@@ -3,24 +3,34 @@ import { mkdirSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import {
   agentRunStateSchema,
+  correctnessReviewSchema,
   chatMessageSchema,
+  chatMessageMetadataSchema,
   createEmptySession,
   createProjectId,
   createProjectThreadSummary,
   createRunId,
   createThreadId,
+  executionPlanSchema,
   type AgentRunState,
   type AgentRunStatus,
   type ChatMessage,
+  type ChatMessageKind,
+  type ChatMessageMetadata,
   type ChatRole,
+  type CorrectnessIterationMode,
+  type CorrectnessReview,
+  type ExecutionPlan,
   type PlannerReadyTurn,
   type PlanningChoice,
   type PlanningQuestion,
+  type PlanExecutionMode,
   type ProviderBrand,
   type ProjectId,
   type ProjectRootPath,
   type ProjectThreadSummary,
   type QuestionId,
+  type SubagentWorktreeStrategy,
   type SubagentTaskState,
   type ThreadBadgeState,
   type ThreadId,
@@ -36,6 +46,10 @@ const GOOGLE_API_KEY = "google_api_key";
 const PROVIDER_BRAND_KEY = "provider_brand";
 const DEBUG_ENABLED_KEY = "debug_enabled";
 const TRACE_PANEL_DEFAULT_OPEN_KEY = "trace_panel_default_open";
+const SUBAGENT_WORKTREE_STRATEGY_DEFAULT_KEY = "subagent_worktree_strategy_default";
+const PLAN_EXECUTION_MODE_DEFAULT_KEY = "plan_execution_mode_default";
+const PLAN_EXECUTION_DELAY_SECONDS_DEFAULT_KEY = "plan_execution_delay_seconds_default";
+const CORRECTNESS_ITERATION_MODE_DEFAULT_KEY = "correctness_iteration_mode_default";
 
 type ProjectRow = {
   id: string;
@@ -63,7 +77,9 @@ type MessageRow = {
   id: string;
   thread_id: string;
   role: ChatRole;
+  kind: ChatMessageKind | null;
   content: string;
+  metadata_json: string | null;
   created_at: string;
 };
 
@@ -79,6 +95,8 @@ type AgentRunRow = {
   summary: string | null;
   final_execution_brief: string | null;
   failure_message: string | null;
+  plan_json: string | null;
+  correctness_review_json: string | null;
   created_at: string;
   updated_at: string;
   completed_at: string | null;
@@ -282,10 +300,18 @@ export class WorkspaceRepository {
       for (const message of sourceMessages) {
         this.db
           .query(
-            `INSERT INTO thread_messages (id, thread_id, role, content, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)`
+            `INSERT INTO thread_messages (id, thread_id, role, kind, content, metadata_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`
           )
-          .run(crypto.randomUUID(), nextThreadId, message.role, message.content, message.createdAt);
+          .run(
+            crypto.randomUUID(),
+            nextThreadId,
+            message.role,
+            message.kind ?? "plain",
+            message.content,
+            message.metadata ? JSON.stringify(message.metadata) : null,
+            message.createdAt
+          );
       }
 
       this.setActiveThread(projectId, nextThreadId, now);
@@ -333,13 +359,22 @@ export class WorkspaceRepository {
     return this.createThread(projectId);
   }
 
-  appendMessage(projectId: ProjectId, role: ChatRole, content: string, threadId?: ThreadId): WorkspaceProjectState {
-    const resolvedThreadId = this.resolveThreadId(projectId, threadId);
+  appendMessage(
+    projectId: ProjectId,
+    role: ChatRole,
+    content: string,
+    threadIdOrOptions?: ThreadId | { threadId?: ThreadId; kind?: ChatMessageKind; metadata?: ChatMessageMetadata }
+  ): WorkspaceProjectState {
+    const options =
+      typeof threadIdOrOptions === "string" || threadIdOrOptions === undefined ? { threadId: threadIdOrOptions } : threadIdOrOptions;
+    const resolvedThreadId = this.resolveThreadId(projectId, options.threadId);
     const thread = this.readThreadRow(projectId, resolvedThreadId);
     const message = {
       id: crypto.randomUUID(),
       role,
+      kind: options.kind ?? "plain",
       content,
+      metadata: options.metadata,
       createdAt: new Date().toISOString()
     } satisfies ChatMessage;
     const priorMessageCount =
@@ -349,10 +384,18 @@ export class WorkspaceRepository {
     const tx = this.db.transaction(() => {
       this.db
         .query(
-          `INSERT INTO thread_messages (id, thread_id, role, content, created_at)
-           VALUES (?1, ?2, ?3, ?4, ?5)`
+          `INSERT INTO thread_messages (id, thread_id, role, kind, content, metadata_json, created_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`
         )
-        .run(message.id, thread.id, message.role, message.content, message.createdAt);
+        .run(
+          message.id,
+          thread.id,
+          message.role,
+          message.kind ?? "plain",
+          message.content,
+          message.metadata ? JSON.stringify(message.metadata) : null,
+          message.createdAt
+        );
       this.db.query(`UPDATE project_threads SET updated_at = ?2 WHERE id = ?1`).run(thread.id, message.createdAt);
       this.touchProject(projectId, message.createdAt);
 
@@ -387,10 +430,12 @@ export class WorkspaceRepository {
           summary,
           final_execution_brief,
           failure_message,
+          plan_json,
+          correctness_review_json,
           created_at,
           updated_at,
           completed_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, NULL, NULL, NULL, ?7, ?7, NULL)`
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?7, ?7, NULL)`
       )
       .run(runId, projectId, resolvedThreadId, "planning", latestUserPrompt, planningModelId ?? null, now);
 
@@ -471,14 +516,57 @@ export class WorkspaceRepository {
     return this.readProjectSnapshot(projectId);
   }
 
-  setAgentRunReady(projectId: ProjectId, runId: string, plan: PlannerReadyTurn, planningModelId?: string) {
+  setAgentRunReady(
+    projectId: ProjectId,
+    runId: string,
+    plan: PlannerReadyTurn,
+    executionPlan?: ExecutionPlan,
+    subtasks: Array<Pick<SubagentTaskState, "id" | "title" | "instruction">> = [],
+    planningModelId?: string
+  ) {
     const now = new Date().toISOString();
+    const resolvedSubtasks = subtasks.length > 0 ? subtasks : plan.subtasks;
+    const resolvedExecutionPlan =
+      executionPlan ??
+      ({
+        runId,
+        origin: "initial",
+        iteration: 1,
+        summary: plan.summary,
+        finalExecutionBrief: plan.finalExecutionBrief,
+        difficultyScore: Math.round(plan.difficultyScore),
+        planningModelId: planningModelId ?? "openai/gpt-5.4",
+        executionModelId: plan.executionModelId,
+        route: resolvedSubtasks.length > 1 ? "pi-subagents" : "main",
+        subagentWorktreeStrategy: "same-worktree",
+        targetSubagentCount: resolvedSubtasks.length,
+        actualSubagentCount: resolvedSubtasks.length > 1 ? resolvedSubtasks.length : 0,
+        gating: {
+          mode: "countdown",
+          delaySeconds: 10
+        },
+        prerequisites: [],
+        contracts: resolvedSubtasks.map((task) => ({
+          taskId: task.id,
+          title: task.title,
+          instruction: task.instruction,
+          effortPoints: 2,
+          ownedPaths: ["(planner-unspecified)"],
+          dependsOnPrerequisiteIds: [],
+          deliverables: [task.title],
+          integrationPoints: [],
+          verificationScope: "owned-files-only",
+          verificationCommands: ["bunx tsc --noEmit"],
+          mergeNotes: `Merge ${task.title} into final solution.`
+        })),
+        correctnessPolicy: "ask-before-iterate"
+      } satisfies ExecutionPlan);
 
     const tx = this.db.transaction(() => {
       this.assertRunExists(projectId, runId);
       this.db.query(`DELETE FROM agent_run_subtasks WHERE run_id = ?1`).run(runId);
 
-      for (const task of plan.subtasks) {
+      for (const task of resolvedSubtasks) {
         this.db
           .query(
             `INSERT INTO agent_run_subtasks (
@@ -509,7 +597,9 @@ export class WorkspaceRepository {
                summary = ?6,
                final_execution_brief = ?7,
                failure_message = NULL,
-               updated_at = ?8
+               plan_json = ?8,
+               correctness_review_json = NULL,
+               updated_at = ?9
            WHERE id = ?1 AND project_id = ?2`
         )
         .run(
@@ -520,6 +610,7 @@ export class WorkspaceRepository {
           Math.round(plan.difficultyScore),
           plan.summary,
           plan.finalExecutionBrief,
+          JSON.stringify(resolvedExecutionPlan),
           now
         );
     });
@@ -541,6 +632,55 @@ export class WorkspaceRepository {
          WHERE id = ?1 AND project_id = ?2`
       )
       .run(runId, projectId, status, failureMessage ?? null, now, completedAt);
+
+    if (updated.changes === 0) {
+      throw new Error(`Unknown agent run: ${runId}`);
+    }
+
+    return this.readProjectSnapshot(projectId);
+  }
+
+  setAgentRunCorrectnessReview(projectId: ProjectId, runId: string, correctnessReview?: CorrectnessReview) {
+    const now = new Date().toISOString();
+    const updated = this.db
+      .query(
+        `UPDATE agent_runs
+         SET correctness_review_json = ?3,
+             updated_at = ?4
+         WHERE id = ?1 AND project_id = ?2`
+      )
+      .run(runId, projectId, correctnessReview ? JSON.stringify(correctnessReview) : null, now);
+
+    if (updated.changes === 0) {
+      throw new Error(`Unknown agent run: ${runId}`);
+    }
+
+    return this.readProjectSnapshot(projectId);
+  }
+
+  setAgentRunExecutionPlan(projectId: ProjectId, runId: string, executionPlan: ExecutionPlan) {
+    const now = new Date().toISOString();
+    const updated = this.db
+      .query(
+        `UPDATE agent_runs
+         SET plan_json = ?3,
+             summary = ?4,
+             final_execution_brief = ?5,
+             difficulty_score = ?6,
+             execution_model_id = ?7,
+             updated_at = ?8
+         WHERE id = ?1 AND project_id = ?2`
+      )
+      .run(
+        runId,
+        projectId,
+        JSON.stringify(executionPlan),
+        executionPlan.summary,
+        executionPlan.finalExecutionBrief,
+        Math.round(executionPlan.difficultyScore),
+        executionPlan.executionModelId,
+        now
+      );
 
     if (updated.changes === 0) {
       throw new Error(`Unknown agent run: ${runId}`);
@@ -677,6 +817,47 @@ export class WorkspaceRepository {
     this.setWorkspaceMetaValue(TRACE_PANEL_DEFAULT_OPEN_KEY, String(tracePanelDefaultOpen));
   }
 
+  getSubagentWorktreeStrategyDefault(): SubagentWorktreeStrategy {
+    return this.getWorkspaceMetaValue(SUBAGENT_WORKTREE_STRATEGY_DEFAULT_KEY) === "separate-worktrees"
+      ? "separate-worktrees"
+      : "same-worktree";
+  }
+
+  setSubagentWorktreeStrategyDefault(value: SubagentWorktreeStrategy) {
+    this.setWorkspaceMetaValue(SUBAGENT_WORKTREE_STRATEGY_DEFAULT_KEY, value);
+  }
+
+  getPlanExecutionModeDefault(): PlanExecutionMode {
+    const value = this.getWorkspaceMetaValue(PLAN_EXECUTION_MODE_DEFAULT_KEY);
+    return value === "approve" || value === "immediate" ? value : "countdown";
+  }
+
+  setPlanExecutionModeDefault(value: PlanExecutionMode) {
+    this.setWorkspaceMetaValue(PLAN_EXECUTION_MODE_DEFAULT_KEY, value);
+  }
+
+  getPlanExecutionDelaySecondsDefault() {
+    const value = Number(this.getWorkspaceMetaValue(PLAN_EXECUTION_DELAY_SECONDS_DEFAULT_KEY));
+    return Number.isFinite(value) && value >= 0 ? Math.min(300, Math.round(value)) : 10;
+  }
+
+  setPlanExecutionDelaySecondsDefault(value: number) {
+    this.setWorkspaceMetaValue(PLAN_EXECUTION_DELAY_SECONDS_DEFAULT_KEY, String(Math.max(0, Math.min(300, Math.round(value)))));
+  }
+
+  getCorrectnessIterationModeDefault(): CorrectnessIterationMode {
+    const value = this.getWorkspaceMetaValue(CORRECTNESS_ITERATION_MODE_DEFAULT_KEY);
+    if (value === "auto-once" || value === "auto-until-clean") {
+      return value;
+    }
+
+    return "ask-before-iterate";
+  }
+
+  setCorrectnessIterationModeDefault(value: CorrectnessIterationMode) {
+    this.setWorkspaceMetaValue(CORRECTNESS_ITERATION_MODE_DEFAULT_KEY, value);
+  }
+
   private migrate() {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS projects (
@@ -717,7 +898,9 @@ export class WorkspaceRepository {
         id TEXT PRIMARY KEY,
         thread_id TEXT NOT NULL,
         role TEXT NOT NULL CHECK(role IN ('system', 'user', 'assistant')),
+        kind TEXT NOT NULL DEFAULT 'plain' CHECK(kind IN ('plain', 'plan-summary')),
         content TEXT NOT NULL,
+        metadata_json TEXT NULL,
         created_at TEXT NOT NULL,
         FOREIGN KEY(thread_id) REFERENCES project_threads(id) ON DELETE CASCADE
       );
@@ -748,6 +931,8 @@ export class WorkspaceRepository {
         summary TEXT NULL,
         final_execution_brief TEXT NULL,
         failure_message TEXT NULL,
+        plan_json TEXT NULL,
+        correctness_review_json TEXT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         completed_at TEXT NULL,
@@ -802,9 +987,13 @@ export class WorkspaceRepository {
     this.addColumnIfMissing("project_threads", "title_source", "TEXT NULL");
     this.addColumnIfMissing("project_threads", "updated_at", "TEXT NULL");
     this.addColumnIfMissing("project_threads", "forked_from_thread_id", "TEXT NULL");
+    this.addColumnIfMissing("thread_messages", "kind", "TEXT NOT NULL DEFAULT 'plain'");
+    this.addColumnIfMissing("thread_messages", "metadata_json", "TEXT NULL");
     this.addColumnIfMissing("agent_run_questions", "choices_json", "TEXT NULL");
     this.addColumnIfMissing("agent_run_subtasks", "commit_sha", "TEXT NULL");
     this.addColumnIfMissing("agent_run_subtasks", "worktree_path", "TEXT NULL");
+    this.addColumnIfMissing("agent_runs", "plan_json", "TEXT NULL");
+    this.addColumnIfMissing("agent_runs", "correctness_review_json", "TEXT NULL");
 
     this.db.exec(`DROP INDEX IF EXISTS project_threads_active_project_idx;`);
     this.db.exec(`UPDATE project_threads SET status = 'active' WHERE status = 'archived';`);
@@ -895,7 +1084,7 @@ export class WorkspaceRepository {
   private readMessages(threadId: ThreadId) {
     return this.db
       .query<MessageRow, [string]>(
-        `SELECT id, thread_id, role, content, created_at
+        `SELECT id, thread_id, role, kind, content, metadata_json, created_at
          FROM thread_messages
          WHERE thread_id = ?1
          ORDER BY created_at ASC`
@@ -905,7 +1094,9 @@ export class WorkspaceRepository {
         chatMessageSchema.parse({
           id: message.id,
           role: message.role,
+          kind: message.kind ?? "plain",
           content: message.content,
+          metadata: parseChatMessageMetadata(message.metadata_json),
           createdAt: message.created_at
         })
       );
@@ -1027,7 +1218,8 @@ export class WorkspaceRepository {
       .query<AgentRunRow, [string, string]>(
         `SELECT
           id, project_id, thread_id, status, latest_user_prompt, planning_model_id, execution_model_id,
-          difficulty_score, summary, final_execution_brief, failure_message, created_at, updated_at, completed_at
+          difficulty_score, summary, final_execution_brief, failure_message, plan_json, correctness_review_json,
+          created_at, updated_at, completed_at
          FROM agent_runs
          WHERE project_id = ?1 AND thread_id = ?2 AND status != 'completed'
          ORDER BY updated_at DESC
@@ -1043,7 +1235,8 @@ export class WorkspaceRepository {
       .query<AgentRunRow, [string, string]>(
         `SELECT
           id, project_id, thread_id, status, latest_user_prompt, planning_model_id, execution_model_id,
-          difficulty_score, summary, final_execution_brief, failure_message, created_at, updated_at, completed_at
+          difficulty_score, summary, final_execution_brief, failure_message, plan_json, correctness_review_json,
+          created_at, updated_at, completed_at
          FROM agent_runs
          WHERE project_id = ?1 AND thread_id = ?2
          ORDER BY updated_at DESC
@@ -1112,6 +1305,8 @@ export class WorkspaceRepository {
       summary: run.summary ?? undefined,
       finalExecutionBrief: run.final_execution_brief ?? undefined,
       failureMessage: run.failure_message ?? undefined,
+      plan: parseExecutionPlan(run.plan_json),
+      correctnessReview: parseCorrectnessReview(run.correctness_review_json),
       questions,
       subtasks,
       resumable: isRunResumable(run.status, hasExecutionState),
@@ -1409,6 +1604,42 @@ function parsePlanningChoices(input: string | null): PlanningChoice[] {
   }
 
   return createFallbackPlanningChoices("Provide answer");
+}
+
+function parseChatMessageMetadata(input: string | null): ChatMessageMetadata | undefined {
+  if (!input) {
+    return undefined;
+  }
+
+  try {
+    return chatMessageMetadataSchema.parse(JSON.parse(input));
+  } catch {
+    return undefined;
+  }
+}
+
+function parseExecutionPlan(input: string | null): ExecutionPlan | undefined {
+  if (!input) {
+    return undefined;
+  }
+
+  try {
+    return executionPlanSchema.parse(JSON.parse(input));
+  } catch {
+    return undefined;
+  }
+}
+
+function parseCorrectnessReview(input: string | null): CorrectnessReview | undefined {
+  if (!input) {
+    return undefined;
+  }
+
+  try {
+    return correctnessReviewSchema.parse(JSON.parse(input));
+  } catch {
+    return undefined;
+  }
 }
 
 function createFallbackPlanningChoices(placeholder: string): PlanningChoice[] {

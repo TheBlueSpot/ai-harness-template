@@ -94,6 +94,35 @@ describe("client command validation", () => {
     ).toThrow();
   });
 
+  test("accepts planning.refine payloads", () => {
+    expect(
+      parseClientCommand({
+        type: "planning.refine",
+        requestId: "req-refine",
+        payload: {
+          projectId: "project-1",
+          threadId: "thread-1",
+          runId: "run-1",
+          content: "Scope this to the existing route only."
+        }
+      }).type
+    ).toBe("planning.refine");
+  });
+
+  test("accepts run.execute payloads", () => {
+    expect(
+      parseClientCommand({
+        type: "run.execute",
+        requestId: "req-execute",
+        payload: {
+          projectId: "project-1",
+          threadId: "thread-1",
+          runId: "run-1"
+        }
+      }).type
+    ).toBe("run.execute");
+  });
+
   test("accepts run.resume payloads", () => {
     expect(
       parseClientCommand({
@@ -201,7 +230,11 @@ describe("planner result validation", () => {
             hasStoredGoogleApiKey: false,
             providerBrand: "gpt",
             debugEnabledDefault: false,
-            tracePanelDefaultOpen: true
+            tracePanelDefaultOpen: true,
+            subagentWorktreeStrategyDefault: "same-worktree",
+            planExecutionModeDefault: "countdown",
+            planExecutionDelaySecondsDefault: 10,
+            correctnessIterationModeDefault: "ask-before-iterate"
           }
         }
       }).type
@@ -227,7 +260,11 @@ describe("planner result validation", () => {
             hasStoredGoogleApiKey: false,
             providerBrand: "gpt",
             debugEnabledDefault: false,
-            tracePanelDefaultOpen: true
+            tracePanelDefaultOpen: true,
+            subagentWorktreeStrategyDefault: "same-worktree",
+            planExecutionModeDefault: "countdown",
+            planExecutionDelaySecondsDefault: 10,
+            correctnessIterationModeDefault: "ask-before-iterate"
           }
         }
       }).type

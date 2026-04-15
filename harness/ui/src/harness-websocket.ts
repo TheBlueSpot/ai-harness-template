@@ -51,7 +51,11 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
                 googleApiKey: localPreferences.googleApiKey,
                 providerBrand: harnessStore.state.providerBrand,
                 debugEnabled: harnessStore.state.debugEnabled,
-                tracePanelDefaultOpen: harnessStore.state.tracePanelDefaultOpen
+                tracePanelDefaultOpen: harnessStore.state.tracePanelDefaultOpen,
+                subagentWorktreeStrategyDefault: harnessStore.state.subagentWorktreeStrategyDefault,
+                planExecutionModeDefault: harnessStore.state.planExecutionModeDefault,
+                planExecutionDelaySecondsDefault: harnessStore.state.planExecutionDelaySecondsDefault,
+                correctnessIterationModeDefault: harnessStore.state.correctnessIterationModeDefault
               }
             } satisfies ClientCommand)
           );
@@ -65,7 +69,11 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
             googleApiKey: harnessStore.state.googleApiKeyDraft.trim() || undefined,
             providerBrand: fallbackProviderBrand,
             debugEnabled: harnessStore.state.debugEnabled,
-            tracePanelDefaultOpen: harnessStore.state.tracePanelDefaultOpen
+            tracePanelDefaultOpen: harnessStore.state.tracePanelDefaultOpen,
+            subagentWorktreeStrategyDefault: harnessStore.state.subagentWorktreeStrategyDefault,
+            planExecutionModeDefault: harnessStore.state.planExecutionModeDefault,
+            planExecutionDelaySecondsDefault: harnessStore.state.planExecutionDelaySecondsDefault,
+            correctnessIterationModeDefault: harnessStore.state.correctnessIterationModeDefault
           });
         }
       }
@@ -78,7 +86,11 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
             parsed.type === "preferences.apiKeyCleared" ? undefined : harnessStore.state.googleApiKeyDraft.trim() || undefined,
           providerBrand: harnessStore.state.providerBrand,
           debugEnabled: harnessStore.state.debugEnabled,
-          tracePanelDefaultOpen: harnessStore.state.tracePanelDefaultOpen
+          tracePanelDefaultOpen: harnessStore.state.tracePanelDefaultOpen,
+          subagentWorktreeStrategyDefault: harnessStore.state.subagentWorktreeStrategyDefault,
+          planExecutionModeDefault: harnessStore.state.planExecutionModeDefault,
+          planExecutionDelaySecondsDefault: harnessStore.state.planExecutionDelaySecondsDefault,
+          correctnessIterationModeDefault: harnessStore.state.correctnessIterationModeDefault
         });
       }
 

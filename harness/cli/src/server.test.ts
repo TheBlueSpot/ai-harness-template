@@ -359,6 +359,10 @@ describe("harness server", () => {
     expect(ready.payload.preferences.hasUsableGoogleApiKey).toBe(false);
     expect(ready.payload.preferences.providerBrand).toBe("gpt");
     expect(ready.payload.preferences.tracePanelDefaultOpen).toBe(true);
+    expect(ready.payload.preferences.subagentWorktreeStrategyDefault).toBe("same-worktree");
+    expect(ready.payload.preferences.planExecutionModeDefault).toBe("countdown");
+    expect(ready.payload.preferences.planExecutionDelaySecondsDefault).toBe(10);
+    expect(ready.payload.preferences.correctnessIterationModeDefault).toBe("ask-before-iterate");
     socket.close();
   });
 
@@ -376,7 +380,11 @@ describe("harness server", () => {
           googleApiKey: "AIza-local-456",
           providerBrand: "gemini",
           debugEnabled: true,
-          tracePanelDefaultOpen: false
+          tracePanelDefaultOpen: false,
+          subagentWorktreeStrategyDefault: "separate-worktrees",
+          planExecutionModeDefault: "approve",
+          planExecutionDelaySecondsDefault: 15,
+          correctnessIterationModeDefault: "auto-once"
         }
       })
     );
@@ -389,6 +397,10 @@ describe("harness server", () => {
     expect(saved.payload.providerBrand).toBe("gemini");
     expect(saved.payload.debugEnabledDefault).toBe(true);
     expect(saved.payload.tracePanelDefaultOpen).toBe(false);
+    expect(saved.payload.subagentWorktreeStrategyDefault).toBe("separate-worktrees");
+    expect(saved.payload.planExecutionModeDefault).toBe("approve");
+    expect(saved.payload.planExecutionDelaySecondsDefault).toBe(15);
+    expect(saved.payload.correctnessIterationModeDefault).toBe("auto-once");
     expect(repository.getStoredOpenAiApiKey()).toBe("sk-local-123");
     expect(repository.getStoredGoogleApiKey()).toBe("AIza-local-456");
     socket.close();
@@ -422,6 +434,7 @@ describe("harness server", () => {
   test("uses gemini planning and subagent defaults when provider brand is gemini", async () => {
     repository.setStoredGoogleApiKey("AIza-gemini-123");
     repository.setProviderBrand("gemini");
+    repository.setSubagentWorktreeStrategyDefault("separate-worktrees");
     adapter.setApiKey("google", "AIza-gemini-123");
 
     const socket = createSocket(port);
@@ -429,22 +442,12 @@ describe("harness server", () => {
     const opened = await openProject(socket, projectRoot);
     const projectId = opened.payload.project.id;
     const threadId = opened.payload.project.activeThreadId;
-    const completePromise = waitForEvent(socket, "chat.complete");
-
-    socket.send(
-      JSON.stringify({
-        type: "chat.send",
-        requestId: "req-gemini",
-        payload: {
-          projectId,
-          threadId,
-          agentId: "pi",
-          content: "complex task"
-        }
-      })
-    );
-
-    await completePromise;
+    await sendChatAndExecute(socket, {
+      requestId: "req-gemini",
+      projectId,
+      threadId,
+      content: "complex task"
+    });
     expect(adapter.calls[0]?.modelId).toBe("google/gemini-3-flash-preview");
     expect(adapter.calls.filter((call) => call.kind === "subagent").every((call) => call.modelId === "google/gemini-2.5-flash-lite")).toBe(true);
     socket.close();
@@ -456,12 +459,36 @@ describe("harness server", () => {
     const opened = await openProject(socket, projectRoot);
     const projectId = opened.payload.project.id;
     const threadId = opened.payload.project.activeThreadId;
-    const completePromise = waitForEvent(socket, "chat.complete");
+    const complete = await sendChatAndExecute(socket, {
+      requestId: "req-low",
+      projectId,
+      threadId,
+      content: "simple task"
+    });
+    expect(complete.payload.projectId).toBe(projectId);
+    expect(complete.payload.assistantMessage.content).toBe("main execution result");
+    expect(adapter.calls.map((call) => call.kind)).toEqual(["planner", "executor"]);
+    socket.close();
+  });
+
+  test("chat.send presents a ready plan before execution", async () => {
+    const socket = createSocket(port);
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot);
+    const projectId = opened.payload.project.id;
+    const threadId = opened.payload.project.activeThreadId;
+    const readyPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "ready");
+    const planPromise = waitForEvent(socket, "agent.plan");
+    const planMessagePromise = waitForEvent(
+      socket,
+      "chat.message-appended",
+      (event) => event.payload.message.kind === "plan-summary"
+    );
 
     socket.send(
       JSON.stringify({
         type: "chat.send",
-        requestId: "req-low",
+        requestId: "req-plan-first",
         payload: {
           projectId,
           threadId,
@@ -471,38 +498,34 @@ describe("harness server", () => {
       })
     );
 
-    const complete = await completePromise;
-    expect(complete.payload.projectId).toBe(projectId);
-    expect(complete.payload.assistantMessage.content).toBe("main execution result");
-    expect(adapter.calls.map((call) => call.kind)).toEqual(["planner", "executor"]);
+    const ready = await readyPromise;
+    const plan = await planPromise;
+    const planMessage = await planMessagePromise;
+
+    expect(ready.payload.run.status).toBe("ready");
+    expect(plan.payload.projectId).toBe(projectId);
+    expect(planMessage.payload.message.kind).toBe("plan-summary");
+    expect(adapter.calls.map((call) => call.kind)).toEqual(["planner"]);
     socket.close();
   });
 
   test("runs high difficulty tasks with subagents and aggregation", async () => {
+    repository.setSubagentWorktreeStrategyDefault("separate-worktrees");
     const socket = createSocket(port);
     await waitForEvent(socket, "connection.ready");
     const opened = await openProject(socket, projectRoot);
     const projectId = opened.payload.project.id;
     const threadId = opened.payload.project.activeThreadId;
     const planPromise = waitForEvent(socket, "agent.plan");
-    const completePromise = waitForEvent(socket, "chat.complete");
 
-    socket.send(
-      JSON.stringify({
-        type: "chat.send",
-        requestId: "req-high",
-        payload: {
-          projectId,
-          threadId,
-          agentId: "pi",
-          content: "complex task"
-        }
-      })
-    );
+    const complete = await sendChatAndExecute(socket, {
+      requestId: "req-high",
+      projectId,
+      threadId,
+      content: "complex task"
+    });
 
     const plan = await planPromise;
-    const complete = await completePromise;
-
     expect(plan.payload.projectId).toBe(projectId);
     expect(plan.payload.plan.usesSubagents).toBe(true);
     expect(complete.payload.assistantMessage.content).toBe("aggregated result");
@@ -549,66 +572,68 @@ describe("harness server", () => {
     expect(questionMessage.payload.message.content).toContain("Which route");
     expect(adapter.calls.map((call) => call.kind)).toEqual(["planner"]);
 
-    const completePromise = waitForEvent(socket, "chat.complete");
-
-    socket.send(
-      JSON.stringify({
-        type: "planning.answer",
-        requestId: "req-question-answer",
-        payload: {
-          projectId,
-          threadId,
-          runId: runUpdate.payload.run.id,
-          questionId: runUpdate.payload.run.questions[0].id,
-          content: "api/users/[id]"
-        }
-      })
-    );
-
-    const complete = await completePromise;
+    const complete = await answerPlanningQuestionAndExecute(socket, {
+      requestId: "req-question-answer",
+      projectId,
+      threadId,
+      runId: runUpdate.payload.run.id,
+      questionId: runUpdate.payload.run.questions[0].id,
+      content: "api/users/[id]"
+    });
     expect(complete.payload.assistantMessage.content).toBe("main execution result");
     expect(adapter.calls.map((call) => call.kind)).toEqual(["planner", "planner", "executor"]);
     socket.close();
   });
 
-  test("keeps partial result resumable and persists completed commit metadata", async () => {
+  test("presents a corrective plan when correctness review finds a runnable gap", async () => {
+    writeFileSync(
+      path.join(projectRoot, "index.html"),
+      '<!doctype html><html><body><script type="module" src="./app.ts"></script></body></html>\n'
+    );
+    writeFileSync(path.join(projectRoot, "app.ts"), 'console.log("hello");\n');
+
     const socket = createSocket(port);
     await waitForEvent(socket, "connection.ready");
     const opened = await openProject(socket, projectRoot);
     const projectId = opened.payload.project.id;
     const threadId = opened.payload.project.activeThreadId;
-    const partialRunPromise = waitForEvent(
+    const correctiveReadyPromise = waitForEvent(
       socket,
       "run.updated",
-      (event) => event.payload.run.status === "partial-complete",
-      60000
+      (event) => event.payload.run.status === "ready" && event.payload.run.plan?.origin === "correctness-followup",
+      10000
     );
-    const completePromise = waitForEvent(socket, "chat.complete", undefined, 60000);
-
-    socket.send(
-      JSON.stringify({
-        type: "chat.send",
-        requestId: "req-resume-run",
-        payload: {
-          projectId,
-          threadId,
-          agentId: "pi",
-          content: "resume task"
-        }
-      })
+    const correctivePlanMessagePromise = waitForEvent(
+      socket,
+      "chat.message-appended",
+      (event) =>
+        event.payload.message.kind === "plan-summary" &&
+        event.payload.message.metadata?.type === "plan-summary" &&
+        event.payload.message.metadata.plan.origin === "correctness-followup",
+      10000
     );
 
-    const partialRun = await partialRunPromise;
-    const partialComplete = await completePromise;
-    expect(partialComplete.payload.assistantMessage.content).toBe("aggregated result");
-    expect(partialRun.payload.run.resumable).toBe(true);
-    expect(partialRun.payload.run.subtasks.find((task: any) => task.id === "task-1")?.status).toBe("completed");
-    expect(partialRun.payload.run.subtasks.find((task: any) => task.id === "task-1")?.commitSha).toBeTruthy();
-    expect(partialRun.payload.run.subtasks.find((task: any) => task.id === "task-2")?.status).toBe("failed");
-    expect(adapter.calls.filter((call) => call.kind === "subagent" && call.prompt.includes("Inspect files"))).toHaveLength(1);
-    expect(adapter.calls.filter((call) => call.kind === "subagent" && call.prompt.includes("Patch code hard"))).toHaveLength(2);
+    const initialReady = await sendChatUntilReady(socket, {
+      requestId: "req-correctness-gap",
+      projectId,
+      threadId,
+      content: "simple task"
+    });
+    await executeReadyRun(socket, {
+      requestId: "req-correctness-gap-execute",
+      projectId,
+      threadId,
+      runId: initialReady.payload.run.id
+    }, 10000).catch(() => undefined);
+
+    const correctiveReady = await correctiveReadyPromise;
+    const correctivePlanMessage = await correctivePlanMessagePromise;
+    expect(correctiveReady.payload.run.plan?.origin).toBe("correctness-followup");
+    expect(correctiveReady.payload.run.plan?.summary).toContain("TypeScript modules directly");
+    expect(correctivePlanMessage.payload.message.metadata.plan.origin).toBe("correctness-followup");
+    expect(correctivePlanMessage.payload.message.metadata.plan.summary).toContain("TypeScript modules directly");
     socket.close();
-  }, 60000);
+  }, 15000);
 
   test("chat.stop aborts running work", async () => {
     const socket = createSocket(port);
@@ -656,22 +681,27 @@ describe("harness server", () => {
     const opened = await openProject(socket, projectRoot);
     const projectId = opened.payload.project.id;
     const threadId = opened.payload.project.activeThreadId;
+    const ready = await sendChatUntilReady(socket, {
+      requestId: "req-refresh-deferred-1",
+      projectId,
+      threadId,
+      content: "streaming refresh"
+    });
     const runningRunPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "running-main");
     const deltaPromise = waitForEvent(socket, "chat.delta");
+    const completePromise = waitForEvent(socket, "chat.complete", undefined, 10000);
 
     socket.send(
       JSON.stringify({
-        type: "chat.send",
-        requestId: "req-refresh-deferred-1",
+        type: "run.execute",
+        requestId: "req-refresh-deferred-execute",
         payload: {
           projectId,
           threadId,
-          agentId: "pi",
-          content: "streaming refresh"
+          runId: ready.payload.run.id
         }
       })
     );
-
     const runningRun = await runningRunPromise;
     await deltaPromise;
     const deferredTracePromise = waitForEvent(
@@ -680,7 +710,6 @@ describe("harness server", () => {
       (event) => event.payload.trace.stage === "refresh-deferred",
       10000
     );
-    const completePromise = waitForEvent(socket, "chat.complete", undefined, 10000);
 
     socket.send(
       JSON.stringify({
@@ -706,24 +735,20 @@ describe("harness server", () => {
     const opened = await openProject(socket, projectRoot);
     const projectId = opened.payload.project.id;
     const threadId = opened.payload.project.activeThreadId;
-    const completePromise = waitForEvent(socket, "chat.complete");
     const completedRunPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "completed");
-
-    socket.send(
-      JSON.stringify({
-        type: "chat.send",
-        requestId: "req-refresh-completed-1",
-        payload: {
-          projectId,
-          threadId,
-          agentId: "pi",
-          content: "simple task"
-        }
-      })
-    );
-
+    const ready = await sendChatUntilReady(socket, {
+      requestId: "req-refresh-completed-1",
+      projectId,
+      threadId,
+      content: "simple task"
+    });
+    await executeReadyRun(socket, {
+      requestId: "req-refresh-completed-execute",
+      projectId,
+      threadId,
+      runId: ready.payload.run.id
+    });
     const completedRun = await completedRunPromise;
-    await completePromise;
     const rejectedPromise = waitForEvent(socket, "command.rejected");
 
     socket.send(
@@ -808,22 +833,12 @@ describe("harness server", () => {
     const opened = await openProject(socket, projectRoot);
     const projectId = opened.payload.project.id;
     const threadId = opened.payload.project.activeThreadId;
-    const completePromise = waitForEvent(socket, "chat.complete");
-
-    socket.send(
-      JSON.stringify({
-        type: "chat.send",
-        requestId: "req-persist",
-        payload: {
-          projectId,
-          threadId,
-          agentId: "pi",
-          content: "simple task"
-        }
-      })
-    );
-
-    await completePromise;
+    await sendChatAndExecute(socket, {
+      requestId: "req-persist",
+      projectId,
+      threadId,
+      content: "simple task"
+    });
     socket.close();
     server.stop(true);
 
@@ -855,23 +870,21 @@ describe("harness server", () => {
     const projectId = opened.payload.project.id;
     const threadId = opened.payload.project.activeThreadId;
     const preflightPromise = waitForEvent(socket, "run.preflight");
-    const completePromise = waitForEvent(socket, "chat.complete");
-
-    socket.send(
-      JSON.stringify({
-        type: "chat.send",
-        requestId: "req-dirty-warning",
-        payload: {
-          projectId,
-          threadId,
-          agentId: "pi",
-          content: "simple task"
-        }
-      })
-    );
+    const readyPromise = sendChatUntilReady(socket, {
+      requestId: "req-dirty-warning",
+      projectId,
+      threadId,
+      content: "simple task"
+    });
 
     const preflight = await preflightPromise;
-    await completePromise;
+    const ready = await readyPromise;
+    await executeReadyRun(socket, {
+      requestId: "req-dirty-warning-execute",
+      projectId,
+      threadId,
+      runId: ready.payload.run.id
+    });
     expect(preflight.payload.preflight.changedFileCount).toBe(1);
     expect(preflight.payload.preflight.kind).toBe("git-dirty");
     socket.close();
@@ -913,26 +926,22 @@ describe("harness server", () => {
     const opened = await openProject(socket, projectRoot);
     const projectId = opened.payload.project.id;
     const threadId = opened.payload.project.activeThreadId;
-    const firstCompletePromise = waitForEvent(socket, "chat.complete");
     const firstRunPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "completed");
-
-    socket.send(
-      JSON.stringify({
-        type: "chat.send",
-        requestId: "req-retry-main-1",
-        payload: {
-          projectId,
-          threadId,
-          agentId: "pi",
-          content: "simple task"
-        }
-      })
-    );
-
+    const firstReady = await sendChatUntilReady(socket, {
+      requestId: "req-retry-main-1",
+      projectId,
+      threadId,
+      content: "simple task"
+    });
+    await executeReadyRun(socket, {
+      requestId: "req-retry-main-1-execute",
+      projectId,
+      threadId,
+      runId: firstReady.payload.run.id
+    });
     const firstRun = await firstRunPromise;
-    await firstCompletePromise;
 
-    const secondCompletePromise = waitForEvent(socket, "chat.complete");
+    const secondReadyPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "ready");
     socket.send(
       JSON.stringify({
         type: "run.retry",
@@ -945,61 +954,68 @@ describe("harness server", () => {
       })
     );
 
-    await secondCompletePromise;
+    const secondReady = await secondReadyPromise;
+    await executeReadyRun(socket, {
+      requestId: "req-retry-main-2-execute",
+      projectId,
+      threadId,
+      runId: secondReady.payload.run.id
+    });
     expect(adapter.calls.map((call) => call.kind)).toEqual(["planner", "executor", "planner", "executor"]);
     socket.close();
   });
 
-  test("retries a selected subagent and re-aggregates", async () => {
+  test("planning.refine replaces the ready plan with a fresh run", async () => {
     const socket = createSocket(port);
     await waitForEvent(socket, "connection.ready");
     const opened = await openProject(socket, projectRoot);
     const projectId = opened.payload.project.id;
     const threadId = opened.payload.project.activeThreadId;
-    const partialRunPromise = waitForEvent(
+    const firstReady = await sendChatUntilReady(socket, {
+      requestId: "req-refine-1",
+      projectId,
+      threadId,
+      content: "complex task"
+    });
+    const refinedReadyPromise = waitForEvent(
       socket,
       "run.updated",
-      (event) => event.payload.run.status === "partial-complete",
-      60000
+      (event) =>
+        event.payload.run.status === "ready" &&
+        event.payload.run.id !== firstReady.payload.run.id &&
+        event.payload.run.latestUserPrompt === "make it runnable",
+      10000
     );
-    const firstCompletePromise = waitForEvent(socket, "chat.complete", undefined, 60000);
-
+    const refinedPlanMessagePromise = waitForEvent(
+      socket,
+      "chat.message-appended",
+      (event) =>
+        event.payload.message.kind === "plan-summary" &&
+        event.payload.message.metadata?.type === "plan-summary" &&
+        event.payload.message.metadata.runId !== firstReady.payload.run.id,
+      10000
+    );
     socket.send(
       JSON.stringify({
-        type: "chat.send",
-        requestId: "req-retry-subagent-1",
+        type: "planning.refine",
+        requestId: "req-refine-2",
         payload: {
           projectId,
           threadId,
-          agentId: "pi",
-          content: "resume task"
+          runId: firstReady.payload.run.id,
+          content: "make it runnable"
         }
       })
     );
 
-    const partialRun = await partialRunPromise;
-    await firstCompletePromise;
-
-    const retryCompletePromise = waitForEvent(socket, "chat.complete", undefined, 60000);
-    socket.send(
-      JSON.stringify({
-        type: "run.retry",
-        requestId: "req-retry-subagent-2",
-        payload: {
-          projectId,
-          threadId,
-          runId: partialRun.payload.run.id,
-          subagentId: "task-1"
-        }
-      })
-    );
-
-    await retryCompletePromise;
-    expect(adapter.calls.filter((call) => call.kind === "subagent" && call.prompt.includes("Inspect files"))).toHaveLength(2);
-    expect(adapter.calls.filter((call) => call.kind === "subagent" && call.prompt.includes("Patch code hard"))).toHaveLength(2);
-    expect(adapter.calls.filter((call) => call.kind === "aggregator")).toHaveLength(2);
+    const refinedReady = await refinedReadyPromise;
+    const refinedPlanMessage = await refinedPlanMessagePromise;
+    expect(refinedReady.payload.run.id).not.toBe(firstReady.payload.run.id);
+    expect(refinedPlanMessage.payload.message.metadata.runId).toBe(refinedReady.payload.run.id);
+    expect(adapter.calls.filter((call) => call.kind === "planner")).toHaveLength(2);
+    expect(adapter.calls.some((call) => call.kind === "executor" || call.kind === "subagent")).toBe(false);
     socket.close();
-  }, 60000);
+  });
 
   test("emits project context usage updates for planner and executor", async () => {
     const socket = createSocket(port);
@@ -1016,21 +1032,18 @@ describe("harness server", () => {
     };
     socket.addEventListener("message", listener);
 
-    const completePromise = waitForEvent(socket, "chat.complete");
-    socket.send(
-      JSON.stringify({
-        type: "chat.send",
-        requestId: "req-context",
-        payload: {
-          projectId,
-          threadId,
-          agentId: "pi",
-          content: "simple task"
-        }
-      })
-    );
-
-    await completePromise;
+    const ready = await sendChatUntilReady(socket, {
+      requestId: "req-context",
+      projectId,
+      threadId,
+      content: "simple task"
+    });
+    await executeReadyRun(socket, {
+      requestId: "req-context-execute",
+      projectId,
+      threadId,
+      runId: ready.payload.run.id
+    });
     socket.removeEventListener("message", listener);
 
     expect(contextEvents.some((event) => event.payload.contextUsage.sourceKind === "planner")).toBe(true);
@@ -1101,24 +1114,158 @@ function openProject(socket: WebSocket, rootPath: string, requestId: string = `r
   return openedPromise;
 }
 
+function createChatSendCommand(input: { requestId: string; projectId: string; threadId: string; content: string }) {
+  return {
+    type: "chat.send",
+    requestId: input.requestId,
+    payload: {
+      projectId: input.projectId,
+      threadId: input.threadId,
+      agentId: "pi",
+      content: input.content
+    }
+  };
+}
+
+async function sendChatUntilReady(
+  socket: WebSocket,
+  input: { requestId: string; projectId: string; threadId: string; content: string },
+  timeoutMs: number = 5000
+) {
+  const readyPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "ready", timeoutMs);
+  const planMessagePromise = waitForEvent(
+    socket,
+    "chat.message-appended",
+    (event) => event.payload.message.kind === "plan-summary",
+    timeoutMs
+  );
+  socket.send(JSON.stringify(createChatSendCommand(input)));
+  const ready = await readyPromise;
+  await planMessagePromise;
+  return ready;
+}
+
+async function executeReadyRun(
+  socket: WebSocket,
+  input: { requestId: string; projectId: string; threadId: string; runId: string },
+  timeoutMs: number = 5000
+) {
+  const completePromise = waitForEvent(socket, "chat.complete", undefined, timeoutMs);
+  socket.send(
+    JSON.stringify({
+      type: "run.execute",
+      requestId: input.requestId,
+      payload: {
+        projectId: input.projectId,
+        threadId: input.threadId,
+        runId: input.runId
+      }
+    })
+  );
+  return completePromise;
+}
+
+async function sendChatAndExecute(
+  socket: WebSocket,
+  input: { requestId: string; projectId: string; threadId: string; content: string },
+  timeoutMs: number = 5000
+) {
+  const ready = await sendChatUntilReady(socket, input, timeoutMs);
+  return executeReadyRun(
+    socket,
+    {
+      requestId: `${input.requestId}-execute`,
+      projectId: input.projectId,
+      threadId: input.threadId,
+      runId: ready.payload.run.id
+    },
+    timeoutMs
+  );
+}
+
+async function answerPlanningQuestionAndExecute(
+  socket: WebSocket,
+  input: { requestId: string; projectId: string; threadId: string; runId: string; questionId: string; content: string },
+  timeoutMs: number = 5000
+) {
+  const readyPromise = waitForEvent(
+    socket,
+    "run.updated",
+    (event) => event.payload.run.id === input.runId && event.payload.run.status === "ready",
+    timeoutMs
+  );
+  const planMessagePromise = waitForEvent(
+    socket,
+    "chat.message-appended",
+    (event) => event.payload.message.kind === "plan-summary",
+    timeoutMs
+  );
+  socket.send(
+    JSON.stringify({
+      type: "planning.answer",
+      requestId: input.requestId,
+      payload: {
+        projectId: input.projectId,
+        threadId: input.threadId,
+        runId: input.runId,
+        questionId: input.questionId,
+        content: input.content
+      }
+    })
+  );
+  const ready = await readyPromise;
+  await planMessagePromise;
+  return executeReadyRun(
+    socket,
+    {
+      requestId: `${input.requestId}-execute`,
+      projectId: input.projectId,
+      threadId: input.threadId,
+      runId: ready.payload.run.id
+    },
+    timeoutMs
+  );
+}
+
 function createSocket(port: number) {
   return new WebSocket(`ws://localhost:${port}/ws`);
 }
 
 function waitForEvent(socket: WebSocket, type: string, predicate?: (payload: any) => boolean, timeoutMs: number = 5000) {
   return new Promise<any>((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error(`Timed out waiting for ${type}`)), timeoutMs);
+    let settled = false;
+    let timeout: ReturnType<typeof setTimeout>;
 
     const listener = (event: MessageEvent) => {
       const payload = JSON.parse(event.data as string);
       if (payload.type === type && (predicate ? predicate(payload) : true)) {
-        clearTimeout(timeout);
-        socket.removeEventListener("message", listener);
+        cleanup();
         resolve(payload);
       }
     };
 
+    const onError = () => {
+      cleanup();
+      reject(new Error("socket error"));
+    };
+
+    const cleanup = () => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      clearTimeout(timeout);
+      socket.removeEventListener("message", listener);
+      socket.removeEventListener("error", onError);
+    };
+
+    timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Timed out waiting for ${type}`));
+    }, timeoutMs);
+
     socket.addEventListener("message", listener);
-    socket.addEventListener("error", () => reject(new Error("socket error")), { once: true });
+    socket.addEventListener("error", onError, { once: true });
   });
 }

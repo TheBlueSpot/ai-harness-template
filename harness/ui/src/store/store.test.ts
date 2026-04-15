@@ -18,7 +18,11 @@ const defaultPreferences: PreferencesState = {
   hasStoredGoogleApiKey: false,
   providerBrand: "gpt",
   debugEnabledDefault: false,
-  tracePanelDefaultOpen: true
+  tracePanelDefaultOpen: true,
+  subagentWorktreeStrategyDefault: "same-worktree",
+  planExecutionModeDefault: "countdown",
+  planExecutionDelaySecondsDefault: 10,
+  correctnessIterationModeDefault: "ask-before-iterate"
 };
 
 function createConnectedState(project?: WorkspaceProjectState) {
@@ -455,7 +459,11 @@ describe("harness store reducer", () => {
           hasStoredGoogleApiKey: true,
           providerBrand: "gemini",
           debugEnabledDefault: true,
-          tracePanelDefaultOpen: false
+          tracePanelDefaultOpen: false,
+          subagentWorktreeStrategyDefault: "same-worktree",
+          planExecutionModeDefault: "countdown",
+          planExecutionDelaySecondsDefault: 10,
+          correctnessIterationModeDefault: "ask-before-iterate"
         }
       }
     });
@@ -481,7 +489,11 @@ describe("harness store reducer", () => {
         hasStoredGoogleApiKey: false,
         providerBrand: "gpt",
         debugEnabledDefault: false,
-        tracePanelDefaultOpen: true
+        tracePanelDefaultOpen: true,
+        subagentWorktreeStrategyDefault: "same-worktree",
+        planExecutionModeDefault: "countdown",
+        planExecutionDelaySecondsDefault: 10,
+        correctnessIterationModeDefault: "ask-before-iterate"
       }
     });
 

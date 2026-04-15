@@ -3,6 +3,7 @@ import { Menu, PanelsTopLeft, Settings2, Workflow } from "lucide-solid";
 import { createRequestId } from "../../shared/protocol";
 import { ChatPanel } from "./components/chat-panel";
 import { ConnectionBanner } from "./components/connection-banner";
+import { ExecutionPlanDialog } from "./components/execution-plan-dialog";
 import { PreferencesModal } from "./components/preferences-modal";
 import { ProjectSidebar } from "./components/project-sidebar";
 import { Toaster } from "./components/toaster";
@@ -66,7 +67,11 @@ export function App() {
       googleApiKey: state.googleApiKeyDraft.trim() || undefined,
       providerBrand,
       debugEnabled: state.debugEnabled,
-      tracePanelDefaultOpen: state.tracePanelDefaultOpen
+      tracePanelDefaultOpen: state.tracePanelDefaultOpen,
+      subagentWorktreeStrategyDefault: state.subagentWorktreeStrategyDefault,
+      planExecutionModeDefault: state.planExecutionModeDefault,
+      planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
+      correctnessIterationModeDefault: state.correctnessIterationModeDefault
     });
 
     if (!connection) {
@@ -81,7 +86,11 @@ export function App() {
         googleApiKey: state.googleApiKeyDraft.trim() || undefined,
         providerBrand,
         debugEnabled: state.debugEnabled,
-        tracePanelDefaultOpen: state.tracePanelDefaultOpen
+        tracePanelDefaultOpen: state.tracePanelDefaultOpen,
+        subagentWorktreeStrategyDefault: state.subagentWorktreeStrategyDefault,
+        planExecutionModeDefault: state.planExecutionModeDefault,
+        planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
+        correctnessIterationModeDefault: state.correctnessIterationModeDefault
       }
     });
   };
@@ -173,6 +182,7 @@ export function App() {
       </div>
 
       <PreferencesModal sendCommand={sendCommand} />
+      <ExecutionPlanDialog executionPlan={state.selectedExecutionPlan} />
       <Toaster />
     </main>
   );

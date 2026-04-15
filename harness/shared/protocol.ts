@@ -12,6 +12,9 @@ export const projectRootPathSchema = z.string().min(1).max(4096);
 export const threadTitleSchema = z.string().trim().min(1).max(256);
 export const agentIdSchema = z.literal("pi");
 export const providerBrandSchema = z.enum(["gpt", "gemini"]);
+export const subagentWorktreeStrategySchema = z.enum(["same-worktree", "separate-worktrees"]);
+export const planExecutionModeSchema = z.enum(["countdown", "approve", "immediate"]);
+export const correctnessIterationModeSchema = z.enum(["ask-before-iterate", "auto-once", "auto-until-clean"]);
 export const preflightSeveritySchema = z.enum(["warning"]);
 export const preflightKindSchema = z.enum(["git-dirty"]);
 export const threadTitleSourceSchema = z.enum(["generated", "custom"]);
@@ -23,14 +26,18 @@ export const providerModelIdSchema = z
   .regex(/^[a-zA-Z0-9._:-]+\/[a-zA-Z0-9._:-]+$/, "Model ids must be provider-qualified");
 
 export const chatRoleSchema = z.enum(["system", "user", "assistant"]);
+export const chatMessageKindSchema = z.enum(["plain", "plan-summary"]);
 export const connectionStateSchema = z.enum(["disconnected", "connecting", "connected", "error"]);
 export const agentTraceStageSchema = z.enum([
   "planning",
   "planning-question",
   "routing",
+  "plan-presented",
   "run-resume",
   "worktree-provision",
   "worktree-cleanup",
+  "prerequisite-start",
+  "prerequisite-complete",
   "subagent-start",
   "subagent-spawn-timing",
   "subagent-complete",
@@ -43,6 +50,9 @@ export const agentTraceStageSchema = z.enum([
   "execution-complete",
   "aggregation-start",
   "aggregation-complete",
+  "correctness-start",
+  "correctness-gap",
+  "correctness-complete",
   "verification-start",
   "verification-complete",
   "sync-back",
@@ -51,10 +61,88 @@ export const agentTraceStageSchema = z.enum([
   "refresh-complete"
 ]);
 
+export const planPrerequisiteSchema = z.object({
+  id: z.string().min(1).max(128),
+  title: z.string().min(1),
+  instruction: z.string().min(1),
+  reason: z.string().min(1),
+  requiredForTaskIds: z.array(z.string().min(1).max(128)),
+  owner: z.enum(["main", "subagent"]),
+  status: z.enum(["pending", "completed"])
+});
+
+export const subagentContractSchema = z.object({
+  taskId: z.string().min(1).max(128),
+  title: z.string().min(1),
+  instruction: z.string().min(1),
+  effortPoints: z.number().int().min(1).max(5),
+  ownedPaths: z.array(z.string().min(1)).max(32),
+  dependsOnPrerequisiteIds: z.array(z.string().min(1).max(128)).max(16),
+  deliverables: z.array(z.string().min(1)).max(16),
+  integrationPoints: z.array(z.string().min(1)).max(16),
+  verificationScope: z.enum(["owned-files-only", "worktree-full"]),
+  verificationCommands: z.array(z.string().min(1)).max(16),
+  mergeNotes: z.string().min(1)
+});
+
+export const correctnessGapSchema = z.object({
+  id: z.string().min(1).max(128),
+  category: z.enum(["plan-gap", "runnable-gap", "quality-gap"]),
+  severity: z.enum(["high", "medium", "low"]),
+  description: z.string().min(1),
+  suggestedFix: z.string().min(1),
+  canParallelize: z.boolean(),
+  ownedPaths: z.array(z.string().min(1)).max(32)
+});
+
+export const executionPlanSchema = z.object({
+  runId: runIdSchema,
+  origin: z.enum(["initial", "correctness-followup"]),
+  iteration: z.number().int().min(1),
+  summary: z.string().min(1),
+  finalExecutionBrief: z.string().min(1),
+  difficultyScore: z.number().min(0).max(100),
+  planningModelId: providerModelIdSchema,
+  executionModelId: providerModelIdSchema,
+  route: z.enum(["main", "pi-subagents"]),
+  subagentWorktreeStrategy: subagentWorktreeStrategySchema,
+  targetSubagentCount: z.number().int().min(0).max(10),
+  actualSubagentCount: z.number().int().min(0).max(10),
+  gating: z.object({
+    mode: planExecutionModeSchema,
+    delaySeconds: z.number().int().min(0).max(300)
+  }),
+  prerequisites: z.array(planPrerequisiteSchema).max(16),
+  contracts: z.array(subagentContractSchema).max(16),
+  correctnessPolicy: correctnessIterationModeSchema
+});
+
+export const correctnessReviewSchema: z.ZodType<{
+  status: "pass" | "needs-iteration";
+  summary: string;
+  gaps: z.infer<typeof correctnessGapSchema>[];
+  recommendedPlan?: z.infer<typeof executionPlanSchema>;
+}> = z.object({
+  status: z.enum(["pass", "needs-iteration"]),
+  summary: z.string().min(1),
+  gaps: z.array(correctnessGapSchema).max(16),
+  recommendedPlan: executionPlanSchema.optional()
+});
+
+export const planSummaryMessageMetadataSchema = z.object({
+  type: z.literal("plan-summary"),
+  runId: runIdSchema,
+  plan: executionPlanSchema
+});
+
+export const chatMessageMetadataSchema = z.discriminatedUnion("type", [planSummaryMessageMetadataSchema]);
+
 export const chatMessageSchema = z.object({
   id: z.string().min(1).max(128),
   role: chatRoleSchema,
+  kind: chatMessageKindSchema.optional(),
   content: z.string().min(1),
+  metadata: chatMessageMetadataSchema.optional(),
   createdAt: z.string().datetime().or(z.string().min(1))
 });
 
@@ -73,7 +161,11 @@ export const preferencesStateSchema = z.object({
   hasStoredGoogleApiKey: z.boolean(),
   providerBrand: providerBrandSchema,
   debugEnabledDefault: z.boolean(),
-  tracePanelDefaultOpen: z.boolean()
+  tracePanelDefaultOpen: z.boolean(),
+  subagentWorktreeStrategyDefault: subagentWorktreeStrategySchema,
+  planExecutionModeDefault: planExecutionModeSchema,
+  planExecutionDelaySecondsDefault: z.number().int().min(0).max(300),
+  correctnessIterationModeDefault: correctnessIterationModeSchema
 });
 
 export const agentPlanSchema = z.object({
@@ -83,7 +175,8 @@ export const agentPlanSchema = z.object({
   difficultyScore: z.number().min(0).max(100),
   usesSubagents: z.boolean(),
   executionModelId: providerModelIdSchema,
-  subtaskCount: z.number().int().min(0)
+  subtaskCount: z.number().int().min(0),
+  executionPlan: executionPlanSchema.optional()
 });
 
 export const agentTraceSchema = z.object({
@@ -189,6 +282,8 @@ export const agentRunStateSchema = z.object({
   summary: z.string().min(1).optional(),
   finalExecutionBrief: z.string().min(1).optional(),
   failureMessage: z.string().min(1).optional(),
+  plan: executionPlanSchema.optional(),
+  correctnessReview: correctnessReviewSchema.optional(),
   questions: z.array(planningQuestionSchema),
   subtasks: z.array(subagentTaskStateSchema),
   resumable: z.boolean(),
@@ -222,7 +317,9 @@ export const plannerReadyTurnSchema = z.object({
   executionModelId: providerModelIdSchema,
   usesSubagents: z.boolean(),
   subtasks: z.array(plannerSubtaskSchema).max(8),
-  finalExecutionBrief: z.string().min(1)
+  finalExecutionBrief: z.string().min(1),
+  prerequisites: z.array(planPrerequisiteSchema).max(16).optional(),
+  contracts: z.array(subagentContractSchema).max(16).optional()
 });
 
 export const plannerTurnResultSchema = z.discriminatedUnion("type", [
@@ -414,6 +511,16 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     })
   }),
   z.object({
+    type: z.literal("planning.refine"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      threadId: threadIdSchema,
+      runId: runIdSchema,
+      content: z.string().trim().min(1).max(32000)
+    })
+  }),
+  z.object({
     type: z.literal("run.resume"),
     requestId: requestIdSchema,
     payload: z.object({
@@ -435,6 +542,15 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     })
   }),
   z.object({
+    type: z.literal("run.execute"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      threadId: threadIdSchema,
+      runId: runIdSchema
+    })
+  }),
+  z.object({
     type: z.literal("run.refresh"),
     requestId: requestIdSchema,
     payload: z.object({
@@ -452,7 +568,11 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       googleApiKey: z.string().min(1).max(1024).optional(),
       providerBrand: providerBrandSchema,
       debugEnabled: z.boolean(),
-      tracePanelDefaultOpen: z.boolean()
+      tracePanelDefaultOpen: z.boolean(),
+      subagentWorktreeStrategyDefault: subagentWorktreeStrategySchema,
+      planExecutionModeDefault: planExecutionModeSchema,
+      planExecutionDelaySecondsDefault: z.number().int().min(0).max(300),
+      correctnessIterationModeDefault: correctnessIterationModeSchema
     })
   }),
   z.object({
@@ -672,12 +792,23 @@ export type ProjectRootPath = z.infer<typeof projectRootPathSchema>;
 export type ThreadTitle = z.infer<typeof threadTitleSchema>;
 export type AgentId = z.infer<typeof agentIdSchema>;
 export type ProviderBrand = z.infer<typeof providerBrandSchema>;
+export type SubagentWorktreeStrategy = z.infer<typeof subagentWorktreeStrategySchema>;
+export type PlanExecutionMode = z.infer<typeof planExecutionModeSchema>;
+export type CorrectnessIterationMode = z.infer<typeof correctnessIterationModeSchema>;
 export type PreflightSeverity = z.infer<typeof preflightSeveritySchema>;
 export type PreflightKind = z.infer<typeof preflightKindSchema>;
 export type ThreadTitleSource = z.infer<typeof threadTitleSourceSchema>;
 export type ThreadBadgeState = z.infer<typeof threadBadgeStateSchema>;
 export type ProviderModelId = z.infer<typeof providerModelIdSchema>;
 export type ChatRole = z.infer<typeof chatRoleSchema>;
+export type ChatMessageKind = z.infer<typeof chatMessageKindSchema>;
+export type PlanPrerequisite = z.infer<typeof planPrerequisiteSchema>;
+export type SubagentContract = z.infer<typeof subagentContractSchema>;
+export type CorrectnessGap = z.infer<typeof correctnessGapSchema>;
+export type ExecutionPlan = z.infer<typeof executionPlanSchema>;
+export type CorrectnessReview = z.infer<typeof correctnessReviewSchema>;
+export type PlanSummaryMessageMetadata = z.infer<typeof planSummaryMessageMetadataSchema>;
+export type ChatMessageMetadata = z.infer<typeof chatMessageMetadataSchema>;
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
 export type AgentOption = z.infer<typeof agentOptionSchema>;
 export type PreferencesState = z.infer<typeof preferencesStateSchema>;
@@ -737,12 +868,18 @@ export function createPlanningChoiceId(): PlanningChoiceId {
 export function createChatMessage(
   role: ChatRole,
   content: string,
-  id: string = crypto.randomUUID()
+  options: {
+    kind?: ChatMessageKind;
+    metadata?: ChatMessageMetadata;
+    id?: string;
+  } = {}
 ): ChatMessage {
   return {
-    id,
+    id: options.id ?? crypto.randomUUID(),
     role,
+    kind: options.kind ?? "plain",
     content,
+    metadata: options.metadata,
     createdAt: new Date().toISOString()
   };
 }

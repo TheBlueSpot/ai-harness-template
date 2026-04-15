@@ -31,14 +31,22 @@ export function PreferencesModal(props: PreferencesModalProps) {
       googleApiKey,
       providerBrand: state.providerBrand,
       debugEnabled: state.debugEnabled,
-      tracePanelDefaultOpen: state.tracePanelDefaultOpen
+      tracePanelDefaultOpen: state.tracePanelDefaultOpen,
+      subagentWorktreeStrategyDefault: state.subagentWorktreeStrategyDefault,
+      planExecutionModeDefault: state.planExecutionModeDefault,
+      planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
+      correctnessIterationModeDefault: state.correctnessIterationModeDefault
     });
     harnessStore.commitLocalPreferences({
       openAiApiKey,
       googleApiKey,
       providerBrand: state.providerBrand,
       debugEnabled: state.debugEnabled,
-      tracePanelDefaultOpen: state.tracePanelDefaultOpen
+      tracePanelDefaultOpen: state.tracePanelDefaultOpen,
+      subagentWorktreeStrategyDefault: state.subagentWorktreeStrategyDefault,
+      planExecutionModeDefault: state.planExecutionModeDefault,
+      planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
+      correctnessIterationModeDefault: state.correctnessIterationModeDefault
     });
 
     props.sendCommand({
@@ -49,7 +57,11 @@ export function PreferencesModal(props: PreferencesModalProps) {
         googleApiKey,
         providerBrand: state.providerBrand,
         debugEnabled: state.debugEnabled,
-        tracePanelDefaultOpen: state.tracePanelDefaultOpen
+        tracePanelDefaultOpen: state.tracePanelDefaultOpen,
+        subagentWorktreeStrategyDefault: state.subagentWorktreeStrategyDefault,
+        planExecutionModeDefault: state.planExecutionModeDefault,
+        planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
+        correctnessIterationModeDefault: state.correctnessIterationModeDefault
       }
     });
 
@@ -62,14 +74,22 @@ export function PreferencesModal(props: PreferencesModalProps) {
       googleApiKey: undefined,
       providerBrand: state.providerBrand,
       debugEnabled: state.debugEnabled,
-      tracePanelDefaultOpen: state.tracePanelDefaultOpen
+      tracePanelDefaultOpen: state.tracePanelDefaultOpen,
+      subagentWorktreeStrategyDefault: state.subagentWorktreeStrategyDefault,
+      planExecutionModeDefault: state.planExecutionModeDefault,
+      planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
+      correctnessIterationModeDefault: state.correctnessIterationModeDefault
     });
     harnessStore.commitLocalPreferences({
       openAiApiKey: undefined,
       googleApiKey: undefined,
       providerBrand: state.providerBrand,
       debugEnabled: state.debugEnabled,
-      tracePanelDefaultOpen: state.tracePanelDefaultOpen
+      tracePanelDefaultOpen: state.tracePanelDefaultOpen,
+      subagentWorktreeStrategyDefault: state.subagentWorktreeStrategyDefault,
+      planExecutionModeDefault: state.planExecutionModeDefault,
+      planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
+      correctnessIterationModeDefault: state.correctnessIterationModeDefault
     });
 
     props.sendCommand({
@@ -175,6 +195,75 @@ export function PreferencesModal(props: PreferencesModalProps) {
             <div class="text-[0.675rem] font-semibold text-[color:var(--foreground)]">Open trace panel by default</div>
             <div class="mt-1 text-[0.675rem] leading-5 text-[color:var(--muted)]">Controls initial layout after refresh.</div>
           </div>
+        </label>
+      </div>
+
+      <div class="grid gap-3 md:grid-cols-2">
+        <label class="space-y-2 rounded-[1.25rem] border border-[color:var(--border)] bg-white/55 px-4 py-3">
+          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">
+            Subagent worktree
+          </span>
+          <select
+            class="flex h-9 w-full rounded-xl border border-[color:var(--border)] bg-white/70 px-3 py-2 text-[0.675rem] text-[color:var(--foreground)] shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-[color:var(--ring)]"
+            value={state.subagentWorktreeStrategyDefault}
+            onInput={(event) =>
+              harnessStore.setSubagentWorktreeStrategyDefault(event.currentTarget.value as "same-worktree" | "separate-worktrees")
+            }
+          >
+            <option value="same-worktree">Same worktree</option>
+            <option value="separate-worktrees">Separate worktrees</option>
+          </select>
+        </label>
+
+        <label class="space-y-2 rounded-[1.25rem] border border-[color:var(--border)] bg-white/55 px-4 py-3">
+          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">
+            Plan gate mode
+          </span>
+          <select
+            class="flex h-9 w-full rounded-xl border border-[color:var(--border)] bg-white/70 px-3 py-2 text-[0.675rem] text-[color:var(--foreground)] shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-[color:var(--ring)]"
+            value={state.planExecutionModeDefault}
+            onInput={(event) =>
+              harnessStore.setPlanExecutionModeDefault(event.currentTarget.value as "countdown" | "approve" | "immediate")
+            }
+          >
+            <option value="countdown">Countdown</option>
+            <option value="approve">Approve first</option>
+            <option value="immediate">Immediate</option>
+          </select>
+        </label>
+
+        <label class="space-y-2 rounded-[1.25rem] border border-[color:var(--border)] bg-white/55 px-4 py-3">
+          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">
+            Countdown seconds
+          </span>
+          <Input
+            type="number"
+            min="0"
+            max="300"
+            value={String(state.planExecutionDelaySecondsDefault)}
+            onInput={(event: InputEvent & { currentTarget: HTMLInputElement; target: Element }) =>
+              harnessStore.setPlanExecutionDelaySecondsDefault(Math.max(0, Math.min(300, Number(event.currentTarget.value) || 0)))
+            }
+          />
+        </label>
+
+        <label class="space-y-2 rounded-[1.25rem] border border-[color:var(--border)] bg-white/55 px-4 py-3">
+          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">
+            Correctness iteration
+          </span>
+          <select
+            class="flex h-9 w-full rounded-xl border border-[color:var(--border)] bg-white/70 px-3 py-2 text-[0.675rem] text-[color:var(--foreground)] shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-[color:var(--ring)]"
+            value={state.correctnessIterationModeDefault}
+            onInput={(event) =>
+              harnessStore.setCorrectnessIterationModeDefault(
+                event.currentTarget.value as "ask-before-iterate" | "auto-once" | "auto-until-clean"
+              )
+            }
+          >
+            <option value="ask-before-iterate">Ask before iterate</option>
+            <option value="auto-once">Auto once</option>
+            <option value="auto-until-clean">Auto until clean</option>
+          </select>
         </label>
       </div>
     </Dialog>

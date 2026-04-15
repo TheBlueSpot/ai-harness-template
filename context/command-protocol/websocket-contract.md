@@ -15,7 +15,9 @@ Client commands are restricted to a fixed set of actions:
 - thread fork
 - thread rename
 - chat send
+- planning refine
 - planning answer
+- run execute
 - run resume
 - run retry
 - run refresh
@@ -50,6 +52,19 @@ Chat requests carry:
 - user content
 - optional execution model override
 - optional debug flag
+
+Plan refinement requests carry:
+
+- project id
+- thread id
+- run id
+- user content
+
+Run execute requests carry:
+
+- project id
+- thread id
+- run id
 
 Planning answer requests carry:
 
@@ -95,6 +110,7 @@ Connection readiness reports:
 - active thread id per project
 - thread summary list per project
 - persisted active thread messages for each project
+- persisted workspace defaults for execution gate, countdown delay, worktree strategy, and correctness iteration mode
 
 Planner events report:
 
@@ -103,6 +119,7 @@ Planner events report:
 - whether subagents were used
 - execution model
 - subtask count
+- frozen execution plan when available
 - project id
 - thread id
 
@@ -116,6 +133,7 @@ Trace events report:
 - optional duration
 - project id
 - thread id
+- plan lifecycle stages can include `plan-presented`, `prerequisite-start`, `prerequisite-complete`, `correctness-start`, `correctness-gap`, and `correctness-complete`
 - refresh stages include `refresh-requested`, `refresh-deferred`, and `refresh-complete`
 - subagent timing can emit `subagent-spawn-timing`
 
@@ -132,6 +150,7 @@ Message append events report:
 - appended message
 - current session state snapshot
 - appended messages may use role `system` for persisted inline run-status updates
+- appended assistant messages can use kind `plan-summary` with typed metadata that points at the frozen execution plan snapshot for that run
 
 Run update events report:
 
@@ -140,6 +159,8 @@ Run update events report:
 - run status
 - persisted planning questions
 - persisted subtask progress
+- persisted execution plan when available
+- persisted correctness review when available
 - resumable state
 - retryable state
 
@@ -174,3 +195,7 @@ Invalid payloads are rejected immediately.
 
 Planner question payloads are shape-constrained.
 Each question must include exactly three typed choices and exactly one recommended choice.
+
+Plan presentation and execution are split.
+`chat.send`, `planning.answer`, and `planning.refine` can end with run status `ready` after plan persistence and plan-summary delivery.
+Execution begins only after `run.execute` or an approved auto-run policy on the client side.

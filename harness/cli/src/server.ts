@@ -1,8 +1,14 @@
 import { createUiAssetManager } from "./ui-build";
 import { defaultAgentCatalog } from "../../shared/agent-catalog";
+import path from "node:path";
 import {
+  createChatMessage,
   createRequestId,
+  type AgentPlan,
   type AgentTrace,
+  type CorrectnessGap,
+  type CorrectnessReview,
+  type ExecutionPlan,
   parseClientCommand,
   type AgentRunState,
   type ClientCommand,
@@ -22,7 +28,7 @@ import { runGitPreflight } from "./git-preflight";
 import { debugLog } from "./logging";
 import { runManagedAgentExecution } from "./managed-agent-execution";
 import { PiSdkAgentAdapter, type PiAgentAdapter } from "./pi-agent-adapter";
-import { aggregateSubagentResults, executeReadyRun, runPlannerTurn } from "./pi-orchestrator";
+import { aggregateSubagentResults, executeReadyRun, executionPlanToTasks, runPlannerTurn } from "./pi-orchestrator";
 import { getDefaultExecutionModelId, getDefaultPlanningModelId, getDefaultSubagentModelId } from "./pi-planner";
 import type { SubagentResult } from "./pi-subagents";
 import { WorkspaceRepository } from "./workspace-repository";
@@ -387,6 +393,7 @@ async function handleCommand(
 
       repository.activateProject(projectId);
       runtime.setActiveProject(projectId);
+      runtime.clearProjectTransients(projectId);
 
       const userMessageProject = repository.appendMessage(projectId, "user", command.payload.content, command.payload.threadId);
       runtime.upsertPersistedProject(userMessageProject);
@@ -415,6 +422,68 @@ async function handleCommand(
           providerBrand,
           debugEnabled,
           executionModelId: effectiveExecutionModelId,
+          abortSignal: abortController.signal
+        });
+      } catch (error) {
+        if (abortController.signal.aborted) {
+          return;
+        }
+
+        const message = error instanceof Error ? error.message : "Unknown pi agent error";
+        await handleRunFailure(ws, command.requestId, runtime, repository, projectId, message);
+      } finally {
+        runtime.setProjectStreaming(projectId, false);
+        runtime.setAbortController(projectId, undefined);
+      }
+
+      return;
+    }
+    case "planning.refine": {
+      const projectId = command.payload.projectId;
+      const project = runtime.getProject(projectId);
+      assertActiveThread(project, command.payload.threadId);
+      const activeRun = requireActiveRun(project, command.payload.runId);
+      if (activeRun.status !== "ready") {
+        throw new Error("Only ready runs can be refined");
+      }
+
+      await enforceExecutionPreflight(ws, command.requestId, runtime, repository, project);
+      const providerBrand = repository.getProviderBrand();
+      const executionModelId =
+        activeRun.executionModelId && isModelIdForProvider(activeRun.executionModelId, providerBrand)
+          ? activeRun.executionModelId
+          : getDefaultExecutionModelId(providerBrand);
+      const debugEnabled = repository.getDebugEnabledDefault();
+
+      const refinedMessageProject = repository.appendMessage(projectId, "user", command.payload.content, command.payload.threadId);
+      runtime.upsertPersistedProject(refinedMessageProject);
+      emitMessageAppended(ws, command.requestId, refinedMessageProject);
+
+      repository.setAgentRunStatus(projectId, activeRun.id, "stopped", "Plan refined before execution");
+      runtime.clearProjectTransients(projectId);
+
+      const runProject = repository.createAgentRun(
+        projectId,
+        command.payload.content,
+        getDefaultPlanningModelId(providerBrand),
+        command.payload.threadId
+      );
+      runtime.upsertPersistedProject(runProject);
+      emitRunUpdated(ws, command.requestId, runProject);
+      runtime.setProjectExecutionModel(projectId, executionModelId);
+      runtime.setProjectError(projectId, undefined);
+      runtime.setProjectStreaming(projectId, true);
+      runtime.clearStreaming(projectId);
+
+      const abortController = new AbortController();
+      runtime.setAbortController(projectId, abortController);
+
+      try {
+        await continueRunLifecycle(ws, command.requestId, runtime, repository, adapter, {
+          projectId,
+          providerBrand,
+          debugEnabled,
+          executionModelId,
           abortSignal: abortController.signal
         });
       } catch (error) {
@@ -473,6 +542,48 @@ async function handleCommand(
             project.session.executionModelId && isModelIdForProvider(project.session.executionModelId, providerBrand)
               ? project.session.executionModelId
               : getDefaultExecutionModelId(providerBrand),
+          abortSignal: abortController.signal
+        });
+      } catch (error) {
+        if (abortController.signal.aborted) {
+          return;
+        }
+
+        const message = error instanceof Error ? error.message : "Unknown pi agent error";
+        await handleRunFailure(ws, command.requestId, runtime, repository, projectId, message);
+      } finally {
+        runtime.setProjectStreaming(projectId, false);
+        runtime.setAbortController(projectId, undefined);
+      }
+
+      return;
+    }
+    case "run.execute": {
+      const projectId = command.payload.projectId;
+      const project = runtime.getProject(projectId);
+      assertActiveThread(project, command.payload.threadId);
+      const activeRun = requireActiveRun(project, command.payload.runId);
+      if (activeRun.status !== "ready") {
+        throw new Error(`Run status ${activeRun.status} is not executable`);
+      }
+      await enforceExecutionPreflight(ws, command.requestId, runtime, repository, project);
+
+      const providerBrand = repository.getProviderBrand();
+      runtime.setProjectError(projectId, undefined);
+      runtime.setProjectStreaming(projectId, true);
+      runtime.clearStreaming(projectId);
+
+      const abortController = new AbortController();
+      runtime.setAbortController(projectId, abortController);
+
+      try {
+        await executeRunLifecycle(ws, command.requestId, runtime, repository, adapter, {
+          projectId,
+          providerBrand,
+          debugEnabled: repository.getDebugEnabledDefault(),
+          runId: activeRun.id,
+          readyPlan: buildReadyPlanFromRun(activeRun),
+          executionPlan: activeRun.plan,
           abortSignal: abortController.signal
         });
       } catch (error) {
@@ -596,7 +707,15 @@ async function handleCommand(
             throw new Error("Retry run was not created");
           }
 
-          runProject = repository.setAgentRunReady(projectId, nextRunId, readyPlan, retryRun.planningModelId);
+          const retryExecutionPlan = buildExecutionPlanFromRun(retryRun, nextRunId);
+          runProject = repository.setAgentRunReady(
+            projectId,
+            nextRunId,
+            readyPlan,
+            retryExecutionPlan,
+            readyPlan.subtasks,
+            retryRun.planningModelId
+          );
           for (const task of retryRun.subtasks) {
             if (task.id === command.payload.subagentId) {
               continue;
@@ -700,6 +819,10 @@ async function handleCommand(
       repository.setProviderBrand(command.payload.providerBrand);
       repository.setDebugEnabledDefault(command.payload.debugEnabled);
       repository.setTracePanelDefaultOpen(command.payload.tracePanelDefaultOpen);
+      repository.setSubagentWorktreeStrategyDefault(command.payload.subagentWorktreeStrategyDefault);
+      repository.setPlanExecutionModeDefault(command.payload.planExecutionModeDefault);
+      repository.setPlanExecutionDelaySecondsDefault(command.payload.planExecutionDelaySecondsDefault);
+      repository.setCorrectnessIterationModeDefault(command.payload.correctnessIterationModeDefault);
 
       sendEvent(ws, {
         type: "preferences.saved",
@@ -745,8 +868,13 @@ async function continueRunLifecycle(
     sessionId: project.session.sessionId,
     messages: project.session.messages,
     latestUserPrompt: activeRun.latestUserPrompt,
+    runId: activeRun.id,
     providerBrand: options.providerBrand,
     executionModelId: options.executionModelId,
+    subagentWorktreeStrategy: repository.getSubagentWorktreeStrategyDefault(),
+    planExecutionMode: repository.getPlanExecutionModeDefault(),
+    planExecutionDelaySeconds: repository.getPlanExecutionDelaySecondsDefault(),
+    correctnessIterationMode: repository.getCorrectnessIterationModeDefault(),
     priorQuestions: activeRun.questions,
     abortSignal: options.abortSignal,
     callbacks: createExecutionCallbacks(ws, requestId, runtime, repository, options.projectId, activeRun.id)
@@ -769,10 +897,16 @@ async function continueRunLifecycle(
     return;
   }
 
+  if (!plannerTurn.executionPlan) {
+    throw new Error("Planner did not return an execution plan");
+  }
+
   const readyProject = repository.setAgentRunReady(
     options.projectId,
     activeRun.id,
     plannerTurn.plannerResult,
+    plannerTurn.executionPlan,
+    plannerTurn.plannerResult.subtasks,
     plannerTurn.planningModelId
   );
   runtime.upsertPersistedProject(readyProject);
@@ -791,14 +925,26 @@ async function continueRunLifecycle(
     });
   }
 
-  await executeRunLifecycle(ws, requestId, runtime, repository, adapter, {
-    projectId: options.projectId,
-    providerBrand: options.providerBrand,
-    debugEnabled: options.debugEnabled,
-    runId: activeRun.id,
-    readyPlan: plannerTurn.plannerResult,
-    abortSignal: options.abortSignal
+  const planSummaryProject = repository.appendMessage(options.projectId, "assistant", plannerTurn.executionPlan.summary, {
+    threadId: activeRun.threadId,
+    kind: "plan-summary",
+    metadata: {
+      type: "plan-summary",
+      runId: activeRun.id,
+      plan: plannerTurn.executionPlan
+    }
   });
+  runtime.upsertPersistedProject(planSummaryProject);
+  emitMessageAppended(ws, requestId, planSummaryProject);
+  emitProjectTrace(ws, requestId, runtime, options.projectId, activeRun.threadId, {
+    sessionId: project.session.sessionId,
+    stage: "plan-presented",
+    message: "Presented execution plan to user",
+    detail: plannerTurn.executionPlan.summary,
+    modelId: plannerTurn.executionPlan.executionModelId
+  });
+  runtime.setProjectStreaming(options.projectId, false);
+  runtime.clearStreaming(options.projectId);
 }
 
 async function resumeRunLifecycle(
@@ -861,6 +1007,7 @@ async function resumeRunLifecycle(
     debugEnabled: options.debugEnabled,
     runId: options.runId,
     readyPlan,
+    executionPlan: activeRun.plan,
     existingSubagentResults: existingResults,
     tasksToRun,
     resumeNote: options.guidanceText,
@@ -880,76 +1027,130 @@ async function executeRunLifecycle(
     debugEnabled: boolean;
     runId: string;
     readyPlan: PlannerReadyTurn;
+    executionPlan?: ExecutionPlan;
     existingSubagentResults?: Parameters<typeof executeReadyRun>[1]["existingSubagentResults"];
     tasksToRun?: Parameters<typeof executeReadyRun>[1]["tasksToRun"];
     resumeNote?: string;
     abortSignal?: AbortSignal;
   }
 ) {
-    const project = runtime.getProject(options.projectId);
-    const status = options.readyPlan.usesSubagents ? "running-subagents" : "running-main";
-    const startedProject = repository.setAgentRunStatus(options.projectId, options.runId, status);
-    runtime.upsertPersistedProject(startedProject);
-    emitRunUpdated(ws, requestId, startedProject);
+  const project = runtime.getProject(options.projectId);
+  const baseExecutionPlan = options.executionPlan ?? buildExecutionPlanFromRun(requireActiveRun(project, options.runId), options.runId);
+  const executionPlan = await completeExecutionPlanPrerequisites(
+    ws,
+    requestId,
+    runtime,
+    repository,
+    options.projectId,
+    project.session.sessionId,
+    baseExecutionPlan,
+    requireActiveRun(project, options.runId).planningModelId
+  );
+  const status = options.readyPlan.usesSubagents ? "running-subagents" : "running-main";
+  const startedProject = repository.setAgentRunStatus(options.projectId, options.runId, status);
+  runtime.upsertPersistedProject(startedProject);
+  emitRunUpdated(ws, requestId, startedProject);
 
-    const outcome = await executeReadyRun(adapter, {
-      cwd: project.rootPath,
-      runId: options.runId,
+  const outcome = await executeReadyRun(adapter, {
+    cwd: project.rootPath,
+    runId: options.runId,
+    sessionId: project.session.sessionId,
+    messages: project.session.messages,
+    providerBrand: options.providerBrand,
+    readyPlan: options.readyPlan,
+    debugEnabled: options.debugEnabled,
+    abortSignal: options.abortSignal,
+    existingSubagentResults: options.existingSubagentResults,
+    tasksToRun: options.tasksToRun,
+    resumeNote: options.resumeNote,
+    executionPlan,
+    callbacks: createExecutionCallbacks(ws, requestId, runtime, repository, options.projectId, options.runId)
+  });
+
+  runtime.clearStreaming(options.projectId);
+  runtime.setProjectStreaming(options.projectId, false);
+  runtime.setProjectError(options.projectId, undefined);
+
+  const correctnessReview = await runCorrectnessReview(project.rootPath, executionPlan, outcome, options.readyPlan);
+  const reviewedProject = repository.setAgentRunCorrectnessReview(options.projectId, options.runId, correctnessReview);
+  runtime.upsertPersistedProject(reviewedProject);
+  emitRunUpdated(ws, requestId, reviewedProject);
+
+  if (correctnessReview.status === "needs-iteration" && correctnessReview.recommendedPlan) {
+    emitProjectTrace(ws, requestId, runtime, options.projectId, project.activeThreadId, {
       sessionId: project.session.sessionId,
-      messages: project.session.messages,
-      providerBrand: options.providerBrand,
-      readyPlan: options.readyPlan,
-      debugEnabled: options.debugEnabled,
-      abortSignal: options.abortSignal,
-      existingSubagentResults: options.existingSubagentResults,
-      tasksToRun: options.tasksToRun,
-      resumeNote: options.resumeNote,
-      callbacks: createExecutionCallbacks(ws, requestId, runtime, repository, options.projectId, options.runId)
+      stage: "correctness-gap",
+      message: correctnessReview.summary,
+      detail: correctnessReview.gaps.map((gap) => gap.description).join("\n")
+    });
+    await presentCorrectivePlan(ws, requestId, runtime, repository, options.projectId, {
+      sessionId: project.session.sessionId,
+      planningModelId: requireActiveRun(runtime.getProject(options.projectId), options.runId).planningModelId ?? getDefaultPlanningModelId(options.providerBrand),
+      executionPlan: correctnessReview.recommendedPlan
     });
 
-    const messageProject = repository.appendMessage(options.projectId, "assistant", outcome.assistantMessage.content);
-    runtime.upsertPersistedProject(messageProject);
-    runtime.clearStreaming(options.projectId);
-    runtime.setProjectStreaming(options.projectId, false);
-    runtime.setProjectError(options.projectId, undefined);
+    if (
+      correctnessReview.recommendedPlan.correctnessPolicy === "auto-once" &&
+      correctnessReview.recommendedPlan.iteration <= 2
+    ) {
+      await executeRunLifecycle(ws, requestId, runtime, repository, adapter, {
+        ...options,
+        readyPlan: buildReadyPlanFromExecutionPlan(correctnessReview.recommendedPlan),
+        executionPlan: correctnessReview.recommendedPlan
+      });
+      return;
+    }
+
+    if (
+      correctnessReview.recommendedPlan.correctnessPolicy === "auto-until-clean" &&
+      correctnessReview.recommendedPlan.iteration < 5
+    ) {
+      await executeRunLifecycle(ws, requestId, runtime, repository, adapter, {
+        ...options,
+        readyPlan: buildReadyPlanFromExecutionPlan(correctnessReview.recommendedPlan),
+        executionPlan: correctnessReview.recommendedPlan
+      });
+      return;
+    }
+
+    return;
+  }
+
+  const messageProject = repository.appendMessage(options.projectId, "assistant", outcome.assistantMessage.content);
+  runtime.upsertPersistedProject(messageProject);
 
   const finalStatus = outcome.partial ? "partial-complete" : "completed";
-    const statusProject = repository.setAgentRunStatus(
-      options.projectId,
-      options.runId,
-      finalStatus,
-      outcome.partialReason
-    );
-    runtime.upsertPersistedProject(statusProject);
-    emitRunUpdated(ws, requestId, statusProject);
-    if (outcome.partial) {
-      appendSystemStatus(
-        ws,
-        requestId,
-        runtime,
-        repository,
-        options.projectId,
-        `Run partial complete. ${outcome.partialReason ?? "Some subagents failed."}`
-      );
-    }
-
-    const nextProject = runtime.getProject(options.projectId);
-    const assistantMessage = findLatestAssistantMessage(nextProject);
-    if (!assistantMessage || assistantMessage.role !== "assistant") {
-      throw new Error("Assistant message was not persisted");
-    }
-
-    sendEvent(ws, {
-      type: "chat.complete",
+  const statusProject = repository.setAgentRunStatus(options.projectId, options.runId, finalStatus, outcome.partialReason);
+  runtime.upsertPersistedProject(statusProject);
+  emitRunUpdated(ws, requestId, statusProject);
+  if (outcome.partial) {
+    appendSystemStatus(
+      ws,
       requestId,
-      payload: {
-        projectId: options.projectId,
-        threadId: nextProject.activeThreadId,
-        sessionId: nextProject.session.sessionId,
-        assistantMessage,
-        state: nextProject.session
-      }
-    });
+      runtime,
+      repository,
+      options.projectId,
+      `Run partial complete. ${outcome.partialReason ?? "Some subagents failed."}`
+    );
+  }
+
+  const nextProject = runtime.getProject(options.projectId);
+  const assistantMessage = findLatestAssistantMessage(nextProject);
+  if (!assistantMessage || assistantMessage.role !== "assistant") {
+    throw new Error("Assistant message was not persisted");
+  }
+
+  sendEvent(ws, {
+    type: "chat.complete",
+    requestId,
+    payload: {
+      projectId: options.projectId,
+      threadId: nextProject.activeThreadId,
+      sessionId: nextProject.session.sessionId,
+      assistantMessage,
+      state: nextProject.session
+    }
+  });
 }
 
 async function executeInlineSubagentRetryLifecycle(
@@ -1545,6 +1746,235 @@ function emitRunUpdated(ws: Bun.ServerWebSocket<HarnessConnection>, requestId: s
   });
 }
 
+async function completeExecutionPlanPrerequisites(
+  ws: Bun.ServerWebSocket<HarnessConnection>,
+  requestId: string,
+  runtime: WorkspaceRuntimeStore,
+  repository: WorkspaceRepository,
+  projectId: ProjectId,
+  sessionId: string,
+  executionPlan: ExecutionPlan,
+  planningModelId?: string
+) {
+  if (executionPlan.prerequisites.every((prerequisite) => prerequisite.status === "completed")) {
+    return executionPlan;
+  }
+
+  for (const prerequisite of executionPlan.prerequisites) {
+    emitProjectTrace(ws, requestId, runtime, projectId, runtime.getProject(projectId).activeThreadId, {
+      sessionId,
+      stage: "prerequisite-start",
+      message: `Running prerequisite: ${prerequisite.title}`,
+      detail: prerequisite.instruction
+    });
+    prerequisite.status = "completed";
+    emitProjectTrace(ws, requestId, runtime, projectId, runtime.getProject(projectId).activeThreadId, {
+      sessionId,
+      stage: "prerequisite-complete",
+      message: `Completed prerequisite: ${prerequisite.title}`
+    });
+  }
+
+  const updatedProject = repository.setAgentRunExecutionPlan(projectId, executionPlan.runId, executionPlan);
+  runtime.upsertPersistedProject(updatedProject);
+  emitRunUpdated(ws, requestId, updatedProject);
+  runtime.setProjectPlan(projectId, createAgentPlanFromExecutionPlan(sessionId, planningModelId ?? executionPlan.planningModelId, executionPlan));
+  return executionPlan;
+}
+
+async function runCorrectnessReview(
+  rootPath: string,
+  executionPlan: ExecutionPlan,
+  outcome: Awaited<ReturnType<typeof executeReadyRun>>,
+  readyPlan: PlannerReadyTurn
+): Promise<CorrectnessReview> {
+  const gaps: CorrectnessGap[] = [];
+  const indexHtmlPath = path.join(rootPath, "index.html");
+  const indexHtmlText = await Bun.file(indexHtmlPath).text().catch(() => "");
+
+  if (outcome.partial) {
+    gaps.push({
+      id: "partial-subagents",
+      category: "plan-gap",
+      severity: "high",
+      description: outcome.partialReason ?? "Some subagent work did not complete cleanly.",
+      suggestedFix: "Resolve failed subagent work and finish missing integration.",
+      canParallelize: false,
+      ownedPaths: []
+    });
+  }
+
+  if (/src\s*=\s*["'][^"']+\.(ts|tsx)["']/.test(indexHtmlText)) {
+    gaps.push({
+      id: "raw-ts-entrypoint",
+      category: "runnable-gap",
+      severity: "high",
+      description: "HTML entrypoint imports TypeScript modules directly, which will not run natively in the browser.",
+      suggestedFix: "Add Bun-compatible build/dev wiring or switch entrypoint to runnable browser JavaScript output.",
+      canParallelize: false,
+      ownedPaths: ["index.html", "package.json"]
+    });
+  }
+
+  const suspiciousFiles = await findSuspiciousQualityFiles(rootPath);
+  if (suspiciousFiles.length > 0) {
+    gaps.push({
+      id: "suspicious-quality-files",
+      category: "quality-gap",
+      severity: "medium",
+      description: `Suspicious leftover files suggest dead-code hoarding or abandoned iterations: ${suspiciousFiles.join(", ")}`,
+      suggestedFix: "Remove abandoned duplicate files or fold them into one coherent implementation.",
+      canParallelize: true,
+      ownedPaths: suspiciousFiles
+    });
+  }
+
+  if (gaps.length === 0) {
+    return {
+      status: "pass",
+      summary: "Correctness review passed. Plan commitments and runnable output checks look good.",
+      gaps: []
+    };
+  }
+
+  return {
+    status: "needs-iteration",
+    summary: `Correctness review found ${gaps.length} gap${gaps.length === 1 ? "" : "s"}.`,
+    gaps,
+    recommendedPlan: buildCorrectiveExecutionPlan(executionPlan, gaps, readyPlan)
+  };
+}
+
+async function findSuspiciousQualityFiles(rootPath: string) {
+  const proc = Bun.spawn({
+    cmd: ["powershell", "-NoProfile", "-Command", "Get-ChildItem -Recurse -File | Select-Object -ExpandProperty FullName"],
+    cwd: rootPath,
+    stdout: "pipe",
+    stderr: "pipe"
+  });
+  const [stdout] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+  return stdout
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .map((value) => path.relative(rootPath, value).replace(/\\/g, "/"))
+    .filter((value) => /(?:^|\/)(?:copy|old|backup|tmp|temp)[^/]*\.(?:ts|tsx|js|jsx)$/.test(value))
+    .slice(0, 8);
+}
+
+function buildCorrectiveExecutionPlan(
+  basePlan: ExecutionPlan,
+  gaps: CorrectnessGap[],
+  readyPlan: PlannerReadyTurn
+): ExecutionPlan {
+  return {
+    ...basePlan,
+    origin: "correctness-followup",
+    iteration: basePlan.iteration + 1,
+    summary: gaps.map((gap) => gap.description).join(" "),
+    finalExecutionBrief: [
+      "Fix correctness gaps from prior implementation.",
+      ...gaps.map((gap) => `${gap.category}: ${gap.suggestedFix}`)
+    ].join("\n"),
+    route: gaps.some((gap) => gap.canParallelize) && gaps.length > 1 ? "pi-subagents" : "main",
+    targetSubagentCount: gaps.some((gap) => gap.canParallelize) ? Math.min(10, Math.max(2, gaps.length)) : 0,
+    actualSubagentCount: gaps.some((gap) => gap.canParallelize) && gaps.length > 1 ? Math.min(10, gaps.length) : 0,
+    prerequisites: [],
+    contracts: gaps.map((gap, index) => ({
+      taskId: `correctness-${index + 1}`,
+      title: gap.category === "runnable-gap" ? "Restore runnable output" : `Resolve ${gap.category}`,
+      instruction: gap.suggestedFix,
+      effortPoints: gap.severity === "high" ? 4 : gap.severity === "medium" ? 3 : 2,
+      ownedPaths: gap.ownedPaths.length > 0 ? gap.ownedPaths : readyPlan.subtasks.flatMap((task) => task.id.split("+")).slice(0, 2),
+      dependsOnPrerequisiteIds: [],
+      deliverables: [gap.description],
+      integrationPoints: [],
+      verificationScope: basePlan.subagentWorktreeStrategy === "same-worktree" ? "owned-files-only" : "worktree-full",
+      verificationCommands:
+        basePlan.subagentWorktreeStrategy === "same-worktree"
+          ? ["bunx tsc --noEmit"]
+          : ["bun run typecheck", "bun run test"],
+      mergeNotes: `Resolve correctness gap: ${gap.description}`
+    }))
+  };
+}
+
+async function presentCorrectivePlan(
+  ws: Bun.ServerWebSocket<HarnessConnection>,
+  requestId: string,
+  runtime: WorkspaceRuntimeStore,
+  repository: WorkspaceRepository,
+  projectId: ProjectId,
+  input: {
+    sessionId: string;
+    planningModelId: string;
+    executionPlan: ExecutionPlan;
+  }
+) {
+  const readyPlan = buildReadyPlanFromExecutionPlan(input.executionPlan);
+  const readyProject = repository.setAgentRunReady(
+    projectId,
+    input.executionPlan.runId,
+    readyPlan,
+    input.executionPlan,
+    executionPlanToTasks(input.executionPlan),
+    input.planningModelId
+  );
+  runtime.upsertPersistedProject(readyProject);
+  emitRunUpdated(ws, requestId, readyProject);
+
+  const agentPlan = createAgentPlanFromExecutionPlan(input.sessionId, input.planningModelId, input.executionPlan);
+  runtime.setProjectPlan(projectId, agentPlan);
+  sendEvent(ws, {
+    type: "agent.plan",
+    requestId,
+    payload: {
+      projectId,
+      threadId: runtime.getProject(projectId).activeThreadId,
+      plan: agentPlan
+    }
+  });
+
+  const planMessageProject = repository.appendMessage(projectId, "assistant", input.executionPlan.summary, {
+    kind: "plan-summary",
+    metadata: {
+      type: "plan-summary",
+      runId: input.executionPlan.runId,
+      plan: input.executionPlan
+    }
+  });
+  runtime.upsertPersistedProject(planMessageProject);
+  emitMessageAppended(ws, requestId, planMessageProject);
+}
+
+function buildReadyPlanFromExecutionPlan(executionPlan: ExecutionPlan): PlannerReadyTurn {
+  const subtasks = executionPlanToTasks(executionPlan);
+  return {
+    type: "ready",
+    difficultyScore: executionPlan.difficultyScore,
+    summary: executionPlan.summary,
+    executionModelId: executionPlan.executionModelId,
+    usesSubagents: subtasks.length > 0,
+    subtasks,
+    finalExecutionBrief: executionPlan.finalExecutionBrief,
+    prerequisites: executionPlan.prerequisites,
+    contracts: executionPlan.contracts
+  };
+}
+
+function createAgentPlanFromExecutionPlan(sessionId: string, planningModelId: string, executionPlan: ExecutionPlan): AgentPlan {
+  return {
+    sessionId,
+    agentId: "pi",
+    planningModelId,
+    difficultyScore: executionPlan.difficultyScore,
+    usesSubagents: executionPlan.actualSubagentCount > 1,
+    executionModelId: executionPlan.executionModelId,
+    subtaskCount: executionPlanToTasks(executionPlan).length,
+    executionPlan
+  };
+}
+
 function buildReadyPlanFromRun(run: AgentRunState): PlannerReadyTurn {
   if (
     run.executionModelId === undefined ||
@@ -1566,7 +1996,61 @@ function buildReadyPlanFromRun(run: AgentRunState): PlannerReadyTurn {
       title: task.title,
       instruction: task.instruction
     })),
-    finalExecutionBrief: run.finalExecutionBrief
+    finalExecutionBrief: run.finalExecutionBrief,
+    prerequisites: run.plan?.prerequisites,
+    contracts: run.plan?.contracts
+  };
+}
+
+function buildExecutionPlanFromRun(run: AgentRunState, runId: string): ExecutionPlan {
+  if (run.plan) {
+    return {
+      ...run.plan,
+      runId
+    };
+  }
+
+  if (
+    run.executionModelId === undefined ||
+    run.difficultyScore === undefined ||
+    run.summary === undefined ||
+    run.finalExecutionBrief === undefined
+  ) {
+    throw new Error("Run does not have a resumable execution plan");
+  }
+
+  return {
+    runId,
+    origin: "initial",
+    iteration: 1,
+    summary: run.summary,
+    finalExecutionBrief: run.finalExecutionBrief,
+    difficultyScore: run.difficultyScore,
+    planningModelId: run.planningModelId ?? getDefaultPlanningModelId("gpt"),
+    executionModelId: run.executionModelId,
+    route: run.subtasks.length > 0 ? "pi-subagents" : "main",
+    subagentWorktreeStrategy: "same-worktree",
+    targetSubagentCount: run.subtasks.length,
+    actualSubagentCount: run.subtasks.length,
+    gating: {
+      mode: "countdown",
+      delaySeconds: 10
+    },
+    prerequisites: [],
+    contracts: run.subtasks.map((task) => ({
+      taskId: task.id,
+      title: task.title,
+      instruction: task.instruction,
+      effortPoints: 2,
+      ownedPaths: ["(planner-unspecified)"],
+      dependsOnPrerequisiteIds: [],
+      deliverables: [task.title],
+      integrationPoints: [],
+      verificationScope: "owned-files-only",
+      verificationCommands: ["bunx tsc --noEmit"],
+      mergeNotes: `Merge ${task.title} into final solution.`
+    })),
+    correctnessPolicy: "ask-before-iterate"
   };
 }
 
@@ -1698,7 +2182,11 @@ function getPreferencesState(repository: WorkspaceRepository, adapter: PiAgentAd
     hasStoredGoogleApiKey,
     providerBrand: repository.getProviderBrand(),
     debugEnabledDefault: repository.getDebugEnabledDefault(),
-    tracePanelDefaultOpen: repository.getTracePanelDefaultOpen()
+    tracePanelDefaultOpen: repository.getTracePanelDefaultOpen(),
+    subagentWorktreeStrategyDefault: repository.getSubagentWorktreeStrategyDefault(),
+    planExecutionModeDefault: repository.getPlanExecutionModeDefault(),
+    planExecutionDelaySecondsDefault: repository.getPlanExecutionDelaySecondsDefault(),
+    correctnessIterationModeDefault: repository.getCorrectnessIterationModeDefault()
   };
 }
 

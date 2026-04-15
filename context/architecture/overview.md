@@ -28,6 +28,14 @@ The public agent surface is intentionally narrow:
 - planner-first execution with `openai/gpt-5.4`
 - automatic internal `pi-subagents` fan-out when planner difficulty exceeds 40
 
+Planning and execution are now separate lifecycle phases.
+`chat.send` and planner answers stop after the backend persists a frozen execution plan, appends a plan-summary assistant message, emits plan metadata for the developer panel, and leaves the run in `ready`.
+Actual code work starts only after a typed execution command or an allowed auto-run gate fires.
+
+Execution plans are richer than legacy subtask lists.
+They can include prerequisites, explicit technical contracts per subagent bucket, worktree strategy, verification scope, bucket sizing, and correctness iteration policy.
+Those plan snapshots persist with the run so the transcript, trace panel, and restart recovery all point at the same plan.
+
 Each project owns its own filesystem root.
 The backend routes pi execution using that project root as the working directory.
 
@@ -44,12 +52,24 @@ Subagent fan-out is resumable at the workflow level.
 Completed subtask outputs persist locally so failed or stopped runs can rerun only pending or failed work after reconnect or restart.
 Completed runs also persist enough state to remain retryable after success, refresh, or restart.
 
+Subagent routing is contract-aware.
+The planner prefers same-worktree fan-out by default, but only when owned paths can be split cleanly and bucket effort stays reasonably balanced.
+If work cannot be split safely, execution collapses bucket count or falls back to broader isolated-worktree flow.
+Shared setup work such as dependencies, config scaffolds, constants, or type baselines belongs in prerequisites before parallel work begins.
+
 Project and thread history persist locally in SQLite.
 Per-thread draft text persists in browser localStorage so in-progress input survives reload and thread switches.
 Planner traces and stream buffers stay transient for current process only.
 Development browser builds emit source maps, and swallowed UI command errors are rethrown after toast display during local debugging so mapped stacks stay visible.
 Before execution starts, the backend can run a dirty-git preflight.
 Small working tree drift surfaces as a warning while larger drift is rejected before the run begins.
+
+After execution, the backend runs a correctness review against the frozen plan and current workspace result.
+That review can surface runnable gaps, missed commitments, or suspicious low-quality output.
+When gaps are found, the system generates a corrective plan and re-enters the same plan-first presentation flow instead of silently claiming success.
+
+Transient execution state is intentionally reset when a new top-level task or ready-plan refinement starts.
+Chat history remains persisted, but traces, context meter snapshots, countdown state, and active plan UI do not bleed from one run into the next.
 
 Thread status is summarized in UI through badge states derived from persisted run state.
 Current badge set is:

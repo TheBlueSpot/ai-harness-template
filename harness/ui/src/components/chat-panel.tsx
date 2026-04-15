@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createSignal, onMount, type JSX } from "solid-js";
+import { For, Show, createEffect, createSignal, onCleanup, onMount, type JSX } from "solid-js";
 import { createRequestId, type ClientCommand } from "../../../shared/protocol";
 import {
   getActiveProject,
@@ -15,12 +15,16 @@ import { Input } from "./ui/input";
 import { ScrollArea } from "./ui/scroll-area";
 import { Textarea } from "./ui/textarea";
 import {
+  Clipboard,
+  Copy,
+  Edit3,
   FolderOpen,
   FolderPlus,
   GitFork,
   LoaderCircle,
   MessageSquareMore,
   Pause,
+  Play,
   RefreshCcw,
   Plus,
   SendHorizontal
@@ -32,12 +36,22 @@ type ChatPanelProps = {
 
 export function ChatPanel(props: ChatPanelProps) {
   let messageViewport: HTMLDivElement | undefined;
+  let countdownTimer: number | undefined;
   const state = harnessStore.state;
   const activeProject = () => getActiveProject(state);
   const [stickToBottom, setStickToBottom] = createSignal(true);
+  const [editingThreadTitle, setEditingThreadTitle] = createSignal(false);
+  const [threadTitleDraft, setThreadTitleDraft] = createSignal("");
+  const [countdownRunId, setCountdownRunId] = createSignal<string>();
+  const [countdownRemainingMs, setCountdownRemainingMs] = createSignal(0);
+  const [countdownPaused, setCountdownPaused] = createSignal(false);
+  const [autoExecutedRunId, setAutoExecutedRunId] = createSignal<string>();
   const pendingQuestion = () => activeProject()?.activeRun?.questions.find((question) => question.status === "pending");
   const resumableRun = () => (activeProject()?.activeRun?.resumable ? activeProject()?.activeRun : undefined);
   const retryableRun = () => (activeProject()?.lastRun?.retryable ? activeProject()?.lastRun : undefined);
+  const readyRun = () => (activeProject()?.activeRun?.status === "ready" ? activeProject()?.activeRun : undefined);
+  const activeThread = () => activeProject()?.threads.find((thread) => thread.id === activeProject()?.activeThreadId);
+  const currentExecutionPlan = () => activeProject()?.latestPlan?.executionPlan ?? readyRun()?.plan;
   const failedSubtaskCount = () =>
     activeProject()?.activeRun?.subtasks.filter((task) => task.status === "failed").length ?? 0;
   const composerContextText = () => {
@@ -80,6 +94,10 @@ export function ChatPanel(props: ChatPanelProps) {
     scrollToBottom(true);
   });
 
+  onCleanup(() => {
+    clearCountdown();
+  });
+
   createEffect(() => {
     activeProject()?.activeThreadId;
     scrollToBottom(true);
@@ -90,6 +108,65 @@ export function ChatPanel(props: ChatPanelProps) {
     activeProject()?.streamingAssistantText;
     scrollToBottom();
   });
+
+  createEffect(() => {
+    const thread = activeThread();
+    setThreadTitleDraft(thread?.title ?? "");
+    setEditingThreadTitle(false);
+  });
+
+  createEffect(() => {
+    const run = readyRun();
+    const executionPlan = currentExecutionPlan();
+    if (!run || !executionPlan) {
+      clearCountdown();
+      return;
+    }
+
+    if (executionPlan.gating.mode === "immediate") {
+      clearCountdown();
+      if (autoExecutedRunId() !== run.id) {
+        handleExecuteRun(run.id);
+        setAutoExecutedRunId(run.id);
+      }
+      return;
+    }
+
+    if (executionPlan.gating.mode !== "countdown") {
+      clearCountdown();
+      return;
+    }
+
+    if (countdownRunId() === run.id) {
+      return;
+    }
+
+    clearCountdown();
+    setCountdownRunId(run.id);
+    setCountdownPaused(false);
+    setCountdownRemainingMs(executionPlan.gating.delaySeconds * 1000);
+    countdownTimer = window.setInterval(() => {
+      setCountdownRemainingMs((value) => {
+        const next = Math.max(0, value - 100);
+        if (next === 0 && readyRun()?.id === run.id && autoExecutedRunId() !== run.id) {
+          clearCountdown();
+          handleExecuteRun(run.id);
+          setAutoExecutedRunId(run.id);
+        }
+        return next;
+      });
+    }, 100);
+  });
+
+  function clearCountdown() {
+    if (countdownTimer !== undefined) {
+      window.clearInterval(countdownTimer);
+      countdownTimer = undefined;
+    }
+    setCountdownRunId(undefined);
+    setCountdownRemainingMs(0);
+    setCountdownPaused(false);
+  }
 
   function handleQuestionChoice(answerText: string) {
     const project = activeProject();
@@ -143,6 +220,23 @@ export function ChatPanel(props: ChatPanelProps) {
       return;
     }
 
+    if (project.activeRun?.status === "ready") {
+      props.sendCommand({
+        type: "planning.refine",
+        requestId: createRequestId(),
+        payload: {
+          projectId: project.id,
+          threadId: project.activeThreadId,
+          runId: project.activeRun.id,
+          content
+        }
+      });
+
+      harnessStore.setProjectDraft(project.id, "");
+      clearCountdown();
+      return;
+    }
+
     if (resumableRun()) {
       pushToast(
         "Resume required",
@@ -183,6 +277,23 @@ export function ChatPanel(props: ChatPanelProps) {
 
     harnessStore.setProjectDraft(project.id, "");
     harnessStore.clearPendingExecutionModelId(project.id);
+  }
+
+  function handleExecuteRun(runId: string) {
+    const project = activeProject();
+    if (!project) {
+      return;
+    }
+
+    props.sendCommand({
+      type: "run.execute",
+      requestId: createRequestId(),
+      payload: {
+        projectId: project.id,
+        threadId: project.activeThreadId,
+        runId
+      }
+    });
   }
 
   function handleResume() {
@@ -268,6 +379,86 @@ export function ChatPanel(props: ChatPanelProps) {
     });
   }
 
+  function handlePauseAutoRun() {
+    if (countdownRunId() === undefined) {
+      return;
+    }
+
+    if (countdownTimer !== undefined) {
+      window.clearInterval(countdownTimer);
+      countdownTimer = undefined;
+    }
+    setCountdownPaused(true);
+  }
+
+  function handleResumeAutoRun() {
+    const runId = countdownRunId();
+    const run = readyRun();
+    if (!runId || !run || run.id !== runId || countdownRemainingMs() <= 0) {
+      return;
+    }
+
+    setCountdownPaused(false);
+    countdownTimer = window.setInterval(() => {
+      setCountdownRemainingMs((value) => {
+        const next = Math.max(0, value - 100);
+        if (next === 0 && readyRun()?.id === run.id && autoExecutedRunId() !== run.id) {
+          clearCountdown();
+          handleExecuteRun(run.id);
+          setAutoExecutedRunId(run.id);
+        }
+        return next;
+      });
+    }, 100);
+  }
+
+  function handleCopyThreadId() {
+    const thread = activeThread();
+    if (!thread) {
+      return;
+    }
+
+    void navigator.clipboard
+      .writeText(thread.id)
+      .then(() => pushToast("Thread id copied", thread.id))
+      .catch(() => pushToast("Copy failed", "Clipboard permission denied.", "error"));
+  }
+
+  function handleStartRenameThread() {
+    const thread = activeThread();
+    if (!thread) {
+      return;
+    }
+
+    setThreadTitleDraft(thread.title);
+    setEditingThreadTitle(true);
+  }
+
+  function handleCommitRenameThread() {
+    const project = activeProject();
+    const thread = activeThread();
+    const title = threadTitleDraft().trim();
+    if (!project || !thread || !title) {
+      setEditingThreadTitle(false);
+      return;
+    }
+
+    props.sendCommand({
+      type: "thread.rename",
+      requestId: createRequestId(),
+      payload: {
+        projectId: project.id,
+        threadId: thread.id,
+        title
+      }
+    });
+    setEditingThreadTitle(false);
+  }
+
+  function isReadyPlanMessage(runId: string) {
+    return readyRun()?.id === runId;
+  }
+
   function getEffectiveExecutionModelId() {
     const project = activeProject();
     if (!project) {
@@ -297,6 +488,10 @@ export function ChatPanel(props: ChatPanelProps) {
 
     if (resumableRun()) {
       return "Optional guidance for resume...";
+    }
+
+    if (project.activeRun?.status === "ready") {
+      return "Refine plan before execution...";
     }
 
     return `Ask pi to work inside ${project.rootPath}...`;
@@ -381,9 +576,55 @@ export function ChatPanel(props: ChatPanelProps) {
                   <span class="text-[color:var(--foreground)]">{project().name}</span>
                 </div>
                 <div>
-                  <h1 class="font-display text-[1.6875rem] tracking-[-0.06em] text-[color:var(--foreground)] md:text-[2.025rem]">
-                    Pi Harness Workspace
-                  </h1>
+                  <div class="flex flex-wrap items-center gap-2">
+                    <Show
+                      when={editingThreadTitle()}
+                      fallback={
+                        <h1 class="font-display text-[1.6875rem] tracking-[-0.06em] text-[color:var(--foreground)] md:text-[2.025rem]">
+                          {activeThread()?.title ?? "Thread"}
+                        </h1>
+                      }
+                    >
+                      <Input
+                        value={threadTitleDraft()}
+                        onInput={(event: InputEvent & { currentTarget: HTMLInputElement; target: Element }) =>
+                          setThreadTitleDraft(event.currentTarget.value)
+                        }
+                        onBlur={handleCommitRenameThread}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            handleCommitRenameThread();
+                          }
+                          if (event.key === "Escape") {
+                            setEditingThreadTitle(false);
+                          }
+                        }}
+                      />
+                    </Show>
+                    <ActionButton
+                      tooltip="Rename this thread"
+                      disabledReason="Project is streaming"
+                      disabled={project().session.isStreaming}
+                      icon={<Edit3 class="h-3.5 w-3.5" />}
+                      size="icon"
+                      variant="ghost"
+                      ariaLabel="Rename this thread"
+                      onClick={handleStartRenameThread}
+                    />
+                  </div>
+                  <div class="mt-2 flex flex-wrap items-center gap-2 text-[0.625rem] text-[color:var(--muted)]">
+                    <span>thread-id</span>
+                    <span class="font-mono text-[0.6rem]">{activeThread()?.id}</span>
+                    <ActionButton
+                      tooltip="Copy thread id"
+                      icon={<Copy class="h-3.5 w-3.5" />}
+                      size="icon"
+                      variant="ghost"
+                      ariaLabel="Copy thread id"
+                      onClick={handleCopyThreadId}
+                    />
+                  </div>
                   <p class="mt-2 max-w-3xl text-[0.675rem] leading-5 text-[color:var(--muted)] md:text-[0.7875rem]">
                     SQLite-backed project chats, GPT or Gemini orchestration, and project-local traces without mixing execution context.
                   </p>
@@ -452,28 +693,85 @@ export function ChatPanel(props: ChatPanelProps) {
                 <div class="space-y-3">
                   <For each={project().session.messages}>
                     {(message) => (
-                      <article
-                        class={`border border-[color:var(--border)] p-3 shadow-sm ${
-                          message.role === "system"
-                            ? "rounded-[1.15rem] bg-slate-100/85"
-                            : message.role === "assistant"
-                            ? "rounded-[1.5rem] bg-teal-950/5"
-                            : "rounded-[1.5rem] bg-white/60"
-                        }`}
+                      <Show
+                        when={message.kind === "plan-summary" && message.metadata?.type === "plan-summary"}
+                        fallback={
+                          <article
+                            class={`border border-[color:var(--border)] p-3 shadow-sm ${
+                              message.role === "system"
+                                ? "rounded-[1.15rem] bg-slate-100/85"
+                                : message.role === "assistant"
+                                ? "rounded-[1.5rem] bg-teal-950/5"
+                                : "rounded-[1.5rem] bg-white/60"
+                            }`}
+                          >
+                            <div
+                              class={`mb-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] ${
+                                message.role === "system"
+                                  ? "text-[color:var(--muted)]"
+                                  : "text-[color:var(--accent-strong)]"
+                              }`}
+                            >
+                              {message.role === "system" ? "status" : message.role}
+                            </div>
+                            <div class="whitespace-pre-wrap text-[0.675rem] leading-6 text-[color:var(--foreground)]">
+                              {message.content}
+                            </div>
+                          </article>
+                        }
                       >
-                        <div
-                          class={`mb-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] ${
-                            message.role === "system"
-                              ? "text-[color:var(--muted)]"
-                              : "text-[color:var(--accent-strong)]"
-                          }`}
-                        >
-                          {message.role === "system" ? "status" : message.role}
-                        </div>
-                        <div class="whitespace-pre-wrap text-[0.675rem] leading-6 text-[color:var(--foreground)]">
-                          {message.content}
-                        </div>
-                      </article>
+                        <article class="rounded-[1.5rem] border border-[color:var(--border)] bg-[linear-gradient(135deg,rgba(15,118,110,0.12),rgba(255,255,255,0.92))] p-4 shadow-sm">
+                          <div class="mb-2 flex items-center gap-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-[color:var(--accent-strong)]">
+                            <Clipboard class="h-3.5 w-3.5" />
+                            Plan summary
+                          </div>
+                          <div class="text-[0.75rem] leading-6 text-[color:var(--foreground)]">
+                            {message.metadata?.plan.summary}
+                          </div>
+                          <div class="mt-3 grid gap-2 text-[0.675rem] text-[color:var(--muted)] md:grid-cols-2">
+                            <div>Route: {message.metadata?.plan.route}</div>
+                            <div>Difficulty: {message.metadata?.plan.difficultyScore}%</div>
+                            <div>Prereqs: {message.metadata?.plan.prerequisites.length}</div>
+                            <div>Contracts: {message.metadata?.plan.contracts.length}</div>
+                            <div>Worktree: {message.metadata?.plan.subagentWorktreeStrategy}</div>
+                            <div>Correctness: {message.metadata?.plan.correctnessPolicy}</div>
+                          </div>
+                          <div class="mt-3 flex flex-wrap gap-2">
+                            <ActionButton
+                              tooltip="Open full execution plan"
+                              icon={<Clipboard class="h-3.5 w-3.5" />}
+                              size="sm"
+                              variant="secondary"
+                              onClick={() => message.metadata?.plan && harnessStore.openExecutionPlanDialog(message.metadata.plan)}
+                            >
+                              Open plan
+                            </ActionButton>
+                            <Show when={message.metadata?.plan.gating.mode === "approve"}>
+                              <ActionButton
+                                tooltip="Start execution with this plan"
+                                disabledReason="This plan is no longer active"
+                                disabled={!isReadyPlanMessage(message.metadata!.runId)}
+                                icon={<Play class="h-3.5 w-3.5" />}
+                                size="sm"
+                                onClick={() => handleExecuteRun(message.metadata!.runId)}
+                              >
+                                Start now
+                              </ActionButton>
+                            </Show>
+                            <Show when={message.metadata?.plan.gating.mode === "countdown" && isReadyPlanMessage(message.metadata!.runId)}>
+                              <ActionButton
+                                tooltip={countdownPaused() ? "Resume automatic execution countdown" : "Pause automatic execution countdown"}
+                                icon={countdownPaused() ? <Play class="h-3.5 w-3.5" /> : <Pause class="h-3.5 w-3.5" />}
+                                size="sm"
+                                variant="secondary"
+                                onClick={() => (countdownPaused() ? handleResumeAutoRun() : handlePauseAutoRun())}
+                              >
+                                {countdownPaused() ? "Resume auto-run" : "Pause auto-run"}
+                              </ActionButton>
+                            </Show>
+                          </div>
+                        </article>
+                      </Show>
                     )}
                   </For>
 
@@ -490,6 +788,42 @@ export function ChatPanel(props: ChatPanelProps) {
                 </div>
               </Show>
             </ScrollArea>
+
+            <Show when={readyRun() && currentExecutionPlan()?.gating.mode === "countdown" && countdownRunId() === readyRun()!.id}>
+              <div class="rounded-[1.25rem] border border-[color:var(--border)] bg-white/65 p-3">
+                <div class="flex flex-wrap items-center justify-between gap-3 text-[0.675rem] text-[color:var(--muted)]">
+                  <span>
+                    Auto-run {countdownPaused() ? "paused" : "in progress"} for {currentExecutionPlan()?.gating.delaySeconds}s gate.
+                  </span>
+                  <ActionButton
+                    tooltip={countdownPaused() ? "Resume automatic execution countdown" : "Pause automatic execution countdown"}
+                    icon={countdownPaused() ? <Play class="h-3.5 w-3.5" /> : <Pause class="h-3.5 w-3.5" />}
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => (countdownPaused() ? handleResumeAutoRun() : handlePauseAutoRun())}
+                  >
+                    {countdownPaused() ? "Resume auto-run" : "Pause auto-run"}
+                  </ActionButton>
+                </div>
+                <div class="mt-3 h-2 overflow-hidden rounded-full bg-[color:var(--border)]">
+                  <div
+                    class="h-full rounded-full bg-[color:var(--accent)] transition-[width]"
+                    style={{
+                      width: `${Math.max(
+                        0,
+                        Math.min(
+                          100,
+                          100 -
+                            (countdownRemainingMs() /
+                              Math.max(1, (currentExecutionPlan()?.gating.delaySeconds ?? 1) * 1000)) *
+                              100
+                        )
+                      )}%`
+                    }}
+                  />
+                </div>
+              </div>
+            </Show>
 
             <form class="space-y-3" onSubmit={handleSubmit}>
               <Show when={pendingQuestion()}>
@@ -576,7 +910,13 @@ export function ChatPanel(props: ChatPanelProps) {
                     </ActionButton>
                   </Show>
                   <ActionButton
-                    tooltip={pendingQuestion() ? "Send planner answer" : "Send task to pi"}
+                    tooltip={
+                      pendingQuestion()
+                        ? "Send planner answer"
+                        : project().activeRun?.status === "ready"
+                        ? "Refine plan before execution"
+                        : "Send task to pi"
+                    }
                     disabledReason={
                       project().session.isStreaming
                         ? "Project is streaming"
@@ -588,7 +928,11 @@ export function ChatPanel(props: ChatPanelProps) {
                     icon={<SendHorizontal class="h-4 w-4" />}
                     type="submit"
                   >
-                    {pendingQuestion() ? "Answer question" : "Send task"}
+                    {pendingQuestion()
+                      ? "Answer question"
+                      : project().activeRun?.status === "ready"
+                      ? "Refine plan"
+                      : "Send task"}
                   </ActionButton>
                 </div>
               </div>

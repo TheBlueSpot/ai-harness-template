@@ -1,9 +1,8 @@
-import { For, Show, createSignal } from "solid-js";
+import { For, Show } from "solid-js";
 import { createRequestId, type ClientCommand } from "../../../shared/protocol";
 import { getActiveProject, harnessStore } from "../harness-store";
 import { getLatestTaskStatusText, getRunRefreshState, isRunWorking } from "../lib/run-status";
 import { ActionButton } from "./action-button";
-import { Dialog } from "./ui/dialog";
 import { Input } from "./ui/input";
 import { ScrollArea } from "./ui/scroll-area";
 import { ClipboardList, LoaderCircle, RefreshCcw } from "lucide-solid";
@@ -14,7 +13,6 @@ type TracePanelProps = {
 
 export function TracePanel(props: TracePanelProps) {
   const state = harnessStore.state;
-  const [planModalOpen, setPlanModalOpen] = createSignal(false);
   const activeProject = () => getActiveProject(state);
   const runToShow = () => activeProject()?.activeRun ?? activeProject()?.lastRun;
   const canRetryRun = () => Boolean(activeProject()?.lastRun?.retryable);
@@ -23,8 +21,7 @@ export function TracePanel(props: TracePanelProps) {
     return project ? getRunRefreshState(project, runToShow()) : { disabled: true, disabledReason: "No run available", refreshing: false };
   };
   const planRun = () => runToShow();
-  const hasPlanDetails = () =>
-    Boolean(planRun()?.summary && planRun()?.finalExecutionBrief && planRun()?.executionModelId);
+  const hasPlanDetails = () => Boolean(activeProject()?.latestPlan?.executionPlan);
 
   function handleRetryRun() {
     const project = activeProject();
@@ -155,7 +152,12 @@ export function TracePanel(props: TracePanelProps) {
                       icon={<ClipboardList class="h-3.5 w-3.5" />}
                       size="sm"
                       variant="secondary"
-                      onClick={() => setPlanModalOpen(true)}
+                      onClick={() => {
+                        const executionPlan = project().latestPlan?.executionPlan;
+                        if (executionPlan) {
+                          harnessStore.openExecutionPlanDialog(executionPlan);
+                        }
+                      }}
                     >
                       Open plan
                     </ActionButton>
@@ -311,58 +313,6 @@ export function TracePanel(props: TracePanelProps) {
         )}
       </Show>
 
-      <Dialog
-        open={planModalOpen()}
-        onClose={() => setPlanModalOpen(false)}
-        title="Execution plan"
-        eyebrow="Trace"
-        description="Planner summary and final execution brief for the current run."
-        class="max-w-3xl"
-      >
-        <Show when={planRun()}>
-          {(run) => (
-            <div class="space-y-4 text-[0.75rem] leading-6 text-[color:var(--foreground)]">
-              <div class="grid gap-2 md:grid-cols-2">
-                <div>Route: {run().subtasks.length > 0 ? "pi-subagents" : "main pi"}</div>
-                <div>Difficulty: {run().difficultyScore ?? "n/a"}%</div>
-                <div>Planner: {run().planningModelId ?? "n/a"}</div>
-                <div>Executor: {run().executionModelId ?? "n/a"}</div>
-                <div>Run: {run().id}</div>
-                <div>Prompt: {run().latestUserPrompt}</div>
-              </div>
-              <div>
-                <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-[color:var(--muted)]">
-                  Planning summary
-                </div>
-                <div class="mt-2 whitespace-pre-wrap">{run().summary ?? "n/a"}</div>
-              </div>
-              <div>
-                <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-[color:var(--muted)]">
-                  Final execution brief
-                </div>
-                <div class="mt-2 whitespace-pre-wrap">{run().finalExecutionBrief ?? "n/a"}</div>
-              </div>
-              <Show when={run().subtasks.length > 0}>
-                <div>
-                  <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-[color:var(--muted)]">
-                    Subtasks
-                  </div>
-                  <div class="mt-2 space-y-2">
-                    <For each={run().subtasks}>
-                      {(task) => (
-                        <div class="rounded-2xl border border-[color:var(--border)] bg-white/60 p-3">
-                          <div class="font-semibold">{task.title}</div>
-                          <div class="mt-1 whitespace-pre-wrap text-[color:var(--muted)]">{task.instruction}</div>
-                        </div>
-                      )}
-                    </For>
-                  </div>
-                </div>
-              </Show>
-            </div>
-          )}
-        </Show>
-      </Dialog>
     </aside>
   );
 }

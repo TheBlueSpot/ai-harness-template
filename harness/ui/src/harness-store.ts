@@ -10,6 +10,7 @@ import {
   type PreferencesState,
   type RunPreflight,
   type ServerEvent,
+  type ExecutionPlan,
   type WorkspaceProjectState,
   type WorkspaceState
 } from "../../shared/protocol";
@@ -19,6 +20,10 @@ export const GOOGLE_API_KEY_STORAGE_KEY = "google_api_key";
 export const PROVIDER_BRAND_STORAGE_KEY = "provider_brand";
 export const DEBUG_ENABLED_STORAGE_KEY = "debug_enabled";
 export const TRACE_PANEL_DEFAULT_OPEN_STORAGE_KEY = "trace_panel_default_open";
+export const SUBAGENT_WORKTREE_STRATEGY_DEFAULT_STORAGE_KEY = "subagent_worktree_strategy_default";
+export const PLAN_EXECUTION_MODE_DEFAULT_STORAGE_KEY = "plan_execution_mode_default";
+export const PLAN_EXECUTION_DELAY_SECONDS_DEFAULT_STORAGE_KEY = "plan_execution_delay_seconds_default";
+export const CORRECTNESS_ITERATION_MODE_DEFAULT_STORAGE_KEY = "correctness_iteration_mode_default";
 export const THREAD_DRAFT_STORAGE_KEY_PREFIX = "pi-harness:thread-draft:v1";
 
 export type ViewProjectState = WorkspaceProjectState & {
@@ -45,6 +50,12 @@ export type HarnessViewState = {
   debugEnabled: boolean;
   tracePanelOpen: boolean;
   tracePanelDefaultOpen: boolean;
+  executionPlanDialogOpen: boolean;
+  selectedExecutionPlan?: ExecutionPlan;
+  subagentWorktreeStrategyDefault: "same-worktree" | "separate-worktrees";
+  planExecutionModeDefault: "countdown" | "approve" | "immediate";
+  planExecutionDelaySecondsDefault: number;
+  correctnessIterationModeDefault: "ask-before-iterate" | "auto-once" | "auto-until-clean";
   preferencesModalOpen: boolean;
   hasUsableApiKey: boolean;
   hasStoredApiKey: boolean;
@@ -61,6 +72,10 @@ export type HarnessViewState = {
   hasLocalProviderBrandPreference: boolean;
   hasLocalDebugPreference: boolean;
   hasLocalTracePreference: boolean;
+  hasLocalSubagentWorktreeStrategyPreference: boolean;
+  hasLocalPlanExecutionModePreference: boolean;
+  hasLocalPlanExecutionDelaySecondsPreference: boolean;
+  hasLocalCorrectnessIterationModePreference: boolean;
   projectPreflights: Record<string, { requestId: string; preflight: RunPreflight } | undefined>;
 };
 
@@ -70,6 +85,10 @@ export type LocalPreferencesState = {
   providerBrand?: ProviderBrand;
   debugEnabled?: boolean;
   tracePanelDefaultOpen?: boolean;
+  subagentWorktreeStrategyDefault?: "same-worktree" | "separate-worktrees";
+  planExecutionModeDefault?: "countdown" | "approve" | "immediate";
+  planExecutionDelaySecondsDefault?: number;
+  correctnessIterationModeDefault?: "ask-before-iterate" | "auto-once" | "auto-until-clean";
 };
 
 export function createInitialWorkspaceState(): ViewWorkspaceState {
@@ -90,6 +109,12 @@ export function createInitialViewState(): HarnessViewState {
     debugEnabled: false,
     tracePanelOpen: true,
     tracePanelDefaultOpen: true,
+    executionPlanDialogOpen: false,
+    selectedExecutionPlan: undefined,
+    subagentWorktreeStrategyDefault: "same-worktree",
+    planExecutionModeDefault: "countdown",
+    planExecutionDelaySecondsDefault: 10,
+    correctnessIterationModeDefault: "ask-before-iterate",
     preferencesModalOpen: false,
     hasUsableApiKey: false,
     hasStoredApiKey: false,
@@ -106,6 +131,10 @@ export function createInitialViewState(): HarnessViewState {
     hasLocalProviderBrandPreference: false,
     hasLocalDebugPreference: false,
     hasLocalTracePreference: false,
+    hasLocalSubagentWorktreeStrategyPreference: false,
+    hasLocalPlanExecutionModePreference: false,
+    hasLocalPlanExecutionDelaySecondsPreference: false,
+    hasLocalCorrectnessIterationModePreference: false,
     projectPreflights: {}
   };
 }
@@ -243,12 +272,22 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
       }));
     case "run.updated":
       return {
-        ...updateThreadScopedProject(state, event.payload.projectId, event.payload.threadId, (project) => ({
-          ...project,
-          activeRun: event.payload.run.status === "completed" ? undefined : event.payload.run,
-          lastRun: event.payload.run,
-          threads: setThreadBadge(project.threads, event.payload.threadId, badgeFromRunStatus(event.payload.run.status))
-        })),
+        ...updateThreadScopedProject(state, event.payload.projectId, event.payload.threadId, (project) => {
+          const resetPlanningTransients =
+            event.payload.run.status === "planning" &&
+            project.activeRun?.id !== undefined &&
+            project.activeRun.id !== event.payload.run.id;
+
+          return {
+            ...project,
+            latestPlan: resetPlanningTransients ? undefined : project.latestPlan,
+            contextUsage: resetPlanningTransients ? undefined : project.contextUsage,
+            traces: resetPlanningTransients ? [] : project.traces,
+            activeRun: event.payload.run.status === "completed" ? undefined : event.payload.run,
+            lastRun: event.payload.run,
+            threads: setThreadBadge(project.threads, event.payload.threadId, badgeFromRunStatus(event.payload.run.status))
+          };
+        }),
         projectPreflights: {
           ...state.projectPreflights,
           [event.payload.projectId]:
@@ -357,6 +396,29 @@ export function createHarnessStore() {
         tracePanelOpen: tracePanelDefaultOpen
       });
     },
+    openExecutionPlanDialog(executionPlan: ExecutionPlan) {
+      setState({
+        executionPlanDialogOpen: true,
+        selectedExecutionPlan: executionPlan
+      });
+    },
+    closeExecutionPlanDialog() {
+      setState({
+        executionPlanDialogOpen: false
+      });
+    },
+    setSubagentWorktreeStrategyDefault(subagentWorktreeStrategyDefault: "same-worktree" | "separate-worktrees") {
+      setState({ subagentWorktreeStrategyDefault });
+    },
+    setPlanExecutionModeDefault(planExecutionModeDefault: "countdown" | "approve" | "immediate") {
+      setState({ planExecutionModeDefault });
+    },
+    setPlanExecutionDelaySecondsDefault(planExecutionDelaySecondsDefault: number) {
+      setState({ planExecutionDelaySecondsDefault });
+    },
+    setCorrectnessIterationModeDefault(correctnessIterationModeDefault: "ask-before-iterate" | "auto-once" | "auto-until-clean") {
+      setState({ correctnessIterationModeDefault });
+    },
     openPreferencesModal() {
       setState({ preferencesModalOpen: true });
     },
@@ -384,6 +446,15 @@ export function createHarnessStore() {
     commitLocalPreferences(localPreferences: LocalPreferencesState) {
       setState({
         providerBrand: localPreferences.providerBrand ?? state.providerBrand,
+        debugEnabled: localPreferences.debugEnabled ?? state.debugEnabled,
+        tracePanelDefaultOpen: localPreferences.tracePanelDefaultOpen ?? state.tracePanelDefaultOpen,
+        subagentWorktreeStrategyDefault:
+          localPreferences.subagentWorktreeStrategyDefault ?? state.subagentWorktreeStrategyDefault,
+        planExecutionModeDefault: localPreferences.planExecutionModeDefault ?? state.planExecutionModeDefault,
+        planExecutionDelaySecondsDefault:
+          localPreferences.planExecutionDelaySecondsDefault ?? state.planExecutionDelaySecondsDefault,
+        correctnessIterationModeDefault:
+          localPreferences.correctnessIterationModeDefault ?? state.correctnessIterationModeDefault,
         openAiApiKeyDraft: localPreferences.openAiApiKey ?? "",
         googleApiKeyDraft: localPreferences.googleApiKey ?? "",
         apiKeyDirty: false,
@@ -391,7 +462,11 @@ export function createHarnessStore() {
         hasLocalGoogleApiKey: Boolean(localPreferences.googleApiKey),
         hasLocalProviderBrandPreference: localPreferences.providerBrand !== undefined,
         hasLocalDebugPreference: localPreferences.debugEnabled !== undefined,
-        hasLocalTracePreference: localPreferences.tracePanelDefaultOpen !== undefined
+        hasLocalTracePreference: localPreferences.tracePanelDefaultOpen !== undefined,
+        hasLocalSubagentWorktreeStrategyPreference: localPreferences.subagentWorktreeStrategyDefault !== undefined,
+        hasLocalPlanExecutionModePreference: localPreferences.planExecutionModeDefault !== undefined,
+        hasLocalPlanExecutionDelaySecondsPreference: localPreferences.planExecutionDelaySecondsDefault !== undefined,
+        hasLocalCorrectnessIterationModePreference: localPreferences.correctnessIterationModeDefault !== undefined
       });
     },
     setHasUsableApiKey(hasUsableApiKey: boolean) {
@@ -404,6 +479,13 @@ export function createHarnessStore() {
         debugEnabled: localPreferences.debugEnabled ?? state.debugEnabled,
         tracePanelDefaultOpen: localPreferences.tracePanelDefaultOpen ?? state.tracePanelDefaultOpen,
         tracePanelOpen: localPreferences.tracePanelDefaultOpen ?? state.tracePanelOpen,
+        subagentWorktreeStrategyDefault:
+          localPreferences.subagentWorktreeStrategyDefault ?? state.subagentWorktreeStrategyDefault,
+        planExecutionModeDefault: localPreferences.planExecutionModeDefault ?? state.planExecutionModeDefault,
+        planExecutionDelaySecondsDefault:
+          localPreferences.planExecutionDelaySecondsDefault ?? state.planExecutionDelaySecondsDefault,
+        correctnessIterationModeDefault:
+          localPreferences.correctnessIterationModeDefault ?? state.correctnessIterationModeDefault,
         openAiApiKeyDraft: localPreferences.openAiApiKey ?? "",
         googleApiKeyDraft: localPreferences.googleApiKey ?? "",
         apiKeyDirty: false,
@@ -411,7 +493,11 @@ export function createHarnessStore() {
         hasLocalGoogleApiKey: Boolean(localPreferences.googleApiKey),
         hasLocalProviderBrandPreference: localPreferences.providerBrand !== undefined,
         hasLocalDebugPreference: localPreferences.debugEnabled !== undefined,
-        hasLocalTracePreference: localPreferences.tracePanelDefaultOpen !== undefined
+        hasLocalTracePreference: localPreferences.tracePanelDefaultOpen !== undefined,
+        hasLocalSubagentWorktreeStrategyPreference: localPreferences.subagentWorktreeStrategyDefault !== undefined,
+        hasLocalPlanExecutionModePreference: localPreferences.planExecutionModeDefault !== undefined,
+        hasLocalPlanExecutionDelaySecondsPreference: localPreferences.planExecutionDelaySecondsDefault !== undefined,
+        hasLocalCorrectnessIterationModePreference: localPreferences.correctnessIterationModeDefault !== undefined
       });
       return localPreferences;
     },
@@ -535,7 +621,19 @@ function applyReadyPreferencesState(state: HarnessViewState, preferences: Prefer
     tracePanelDefaultOpen: state.hasLocalTracePreference
       ? state.tracePanelDefaultOpen
       : preferences.tracePanelDefaultOpen,
-    tracePanelOpen: state.hasLocalTracePreference ? state.tracePanelOpen : preferences.tracePanelDefaultOpen
+    tracePanelOpen: state.hasLocalTracePreference ? state.tracePanelOpen : preferences.tracePanelDefaultOpen,
+    subagentWorktreeStrategyDefault: state.hasLocalSubagentWorktreeStrategyPreference
+      ? state.subagentWorktreeStrategyDefault
+      : preferences.subagentWorktreeStrategyDefault,
+    planExecutionModeDefault: state.hasLocalPlanExecutionModePreference
+      ? state.planExecutionModeDefault
+      : preferences.planExecutionModeDefault,
+    planExecutionDelaySecondsDefault: state.hasLocalPlanExecutionDelaySecondsPreference
+      ? state.planExecutionDelaySecondsDefault
+      : preferences.planExecutionDelaySecondsDefault,
+    correctnessIterationModeDefault: state.hasLocalCorrectnessIterationModePreference
+      ? state.correctnessIterationModeDefault
+      : preferences.correctnessIterationModeDefault
   };
 }
 
@@ -551,13 +649,29 @@ export function readLocalPreferences(): LocalPreferencesState {
   const tracePanelDefaultOpen = parseBooleanStorageValue(
     window.localStorage.getItem(TRACE_PANEL_DEFAULT_OPEN_STORAGE_KEY)
   );
+  const subagentWorktreeStrategyDefault = parseSubagentWorktreeStrategyStorageValue(
+    window.localStorage.getItem(SUBAGENT_WORKTREE_STRATEGY_DEFAULT_STORAGE_KEY)
+  );
+  const planExecutionModeDefault = parsePlanExecutionModeStorageValue(
+    window.localStorage.getItem(PLAN_EXECUTION_MODE_DEFAULT_STORAGE_KEY)
+  );
+  const planExecutionDelaySecondsDefault = parseIntegerStorageValue(
+    window.localStorage.getItem(PLAN_EXECUTION_DELAY_SECONDS_DEFAULT_STORAGE_KEY)
+  );
+  const correctnessIterationModeDefault = parseCorrectnessIterationModeStorageValue(
+    window.localStorage.getItem(CORRECTNESS_ITERATION_MODE_DEFAULT_STORAGE_KEY)
+  );
 
   return {
     openAiApiKey,
     googleApiKey,
     providerBrand,
     debugEnabled,
-    tracePanelDefaultOpen
+    tracePanelDefaultOpen,
+    subagentWorktreeStrategyDefault,
+    planExecutionModeDefault,
+    planExecutionDelaySecondsDefault,
+    correctnessIterationModeDefault
   };
 }
 
@@ -597,6 +711,10 @@ export function persistLocalPreferences(input: LocalPreferencesState) {
   persistProviderBrandStorageValue(PROVIDER_BRAND_STORAGE_KEY, input.providerBrand);
   persistBooleanStorageValue(DEBUG_ENABLED_STORAGE_KEY, input.debugEnabled);
   persistBooleanStorageValue(TRACE_PANEL_DEFAULT_OPEN_STORAGE_KEY, input.tracePanelDefaultOpen);
+  persistStorageValue(SUBAGENT_WORKTREE_STRATEGY_DEFAULT_STORAGE_KEY, input.subagentWorktreeStrategyDefault);
+  persistStorageValue(PLAN_EXECUTION_MODE_DEFAULT_STORAGE_KEY, input.planExecutionModeDefault);
+  persistIntegerStorageValue(PLAN_EXECUTION_DELAY_SECONDS_DEFAULT_STORAGE_KEY, input.planExecutionDelaySecondsDefault);
+  persistStorageValue(CORRECTNESS_ITERATION_MODE_DEFAULT_STORAGE_KEY, input.correctnessIterationModeDefault);
 }
 
 function parseBooleanStorageValue(value: string | null) {
@@ -615,6 +733,27 @@ function parseProviderBrandStorageValue(value: string | null): ProviderBrand | u
   return value === "gpt" || value === "gemini" ? value : undefined;
 }
 
+function parseSubagentWorktreeStrategyStorageValue(value: string | null) {
+  return value === "same-worktree" || value === "separate-worktrees" ? value : undefined;
+}
+
+function parsePlanExecutionModeStorageValue(value: string | null) {
+  return value === "countdown" || value === "approve" || value === "immediate" ? value : undefined;
+}
+
+function parseCorrectnessIterationModeStorageValue(value: string | null) {
+  return value === "ask-before-iterate" || value === "auto-once" || value === "auto-until-clean" ? value : undefined;
+}
+
+function parseIntegerStorageValue(value: string | null) {
+  if (!value) {
+    return undefined;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 function persistStorageValue(key: string, value: string | undefined) {
   if (value?.trim()) {
     window.localStorage.setItem(key, value.trim());
@@ -631,6 +770,15 @@ function persistBooleanStorageValue(key: string, value: boolean | undefined) {
   }
 
   window.localStorage.setItem(key, String(value));
+}
+
+function persistIntegerStorageValue(key: string, value: number | undefined) {
+  if (value === undefined) {
+    window.localStorage.removeItem(key);
+    return;
+  }
+
+  window.localStorage.setItem(key, String(Math.round(value)));
 }
 
 function persistProviderBrandStorageValue(key: string, value: ProviderBrand | undefined) {
