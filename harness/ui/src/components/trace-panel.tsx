@@ -5,7 +5,7 @@ import { getLatestTaskStatusText, getRunRefreshState, isRunWorking } from "../li
 import { ActionButton } from "./action-button";
 import { Input } from "./ui/input";
 import { ScrollArea } from "./ui/scroll-area";
-import { ClipboardList, LoaderCircle, RefreshCcw } from "lucide-solid";
+import { CheckCircle2, Circle, CircleAlert, ClipboardList, LoaderCircle, RefreshCcw } from "lucide-solid";
 
 type TracePanelProps = {
   sendCommand: (command: ClientCommand) => void;
@@ -231,9 +231,7 @@ export function TracePanel(props: TracePanelProps) {
                           <div class="rounded-2xl border border-[color:var(--border)] bg-white/70 p-3 text-[0.675rem]">
                             <div class="flex items-center justify-between gap-3 text-[color:var(--foreground)]">
                               <span class="flex items-center gap-2 font-semibold">
-                                <Show when={task.status === "running"}>
-                                  <LoaderCircle class="h-3.5 w-3.5 animate-spin" />
-                                </Show>
+                                <TaskStatusIcon status={task.status} />
                                 {task.title}
                               </span>
                               <span class="uppercase tracking-[0.14em] text-[color:var(--accent-strong)]">{task.status}</span>
@@ -315,4 +313,17 @@ export function TracePanel(props: TracePanelProps) {
 
     </aside>
   );
+}
+
+function TaskStatusIcon(props: { status: "pending" | "running" | "completed" | "failed" }) {
+  switch (props.status) {
+    case "running":
+      return <LoaderCircle class="h-3.5 w-3.5 animate-spin" aria-label="Subtask running" />;
+    case "completed":
+      return <CheckCircle2 class="h-3.5 w-3.5 text-emerald-600" aria-label="Subtask completed" />;
+    case "failed":
+      return <CircleAlert class="h-3.5 w-3.5 text-rose-600" aria-label="Subtask failed" />;
+    default:
+      return <Circle class="h-3.5 w-3.5 text-[color:var(--muted)]" aria-label="Subtask pending" />;
+  }
 }

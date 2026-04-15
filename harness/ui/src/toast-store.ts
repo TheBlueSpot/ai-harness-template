@@ -20,10 +20,20 @@ function createToastStore() {
     setToasts((items) => items.filter((toast) => toast.id !== id));
   }
 
+  function clear() {
+    setToasts([]);
+  }
+
+  function replace(nextToasts: ToastEntry[]) {
+    setToasts(nextToasts);
+  }
+
   return {
     toasts,
     push,
-    dismiss
+    dismiss,
+    clear,
+    replace
   };
 }
 
@@ -40,6 +50,14 @@ export function pushToast(title: string, description?: string, tone: ToastEntry[
     description,
     tone
   });
+}
+
+export function resetToastStoreForTests() {
+  toastStore.clear();
+}
+
+export function seedToastStoreForTests(toasts: ToastEntry[]) {
+  toastStore.replace(toasts);
 }
 
 export function reportUiError(error: unknown, source: string, options: ReportUiErrorOptions = {}) {

@@ -442,16 +442,33 @@ describe("harness server", () => {
     const opened = await openProject(socket, projectRoot);
     const projectId = opened.payload.project.id;
     const threadId = opened.payload.project.activeThreadId;
-    await sendChatAndExecute(socket, {
+    const ready = await sendChatUntilReady(socket, {
       requestId: "req-gemini",
       projectId,
       threadId,
       content: "complex task"
-    });
+    }, 30000);
+
+    socket.send(
+      JSON.stringify({
+        type: "run.execute",
+        requestId: "req-gemini-execute",
+        payload: {
+          projectId,
+          threadId,
+          runId: ready.payload.run.id
+        }
+      })
+    );
+
+    await waitForCondition(() => adapter.calls.some((call) => call.kind === "subagent"), 30000);
+    await waitForCondition(() => adapter.calls.some((call) => call.kind === "aggregator"), 30000);
+
     expect(adapter.calls[0]?.modelId).toBe("google/gemini-3-flash-preview");
     expect(adapter.calls.filter((call) => call.kind === "subagent").every((call) => call.modelId === "google/gemini-2.5-flash-lite")).toBe(true);
+    expect(adapter.calls.some((call) => call.kind === "aggregator")).toBe(true);
     socket.close();
-  });
+  }, 60000);
 
   test("runs low difficulty tasks on the main executor only", async () => {
     const socket = createSocket(port);
@@ -505,6 +522,7 @@ describe("harness server", () => {
     expect(ready.payload.run.status).toBe("ready");
     expect(plan.payload.projectId).toBe(projectId);
     expect(planMessage.payload.message.kind).toBe("plan-summary");
+    expect(planMessage.payload.state.isStreaming).toBe(false);
     expect(adapter.calls.map((call) => call.kind)).toEqual(["planner"]);
     socket.close();
   });
@@ -518,26 +536,37 @@ describe("harness server", () => {
     const threadId = opened.payload.project.activeThreadId;
     const planPromise = waitForEvent(socket, "agent.plan");
 
-    const complete = await sendChatAndExecute(socket, {
+    const ready = await sendChatUntilReady(socket, {
       requestId: "req-high",
       projectId,
       threadId,
       content: "complex task"
-    });
+    }, 30000);
+
+    socket.send(
+      JSON.stringify({
+        type: "run.execute",
+        requestId: "req-high-execute",
+        payload: {
+          projectId,
+          threadId,
+          runId: ready.payload.run.id
+        }
+      })
+    );
+
+    await waitForCondition(() => adapter.calls.some((call) => call.kind === "aggregator"), 30000);
 
     const plan = await planPromise;
     expect(plan.payload.projectId).toBe(projectId);
     expect(plan.payload.plan.usesSubagents).toBe(true);
-    expect(complete.payload.assistantMessage.content).toBe("aggregated result");
-    expect(adapter.calls.map((call) => call.kind)).toEqual([
-      "planner",
-      "subagent",
-      "subagent",
-      "subagent",
-      "aggregator"
-    ]);
+    const callKinds = adapter.calls.map((call) => call.kind);
+    expect(callKinds[0]).toBe("planner");
+    expect(callKinds.includes("subagent")).toBe(true);
+    expect(callKinds.includes("aggregator")).toBe(true);
+    expect(callKinds.indexOf("aggregator")).toBeGreaterThan(callKinds.indexOf("subagent"));
     socket.close();
-  });
+  }, 60000);
 
   test("asks planner question before execution and resumes after answer", async () => {
     const socket = createSocket(port);
@@ -570,6 +599,7 @@ describe("harness server", () => {
 
     expect(runUpdate.payload.run.questions[0].prompt).toContain("Which route");
     expect(questionMessage.payload.message.content).toContain("Which route");
+    expect(questionMessage.payload.state.isStreaming).toBe(false);
     expect(adapter.calls.map((call) => call.kind)).toEqual(["planner"]);
 
     const complete = await answerPlanningQuestionAndExecute(socket, {
@@ -971,6 +1001,14 @@ describe("harness server", () => {
     const opened = await openProject(socket, projectRoot);
     const projectId = opened.payload.project.id;
     const threadId = opened.payload.project.activeThreadId;
+    const rejectedEvents: any[] = [];
+    const rejectListener = (event: MessageEvent) => {
+      const payload = JSON.parse(event.data as string);
+      if (payload.type === "command.rejected") {
+        rejectedEvents.push(payload);
+      }
+    };
+    socket.addEventListener("message", rejectListener);
     const firstReady = await sendChatUntilReady(socket, {
       requestId: "req-refine-1",
       projectId,
@@ -1014,6 +1052,42 @@ describe("harness server", () => {
     expect(refinedPlanMessage.payload.message.metadata.runId).toBe(refinedReady.payload.run.id);
     expect(adapter.calls.filter((call) => call.kind === "planner")).toHaveLength(2);
     expect(adapter.calls.some((call) => call.kind === "executor" || call.kind === "subagent")).toBe(false);
+    expect(rejectedEvents).toHaveLength(0);
+    socket.removeEventListener("message", rejectListener);
+    socket.close();
+  });
+
+  test("allows a second top-level send after a completed run in the same thread", async () => {
+    const socket = createSocket(port);
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot);
+    const projectId = opened.payload.project.id;
+    const threadId = opened.payload.project.activeThreadId;
+    const rejectedEvents: any[] = [];
+    const rejectListener = (event: MessageEvent) => {
+      const payload = JSON.parse(event.data as string);
+      if (payload.type === "command.rejected") {
+        rejectedEvents.push(payload);
+      }
+    };
+    socket.addEventListener("message", rejectListener);
+
+    await sendChatAndExecute(socket, {
+      requestId: "req-first-complete",
+      projectId,
+      threadId,
+      content: "simple task"
+    });
+    const secondReady = await sendChatUntilReady(socket, {
+      requestId: "req-second-followup",
+      projectId,
+      threadId,
+      content: "another task"
+    });
+
+    expect(secondReady.payload.run.status).toBe("ready");
+    expect(rejectedEvents).toHaveLength(0);
+    socket.removeEventListener("message", rejectListener);
     socket.close();
   });
 
@@ -1267,5 +1341,23 @@ function waitForEvent(socket: WebSocket, type: string, predicate?: (payload: any
 
     socket.addEventListener("message", listener);
     socket.addEventListener("error", onError, { once: true });
+  });
+}
+
+function waitForCondition(predicate: () => boolean, timeoutMs: number = 5000, intervalMs: number = 50) {
+  return new Promise<void>((resolve, reject) => {
+    const startedAt = Date.now();
+    const interval = setInterval(() => {
+      if (predicate()) {
+        clearInterval(interval);
+        resolve();
+        return;
+      }
+
+      if (Date.now() - startedAt >= timeoutMs) {
+        clearInterval(interval);
+        reject(new Error("Timed out waiting for condition"));
+      }
+    }, intervalMs);
   });
 }

@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Galaga Clone</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: black; }
+        canvas { display: block; }
+        #overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            font-family: monospace;
+            text-align: center;
+            z-index: 100;
+            pointer-events: none; /* Allows clicks to pass through to canvas if needed */
+        }
+        #menu, #game-over {
+            pointer-events: all; /* Re-enable pointer events for interactive elements */
+            background: rgba(0,0,0,0.7);
+            padding: 40px;
+            border: 2px solid #00ff00;
+            box-shadow: 0 0 20px #00ff00;
+        }
+        h1 {
+            color: #00ff00;
+            text-shadow: 0 0 10px #00ff00;
+            margin-bottom: 30px;
+        }
+        button {
+            background: #008800;
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            font-size: 1.2em;
+            cursor: pointer;
+            margin-top: 20px;
+            box-shadow: 0 0 10px #00ff00;
+            transition: background-color 0.3s, box-shadow 0.3s;
+        }
+        button:hover {
+            background: #00cc00;
+            box-shadow: 0 0 25px #00ff00;
+        }
+        #score-display, #high-score-display {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            font-size: 1.5em;
+            color: #00ff00;
+            text-shadow: 0 0 5px #00ff00;
+            pointer-events: none;
+        }
+        #high-score-display {
+            top: 60px;
+        }
+    </style>
+</head>
+<body>
+    <div id="overlay">
+        <div id="menu" style="display: block;">
+            <h1>GALAGIA</h1>
+            <button id="start-button">START GAME</button>
+        </div>
+        <div id="game-over" style="display: none;">
+            <h1>GAME OVER</h1>
+            <p>SCORE: <span id="final-score">0</span></p>
+            <button id="restart-button">RESTART</button>
+        </div>
+        <div id="score-display">SCORE: 0</div>
+        <div id="high-score-display">HIGH SCORE: 0</div>
+    </div>
+
+    <!-- Three.js CDN -->
+    <script async src="https://unpkg.com/es-module-shims@1.6.3/dist/es-module-shims.js"></script>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.163.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.163.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <!-- Game Scripts -->
+    <script type="module" src="js/utils.js"></script>
+    <script type="module" src="js/highscores.js"></script>
+    <script type="module" src="js/ui.js"></script>
+    <script type="module" src="js/geometry.js"></script>
+    <script type="module" src="js/player.js"></script>
+    <script type="module" src="js/enemies.js"></script>
+    <script type="module" src="js/bullets.js"></script>
+    <script type="module" src="js/animations.js"></script>
+    <script type="module" src="js/postprocessing.js"></script>
+    <script type="module" src="js/main.js"></script>
+</body>
+</html>

@@ -1,4 +1,4 @@
-import { createStore } from "solid-js/store";
+import { createStore, reconcile } from "solid-js/store";
 import { defaultAgentCatalog } from "../../shared/agent-catalog";
 import {
   type AgentPlan,
@@ -185,9 +185,13 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
       };
     case "thread.created":
     case "thread.activated":
-      return updateProjectState(state, event.payload.projectId, (project) =>
-        mergeIncomingProject(project, toViewProject(event.payload.project))
-      );
+      return {
+        ...updateProjectState(state, event.payload.projectId, (project) =>
+          mergeIncomingProject(project, toViewProject(event.payload.project))
+        ),
+        executionPlanDialogOpen: false,
+        selectedExecutionPlan: undefined
+      };
     case "thread.renamed":
       return updateProjectState(state, event.payload.projectId, (project) => ({
         ...project,
@@ -232,8 +236,7 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
         lastError: undefined,
         session: {
           ...event.payload.state,
-          isStreaming: project.session.isStreaming,
-          lastError: undefined
+          lastError: event.payload.state.lastError
         }
       }));
     case "chat.error":
@@ -253,45 +256,57 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
         }
       }));
     case "session.reset":
-      return updateProjectState(state, event.payload.projectId, (project) => ({
-        ...project,
-        activeThreadId: event.payload.threadId,
-        latestPlan: undefined,
-        activeRun: undefined,
-        lastRun: undefined,
-        contextUsage: undefined,
-        traces: [],
-        streamingAssistantText: "",
-        lastError: undefined,
-        draft: readThreadDraft(event.payload.projectId, event.payload.threadId),
-        session: {
-          ...event.payload.state,
-          isStreaming: false,
-          lastError: undefined
-        }
-      }));
+      return {
+        ...updateProjectState(state, event.payload.projectId, (project) => ({
+          ...project,
+          activeThreadId: event.payload.threadId,
+          latestPlan: undefined,
+          activeRun: undefined,
+          lastRun: undefined,
+          contextUsage: undefined,
+          traces: [],
+          streamingAssistantText: "",
+          lastError: undefined,
+          draft: readThreadDraft(event.payload.projectId, event.payload.threadId),
+          session: {
+            ...event.payload.state,
+            isStreaming: false,
+            lastError: undefined
+          }
+        })),
+        executionPlanDialogOpen: false,
+        selectedExecutionPlan: undefined
+      };
     case "run.updated":
+      const currentProject = state.workspace.projects.find((project) => project.id === event.payload.projectId);
+      const latestKnownRunId = currentProject?.activeRun?.id ?? currentProject?.lastRun?.id;
+      const resetPlanningTransients =
+        event.payload.run.status === "planning" &&
+        latestKnownRunId !== undefined &&
+        latestKnownRunId !== event.payload.run.id;
+
       return {
         ...updateThreadScopedProject(state, event.payload.projectId, event.payload.threadId, (project) => {
-          const resetPlanningTransients =
-            event.payload.run.status === "planning" &&
-            project.activeRun?.id !== undefined &&
-            project.activeRun.id !== event.payload.run.id;
-
           return {
             ...project,
             latestPlan: resetPlanningTransients ? undefined : project.latestPlan,
             contextUsage: resetPlanningTransients ? undefined : project.contextUsage,
             traces: resetPlanningTransients ? [] : project.traces,
+            streamingAssistantText: resetPlanningTransients ? "" : project.streamingAssistantText,
+            lastError: resetPlanningTransients ? undefined : project.lastError,
             activeRun: event.payload.run.status === "completed" ? undefined : event.payload.run,
             lastRun: event.payload.run,
             threads: setThreadBadge(project.threads, event.payload.threadId, badgeFromRunStatus(event.payload.run.status))
           };
         }),
+        executionPlanDialogOpen: resetPlanningTransients ? false : state.executionPlanDialogOpen,
+        selectedExecutionPlan: resetPlanningTransients ? undefined : state.selectedExecutionPlan,
         projectPreflights: {
           ...state.projectPreflights,
           [event.payload.projectId]:
-            state.projectPreflights[event.payload.projectId]?.requestId === event.requestId
+            event.payload.run.status === "planning"
+              ? undefined
+              : state.projectPreflights[event.payload.projectId]?.requestId === event.requestId
               ? state.projectPreflights[event.payload.projectId]
               : undefined
         }
@@ -404,7 +419,8 @@ export function createHarnessStore() {
     },
     closeExecutionPlanDialog() {
       setState({
-        executionPlanDialogOpen: false
+        executionPlanDialogOpen: false,
+        selectedExecutionPlan: undefined
       });
     },
     setSubagentWorktreeStrategyDefault(subagentWorktreeStrategyDefault: "same-worktree" | "separate-worktrees") {
@@ -503,6 +519,12 @@ export function createHarnessStore() {
     },
     applyServerEvent(event: ServerEvent) {
       setState(reduceServerEvent(state, event));
+    },
+    replaceStateForTests(nextState: HarnessViewState) {
+      setState(reconcile(nextState));
+    },
+    resetForTests(overrides: Partial<HarnessViewState> = {}) {
+      setState(reconcile({ ...createInitialViewState(), ...overrides }));
     }
   };
 }

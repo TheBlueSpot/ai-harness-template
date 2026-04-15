@@ -25,6 +25,8 @@
     "@babel/core": "^7.29.0",
     "@babel/preset-typescript": "^7.28.5",
     "@dschz/bun-plugin-solid": "^1.0.4",
+    "@happy-dom/global-registrator": "^20.0.10",
+    "@solidjs/testing-library": "^0.8.10",
     "@types/node": "^24.3.0",
     "babel-preset-solid": "^1.9.12",
     "bun-types": "^1.2.21",

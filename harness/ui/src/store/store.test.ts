@@ -225,6 +225,106 @@ describe("harness store reducer", () => {
     expect(project?.session.messages[0]?.content).toBe("hello planner");
   });
 
+  test("uses appended session streaming state instead of stale local streaming state", () => {
+    const initialProject = createProject();
+    const initialState = createConnectedState(initialProject);
+    const projectId = initialProject.id;
+    const threadId = initialProject.activeThreadId;
+    const streamingState = reduceServerEvent(initialState, {
+      type: "chat.delta",
+      requestId: "req-streaming",
+      payload: {
+        projectId,
+        threadId,
+        sessionId: threadId,
+        delta: "hello"
+      }
+    });
+
+    const nextState = reduceServerEvent(streamingState, {
+      type: "chat.message-appended",
+      requestId: "req-streaming-stop",
+      payload: {
+        projectId,
+        threadId,
+        sessionId: threadId,
+        message: {
+          id: "assistant-plan",
+          role: "assistant",
+          kind: "plan-summary",
+          content: "Plan ready",
+          metadata: {
+            type: "plan-summary",
+            runId: "run-1",
+            plan: {
+              runId: "run-1",
+              origin: "initial",
+              iteration: 1,
+              summary: "Plan ready",
+              finalExecutionBrief: "Do work",
+              difficultyScore: 20,
+              planningModelId: "openai/gpt-5.4",
+              executionModelId: "openai/gpt-5.4",
+              route: "main",
+              subagentWorktreeStrategy: "same-worktree",
+              targetSubagentCount: 0,
+              actualSubagentCount: 0,
+              gating: {
+                mode: "approve",
+                delaySeconds: 0
+              },
+              prerequisites: [],
+              contracts: [],
+              correctnessPolicy: "ask-before-iterate"
+            }
+          },
+          createdAt: new Date().toISOString()
+        },
+        state: {
+          ...createEmptySession(threadId),
+          messages: [
+            {
+              id: "assistant-plan",
+              role: "assistant",
+              kind: "plan-summary",
+              content: "Plan ready",
+              metadata: {
+                type: "plan-summary",
+                runId: "run-1",
+                plan: {
+                  runId: "run-1",
+                  origin: "initial",
+                  iteration: 1,
+                  summary: "Plan ready",
+                  finalExecutionBrief: "Do work",
+                  difficultyScore: 20,
+                  planningModelId: "openai/gpt-5.4",
+                  executionModelId: "openai/gpt-5.4",
+                  route: "main",
+                  subagentWorktreeStrategy: "same-worktree",
+                  targetSubagentCount: 0,
+                  actualSubagentCount: 0,
+                  gating: {
+                    mode: "approve",
+                    delaySeconds: 0
+                  },
+                  prerequisites: [],
+                  contracts: [],
+                  correctnessPolicy: "ask-before-iterate"
+                }
+              },
+              createdAt: new Date().toISOString()
+            }
+          ],
+          isStreaming: false
+        }
+      }
+    });
+
+    expect(streamingState.workspace.projects[0]?.session.isStreaming).toBe(true);
+    expect(nextState.workspace.projects[0]?.session.isStreaming).toBe(false);
+  });
+
   test("stores persisted system status messages inline with chat history", () => {
     const initialProject = createProject();
     const initialState = createConnectedState(initialProject);
@@ -356,6 +456,182 @@ describe("harness store reducer", () => {
 
     expect(nextState.workspace.projects[0]?.activeRun).toBeUndefined();
     expect(nextState.workspace.projects[0]?.lastRun?.id).toBe("run-complete");
+  });
+
+  test("clears transient planning state when a new run starts after a completed run", () => {
+    const initialProject = createProject();
+    const projectId = initialProject.id;
+    const threadId = initialProject.activeThreadId;
+    const stateWithCompletedRun = reduceServerEvent(
+      reduceServerEvent(
+        reduceServerEvent(initialStateWithPlan(initialProject), {
+          type: "agent.trace",
+          requestId: "req-trace-old",
+          payload: {
+            projectId,
+            threadId,
+            trace: {
+              sessionId: threadId,
+              stage: "plan-presented",
+              message: "Presented plan"
+            }
+          }
+        }),
+        {
+          type: "project.context",
+          requestId: "req-context-old",
+          payload: {
+            projectId,
+            threadId,
+            contextUsage: {
+              sourceKind: "planner",
+              sourceLabel: "planner",
+              modelId: "openai/gpt-5.4",
+              tokens: 100,
+              contextWindow: 200000,
+              usagePercent: 0.1,
+              updatedAt: new Date().toISOString()
+            }
+          }
+        }
+      ),
+      {
+        type: "run.updated",
+        requestId: "req-run-old",
+        payload: {
+          projectId,
+          threadId,
+          run: {
+            id: "run-old",
+            threadId,
+            status: "completed",
+            latestUserPrompt: "old task",
+            executionModelId: "openai/gpt-5.4",
+            questions: [],
+            subtasks: [],
+            resumable: false,
+            retryable: true,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            completedAt: new Date().toISOString()
+          }
+        }
+      }
+    );
+
+    const nextState = reduceServerEvent(stateWithCompletedRun, {
+      type: "run.updated",
+      requestId: "req-run-new",
+      payload: {
+        projectId,
+        threadId,
+        run: {
+          id: "run-new",
+          threadId,
+          status: "planning",
+          latestUserPrompt: "new task",
+          questions: [],
+          subtasks: [],
+          resumable: false,
+          retryable: false,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        }
+      }
+    });
+
+    expect(stateWithCompletedRun.workspace.projects[0]?.traces.length).toBe(1);
+    expect(nextState.workspace.projects[0]?.traces.length).toBe(0);
+    expect(nextState.workspace.projects[0]?.latestPlan).toBeUndefined();
+    expect(nextState.workspace.projects[0]?.contextUsage).toBeUndefined();
+  });
+
+  test("closes selected execution plan on session reset and new planning runs", () => {
+    const initialProject = createProject();
+    const projectId = initialProject.id;
+    const threadId = initialProject.activeThreadId;
+    const seededRunState = reduceServerEvent(initialStateWithPlan(initialProject), {
+      type: "run.updated",
+      requestId: "req-existing-run",
+      payload: {
+        projectId,
+        threadId,
+        run: {
+          id: "run-1",
+          threadId,
+          status: "completed",
+          latestUserPrompt: "existing task",
+          questions: [],
+          subtasks: [],
+          resumable: false,
+          retryable: true,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          completedAt: new Date().toISOString()
+        }
+      }
+    });
+    const stateWithDialog = {
+      ...seededRunState,
+      executionPlanDialogOpen: true,
+      selectedExecutionPlan: {
+        runId: "run-1",
+        origin: "initial",
+        iteration: 1,
+        summary: "Plan",
+        finalExecutionBrief: "Do work",
+        difficultyScore: 20,
+        planningModelId: "openai/gpt-5.4",
+        executionModelId: "openai/gpt-5.4",
+        route: "main",
+        subagentWorktreeStrategy: "same-worktree",
+        targetSubagentCount: 0,
+        actualSubagentCount: 0,
+        gating: {
+          mode: "approve",
+          delaySeconds: 0
+        },
+        prerequisites: [],
+        contracts: [],
+        correctnessPolicy: "ask-before-iterate"
+      }
+    };
+
+    const resetState = reduceServerEvent(stateWithDialog, {
+      type: "session.reset",
+      requestId: "req-reset-dialog",
+      payload: {
+        projectId,
+        threadId: "thread-2",
+        sessionId: "thread-2",
+        state: createEmptySession("thread-2")
+      }
+    });
+    const planningState = reduceServerEvent(stateWithDialog, {
+      type: "run.updated",
+      requestId: "req-planning-dialog",
+      payload: {
+        projectId,
+        threadId,
+        run: {
+          id: "run-2",
+          threadId,
+          status: "planning",
+          latestUserPrompt: "new task",
+          questions: [],
+          subtasks: [],
+          resumable: false,
+          retryable: false,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        }
+      }
+    });
+
+    expect(resetState.executionPlanDialogOpen).toBe(false);
+    expect(resetState.selectedExecutionPlan).toBeUndefined();
+    expect(planningState.executionPlanDialogOpen).toBe(false);
+    expect(planningState.selectedExecutionPlan).toBeUndefined();
   });
 
   test("stores transient preflight warning by project", () => {
@@ -502,3 +778,44 @@ describe("harness store reducer", () => {
     expect(nextState.hasUsableOpenAiApiKey).toBe(true);
   });
 });
+
+function initialStateWithPlan(project: WorkspaceProjectState) {
+  return reduceServerEvent(createConnectedState(project), {
+    type: "agent.plan",
+    requestId: "req-plan-seed",
+    payload: {
+      projectId: project.id,
+      threadId: project.activeThreadId,
+      plan: {
+        sessionId: project.session.sessionId,
+        agentId: "pi",
+        planningModelId: "openai/gpt-5.4",
+        difficultyScore: 20,
+        usesSubagents: false,
+        executionModelId: "openai/gpt-5.4",
+        subtaskCount: 0,
+        executionPlan: {
+          runId: "run-1",
+          origin: "initial",
+          iteration: 1,
+          summary: "Plan",
+          finalExecutionBrief: "Do work",
+          difficultyScore: 20,
+          planningModelId: "openai/gpt-5.4",
+          executionModelId: "openai/gpt-5.4",
+          route: "main",
+          subagentWorktreeStrategy: "same-worktree",
+          targetSubagentCount: 0,
+          actualSubagentCount: 0,
+          gating: {
+            mode: "approve",
+            delaySeconds: 0
+          },
+          prerequisites: [],
+          contracts: [],
+          correctnessPolicy: "ask-before-iterate"
+        }
+      }
+    }
+  });
+}

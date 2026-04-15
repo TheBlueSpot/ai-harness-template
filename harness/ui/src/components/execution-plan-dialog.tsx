@@ -18,6 +18,7 @@ export function ExecutionPlanDialog(props: ExecutionPlanDialogProps) {
       eyebrow="Plan"
       description="Planner summary, prerequisites, contract buckets, verification scope, and correctness policy."
       class="max-w-4xl"
+      contentClass="flex max-h-[80vh] flex-col gap-4 overflow-auto"
     >
       <Show when={props.executionPlan}>
         {(executionPlan) => (

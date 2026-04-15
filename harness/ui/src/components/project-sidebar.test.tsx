@@ -1,0 +1,88 @@
+/** @jsxImportSource solid-js */
+import { beforeEach, expect, it } from "bun:test";
+import { createUiTest } from "../utils/tests/test-harness";
+import { render, screen } from "@solidjs/testing-library";
+import { ProjectSidebar } from "./project-sidebar";
+import { clearBrowserStateForTests, seedHarnessStoreForTests } from "../utils/tests/store-test-utils";
+import { createHarnessStateFixture, createViewProjectFixture } from "../utils/tests/test-fixtures";
+
+createUiTest("ProjectSidebar", () => {
+  beforeEach(() => {
+    clearBrowserStateForTests();
+  });
+
+  it("shows streaming badge and disables project actions while streaming", () => {
+    const project = createViewProjectFixture({
+      id: "project-streaming",
+      session: {
+        ...createViewProjectFixture().session,
+        isStreaming: true,
+        messages: []
+      },
+      threads: [
+        {
+          id: "thread-1",
+          title: "Thread 1",
+          titleSource: "generated",
+          badgeState: "executing",
+          messageCount: 3,
+          updatedAt: new Date().toISOString()
+        },
+        {
+          id: "thread-2",
+          title: "Thread 2",
+          titleSource: "generated",
+          badgeState: "planning",
+          messageCount: 1,
+          updatedAt: new Date().toISOString()
+        }
+      ]
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ProjectSidebar sendCommand={() => undefined} />);
+
+    expect(screen.getByText("streaming")).not.toBeNull();
+    expect((screen.getByRole("button", { name: "Create a new thread in this project" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: `Remove ${project.name}` }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByText("Thread 2").closest("button") as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText("Planning")).not.toBeNull();
+  });
+
+  it("renders thread badge labels and keeps remove enabled when not streaming", () => {
+    const project = createViewProjectFixture({
+      id: "project-idle",
+      threads: [
+        {
+          id: "thread-1",
+          title: "Thread 1",
+          titleSource: "generated",
+          badgeState: "done",
+          messageCount: 4,
+          updatedAt: new Date().toISOString()
+        }
+      ]
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ProjectSidebar sendCommand={() => undefined} />);
+
+    const doneBadge = screen.getByText("Done");
+    expect(doneBadge.className).toContain("bg-emerald-600");
+    expect((screen.getByRole("button", { name: `Remove ${project.name}` }) as HTMLButtonElement).disabled).toBe(false);
+  });
+});

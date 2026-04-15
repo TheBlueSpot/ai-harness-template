@@ -71,6 +71,15 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - `bun run typecheck` validates TypeScript contracts
 - Development startup auto-purges broken local SQLite artifacts, retries delete on transient Windows file locks, then retries boot once if legacy migration drift makes the dev DB unloadable
 
+## Testing
+
+- Solid UI tests live next to core components as sibling `*.test.tsx` files
+- UI specs share one Bun plus Happy DOM harness so modal, sheet, chat, sidebar, and trace interactions run in one lightweight browser-like path
+- Core UI branching is unit tested directly at the component level, including ready-plan followups, planner questions, retry and resume actions, modal dismissal, and status icon branches
+- Store reducer tests lock transient reset rules so follow-up runs clear traces, plan state, stream buffers, and modal selection without losing persisted chat history
+- Backend websocket tests remain the authoritative integration layer for planner-ready, planner-question, follow-up, retry, and context-update flows
+- Planner-ready and planner-question transcript messages explicitly stop reporting `isStreaming` before the UI accepts refinement or answer input
+
 ## Runtime Shape
 
 - The backend validates every websocket payload before processing it

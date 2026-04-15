@@ -397,7 +397,7 @@ async function handleCommand(
 
       const userMessageProject = repository.appendMessage(projectId, "user", command.payload.content, command.payload.threadId);
       runtime.upsertPersistedProject(userMessageProject);
-      emitMessageAppended(ws, command.requestId, userMessageProject);
+      emitMessageAppended(ws, command.requestId, runtime, projectId);
 
       const runProject = repository.createAgentRun(
         projectId,
@@ -457,7 +457,7 @@ async function handleCommand(
 
       const refinedMessageProject = repository.appendMessage(projectId, "user", command.payload.content, command.payload.threadId);
       runtime.upsertPersistedProject(refinedMessageProject);
-      emitMessageAppended(ws, command.requestId, refinedMessageProject);
+      emitMessageAppended(ws, command.requestId, runtime, projectId);
 
       repository.setAgentRunStatus(projectId, activeRun.id, "stopped", "Plan refined before execution");
       runtime.clearProjectTransients(projectId);
@@ -515,7 +515,7 @@ async function handleCommand(
       const providerBrand = repository.getProviderBrand();
       const answerProject = repository.appendMessage(projectId, "user", command.payload.content, command.payload.threadId);
       runtime.upsertPersistedProject(answerProject);
-      emitMessageAppended(ws, command.requestId, answerProject);
+      emitMessageAppended(ws, command.requestId, runtime, projectId);
 
       const answeredProject = repository.answerPlanningQuestion(
         projectId,
@@ -614,7 +614,7 @@ async function handleCommand(
       if (command.payload.guidanceText?.trim()) {
         const guidanceProject = repository.appendMessage(projectId, "user", command.payload.guidanceText, command.payload.threadId);
         runtime.upsertPersistedProject(guidanceProject);
-        emitMessageAppended(ws, command.requestId, guidanceProject);
+        emitMessageAppended(ws, command.requestId, runtime, projectId);
       }
 
       runtime.setProjectError(projectId, undefined);
@@ -885,15 +885,15 @@ async function continueRunLifecycle(
     runtime.upsertPersistedProject(questionProject);
     emitRunUpdated(ws, requestId, questionProject);
 
+    runtime.setProjectStreaming(options.projectId, false);
+    runtime.clearStreaming(options.projectId);
     const promptProject = repository.appendMessage(
       options.projectId,
       "assistant",
       plannerTurn.plannerResult.question.prompt
     );
     runtime.upsertPersistedProject(promptProject);
-    emitMessageAppended(ws, requestId, promptProject);
-    runtime.setProjectStreaming(options.projectId, false);
-    runtime.clearStreaming(options.projectId);
+    emitMessageAppended(ws, requestId, runtime, options.projectId);
     return;
   }
 
@@ -925,6 +925,8 @@ async function continueRunLifecycle(
     });
   }
 
+  runtime.setProjectStreaming(options.projectId, false);
+  runtime.clearStreaming(options.projectId);
   const planSummaryProject = repository.appendMessage(options.projectId, "assistant", plannerTurn.executionPlan.summary, {
     threadId: activeRun.threadId,
     kind: "plan-summary",
@@ -935,7 +937,7 @@ async function continueRunLifecycle(
     }
   });
   runtime.upsertPersistedProject(planSummaryProject);
-  emitMessageAppended(ws, requestId, planSummaryProject);
+  emitMessageAppended(ws, requestId, runtime, options.projectId);
   emitProjectTrace(ws, requestId, runtime, options.projectId, activeRun.threadId, {
     sessionId: project.session.sessionId,
     stage: "plan-presented",
@@ -943,8 +945,6 @@ async function continueRunLifecycle(
     detail: plannerTurn.executionPlan.summary,
     modelId: plannerTurn.executionPlan.executionModelId
   });
-  runtime.setProjectStreaming(options.projectId, false);
-  runtime.clearStreaming(options.projectId);
 }
 
 async function resumeRunLifecycle(
@@ -1584,7 +1584,7 @@ function appendSystemStatus(
 
   const nextProject = repository.appendMessage(projectId, "system", normalizedContent, project.activeThreadId);
   runtime.upsertPersistedProject(nextProject);
-  emitMessageAppended(ws, requestId, nextProject);
+  emitMessageAppended(ws, requestId, runtime, projectId);
 }
 
 function statusMessageFromTrace(trace: AgentTrace) {
@@ -1699,7 +1699,13 @@ function emitProjectTrace(
   });
 }
 
-function emitMessageAppended(ws: Bun.ServerWebSocket<HarnessConnection>, requestId: string, project: ProjectLike) {
+function emitMessageAppended(
+  ws: Bun.ServerWebSocket<HarnessConnection>,
+  requestId: string,
+  runtime: WorkspaceRuntimeStore,
+  projectId: ProjectId
+) {
+  const project = runtime.getProject(projectId);
   const message = project.session.messages.at(-1);
   if (!message) {
     throw new Error("Expected appended message");
@@ -1944,7 +1950,7 @@ async function presentCorrectivePlan(
     }
   });
   runtime.upsertPersistedProject(planMessageProject);
-  emitMessageAppended(ws, requestId, planMessageProject);
+  emitMessageAppended(ws, requestId, runtime, projectId);
 }
 
 function buildReadyPlanFromExecutionPlan(executionPlan: ExecutionPlan): PlannerReadyTurn {

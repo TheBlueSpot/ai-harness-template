@@ -1,4 +1,4 @@
-import { Show, type JSX } from "solid-js";
+import { createEffect, onCleanup, Show, type JSX } from "solid-js";
 import { X } from "lucide-solid";
 import { cn } from "../../lib/utils";
 
@@ -25,6 +25,30 @@ export function SheetContent(props: {
   class?: string;
   children: JSX.Element;
 }) {
+  let surfaceRef: HTMLElement | undefined;
+
+  createEffect(() => {
+    if (!props.open) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        props.onClose?.();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    document.addEventListener("keydown", handleKeyDown);
+    queueMicrotask(() => {
+      surfaceRef?.focus();
+    });
+    onCleanup(() => {
+      window.removeEventListener("keydown", handleKeyDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    });
+  });
+
   return (
     <Show when={props.open}>
       <div class="fixed inset-0 z-40 bg-black/45 backdrop-blur-sm" onClick={() => props.onClose?.()} />
@@ -33,6 +57,14 @@ export function SheetContent(props: {
           "fixed inset-y-0 left-0 z-50 flex w-[88vw] max-w-sm flex-col border-r border-[color:var(--border)] bg-[color:var(--panel)] p-3 shadow-2xl",
           props.class
         )}
+        tabindex="-1"
+        ref={surfaceRef}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            props.onClose?.();
+          }
+        }}
+        onClick={(event) => event.stopPropagation()}
       >
         <div class="mb-4 flex items-center justify-between gap-3">
           <div class="text-xs font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">{props.title}</div>
