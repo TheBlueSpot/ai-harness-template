@@ -32,6 +32,7 @@ export const agentTraceStageSchema = z.enum([
   "worktree-provision",
   "worktree-cleanup",
   "subagent-start",
+  "subagent-spawn-timing",
   "subagent-complete",
   "subagent-retry",
   "subagent-error",
@@ -44,7 +45,10 @@ export const agentTraceStageSchema = z.enum([
   "aggregation-complete",
   "verification-start",
   "verification-complete",
-  "sync-back"
+  "sync-back",
+  "refresh-requested",
+  "refresh-deferred",
+  "refresh-complete"
 ]);
 
 export const chatMessageSchema = z.object({
@@ -422,6 +426,16 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("run.retry"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      threadId: threadIdSchema,
+      runId: runIdSchema,
+      subagentId: z.string().min(1).max(128).optional()
+    })
+  }),
+  z.object({
+    type: z.literal("run.refresh"),
     requestId: requestIdSchema,
     payload: z.object({
       projectId: projectIdSchema,

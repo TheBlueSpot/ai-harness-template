@@ -124,6 +124,21 @@ describe("client command validation", () => {
       }).type
     ).toBe("run.retry");
   });
+
+  test("accepts run.refresh payloads", () => {
+    expect(
+      parseClientCommand({
+        type: "run.refresh",
+        requestId: "req-refresh",
+        payload: {
+          projectId: "project-1",
+          threadId: "thread-1",
+          runId: "run-1",
+          subagentId: "task-1"
+        }
+      }).type
+    ).toBe("run.refresh");
+  });
 });
 
 describe("planner result validation", () => {

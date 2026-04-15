@@ -7,6 +7,7 @@ type DialogProps = {
   open?: boolean;
   onClose?: () => void;
   title: string;
+  eyebrow?: string;
   description?: string;
   class?: string;
   children: JSX.Element;
@@ -31,7 +32,7 @@ export function Dialog(props: DialogProps) {
             <div class="flex items-start justify-between gap-3">
               <div class="space-y-1">
                 <div class="text-[0.65rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">
-                  Preferences
+                  {props.eyebrow ?? "Dialog"}
                 </div>
                 <h2 class="text-xl font-semibold tracking-[-0.04em] text-[color:var(--foreground)]">{props.title}</h2>
                 <Show when={props.description}>

@@ -1,5 +1,8 @@
 import type { AgentTrace, PlannerSubtask, ProjectContextUsage, ProviderBrand } from "../../shared/protocol";
+import type { ManagedExecutionState } from "./execution-runtime";
 import { GitWorktreeManager } from "./git-worktree-manager";
+import { debugLog } from "./logging";
+import { runManagedAgentExecution } from "./managed-agent-execution";
 import { getDefaultSubagentModelId } from "./pi-planner";
 import type { PiAgentAdapter } from "./pi-agent-adapter";
 
@@ -25,6 +28,9 @@ export type SubagentProgressCallbacks = {
   onError?: (task: PlannerSubtask, error: Error) => void;
   onContextUsage?: (task: PlannerSubtask, contextUsage: ProjectContextUsage) => void;
   onTrace?: (trace: Pick<AgentTrace, "stage" | "message" | "detail" | "subagentId">) => void;
+  setExecutionState?: (state: ManagedExecutionState) => void;
+  getExecutionState?: (input: Pick<ManagedExecutionState, "runId" | "kind" | "subagentId">) => ManagedExecutionState | undefined;
+  clearExecutionState?: (input: Pick<ManagedExecutionState, "runId" | "kind" | "subagentId">) => void;
 };
 
 const MAX_CONCURRENCY = 4;
@@ -67,6 +73,7 @@ export async function executeSubagents(
       }
 
       const result = await executeSubagentWithRetry(adapter, manager, options.providerBrand, task, options.brief, {
+        runId: options.runId,
         abortSignal: options.abortSignal,
         callbacks: options.callbacks,
         executionModelId: options.executionModelId,
@@ -88,6 +95,7 @@ async function executeSubagentWithRetry(
   task: PlannerSubtask,
   brief: string,
   options: {
+    runId: string;
     abortSignal: AbortSignal | undefined;
     callbacks: SubagentProgressCallbacks | undefined;
     executionModelId: string;
@@ -95,6 +103,7 @@ async function executeSubagentWithRetry(
   }
 ): Promise<SubagentResult> {
   let attempt = 0;
+  const dequeuedAt = Date.now();
 
   while (true) {
     attempt += 1;
@@ -103,28 +112,59 @@ async function executeSubagentWithRetry(
       options.callbacks?.onStart?.(task);
     }
 
+    const worktreePrepareStartedAt = Date.now();
     const lease = await manager.prepareSubagentLease(task.id);
+    const worktreeReadyAt = Date.now();
+    let settledExecutionState: ManagedExecutionState | undefined;
     try {
-      const response = await adapter.runPrompt({
+      const subagentModelId = getDefaultSubagentModelId(providerBrand);
+      const basePrompt = [
+        "You are a focused coding subagent.",
+        "Complete only the assigned instruction.",
+        "Return concise, implementation-focused output.",
+        "",
+        `Shared brief: ${brief}`,
+        `Subtask title: ${task.title}`,
+        `Subtask instruction: ${task.instruction}`
+      ].join("\n");
+      const response = await runManagedAgentExecution(adapter, {
+        runId: options.runId,
         kind: "subagent",
-        cwd: lease.worktreePath,
-        modelId: getDefaultSubagentModelId(providerBrand),
-        prompt: [
-          "You are a focused coding subagent.",
-          "Complete only the assigned instruction.",
-          "Return concise, implementation-focused output.",
-          "",
-          `Shared brief: ${brief}`,
-          `Subtask title: ${task.title}`,
-          `Subtask instruction: ${task.instruction}`
-        ].join("\n"),
-        abortSignal: options.abortSignal
+        subagentId: task.id,
+        originalRequest: {
+          kind: "subagent",
+          cwd: lease.worktreePath,
+          modelId: subagentModelId,
+          prompt: basePrompt
+        },
+        continuationRequest: {
+          kind: "subagent",
+          cwd: lease.worktreePath,
+          modelId: subagentModelId,
+          prompt: ["continue", "", basePrompt].join("\n")
+        },
+        abortSignal: options.abortSignal,
+        store: createExecutionStore(options.callbacks, options.runId, task.id, {
+          dequeuedAt,
+          worktreePrepareStartedAt,
+          worktreeReadyAt
+        }),
+        onSettledState(state) {
+          settledExecutionState = state;
+        },
+        onRefreshComplete(mode) {
+          options.callbacks?.onTrace?.({
+            stage: "refresh-complete",
+            message: `Refresh complete for ${task.title} (${mode})`,
+            subagentId: task.id
+          });
+        }
       });
       if (response.contextUsage) {
         options.callbacks?.onContextUsage?.(task, {
           sourceKind: "subagent",
           sourceLabel: task.id,
-          modelId: getDefaultSubagentModelId(providerBrand),
+          modelId: subagentModelId,
           tokens: response.contextUsage.tokens,
           contextWindow: response.contextUsage.contextWindow,
           usagePercent: response.contextUsage.usagePercent,
@@ -134,6 +174,15 @@ async function executeSubagentWithRetry(
 
       const commit = await manager.finalizeSubagentLease(lease);
       await manager.cleanupSubagentLease(lease);
+      emitSpawnTiming(options.callbacks, task, {
+        dequeuedAt,
+        worktreePrepareStartedAt,
+        worktreeReadyAt,
+        sessionCreatedAt: settledExecutionState?.spawnTiming?.sessionCreatedAt,
+        firstActivityAt: settledExecutionState?.spawnTiming?.firstActivityAt,
+        firstToolStartAt: settledExecutionState?.spawnTiming?.firstToolStartAt,
+        completedAt: Date.now()
+      });
       options.callbacks?.onComplete?.(task, response.text, Date.now() - startedAt);
       return {
         id: task.id,
@@ -166,6 +215,15 @@ async function executeSubagentWithRetry(
       }
 
       if (!isTransientError(typedError) || attempt > 1) {
+        emitSpawnTiming(options.callbacks, task, {
+          dequeuedAt,
+          worktreePrepareStartedAt,
+          worktreeReadyAt,
+          sessionCreatedAt: settledExecutionState?.spawnTiming?.sessionCreatedAt,
+          firstActivityAt: settledExecutionState?.spawnTiming?.firstActivityAt,
+          firstToolStartAt: settledExecutionState?.spawnTiming?.firstToolStartAt,
+          failedAt: Date.now()
+        });
         options.callbacks?.onError?.(task, typedError);
         await manager.cleanupSubagentLease(lease, { preserveWorktree: options.debugEnabled });
         return {
@@ -196,4 +254,80 @@ function isTransientError(error: Error) {
 
 function isAbortError(error: Error, abortSignal: AbortSignal | undefined) {
   return abortSignal?.aborted === true || error.message.toLowerCase().includes("abort");
+}
+
+function createExecutionStore(
+  callbacks: SubagentProgressCallbacks | undefined,
+  runId: string,
+  subagentId: string,
+  seedTiming: NonNullable<ManagedExecutionState["spawnTiming"]>
+) {
+  return {
+    getState() {
+      return callbacks?.getExecutionState?.({
+        runId,
+        kind: "subagent",
+        subagentId
+      });
+    },
+    setState(state: ManagedExecutionState) {
+      const current = callbacks?.getExecutionState?.({
+        runId,
+        kind: "subagent",
+        subagentId
+      });
+      const nextState = {
+        ...state,
+        spawnTiming: {
+          ...seedTiming,
+          ...current?.spawnTiming,
+          ...state.spawnTiming
+        }
+      };
+      callbacks?.setExecutionState?.(nextState);
+    },
+    clearState() {
+      callbacks?.clearExecutionState?.({
+        runId,
+        kind: "subagent",
+        subagentId
+      });
+    }
+  };
+}
+
+function emitSpawnTiming(
+  callbacks: SubagentProgressCallbacks | undefined,
+  task: PlannerSubtask,
+  timing: {
+    dequeuedAt: number;
+    worktreePrepareStartedAt: number;
+    worktreeReadyAt: number;
+    sessionCreatedAt?: number;
+    firstActivityAt?: number;
+    firstToolStartAt?: number;
+    completedAt?: number;
+    failedAt?: number;
+  }
+) {
+  const endAt = timing.completedAt ?? timing.failedAt ?? Date.now();
+  const detail = [
+    `queue=${Math.max(0, timing.worktreePrepareStartedAt - timing.dequeuedAt)}ms`,
+    `provision=${Math.max(0, timing.worktreeReadyAt - timing.worktreePrepareStartedAt)}ms`,
+    `session=${timing.sessionCreatedAt ? Math.max(0, timing.sessionCreatedAt - timing.worktreeReadyAt) : "?"}ms`,
+    `first-activity=${timing.firstActivityAt ? Math.max(0, timing.firstActivityAt - (timing.sessionCreatedAt ?? timing.worktreeReadyAt)) : "?"}ms`,
+    `first-tool=${timing.firstToolStartAt ? Math.max(0, timing.firstToolStartAt - timing.worktreeReadyAt) : "?"}ms`,
+    `total=${Math.max(0, endAt - timing.dequeuedAt)}ms`
+  ].join(" ");
+
+  debugLog("subagent.spawn", {
+    taskId: task.id,
+    detail
+  });
+  callbacks?.onTrace?.({
+    stage: "subagent-spawn-timing",
+    message: `Spawn timing for ${task.title}`,
+    detail,
+    subagentId: task.id
+  });
 }

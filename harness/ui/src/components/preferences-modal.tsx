@@ -83,6 +83,7 @@ export function PreferencesModal(props: PreferencesModalProps) {
       open={state.preferencesModalOpen}
       onClose={() => harnessStore.closePreferencesModal()}
       title="Workspace preferences"
+      eyebrow="Preferences"
       description="Manage local GPT and Gemini keys plus default workspace preferences."
       footer={
         <>

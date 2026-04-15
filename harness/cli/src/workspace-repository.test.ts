@@ -195,6 +195,17 @@ describe("workspace repository", () => {
     expect(restoredProject.threads[0]?.forkedFromThreadId).toBeUndefined();
   });
 
+  test("prefers last non-system message for thread preview", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+
+    repository.appendMessage(project.id, "user", "build feature");
+    repository.appendMessage(project.id, "system", "Planning task.");
+    const restoredProject = repository.getProject(project.id);
+
+    expect(restoredProject.threads[0]?.lastMessagePreview).toBe("build feature");
+  });
+
   test("deletes broken legacy thread rows during dev load recovery", () => {
     const repository = createRepository();
     const project = addProject(repository);

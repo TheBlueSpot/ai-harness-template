@@ -21,6 +21,7 @@ export type PiAgentPromptRequest = {
   abortSignal?: AbortSignal;
   readOnly?: boolean;
   onTextDelta?: (delta: string) => void;
+  onExecutionEvent?: (event: PiAgentExecutionEvent) => void;
 };
 
 export type PiAgentPromptResult = {
@@ -33,8 +34,22 @@ export type PiAgentPromptResult = {
   };
 };
 
+export type PiAgentExecutionEvent =
+  | { type: "session-created" }
+  | { type: "activity" }
+  | { type: "tool-start"; toolName: string }
+  | { type: "tool-end"; toolName: string; isError: boolean };
+
+export interface PiAgentExecutionController {
+  readonly result: Promise<PiAgentPromptResult>;
+  continueWithPrompt(prompt?: string): Promise<PiAgentPromptResult>;
+  abort(): Promise<void>;
+  dispose(): void;
+}
+
 export interface PiAgentAdapter {
   runPrompt(request: PiAgentPromptRequest): Promise<PiAgentPromptResult>;
+  startExecution(request: PiAgentPromptRequest): Promise<PiAgentExecutionController>;
   setApiKey(provider: "openai" | "google", apiKey: string | undefined): void;
   hasApiKey(provider: "openai" | "google"): boolean;
 }
@@ -69,6 +84,15 @@ export class PiSdkAgentAdapter implements PiAgentAdapter {
   }
 
   async runPrompt(request: PiAgentPromptRequest): Promise<PiAgentPromptResult> {
+    const controller = await this.startExecution(request);
+    try {
+      return await controller.result;
+    } finally {
+      controller.dispose();
+    }
+  }
+
+  async startExecution(request: PiAgentPromptRequest): Promise<PiAgentExecutionController> {
     const model = this.resolveOpenAiModel(request.modelId);
     const toolset = request.readOnly ? createReadOnlyTools(request.cwd) : createCodingTools(request.cwd);
     const { session } = await createAgentSession({
@@ -81,44 +105,7 @@ export class PiSdkAgentAdapter implements PiAgentAdapter {
       settingsManager: this.settingsManager
     });
 
-    const unsubscribe = session.subscribe((event) => {
-      this.handleEvent(event, request);
-    });
-
-    const abortHandler = async () => {
-      debugLog("agent.abort", {
-        kind: request.kind,
-        modelId: request.modelId
-      });
-      await session.abort();
-    };
-
-    request.abortSignal?.addEventListener("abort", abortHandler, { once: true });
-
-    try {
-      await session.prompt(request.prompt);
-      const text = session.getLastAssistantText()?.trim();
-
-      if (!text) {
-        throw new Error("Pi agent returned an empty response");
-      }
-
-      const sessionStats = session.getSessionStats();
-      const tokens = sessionStats.contextUsage?.tokens ?? undefined;
-      return {
-        text,
-        contextUsage: {
-          tokens,
-          contextWindow: model.contextWindow,
-          usagePercent: tokens === undefined ? undefined : Math.min(100, (tokens / model.contextWindow) * 100),
-          sessionStats
-        }
-      };
-    } finally {
-      request.abortSignal?.removeEventListener("abort", abortHandler);
-      unsubscribe();
-      session.dispose();
-    }
+    return new PiSdkExecutionController(session, request, model.contextWindow, (event) => this.handleEvent(event, request));
   }
 
   private resolveOpenAiModel(modelId: string) {
@@ -138,11 +125,17 @@ export class PiSdkAgentAdapter implements PiAgentAdapter {
 
   private handleEvent(event: AgentSessionEvent, request: PiAgentPromptRequest) {
     if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+      request.onExecutionEvent?.({ type: "activity" });
       request.onTextDelta?.(event.assistantMessageEvent.delta);
       return;
     }
 
     if (event.type === "tool_execution_start") {
+      request.onExecutionEvent?.({ type: "activity" });
+      request.onExecutionEvent?.({
+        type: "tool-start",
+        toolName: event.toolName
+      });
       debugLog("agent.tool.start", {
         kind: request.kind,
         modelId: request.modelId,
@@ -152,6 +145,12 @@ export class PiSdkAgentAdapter implements PiAgentAdapter {
     }
 
     if (event.type === "tool_execution_end") {
+      request.onExecutionEvent?.({ type: "activity" });
+      request.onExecutionEvent?.({
+        type: "tool-end",
+        toolName: event.toolName,
+        isError: event.isError
+      });
       debugLog("agent.tool.end", {
         kind: request.kind,
         modelId: request.modelId,
@@ -161,4 +160,96 @@ export class PiSdkAgentAdapter implements PiAgentAdapter {
     }
   }
 
+}
+
+class PiSdkExecutionController implements PiAgentExecutionController {
+  readonly result: Promise<PiAgentPromptResult>;
+
+  private readonly abortHandler: (() => Promise<void>) | undefined;
+  private readonly unsubscribe: () => void;
+  private currentResult: Promise<PiAgentPromptResult> | undefined;
+  private disposed = false;
+  private running = false;
+
+  constructor(
+    private readonly session: Awaited<ReturnType<typeof createAgentSession>>["session"],
+    private readonly request: PiAgentPromptRequest,
+    private readonly contextWindow: number,
+    onSessionEvent: (event: AgentSessionEvent) => void
+  ) {
+    this.unsubscribe = this.session.subscribe((event) => onSessionEvent(event));
+    this.request.onExecutionEvent?.({ type: "session-created" });
+
+    this.abortHandler = this.request.abortSignal
+      ? async () => {
+          await this.abort();
+        }
+      : undefined;
+
+    if (this.abortHandler) {
+      this.request.abortSignal?.addEventListener("abort", this.abortHandler, { once: true });
+    }
+    this.result = this.run(this.request.prompt);
+  }
+
+  continueWithPrompt(prompt: string = "continue") {
+    return this.run(prompt);
+  }
+
+  async abort() {
+    debugLog("agent.abort", {
+      kind: this.request.kind,
+      modelId: this.request.modelId
+    });
+    await this.session.abort();
+  }
+
+  dispose() {
+    if (this.disposed) {
+      return;
+    }
+
+    this.disposed = true;
+    if (this.abortHandler) {
+      this.request.abortSignal?.removeEventListener("abort", this.abortHandler);
+    }
+    this.unsubscribe();
+    this.session.dispose();
+  }
+
+  private run(prompt: string) {
+    if (this.disposed) {
+      return Promise.reject(new Error("Execution controller is disposed"));
+    }
+
+    if (this.running) {
+      return Promise.reject(new Error("Execution already running"));
+    }
+
+    this.running = true;
+    this.currentResult = (async () => {
+      await this.session.prompt(prompt);
+      const text = this.session.getLastAssistantText()?.trim();
+
+      if (!text) {
+        throw new Error("Pi agent returned an empty response");
+      }
+
+      const sessionStats = this.session.getSessionStats();
+      const tokens = sessionStats.contextUsage?.tokens ?? undefined;
+      return {
+        text,
+        contextUsage: {
+          tokens,
+          contextWindow: this.contextWindow,
+          usagePercent: tokens === undefined ? undefined : Math.min(100, (tokens / this.contextWindow) * 100),
+          sessionStats
+        }
+      } satisfies PiAgentPromptResult;
+    })().finally(() => {
+      this.running = false;
+    });
+
+    return this.currentResult;
+  }
 }

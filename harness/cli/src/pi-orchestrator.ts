@@ -11,8 +11,10 @@ import {
   type ProviderBrand,
   type ProviderModelId
 } from "../../shared/protocol";
+import type { ManagedExecutionState, ManagedRefreshAction } from "./execution-runtime";
 import { GitWorktreeManager } from "./git-worktree-manager";
 import { debugLog } from "./logging";
+import { runManagedAgentExecution } from "./managed-agent-execution";
 import type { PiAgentAdapter } from "./pi-agent-adapter";
 import {
   getDefaultPlanningModelId,
@@ -28,6 +30,9 @@ export type PiOrchestratorCallbacks = {
   onContextUsage?: (contextUsage: ProjectContextUsage) => void;
   onSubagentStart?: (task: PlannerSubtask) => void;
   onSubagentResult?: (result: SubagentResult) => void;
+  setExecutionState?: (state: ManagedExecutionState) => void;
+  getExecutionState?: (input: Pick<ManagedExecutionState, "runId" | "kind" | "subagentId">) => ManagedExecutionState | undefined;
+  clearExecutionState?: (input: Pick<ManagedExecutionState, "runId" | "kind" | "subagentId">) => void;
 };
 
 export type PlannerTurnOutcome = {
@@ -149,6 +154,7 @@ export async function executeReadyRun(
         adapter,
         {
           cwd: options.cwd,
+          runId: options.runId,
           sessionId: options.sessionId,
           messages: options.messages,
           abortSignal: options.abortSignal,
@@ -296,6 +302,7 @@ export async function executeReadyRun(
     adapter,
     {
       cwd: options.cwd,
+      runId: options.runId,
       sessionId: options.sessionId,
       messages: options.messages,
       abortSignal: options.abortSignal,
@@ -321,6 +328,7 @@ async function executeMainAgent(
   adapter: PiAgentAdapter,
   options: {
     cwd: string;
+    runId: string;
     sessionId: string;
     messages: ChatMessage[];
     abortSignal?: AbortSignal;
@@ -337,14 +345,32 @@ async function executeMainAgent(
     modelId: executionModelId
   });
 
-  const result = await adapter.runPrompt({
-    kind: "executor",
+  const originalRequest = {
+    kind: "executor" as const,
     cwd: options.cwd,
     modelId: executionModelId,
     prompt: buildExecutionPrompt(options.messages, finalExecutionBrief),
-    abortSignal: options.abortSignal,
-    onTextDelta(delta) {
+    onTextDelta(delta: string) {
       options.callbacks?.onDelta?.(delta);
+    }
+  };
+  const result = await runManagedAgentExecution(adapter, {
+    runId: options.runId,
+    kind: "main",
+    originalRequest,
+    continuationRequest: {
+      ...originalRequest,
+      prompt: buildContinuationPrompt("continue", options.messages, finalExecutionBrief)
+    },
+    abortSignal: options.abortSignal,
+    store: createExecutionStore(options.callbacks, options.runId, "main"),
+    onRefreshComplete(mode) {
+      emitTrace(options.callbacks, {
+        sessionId: options.sessionId,
+        stage: "refresh-complete",
+        message: `Refresh complete for main execution (${mode})`,
+        modelId: executionModelId
+      });
     }
   });
   if (result.contextUsage) {
@@ -374,6 +400,7 @@ export async function aggregateSubagentResults(
   adapter: PiAgentAdapter,
   options: {
     cwd: string;
+    runId: string;
     sessionId: string;
     messages: ChatMessage[];
     abortSignal?: AbortSignal;
@@ -394,26 +421,54 @@ export async function aggregateSubagentResults(
     modelId: executionModelId
   });
 
-  const result = await adapter.runPrompt({
+  const aggregationPrompt = [
+    buildExecutionPrompt(options.messages, finalExecutionBrief),
+    "",
+    resumeNote ? `Resume note: ${resumeNote}` : "",
+    integrationNote ?? "",
+    subagentResults.some((entry) => entry.status === "failed")
+      ? "Some subagents failed. Produce best-effort answer and call out any residual gaps."
+      : "",
+    "Subagent outputs:",
+    formatSubagentResults(subtasks, subagentResults)
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  const result = await runManagedAgentExecution(adapter, {
+    runId: options.runId,
     kind: "aggregator",
-    cwd: options.cwd,
-    modelId: executionModelId,
-    prompt: [
-      buildExecutionPrompt(options.messages, finalExecutionBrief),
-      "",
-      resumeNote ? `Resume note: ${resumeNote}` : "",
-      integrationNote ?? "",
-      subagentResults.some((entry) => entry.status === "failed")
-        ? "Some subagents failed. Produce best-effort answer and call out any residual gaps."
-        : "",
-      "Subagent outputs:",
-      formatSubagentResults(subtasks, subagentResults)
-    ]
-      .filter(Boolean)
-      .join("\n"),
+    originalRequest: {
+      kind: "aggregator",
+      cwd: options.cwd,
+      modelId: executionModelId,
+      prompt: aggregationPrompt,
+      onTextDelta(delta: string) {
+        options.callbacks?.onDelta?.(delta);
+      }
+    },
+    continuationRequest: {
+      kind: "aggregator",
+      cwd: options.cwd,
+      modelId: executionModelId,
+      prompt: [
+        "continue",
+        "",
+        aggregationPrompt
+      ].join("\n"),
+      onTextDelta(delta: string) {
+        options.callbacks?.onDelta?.(delta);
+      }
+    },
     abortSignal: options.abortSignal,
-    onTextDelta(delta) {
-      options.callbacks?.onDelta?.(delta);
+    store: createExecutionStore(options.callbacks, options.runId, "aggregator"),
+    onRefreshComplete(mode) {
+      emitTrace(options.callbacks, {
+        sessionId: options.sessionId,
+        stage: "refresh-complete",
+        message: `Refresh complete for aggregation (${mode})`,
+        modelId: executionModelId
+      });
     }
   });
   if (result.contextUsage) {
@@ -451,8 +506,13 @@ export function buildExecutionPrompt(messages: ChatMessage[], finalExecutionBrie
   ].join("\n");
 }
 
+function buildContinuationPrompt(prefix: string, messages: ChatMessage[], finalExecutionBrief: string) {
+  return [prefix, "", buildExecutionPrompt(messages, finalExecutionBrief)].join("\n");
+}
+
 function formatMessages(messages: ChatMessage[]) {
-  return messages.map((message) => `${message.role.toUpperCase()}: ${message.content}`).join("\n");
+  const visibleMessages = messages.filter((message) => message.role !== "system");
+  return visibleMessages.map((message) => `${message.role.toUpperCase()}: ${message.content}`).join("\n");
 }
 
 function formatSubagentResults(subtasks: PlannerSubtask[], subagentResults: SubagentResult[]) {
@@ -488,6 +548,33 @@ function emitTrace(callbacks: PiOrchestratorCallbacks | undefined, trace: AgentT
     subagentId: trace.subagentId
   });
   callbacks?.onTrace?.(trace);
+}
+
+function createExecutionStore(
+  callbacks: PiOrchestratorCallbacks | undefined,
+  runId: string,
+  kind: ManagedExecutionState["kind"],
+  subagentId?: string
+) {
+  return {
+    getState() {
+      return callbacks?.getExecutionState?.({
+        runId,
+        kind,
+        subagentId
+      });
+    },
+    setState(state: ManagedExecutionState) {
+      callbacks?.setExecutionState?.(state);
+    },
+    clearState() {
+      callbacks?.clearExecutionState?.({
+        runId,
+        kind,
+        subagentId
+      });
+    }
+  };
 }
 
 export function chooseExecutionPath(difficultyScore: number) {

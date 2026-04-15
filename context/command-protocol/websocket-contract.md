@@ -18,6 +18,7 @@ Client commands are restricted to a fixed set of actions:
 - planning answer
 - run resume
 - run retry
+- run refresh
 - chat stop
 - session reset as legacy alias for thread create
 
@@ -73,6 +74,13 @@ Retry requests carry:
 - run id
 - optional subagent id
 
+Refresh requests carry:
+
+- project id
+- thread id
+- run id
+- optional subagent id
+
 Thread management requests carry:
 
 - project id
@@ -108,6 +116,8 @@ Trace events report:
 - optional duration
 - project id
 - thread id
+- refresh stages include `refresh-requested`, `refresh-deferred`, and `refresh-complete`
+- subagent timing can emit `subagent-spawn-timing`
 
 Chat completion and reset events report:
 
@@ -121,6 +131,7 @@ Message append events report:
 - thread id
 - appended message
 - current session state snapshot
+- appended messages may use role `system` for persisted inline run-status updates
 
 Run update events report:
 

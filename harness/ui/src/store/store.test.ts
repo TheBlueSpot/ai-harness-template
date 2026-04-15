@@ -221,6 +221,44 @@ describe("harness store reducer", () => {
     expect(project?.session.messages[0]?.content).toBe("hello planner");
   });
 
+  test("stores persisted system status messages inline with chat history", () => {
+    const initialProject = createProject();
+    const initialState = createConnectedState(initialProject);
+    const projectId = initialProject.id;
+    const threadId = initialProject.activeThreadId;
+    const nextState = reduceServerEvent(initialState, {
+      type: "chat.message-appended",
+      requestId: "req-status",
+      payload: {
+        projectId,
+        threadId,
+        sessionId: threadId,
+        message: {
+          id: "system-1",
+          role: "system",
+          content: "Planning task.",
+          createdAt: new Date().toISOString()
+        },
+        state: {
+          ...createEmptySession(threadId),
+          messages: [
+            {
+              id: "system-1",
+              role: "system",
+              content: "Planning task.",
+              createdAt: new Date().toISOString()
+            }
+          ]
+        }
+      }
+    });
+
+    const project = nextState.workspace.projects.find((entry) => entry.id === projectId);
+    expect(project?.session.messages).toHaveLength(1);
+    expect(project?.session.messages[0]?.role).toBe("system");
+    expect(project?.session.messages[0]?.content).toBe("Planning task.");
+  });
+
   test("hydrates active run and clears it", () => {
     const initialProject = createProject();
     const initialState = createConnectedState(initialProject);

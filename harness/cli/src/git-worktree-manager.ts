@@ -19,6 +19,7 @@ export type DirtySnapshot = {
 export type SubagentWorktreeLease = {
   taskId: string;
   branchName: string;
+  repoWorktreePath: string;
   worktreePath: string;
   baseCommit: string;
 };
@@ -26,6 +27,7 @@ export type SubagentWorktreeLease = {
 export type SubagentCommitResult = {
   taskId: string;
   branchName: string;
+  repoWorktreePath: string;
   worktreePath: string;
   commitSha: string;
 };
@@ -54,11 +56,12 @@ type VerifiedScripts = {
 
 type ManagerState = {
   repoRoot: string;
+  projectRelativePath: string;
   runRoot: string;
   snapshotDir: string;
   snapshotBranchName: string;
   snapshotCommit: string;
-  baseCommit: string;
+  baseCommit?: string;
   snapshot: DirtySnapshot;
 };
 
@@ -78,11 +81,13 @@ export class GitWorktreeManager {
   async prepareSubagentLease(taskId: string): Promise<SubagentWorktreeLease> {
     const state = await this.ensureInitialized();
     const branchName = this.getSubagentBranchName(taskId);
-    const worktreePath = path.join(state.runRoot, taskId);
+    const repoWorktreePath = path.join(state.runRoot, taskId);
+    const worktreePath = this.getProjectPathInWorktree(repoWorktreePath, state.projectRelativePath);
 
-    await this.removeWorktreeAndBranch(worktreePath, branchName);
-    await this.runGit(["worktree", "add", "-b", branchName, worktreePath, state.snapshotCommit], state.repoRoot);
-    const provision = await provisionWorktree(state.repoRoot, worktreePath);
+    await this.removeWorktreeAndBranch(repoWorktreePath, branchName);
+    await this.runGit(["worktree", "add", "-b", branchName, repoWorktreePath, state.snapshotCommit], state.repoRoot);
+    const provision = await provisionWorktree(state.repoRoot, repoWorktreePath);
+    await mkdir(worktreePath, { recursive: true });
     this.emitTrace({
       stage: "worktree-provision",
       message: `Provisioned worktree for ${taskId}`,
@@ -93,6 +98,7 @@ export class GitWorktreeManager {
     return {
       taskId,
       branchName,
+      repoWorktreePath,
       worktreePath,
       baseCommit: state.snapshotCommit
     };
@@ -118,13 +124,14 @@ export class GitWorktreeManager {
     return {
       taskId: lease.taskId,
       branchName: lease.branchName,
+      repoWorktreePath: lease.repoWorktreePath,
       worktreePath: lease.worktreePath,
       commitSha
     };
   }
 
   async cleanupSubagentLease(
-    lease: Pick<SubagentWorktreeLease, "taskId" | "worktreePath">,
+    lease: Pick<SubagentWorktreeLease, "taskId" | "repoWorktreePath">,
     options: {
       preserveWorktree?: boolean;
     } = {}
@@ -133,7 +140,7 @@ export class GitWorktreeManager {
       return;
     }
 
-    await cleanupWorktree(lease.worktreePath);
+    await cleanupWorktree(lease.repoWorktreePath);
     this.emitTrace({
       stage: "worktree-cleanup",
       message: `Removed worktree for ${lease.taskId}`,
@@ -251,12 +258,13 @@ export class GitWorktreeManager {
 
   async syncIntegrationResultToRoot(integrationWorktreePath: string): Promise<void> {
     const state = await this.ensureInitialized();
+    const projectScope = this.getProjectGitPathspec(state.projectRelativePath);
     const changedFiles = await this.readNullSeparatedGitOutput(
-      ["diff", "--name-only", "-z", `${state.snapshotCommit}`, "HEAD"],
+      ["diff", "--name-only", "-z", `${state.snapshotCommit}`, "HEAD", "--", projectScope],
       integrationWorktreePath
     );
     const deletedFiles = await this.readNullSeparatedGitOutput(
-      ["diff", "--name-only", "--diff-filter=D", "-z", `${state.snapshotCommit}`, "HEAD"],
+      ["diff", "--name-only", "--diff-filter=D", "-z", `${state.snapshotCommit}`, "HEAD", "--", projectScope],
       integrationWorktreePath
     );
 
@@ -305,7 +313,7 @@ export class GitWorktreeManager {
     ];
 
     for (const worktreePath of worktreePaths) {
-      if (preserved.has(worktreePath)) {
+      if ([...preserved].some((preservedPath) => isSameOrNestedPath(worktreePath, preservedPath))) {
         continue;
       }
 
@@ -341,12 +349,18 @@ export class GitWorktreeManager {
     await this.ensureExecutable("git");
     await this.ensureExecutable("bun");
 
-    const repoRoot = await this.runGit(["rev-parse", "--show-toplevel"], this.context.rootPath);
+    const repoRootResult = await this.tryRunGit(["rev-parse", "--show-toplevel"], this.context.rootPath);
+    if (repoRootResult.exitCode !== 0) {
+      throw new Error(`Project root must be inside a git repository: ${path.resolve(this.context.rootPath)}`);
+    }
+
+    const repoRoot = repoRootResult.stdout.trim();
     const resolvedRepoRoot = path.resolve(repoRoot);
     const resolvedRootPath = path.resolve(this.context.rootPath);
-    if (resolvedRepoRoot !== resolvedRootPath) {
-      throw new Error(`Project root must match git repository root: ${resolvedRootPath}`);
+    if (!isSameOrNestedPath(resolvedRepoRoot, resolvedRootPath)) {
+      throw new Error(`Project root must stay inside git repository root: ${resolvedRootPath}`);
     }
+    const projectRelativePath = path.relative(resolvedRepoRoot, resolvedRootPath);
 
     await ensureFileExists(path.join(resolvedRepoRoot, "package.json"), "package.json");
     await ensureAnyFileExists(
@@ -358,25 +372,46 @@ export class GitWorktreeManager {
     const snapshotDir = path.join(runRoot, "snapshot-state");
     await mkdir(snapshotDir, { recursive: true });
 
-    const baseCommit = await this.runGit(["rev-parse", "HEAD"], resolvedRepoRoot);
+    const baseCommit = await this.resolveHeadCommit(resolvedRepoRoot);
     const snapshotBranchName = this.getSnapshotBranchName();
     const existingSnapshotCommit = await this.resolveBranchCommit(snapshotBranchName, resolvedRepoRoot);
     if (existingSnapshotCommit) {
       return {
         repoRoot: resolvedRepoRoot,
+        projectRelativePath,
         runRoot,
         snapshotDir,
         snapshotBranchName,
         snapshotCommit: existingSnapshotCommit,
         baseCommit,
-        snapshot: await this.captureDirtySnapshot(snapshotDir, resolvedRepoRoot, baseCommit)
+        snapshot: baseCommit
+          ? await this.captureDirtySnapshot(snapshotDir, resolvedRepoRoot, baseCommit, projectRelativePath)
+          : { trackedPatchPath: undefined, untrackedRelativePaths: [] }
       };
     }
 
-    const snapshot = await this.captureDirtySnapshot(snapshotDir, resolvedRepoRoot, baseCommit);
+    if (!baseCommit) {
+      const snapshotCommit = await this.createSyntheticSnapshotCommit(resolvedRepoRoot, runRoot, snapshotBranchName);
+      return {
+        repoRoot: resolvedRepoRoot,
+        projectRelativePath,
+        runRoot,
+        snapshotDir,
+        snapshotBranchName,
+        snapshotCommit,
+        baseCommit,
+        snapshot: {
+          trackedPatchPath: undefined,
+          untrackedRelativePaths: []
+        }
+      };
+    }
+
+    const snapshot = await this.captureDirtySnapshot(snapshotDir, resolvedRepoRoot, baseCommit, projectRelativePath);
     if (!snapshot.trackedPatchPath && snapshot.untrackedRelativePaths.length === 0) {
       return {
         repoRoot: resolvedRepoRoot,
+        projectRelativePath,
         runRoot,
         snapshotDir,
         snapshotBranchName,
@@ -411,6 +446,7 @@ export class GitWorktreeManager {
 
     return {
       repoRoot: resolvedRepoRoot,
+      projectRelativePath,
       runRoot,
       snapshotDir,
       snapshotBranchName,
@@ -420,8 +456,14 @@ export class GitWorktreeManager {
     };
   }
 
-  private async captureDirtySnapshot(snapshotDir: string, repoRoot: string, baseCommit: string): Promise<DirtySnapshot> {
-    const trackedPatch = await this.runGit(["diff", "--binary", baseCommit, "--", "."], repoRoot);
+  private async captureDirtySnapshot(
+    snapshotDir: string,
+    repoRoot: string,
+    baseCommit: string,
+    projectRelativePath: string
+  ): Promise<DirtySnapshot> {
+    const projectScope = this.getProjectGitPathspec(projectRelativePath);
+    const trackedPatch = await this.runGit(["diff", "--binary", baseCommit, "--", projectScope], repoRoot);
     const trackedPatchPath = trackedPatch
       ? path.join(snapshotDir, "tracked.patch")
       : undefined;
@@ -431,7 +473,9 @@ export class GitWorktreeManager {
       await writeFile(trackedPatchPath, trackedPatch, "utf8");
     }
 
-    const untrackedRelativePaths = (await this.runGit(["ls-files", "--others", "--exclude-standard", "-z"], repoRoot))
+    const untrackedRelativePaths = (
+      await this.runGit(["ls-files", "--others", "--exclude-standard", "-z", "--", projectScope], repoRoot)
+    )
       .split("\0")
       .filter(Boolean)
       .sort();
@@ -470,13 +514,16 @@ export class GitWorktreeManager {
     taskId: string,
     abortSignal?: AbortSignal
   ) {
+    const state = await this.ensureInitialized();
+    const integrationProjectPath = this.getProjectPathInWorktree(integrationWorktreePath, state.projectRelativePath);
+    await mkdir(integrationProjectPath, { recursive: true });
     const unresolvedBefore = await this.readNullSeparatedGitOutput(
       ["diff", "--name-only", "--diff-filter=U", "-z"],
       integrationWorktreePath
     );
     const response = await adapter.runPrompt({
       kind: "merge-resolver",
-      cwd: integrationWorktreePath,
+      cwd: integrationProjectPath,
       modelId: this.context.executionModelId,
       prompt: [
         "You are resolving git merge conflicts inside a Bun project worktree.",
@@ -537,6 +584,40 @@ export class GitWorktreeManager {
     return result.exitCode === 0 ? result.stdout.trim() : undefined;
   }
 
+  private async resolveHeadCommit(cwd: string) {
+    const result = await this.tryRunGit(["rev-parse", "--verify", "HEAD"], cwd);
+    return result.exitCode === 0 ? result.stdout.trim() : undefined;
+  }
+
+  private async createSyntheticSnapshotCommit(repoRoot: string, runRoot: string, branchName: string) {
+    const syntheticIndexPath = path.join(runRoot, `snapshot-index-${this.context.runId}`);
+    const env = { GIT_INDEX_FILE: syntheticIndexPath };
+    await rm(syntheticIndexPath, { force: true }).catch(() => undefined);
+
+    try {
+      await this.runGit(["read-tree", "--empty"], repoRoot, env);
+      await this.runGit(["add", "-A", "--all", "--", "."], repoRoot, env);
+      const treeSha = await this.runGit(["write-tree"], repoRoot, env);
+      const snapshotCommit = await this.runGit(
+        ["commit-tree", treeSha, "-m", `chore: snapshot ${this.context.runId}`],
+        repoRoot,
+        env
+      );
+      await this.runGit(["branch", "-f", branchName, snapshotCommit], repoRoot);
+      return snapshotCommit;
+    } finally {
+      await rm(syntheticIndexPath, { force: true }).catch(() => undefined);
+    }
+  }
+
+  private getProjectGitPathspec(projectRelativePath: string) {
+    return projectRelativePath ? projectRelativePath.replace(/\\/g, "/") : ".";
+  }
+
+  private getProjectPathInWorktree(repoWorktreePath: string, projectRelativePath: string) {
+    return projectRelativePath ? path.join(repoWorktreePath, projectRelativePath) : repoWorktreePath;
+  }
+
   private async ensureExecutable(binary: string) {
     await this.runCommand([binary, "--version"], this.context.rootPath);
   }
@@ -555,16 +636,16 @@ export class GitWorktreeManager {
     this.callbacks.onTrace?.(trace);
   }
 
-  private async runGit(args: string[], cwd: string) {
-    const result = await this.tryRunGit(args, cwd);
+  private async runGit(args: string[], cwd: string, env?: Record<string, string>) {
+    const result = await this.tryRunGit(args, cwd, undefined, env);
     if (result.exitCode !== 0) {
       throw new Error(`git ${args.join(" ")} failed: ${result.detail}`);
     }
     return result.stdout.trim();
   }
 
-  private async tryRunGit(args: string[], cwd: string, abortSignal?: AbortSignal) {
-    return this.tryRunCommand(["git", ...args], cwd, abortSignal);
+  private async tryRunGit(args: string[], cwd: string, abortSignal?: AbortSignal, env?: Record<string, string>) {
+    return this.tryRunCommand(["git", ...args], cwd, abortSignal, env);
   }
 
   private async runCommand(command: string[], cwd: string, abortSignal?: AbortSignal) {
@@ -575,10 +656,16 @@ export class GitWorktreeManager {
     return result.stdout.trim();
   }
 
-  private async tryRunCommand(command: string[], cwd: string, abortSignal?: AbortSignal) {
+  private async tryRunCommand(
+    command: string[],
+    cwd: string,
+    abortSignal?: AbortSignal,
+    env?: Record<string, string>
+  ) {
     const proc = Bun.spawn({
       cmd: command,
       cwd,
+      env: env ? { ...Bun.env, ...env } : undefined,
       stdout: "pipe",
       stderr: "pipe",
       signal: abortSignal
@@ -640,4 +727,9 @@ function isProtectedLockfile(relativePath: string) {
 
 function describeProvision(provision: WorktreeProvisionResult) {
   return `${provision.installDurationMs}ms; copied ${provision.copiedArtifacts.join(", ") || "nothing"}`;
+}
+
+function isSameOrNestedPath(parentPath: string, candidatePath: string) {
+  const relativePath = path.relative(parentPath, candidatePath);
+  return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
 }

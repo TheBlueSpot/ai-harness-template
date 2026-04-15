@@ -2,7 +2,12 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
-import type { PiAgentAdapter, PiAgentPromptRequest, PiAgentPromptResult } from "./pi-agent-adapter";
+import type {
+  PiAgentAdapter,
+  PiAgentExecutionController,
+  PiAgentPromptRequest,
+  PiAgentPromptResult
+} from "./pi-agent-adapter";
 import { GitWorktreeManager } from "./git-worktree-manager";
 
 const tempPaths: string[] = [];
@@ -25,6 +30,22 @@ class MergeResolverAdapter implements PiAgentAdapter {
 
     return { text: "ok" };
   }
+
+  async startExecution(request: PiAgentPromptRequest): Promise<PiAgentExecutionController> {
+    const adapter = this;
+    let currentResult = adapter.runPrompt(request);
+    return {
+      get result() {
+        return currentResult;
+      },
+      continueWithPrompt(prompt: string = "continue") {
+        currentResult = adapter.runPrompt({ ...request, prompt });
+        return currentResult;
+      },
+      async abort() {},
+      dispose() {}
+    };
+  }
 }
 
 afterEach(async () => {
@@ -33,7 +54,7 @@ afterEach(async () => {
 
 describe("git worktree manager", () => {
   test("rejects non-git roots", async () => {
-    const rootPath = createTempDir("manager-non-git");
+    const rootPath = createExternalTempDir("manager-non-git");
     seedBunProject(rootPath);
     const manager = new GitWorktreeManager({
       rootPath,
@@ -42,7 +63,7 @@ describe("git worktree manager", () => {
       executionModelId: "openai/gpt-5.4"
     });
 
-    await expect(manager.prepareSubagentLease("task-1")).rejects.toThrow("Project root must match git repository root");
+    await expect(manager.prepareSubagentLease("task-1")).rejects.toThrow("Project root must be inside a git repository");
   });
 
   test("rejects bun-less repos", async () => {
@@ -109,6 +130,84 @@ describe("git worktree manager", () => {
     expect(normalizeNewlines(await readFile(path.join(rootPath, "task-2.txt"), "utf8"))).toBe("task-2\n");
   });
 
+  test("limits dirty snapshot and sync to selected project slice", async () => {
+    const repoRoot = createTempDir("manager-slice");
+    seedBunGitProject(repoRoot);
+    const projectRoot = path.join(repoRoot, "context");
+    mkdirSync(projectRoot, { recursive: true });
+    writeFileSync(path.join(projectRoot, "guide.md"), "base guide\n");
+    writeFileSync(path.join(repoRoot, "outside.txt"), "base outside\n");
+    runSync(["git", "add", "."], repoRoot);
+    runSync(["git", "commit", "-m", "slice base"], repoRoot);
+
+    writeFileSync(path.join(repoRoot, "outside.txt"), "dirty outside\n");
+
+    const manager = new GitWorktreeManager({
+      rootPath: projectRoot,
+      runId: "run-slice",
+      debugEnabled: false,
+      executionModelId: "openai/gpt-5.4"
+    });
+
+    const lease = await manager.prepareSubagentLease("task-1");
+    expect(normalizeNewlines(await readFile(path.join(lease.repoWorktreePath, "outside.txt"), "utf8"))).toBe("base outside\n");
+    writeFileSync(path.join(lease.worktreePath, "guide.md"), "slice update\n");
+    const commit = await manager.finalizeSubagentLease(lease);
+    await manager.cleanupSubagentLease(lease);
+
+    const integration = await manager.mergeSubagentBranches(new MergeResolverAdapter(), {
+      tasks: [{ id: "task-1", title: "Task 1", instruction: "Update guide" }],
+      subagentResults: [{ taskId: "task-1", commitSha: commit.commitSha }]
+    });
+
+    expect(integration).toBeDefined();
+    await manager.syncIntegrationResultToRoot(integration!.integrationWorktreePath);
+    await manager.cleanupRunWorktrees({
+      taskIds: ["task-1"],
+      finalCleanup: true
+    });
+
+    expect(normalizeNewlines(await readFile(path.join(projectRoot, "guide.md"), "utf8"))).toBe("slice update\n");
+    expect(normalizeNewlines(await readFile(path.join(repoRoot, "outside.txt"), "utf8"))).toBe("dirty outside\n");
+  });
+
+  test("creates worktrees from unborn git history", async () => {
+    const repoRoot = createTempDir("manager-unborn");
+    seedBunProject(repoRoot);
+    const projectRoot = path.join(repoRoot, "context");
+    mkdirSync(projectRoot, { recursive: true });
+    writeFileSync(path.join(projectRoot, "note.md"), "initial\n");
+    runSync(["git", "init"], repoRoot);
+    runSync(["git", "config", "user.name", "Test User"], repoRoot);
+    runSync(["git", "config", "user.email", "test@example.com"], repoRoot);
+
+    const manager = new GitWorktreeManager({
+      rootPath: projectRoot,
+      runId: "run-unborn",
+      debugEnabled: false,
+      executionModelId: "openai/gpt-5.4"
+    });
+
+    const lease = await manager.prepareSubagentLease("task-1");
+    writeFileSync(path.join(lease.worktreePath, "note.md"), "updated\n");
+    const commit = await manager.finalizeSubagentLease(lease);
+    await manager.cleanupSubagentLease(lease);
+
+    const integration = await manager.mergeSubagentBranches(new MergeResolverAdapter(), {
+      tasks: [{ id: "task-1", title: "Task 1", instruction: "Update note" }],
+      subagentResults: [{ taskId: "task-1", commitSha: commit.commitSha }]
+    });
+
+    expect(integration).toBeDefined();
+    await manager.syncIntegrationResultToRoot(integration!.integrationWorktreePath);
+    await manager.cleanupRunWorktrees({
+      taskIds: ["task-1"],
+      finalCleanup: true
+    });
+
+    expect(normalizeNewlines(await readFile(path.join(projectRoot, "note.md"), "utf8"))).toBe("updated\n");
+  });
+
   test("uses merge resolver when subagent commits conflict", async () => {
     const rootPath = createTempDir("manager-conflict");
     seedBunGitProject(rootPath);
@@ -159,6 +258,14 @@ describe("git worktree manager", () => {
 
 function createTempDir(prefix: string) {
   const targetPath = path.join(process.cwd(), ".tmp-test-data", `${prefix}-${crypto.randomUUID()}`);
+  mkdirSync(targetPath, { recursive: true });
+  tempPaths.push(targetPath);
+  return targetPath;
+}
+
+function createExternalTempDir(prefix: string) {
+  const tempRoot = Bun.env.TEMP ?? Bun.env.TMP ?? process.cwd();
+  const targetPath = path.join(tempRoot, "pi-harness-tests", `${prefix}-${crypto.randomUUID()}`);
   mkdirSync(targetPath, { recursive: true });
   tempPaths.push(targetPath);
   return targetPath;

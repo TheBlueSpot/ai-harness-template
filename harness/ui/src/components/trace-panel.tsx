@@ -1,11 +1,12 @@
-import { For, Show } from "solid-js";
+import { For, Show, createSignal } from "solid-js";
 import { createRequestId, type ClientCommand } from "../../../shared/protocol";
 import { getActiveProject, harnessStore } from "../harness-store";
-import { getLatestTaskStatusText } from "../lib/run-status";
+import { getLatestTaskStatusText, getRunRefreshState, isRunWorking } from "../lib/run-status";
 import { ActionButton } from "./action-button";
+import { Dialog } from "./ui/dialog";
 import { Input } from "./ui/input";
 import { ScrollArea } from "./ui/scroll-area";
-import { LoaderCircle, RefreshCcw } from "lucide-solid";
+import { ClipboardList, LoaderCircle, RefreshCcw } from "lucide-solid";
 
 type TracePanelProps = {
   sendCommand: (command: ClientCommand) => void;
@@ -13,9 +14,17 @@ type TracePanelProps = {
 
 export function TracePanel(props: TracePanelProps) {
   const state = harnessStore.state;
+  const [planModalOpen, setPlanModalOpen] = createSignal(false);
   const activeProject = () => getActiveProject(state);
   const runToShow = () => activeProject()?.activeRun ?? activeProject()?.lastRun;
   const canRetryRun = () => Boolean(activeProject()?.lastRun?.retryable);
+  const refreshState = () => {
+    const project = activeProject();
+    return project ? getRunRefreshState(project, runToShow()) : { disabled: true, disabledReason: "No run available", refreshing: false };
+  };
+  const planRun = () => runToShow();
+  const hasPlanDetails = () =>
+    Boolean(planRun()?.summary && planRun()?.finalExecutionBrief && planRun()?.executionModelId);
 
   function handleRetryRun() {
     const project = activeProject();
@@ -50,6 +59,43 @@ export function TracePanel(props: TracePanelProps) {
 
     props.sendCommand({
       type: "run.retry",
+      requestId: createRequestId(),
+      payload: {
+        projectId: project.id,
+        threadId: project.activeThreadId,
+        runId: run.id,
+        subagentId
+      }
+    });
+  }
+
+  function handleRefreshRun() {
+    const project = activeProject();
+    const run = project?.activeRun;
+    if (!project || !run) {
+      return;
+    }
+
+    props.sendCommand({
+      type: "run.refresh",
+      requestId: createRequestId(),
+      payload: {
+        projectId: project.id,
+        threadId: project.activeThreadId,
+        runId: run.id
+      }
+    });
+  }
+
+  function handleRefreshSubagent(subagentId: string) {
+    const project = activeProject();
+    const run = project?.activeRun;
+    if (!project || !run) {
+      return;
+    }
+
+    props.sendCommand({
+      type: "run.refresh",
       requestId: createRequestId(),
       payload: {
         projectId: project.id,
@@ -101,8 +147,19 @@ export function TracePanel(props: TracePanelProps) {
 
             <Show when={project().latestPlan}>
               <div class="rounded-[1.5rem] border border-[color:var(--border)] bg-white/55 p-3">
-                <div class="mb-3 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-[color:var(--muted)]">
-                  Latest plan
+                <div class="mb-3 flex items-center justify-between gap-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-[color:var(--muted)]">
+                  <span>Latest plan</span>
+                  <Show when={hasPlanDetails()}>
+                    <ActionButton
+                      tooltip="Open the full execution plan"
+                      icon={<ClipboardList class="h-3.5 w-3.5" />}
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => setPlanModalOpen(true)}
+                    >
+                      Open plan
+                    </ActionButton>
+                  </Show>
                 </div>
                 <div class="grid grid-cols-2 gap-2 text-[0.675rem] text-[color:var(--muted)]">
                   <div>Difficulty: {project().latestPlan?.difficultyScore}%</div>
@@ -119,24 +176,37 @@ export function TracePanel(props: TracePanelProps) {
               <div class="rounded-[1.5rem] border border-[color:var(--border)] bg-white/55 p-3">
                 <div class="mb-3 flex items-center justify-between gap-3 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-[color:var(--muted)]">
                   <div class="flex items-center gap-2">
-                    <Show when={runToShow() && ["planning", "running-main", "running-subagents", "aggregating"].includes(runToShow()!.status)}>
+                    <Show when={runToShow() && isRunWorking(runToShow()!.status)}>
                       <LoaderCircle class="h-3.5 w-3.5 animate-spin" />
                     </Show>
                     Run
                   </div>
-                  <Show when={canRetryRun()}>
+                  <div class="flex items-center gap-2">
                     <ActionButton
-                      tooltip="Retry last pi run"
-                      disabledReason="Project is streaming"
-                      disabled={project().session.isStreaming}
+                      tooltip="Refresh the active run"
+                      disabledReason={refreshState().disabledReason}
+                      disabled={refreshState().disabled}
                       icon={<RefreshCcw class="h-3.5 w-3.5" />}
                       size="sm"
                       variant="secondary"
-                      onClick={handleRetryRun}
+                      onClick={handleRefreshRun}
                     >
-                      Retry
+                      {refreshState().refreshing ? "Refreshing" : "Refresh"}
                     </ActionButton>
-                  </Show>
+                    <Show when={canRetryRun()}>
+                      <ActionButton
+                        tooltip="Retry last pi run"
+                        disabledReason="Project is streaming"
+                        disabled={project().session.isStreaming}
+                        icon={<RefreshCcw class="h-3.5 w-3.5" />}
+                        size="sm"
+                        variant="secondary"
+                        onClick={handleRetryRun}
+                      >
+                        Retry
+                      </ActionButton>
+                    </Show>
+                  </div>
                 </div>
                 <div class="space-y-2 text-[0.675rem] text-[color:var(--muted)]">
                   <div>Status: {runToShow()?.status}</div>
@@ -168,8 +238,19 @@ export function TracePanel(props: TracePanelProps) {
                             </div>
                             <div class="mt-1 text-[color:var(--muted)]">Attempts: {task.attemptCount}</div>
                             <div class="mt-1 text-[color:var(--muted)]">Latest status: {getLatestTaskStatusText(project(), task)}</div>
-                            <Show when={project().lastRun?.retryable}>
-                              <div class="mt-2">
+                            <div class="mt-2 flex flex-wrap gap-2">
+                              <ActionButton
+                                tooltip="Refresh this active subagent"
+                                disabledReason={getRunRefreshState(project(), project().activeRun, task.id).disabledReason}
+                                disabled={getRunRefreshState(project(), project().activeRun, task.id).disabled}
+                                icon={<RefreshCcw class="h-3.5 w-3.5" />}
+                                size="sm"
+                                variant="secondary"
+                                onClick={() => handleRefreshSubagent(task.id)}
+                              >
+                                {getRunRefreshState(project(), project().activeRun, task.id).refreshing ? "Refreshing" : "Refresh"}
+                              </ActionButton>
+                              <Show when={project().lastRun?.retryable}>
                                 <ActionButton
                                   tooltip="Retry this subagent"
                                   disabledReason="Project is streaming"
@@ -181,8 +262,8 @@ export function TracePanel(props: TracePanelProps) {
                                 >
                                   Retry
                                 </ActionButton>
-                              </div>
-                            </Show>
+                              </Show>
+                            </div>
                             <Show when={task.errorMessage}>
                               <div class="mt-1 whitespace-pre-wrap text-rose-900/80">{task.errorMessage}</div>
                             </Show>
@@ -229,6 +310,59 @@ export function TracePanel(props: TracePanelProps) {
           </>
         )}
       </Show>
+
+      <Dialog
+        open={planModalOpen()}
+        onClose={() => setPlanModalOpen(false)}
+        title="Execution plan"
+        eyebrow="Trace"
+        description="Planner summary and final execution brief for the current run."
+        class="max-w-3xl"
+      >
+        <Show when={planRun()}>
+          {(run) => (
+            <div class="space-y-4 text-[0.75rem] leading-6 text-[color:var(--foreground)]">
+              <div class="grid gap-2 md:grid-cols-2">
+                <div>Route: {run().subtasks.length > 0 ? "pi-subagents" : "main pi"}</div>
+                <div>Difficulty: {run().difficultyScore ?? "n/a"}%</div>
+                <div>Planner: {run().planningModelId ?? "n/a"}</div>
+                <div>Executor: {run().executionModelId ?? "n/a"}</div>
+                <div>Run: {run().id}</div>
+                <div>Prompt: {run().latestUserPrompt}</div>
+              </div>
+              <div>
+                <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-[color:var(--muted)]">
+                  Planning summary
+                </div>
+                <div class="mt-2 whitespace-pre-wrap">{run().summary ?? "n/a"}</div>
+              </div>
+              <div>
+                <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-[color:var(--muted)]">
+                  Final execution brief
+                </div>
+                <div class="mt-2 whitespace-pre-wrap">{run().finalExecutionBrief ?? "n/a"}</div>
+              </div>
+              <Show when={run().subtasks.length > 0}>
+                <div>
+                  <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-[color:var(--muted)]">
+                    Subtasks
+                  </div>
+                  <div class="mt-2 space-y-2">
+                    <For each={run().subtasks}>
+                      {(task) => (
+                        <div class="rounded-2xl border border-[color:var(--border)] bg-white/60 p-3">
+                          <div class="font-semibold">{task.title}</div>
+                          <div class="mt-1 whitespace-pre-wrap text-[color:var(--muted)]">{task.instruction}</div>
+                        </div>
+                      )}
+                    </For>
+                  </div>
+                </div>
+              </Show>
+            </div>
+          )}
+        </Show>
+      </Dialog>
     </aside>
   );
 }

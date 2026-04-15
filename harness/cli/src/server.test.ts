@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { PiAgentAdapter, PiAgentPromptRequest, PiAgentPromptResult } from "./pi-agent-adapter";
+import type {
+  PiAgentAdapter,
+  PiAgentExecutionController,
+  PiAgentPromptRequest,
+  PiAgentPromptResult
+} from "./pi-agent-adapter";
 import { startHarnessServer } from "./server";
 import { WorkspaceRepository } from "./workspace-repository";
 
@@ -205,6 +210,85 @@ class FakePiAgentAdapter implements PiAgentAdapter {
 
     return withUsage(request.kind === "aggregator" ? "aggregated result" : "main execution result");
   }
+
+  async startExecution(request: PiAgentPromptRequest): Promise<PiAgentExecutionController> {
+    let aborted = false;
+    let rejectAbort: ((error: Error) => void) | undefined;
+    const run = (nextRequest: PiAgentPromptRequest) => {
+      if (nextRequest.kind === "executor" && nextRequest.prompt.includes("streaming refresh")) {
+        this.calls.push(nextRequest);
+        nextRequest.onExecutionEvent?.({ type: "session-created" });
+        nextRequest.onExecutionEvent?.({ type: "activity" });
+        nextRequest.onTextDelta?.("working");
+        return new Promise<PiAgentPromptResult>((resolve, reject) => {
+          rejectAbort = (error: Error) => reject(error);
+          setTimeout(() => {
+            if (aborted) {
+              reject(new Error("aborted by test"));
+              return;
+            }
+
+            resolve({
+              text: "main execution result",
+              contextUsage: {
+                tokens: 2400,
+                contextWindow: 200000,
+                usagePercent: 1.2,
+                sessionStats: {
+                  sessionFile: undefined,
+                  sessionId: crypto.randomUUID(),
+                  userMessages: 1,
+                  assistantMessages: 1,
+                  toolCalls: 0,
+                  toolResults: 0,
+                  totalMessages: 2,
+                  tokens: {
+                    input: 100,
+                    output: 200,
+                    cacheRead: 0,
+                    cacheWrite: 0,
+                    total: 300
+                  },
+                  cost: 0,
+                  contextUsage: {
+                    tokens: 2400,
+                    contextWindow: 200000,
+                    percent: 1.2
+                  }
+                }
+              }
+            });
+          }, 120);
+        });
+      }
+
+      return Promise.race([
+        this.runPrompt(nextRequest),
+        new Promise<PiAgentPromptResult>((_, reject) => {
+          rejectAbort = (error: Error) => reject(error);
+          if (aborted) {
+            reject(new Error("aborted by test"));
+          }
+        })
+      ]);
+    };
+
+    let currentResult = run(request);
+    return {
+      get result() {
+        return currentResult;
+      },
+      continueWithPrompt(prompt: string = "continue") {
+        currentResult = run({ ...request, prompt });
+        return currentResult;
+      },
+      async abort() {
+        aborted = true;
+        rejectAbort?.(new Error("aborted by test"));
+      },
+      dispose() {}
+    };
+  }
 }
 
 describe("harness server", () => {
@@ -214,6 +298,7 @@ describe("harness server", () => {
   let dbPath: string;
   let extraProjectRoot: string;
   let projectRoot: string;
+  let port: number;
 
   beforeEach(async () => {
     const tempRoot = path.join(process.cwd(), ".tmp-test-data");
@@ -223,11 +308,12 @@ describe("harness server", () => {
     extraProjectRoot = path.join(tempRoot, `project-${crypto.randomUUID()}`);
     mkdirSync(extraProjectRoot, { recursive: true });
     dbPath = path.join(tempRoot, `server-${crypto.randomUUID()}.sqlite`);
+    port = 8800 + Math.floor(Math.random() * 1000);
 
     adapter = new FakePiAgentAdapter();
     repository = new WorkspaceRepository(dbPath, projectRoot);
     server = await startHarnessServer({
-      port: 8790,
+      port,
       adapter,
       repository,
       pickFolder: async () => extraProjectRoot,
@@ -236,11 +322,11 @@ describe("harness server", () => {
   });
 
   afterEach(() => {
-    server.stop(true);
+    server?.stop(true);
   });
 
   test("accepts websocket commands and rejects malformed payloads", async () => {
-    const socket = new WebSocket("ws://localhost:8790/ws");
+    const socket = createSocket(port);
 
     await new Promise<void>((resolve, reject) => {
       socket.addEventListener("open", () => {
@@ -262,7 +348,7 @@ describe("harness server", () => {
   });
 
   test("returns ready state and persisted workspace on connect", async () => {
-    const socket = new WebSocket("ws://localhost:8790/ws");
+    const socket = createSocket(port);
     const ready = await waitForEvent(socket, "connection.ready");
 
     expect(ready.payload.agents[0].id).toBe("pi");
@@ -277,7 +363,7 @@ describe("harness server", () => {
   });
 
   test("saves preferences and persists API key", async () => {
-    const socket = new WebSocket("ws://localhost:8790/ws");
+    const socket = createSocket(port);
     await waitForEvent(socket, "connection.ready");
     const savedPromise = waitForEvent(socket, "preferences.saved");
 
@@ -314,7 +400,7 @@ describe("harness server", () => {
     adapter.setApiKey("openai", "sk-clear-123");
     adapter.setApiKey("google", "AIza-clear-456");
 
-    const socket = new WebSocket("ws://localhost:8790/ws");
+    const socket = createSocket(port);
     await waitForEvent(socket, "connection.ready");
     const clearedPromise = waitForEvent(socket, "preferences.apiKeyCleared");
 
@@ -338,7 +424,7 @@ describe("harness server", () => {
     repository.setProviderBrand("gemini");
     adapter.setApiKey("google", "AIza-gemini-123");
 
-    const socket = new WebSocket("ws://localhost:8790/ws");
+    const socket = createSocket(port);
     await waitForEvent(socket, "connection.ready");
     const opened = await openProject(socket, projectRoot);
     const projectId = opened.payload.project.id;
@@ -365,7 +451,7 @@ describe("harness server", () => {
   });
 
   test("runs low difficulty tasks on the main executor only", async () => {
-    const socket = new WebSocket("ws://localhost:8790/ws");
+    const socket = createSocket(port);
     await waitForEvent(socket, "connection.ready");
     const opened = await openProject(socket, projectRoot);
     const projectId = opened.payload.project.id;
@@ -393,7 +479,7 @@ describe("harness server", () => {
   });
 
   test("runs high difficulty tasks with subagents and aggregation", async () => {
-    const socket = new WebSocket("ws://localhost:8790/ws");
+    const socket = createSocket(port);
     await waitForEvent(socket, "connection.ready");
     const opened = await openProject(socket, projectRoot);
     const projectId = opened.payload.project.id;
@@ -431,7 +517,7 @@ describe("harness server", () => {
   });
 
   test("asks planner question before execution and resumes after answer", async () => {
-    const socket = new WebSocket("ws://localhost:8790/ws");
+    const socket = createSocket(port);
     await waitForEvent(socket, "connection.ready");
     const opened = await openProject(socket, projectRoot);
     const projectId = opened.payload.project.id;
@@ -486,7 +572,7 @@ describe("harness server", () => {
   });
 
   test("keeps partial result resumable and persists completed commit metadata", async () => {
-    const socket = new WebSocket("ws://localhost:8790/ws");
+    const socket = createSocket(port);
     await waitForEvent(socket, "connection.ready");
     const opened = await openProject(socket, projectRoot);
     const projectId = opened.payload.project.id;
@@ -525,7 +611,7 @@ describe("harness server", () => {
   }, 60000);
 
   test("chat.stop aborts running work", async () => {
-    const socket = new WebSocket("ws://localhost:8790/ws");
+    const socket = createSocket(port);
     await waitForEvent(socket, "connection.ready");
     const opened = await openProject(socket, projectRoot);
     const projectId = opened.payload.project.id;
@@ -564,8 +650,101 @@ describe("harness server", () => {
     socket.close();
   });
 
+  test("defers run.refresh while active main execution is streaming", async () => {
+    const socket = createSocket(port);
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot);
+    const projectId = opened.payload.project.id;
+    const threadId = opened.payload.project.activeThreadId;
+    const runningRunPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "running-main");
+    const deltaPromise = waitForEvent(socket, "chat.delta");
+
+    socket.send(
+      JSON.stringify({
+        type: "chat.send",
+        requestId: "req-refresh-deferred-1",
+        payload: {
+          projectId,
+          threadId,
+          agentId: "pi",
+          content: "streaming refresh"
+        }
+      })
+    );
+
+    const runningRun = await runningRunPromise;
+    await deltaPromise;
+    const deferredTracePromise = waitForEvent(
+      socket,
+      "agent.trace",
+      (event) => event.payload.trace.stage === "refresh-deferred",
+      10000
+    );
+    const completePromise = waitForEvent(socket, "chat.complete", undefined, 10000);
+
+    socket.send(
+      JSON.stringify({
+        type: "run.refresh",
+        requestId: "req-refresh-deferred-2",
+        payload: {
+          projectId,
+          threadId,
+          runId: runningRun.payload.run.id
+        }
+      })
+    );
+
+    await deferredTracePromise;
+    await completePromise;
+    expect(adapter.calls.filter((call) => call.kind === "executor")).toHaveLength(1);
+    socket.close();
+  }, 10000);
+
+  test("rejects run.refresh for completed runs", async () => {
+    const socket = createSocket(port);
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot);
+    const projectId = opened.payload.project.id;
+    const threadId = opened.payload.project.activeThreadId;
+    const completePromise = waitForEvent(socket, "chat.complete");
+    const completedRunPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "completed");
+
+    socket.send(
+      JSON.stringify({
+        type: "chat.send",
+        requestId: "req-refresh-completed-1",
+        payload: {
+          projectId,
+          threadId,
+          agentId: "pi",
+          content: "simple task"
+        }
+      })
+    );
+
+    const completedRun = await completedRunPromise;
+    await completePromise;
+    const rejectedPromise = waitForEvent(socket, "command.rejected");
+
+    socket.send(
+      JSON.stringify({
+        type: "run.refresh",
+        requestId: "req-refresh-completed-2",
+        payload: {
+          projectId,
+          threadId,
+          runId: completedRun.payload.run.id
+        }
+      })
+    );
+
+    const rejected = await rejectedPromise;
+    expect(rejected.payload.detail).toContain("not refreshable");
+    socket.close();
+  });
+
   test("opens project through typed folder browse command", async () => {
-    const socket = new WebSocket("ws://localhost:8790/ws");
+    const socket = createSocket(port);
     await waitForEvent(socket, "connection.ready");
     const addedPromise = waitForEvent(socket, "project.opened");
 
@@ -584,7 +763,7 @@ describe("harness server", () => {
   });
 
   test("reopens existing project by creating a new thread", async () => {
-    const socket = new WebSocket("ws://localhost:8790/ws");
+    const socket = createSocket(port);
     await waitForEvent(socket, "connection.ready");
     const firstOpened = await openProject(socket, projectRoot, "req-open-existing-1");
     const secondOpened = await openProject(socket, projectRoot, "req-open-existing-2");
@@ -598,7 +777,7 @@ describe("harness server", () => {
   });
 
   test("removes final project and returns to empty workspace", async () => {
-    const socket = new WebSocket("ws://localhost:8790/ws");
+    const socket = createSocket(port);
     await waitForEvent(socket, "connection.ready");
     const opened = await openProject(socket, projectRoot, "req-remove-open");
     const removedPromise = waitForEvent(socket, "project.removed");
@@ -624,7 +803,7 @@ describe("harness server", () => {
   });
 
   test("restores persisted chat history after restart", async () => {
-    const socket = new WebSocket("ws://localhost:8790/ws");
+    const socket = createSocket(port);
     await waitForEvent(socket, "connection.ready");
     const opened = await openProject(socket, projectRoot);
     const projectId = opened.payload.project.id;
@@ -649,19 +828,20 @@ describe("harness server", () => {
     server.stop(true);
 
     server = await startHarnessServer({
-      port: 8790,
+      port,
       adapter,
       repository: new WorkspaceRepository(dbPath, projectRoot),
       serverOnly: true
     });
 
-    const nextSocket = new WebSocket("ws://localhost:8790/ws");
+    const nextSocket = createSocket(port);
     const nextReady = await waitForEvent(nextSocket, "connection.ready");
     const restoredProject = nextReady.payload.workspace.projects.find((project: any) => project.id === projectId);
 
-    expect(restoredProject.session.messages).toHaveLength(2);
+    expect(restoredProject.session.messages.length).toBeGreaterThanOrEqual(3);
     expect(restoredProject.session.messages[0].content).toBe("simple task");
-    expect(restoredProject.session.messages[1].content).toBe("main execution result");
+    expect(restoredProject.session.messages.some((message: any) => message.role === "system")).toBe(true);
+    expect(restoredProject.session.messages.at(-1).content).toBe("main execution result");
     expect(restoredProject.lastRun?.status).toBe("completed");
     expect(restoredProject.lastRun?.retryable).toBe(true);
     nextSocket.close();
@@ -669,7 +849,7 @@ describe("harness server", () => {
 
   test("emits dirty git warning and still runs when change count is within threshold", async () => {
     writeFileSync(path.join(projectRoot, "dirty-warning.txt"), "warn\n");
-    const socket = new WebSocket("ws://localhost:8790/ws");
+    const socket = createSocket(port);
     await waitForEvent(socket, "connection.ready");
     const opened = await openProject(socket, projectRoot);
     const projectId = opened.payload.project.id;
@@ -702,7 +882,7 @@ describe("harness server", () => {
       writeFileSync(path.join(projectRoot, `dirty-${index}.txt`), `${index}\n`);
     }
 
-    const socket = new WebSocket("ws://localhost:8790/ws");
+    const socket = createSocket(port);
     await waitForEvent(socket, "connection.ready");
     const opened = await openProject(socket, projectRoot);
     const projectId = opened.payload.project.id;
@@ -728,7 +908,7 @@ describe("harness server", () => {
   });
 
   test("retries completed main run with a fresh planner + executor pass", async () => {
-    const socket = new WebSocket("ws://localhost:8790/ws");
+    const socket = createSocket(port);
     await waitForEvent(socket, "connection.ready");
     const opened = await openProject(socket, projectRoot);
     const projectId = opened.payload.project.id;
@@ -771,7 +951,7 @@ describe("harness server", () => {
   });
 
   test("retries a selected subagent and re-aggregates", async () => {
-    const socket = new WebSocket("ws://localhost:8790/ws");
+    const socket = createSocket(port);
     await waitForEvent(socket, "connection.ready");
     const opened = await openProject(socket, projectRoot);
     const projectId = opened.payload.project.id;
@@ -822,7 +1002,7 @@ describe("harness server", () => {
   }, 60000);
 
   test("emits project context usage updates for planner and executor", async () => {
-    const socket = new WebSocket("ws://localhost:8790/ws");
+    const socket = createSocket(port);
     await waitForEvent(socket, "connection.ready");
     const opened = await openProject(socket, projectRoot);
     const projectId = opened.payload.project.id;
@@ -919,6 +1099,10 @@ function openProject(socket: WebSocket, rootPath: string, requestId: string = `r
     })
   );
   return openedPromise;
+}
+
+function createSocket(port: number) {
+  return new WebSocket(`ws://localhost:${port}/ws`);
 }
 
 function waitForEvent(socket: WebSocket, type: string, predicate?: (payload: any) => boolean, timeoutMs: number = 5000) {

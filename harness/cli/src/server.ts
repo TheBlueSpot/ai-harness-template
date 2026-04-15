@@ -14,8 +14,13 @@ import {
   type WorkspaceProjectState
 } from "../../shared/protocol";
 import { pickProjectFolder } from "./folder-picker";
+import {
+  type ManagedExecutionState,
+  type ManagedRefreshAction
+} from "./execution-runtime";
 import { runGitPreflight } from "./git-preflight";
 import { debugLog } from "./logging";
+import { runManagedAgentExecution } from "./managed-agent-execution";
 import { PiSdkAgentAdapter, type PiAgentAdapter } from "./pi-agent-adapter";
 import { aggregateSubagentResults, executeReadyRun, runPlannerTurn } from "./pi-orchestrator";
 import { getDefaultExecutionModelId, getDefaultPlanningModelId, getDefaultSubagentModelId } from "./pi-planner";
@@ -371,7 +376,7 @@ async function handleCommand(
       const project = runtime.getProject(projectId);
       assertActiveThread(project, command.payload.threadId);
       assertProjectCanStartRun(project);
-      await enforceExecutionPreflight(ws, command.requestId, project);
+      await enforceExecutionPreflight(ws, command.requestId, runtime, repository, project);
       const providerBrand = repository.getProviderBrand();
       const debugEnabled = command.payload.debug ?? repository.getDebugEnabledDefault();
       const persistedExecutionModelId = isModelIdForProvider(project.session.executionModelId, providerBrand)
@@ -492,7 +497,7 @@ async function handleCommand(
       if (!activeRun.resumable) {
         throw new Error("Run is not resumable");
       }
-      await enforceExecutionPreflight(ws, command.requestId, project);
+      await enforceExecutionPreflight(ws, command.requestId, runtime, repository, project);
 
       const providerBrand = repository.getProviderBrand();
       if (command.payload.guidanceText?.trim()) {
@@ -537,7 +542,7 @@ async function handleCommand(
       const project = runtime.getProject(projectId);
       assertActiveThread(project, command.payload.threadId);
       assertProjectCanStartRetry(project, command.payload.runId);
-      await enforceExecutionPreflight(ws, command.requestId, project);
+      await enforceExecutionPreflight(ws, command.requestId, runtime, repository, project);
 
       const retryRun = requireRetryableRun(project, command.payload.runId);
       const providerBrand = repository.getProviderBrand();
@@ -645,6 +650,38 @@ async function handleCommand(
       } finally {
         runtime.setProjectStreaming(projectId, false);
         runtime.setAbortController(projectId, undefined);
+      }
+
+      return;
+    }
+    case "run.refresh": {
+      const projectId = command.payload.projectId;
+      const project = runtime.getProject(projectId);
+      assertActiveThread(project, command.payload.threadId);
+      const targetRun = [project.activeRun, project.lastRun].find((run) => run?.id === command.payload.runId);
+      if (!targetRun) {
+        throw new Error(`Run ${command.payload.runId} is not available`);
+      }
+      assertRunCanRefresh(targetRun);
+
+      const executionStates = runtime
+        .getRunExecutionStates(projectId, targetRun.id)
+        .filter((state) => command.payload.subagentId === undefined || state.subagentId === command.payload.subagentId);
+
+      if (executionStates.length === 0) {
+        throw new Error("No refreshable execution is active for this run");
+      }
+
+      for (const executionState of executionStates) {
+        await requestExecutionRefresh(
+          ws,
+          command.requestId,
+          runtime,
+          repository,
+          projectId,
+          project.activeThreadId,
+          executionState
+        );
       }
 
       return;
@@ -876,8 +913,8 @@ async function executeRunLifecycle(
     runtime.setProjectStreaming(options.projectId, false);
     runtime.setProjectError(options.projectId, undefined);
 
-    const finalStatus = outcome.partial ? "partial-complete" : "completed";
-  const statusProject = repository.setAgentRunStatus(
+  const finalStatus = outcome.partial ? "partial-complete" : "completed";
+    const statusProject = repository.setAgentRunStatus(
       options.projectId,
       options.runId,
       finalStatus,
@@ -885,9 +922,19 @@ async function executeRunLifecycle(
     );
     runtime.upsertPersistedProject(statusProject);
     emitRunUpdated(ws, requestId, statusProject);
+    if (outcome.partial) {
+      appendSystemStatus(
+        ws,
+        requestId,
+        runtime,
+        repository,
+        options.projectId,
+        `Run partial complete. ${outcome.partialReason ?? "Some subagents failed."}`
+      );
+    }
 
     const nextProject = runtime.getProject(options.projectId);
-    const assistantMessage = nextProject.session.messages.at(-1);
+    const assistantMessage = findLatestAssistantMessage(nextProject);
     if (!assistantMessage || assistantMessage.role !== "assistant") {
       throw new Error("Assistant message was not persisted");
     }
@@ -958,6 +1005,7 @@ async function executeInlineSubagentRetryLifecycle(
   callbacks.onSubagentStart?.(options.targetTask);
 
   const retriedResult = await runInlineSubagentRetry(adapter, {
+    runId: options.runId,
     cwd: project.rootPath,
     providerBrand: options.providerBrand,
     task: options.targetTask,
@@ -980,6 +1028,7 @@ async function executeInlineSubagentRetryLifecycle(
     adapter,
     {
       cwd: project.rootPath,
+      runId: options.runId,
       sessionId,
       messages: project.session.messages,
       abortSignal: options.abortSignal,
@@ -1006,9 +1055,19 @@ async function executeInlineSubagentRetryLifecycle(
   );
   runtime.upsertPersistedProject(statusProject);
   emitRunUpdated(ws, requestId, statusProject);
+  if (partial) {
+    appendSystemStatus(
+      ws,
+      requestId,
+      runtime,
+      repository,
+      options.projectId,
+      "Run partial complete. Some retried subagents still failed."
+    );
+  }
 
   const nextProject = runtime.getProject(options.projectId);
-  const persistedAssistantMessage = nextProject.session.messages.at(-1);
+  const persistedAssistantMessage = findLatestAssistantMessage(nextProject);
   if (!persistedAssistantMessage || persistedAssistantMessage.role !== "assistant") {
     throw new Error("Assistant message was not persisted");
   }
@@ -1046,6 +1105,10 @@ function createExecutionCallbacks(
           trace
         }
       });
+      const statusMessage = statusMessageFromTrace(trace);
+      if (statusMessage) {
+        appendSystemStatus(ws, requestId, runtime, repository, projectId, statusMessage);
+      }
     },
     onDelta(delta: string) {
       const project = runtime.getProject(projectId);
@@ -1102,6 +1165,19 @@ function createExecutionCallbacks(
             );
       runtime.upsertPersistedProject(nextProject);
       emitRunUpdated(ws, requestId, nextProject);
+      const nextRun = runtime.getProject(projectId).activeRun ?? runtime.getProject(projectId).lastRun;
+      if (nextRun) {
+        appendSystemStatus(ws, requestId, runtime, repository, projectId, formatSubagentProgressStatus(nextRun));
+      }
+    },
+    setExecutionState(state: ManagedExecutionState) {
+      runtime.setExecutionState(projectId, state);
+    },
+    getExecutionState(input: Pick<ManagedExecutionState, "runId" | "kind" | "subagentId">) {
+      return runtime.getExecutionState(projectId, input);
+    },
+    clearExecutionState(input: Pick<ManagedExecutionState, "runId" | "kind" | "subagentId">) {
+      runtime.clearExecutionState(projectId, input);
     }
   };
 }
@@ -1109,6 +1185,7 @@ function createExecutionCallbacks(
 async function runInlineSubagentRetry(
   adapter: PiAgentAdapter,
   options: {
+    runId: string;
     cwd: string;
     providerBrand: "gpt" | "gemini";
     task: PlannerReadyTurn["subtasks"][number];
@@ -1126,20 +1203,56 @@ async function runInlineSubagentRetry(
     attempt += 1;
     const startedAt = Date.now();
     try {
-      const response = await adapter.runPrompt({
+      const basePrompt = [
+        "You are a focused coding subagent.",
+        "Complete only the assigned instruction.",
+        "Return concise, implementation-focused output.",
+        "",
+        `Shared brief: ${options.brief}`,
+        `Subtask title: ${options.task.title}`,
+        `Subtask instruction: ${options.task.instruction}`
+      ].join("\n");
+      const response = await runManagedAgentExecution(adapter, {
+        runId: options.runId,
         kind: "subagent",
-        cwd: options.cwd,
-        modelId: subagentModelId,
-        prompt: [
-          "You are a focused coding subagent.",
-          "Complete only the assigned instruction.",
-          "Return concise, implementation-focused output.",
-          "",
-          `Shared brief: ${options.brief}`,
-          `Subtask title: ${options.task.title}`,
-          `Subtask instruction: ${options.task.instruction}`
-        ].join("\n"),
-        abortSignal: options.abortSignal
+        subagentId: options.task.id,
+        originalRequest: {
+          kind: "subagent",
+          cwd: options.cwd,
+          modelId: subagentModelId,
+          prompt: basePrompt
+        },
+        continuationRequest: {
+          kind: "subagent",
+          cwd: options.cwd,
+          modelId: subagentModelId,
+          prompt: ["continue", "", basePrompt].join("\n")
+        },
+        abortSignal: options.abortSignal,
+        store: {
+          getState: () =>
+            options.callbacks.getExecutionState?.({
+              runId: options.runId,
+              kind: "subagent",
+              subagentId: options.task.id
+            }),
+          setState: (state) => options.callbacks.setExecutionState?.(state),
+          clearState: () =>
+            options.callbacks.clearExecutionState?.({
+              runId: options.runId,
+              kind: "subagent",
+              subagentId: options.task.id
+            })
+        },
+        onRefreshComplete(mode) {
+          options.callbacks.onTrace?.({
+            sessionId: options.sessionId,
+            stage: "refresh-complete",
+            message: `Refresh complete for ${options.task.title} (${mode})`,
+            subagentId: options.task.id,
+            modelId: subagentModelId
+          });
+        }
       });
       if (response.contextUsage) {
         options.callbacks.onContextUsage?.({
@@ -1230,6 +1343,7 @@ async function handleRunFailure(
   runtime.setProjectError(projectId, message);
   runtime.setProjectStreaming(projectId, false);
   runtime.clearStreaming(projectId);
+  appendSystemStatus(ws, requestId, runtime, repository, projectId, `Run failed. ${message}`);
 
   sendEvent(ws, {
     type: "chat.error",
@@ -1245,6 +1359,142 @@ async function handleRunFailure(
   debugLog("chat.error", {
     projectId,
     detail: message
+  });
+}
+
+function appendSystemStatus(
+  ws: Bun.ServerWebSocket<HarnessConnection>,
+  requestId: string,
+  runtime: WorkspaceRuntimeStore,
+  repository: WorkspaceRepository,
+  projectId: ProjectId,
+  content: string
+) {
+  const normalizedContent = content.trim();
+  if (!normalizedContent) {
+    return;
+  }
+
+  const project = runtime.getProject(projectId);
+  const lastMessage = project.session.messages.at(-1);
+  if (lastMessage?.role === "system" && lastMessage.content === normalizedContent) {
+    return;
+  }
+
+  const nextProject = repository.appendMessage(projectId, "system", normalizedContent, project.activeThreadId);
+  runtime.upsertPersistedProject(nextProject);
+  emitMessageAppended(ws, requestId, nextProject);
+}
+
+function statusMessageFromTrace(trace: AgentTrace) {
+  switch (trace.stage) {
+    case "planning":
+      return "Planning task.";
+    case "routing":
+      return trace.message;
+    case "merge-start":
+    case "merge-conflict":
+    case "merge-complete":
+    case "verification-start":
+    case "verification-complete":
+    case "aggregation-start":
+    case "aggregation-complete":
+      return trace.message;
+    case "refresh-requested":
+    case "refresh-deferred":
+      return trace.message;
+    default:
+      return undefined;
+  }
+}
+
+function formatSubagentProgressStatus(run: AgentRunState) {
+  const completedCount = run.subtasks.filter((task) => task.status === "completed").length;
+  const failedCount = run.subtasks.filter((task) => task.status === "failed").length;
+  if (failedCount > 0) {
+    return `Subagent progress: ${completedCount}/${run.subtasks.length} done, ${failedCount} failed.`;
+  }
+
+  return `Subagent progress: ${completedCount}/${run.subtasks.length} done.`;
+}
+
+async function requestExecutionRefresh(
+  ws: Bun.ServerWebSocket<HarnessConnection>,
+  requestId: string,
+  runtime: WorkspaceRuntimeStore,
+  repository: WorkspaceRepository,
+  projectId: ProjectId,
+  threadId: string,
+  executionState: ManagedExecutionState
+) {
+  if (executionState.phase === "waiting-input") {
+    throw new Error("Execution is waiting for user input");
+  }
+
+  const executionLabel = executionState.subagentId ? `subagent ${executionState.subagentId}` : executionState.kind;
+  if (isExecutionBusy(executionState)) {
+    runtime.updateExecutionState(projectId, executionState, (state) => ({
+      ...state,
+      refreshRequested: true,
+      refreshDeferred: true,
+      lastProgressAt: Date.now()
+    }));
+    appendSystemStatus(ws, requestId, runtime, repository, projectId, `Refreshing ${executionLabel} after current stream completes.`);
+    emitProjectTrace(ws, requestId, runtime, projectId, threadId, {
+      sessionId: runtime.getProject(projectId).session.sessionId,
+      stage: "refresh-deferred",
+      message: `Refreshing ${executionLabel} after current stream completes.`
+    });
+    return;
+  }
+
+  const refreshAction: ManagedRefreshAction = executionState.hasReceivedActivity ? "continue" : "restart";
+  runtime.updateExecutionState(projectId, executionState, (state) => ({
+    ...state,
+    refreshRequested: true,
+    refreshDeferred: false,
+    pendingRefreshAction: refreshAction,
+    lastProgressAt: Date.now()
+  }));
+  appendSystemStatus(
+    ws,
+    requestId,
+    runtime,
+    repository,
+    projectId,
+    refreshAction === "restart"
+      ? `Refreshing ${executionLabel} by restarting original prompt.`
+      : `Refreshing ${executionLabel} with continue.`
+  );
+  emitProjectTrace(ws, requestId, runtime, projectId, threadId, {
+    sessionId: runtime.getProject(projectId).session.sessionId,
+    stage: "refresh-requested",
+    message:
+      refreshAction === "restart"
+        ? `Refreshing ${executionLabel} by restarting original prompt.`
+        : `Refreshing ${executionLabel} with continue.`
+  });
+
+  await executionState.controller?.abort();
+}
+
+function emitProjectTrace(
+  ws: Bun.ServerWebSocket<HarnessConnection>,
+  requestId: string,
+  runtime: WorkspaceRuntimeStore,
+  projectId: ProjectId,
+  threadId: string,
+  trace: AgentTrace
+) {
+  runtime.appendTrace(projectId, trace);
+  sendEvent(ws, {
+    type: "agent.trace",
+    requestId,
+    payload: {
+      projectId,
+      threadId,
+      trace
+    }
   });
 }
 
@@ -1265,6 +1515,17 @@ function emitMessageAppended(ws: Bun.ServerWebSocket<HarnessConnection>, request
       state: project.session
     }
   });
+}
+
+function findLatestAssistantMessage(project: ProjectLike) {
+  for (let index = project.session.messages.length - 1; index >= 0; index -= 1) {
+    const message = project.session.messages[index];
+    if (message?.role === "assistant") {
+      return message;
+    }
+  }
+
+  return undefined;
 }
 
 function emitRunUpdated(ws: Bun.ServerWebSocket<HarnessConnection>, requestId: string, project: ProjectLike) {
@@ -1307,6 +1568,16 @@ function buildReadyPlanFromRun(run: AgentRunState): PlannerReadyTurn {
     })),
     finalExecutionBrief: run.finalExecutionBrief
   };
+}
+
+function assertRunCanRefresh(run: AgentRunState) {
+  if (run.status === "awaiting-user-input") {
+    throw new Error("Run is waiting for planner input");
+  }
+
+  if (!["running-main", "running-subagents", "aggregating"].includes(run.status)) {
+    throw new Error(`Run status ${run.status} is not refreshable`);
+  }
 }
 
 function assertProjectCanStartRun(project: ProjectLike) {
@@ -1354,13 +1625,20 @@ function requireRetryableRun(project: ProjectLike, runId: string) {
   return run;
 }
 
+function isExecutionBusy(state: ManagedExecutionState) {
+  return state.phase === "active" || state.phase === "finishing";
+}
+
 async function enforceExecutionPreflight(
   ws: Bun.ServerWebSocket<HarnessConnection>,
   requestId: string,
+  runtime: WorkspaceRuntimeStore,
+  repository: WorkspaceRepository,
   project: ProjectLike
 ) {
   const result = await runGitPreflight(project.rootPath);
   if (result.status === "warning") {
+    appendSystemStatus(ws, requestId, runtime, repository, project.id, result.preflight.message);
     sendEvent(ws, {
       type: "run.preflight",
       requestId,

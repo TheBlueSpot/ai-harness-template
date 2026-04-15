@@ -97,11 +97,12 @@ export async function planTask(
 }
 
 function formatMessages(messages: ChatMessage[]) {
-  if (messages.length === 0) {
+  const visibleMessages = messages.filter((message) => message.role !== "system");
+  if (visibleMessages.length === 0) {
     return "(no prior messages)";
   }
 
-  return messages.map((message) => `${message.role.toUpperCase()}: ${message.content}`).join("\n");
+  return visibleMessages.map((message) => `${message.role.toUpperCase()}: ${message.content}`).join("\n");
 }
 
 function formatPlanningQuestions(questions: PlanningQuestion[]) {

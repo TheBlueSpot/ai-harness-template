@@ -102,6 +102,69 @@ export function getLatestTaskStatusText(project: ViewProjectState, task: Subagen
   }
 }
 
+export function isRunWorking(status: string) {
+  return status === "planning" || status === "running-main" || status === "running-subagents" || status === "aggregating";
+}
+
+export function getRunRefreshState(project: ViewProjectState, targetRun = project.activeRun ?? project.lastRun, subagentId?: string) {
+  if (!targetRun) {
+    return {
+      disabled: true,
+      disabledReason: "No run available",
+      refreshing: false
+    };
+  }
+
+  if (project.activeRun?.id !== targetRun.id) {
+    return {
+      disabled: true,
+      disabledReason: "Use retry or resume for completed runs",
+      refreshing: false
+    };
+  }
+
+  if (targetRun.status === "awaiting-user-input") {
+    return {
+      disabled: true,
+      disabledReason: "Planner input required before refresh",
+      refreshing: false
+    };
+  }
+
+  if (!["running-main", "running-subagents", "aggregating"].includes(targetRun.status)) {
+    return {
+      disabled: true,
+      disabledReason: "Refresh only works while a run is active",
+      refreshing: false
+    };
+  }
+
+  if (subagentId) {
+    const task = targetRun.subtasks.find((entry) => entry.id === subagentId);
+    if (!task) {
+      return {
+        disabled: true,
+        disabledReason: "Unknown subagent",
+        refreshing: false
+      };
+    }
+
+    if (task.status === "completed" || task.status === "failed") {
+      return {
+        disabled: true,
+        disabledReason: "Use retry or resume for finished subtasks",
+        refreshing: false
+      };
+    }
+  }
+
+  return {
+    disabled: false,
+    disabledReason: undefined,
+    refreshing: hasPendingRefreshTrace(project.traces, targetRun.id, subagentId)
+  };
+}
+
 export function getLatestTraceForSubagent(traces: AgentTrace[], subagentId: string) {
   for (let index = traces.length - 1; index >= 0; index -= 1) {
     const trace = traces[index];
@@ -190,6 +253,29 @@ function formatCompactNumber(value: number) {
   return `${Math.round(value / 1_000)}k`;
 }
 
-function isRunWorking(status: string) {
-  return status === "planning" || status === "running-main" || status === "running-subagents" || status === "aggregating";
+function hasPendingRefreshTrace(traces: AgentTrace[], _runId: string, subagentId?: string) {
+  for (let index = traces.length - 1; index >= 0; index -= 1) {
+    const trace = traces[index];
+    if (!trace) {
+      continue;
+    }
+
+    if (subagentId && trace.subagentId && trace.subagentId !== subagentId) {
+      continue;
+    }
+
+    if (!subagentId && trace.subagentId) {
+      continue;
+    }
+
+    if (trace.stage === "refresh-complete") {
+      return false;
+    }
+
+    if (trace.stage === "refresh-requested" || trace.stage === "refresh-deferred") {
+      return true;
+    }
+  }
+
+  return false;
 }

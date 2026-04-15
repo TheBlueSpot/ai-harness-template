@@ -7,6 +7,7 @@ import {
   type WorkspaceProjectState,
   type WorkspaceState
 } from "../../shared/protocol";
+import { getExecutionKey, type ManagedExecutionState } from "./execution-runtime";
 
 export type RuntimeProjectState = WorkspaceProjectState & {
   latestPlan?: AgentPlan;
@@ -20,6 +21,7 @@ export type RuntimeProjectState = WorkspaceProjectState & {
 type RuntimeProjectRecord = {
   project: RuntimeProjectState;
   abortController?: AbortController;
+  executions: Map<string, ManagedExecutionState>;
 };
 
 export class WorkspaceRuntimeStore {
@@ -29,7 +31,8 @@ export class WorkspaceRuntimeStore {
   constructor(workspace: WorkspaceState) {
     for (const project of workspace.projects) {
       this.projects.set(project.id, {
-        project: createRuntimeProject(project)
+        project: createRuntimeProject(project),
+        executions: new Map()
       });
     }
 
@@ -58,7 +61,8 @@ export class WorkspaceRuntimeStore {
 
     this.projects.set(project.id, {
       project: hydratedProject,
-      abortController: existing?.abortController
+      abortController: existing?.abortController,
+      executions: existing?.executions ?? new Map()
     });
   }
 
@@ -160,6 +164,7 @@ export class WorkspaceRuntimeStore {
         lastError: undefined
       }
     }));
+    this.getProjectRecord(projectId).executions.clear();
   }
 
   setAbortController(projectId: ProjectId, abortController?: AbortController) {
@@ -175,6 +180,37 @@ export class WorkspaceRuntimeStore {
     return this.projects.get(projectId)?.abortController;
   }
 
+  getExecutionState(projectId: ProjectId, input: Pick<ManagedExecutionState, "runId" | "subagentId" | "kind">) {
+    return this.getProjectRecord(projectId).executions.get(getExecutionKey(input));
+  }
+
+  getRunExecutionStates(projectId: ProjectId, runId: string) {
+    return [...this.getProjectRecord(projectId).executions.values()].filter((entry) => entry.runId === runId);
+  }
+
+  setExecutionState(projectId: ProjectId, state: ManagedExecutionState) {
+    this.getProjectRecord(projectId).executions.set(getExecutionKey(state), state);
+  }
+
+  updateExecutionState(
+    projectId: ProjectId,
+    input: Pick<ManagedExecutionState, "runId" | "subagentId" | "kind">,
+    updater: (state: ManagedExecutionState) => ManagedExecutionState
+  ) {
+    const record = this.getProjectRecord(projectId);
+    const key = getExecutionKey(input);
+    const current = record.executions.get(key);
+    if (!current) {
+      throw new Error(`Unknown execution state: ${key}`);
+    }
+
+    record.executions.set(key, updater(current));
+  }
+
+  clearExecutionState(projectId: ProjectId, input: Pick<ManagedExecutionState, "runId" | "subagentId" | "kind">) {
+    this.getProjectRecord(projectId).executions.delete(getExecutionKey(input));
+  }
+
   private updateProject(projectId: ProjectId, updater: (project: RuntimeProjectState) => RuntimeProjectState) {
     const record = this.projects.get(projectId);
 
@@ -183,6 +219,15 @@ export class WorkspaceRuntimeStore {
     }
 
     record.project = updater(record.project);
+  }
+
+  private getProjectRecord(projectId: ProjectId) {
+    const record = this.projects.get(projectId);
+    if (!record) {
+      throw new Error(`Unknown project: ${projectId}`);
+    }
+
+    return record;
   }
 }
 

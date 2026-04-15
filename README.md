@@ -17,12 +17,14 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - Interactive planning questions that pause execution until the user answers in chat, with three typed quick options and one recommended path
 - Resumable partial subagent runs that keep completed work after failure or stop
 - Persistent retry for full runs and individual subagents, including successful runs
+- Manual refresh for active runs and active subagents, with deferred refresh while work is still streaming
 - Dirty-git preflight that warns on small working tree drift and refuses very dirty repos
 - Live context usage meter sourced from pi session context stats
 
 ## Workspace Model
 
 - Each project maps to a validated local folder path
+- A project can be the repository root or a nested folder inside a larger git repository
 - Workspaces can start empty and return to empty after removing the final project
 - Each project keeps multiple named threads and one selected active thread
 - `New thread` creates blank thread in same project and switches to it immediately
@@ -30,6 +32,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - `Pi fork` clones only source transcript into new thread and leaves run state, traces, errors, and drafts behind
 - Thread titles auto-generate from first user message until user renames them
 - Thread badges summarize status: purple `User Input`, orange `Planning`, yellow `Executing`, red `Error`, green `Done`
+- High-signal run status updates persist inline in chat as `system` messages instead of floating badges above the transcript
 - OpenAI and Google API keys plus provider brand preference can be persisted locally for the current machine
 - Agent run state, planning questions, and subtask progress persist locally with the active thread
 - Completed run metadata persists so retry stays available after refresh or restart
@@ -49,6 +52,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - Local Solid primitives for buttons, inputs, dialogs, tooltips, sheets, and toast presentation
 - `lucide-solid` icons across project actions and workspace controls
 - Tooltips render through a body-level portal so panel overflow does not clip them
+- Trace panel can open a full execution plan modal sourced from the current run summary, brief, and subtasks
 
 ## Local Workflow
 
@@ -70,11 +74,15 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - The UI sends typed project and chat commands only
 - Project open responses report whether a new project was created or an existing project was reopened with a new thread
 - Thread lifecycle, planning answers, resume requests, retry requests, and preflight warnings use typed websocket contracts
+- Refresh requests use a typed `run.refresh` command for active run-level and subagent-level recovery
 - pi tool use stays behind the backend adapter boundary
 - Subagent edits merge inside a separate integration worktree before verified changes sync back to the main project root
+- When a project points at a nested folder, repo-level worktrees still back execution while edit sync stays scoped to the selected folder
+- Repositories with no commits yet can still fan out through ephemeral snapshot state instead of failing on missing git history
 - Debug mode can preserve failed worktrees locally for inspection while successful worktrees are cleaned up automatically
 - Developer traces stay out of the user-visible transcript
-- Significant orchestration milestones can surface in chat as transient status cards
+- Significant orchestration milestones surface in chat as persisted inline status rows
+- Subagent startup timing is captured in debug logs plus developer trace events so slow spawn phases are measurable
 - Caught UI and command errors surface through toast notifications
 - Development builds re-surface swallowed UI and command errors after toast display so local debugging keeps mapped stacks visible
 

@@ -1,4 +1,4 @@
-import { For, Show, type JSX } from "solid-js";
+import { For, Show, createEffect, createSignal, onMount, type JSX } from "solid-js";
 import { createRequestId, type ClientCommand } from "../../../shared/protocol";
 import {
   getActiveProject,
@@ -8,7 +8,7 @@ import {
   isModelIdForProvider
 } from "../harness-store";
 import { isAbsolutePath } from "../lib/utils";
-import { formatContextUsage, getProjectStatusCards } from "../lib/run-status";
+import { formatContextUsage } from "../lib/run-status";
 import { pushToast } from "../toast-store";
 import { ActionButton } from "./action-button";
 import { Input } from "./ui/input";
@@ -31,17 +31,15 @@ type ChatPanelProps = {
 };
 
 export function ChatPanel(props: ChatPanelProps) {
+  let messageViewport: HTMLDivElement | undefined;
   const state = harnessStore.state;
   const activeProject = () => getActiveProject(state);
+  const [stickToBottom, setStickToBottom] = createSignal(true);
   const pendingQuestion = () => activeProject()?.activeRun?.questions.find((question) => question.status === "pending");
   const resumableRun = () => (activeProject()?.activeRun?.resumable ? activeProject()?.activeRun : undefined);
   const retryableRun = () => (activeProject()?.lastRun?.retryable ? activeProject()?.lastRun : undefined);
   const failedSubtaskCount = () =>
     activeProject()?.activeRun?.subtasks.filter((task) => task.status === "failed").length ?? 0;
-  const statusCards = () => {
-    const project = activeProject();
-    return project ? getProjectStatusCards(project, state.projectPreflights[project.id]) : [];
-  };
   const composerContextText = () => {
     const contextUsage = activeProject()?.contextUsage;
     if (!contextUsage) {
@@ -52,6 +50,46 @@ export function ChatPanel(props: ChatPanelProps) {
       contextUsage.sourceLabel
     }`;
   };
+
+  const scrollToBottom = (force: boolean = false) => {
+    if (!messageViewport || (!force && !stickToBottom())) {
+      return;
+    }
+
+    queueMicrotask(() => {
+      if (!messageViewport) {
+        return;
+      }
+
+      messageViewport.scrollTop = messageViewport.scrollHeight;
+    });
+  };
+
+  const updateScrollLock = () => {
+    if (!messageViewport) {
+      setStickToBottom(true);
+      return;
+    }
+
+    const distanceFromBottom =
+      messageViewport.scrollHeight - messageViewport.scrollTop - messageViewport.clientHeight;
+    setStickToBottom(distanceFromBottom <= 32);
+  };
+
+  onMount(() => {
+    scrollToBottom(true);
+  });
+
+  createEffect(() => {
+    activeProject()?.activeThreadId;
+    scrollToBottom(true);
+  });
+
+  createEffect(() => {
+    activeProject()?.session.messages.length;
+    activeProject()?.streamingAssistantText;
+    scrollToBottom();
+  });
 
   function handleQuestionChoice(answerText: string) {
     const project = activeProject();
@@ -398,9 +436,13 @@ export function ChatPanel(props: ChatPanelProps) {
               </div>
             </div>
 
-            <ScrollArea class="flex-1 min-h-0 space-y-3 pr-2">
+            <ScrollArea
+              ref={messageViewport}
+              class="flex-1 min-h-0 space-y-3 pr-2"
+              onScroll={updateScrollLock}
+            >
               <Show
-                when={project().session.messages.length > 0 || project().streamingAssistantText || statusCards().length > 0}
+                when={project().session.messages.length > 0 || project().streamingAssistantText}
                 fallback={
                   <div class="flex min-h-56 items-center justify-center rounded-[1.5rem] border border-dashed border-[color:var(--border)] bg-white/40 p-8 text-center text-[0.675rem] text-[color:var(--muted)]">
                     Choose project, then send task. Each project keeps its own persisted thread history.
@@ -408,36 +450,25 @@ export function ChatPanel(props: ChatPanelProps) {
                 }
               >
                 <div class="space-y-3">
-                  <For each={statusCards()}>
-                    {(card) => (
-                      <article
-                        class={`rounded-[1.5rem] border p-3 shadow-sm ${
-                          card.tone === "warning"
-                            ? "border-amber-300/70 bg-amber-50/80"
-                            : card.tone === "error"
-                            ? "border-rose-300/70 bg-rose-50/85"
-                            : "border-[color:var(--border)] bg-teal-950/5"
-                        }`}
-                      >
-                        <div class="mb-2 flex items-center gap-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-[color:var(--accent-strong)]">
-                          <Show when={card.spinning}>
-                            <LoaderCircle class="h-3.5 w-3.5 animate-spin" />
-                          </Show>
-                          {card.label}
-                        </div>
-                        <div class="whitespace-pre-wrap text-[0.675rem] leading-6 text-[color:var(--foreground)]">{card.body}</div>
-                      </article>
-                    )}
-                  </For>
                   <For each={project().session.messages}>
                     {(message) => (
                       <article
-                        class={`rounded-[1.5rem] border border-[color:var(--border)] p-3 shadow-sm ${
-                          message.role === "assistant" ? "bg-teal-950/5" : "bg-white/60"
+                        class={`border border-[color:var(--border)] p-3 shadow-sm ${
+                          message.role === "system"
+                            ? "rounded-[1.15rem] bg-slate-100/85"
+                            : message.role === "assistant"
+                            ? "rounded-[1.5rem] bg-teal-950/5"
+                            : "rounded-[1.5rem] bg-white/60"
                         }`}
                       >
-                        <div class="mb-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-[color:var(--accent-strong)]">
-                          {message.role}
+                        <div
+                          class={`mb-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] ${
+                            message.role === "system"
+                              ? "text-[color:var(--muted)]"
+                              : "text-[color:var(--accent-strong)]"
+                          }`}
+                        >
+                          {message.role === "system" ? "status" : message.role}
                         </div>
                         <div class="whitespace-pre-wrap text-[0.675rem] leading-6 text-[color:var(--foreground)]">
                           {message.content}
@@ -518,7 +549,7 @@ export function ChatPanel(props: ChatPanelProps) {
               </Show>
 
               <Textarea
-                rows="6"
+                rows="4"
                 value={project().draft}
                 placeholder={getComposerPlaceholder()}
                 onInput={(event: InputEvent & { currentTarget: HTMLTextAreaElement; target: Element }) =>

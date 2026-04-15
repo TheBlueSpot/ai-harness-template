@@ -927,9 +927,20 @@ export class WorkspaceRepository {
         const preview =
           this.db
             .query<{ content: string }, [string]>(
+              `SELECT content
+               FROM thread_messages
+               WHERE thread_id = ?1
+                 AND role != 'system'
+               ORDER BY created_at DESC
+               LIMIT 1`
+            )
+            .get(thread.id)?.content ??
+          this.db
+            .query<{ content: string }, [string]>(
               `SELECT content FROM thread_messages WHERE thread_id = ?1 ORDER BY created_at DESC LIMIT 1`
             )
-            .get(thread.id)?.content ?? undefined;
+            .get(thread.id)?.content ??
+          undefined;
         const messageCount =
           this.db.query<{ count: number }, [string]>(`SELECT COUNT(*) AS count FROM thread_messages WHERE thread_id = ?1`).get(thread.id)
             ?.count ?? 0;
