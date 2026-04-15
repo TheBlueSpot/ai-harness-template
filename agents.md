@@ -2,6 +2,7 @@
 
 These rules are hard requirements for this repository.
 
+- All conversations init with /caveman ultra skill
 - Use Bun latest syntax for scripts, tests, and generated files.
 - Keep filenames and directories in kebab-case.
 - Treat `/context` as the searchable reference source for project knowledge.
@@ -10,7 +11,7 @@ These rules are hard requirements for this repository.
 - Prefer explicit typed contracts over ad hoc string commands.
 - Fail fast on invalid input, malformed payloads, and unexpected message types.
 - Keep development local-first.
-- Keep chat history in memory for the current run only unless persistence is added later.
+- Keep project and chat history in local SQLite unless the repository explicitly changes persistence strategy later.
 - Keep command handling behind a narrow, typed bridge.
 - Do not place code examples in this file.
 - The project internals should always be in either bun typescript (or lower level code like c++ for extreme performance wins)
@@ -18,3 +19,9 @@ These rules are hard requirements for this repository.
 - Make sure developer builds have toggleable world class debugging logging
 - After finishing a task locate the nearest readme.md and update it as needed. if one does not exist create it
 - MD files should contain as little references to code and more high level concepts and links to other MD files.
+- Prefer shadcn-style Solid components for UI primitives.
+- Prefer lucide-solid for icons.
+- Every button must have tooltip copy.
+- Disabled buttons must explain why in tooltip copy.
+- Icon-only list actions must use icons plus accessible labels.
+- Surface caught UI and command errors through toast notifications.

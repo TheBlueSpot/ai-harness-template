@@ -1,0 +1,201 @@
+import {
+  type AgentRunState,
+  type AgentPlan,
+  type ProjectContextUsage,
+  type AgentTrace,
+  type ProjectId,
+  type WorkspaceProjectState,
+  type WorkspaceState
+} from "../../shared/protocol";
+
+type RuntimeProjectRecord = {
+  project: WorkspaceProjectState;
+  abortController?: AbortController;
+};
+
+export class WorkspaceRuntimeStore {
+  private readonly projects = new Map<ProjectId, RuntimeProjectRecord>();
+  private activeProjectId: ProjectId;
+
+  constructor(workspace: WorkspaceState) {
+    for (const project of workspace.projects) {
+      this.projects.set(project.id, {
+        project
+      });
+    }
+
+    this.activeProjectId = workspace.activeProjectId;
+  }
+
+  getWorkspace(): WorkspaceState {
+    return {
+      projects: Array.from(this.projects.values()).map((record) => record.project),
+      activeProjectId: this.activeProjectId
+    };
+  }
+
+  getProject(projectId: ProjectId) {
+    const project = this.projects.get(projectId)?.project;
+    if (!project) {
+      throw new Error(`Unknown project: ${projectId}`);
+    }
+
+    return project;
+  }
+
+  upsertPersistedProject(project: WorkspaceProjectState) {
+    const existing = this.projects.get(project.id);
+    const hydratedProject = existing ? hydrateProjectState(existing.project, project) : project;
+
+    this.projects.set(project.id, {
+      project: hydratedProject,
+      abortController: existing?.abortController
+    });
+  }
+
+  removeProject(projectId: ProjectId, activeProjectId: ProjectId) {
+    this.projects.delete(projectId);
+    this.activeProjectId = activeProjectId;
+  }
+
+  setActiveProject(projectId: ProjectId) {
+    this.getProject(projectId);
+    this.activeProjectId = projectId;
+  }
+
+  setProjectStreaming(projectId: ProjectId, isStreaming: boolean) {
+    this.updateProject(projectId, (project) => ({
+      ...project,
+      session: {
+        ...project.session,
+        isStreaming
+      }
+    }));
+  }
+
+  setProjectError(projectId: ProjectId, lastError?: string) {
+    this.updateProject(projectId, (project) => ({
+      ...project,
+      lastError,
+      session: {
+        ...project.session,
+        lastError
+      }
+    }));
+  }
+
+  setProjectExecutionModel(projectId: ProjectId, executionModelId?: string) {
+    this.updateProject(projectId, (project) => ({
+      ...project,
+      session: {
+        ...project.session,
+        executionModelId
+      }
+    }));
+  }
+
+  setProjectPlan(projectId: ProjectId, latestPlan?: AgentPlan) {
+    this.updateProject(projectId, (project) => ({
+      ...project,
+      latestPlan
+    }));
+  }
+
+  setProjectRun(projectId: ProjectId, activeRun?: AgentRunState) {
+    this.updateProject(projectId, (project) => ({
+      ...project,
+      activeRun
+    }));
+  }
+
+  setProjectContextUsage(projectId: ProjectId, contextUsage?: ProjectContextUsage) {
+    this.updateProject(projectId, (project) => ({
+      ...project,
+      contextUsage
+    }));
+  }
+
+  appendTrace(projectId: ProjectId, trace: AgentTrace) {
+    this.updateProject(projectId, (project) => ({
+      ...project,
+      traces: [...project.traces, trace]
+    }));
+  }
+
+  appendStreamingDelta(projectId: ProjectId, delta: string) {
+    this.updateProject(projectId, (project) => ({
+      ...project,
+      streamingAssistantText: `${project.streamingAssistantText}${delta}`
+    }));
+  }
+
+  clearStreaming(projectId: ProjectId) {
+    this.updateProject(projectId, (project) => ({
+      ...project,
+      streamingAssistantText: ""
+    }));
+  }
+
+  clearProjectTransients(projectId: ProjectId) {
+    this.updateProject(projectId, (project) => ({
+      ...project,
+      latestPlan: undefined,
+      activeRun: undefined,
+      traces: [],
+      streamingAssistantText: "",
+      lastError: undefined,
+      session: {
+        ...project.session,
+        isStreaming: false,
+        lastError: undefined
+      }
+    }));
+  }
+
+  setAbortController(projectId: ProjectId, abortController?: AbortController) {
+    const record = this.projects.get(projectId);
+    if (!record) {
+      throw new Error(`Unknown project: ${projectId}`);
+    }
+
+    record.abortController = abortController;
+  }
+
+  getAbortController(projectId: ProjectId) {
+    return this.projects.get(projectId)?.abortController;
+  }
+
+  private updateProject(projectId: ProjectId, updater: (project: WorkspaceProjectState) => WorkspaceProjectState) {
+    const record = this.projects.get(projectId);
+
+    if (!record) {
+      throw new Error(`Unknown project: ${projectId}`);
+    }
+
+    record.project = updater(record.project);
+  }
+}
+
+function hydrateProjectState(
+  existing: WorkspaceProjectState,
+  incoming: WorkspaceProjectState
+): WorkspaceProjectState {
+  return {
+    ...incoming,
+    latestPlan: existing.latestPlan,
+    activeRun: incoming.activeRun,
+    lastRun: incoming.lastRun,
+    contextUsage: existing.contextUsage ?? incoming.contextUsage,
+    traces: existing.traces,
+    streamingAssistantText: existing.streamingAssistantText,
+    draft: existing.draft,
+    lastError: existing.lastError,
+    session: {
+      ...incoming.session,
+      selectedAgentId: existing.session.selectedAgentId ?? incoming.session.selectedAgentId,
+      executionModelId: existing.session.executionModelId ?? incoming.session.executionModelId,
+      isStreaming: existing.session.isStreaming,
+      lastError: existing.session.lastError
+    }
+  };
+}

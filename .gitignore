@@ -2,5 +2,7 @@ node_modules
 dist
 harness/ui/dist
 .bun
+.local
+.tmp-test-data
 .DS_Store
 

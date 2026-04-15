@@ -3,26 +3,31 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev:cli": "bun --watch harness/cli/src/index.ts",
-    "dev:ui": "bunx vite --config harness/ui/vite.config.ts",
-    "build:ui": "bunx vite build --config harness/ui/vite.config.ts",
+    "dev": "bun --hot harness/cli/src/index.ts",
+    "dev:cli": "bun --watch harness/cli/src/index.ts --server-only",
+    "build:ui": "bun run scripts/build-ui.ts",
     "test": "bun test",
     "typecheck": "bunx tsc --noEmit"
   },
   "dependencies": {
-    "react": "^19.1.1",
-    "react-dom": "^19.1.1",
-    "zod": "^3.25.76",
-    "zustand": "^5.0.7"
+    "@kobalte/core": "^0.13.11",
+    "@mariozechner/pi-coding-agent": "^0.66.1",
+    "bun-plugin-tailwind": "^0.1.2",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-solid": "^1.8.0",
+    "solid-js": "^1.9.12",
+    "tailwind-merge": "^3.5.0",
+    "tailwindcss": "^4.2.2",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@babel/core": "^7.29.0",
+    "@babel/preset-typescript": "^7.28.5",
+    "@dschz/bun-plugin-solid": "^1.0.4",
     "@types/node": "^24.3.0",
-    "@types/react": "^19.1.11",
-    "@types/react-dom": "^19.1.7",
-    "@vitejs/plugin-react": "^5.0.2",
+    "babel-preset-solid": "^1.9.12",
     "bun-types": "^1.2.21",
-    "typescript": "^5.9.2",
-    "vite": "^7.1.4"
+    "typescript": "^5.9.2"
   }
 }
-

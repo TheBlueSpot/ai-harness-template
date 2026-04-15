@@ -1,13 +1,11 @@
-import React from "react";
-import ReactDOM from "react-dom/client";
+import { render } from "solid-js/web";
 import { App } from "./app";
 import "./styles.css";
 
-const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
+const root = document.getElementById("root");
 
-root.render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>
-);
+if (!root) {
+  throw new Error("Missing root element");
+}
 
+render(() => <App />, root);

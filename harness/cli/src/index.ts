@@ -1,8 +1,9 @@
 import { startHarnessServer } from "./server";
 
-const port = Number(Bun.env.HARNESS_CLI_PORT ?? 8787);
+const port = Number(Bun.env.HARNESS_PORT ?? 8787);
+const serverOnly = process.argv.includes("--server-only");
 
-startHarnessServer({
-  port: Number.isFinite(port) ? port : 8787
+await startHarnessServer({
+  port: Number.isFinite(port) ? port : 8787,
+  serverOnly
 });
-
