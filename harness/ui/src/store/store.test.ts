@@ -11,6 +11,7 @@ describe("harness store reducer", () => {
   test("records plans and traces on active project without polluting messages", () => {
     const initialState = createInitialViewState();
     const projectId = initialState.workspace.activeProjectId;
+    const threadId = initialState.workspace.projects[0].activeThreadId;
     const sessionId = initialState.workspace.projects[0].session.sessionId;
 
     const nextState = reduceServerEvent(initialState, {
@@ -18,6 +19,7 @@ describe("harness store reducer", () => {
       requestId: "req-1",
       payload: {
         projectId,
+        threadId,
         plan: {
           sessionId,
           agentId: "pi",
@@ -35,6 +37,7 @@ describe("harness store reducer", () => {
       requestId: "req-1",
       payload: {
         projectId,
+        threadId,
         trace: {
           sessionId,
           stage: "subagent-start",
@@ -59,6 +62,7 @@ describe("harness store reducer", () => {
       requestId: "req-2",
       payload: {
         projectId,
+        threadId: initialState.workspace.projects[0].activeThreadId,
         trace: {
           sessionId: initialState.workspace.projects[0].session.sessionId,
           stage: "planning",
@@ -72,7 +76,7 @@ describe("harness store reducer", () => {
       requestId: "req-3",
       payload: {
         projectId,
-        activeThreadId: "thread-2",
+        threadId: "thread-2",
         sessionId: "thread-2",
         state: createEmptySession("thread-2")
       }
@@ -87,12 +91,14 @@ describe("harness store reducer", () => {
   test("stores streaming deltas until completion for matching project", () => {
     const initialState = createInitialViewState();
     const projectId = initialState.workspace.activeProjectId;
+    const threadId = initialState.workspace.projects[0].activeThreadId;
     const deltaState = reduceServerEvent(initialState, {
       type: "chat.delta",
       requestId: "req-4",
       payload: {
         projectId,
-        sessionId: "thread-1",
+        threadId,
+        sessionId: threadId,
         delta: "hello"
       }
     });
@@ -100,10 +106,10 @@ describe("harness store reducer", () => {
     const completeEvent: ServerEvent = {
       type: "chat.complete",
       requestId: "req-4",
-      payload: {
-        projectId,
-        activeThreadId: "thread-1",
-        sessionId: "thread-1",
+        payload: {
+          projectId,
+          threadId,
+          sessionId: threadId,
         assistantMessage: {
           id: "assistant-1",
           role: "assistant",
@@ -111,7 +117,7 @@ describe("harness store reducer", () => {
           createdAt: new Date().toISOString()
         },
         state: {
-          ...createEmptySession("thread-1"),
+          ...createEmptySession(threadId),
           messages: [
             {
               id: "assistant-1",
@@ -135,13 +141,14 @@ describe("harness store reducer", () => {
   test("appends chat messages without waiting for completion", () => {
     const initialState = createInitialViewState();
     const projectId = initialState.workspace.activeProjectId;
+    const threadId = initialState.workspace.projects[0].activeThreadId;
     const nextState = reduceServerEvent(initialState, {
       type: "chat.message-appended",
       requestId: "req-append",
       payload: {
         projectId,
-        activeThreadId: "thread-1",
-        sessionId: "thread-1",
+        threadId,
+        sessionId: threadId,
         message: {
           id: "user-1",
           role: "user",
@@ -149,7 +156,7 @@ describe("harness store reducer", () => {
           createdAt: new Date().toISOString()
         },
         state: {
-          ...createEmptySession("thread-1"),
+          ...createEmptySession(threadId),
           messages: [
             {
               id: "user-1",
@@ -170,14 +177,16 @@ describe("harness store reducer", () => {
   test("hydrates active run and clears it", () => {
     const initialState = createInitialViewState();
     const projectId = initialState.workspace.activeProjectId;
+    const threadId = initialState.workspace.projects[0].activeThreadId;
     const stateWithRun = reduceServerEvent(initialState, {
       type: "run.updated",
       requestId: "req-run",
       payload: {
         projectId,
+        threadId,
         run: {
           id: "run-1",
-          threadId: "thread-1",
+          threadId,
           status: "partial-complete",
           latestUserPrompt: "complex task",
           executionModelId: "openai/gpt-5.4",
@@ -218,6 +227,7 @@ describe("harness store reducer", () => {
       requestId: "req-run-clear",
       payload: {
         projectId,
+        threadId,
         runId: "run-1"
       }
     });
@@ -229,14 +239,16 @@ describe("harness store reducer", () => {
   test("stores completed runs as lastRun but clears activeRun", () => {
     const initialState = createInitialViewState();
     const projectId = initialState.workspace.activeProjectId;
+    const threadId = initialState.workspace.projects[0].activeThreadId;
     const nextState = reduceServerEvent(initialState, {
       type: "run.updated",
       requestId: "req-run-complete",
       payload: {
         projectId,
+        threadId,
         run: {
           id: "run-complete",
-          threadId: "thread-1",
+          threadId,
           status: "completed",
           latestUserPrompt: "simple task",
           executionModelId: "openai/gpt-5.4",
@@ -263,6 +275,7 @@ describe("harness store reducer", () => {
       requestId: "req-preflight",
       payload: {
         projectId,
+        threadId: initialState.workspace.projects[0].activeThreadId,
         preflight: {
           severity: "warning",
           kind: "git-dirty",
@@ -283,6 +296,7 @@ describe("harness store reducer", () => {
       requestId: "req-context",
       payload: {
         projectId,
+        threadId: initialState.workspace.projects[0].activeThreadId,
         contextUsage: {
           sourceKind: "planner",
           sourceLabel: "planner",

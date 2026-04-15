@@ -83,6 +83,29 @@ describe("workspace repository", () => {
       id: "question-1",
       prompt: "Which route should handle this?",
       placeholder: "api/users/[id]",
+      choices: [
+        {
+          id: "choice-1",
+          label: "API route",
+          description: "Use provided API route.",
+          answerText: "api/users/[id]",
+          recommended: true
+        },
+        {
+          id: "choice-2",
+          label: "Web route",
+          description: "Use a page route instead.",
+          answerText: "users/[id]",
+          recommended: false
+        },
+        {
+          id: "choice-3",
+          label: "Custom",
+          description: "Type a custom route.",
+          answerText: "custom route",
+          recommended: false
+        }
+      ],
       required: true
     });
     repository.answerPlanningQuestion(projectId, runId!, "question-1", "api/users/[id]");

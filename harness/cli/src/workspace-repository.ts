@@ -2,28 +2,31 @@ import { Database } from "bun:sqlite";
 import { mkdirSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import {
-  createRunId,
   createEmptySession,
   createProjectId,
+  createProjectThreadSummary,
+  createRunId,
   createThreadId,
   type AgentRunState,
   type AgentRunStatus,
   type ChatMessage,
   type ChatRole,
   type PlannerReadyTurn,
+  type PlanningChoice,
   type PlanningQuestion,
   type ProviderBrand,
   type ProjectId,
   type ProjectRootPath,
+  type ProjectThreadSummary,
   type QuestionId,
   type SubagentTaskState,
+  type ThreadBadgeState,
   type ThreadId,
   type WorkspaceProjectState,
   type WorkspaceState
 } from "../../shared/protocol";
 
 const ACTIVE_THREAD_STATUS = "active";
-const ARCHIVED_THREAD_STATUS = "archived";
 const ACTIVE_PROJECT_KEY = "active_project_id";
 const OPENAI_API_KEY = "openai_api_key";
 const GOOGLE_API_KEY = "google_api_key";
@@ -35,6 +38,7 @@ type ProjectRow = {
   id: string;
   name: string;
   root_path: string;
+  active_thread_id: string | null;
   created_at: string;
   updated_at: string;
   last_opened_at: string;
@@ -44,6 +48,10 @@ type ThreadRow = {
   id: string;
   project_id: string;
   status: string;
+  title: string;
+  title_source: "generated" | "custom";
+  updated_at: string;
+  forked_from_thread_id: string | null;
   created_at: string;
   archived_at: string | null;
 };
@@ -79,6 +87,7 @@ type AgentRunQuestionRow = {
   ordinal: number;
   prompt: string;
   placeholder: string | null;
+  choices_json: string | null;
   status: "pending" | "answered";
   answer_text: string | null;
   asked_at: string;
@@ -119,7 +128,7 @@ export class WorkspaceRepository {
   loadWorkspace(): WorkspaceState {
     const projectRows = this.db
       .query<ProjectRow, []>(
-        `SELECT id, name, root_path, created_at, updated_at, last_opened_at
+        `SELECT id, name, root_path, active_thread_id, created_at, updated_at, last_opened_at
          FROM projects
          ORDER BY last_opened_at DESC, created_at ASC`
       )
@@ -130,9 +139,8 @@ export class WorkspaceRepository {
     }
 
     const activeProjectId = this.resolveActiveProjectId(projectRows.map((project) => project.id as ProjectId));
-    const projects = projectRows.map((project) => this.readProjectSnapshot(project.id as ProjectId));
     return {
-      projects,
+      projects: projectRows.map((project) => this.readProjectSnapshot(project.id as ProjectId)),
       activeProjectId
     };
   }
@@ -143,7 +151,7 @@ export class WorkspaceRepository {
 
     const existingProject = this.db
       .query<ProjectRow, [string]>(
-        `SELECT id, name, root_path, created_at, updated_at, last_opened_at
+        `SELECT id, name, root_path, active_thread_id, created_at, updated_at, last_opened_at
          FROM projects
          WHERE root_path = ?1`
       )
@@ -159,24 +167,19 @@ export class WorkspaceRepository {
     const baseName = path.basename(normalizedRootPath);
     const uniqueName = this.resolveUniqueProjectName(baseName);
 
-    const insertProject = this.db.query(
-      `INSERT INTO projects (id, name, root_path, created_at, updated_at, last_opened_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6)`
-    );
-    const insertThread = this.db.query(
-      `INSERT INTO project_threads (id, project_id, status, created_at, archived_at)
-       VALUES (?1, ?2, ?3, ?4, NULL)`
-    );
-    const setActiveProject = this.db.query(
-      `INSERT INTO workspace_meta (key, value)
-       VALUES (?1, ?2)
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value`
-    );
-
     const tx = this.db.transaction(() => {
-      insertProject.run(projectId, uniqueName, normalizedRootPath, now, now, now);
-      insertThread.run(threadId, projectId, ACTIVE_THREAD_STATUS, now);
-      setActiveProject.run(ACTIVE_PROJECT_KEY, projectId);
+      this.db
+        .query(
+          `INSERT INTO projects (id, name, root_path, active_thread_id, created_at, updated_at, last_opened_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?5)`
+        )
+        .run(projectId, uniqueName, normalizedRootPath, threadId, now);
+      this.insertThread(projectId, threadId, {
+        title: "Thread 1",
+        titleSource: "generated",
+        updatedAt: now
+      });
+      this.setWorkspaceMetaValue(ACTIVE_PROJECT_KEY, projectId);
     });
     tx();
 
@@ -186,27 +189,12 @@ export class WorkspaceRepository {
   activateProject(projectId: ProjectId) {
     this.assertProjectExists(projectId);
     const now = new Date().toISOString();
-
-    this.db
-      .query(
-        `UPDATE projects
-         SET last_opened_at = ?2, updated_at = ?2
-         WHERE id = ?1`
-      )
-      .run(projectId, now);
-
-    this.db
-      .query(
-        `INSERT INTO workspace_meta (key, value)
-         VALUES (?1, ?2)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value`
-      )
-      .run(ACTIVE_PROJECT_KEY, projectId);
+    this.touchProject(projectId, now);
+    this.setWorkspaceMetaValue(ACTIVE_PROJECT_KEY, projectId);
   }
 
   removeProject(projectId: ProjectId): { activeProjectId: ProjectId } {
     this.assertProjectExists(projectId);
-
     const remainingProjectIds = this.db
       .query<{ id: string }, [string]>(`SELECT id FROM projects WHERE id != ?1 ORDER BY last_opened_at DESC, created_at ASC`)
       .all(projectId)
@@ -217,88 +205,137 @@ export class WorkspaceRepository {
     }
 
     const nextActiveProjectId = remainingProjectIds[0];
-
-    const deleteProject = this.db.query(`DELETE FROM projects WHERE id = ?1`);
-    const setActiveProject = this.db.query(
-      `INSERT INTO workspace_meta (key, value)
-       VALUES (?1, ?2)
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value`
-    );
-
     const tx = this.db.transaction(() => {
-      deleteProject.run(projectId);
-      setActiveProject.run(ACTIVE_PROJECT_KEY, nextActiveProjectId);
+      this.db.query(`DELETE FROM projects WHERE id = ?1`).run(projectId);
+      this.setWorkspaceMetaValue(ACTIVE_PROJECT_KEY, nextActiveProjectId);
     });
     tx();
 
     return { activeProjectId: nextActiveProjectId };
   }
 
-  resetProject(projectId: ProjectId) {
+  createThread(projectId: ProjectId) {
     this.assertProjectExists(projectId);
-
-    const activeThread = this.readActiveThreadRow(projectId);
-    const nextThreadId = createThreadId();
+    const threadId = createThreadId();
     const now = new Date().toISOString();
-
     const tx = this.db.transaction(() => {
-      this.db
-        .query(
-          `UPDATE project_threads
-           SET status = ?2, archived_at = ?3
-           WHERE id = ?1`
-        )
-        .run(activeThread.id, ARCHIVED_THREAD_STATUS, now);
-
-      this.db
-        .query(
-          `INSERT INTO project_threads (id, project_id, status, created_at, archived_at)
-           VALUES (?1, ?2, ?3, ?4, NULL)`
-        )
-        .run(nextThreadId, projectId, ACTIVE_THREAD_STATUS, now);
-
-      this.db
-        .query(
-          `UPDATE projects
-           SET updated_at = ?2, last_opened_at = ?2
-           WHERE id = ?1`
-        )
-        .run(projectId, now);
+      this.insertThread(projectId, threadId, {
+        title: `Thread ${this.getNextThreadNumber(projectId)}`,
+        titleSource: "generated",
+        updatedAt: now
+      });
+      this.setActiveThread(projectId, threadId, now);
     });
     tx();
 
     return this.readProjectSnapshot(projectId);
   }
 
-  appendMessage(projectId: ProjectId, role: ChatRole, content: string): WorkspaceProjectState {
-    const thread = this.readActiveThreadRow(projectId);
+  forkThread(projectId: ProjectId, sourceThreadId: ThreadId) {
+    const sourceThread = this.readThreadRow(projectId, sourceThreadId);
+    const nextThreadId = createThreadId();
+    const now = new Date().toISOString();
+    const sourceMessages = this.readMessages(sourceThread.id as ThreadId);
+
+    const tx = this.db.transaction(() => {
+      this.insertThread(projectId, nextThreadId, {
+        title: `Fork of ${sourceThread.title}`,
+        titleSource: "generated",
+        updatedAt: now,
+        forkedFromThreadId: sourceThread.id as ThreadId
+      });
+
+      for (const message of sourceMessages) {
+        this.db
+          .query(
+            `INSERT INTO thread_messages (id, thread_id, role, content, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)`
+          )
+          .run(crypto.randomUUID(), nextThreadId, message.role, message.content, message.createdAt);
+      }
+
+      this.setActiveThread(projectId, nextThreadId, now);
+    });
+    tx();
+
+    return this.readProjectSnapshot(projectId);
+  }
+
+  activateThread(projectId: ProjectId, threadId: ThreadId) {
+    this.readThreadRow(projectId, threadId);
+    this.setActiveThread(projectId, threadId, new Date().toISOString());
+    return this.readProjectSnapshot(projectId);
+  }
+
+  renameThread(projectId: ProjectId, threadId: ThreadId, title: string) {
+    const normalizedTitle = normalizeThreadTitle(title);
+    const now = new Date().toISOString();
+    const updated = this.db
+      .query(
+        `UPDATE project_threads
+         SET title = ?3, title_source = 'custom', updated_at = ?4
+         WHERE id = ?1 AND project_id = ?2`
+      )
+      .run(threadId, projectId, normalizedTitle, now);
+
+    if (updated.changes === 0) {
+      throw new Error(`Unknown thread: ${threadId}`);
+    }
+
+    this.touchProject(projectId, now);
+    return this.readProjectSnapshot(projectId);
+  }
+
+  listThreadSummaries(projectId: ProjectId) {
+    this.assertProjectExists(projectId);
+    return this.readThreadSummaries(projectId);
+  }
+
+  getThreadSummary(projectId: ProjectId, threadId: ThreadId) {
+    return this.readThreadSummaries(projectId).find((thread) => thread.id === threadId);
+  }
+
+  resetProject(projectId: ProjectId) {
+    return this.createThread(projectId);
+  }
+
+  appendMessage(projectId: ProjectId, role: ChatRole, content: string, threadId?: ThreadId): WorkspaceProjectState {
+    const resolvedThreadId = this.resolveThreadId(projectId, threadId);
+    const thread = this.readThreadRow(projectId, resolvedThreadId);
     const message = {
       id: crypto.randomUUID(),
       role,
       content,
       createdAt: new Date().toISOString()
     } satisfies ChatMessage;
+    const priorMessageCount =
+      this.db.query<{ count: number }, [string]>(`SELECT COUNT(*) AS count FROM thread_messages WHERE thread_id = ?1`).get(thread.id)
+        ?.count ?? 0;
 
-    this.db
-      .query(
-        `INSERT INTO thread_messages (id, thread_id, role, content, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)`
-      )
-      .run(message.id, thread.id, message.role, message.content, message.createdAt);
+    const tx = this.db.transaction(() => {
+      this.db
+        .query(
+          `INSERT INTO thread_messages (id, thread_id, role, content, created_at)
+           VALUES (?1, ?2, ?3, ?4, ?5)`
+        )
+        .run(message.id, thread.id, message.role, message.content, message.createdAt);
+      this.db.query(`UPDATE project_threads SET updated_at = ?2 WHERE id = ?1`).run(thread.id, message.createdAt);
+      this.touchProject(projectId, message.createdAt);
 
-    this.db
-      .query(
-        `UPDATE projects
-         SET updated_at = ?2, last_opened_at = ?2
-         WHERE id = ?1`
-      )
-      .run(projectId, message.createdAt);
+      if (role === "user" && priorMessageCount === 0 && thread.title_source === "generated" && /^Thread \d+$/.test(thread.title)) {
+        this.db
+          .query(`UPDATE project_threads SET title = ?3 WHERE id = ?1 AND project_id = ?2`)
+          .run(thread.id, projectId, toGeneratedThreadTitle(content, thread.title));
+      }
+    });
+    tx();
 
     return this.readProjectSnapshot(projectId);
   }
 
-  createAgentRun(projectId: ProjectId, latestUserPrompt: string, planningModelId?: string) {
-    const thread = this.readActiveThreadRow(projectId);
+  createAgentRun(projectId: ProjectId, latestUserPrompt: string, planningModelId?: string, threadId?: ThreadId) {
+    const resolvedThreadId = this.resolveThreadId(projectId, threadId);
+    this.readThreadRow(projectId, resolvedThreadId);
     const runId = createRunId();
     const now = new Date().toISOString();
 
@@ -321,15 +358,17 @@ export class WorkspaceRepository {
           completed_at
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, NULL, NULL, NULL, ?7, ?7, NULL)`
       )
-      .run(runId, projectId, thread.id, "planning", latestUserPrompt, planningModelId ?? null, now);
+      .run(runId, projectId, resolvedThreadId, "planning", latestUserPrompt, planningModelId ?? null, now);
 
+    this.db.query(`UPDATE project_threads SET updated_at = ?2 WHERE id = ?1`).run(resolvedThreadId, now);
+    this.touchProject(projectId, now);
     return this.readProjectSnapshot(projectId);
   }
 
   appendPlanningQuestion(
     projectId: ProjectId,
     runId: string,
-    question: Pick<PlanningQuestion, "id" | "prompt" | "placeholder" | "required">
+    question: Pick<PlanningQuestion, "id" | "prompt" | "placeholder" | "choices" | "required">
   ) {
     const now = new Date().toISOString();
     const ordinal =
@@ -347,13 +386,14 @@ export class WorkspaceRepository {
             ordinal,
             prompt,
             placeholder,
+            choices_json,
             status,
             answer_text,
             asked_at,
             answered_at
-          ) VALUES (?1, ?2, ?3, ?4, ?5, 'pending', NULL, ?6, NULL)`
+          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', NULL, ?7, NULL)`
         )
-        .run(question.id, runId, ordinal, question.prompt, question.placeholder ?? null, now);
+        .run(question.id, runId, ordinal, question.prompt, question.placeholder ?? null, JSON.stringify(question.choices), now);
 
       this.db
         .query(
@@ -402,9 +442,7 @@ export class WorkspaceRepository {
 
     const tx = this.db.transaction(() => {
       this.assertRunExists(projectId, runId);
-      this.db
-        .query(`DELETE FROM agent_run_subtasks WHERE run_id = ?1`)
-        .run(runId);
+      this.db.query(`DELETE FROM agent_run_subtasks WHERE run_id = ?1`).run(runId);
 
       for (const task of plan.subtasks) {
         this.db
@@ -531,10 +569,7 @@ export class WorkspaceRepository {
 
   clearAgentRun(projectId: ProjectId, runId: string) {
     const deleted = this.db
-      .query(
-        `DELETE FROM agent_runs
-         WHERE id = ?1 AND project_id = ?2`
-      )
+      .query(`DELETE FROM agent_runs WHERE id = ?1 AND project_id = ?2`)
       .run(runId, projectId);
 
     if (deleted.changes === 0) {
@@ -610,7 +645,6 @@ export class WorkspaceRepository {
 
   private bootstrapDefaultProject(defaultRootPath: string) {
     const count = this.db.query<{ count: number }, []>(`SELECT COUNT(*) AS count FROM projects`).get()?.count ?? 0;
-
     if (count > 0) {
       return;
     }
@@ -626,24 +660,16 @@ export class WorkspaceRepository {
     const tx = this.db.transaction(() => {
       this.db
         .query(
-          `INSERT INTO projects (id, name, root_path, created_at, updated_at, last_opened_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6)`
+          `INSERT INTO projects (id, name, root_path, active_thread_id, created_at, updated_at, last_opened_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?5)`
         )
-        .run(projectId, projectName, normalizedRootPath, now, now, now);
-
-      this.db
-        .query(
-          `INSERT INTO project_threads (id, project_id, status, created_at, archived_at)
-           VALUES (?1, ?2, ?3, ?4, NULL)`
-        )
-        .run(threadId, projectId, ACTIVE_THREAD_STATUS, now);
-
-      this.db
-        .query(
-          `INSERT INTO workspace_meta (key, value)
-           VALUES (?1, ?2)`
-        )
-        .run(ACTIVE_PROJECT_KEY, projectId);
+        .run(projectId, projectName, normalizedRootPath, threadId, now);
+      this.insertThread(projectId, threadId, {
+        title: "Thread 1",
+        titleSource: "generated",
+        updatedAt: now
+      });
+      this.db.query(`INSERT INTO workspace_meta (key, value) VALUES (?1, ?2)`).run(ACTIVE_PROJECT_KEY, projectId);
     });
     tx();
   }
@@ -654,6 +680,7 @@ export class WorkspaceRepository {
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         root_path TEXT NOT NULL UNIQUE,
+        active_thread_id TEXT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         last_opened_at TEXT NOT NULL
@@ -668,17 +695,20 @@ export class WorkspaceRepository {
         id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL,
         status TEXT NOT NULL CHECK(status IN ('active', 'archived')),
+        title TEXT NULL,
+        title_source TEXT NULL,
+        updated_at TEXT NULL,
+        forked_from_thread_id TEXT NULL,
         created_at TEXT NOT NULL,
         archived_at TEXT NULL,
         FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
       );
 
-      CREATE UNIQUE INDEX IF NOT EXISTS project_threads_active_project_idx
-      ON project_threads(project_id)
-      WHERE status = 'active';
-
       CREATE INDEX IF NOT EXISTS project_threads_project_status_idx
       ON project_threads(project_id, status);
+
+      CREATE INDEX IF NOT EXISTS project_threads_project_updated_idx
+      ON project_threads(project_id, updated_at DESC, created_at DESC);
 
       CREATE TABLE IF NOT EXISTS thread_messages (
         id TEXT PRIMARY KEY,
@@ -731,6 +761,7 @@ export class WorkspaceRepository {
         ordinal INTEGER NOT NULL,
         prompt TEXT NOT NULL,
         placeholder TEXT NULL,
+        choices_json TEXT NULL,
         status TEXT NOT NULL CHECK(status IN ('pending', 'answered')),
         answer_text TEXT NULL,
         asked_at TEXT NOT NULL,
@@ -763,14 +794,27 @@ export class WorkspaceRepository {
       ON agent_run_subtasks(run_id, planner_task_id);
     `);
 
+    this.addColumnIfMissing("projects", "active_thread_id", "TEXT NULL");
+    this.addColumnIfMissing("project_threads", "title", "TEXT NULL");
+    this.addColumnIfMissing("project_threads", "title_source", "TEXT NULL");
+    this.addColumnIfMissing("project_threads", "updated_at", "TEXT NULL");
+    this.addColumnIfMissing("project_threads", "forked_from_thread_id", "TEXT NULL");
+    this.addColumnIfMissing("agent_run_questions", "choices_json", "TEXT NULL");
     this.addColumnIfMissing("agent_run_subtasks", "commit_sha", "TEXT NULL");
     this.addColumnIfMissing("agent_run_subtasks", "worktree_path", "TEXT NULL");
+
+    this.db.exec(`DROP INDEX IF EXISTS project_threads_active_project_idx;`);
+    this.db.exec(`UPDATE project_threads SET status = 'active' WHERE status = 'archived';`);
+
+    this.backfillActiveThreadIds();
+    this.backfillThreadMetadata();
+    this.backfillQuestionChoices();
   }
 
   private readProjectSnapshot(projectId: ProjectId): WorkspaceProjectState {
     const project = this.db
       .query<ProjectRow, [string]>(
-        `SELECT id, name, root_path, created_at, updated_at, last_opened_at
+        `SELECT id, name, root_path, active_thread_id, created_at, updated_at, last_opened_at
          FROM projects
          WHERE id = ?1`
       )
@@ -781,62 +825,103 @@ export class WorkspaceRepository {
     }
 
     const activeThread = this.readActiveThreadRow(projectId);
-    const messages = this.db
+    return {
+      id: project.id as ProjectId,
+      name: project.name,
+      rootPath: project.root_path as ProjectRootPath,
+      activeThreadId: activeThread.id as ThreadId,
+      threads: this.readThreadSummaries(projectId),
+      session: {
+        ...createEmptySession(activeThread.id as ThreadId),
+        messages: this.readMessages(activeThread.id as ThreadId)
+      },
+      activeRun: this.readActiveRun(projectId, activeThread.id as ThreadId),
+      lastRun: this.readLatestRun(projectId, activeThread.id as ThreadId)
+    };
+  }
+
+  private readActiveThreadRow(projectId: ProjectId) {
+    const activeThreadId = this.db
+      .query<{ active_thread_id: string | null }, [string]>(`SELECT active_thread_id FROM projects WHERE id = ?1`)
+      .get(projectId)?.active_thread_id;
+
+    if (!activeThreadId) {
+      throw new Error(`Project ${projectId} has no active thread`);
+    }
+
+    return this.readThreadRow(projectId, activeThreadId as ThreadId);
+  }
+
+  private readThreadRow(projectId: ProjectId, threadId: ThreadId) {
+    const thread = this.db
+      .query<ThreadRow, [string, string]>(
+        `SELECT id, project_id, status, title, title_source, updated_at, forked_from_thread_id, created_at, archived_at
+         FROM project_threads
+         WHERE project_id = ?1 AND id = ?2`
+      )
+      .get(projectId, threadId);
+
+    if (!thread) {
+      throw new Error(`Unknown thread: ${threadId}`);
+    }
+
+    return thread;
+  }
+
+  private readMessages(threadId: ThreadId) {
+    return this.db
       .query<MessageRow, [string]>(
         `SELECT id, thread_id, role, content, created_at
          FROM thread_messages
          WHERE thread_id = ?1
          ORDER BY created_at ASC`
       )
-      .all(activeThread.id)
+      .all(threadId)
       .map((message) => ({
         id: message.id,
         role: message.role,
         content: message.content,
         createdAt: message.created_at
       }));
-
-    return {
-      id: project.id as ProjectId,
-      name: project.name,
-      rootPath: project.root_path as ProjectRootPath,
-      activeThreadId: activeThread.id as ThreadId,
-      session: {
-        ...createEmptySession(activeThread.id as ThreadId),
-        messages
-      },
-      latestPlan: undefined,
-      activeRun: this.readActiveRun(projectId, activeThread.id as ThreadId),
-      lastRun: this.readLatestRun(projectId, activeThread.id as ThreadId),
-      contextUsage: undefined,
-      traces: [],
-      streamingAssistantText: "",
-      draft: "",
-      lastError: undefined
-    };
   }
 
-  private readActiveThreadRow(projectId: ProjectId): ThreadRow {
-    const thread = this.db
-      .query<ThreadRow, [string, string]>(
-        `SELECT id, project_id, status, created_at, archived_at
+  private readThreadSummaries(projectId: ProjectId): ProjectThreadSummary[] {
+    const threadRows = this.db
+      .query<ThreadRow, [string]>(
+        `SELECT id, project_id, status, title, title_source, updated_at, forked_from_thread_id, created_at, archived_at
          FROM project_threads
-         WHERE project_id = ?1 AND status = ?2`
+         WHERE project_id = ?1
+         ORDER BY updated_at DESC, created_at DESC`
       )
-      .get(projectId, ACTIVE_THREAD_STATUS);
+      .all(projectId);
 
-    if (!thread) {
-      throw new Error(`Project ${projectId} has no active thread`);
-    }
+    return threadRows.map((thread) => {
+      const latestRun = this.readLatestRun(projectId, thread.id as ThreadId);
+      const preview =
+        this.db
+          .query<{ content: string }, [string]>(
+            `SELECT content FROM thread_messages WHERE thread_id = ?1 ORDER BY created_at DESC LIMIT 1`
+          )
+          .get(thread.id)?.content ?? undefined;
+      const messageCount =
+        this.db.query<{ count: number }, [string]>(`SELECT COUNT(*) AS count FROM thread_messages WHERE thread_id = ?1`).get(thread.id)
+          ?.count ?? 0;
 
-    return thread;
+      return createProjectThreadSummary({
+        id: thread.id as ThreadId,
+        title: thread.title,
+        titleSource: thread.title_source,
+        badgeState: getThreadBadgeState(latestRun),
+        messageCount,
+        lastMessagePreview: preview ? summarizeMessagePreview(preview) : undefined,
+        updatedAt: thread.updated_at,
+        forkedFromThreadId: thread.forked_from_thread_id as ThreadId | undefined
+      });
+    });
   }
 
   private assertProjectExists(projectId: ProjectId) {
-    const project = this.db
-      .query<{ id: string }, [string]>(`SELECT id FROM projects WHERE id = ?1`)
-      .get(projectId);
-
+    const project = this.db.query<{ id: string }, [string]>(`SELECT id FROM projects WHERE id = ?1`).get(projectId);
     if (!project) {
       throw new Error(`Unknown project: ${projectId}`);
     }
@@ -866,28 +951,18 @@ export class WorkspaceRepository {
     return fallbackProjectId;
   }
 
+  private resolveThreadId(projectId: ProjectId, threadId?: ThreadId) {
+    return threadId ?? (this.readActiveThreadRow(projectId).id as ThreadId);
+  }
+
   private readActiveRun(projectId: ProjectId, threadId: ThreadId): AgentRunState | undefined {
     const run = this.db
       .query<AgentRunRow, [string, string]>(
         `SELECT
-          id,
-          project_id,
-          thread_id,
-          status,
-          latest_user_prompt,
-          planning_model_id,
-          execution_model_id,
-          difficulty_score,
-          summary,
-          final_execution_brief,
-          failure_message,
-          created_at,
-          updated_at,
-          completed_at
+          id, project_id, thread_id, status, latest_user_prompt, planning_model_id, execution_model_id,
+          difficulty_score, summary, final_execution_brief, failure_message, created_at, updated_at, completed_at
          FROM agent_runs
-         WHERE project_id = ?1
-           AND thread_id = ?2
-           AND status != 'completed'
+         WHERE project_id = ?1 AND thread_id = ?2 AND status != 'completed'
          ORDER BY updated_at DESC
          LIMIT 1`
       )
@@ -900,23 +975,10 @@ export class WorkspaceRepository {
     const run = this.db
       .query<AgentRunRow, [string, string]>(
         `SELECT
-          id,
-          project_id,
-          thread_id,
-          status,
-          latest_user_prompt,
-          planning_model_id,
-          execution_model_id,
-          difficulty_score,
-          summary,
-          final_execution_brief,
-          failure_message,
-          created_at,
-          updated_at,
-          completed_at
+          id, project_id, thread_id, status, latest_user_prompt, planning_model_id, execution_model_id,
+          difficulty_score, summary, final_execution_brief, failure_message, created_at, updated_at, completed_at
          FROM agent_runs
-         WHERE project_id = ?1
-           AND thread_id = ?2
+         WHERE project_id = ?1 AND thread_id = ?2
          ORDER BY updated_at DESC
          LIMIT 1`
       )
@@ -928,7 +990,7 @@ export class WorkspaceRepository {
   private hydrateRunState(run: AgentRunRow): AgentRunState {
     const questions = this.db
       .query<AgentRunQuestionRow, [string]>(
-        `SELECT id, run_id, ordinal, prompt, placeholder, status, answer_text, asked_at, answered_at
+        `SELECT id, run_id, ordinal, prompt, placeholder, choices_json, status, answer_text, asked_at, answered_at
          FROM agent_run_questions
          WHERE run_id = ?1
          ORDER BY ordinal ASC`
@@ -938,6 +1000,7 @@ export class WorkspaceRepository {
         id: question.id,
         prompt: question.prompt,
         placeholder: question.placeholder ?? undefined,
+        choices: parsePlanningChoices(question.choices_json),
         required: true,
         status: question.status,
         answerText: question.answer_text ?? undefined,
@@ -948,20 +1011,8 @@ export class WorkspaceRepository {
     const subtasks = this.db
       .query<AgentRunSubtaskRow, [string]>(
         `SELECT
-          id,
-          run_id,
-          planner_task_id,
-          title,
-          instruction,
-          status,
-          attempt_count,
-          output,
-          error_message,
-          commit_sha,
-          worktree_path,
-          started_at,
-          completed_at,
-          updated_at
+          id, run_id, planner_task_id, title, instruction, status, attempt_count, output, error_message,
+          commit_sha, worktree_path, started_at, completed_at, updated_at
          FROM agent_run_subtasks
          WHERE run_id = ?1
          ORDER BY planner_task_id ASC`
@@ -1044,6 +1095,129 @@ export class WorkspaceRepository {
     return `${baseName} (${suffix})`;
   }
 
+  private getNextThreadNumber(projectId: ProjectId) {
+    const count =
+      this.db.query<{ count: number }, [string]>(`SELECT COUNT(*) AS count FROM project_threads WHERE project_id = ?1`).get(projectId)
+        ?.count ?? 0;
+    return count + 1;
+  }
+
+  private insertThread(
+    projectId: ProjectId,
+    threadId: ThreadId,
+    input: { title: string; titleSource: "generated" | "custom"; updatedAt: string; forkedFromThreadId?: ThreadId }
+  ) {
+    this.db
+      .query(
+        `INSERT INTO project_threads (
+          id, project_id, status, title, title_source, updated_at, forked_from_thread_id, created_at, archived_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?6, NULL)`
+      )
+      .run(threadId, projectId, ACTIVE_THREAD_STATUS, input.title, input.titleSource, input.updatedAt, input.forkedFromThreadId ?? null);
+  }
+
+  private setActiveThread(projectId: ProjectId, threadId: ThreadId, now: string) {
+    this.db
+      .query(
+        `UPDATE projects
+         SET active_thread_id = ?2, updated_at = ?3, last_opened_at = ?3
+         WHERE id = ?1`
+      )
+      .run(projectId, threadId, now);
+  }
+
+  private touchProject(projectId: ProjectId, now: string) {
+    this.db
+      .query(
+        `UPDATE projects
+         SET updated_at = ?2, last_opened_at = ?2
+         WHERE id = ?1`
+      )
+      .run(projectId, now);
+  }
+
+  private backfillActiveThreadIds() {
+    const projects = this.db.query<{ id: string; active_thread_id: string | null }, []>(`SELECT id, active_thread_id FROM projects`).all();
+    for (const project of projects) {
+      if (project.active_thread_id) {
+        continue;
+      }
+
+      const threadId = this.db
+        .query<{ id: string }, [string]>(
+          `SELECT id
+           FROM project_threads
+           WHERE project_id = ?1
+           ORDER BY created_at ASC
+           LIMIT 1`
+        )
+        .get(project.id)?.id;
+
+      if (threadId) {
+        this.db.query(`UPDATE projects SET active_thread_id = ?2 WHERE id = ?1`).run(project.id, threadId);
+      }
+    }
+  }
+
+  private backfillThreadMetadata() {
+    const projectIds = this.db.query<{ id: string }, []>(`SELECT id FROM projects`).all().map((project) => project.id);
+
+    for (const projectId of projectIds) {
+      const threads = this.db
+        .query<ThreadRow, [string]>(
+          `SELECT id, project_id, status, title, title_source, updated_at, forked_from_thread_id, created_at, archived_at
+           FROM project_threads
+           WHERE project_id = ?1
+           ORDER BY created_at ASC`
+        )
+        .all(projectId);
+
+      threads.forEach((thread, index) => {
+        const firstUserMessage = this.db
+          .query<{ content: string }, [string]>(
+            `SELECT content FROM thread_messages WHERE thread_id = ?1 AND role = 'user' ORDER BY created_at ASC LIMIT 1`
+          )
+          .get(thread.id)?.content;
+        const latestMessageAt = this.db
+          .query<{ created_at: string }, [string]>(
+            `SELECT created_at FROM thread_messages WHERE thread_id = ?1 ORDER BY created_at DESC LIMIT 1`
+          )
+          .get(thread.id)?.created_at;
+
+        this.db
+          .query(
+            `UPDATE project_threads
+             SET title = ?2, title_source = ?3, updated_at = ?4
+             WHERE id = ?1`
+          )
+          .run(
+            thread.id,
+            normalizeThreadTitle(thread.title ?? toGeneratedThreadTitle(firstUserMessage, `Thread ${index + 1}`)),
+            thread.title_source ?? "generated",
+            thread.updated_at ?? latestMessageAt ?? thread.created_at
+          );
+      });
+    }
+  }
+
+  private backfillQuestionChoices() {
+    const rows = this.db
+      .query<{ id: string; placeholder: string | null; choices_json: string | null }, []>(
+        `SELECT id, placeholder, choices_json FROM agent_run_questions`
+      )
+      .all();
+
+    for (const row of rows) {
+      if (row.choices_json) {
+        continue;
+      }
+
+      this.db
+        .query(`UPDATE agent_run_questions SET choices_json = ?2 WHERE id = ?1`)
+        .run(row.id, JSON.stringify(createFallbackPlanningChoices(row.placeholder ?? "Provide answer")));
+    }
+  }
+
   private updateSubtask(
     projectId: ProjectId,
     runId: string,
@@ -1063,21 +1237,11 @@ export class WorkspaceRepository {
     const updated = this.db
       .query(
         `UPDATE agent_run_subtasks
-         SET status = ?4,
-             attempt_count = ?5,
-             started_at = COALESCE(?6, started_at),
-             completed_at = ?7,
-             output = ?8,
-             error_message = ?9,
-             commit_sha = ?10,
-             worktree_path = ?11,
-             updated_at = ?12
+         SET status = ?4, attempt_count = ?5, started_at = COALESCE(?6, started_at), completed_at = ?7,
+             output = ?8, error_message = ?9, commit_sha = ?10, worktree_path = ?11, updated_at = ?12
          WHERE run_id = ?1
            AND planner_task_id = ?2
-           AND EXISTS (
-             SELECT 1 FROM agent_runs
-             WHERE agent_runs.id = ?1 AND agent_runs.project_id = ?3
-           )`
+           AND EXISTS (SELECT 1 FROM agent_runs WHERE agent_runs.id = ?1 AND agent_runs.project_id = ?3)`
       )
       .run(
         runId,
@@ -1098,14 +1262,7 @@ export class WorkspaceRepository {
       throw new Error(`Unknown agent subtask: ${taskId}`);
     }
 
-    this.db
-      .query(
-        `UPDATE agent_runs
-         SET updated_at = ?3
-         WHERE id = ?1 AND project_id = ?2`
-      )
-      .run(runId, projectId, now);
-
+    this.db.query(`UPDATE agent_runs SET updated_at = ?3 WHERE id = ?1 AND project_id = ?2`).run(runId, projectId, now);
     return this.readProjectSnapshot(projectId);
   }
 
@@ -1115,12 +1272,84 @@ export class WorkspaceRepository {
       .all(tableName)
       .map((row) => row.name);
 
-    if (columns.includes(columnName)) {
-      return;
+    if (!columns.includes(columnName)) {
+      this.db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
     }
-
-    this.db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
   }
+}
+
+function parsePlanningChoices(input: string | null): PlanningChoice[] {
+  if (!input) {
+    return createFallbackPlanningChoices("Provide answer");
+  }
+
+  try {
+    const parsed = JSON.parse(input);
+    if (Array.isArray(parsed) && parsed.length === 3) {
+      return parsed as PlanningChoice[];
+    }
+  } catch {
+    return createFallbackPlanningChoices("Provide answer");
+  }
+
+  return createFallbackPlanningChoices("Provide answer");
+}
+
+function createFallbackPlanningChoices(placeholder: string): PlanningChoice[] {
+  return [
+    { id: "choice-1", label: "Use example", description: "Send example answer.", answerText: placeholder, recommended: true },
+    { id: "choice-2", label: "Confirm", description: "Send short confirmation.", answerText: placeholder, recommended: false },
+    { id: "choice-3", label: "Custom", description: "Type custom answer.", answerText: placeholder, recommended: false }
+  ];
+}
+
+function getThreadBadgeState(run?: AgentRunState): ThreadBadgeState {
+  if (!run) {
+    return "idle";
+  }
+  if (run.status === "failed" || run.status === "partial-complete") {
+    return "error";
+  }
+  if (run.status === "awaiting-user-input") {
+    return "needs-input";
+  }
+  if (run.status === "planning" || run.status === "ready") {
+    return "planning";
+  }
+  if (run.status === "running-main" || run.status === "running-subagents" || run.status === "aggregating") {
+    return "executing";
+  }
+  if (run.status === "completed") {
+    return "done";
+  }
+  return "idle";
+}
+
+function summarizeMessagePreview(content: string) {
+  const compact = content.replace(/\s+/g, " ").trim();
+  return compact.length <= 80 ? compact : `${compact.slice(0, 77)}...`;
+}
+
+function normalizeThreadTitle(title: string) {
+  const normalized = title.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    throw new Error("Thread title is required");
+  }
+
+  return normalized.slice(0, 256);
+}
+
+function toGeneratedThreadTitle(content: string | undefined, fallback: string) {
+  if (!content) {
+    return fallback;
+  }
+
+  const firstLine = content
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean);
+
+  return firstLine ? normalizeThreadTitle(firstLine.slice(0, 256)) : fallback;
 }
 
 function isRunResumable(status: AgentRunStatus, hasExecutionState: boolean) {
@@ -1128,11 +1357,7 @@ function isRunResumable(status: AgentRunStatus, hasExecutionState: boolean) {
     return true;
   }
 
-  if (status === "failed") {
-    return hasExecutionState;
-  }
-
-  return false;
+  return status === "failed" ? hasExecutionState : false;
 }
 
 function isRunRetryable(status: AgentRunStatus, hasExecutionState: boolean) {
@@ -1140,11 +1365,7 @@ function isRunRetryable(status: AgentRunStatus, hasExecutionState: boolean) {
     return true;
   }
 
-  if (status === "failed") {
-    return hasExecutionState;
-  }
-
-  return false;
+  return status === "failed" ? hasExecutionState : false;
 }
 
 export function normalizeProjectRootPath(rootPath: string) {

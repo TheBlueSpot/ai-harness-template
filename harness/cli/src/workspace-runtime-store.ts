@@ -1,15 +1,24 @@
 import {
-  type AgentRunState,
   type AgentPlan,
-  type ProjectContextUsage,
+  type AgentRunState,
   type AgentTrace,
+  type ProjectContextUsage,
   type ProjectId,
   type WorkspaceProjectState,
   type WorkspaceState
 } from "../../shared/protocol";
 
+export type RuntimeProjectState = WorkspaceProjectState & {
+  latestPlan?: AgentPlan;
+  contextUsage?: ProjectContextUsage;
+  traces: AgentTrace[];
+  streamingAssistantText: string;
+  draft: string;
+  lastError?: string;
+};
+
 type RuntimeProjectRecord = {
-  project: WorkspaceProjectState;
+  project: RuntimeProjectState;
   abortController?: AbortController;
 };
 
@@ -20,7 +29,7 @@ export class WorkspaceRuntimeStore {
   constructor(workspace: WorkspaceState) {
     for (const project of workspace.projects) {
       this.projects.set(project.id, {
-        project
+        project: createRuntimeProject(project)
       });
     }
 
@@ -29,7 +38,7 @@ export class WorkspaceRuntimeStore {
 
   getWorkspace(): WorkspaceState {
     return {
-      projects: Array.from(this.projects.values()).map((record) => record.project),
+      projects: Array.from(this.projects.values()).map((record) => stripRuntimeProject(record.project)),
       activeProjectId: this.activeProjectId
     };
   }
@@ -45,7 +54,7 @@ export class WorkspaceRuntimeStore {
 
   upsertPersistedProject(project: WorkspaceProjectState) {
     const existing = this.projects.get(project.id);
-    const hydratedProject = existing ? hydrateProjectState(existing.project, project) : project;
+    const hydratedProject = existing ? hydrateProjectState(existing.project, project) : createRuntimeProject(project);
 
     this.projects.set(project.id, {
       project: hydratedProject,
@@ -141,6 +150,7 @@ export class WorkspaceRuntimeStore {
       ...project,
       latestPlan: undefined,
       activeRun: undefined,
+      contextUsage: undefined,
       traces: [],
       streamingAssistantText: "",
       lastError: undefined,
@@ -165,7 +175,7 @@ export class WorkspaceRuntimeStore {
     return this.projects.get(projectId)?.abortController;
   }
 
-  private updateProject(projectId: ProjectId, updater: (project: WorkspaceProjectState) => WorkspaceProjectState) {
+  private updateProject(projectId: ProjectId, updater: (project: RuntimeProjectState) => RuntimeProjectState) {
     const record = this.projects.get(projectId);
 
     if (!record) {
@@ -176,16 +186,37 @@ export class WorkspaceRuntimeStore {
   }
 }
 
-function hydrateProjectState(
-  existing: WorkspaceProjectState,
-  incoming: WorkspaceProjectState
-): WorkspaceProjectState {
+function createRuntimeProject(project: WorkspaceProjectState): RuntimeProjectState {
   return {
+    ...project,
+    latestPlan: undefined,
+    contextUsage: undefined,
+    traces: [],
+    streamingAssistantText: "",
+    draft: "",
+    lastError: undefined
+  };
+}
+
+function stripRuntimeProject(project: RuntimeProjectState): WorkspaceProjectState {
+  return {
+    id: project.id,
+    name: project.name,
+    rootPath: project.rootPath,
+    activeThreadId: project.activeThreadId,
+    threads: project.threads,
+    session: project.session,
+    activeRun: project.activeRun,
+    lastRun: project.lastRun
+  };
+}
+
+function hydrateProjectState(existing: RuntimeProjectState, incoming: WorkspaceProjectState): RuntimeProjectState {
+  return {
+    ...existing,
     ...incoming,
     latestPlan: existing.latestPlan,
-    activeRun: incoming.activeRun,
-    lastRun: incoming.lastRun,
-    contextUsage: existing.contextUsage ?? incoming.contextUsage,
+    contextUsage: existing.contextUsage,
     traces: existing.traces,
     streamingAssistantText: existing.streamingAssistantText,
     draft: existing.draft,

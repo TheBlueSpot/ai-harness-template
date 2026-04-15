@@ -1,4 +1,4 @@
-import { For } from "solid-js";
+import { For, Show, createSignal } from "solid-js";
 import { createRequestId, type ClientCommand } from "../../../shared/protocol";
 import { getActiveProject, harnessStore } from "../harness-store";
 import { isAbsolutePath, truncateMiddle } from "../lib/utils";
@@ -6,7 +6,7 @@ import { ActionButton } from "./action-button";
 import { Input } from "./ui/input";
 import { ScrollArea } from "./ui/scroll-area";
 import { Separator } from "./ui/separator";
-import { Folder, FolderOpen, FolderPlus, Trash2 } from "lucide-solid";
+import { Edit3, Folder, FolderOpen, FolderPlus, GitFork, Plus, Trash2 } from "lucide-solid";
 
 type ProjectSidebarProps = {
   sendCommand: (command: ClientCommand) => void;
@@ -19,22 +19,19 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
   const activeProject = () => getActiveProject(state);
   const trimmedInput = () => state.projectInput.trim();
   const canAddManualProject = () => trimmedInput().length > 0 && isAbsolutePath(trimmedInput());
+  const [editingThreadId, setEditingThreadId] = createSignal<string>();
+  const [threadTitleDraft, setThreadTitleDraft] = createSignal("");
 
   function handleAddProject() {
     props.sendCommand({
       type: "project.add",
       requestId: createRequestId(),
-      payload: {
-        rootPath: trimmedInput()
-      }
+      payload: { rootPath: trimmedInput() }
     });
   }
 
   function handleBrowseProject() {
-    props.sendCommand({
-      type: "project.browse",
-      requestId: createRequestId()
-    });
+    props.sendCommand({ type: "project.browse", requestId: createRequestId() });
   }
 
   function handleActivateProject(projectId: string) {
@@ -45,30 +42,71 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
     props.sendCommand({
       type: "project.activate",
       requestId: createRequestId(),
-      payload: {
-        projectId
-      }
+      payload: { projectId }
     });
     props.onNavigate?.();
+  }
+
+  function handleActivateThread(projectId: string, threadId: string) {
+    props.sendCommand({
+      type: "thread.activate",
+      requestId: createRequestId(),
+      payload: { projectId, threadId }
+    });
+    props.onNavigate?.();
+  }
+
+  function handleCreateThread(projectId: string) {
+    props.sendCommand({
+      type: "thread.create",
+      requestId: createRequestId(),
+      payload: { projectId }
+    });
+  }
+
+  function handleForkThread(projectId: string, sourceThreadId: string) {
+    props.sendCommand({
+      type: "thread.fork",
+      requestId: createRequestId(),
+      payload: { projectId, sourceThreadId }
+    });
   }
 
   function handleRemoveProject(projectId: string) {
     props.sendCommand({
       type: "project.remove",
       requestId: createRequestId(),
-      payload: {
-        projectId
-      }
+      payload: { projectId }
     });
   }
 
+  function startRename(threadId: string, title: string) {
+    setEditingThreadId(threadId);
+    setThreadTitleDraft(title);
+  }
+
+  function commitRename(projectId: string, threadId: string) {
+    const title = threadTitleDraft().trim();
+    if (!title) {
+      setEditingThreadId(undefined);
+      return;
+    }
+
+    props.sendCommand({
+      type: "thread.rename",
+      requestId: createRequestId(),
+      payload: { projectId, threadId, title }
+    });
+    setEditingThreadId(undefined);
+  }
+
   return (
-    <div class={`panel-shell flex h-full min-h-0 flex-col gap-4 rounded-[2rem] p-[0.8rem] ${props.compact ? "" : ""}`}>
+    <div class="panel-shell flex h-full min-h-0 flex-col gap-4 rounded-[2rem] p-[0.8rem]">
       <div class="space-y-2">
         <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-[color:var(--muted)]">Projects</div>
         <h2 class="text-[1.125rem] font-semibold tracking-[-0.04em] text-[color:var(--foreground)]">Workspace roots</h2>
         <p class="text-[0.675rem] leading-5 text-[color:var(--muted)]">
-          Each project root keeps its own SQLite-backed chat thread and local execution context.
+          Each project root keeps its own selectable threads, local chat history, and project-scoped execution context.
         </p>
       </div>
 
@@ -106,49 +144,35 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
 
       <Separator />
 
-      <div class="space-y-2">
-        <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">Active + recent</div>
-        <div class="text-[0.675rem] text-[color:var(--muted)]">
-          Compact workspace cards keep project context visible without wasting panel space.
-        </div>
-      </div>
-
       <ScrollArea class="flex-1 min-h-0 pr-1">
-        <div class="space-y-2.5">
+        <div class="space-y-3">
           <For each={state.workspace.projects}>
             {(project) => {
-              const isActive = () => project.id === state.workspace.activeProjectId;
-              const isDisabled = () => isActive();
+              const isActiveProject = () => project.id === state.workspace.activeProjectId;
+              const disableProjectActions = () => project.session.isStreaming;
               const removeDisabledReason = () => {
                 if (state.workspace.projects.length <= 1) {
                   return "At least one project must remain";
                 }
-
-                if (project.session.isStreaming) {
-                  return "Project is streaming";
-                }
-
-                return undefined;
+                return disableProjectActions() ? "Project is streaming" : undefined;
               };
 
               return (
-                <div
-                  class={`rounded-[1.4rem] border p-2.5 transition ${
-                    isActive()
-                      ? "border-[color:var(--accent)] bg-[linear-gradient(135deg,rgba(15,118,110,0.18),rgba(255,255,255,0.86))] shadow-md"
-                      : "border-[color:var(--border)] bg-white/52"
+                <section
+                  class={`rounded-[1.4rem] border p-3 transition ${
+                    isActiveProject()
+                      ? "border-[color:var(--accent)] bg-[linear-gradient(135deg,rgba(15,118,110,0.18),rgba(255,255,255,0.9))] shadow-md"
+                      : "border-[color:var(--border)] bg-white/55"
                   }`}
                 >
                   <div class="flex items-start gap-2">
                     <ActionButton
-                      tooltip={isActive() ? `${project.name} is active` : `Switch to ${project.name}`}
+                      tooltip={isActiveProject() ? `${project.name} is active` : `Switch to ${project.name}`}
                       disabledReason="Project already active"
-                      disabled={isDisabled()}
+                      disabled={isActiveProject()}
                       icon={<Folder class="h-4 w-4" />}
-                      variant={isActive() ? "secondary" : "ghost"}
-                      class={`min-h-[2.75rem] flex-1 justify-start rounded-[1rem] px-3 py-2 ${
-                        isActive() ? "border border-white/60 bg-white/70" : ""
-                      }`}
+                      variant={isActiveProject() ? "secondary" : "ghost"}
+                      class="min-h-[2.75rem] flex-1 justify-start rounded-[1rem] px-3 py-2"
                       onClick={() => handleActivateProject(project.id)}
                     >
                       <div class="min-w-0 text-left">
@@ -157,10 +181,9 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
                           {truncateMiddle(project.rootPath, props.compact ? 24 : 30)}
                         </div>
                         <div class="mt-1.5 flex flex-wrap gap-2 text-[0.6rem] uppercase tracking-[0.16em] text-[color:var(--muted)]">
-                          <span>{project.session.messages.length} msgs</span>
+                          <span>{project.threads.length} threads</span>
                           {project.session.isStreaming ? <span>streaming</span> : null}
-                          {project.lastError ? <span>error</span> : null}
-                          {isActive() ? <span>active</span> : null}
+                          {isActiveProject() ? <span>active</span> : null}
                         </div>
                       </div>
                     </ActionButton>
@@ -176,7 +199,96 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
                       onClick={() => handleRemoveProject(project.id)}
                     />
                   </div>
-                </div>
+
+                  <div class="mt-3 flex gap-2">
+                    <ActionButton
+                      tooltip="Create a new thread in this project"
+                      disabledReason="Project is streaming"
+                      disabled={disableProjectActions()}
+                      icon={<Plus class="h-4 w-4" />}
+                      variant="secondary"
+                      class="flex-1"
+                      onClick={() => handleCreateThread(project.id)}
+                    >
+                      New thread
+                    </ActionButton>
+                  </div>
+
+                  <div class="mt-3 space-y-2">
+                    <For each={project.threads}>
+                      {(thread) => {
+                        const isActiveThread = () => project.activeThreadId === thread.id;
+                        const isEditing = () => editingThreadId() === thread.id;
+                        const badgeStyle = badgeClass(thread.badgeState);
+                        return (
+                          <div class={`rounded-[1rem] border px-3 py-2 ${isActiveThread() ? "border-teal-500/50 bg-white/80" : "border-[color:var(--border)] bg-white/60"}`}>
+                            <div class="flex items-start justify-between gap-2">
+                              <button
+                                class="min-w-0 flex-1 text-left"
+                                disabled={isActiveThread() || disableProjectActions()}
+                                onClick={() => handleActivateThread(project.id, thread.id)}
+                              >
+                                <Show
+                                  when={isEditing()}
+                                  fallback={<div class="truncate text-[0.675rem] font-semibold text-[color:var(--foreground)]">{thread.title}</div>}
+                                >
+                                  <Input
+                                    value={threadTitleDraft()}
+                                    onInput={(event: InputEvent & { currentTarget: HTMLInputElement; target: Element }) =>
+                                      setThreadTitleDraft(event.currentTarget.value)
+                                    }
+                                    onBlur={() => commitRename(project.id, thread.id)}
+                                    onKeyDown={(event) => {
+                                      if (event.key === "Enter") {
+                                        event.preventDefault();
+                                        commitRename(project.id, thread.id);
+                                      }
+                                      if (event.key === "Escape") {
+                                        setEditingThreadId(undefined);
+                                      }
+                                    }}
+                                  />
+                                </Show>
+                                <div class="mt-1 flex flex-wrap items-center gap-2 text-[0.575rem] uppercase tracking-[0.14em] text-[color:var(--muted)]">
+                                  <Show when={thread.badgeState !== "idle"}>
+                                    <span class={`rounded-full px-2 py-0.5 ${badgeStyle}`}>{badgeLabel(thread.badgeState)}</span>
+                                  </Show>
+                                  <span>{thread.messageCount} msgs</span>
+                                  <Show when={thread.lastMessagePreview}>
+                                    <span class="normal-case tracking-normal text-[0.625rem]">{thread.lastMessagePreview}</span>
+                                  </Show>
+                                </div>
+                              </button>
+
+                              <div class="flex gap-1">
+                                <ActionButton
+                                  tooltip="Fork this thread"
+                                  disabledReason="Project is streaming"
+                                  disabled={disableProjectActions()}
+                                  icon={<GitFork class="h-3.5 w-3.5" />}
+                                  variant="ghost"
+                                  size="icon"
+                                  ariaLabel={`Fork ${thread.title}`}
+                                  onClick={() => handleForkThread(project.id, thread.id)}
+                                />
+                                <ActionButton
+                                  tooltip="Rename this thread"
+                                  disabledReason="Project is streaming"
+                                  disabled={disableProjectActions()}
+                                  icon={<Edit3 class="h-3.5 w-3.5" />}
+                                  variant="ghost"
+                                  size="icon"
+                                  ariaLabel={`Rename ${thread.title}`}
+                                  onClick={() => startRename(thread.id, thread.title)}
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      }}
+                    </For>
+                  </div>
+                </section>
               );
             }}
           </For>
@@ -191,4 +303,38 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
       </div>
     </div>
   );
+}
+
+function badgeLabel(value: string) {
+  switch (value) {
+    case "needs-input":
+      return "User input";
+    case "planning":
+      return "Planning";
+    case "executing":
+      return "Executing";
+    case "error":
+      return "Error";
+    case "done":
+      return "Done";
+    default:
+      return "Idle";
+  }
+}
+
+function badgeClass(value: string) {
+  switch (value) {
+    case "needs-input":
+      return "bg-violet-600 text-white";
+    case "planning":
+      return "bg-orange-500 text-white";
+    case "executing":
+      return "bg-yellow-400 text-slate-900";
+    case "error":
+      return "bg-rose-600 text-white";
+    case "done":
+      return "bg-emerald-600 text-white";
+    default:
+      return "bg-slate-200 text-slate-800";
+  }
 }

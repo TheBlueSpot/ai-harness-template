@@ -69,6 +69,7 @@ describe("client command validation", () => {
         requestId: "req-answer",
         payload: {
           projectId: "project-1",
+          threadId: "thread-1",
           runId: "run-1",
           questionId: "question-1",
           content: "Use the API route."
@@ -84,6 +85,7 @@ describe("client command validation", () => {
         requestId: "req-answer-2",
         payload: {
           projectId: "project-1",
+          threadId: "thread-1",
           runId: "run-1",
           questionId: "question-1",
           content: "   "
@@ -99,6 +101,7 @@ describe("client command validation", () => {
         requestId: "req-resume",
         payload: {
           projectId: "project-1",
+          threadId: "thread-1",
           runId: "run-1",
           guidanceText: "Retry only the patch task.",
           subagentIds: ["task-2"]
@@ -114,6 +117,7 @@ describe("client command validation", () => {
         requestId: "req-retry",
         payload: {
           projectId: "project-1",
+          threadId: "thread-1",
           runId: "run-1",
           subagentId: "task-1"
         }
@@ -151,6 +155,16 @@ describe("planner result validation", () => {
                 name: "Example",
                 rootPath: "C:\\repo",
                 activeThreadId: "thread-1",
+                threads: [
+                  {
+                    id: "thread-1",
+                    title: "Thread 1",
+                    titleSource: "generated",
+                    badgeState: "idle",
+                    messageCount: 0,
+                    updatedAt: new Date().toISOString()
+                  }
+                ],
                 session: {
                   sessionId: "session-1",
                   selectedAgentId: "pi",
@@ -158,14 +172,8 @@ describe("planner result validation", () => {
                   messages: [],
                   isStreaming: false
                 },
-                latestPlan: undefined,
                 activeRun: undefined,
-                lastRun: undefined,
-                contextUsage: undefined,
-                traces: [],
-                streamingAssistantText: "",
-                draft: "",
-                lastError: undefined
+                lastRun: undefined
               }
             ]
           },
@@ -194,6 +202,29 @@ describe("planner result validation", () => {
           id: "question-1",
           prompt: "Which route should handle this?",
           placeholder: "api/users/[id]",
+          choices: [
+            {
+              id: "choice-1",
+              label: "API route",
+              description: "Use provided API route.",
+              answerText: "api/users/[id]",
+              recommended: true
+            },
+            {
+              id: "choice-2",
+              label: "Web route",
+              description: "Use a page route.",
+              answerText: "users/[id]",
+              recommended: false
+            },
+            {
+              id: "choice-3",
+              label: "Custom",
+              description: "Type a custom route.",
+              answerText: "custom route",
+              recommended: false
+            }
+          ],
           required: true
         }
       }).type
@@ -207,6 +238,7 @@ describe("planner result validation", () => {
         requestId: "req-run",
         payload: {
           projectId: "project-1",
+          threadId: "thread-1",
           run: {
             id: "run-1",
             threadId: "thread-1",
@@ -217,6 +249,29 @@ describe("planner result validation", () => {
               {
                 id: "question-1",
                 prompt: "Which route?",
+                choices: [
+                  {
+                    id: "choice-1",
+                    label: "API route",
+                    description: "Use provided API route.",
+                    answerText: "api/users/[id]",
+                    recommended: true
+                  },
+                  {
+                    id: "choice-2",
+                    label: "Web route",
+                    description: "Use a page route.",
+                    answerText: "users/[id]",
+                    recommended: false
+                  },
+                  {
+                    id: "choice-3",
+                    label: "Custom",
+                    description: "Type a custom route.",
+                    answerText: "custom route",
+                    recommended: false
+                  }
+                ],
                 required: true,
                 status: "pending",
                 askedAt: new Date().toISOString()

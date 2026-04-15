@@ -12,7 +12,7 @@ import { pushToast } from "../toast-store";
 import { ActionButton } from "./action-button";
 import { ScrollArea } from "./ui/scroll-area";
 import { Textarea } from "./ui/textarea";
-import { LoaderCircle, MessageSquareMore, Pause, RefreshCcw, RotateCcw, SendHorizontal } from "lucide-solid";
+import { GitFork, LoaderCircle, MessageSquareMore, Pause, RefreshCcw, Plus, SendHorizontal } from "lucide-solid";
 
 type ChatPanelProps = {
   sendCommand: (command: ClientCommand) => void;
@@ -38,6 +38,28 @@ export function ChatPanel(props: ChatPanelProps) {
     }`;
   };
 
+  function handleQuestionChoice(answerText: string) {
+    const project = activeProject();
+    const question = pendingQuestion();
+    if (!question || !project.activeRun) {
+      return;
+    }
+
+    props.sendCommand({
+      type: "planning.answer",
+      requestId: createRequestId(),
+      payload: {
+        projectId: project.id,
+        threadId: project.activeThreadId,
+        runId: project.activeRun.id,
+        questionId: question.id,
+        content: answerText
+      }
+    });
+
+    harnessStore.setProjectDraft(project.id, "");
+  }
+
   function handleSubmit(event: SubmitEvent) {
     event.preventDefault();
 
@@ -54,6 +76,7 @@ export function ChatPanel(props: ChatPanelProps) {
         requestId: createRequestId(),
         payload: {
           projectId: project.id,
+          threadId: project.activeThreadId,
           runId: project.activeRun.id,
           questionId: question.id,
           content
@@ -94,6 +117,7 @@ export function ChatPanel(props: ChatPanelProps) {
       requestId: createRequestId(),
       payload: {
         projectId: project.id,
+        threadId: project.activeThreadId,
         agentId: project.session.selectedAgentId,
         content,
         executionModelId,
@@ -117,6 +141,7 @@ export function ChatPanel(props: ChatPanelProps) {
       requestId: createRequestId(),
       payload: {
         projectId: project.id,
+        threadId: project.activeThreadId,
         runId: run.id,
         guidanceText: project.draft.trim() || undefined
       }
@@ -128,10 +153,22 @@ export function ChatPanel(props: ChatPanelProps) {
   function handleReset() {
     const project = activeProject();
     props.sendCommand({
-      type: "session.reset",
+      type: "thread.create",
       requestId: createRequestId(),
       payload: {
         projectId: project.id
+      }
+    });
+  }
+
+  function handleForkThread() {
+    const project = activeProject();
+    props.sendCommand({
+      type: "thread.fork",
+      requestId: createRequestId(),
+      payload: {
+        projectId: project.id,
+        sourceThreadId: project.activeThreadId
       }
     });
   }
@@ -142,7 +179,8 @@ export function ChatPanel(props: ChatPanelProps) {
       type: "chat.stop",
       requestId: createRequestId(),
       payload: {
-        projectId: project.id
+        projectId: project.id,
+        threadId: project.activeThreadId
       }
     });
   }
@@ -159,6 +197,7 @@ export function ChatPanel(props: ChatPanelProps) {
       requestId: createRequestId(),
       payload: {
         projectId: project.id,
+        threadId: project.activeThreadId,
         runId: run.id
       }
     });
@@ -210,14 +249,24 @@ export function ChatPanel(props: ChatPanelProps) {
 
         <div class="flex flex-wrap gap-2">
           <ActionButton
-            tooltip="Archive current thread and start a fresh one"
+            tooltip="Create a new thread in this project"
             disabledReason="Project is streaming"
             disabled={activeProject().session.isStreaming}
-            icon={<RotateCcw class="h-4 w-4" />}
+            icon={<Plus class="h-4 w-4" />}
             variant="secondary"
             onClick={handleReset}
           >
-            Reset thread
+            New thread
+          </ActionButton>
+          <ActionButton
+            tooltip="Fork current thread into a new thread"
+            disabledReason="Project is streaming"
+            disabled={activeProject().session.isStreaming}
+            icon={<GitFork class="h-4 w-4" />}
+            variant="secondary"
+            onClick={handleForkThread}
+          >
+            Pi fork
           </ActionButton>
           <ActionButton
             tooltip="Stop active run"
@@ -318,6 +367,31 @@ export function ChatPanel(props: ChatPanelProps) {
               <Show when={question().placeholder}>
                 <div class="mt-2 text-[0.675rem] text-amber-900/70">Example reply: {question().placeholder}</div>
               </Show>
+              <div class="mt-3 grid gap-2 md:grid-cols-3">
+                <For each={question().choices}>
+                  {(choice) => (
+                    <button
+                      class={`rounded-[1.1rem] border px-3 py-2 text-left text-[0.675rem] transition ${
+                        choice.recommended
+                          ? "border-amber-500 bg-white text-amber-950"
+                          : "border-amber-200/80 bg-white/70 text-amber-900"
+                      }`}
+                      type="button"
+                      onClick={() => handleQuestionChoice(choice.answerText)}
+                    >
+                      <div class="flex items-center justify-between gap-2 font-semibold">
+                        <span>{choice.label}</span>
+                        <Show when={choice.recommended}>
+                          <span class="rounded-full bg-amber-200 px-2 py-0.5 text-[0.55rem] uppercase tracking-[0.14em]">
+                            Recommended
+                          </span>
+                        </Show>
+                      </div>
+                      <div class="mt-1 text-[0.625rem] leading-5">{choice.description}</div>
+                    </button>
+                  )}
+                </For>
+              </div>
             </div>
           )}
         </Show>

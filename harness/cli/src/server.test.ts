@@ -66,6 +66,29 @@ class FakePiAgentAdapter implements PiAgentAdapter {
                 id: "question-1",
                 prompt: "Which route should handle this?",
                 placeholder: "api/users/[id]",
+                choices: [
+                  {
+                    id: "choice-1",
+                    label: "API route",
+                    description: "Use provided API route.",
+                    answerText: "api/users/[id]",
+                    recommended: true
+                  },
+                  {
+                    id: "choice-2",
+                    label: "Web route",
+                    description: "Use page route.",
+                    answerText: "users/[id]",
+                    recommended: false
+                  },
+                  {
+                    id: "choice-3",
+                    label: "Custom",
+                    description: "Type custom route.",
+                    answerText: "custom route",
+                    recommended: false
+                  }
+                ],
                 required: true
               }
             })
@@ -318,6 +341,7 @@ describe("harness server", () => {
     const socket = new WebSocket("ws://localhost:8790/ws");
     const ready = await waitForEvent(socket, "connection.ready");
     const projectId = ready.payload.workspace.activeProjectId;
+    const threadId = ready.payload.workspace.projects[0].activeThreadId;
     const completePromise = waitForEvent(socket, "chat.complete");
 
     socket.send(
@@ -326,6 +350,7 @@ describe("harness server", () => {
         requestId: "req-gemini",
         payload: {
           projectId,
+          threadId,
           agentId: "pi",
           content: "complex task"
         }
@@ -342,6 +367,7 @@ describe("harness server", () => {
     const socket = new WebSocket("ws://localhost:8790/ws");
     const ready = await waitForEvent(socket, "connection.ready");
     const projectId = ready.payload.workspace.activeProjectId;
+    const threadId = ready.payload.workspace.projects[0].activeThreadId;
     const completePromise = waitForEvent(socket, "chat.complete");
 
     socket.send(
@@ -350,6 +376,7 @@ describe("harness server", () => {
         requestId: "req-low",
         payload: {
           projectId,
+          threadId,
           agentId: "pi",
           content: "simple task"
         }
@@ -367,6 +394,7 @@ describe("harness server", () => {
     const socket = new WebSocket("ws://localhost:8790/ws");
     const ready = await waitForEvent(socket, "connection.ready");
     const projectId = ready.payload.workspace.activeProjectId;
+    const threadId = ready.payload.workspace.projects[0].activeThreadId;
     const planPromise = waitForEvent(socket, "agent.plan");
     const completePromise = waitForEvent(socket, "chat.complete");
 
@@ -376,6 +404,7 @@ describe("harness server", () => {
         requestId: "req-high",
         payload: {
           projectId,
+          threadId,
           agentId: "pi",
           content: "complex task"
         }
@@ -402,6 +431,7 @@ describe("harness server", () => {
     const socket = new WebSocket("ws://localhost:8790/ws");
     const ready = await waitForEvent(socket, "connection.ready");
     const projectId = ready.payload.workspace.activeProjectId;
+    const threadId = ready.payload.workspace.projects[0].activeThreadId;
     const runPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "awaiting-user-input");
     const questionMessagePromise = waitForEvent(
       socket,
@@ -415,6 +445,7 @@ describe("harness server", () => {
         requestId: "req-question",
         payload: {
           projectId,
+          threadId,
           agentId: "pi",
           content: "needs clarification"
         }
@@ -436,6 +467,7 @@ describe("harness server", () => {
         requestId: "req-question-answer",
         payload: {
           projectId,
+          threadId,
           runId: runUpdate.payload.run.id,
           questionId: runUpdate.payload.run.questions[0].id,
           content: "api/users/[id]"
@@ -453,6 +485,7 @@ describe("harness server", () => {
     const socket = new WebSocket("ws://localhost:8790/ws");
     const ready = await waitForEvent(socket, "connection.ready");
     const projectId = ready.payload.workspace.activeProjectId;
+    const threadId = ready.payload.workspace.projects[0].activeThreadId;
     const partialRunPromise = waitForEvent(
       socket,
       "run.updated",
@@ -467,6 +500,7 @@ describe("harness server", () => {
         requestId: "req-resume-run",
         payload: {
           projectId,
+          threadId,
           agentId: "pi",
           content: "resume task"
         }
@@ -489,6 +523,7 @@ describe("harness server", () => {
     const socket = new WebSocket("ws://localhost:8790/ws");
     const ready = await waitForEvent(socket, "connection.ready");
     const projectId = ready.payload.workspace.activeProjectId;
+    const threadId = ready.payload.workspace.projects[0].activeThreadId;
     const planPromise = waitForEvent(socket, "agent.plan");
 
     socket.send(
@@ -497,6 +532,7 @@ describe("harness server", () => {
         requestId: "req-stop",
         payload: {
           projectId,
+          threadId,
           agentId: "pi",
           content: "slow task"
         }
@@ -511,7 +547,8 @@ describe("harness server", () => {
         type: "chat.stop",
         requestId: "req-stop-2",
         payload: {
-          projectId
+          projectId,
+          threadId
         }
       })
     );
@@ -543,6 +580,7 @@ describe("harness server", () => {
     const socket = new WebSocket("ws://localhost:8790/ws");
     const ready = await waitForEvent(socket, "connection.ready");
     const projectId = ready.payload.workspace.activeProjectId;
+    const threadId = ready.payload.workspace.projects[0].activeThreadId;
     const completePromise = waitForEvent(socket, "chat.complete");
 
     socket.send(
@@ -551,6 +589,7 @@ describe("harness server", () => {
         requestId: "req-persist",
         payload: {
           projectId,
+          threadId,
           agentId: "pi",
           content: "simple task"
         }
@@ -585,6 +624,7 @@ describe("harness server", () => {
     const socket = new WebSocket("ws://localhost:8790/ws");
     const ready = await waitForEvent(socket, "connection.ready");
     const projectId = ready.payload.workspace.activeProjectId;
+    const threadId = ready.payload.workspace.projects[0].activeThreadId;
     const preflightPromise = waitForEvent(socket, "run.preflight");
     const completePromise = waitForEvent(socket, "chat.complete");
 
@@ -594,6 +634,7 @@ describe("harness server", () => {
         requestId: "req-dirty-warning",
         payload: {
           projectId,
+          threadId,
           agentId: "pi",
           content: "simple task"
         }
@@ -615,6 +656,7 @@ describe("harness server", () => {
     const socket = new WebSocket("ws://localhost:8790/ws");
     const ready = await waitForEvent(socket, "connection.ready");
     const projectId = ready.payload.workspace.activeProjectId;
+    const threadId = ready.payload.workspace.projects[0].activeThreadId;
     const rejectedPromise = waitForEvent(socket, "command.rejected");
 
     socket.send(
@@ -623,6 +665,7 @@ describe("harness server", () => {
         requestId: "req-dirty-block",
         payload: {
           projectId,
+          threadId,
           agentId: "pi",
           content: "simple task"
         }
@@ -638,6 +681,7 @@ describe("harness server", () => {
     const socket = new WebSocket("ws://localhost:8790/ws");
     const ready = await waitForEvent(socket, "connection.ready");
     const projectId = ready.payload.workspace.activeProjectId;
+    const threadId = ready.payload.workspace.projects[0].activeThreadId;
     const firstCompletePromise = waitForEvent(socket, "chat.complete");
     const firstRunPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "completed");
 
@@ -647,6 +691,7 @@ describe("harness server", () => {
         requestId: "req-retry-main-1",
         payload: {
           projectId,
+          threadId,
           agentId: "pi",
           content: "simple task"
         }
@@ -663,6 +708,7 @@ describe("harness server", () => {
         requestId: "req-retry-main-2",
         payload: {
           projectId,
+          threadId,
           runId: firstRun.payload.run.id
         }
       })
@@ -677,6 +723,7 @@ describe("harness server", () => {
     const socket = new WebSocket("ws://localhost:8790/ws");
     const ready = await waitForEvent(socket, "connection.ready");
     const projectId = ready.payload.workspace.activeProjectId;
+    const threadId = ready.payload.workspace.projects[0].activeThreadId;
     const partialRunPromise = waitForEvent(
       socket,
       "run.updated",
@@ -691,6 +738,7 @@ describe("harness server", () => {
         requestId: "req-retry-subagent-1",
         payload: {
           projectId,
+          threadId,
           agentId: "pi",
           content: "resume task"
         }
@@ -707,6 +755,7 @@ describe("harness server", () => {
         requestId: "req-retry-subagent-2",
         payload: {
           projectId,
+          threadId,
           runId: partialRun.payload.run.id,
           subagentId: "task-1"
         }
@@ -724,6 +773,7 @@ describe("harness server", () => {
     const socket = new WebSocket("ws://localhost:8790/ws");
     const ready = await waitForEvent(socket, "connection.ready");
     const projectId = ready.payload.workspace.activeProjectId;
+    const threadId = ready.payload.workspace.projects[0].activeThreadId;
     const contextEvents: any[] = [];
     const listener = (event: MessageEvent) => {
       const payload = JSON.parse(event.data as string);
@@ -740,6 +790,7 @@ describe("harness server", () => {
         requestId: "req-context",
         payload: {
           projectId,
+          threadId,
           agentId: "pi",
           content: "simple task"
         }

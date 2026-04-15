@@ -6,12 +6,16 @@ export const threadIdSchema = z.string().min(1).max(128);
 export const projectIdSchema = z.string().min(1).max(128);
 export const runIdSchema = z.string().min(1).max(128);
 export const questionIdSchema = z.string().min(1).max(128);
+export const planningChoiceIdSchema = z.string().min(1).max(128);
 export const projectNameSchema = z.string().min(1).max(256);
 export const projectRootPathSchema = z.string().min(1).max(4096);
+export const threadTitleSchema = z.string().trim().min(1).max(256);
 export const agentIdSchema = z.literal("pi");
 export const providerBrandSchema = z.enum(["gpt", "gemini"]);
 export const preflightSeveritySchema = z.enum(["warning"]);
 export const preflightKindSchema = z.enum(["git-dirty"]);
+export const threadTitleSourceSchema = z.enum(["generated", "custom"]);
+export const threadBadgeStateSchema = z.enum(["idle", "needs-input", "planning", "executing", "error", "done"]);
 export const providerModelIdSchema = z
   .string()
   .min(1)
@@ -113,6 +117,14 @@ export const plannerSubtaskSchema = z.object({
   instruction: z.string().min(1)
 });
 
+export const planningChoiceSchema = z.object({
+  id: planningChoiceIdSchema,
+  label: z.string().min(1).max(128),
+  description: z.string().min(1).max(256),
+  answerText: z.string().min(1).max(32000),
+  recommended: z.boolean()
+});
+
 export const agentRunStatusSchema = z.enum([
   "planning",
   "awaiting-user-input",
@@ -132,6 +144,12 @@ export const planningQuestionSchema = z.object({
   id: questionIdSchema,
   prompt: z.string().min(1),
   placeholder: z.string().min(1).optional(),
+  choices: z
+    .array(planningChoiceSchema)
+    .length(3)
+    .refine((choices) => choices.filter((choice) => choice.recommended).length === 1, {
+      message: "Planning questions must include exactly one recommended choice"
+    }),
   required: z.boolean(),
   status: planningQuestionStatusSchema,
   answerText: z.string().min(1).optional(),
@@ -183,6 +201,12 @@ export const plannerQuestionTurnSchema = z.object({
     id: questionIdSchema,
     prompt: z.string().min(1),
     placeholder: z.string().min(1).optional(),
+    choices: z
+      .array(planningChoiceSchema)
+      .length(3)
+      .refine((choices) => choices.filter((choice) => choice.recommended).length === 1, {
+        message: "Planner questions must include exactly one recommended choice"
+      }),
     required: z.literal(true)
   })
 });
@@ -213,20 +237,26 @@ export const chatSessionStateSchema = z.object({
   lastError: z.string().min(1).optional()
 });
 
+export const projectThreadSummarySchema = z.object({
+  id: threadIdSchema,
+  title: threadTitleSchema,
+  titleSource: threadTitleSourceSchema,
+  badgeState: threadBadgeStateSchema,
+  messageCount: z.number().int().min(0),
+  lastMessagePreview: z.string().min(1).optional(),
+  updatedAt: z.string().datetime().or(z.string().min(1)),
+  forkedFromThreadId: threadIdSchema.optional()
+});
+
 export const workspaceProjectStateSchema = z.object({
   id: projectIdSchema,
   name: projectNameSchema,
   rootPath: projectRootPathSchema,
   activeThreadId: threadIdSchema,
+  threads: z.array(projectThreadSummarySchema).min(1),
   session: chatSessionStateSchema,
-  latestPlan: agentPlanSchema.optional(),
   activeRun: agentRunStateSchema.optional(),
-  lastRun: agentRunStateSchema.optional(),
-  contextUsage: projectContextUsageSchema.optional(),
-  traces: z.array(agentTraceSchema),
-  streamingAssistantText: z.string(),
-  draft: z.string(),
-  lastError: z.string().min(1).optional()
+  lastRun: agentRunStateSchema.optional()
 });
 
 export const workspaceStateSchema = z.object({
@@ -274,6 +304,38 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     })
   }),
   z.object({
+    type: z.literal("thread.create"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema
+    })
+  }),
+  z.object({
+    type: z.literal("thread.activate"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      threadId: threadIdSchema
+    })
+  }),
+  z.object({
+    type: z.literal("thread.fork"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      sourceThreadId: threadIdSchema
+    })
+  }),
+  z.object({
+    type: z.literal("thread.rename"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      threadId: threadIdSchema,
+      title: threadTitleSchema
+    })
+  }),
+  z.object({
     type: z.literal("session.reset"),
     requestId: requestIdSchema,
     payload: z.object({
@@ -284,7 +346,8 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     type: z.literal("chat.stop"),
     requestId: requestIdSchema,
     payload: z.object({
-      projectId: projectIdSchema
+      projectId: projectIdSchema,
+      threadId: threadIdSchema
     })
   }),
   z.object({
@@ -292,6 +355,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     requestId: requestIdSchema,
     payload: z.object({
       projectId: projectIdSchema,
+      threadId: threadIdSchema,
       agentId: agentIdSchema,
       content: z.string().min(1).max(32000),
       executionModelId: providerModelIdSchema.optional(),
@@ -303,6 +367,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     requestId: requestIdSchema,
     payload: z.object({
       projectId: projectIdSchema,
+      threadId: threadIdSchema,
       runId: runIdSchema,
       questionId: questionIdSchema,
       content: z.string().trim().min(1).max(32000)
@@ -313,6 +378,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     requestId: requestIdSchema,
     payload: z.object({
       projectId: projectIdSchema,
+      threadId: threadIdSchema,
       runId: runIdSchema,
       guidanceText: z.string().trim().min(1).max(32000).optional(),
       subagentIds: z.array(z.string().min(1).max(128)).max(8).optional()
@@ -323,6 +389,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     requestId: requestIdSchema,
     payload: z.object({
       projectId: projectIdSchema,
+      threadId: threadIdSchema,
       runId: runIdSchema,
       subagentId: z.string().min(1).max(128).optional()
     })
@@ -393,10 +460,35 @@ export const serverEventSchema = z.discriminatedUnion("type", [
     })
   }),
   z.object({
+    type: z.literal("thread.created"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      project: workspaceProjectStateSchema
+    })
+  }),
+  z.object({
+    type: z.literal("thread.activated"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      project: workspaceProjectStateSchema
+    })
+  }),
+  z.object({
+    type: z.literal("thread.renamed"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      thread: projectThreadSummarySchema
+    })
+  }),
+  z.object({
     type: z.literal("agent.plan"),
     requestId: requestIdSchema,
     payload: z.object({
       projectId: projectIdSchema,
+      threadId: threadIdSchema,
       plan: agentPlanSchema
     })
   }),
@@ -405,6 +497,7 @@ export const serverEventSchema = z.discriminatedUnion("type", [
     requestId: requestIdSchema,
     payload: z.object({
       projectId: projectIdSchema,
+      threadId: threadIdSchema,
       trace: agentTraceSchema
     })
   }),
@@ -413,6 +506,7 @@ export const serverEventSchema = z.discriminatedUnion("type", [
     requestId: requestIdSchema,
     payload: z.object({
       projectId: projectIdSchema,
+      threadId: threadIdSchema,
       sessionId: sessionIdSchema,
       delta: z.string()
     })
@@ -422,7 +516,7 @@ export const serverEventSchema = z.discriminatedUnion("type", [
     requestId: requestIdSchema,
     payload: z.object({
       projectId: projectIdSchema,
-      activeThreadId: threadIdSchema,
+      threadId: threadIdSchema,
       sessionId: sessionIdSchema,
       assistantMessage: chatMessageSchema,
       state: chatSessionStateSchema
@@ -433,7 +527,7 @@ export const serverEventSchema = z.discriminatedUnion("type", [
     requestId: requestIdSchema,
     payload: z.object({
       projectId: projectIdSchema,
-      activeThreadId: threadIdSchema,
+      threadId: threadIdSchema,
       sessionId: sessionIdSchema,
       message: chatMessageSchema,
       state: chatSessionStateSchema
@@ -444,6 +538,7 @@ export const serverEventSchema = z.discriminatedUnion("type", [
     requestId: requestIdSchema,
     payload: z.object({
       projectId: projectIdSchema.optional(),
+      threadId: threadIdSchema.optional(),
       message: z.string().min(1),
       detail: z.string().min(1).optional()
     })
@@ -453,6 +548,7 @@ export const serverEventSchema = z.discriminatedUnion("type", [
     requestId: requestIdSchema,
     payload: z.object({
       projectId: projectIdSchema,
+      threadId: threadIdSchema,
       run: agentRunStateSchema
     })
   }),
@@ -461,6 +557,7 @@ export const serverEventSchema = z.discriminatedUnion("type", [
     requestId: requestIdSchema,
     payload: z.object({
       projectId: projectIdSchema,
+      threadId: threadIdSchema,
       preflight: runPreflightSchema
     })
   }),
@@ -469,6 +566,7 @@ export const serverEventSchema = z.discriminatedUnion("type", [
     requestId: requestIdSchema,
     payload: z.object({
       projectId: projectIdSchema,
+      threadId: threadIdSchema,
       runId: runIdSchema
     })
   }),
@@ -477,7 +575,7 @@ export const serverEventSchema = z.discriminatedUnion("type", [
     requestId: requestIdSchema,
     payload: z.object({
       projectId: projectIdSchema,
-      activeThreadId: threadIdSchema,
+      threadId: threadIdSchema,
       sessionId: sessionIdSchema,
       state: chatSessionStateSchema
     })
@@ -487,6 +585,7 @@ export const serverEventSchema = z.discriminatedUnion("type", [
     requestId: requestIdSchema,
     payload: z.object({
       projectId: projectIdSchema,
+      threadId: threadIdSchema,
       contextUsage: projectContextUsageSchema
     })
   }),
@@ -516,12 +615,16 @@ export type ThreadId = z.infer<typeof threadIdSchema>;
 export type ProjectId = z.infer<typeof projectIdSchema>;
 export type RunId = z.infer<typeof runIdSchema>;
 export type QuestionId = z.infer<typeof questionIdSchema>;
+export type PlanningChoiceId = z.infer<typeof planningChoiceIdSchema>;
 export type ProjectName = z.infer<typeof projectNameSchema>;
 export type ProjectRootPath = z.infer<typeof projectRootPathSchema>;
+export type ThreadTitle = z.infer<typeof threadTitleSchema>;
 export type AgentId = z.infer<typeof agentIdSchema>;
 export type ProviderBrand = z.infer<typeof providerBrandSchema>;
 export type PreflightSeverity = z.infer<typeof preflightSeveritySchema>;
 export type PreflightKind = z.infer<typeof preflightKindSchema>;
+export type ThreadTitleSource = z.infer<typeof threadTitleSourceSchema>;
+export type ThreadBadgeState = z.infer<typeof threadBadgeStateSchema>;
 export type ProviderModelId = z.infer<typeof providerModelIdSchema>;
 export type ChatRole = z.infer<typeof chatRoleSchema>;
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
@@ -534,6 +637,7 @@ export type ProjectContextSourceKind = z.infer<typeof projectContextSourceKindSc
 export type ProjectContextUsage = z.infer<typeof projectContextUsageSchema>;
 export type RunPreflight = z.infer<typeof runPreflightSchema>;
 export type PlannerSubtask = z.infer<typeof plannerSubtaskSchema>;
+export type PlanningChoice = z.infer<typeof planningChoiceSchema>;
 export type AgentRunStatus = z.infer<typeof agentRunStatusSchema>;
 export type PlanningQuestionStatus = z.infer<typeof planningQuestionStatusSchema>;
 export type PlanningQuestion = z.infer<typeof planningQuestionSchema>;
@@ -545,6 +649,7 @@ export type PlannerReadyTurn = z.infer<typeof plannerReadyTurnSchema>;
 export type PlannerTurnResult = z.infer<typeof plannerTurnResultSchema>;
 export type PlannerResult = z.infer<typeof plannerResultSchema>;
 export type ChatSessionState = z.infer<typeof chatSessionStateSchema>;
+export type ProjectThreadSummary = z.infer<typeof projectThreadSummarySchema>;
 export type WorkspaceProjectState = z.infer<typeof workspaceProjectStateSchema>;
 export type WorkspaceState = z.infer<typeof workspaceStateSchema>;
 export type ClientCommand = z.infer<typeof clientCommandSchema>;
@@ -574,6 +679,10 @@ export function createQuestionId(): QuestionId {
   return crypto.randomUUID();
 }
 
+export function createPlanningChoiceId(): PlanningChoiceId {
+  return crypto.randomUUID();
+}
+
 export function createChatMessage(
   role: ChatRole,
   content: string,
@@ -597,26 +706,48 @@ export function createEmptySession(sessionId: SessionId = createSessionId()): Ch
   };
 }
 
+export function createProjectThreadSummary(
+  input: Pick<ProjectThreadSummary, "id" | "title" | "titleSource" | "updatedAt"> &
+    Partial<Pick<ProjectThreadSummary, "badgeState" | "messageCount" | "lastMessagePreview" | "forkedFromThreadId">>
+): ProjectThreadSummary {
+  return {
+    id: input.id,
+    title: input.title,
+    titleSource: input.titleSource,
+    badgeState: input.badgeState ?? "idle",
+    messageCount: input.messageCount ?? 0,
+    lastMessagePreview: input.lastMessagePreview,
+    updatedAt: input.updatedAt,
+    forkedFromThreadId: input.forkedFromThreadId
+  };
+}
+
 export function createWorkspaceProjectState(
   input: Pick<WorkspaceProjectState, "id" | "name" | "rootPath"> & {
     activeThreadId?: ThreadId;
     session?: ChatSessionState;
+    threads?: ProjectThreadSummary[];
   }
 ): WorkspaceProjectState {
+  const activeThreadId = input.activeThreadId ?? createThreadId();
   return {
     id: input.id,
     name: input.name,
     rootPath: input.rootPath,
-    activeThreadId: input.activeThreadId ?? createThreadId(),
+    activeThreadId,
+    threads:
+      input.threads ??
+      [
+        createProjectThreadSummary({
+          id: activeThreadId,
+          title: "Thread 1",
+          titleSource: "generated",
+          updatedAt: new Date().toISOString()
+        })
+      ],
     session: input.session ?? createEmptySession(),
-    latestPlan: undefined,
     activeRun: undefined,
-    lastRun: undefined,
-    contextUsage: undefined,
-    traces: [],
-    streamingAssistantText: "",
-    draft: "",
-    lastError: undefined
+    lastRun: undefined
   };
 }
 

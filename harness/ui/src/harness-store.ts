@@ -1,8 +1,12 @@
 import { createStore } from "solid-js/store";
 import { defaultAgentCatalog } from "../../shared/agent-catalog";
 import {
+  type AgentPlan,
+  type AgentTrace,
   createEmptySession,
   createProjectId,
+  createProjectThreadSummary,
+  type ProjectContextUsage,
   type ProviderBrand,
   type AgentOption,
   type ConnectionState,
@@ -18,12 +22,27 @@ export const GOOGLE_API_KEY_STORAGE_KEY = "google_api_key";
 export const PROVIDER_BRAND_STORAGE_KEY = "provider_brand";
 export const DEBUG_ENABLED_STORAGE_KEY = "debug_enabled";
 export const TRACE_PANEL_DEFAULT_OPEN_STORAGE_KEY = "trace_panel_default_open";
+export const THREAD_DRAFT_STORAGE_KEY_PREFIX = "pi-harness:thread-draft:v1";
+
+export type ViewProjectState = WorkspaceProjectState & {
+  latestPlan?: AgentPlan;
+  contextUsage?: ProjectContextUsage;
+  traces: AgentTrace[];
+  streamingAssistantText: string;
+  draft: string;
+  lastError?: string;
+};
+
+export type ViewWorkspaceState = {
+  activeProjectId: string;
+  projects: ViewProjectState[];
+};
 
 export type HarnessViewState = {
   connectionState: ConnectionState;
   connectionError?: string;
   availableAgents: AgentOption[];
-  workspace: WorkspaceState;
+  workspace: ViewWorkspaceState;
   projectInput: string;
   pendingExecutionModelIds: Record<string, string | undefined>;
   debugEnabled: boolean;
@@ -56,8 +75,9 @@ export type LocalPreferencesState = {
   tracePanelDefaultOpen?: boolean;
 };
 
-export function createInitialWorkspaceState(): WorkspaceState {
+export function createInitialWorkspaceState(): ViewWorkspaceState {
   const initialProjectId = createProjectId();
+  const initialThreadId = crypto.randomUUID();
   return {
     activeProjectId: initialProjectId,
     projects: [
@@ -65,9 +85,16 @@ export function createInitialWorkspaceState(): WorkspaceState {
         id: initialProjectId,
         name: "Loading workspace",
         rootPath: "C:\\loading",
-        activeThreadId: crypto.randomUUID(),
-        session: createEmptySession(),
-        latestPlan: undefined,
+        activeThreadId: initialThreadId,
+        threads: [
+          createProjectThreadSummary({
+            id: initialThreadId,
+            title: "Thread 1",
+            titleSource: "generated",
+            updatedAt: new Date().toISOString()
+          })
+        ],
+        session: createEmptySession(initialThreadId),
         activeRun: undefined,
         lastRun: undefined,
         contextUsage: undefined,
@@ -124,7 +151,7 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
       return {
         ...state,
         availableAgents: [...event.payload.agents],
-        workspace: event.payload.workspace,
+        workspace: hydrateWorkspace(event.payload.workspace),
         projectPreflights: {},
         ...applyReadyPreferencesState(state, event.payload.preferences)
       };
@@ -139,7 +166,7 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
         projectInput: "",
         workspace: {
           activeProjectId: event.payload.activeProjectId,
-          projects: upsertProject(state.workspace.projects, event.payload.project)
+          projects: upsertProject(state.workspace.projects, toViewProject(event.payload.project))
         }
       };
     case "project.removed":
@@ -158,31 +185,43 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
           activeProjectId: event.payload.projectId
         }
       };
-    case "agent.plan":
+    case "thread.created":
+    case "thread.activated":
+      return updateProjectState(state, event.payload.projectId, (project) =>
+        mergeIncomingProject(project, toViewProject(event.payload.project))
+      );
+    case "thread.renamed":
       return updateProjectState(state, event.payload.projectId, (project) => ({
         ...project,
-        latestPlan: event.payload.plan
+        threads: project.threads.map((thread) => (thread.id === event.payload.thread.id ? event.payload.thread : thread))
+      }));
+    case "agent.plan":
+      return updateThreadScopedProject(state, event.payload.projectId, event.payload.threadId, (project) => ({
+        ...project,
+        latestPlan: event.payload.plan,
+        threads: setThreadBadge(project.threads, event.payload.threadId, "planning")
       }));
     case "agent.trace":
-      return updateProjectState(state, event.payload.projectId, (project) => ({
+      return updateThreadScopedProject(state, event.payload.projectId, event.payload.threadId, (project) => ({
         ...project,
         traces: [...project.traces, event.payload.trace]
       }));
     case "chat.delta":
-      return updateProjectState(state, event.payload.projectId, (project) => ({
+      return updateThreadScopedProject(state, event.payload.projectId, event.payload.threadId, (project) => ({
         ...project,
         streamingAssistantText: `${project.streamingAssistantText}${event.payload.delta}`,
+        threads: setThreadBadge(project.threads, event.payload.threadId, "executing"),
         session: {
           ...project.session,
           isStreaming: true
         }
       }));
     case "chat.complete":
-      return updateProjectState(state, event.payload.projectId, (project) => ({
+      return updateThreadScopedProject(state, event.payload.projectId, event.payload.threadId, (project) => ({
         ...project,
-        activeThreadId: event.payload.activeThreadId,
         streamingAssistantText: "",
         lastError: undefined,
+        threads: setThreadBadge(project.threads, event.payload.threadId, "done"),
         session: {
           ...event.payload.state,
           isStreaming: false,
@@ -190,9 +229,8 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
         }
       }));
     case "chat.message-appended":
-      return updateProjectState(state, event.payload.projectId, (project) => ({
+      return updateThreadScopedProject(state, event.payload.projectId, event.payload.threadId, (project) => ({
         ...project,
-        activeThreadId: event.payload.activeThreadId,
         lastError: undefined,
         session: {
           ...event.payload.state,
@@ -209,6 +247,7 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
         ...project,
         streamingAssistantText: "",
         lastError: event.payload.detail ?? event.payload.message,
+        threads: event.payload.threadId ? setThreadBadge(project.threads, event.payload.threadId, "error") : project.threads,
         session: {
           ...project.session,
           isStreaming: false,
@@ -218,7 +257,7 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
     case "session.reset":
       return updateProjectState(state, event.payload.projectId, (project) => ({
         ...project,
-        activeThreadId: event.payload.activeThreadId,
+        activeThreadId: event.payload.threadId,
         latestPlan: undefined,
         activeRun: undefined,
         lastRun: undefined,
@@ -226,6 +265,7 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
         traces: [],
         streamingAssistantText: "",
         lastError: undefined,
+        draft: readThreadDraft(event.payload.projectId, event.payload.threadId),
         session: {
           ...event.payload.state,
           isStreaming: false,
@@ -234,10 +274,11 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
       }));
     case "run.updated":
       return {
-        ...updateProjectState(state, event.payload.projectId, (project) => ({
+        ...updateThreadScopedProject(state, event.payload.projectId, event.payload.threadId, (project) => ({
           ...project,
           activeRun: event.payload.run.status === "completed" ? undefined : event.payload.run,
-          lastRun: event.payload.run
+          lastRun: event.payload.run,
+          threads: setThreadBadge(project.threads, event.payload.threadId, badgeFromRunStatus(event.payload.run.status))
         })),
         projectPreflights: {
           ...state.projectPreflights,
@@ -259,12 +300,12 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
         }
       };
     case "run.cleared":
-      return updateProjectState(state, event.payload.projectId, (project) => ({
+      return updateThreadScopedProject(state, event.payload.projectId, event.payload.threadId, (project) => ({
         ...project,
         activeRun: project.activeRun?.id === event.payload.runId ? undefined : project.activeRun
       }));
     case "project.context":
-      return updateProjectState(state, event.payload.projectId, (project) => ({
+      return updateThreadScopedProject(state, event.payload.projectId, event.payload.threadId, (project) => ({
         ...project,
         contextUsage: event.payload.contextUsage
       }));
@@ -297,12 +338,27 @@ export function createHarnessStore() {
       setState({ projectInput });
     },
     setProjectDraft(projectId: string, draft: string) {
+      const project = state.workspace.projects.find((entry) => entry.id === projectId);
+      if (!project) {
+        return;
+      }
+
+      persistThreadDraft(projectId, project.activeThreadId, draft);
       setState(
         "workspace",
         "projects",
         (project) => project.id === projectId,
         "draft",
         draft
+      );
+    },
+    syncProjectDraft(projectId: string, threadId: string) {
+      setState(
+        "workspace",
+        "projects",
+        (project) => project.id === projectId,
+        "draft",
+        readThreadDraft(projectId, threadId)
       );
     },
     setPendingExecutionModelId(projectId: string, modelId?: string) {
@@ -401,7 +457,7 @@ export const harnessStore = createHarnessStore();
 function updateProjectState(
   state: HarnessViewState,
   projectId: string,
-  updater: (project: WorkspaceProjectState) => WorkspaceProjectState
+  updater: (project: ViewProjectState) => ViewProjectState
 ): HarnessViewState {
   return {
     ...state,
@@ -412,12 +468,83 @@ function updateProjectState(
   };
 }
 
-function upsertProject(projects: WorkspaceProjectState[], nextProject: WorkspaceProjectState) {
+function updateThreadScopedProject(
+  state: HarnessViewState,
+  projectId: string,
+  threadId: string,
+  updater: (project: ViewProjectState) => ViewProjectState
+) {
+  return updateProjectState(state, projectId, (project) => (project.activeThreadId === threadId ? updater(project) : project));
+}
+
+function upsertProject(projects: ViewProjectState[], nextProject: ViewProjectState) {
   if (projects.some((project) => project.id === nextProject.id)) {
     return projects.map((project) => (project.id === nextProject.id ? nextProject : project));
   }
 
   return [nextProject, ...projects];
+}
+
+function hydrateWorkspace(workspace: WorkspaceState): ViewWorkspaceState {
+  return {
+    activeProjectId: workspace.activeProjectId,
+    projects: workspace.projects.map((project) => toViewProject(project))
+  };
+}
+
+function toViewProject(project: WorkspaceProjectState): ViewProjectState {
+  return {
+    ...project,
+    latestPlan: undefined,
+    contextUsage: undefined,
+    traces: [],
+    streamingAssistantText: "",
+    draft: readThreadDraft(project.id, project.activeThreadId),
+    lastError: undefined
+  };
+}
+
+function mergeIncomingProject(existing: ViewProjectState, incoming: ViewProjectState): ViewProjectState {
+  const activeThreadChanged = existing.activeThreadId !== incoming.activeThreadId;
+  return {
+    ...incoming,
+    latestPlan: activeThreadChanged ? undefined : existing.latestPlan,
+    contextUsage: activeThreadChanged ? undefined : existing.contextUsage,
+    traces: activeThreadChanged ? [] : existing.traces,
+    streamingAssistantText: activeThreadChanged ? "" : existing.streamingAssistantText,
+    draft: readThreadDraft(incoming.id, incoming.activeThreadId),
+    lastError: activeThreadChanged ? undefined : existing.lastError,
+    session: {
+      ...incoming.session,
+      selectedAgentId: existing.session.selectedAgentId ?? incoming.session.selectedAgentId,
+      executionModelId: existing.session.executionModelId ?? incoming.session.executionModelId,
+      isStreaming: activeThreadChanged ? false : existing.session.isStreaming,
+      lastError: activeThreadChanged ? undefined : existing.session.lastError
+    }
+  };
+}
+
+function setThreadBadge(threads: ViewProjectState["threads"], threadId: string, badgeState: ViewProjectState["threads"][number]["badgeState"]) {
+  return threads.map((thread) => (thread.id === threadId ? { ...thread, badgeState } : thread));
+}
+
+function badgeFromRunStatus(status: NonNullable<ViewProjectState["lastRun"]>["status"]): ViewProjectState["threads"][number]["badgeState"] {
+  if (status === "failed" || status === "partial-complete") {
+    return "error";
+  }
+  if (status === "awaiting-user-input") {
+    return "needs-input";
+  }
+  if (status === "planning" || status === "ready") {
+    return "planning";
+  }
+  if (status === "running-main" || status === "running-subagents" || status === "aggregating") {
+    return "executing";
+  }
+  if (status === "completed") {
+    return "done";
+  }
+  return "idle";
 }
 
 function applyReadyPreferencesState(state: HarnessViewState, preferences: PreferencesState) {
@@ -459,6 +586,32 @@ export function readLocalPreferences(): LocalPreferencesState {
     debugEnabled,
     tracePanelDefaultOpen
   };
+}
+
+export function getThreadDraftStorageKey(projectId: string, threadId: string) {
+  return `${THREAD_DRAFT_STORAGE_KEY_PREFIX}:${projectId}:${threadId}`;
+}
+
+export function readThreadDraft(projectId: string, threadId: string) {
+  if (typeof window === "undefined") {
+    return "";
+  }
+
+  return window.localStorage.getItem(getThreadDraftStorageKey(projectId, threadId)) ?? "";
+}
+
+export function persistThreadDraft(projectId: string, threadId: string, draft: string) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const key = getThreadDraftStorageKey(projectId, threadId);
+  if (!draft) {
+    window.localStorage.removeItem(key);
+    return;
+  }
+
+  window.localStorage.setItem(key, draft);
 }
 
 export function persistLocalPreferences(input: LocalPreferencesState) {

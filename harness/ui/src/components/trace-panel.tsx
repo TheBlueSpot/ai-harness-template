@@ -29,6 +29,7 @@ export function TracePanel(props: TracePanelProps) {
       requestId: createRequestId(),
       payload: {
         projectId: project.id,
+        threadId: project.activeThreadId,
         runId: run.id
       }
     });
@@ -46,6 +47,7 @@ export function TracePanel(props: TracePanelProps) {
       requestId: createRequestId(),
       payload: {
         projectId: project.id,
+        threadId: project.activeThreadId,
         runId: run.id,
         subagentId
       }

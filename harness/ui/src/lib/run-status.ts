@@ -1,4 +1,5 @@
-import type { AgentTrace, RunPreflight, SubagentTaskState, WorkspaceProjectState } from "../../../shared/protocol";
+import type { AgentTrace, RunPreflight, SubagentTaskState } from "../../../shared/protocol";
+import type { ViewProjectState } from "../harness-store";
 
 export type ChatStatusCard = {
   id: string;
@@ -9,7 +10,7 @@ export type ChatStatusCard = {
 };
 
 export function getProjectStatusCards(
-  project: WorkspaceProjectState,
+  project: ViewProjectState,
   preflightEntry?: { requestId: string; preflight: RunPreflight }
 ) {
   const run = project.activeRun ?? project.lastRun;
@@ -83,7 +84,7 @@ export function getProjectStatusCards(
   return cards;
 }
 
-export function getLatestTaskStatusText(project: WorkspaceProjectState, task: SubagentTaskState) {
+export function getLatestTaskStatusText(project: ViewProjectState, task: SubagentTaskState) {
   const trace = getLatestTraceForSubagent(project.traces, task.id);
   if (trace) {
     return toCavemanTrace(trace);

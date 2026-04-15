@@ -10,7 +10,8 @@ import {
   type PreferencesState,
   type ProjectContextUsage,
   type ProjectId,
-  type ServerEvent
+  type ServerEvent,
+  type WorkspaceProjectState
 } from "../../shared/protocol";
 import { pickProjectFolder } from "./folder-picker";
 import { runGitPreflight } from "./git-preflight";
@@ -33,6 +34,8 @@ type HarnessServerOptions = {
   pickFolder?: typeof pickProjectFolder;
   serverOnly?: boolean;
 };
+
+type ProjectLike = Pick<WorkspaceProjectState, "id" | "rootPath" | "activeThreadId" | "session" | "activeRun" | "lastRun">;
 
 export async function startHarnessServer({
   port,
@@ -225,6 +228,86 @@ async function handleCommand(
       });
       return;
     }
+    case "thread.create": {
+      const project = runtime.getProject(command.payload.projectId);
+      if (project.session.isStreaming) {
+        throw new Error("Project is streaming");
+      }
+
+      const nextProject = repository.createThread(command.payload.projectId);
+      runtime.upsertPersistedProject(nextProject);
+      runtime.clearProjectTransients(command.payload.projectId);
+      sendEvent(ws, {
+        type: "thread.created",
+        requestId: command.requestId,
+        payload: {
+          projectId: command.payload.projectId,
+          project: runtime.getProject(command.payload.projectId)
+        }
+      });
+      return;
+    }
+    case "thread.activate": {
+      const project = runtime.getProject(command.payload.projectId);
+      if (project.session.isStreaming) {
+        throw new Error("Project is streaming");
+      }
+
+      const nextProject = repository.activateThread(command.payload.projectId, command.payload.threadId);
+      runtime.upsertPersistedProject(nextProject);
+      runtime.clearProjectTransients(command.payload.projectId);
+      sendEvent(ws, {
+        type: "thread.activated",
+        requestId: command.requestId,
+        payload: {
+          projectId: command.payload.projectId,
+          project: runtime.getProject(command.payload.projectId)
+        }
+      });
+      return;
+    }
+    case "thread.fork": {
+      const project = runtime.getProject(command.payload.projectId);
+      if (project.session.isStreaming) {
+        throw new Error("Project is streaming");
+      }
+
+      const nextProject = repository.forkThread(command.payload.projectId, command.payload.sourceThreadId);
+      runtime.upsertPersistedProject(nextProject);
+      runtime.clearProjectTransients(command.payload.projectId);
+      sendEvent(ws, {
+        type: "thread.created",
+        requestId: command.requestId,
+        payload: {
+          projectId: command.payload.projectId,
+          project: runtime.getProject(command.payload.projectId)
+        }
+      });
+      return;
+    }
+    case "thread.rename": {
+      const project = runtime.getProject(command.payload.projectId);
+      if (project.session.isStreaming) {
+        throw new Error("Project is streaming");
+      }
+
+      const nextProject = repository.renameThread(command.payload.projectId, command.payload.threadId, command.payload.title);
+      runtime.upsertPersistedProject(nextProject);
+      const thread = nextProject.threads.find((entry) => entry.id === command.payload.threadId);
+      if (!thread) {
+        throw new Error(`Unknown thread: ${command.payload.threadId}`);
+      }
+
+      sendEvent(ws, {
+        type: "thread.renamed",
+        requestId: command.requestId,
+        payload: {
+          projectId: command.payload.projectId,
+          thread
+        }
+      });
+      return;
+    }
     case "session.reset": {
       const activeProject = runtime.getProject(command.payload.projectId);
       if (activeProject.session.isStreaming) {
@@ -241,7 +324,7 @@ async function handleCommand(
         requestId: command.requestId,
         payload: {
           projectId: command.payload.projectId,
-          activeThreadId: nextProject.activeThreadId,
+          threadId: nextProject.activeThreadId,
           sessionId: nextProject.session.sessionId,
           state: nextProject.session
         }
@@ -250,6 +333,7 @@ async function handleCommand(
     }
     case "chat.stop": {
       const project = runtime.getProject(command.payload.projectId);
+      assertActiveThread(project, command.payload.threadId);
       const activeRun = project.activeRun;
       runtime.getAbortController(command.payload.projectId)?.abort();
       runtime.setProjectStreaming(command.payload.projectId, false);
@@ -267,6 +351,7 @@ async function handleCommand(
         requestId: command.requestId,
         payload: {
           projectId: command.payload.projectId,
+          threadId: project.activeThreadId,
           message: "Chat request stopped by user"
         }
       });
@@ -279,6 +364,7 @@ async function handleCommand(
     case "chat.send": {
       const projectId = command.payload.projectId;
       const project = runtime.getProject(projectId);
+      assertActiveThread(project, command.payload.threadId);
       assertProjectCanStartRun(project);
       await enforceExecutionPreflight(ws, command.requestId, project);
       const providerBrand = repository.getProviderBrand();
@@ -292,11 +378,16 @@ async function handleCommand(
       repository.activateProject(projectId);
       runtime.setActiveProject(projectId);
 
-      const userMessageProject = repository.appendMessage(projectId, "user", command.payload.content);
+      const userMessageProject = repository.appendMessage(projectId, "user", command.payload.content, command.payload.threadId);
       runtime.upsertPersistedProject(userMessageProject);
       emitMessageAppended(ws, command.requestId, userMessageProject);
 
-      const runProject = repository.createAgentRun(projectId, command.payload.content, getDefaultPlanningModelId(providerBrand));
+      const runProject = repository.createAgentRun(
+        projectId,
+        command.payload.content,
+        getDefaultPlanningModelId(providerBrand),
+        command.payload.threadId
+      );
       runtime.upsertPersistedProject(runProject);
       emitRunUpdated(ws, command.requestId, runProject);
 
@@ -333,6 +424,7 @@ async function handleCommand(
     case "planning.answer": {
       const projectId = command.payload.projectId;
       const project = runtime.getProject(projectId);
+      assertActiveThread(project, command.payload.threadId);
       const activeRun = requireActiveRun(project, command.payload.runId);
       const pendingQuestion = activeRun.questions.find(
         (question) => question.id === command.payload.questionId && question.status === "pending"
@@ -342,7 +434,7 @@ async function handleCommand(
       }
 
       const providerBrand = repository.getProviderBrand();
-      const answerProject = repository.appendMessage(projectId, "user", command.payload.content);
+      const answerProject = repository.appendMessage(projectId, "user", command.payload.content, command.payload.threadId);
       runtime.upsertPersistedProject(answerProject);
       emitMessageAppended(ws, command.requestId, answerProject);
 
@@ -390,6 +482,7 @@ async function handleCommand(
     case "run.resume": {
       const projectId = command.payload.projectId;
       const project = runtime.getProject(projectId);
+      assertActiveThread(project, command.payload.threadId);
       const activeRun = requireActiveRun(project, command.payload.runId);
       if (!activeRun.resumable) {
         throw new Error("Run is not resumable");
@@ -398,7 +491,7 @@ async function handleCommand(
 
       const providerBrand = repository.getProviderBrand();
       if (command.payload.guidanceText?.trim()) {
-        const guidanceProject = repository.appendMessage(projectId, "user", command.payload.guidanceText);
+        const guidanceProject = repository.appendMessage(projectId, "user", command.payload.guidanceText, command.payload.threadId);
         runtime.upsertPersistedProject(guidanceProject);
         emitMessageAppended(ws, command.requestId, guidanceProject);
       }
@@ -437,6 +530,7 @@ async function handleCommand(
     case "run.retry": {
       const projectId = command.payload.projectId;
       const project = runtime.getProject(projectId);
+      assertActiveThread(project, command.payload.threadId);
       assertProjectCanStartRetry(project, command.payload.runId);
       await enforceExecutionPreflight(ws, command.requestId, project);
 
@@ -460,7 +554,8 @@ async function handleCommand(
           const runProject = repository.createAgentRun(
             projectId,
             retryRun.latestUserPrompt,
-            retryRun.planningModelId ?? getDefaultPlanningModelId(providerBrand)
+            retryRun.planningModelId ?? getDefaultPlanningModelId(providerBrand),
+            command.payload.threadId
           );
           runtime.upsertPersistedProject(runProject);
           emitRunUpdated(ws, command.requestId, runtime.getProject(projectId));
@@ -483,7 +578,8 @@ async function handleCommand(
           let runProject = repository.createAgentRun(
             projectId,
             retryRun.latestUserPrompt,
-            retryRun.planningModelId ?? getDefaultPlanningModelId(providerBrand)
+            retryRun.planningModelId ?? getDefaultPlanningModelId(providerBrand),
+            command.payload.threadId
           );
           const nextRunId = runProject.activeRun?.id;
           if (!nextRunId) {
@@ -647,6 +743,7 @@ async function continueRunLifecycle(
       requestId,
       payload: {
         projectId: options.projectId,
+        threadId: activeRun.threadId,
         plan: plannerTurn.plan
       }
     });
@@ -795,7 +892,7 @@ async function executeRunLifecycle(
       requestId,
       payload: {
         projectId: options.projectId,
-        activeThreadId: nextProject.activeThreadId,
+        threadId: nextProject.activeThreadId,
         sessionId: nextProject.session.sessionId,
         assistantMessage,
         state: nextProject.session
@@ -916,7 +1013,7 @@ async function executeInlineSubagentRetryLifecycle(
     requestId,
     payload: {
       projectId: options.projectId,
-      activeThreadId: nextProject.activeThreadId,
+      threadId: nextProject.activeThreadId,
       sessionId: nextProject.session.sessionId,
       assistantMessage: persistedAssistantMessage,
       state: nextProject.session
@@ -940,6 +1037,7 @@ function createExecutionCallbacks(
         requestId,
         payload: {
           projectId,
+          threadId: runtime.getProject(projectId).activeThreadId,
           trace
         }
       });
@@ -952,6 +1050,7 @@ function createExecutionCallbacks(
         requestId,
         payload: {
           projectId,
+          threadId: project.activeThreadId,
           sessionId: project.session.sessionId,
           delta
         }
@@ -964,6 +1063,7 @@ function createExecutionCallbacks(
         requestId,
         payload: {
           projectId,
+          threadId: runtime.getProject(projectId).activeThreadId,
           contextUsage
         }
       });
@@ -1131,6 +1231,7 @@ async function handleRunFailure(
     requestId,
     payload: {
       projectId,
+      threadId: project.activeThreadId,
       message: "Pi agent execution failed",
       detail: message
     }
@@ -1142,11 +1243,7 @@ async function handleRunFailure(
   });
 }
 
-function emitMessageAppended(
-  ws: Bun.ServerWebSocket<HarnessConnection>,
-  requestId: string,
-  project: ReturnType<WorkspaceRuntimeStore["getProject"]>
-) {
+function emitMessageAppended(ws: Bun.ServerWebSocket<HarnessConnection>, requestId: string, project: ProjectLike) {
   const message = project.session.messages.at(-1);
   if (!message) {
     throw new Error("Expected appended message");
@@ -1157,7 +1254,7 @@ function emitMessageAppended(
     requestId,
     payload: {
       projectId: project.id,
-      activeThreadId: project.activeThreadId,
+      threadId: project.activeThreadId,
       sessionId: project.session.sessionId,
       message,
       state: project.session
@@ -1165,11 +1262,7 @@ function emitMessageAppended(
   });
 }
 
-function emitRunUpdated(
-  ws: Bun.ServerWebSocket<HarnessConnection>,
-  requestId: string,
-  project: ReturnType<WorkspaceRuntimeStore["getProject"]>
-) {
+function emitRunUpdated(ws: Bun.ServerWebSocket<HarnessConnection>, requestId: string, project: ProjectLike) {
   const run = project.activeRun ?? project.lastRun;
   if (!run) {
     return;
@@ -1180,6 +1273,7 @@ function emitRunUpdated(
     requestId,
     payload: {
       projectId: project.id,
+      threadId: run.threadId,
       run
     }
   });
@@ -1210,21 +1304,27 @@ function buildReadyPlanFromRun(run: AgentRunState): PlannerReadyTurn {
   };
 }
 
-function assertProjectCanStartRun(project: ReturnType<WorkspaceRuntimeStore["getProject"]>) {
+function assertProjectCanStartRun(project: ProjectLike) {
   const blockingStatuses = new Set(["planning", "awaiting-user-input", "ready", "running-main", "running-subagents", "aggregating", "partial-complete"]);
   if (project.activeRun && blockingStatuses.has(project.activeRun.status)) {
     throw new Error(`Project has active run in status ${project.activeRun.status}`);
   }
 }
 
-function assertProjectCanStartRetry(project: ReturnType<WorkspaceRuntimeStore["getProject"]>, runId: string) {
+function assertActiveThread(project: ProjectLike, threadId: string) {
+  if (project.activeThreadId !== threadId) {
+    throw new Error(`Thread ${threadId} is not active for project ${project.id}`);
+  }
+}
+
+function assertProjectCanStartRetry(project: ProjectLike, runId: string) {
   const blockingStatuses = new Set(["planning", "awaiting-user-input", "ready", "running-main", "running-subagents", "aggregating"]);
   if (project.activeRun && project.activeRun.id !== runId && blockingStatuses.has(project.activeRun.status)) {
     throw new Error(`Project has active run in status ${project.activeRun.status}`);
   }
 }
 
-function requireActiveRun(project: ReturnType<WorkspaceRuntimeStore["getProject"]>, runId?: string) {
+function requireActiveRun(project: ProjectLike, runId?: string) {
   if (!project.activeRun) {
     throw new Error("Project has no active run");
   }
@@ -1236,7 +1336,7 @@ function requireActiveRun(project: ReturnType<WorkspaceRuntimeStore["getProject"
   return project.activeRun;
 }
 
-function requireRetryableRun(project: ReturnType<WorkspaceRuntimeStore["getProject"]>, runId: string) {
+function requireRetryableRun(project: ProjectLike, runId: string) {
   const run = [project.activeRun, project.lastRun].find((entry) => entry?.id === runId);
   if (!run) {
     throw new Error(`Run ${runId} is not available`);
@@ -1252,7 +1352,7 @@ function requireRetryableRun(project: ReturnType<WorkspaceRuntimeStore["getProje
 async function enforceExecutionPreflight(
   ws: Bun.ServerWebSocket<HarnessConnection>,
   requestId: string,
-  project: ReturnType<WorkspaceRuntimeStore["getProject"]>
+  project: ProjectLike
 ) {
   const result = await runGitPreflight(project.rootPath);
   if (result.status === "warning") {
@@ -1261,6 +1361,7 @@ async function enforceExecutionPreflight(
       requestId,
       payload: {
         projectId: project.id,
+        threadId: project.activeThreadId,
         preflight: result.preflight
       }
     });

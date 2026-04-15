@@ -10,18 +10,23 @@ Client commands are restricted to a fixed set of actions:
 - project browse
 - project remove
 - project activate
+- thread create
+- thread activate
+- thread fork
+- thread rename
 - chat send
 - planning answer
 - run resume
 - run retry
 - chat stop
-- session reset
+- session reset as legacy alias for thread create
 
 Server responses are structured events that report:
 
 - readiness and workspace state
 - agent catalogs
 - project additions, removals, and activation changes
+- thread creation, activation, and rename changes
 - planner summaries
 - developer trace updates
 - execution preflight warnings
@@ -39,6 +44,7 @@ Project commands carry:
 Chat requests carry:
 
 - project id
+- thread id
 - agent id
 - user content
 - optional execution model override
@@ -47,6 +53,7 @@ Chat requests carry:
 Planning answer requests carry:
 
 - project id
+- thread id
 - run id
 - question id
 - user content
@@ -54,6 +61,7 @@ Planning answer requests carry:
 Resume requests carry:
 
 - project id
+- thread id
 - run id
 - optional guidance text
 - optional subagent ids
@@ -61,13 +69,23 @@ Resume requests carry:
 Retry requests carry:
 
 - project id
+- thread id
 - run id
 - optional subagent id
+
+Thread management requests carry:
+
+- project id
+- thread id for activation and rename
+- source thread id for fork
+- validated title text for rename
 
 Connection readiness reports:
 
 - full workspace snapshot
 - active project id
+- active thread id per project
+- thread summary list per project
 - persisted active thread messages for each project
 
 Planner events report:
@@ -78,6 +96,7 @@ Planner events report:
 - execution model
 - subtask count
 - project id
+- thread id
 
 Trace events report:
 
@@ -88,23 +107,25 @@ Trace events report:
 - optional model id
 - optional duration
 - project id
+- thread id
 
 Chat completion and reset events report:
 
 - project id
-- active thread id
+- thread id
 - current session state snapshot
 
 Message append events report:
 
 - project id
-- active thread id
+- thread id
 - appended message
 - current session state snapshot
 
 Run update events report:
 
 - project id
+- thread id
 - run status
 - persisted planning questions
 - persisted subtask progress
@@ -122,6 +143,7 @@ Execution preflight events report:
 Project context events report:
 
 - project id
+- thread id
 - source kind
 - source label
 - model id
@@ -134,3 +156,6 @@ The UI issues a typed browse request and the backend decides whether native fold
 
 All payloads must be validated before they are processed.
 Invalid payloads are rejected immediately.
+
+Planner question payloads are shape-constrained.
+Each question must include exactly three typed choices and exactly one recommended choice.
