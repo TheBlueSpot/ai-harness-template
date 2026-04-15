@@ -147,4 +147,27 @@ describe("workspace repository", () => {
     expect(normalizeWindowsEscapedPath("C:\\\\repo\\\\project")).toBe("C:\\repo\\project");
     expect(normalizeWindowsEscapedPath("C:\\repo\\project")).toBe("C:\\repo\\project");
   });
+
+  test("deletes broken legacy thread rows during dev load recovery", () => {
+    const tempRoot = path.join(process.cwd(), ".tmp-test-data");
+    mkdirSync(tempRoot, { recursive: true });
+    const dbPath = path.join(tempRoot, `workspace-${crypto.randomUUID()}.sqlite`);
+    const repository = new WorkspaceRepository(dbPath, process.cwd());
+    const projectId = repository.loadWorkspace().activeProjectId;
+    const activeThreadId = repository.getProject(projectId).activeThreadId;
+
+    (repository as any).db
+      .query(`UPDATE project_threads SET title = '' WHERE id = ?1 AND project_id = ?2`)
+      .run(activeThreadId, projectId);
+
+    const reloadedRepository = new WorkspaceRepository(dbPath, process.cwd());
+    const workspace = reloadedRepository.loadWorkspace();
+    const restoredProject = workspace.projects.find((project) => project.id === projectId);
+
+    expect(restoredProject).toBeDefined();
+    expect(restoredProject?.threads).toHaveLength(1);
+    expect(restoredProject?.threads[0]?.title).toBe("Thread 1");
+    expect(restoredProject?.activeThreadId).toBe(restoredProject?.session.sessionId);
+    expect(restoredProject?.activeThreadId).not.toBe(activeThreadId);
+  });
 });

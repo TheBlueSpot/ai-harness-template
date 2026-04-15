@@ -2,6 +2,8 @@ import { Database } from "bun:sqlite";
 import { mkdirSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import {
+  agentRunStateSchema,
+  chatMessageSchema,
   createEmptySession,
   createProjectId,
   createProjectThreadSummary,
@@ -25,6 +27,7 @@ import {
   type WorkspaceProjectState,
   type WorkspaceState
 } from "../../shared/protocol";
+import { debugLog } from "./logging";
 
 const ACTIVE_THREAD_STATUS = "active";
 const ACTIVE_PROJECT_KEY = "active_project_id";
@@ -114,9 +117,11 @@ type AgentRunSubtaskRow = {
 export class WorkspaceRepository {
   private readonly db: Database;
   private readonly dbPath: string;
+  private readonly allowDevThreadRecovery: boolean;
 
   constructor(dbPath?: string, defaultRootPath: string = process.cwd()) {
     this.dbPath = dbPath ?? path.join(process.cwd(), ".local", "harness.db");
+    this.allowDevThreadRecovery = Bun.env.NODE_ENV !== "production";
     mkdirSync(path.dirname(this.dbPath), { recursive: true });
     this.db = new Database(this.dbPath, { create: true, strict: true });
     this.db.exec("PRAGMA foreign_keys = ON;");
@@ -812,6 +817,23 @@ export class WorkspaceRepository {
   }
 
   private readProjectSnapshot(projectId: ProjectId): WorkspaceProjectState {
+    let attemptCount = 0;
+    while (attemptCount < 8) {
+      try {
+        return this.readProjectSnapshotUnsafe(projectId);
+      } catch (error) {
+        if (!this.tryRecoverFromProjectLoadFailure(projectId, error)) {
+          throw error;
+        }
+      }
+
+      attemptCount += 1;
+    }
+
+    throw new Error(`Unable to recover project snapshot for ${projectId}`);
+  }
+
+  private readProjectSnapshotUnsafe(projectId: ProjectId): WorkspaceProjectState {
     const project = this.db
       .query<ProjectRow, [string]>(
         `SELECT id, name, root_path, active_thread_id, created_at, updated_at, last_opened_at
@@ -825,19 +847,23 @@ export class WorkspaceRepository {
     }
 
     const activeThread = this.readActiveThreadRow(projectId);
-    return {
-      id: project.id as ProjectId,
-      name: project.name,
-      rootPath: project.root_path as ProjectRootPath,
-      activeThreadId: activeThread.id as ThreadId,
-      threads: this.readThreadSummaries(projectId),
-      session: {
-        ...createEmptySession(activeThread.id as ThreadId),
-        messages: this.readMessages(activeThread.id as ThreadId)
-      },
-      activeRun: this.readActiveRun(projectId, activeThread.id as ThreadId),
-      lastRun: this.readLatestRun(projectId, activeThread.id as ThreadId)
-    };
+    try {
+      return {
+        id: project.id as ProjectId,
+        name: project.name,
+        rootPath: project.root_path as ProjectRootPath,
+        activeThreadId: activeThread.id as ThreadId,
+        threads: this.readThreadSummaries(projectId),
+        session: {
+          ...createEmptySession(activeThread.id as ThreadId),
+          messages: this.readMessages(activeThread.id as ThreadId)
+        },
+        activeRun: this.readActiveRun(projectId, activeThread.id as ThreadId),
+        lastRun: this.readLatestRun(projectId, activeThread.id as ThreadId)
+      };
+    } catch (error) {
+      throw new ThreadLoadError(projectId, activeThread.id as ThreadId, error);
+    }
   }
 
   private readActiveThreadRow(projectId: ProjectId) {
@@ -877,12 +903,14 @@ export class WorkspaceRepository {
          ORDER BY created_at ASC`
       )
       .all(threadId)
-      .map((message) => ({
-        id: message.id,
-        role: message.role,
-        content: message.content,
-        createdAt: message.created_at
-      }));
+      .map((message) =>
+        chatMessageSchema.parse({
+          id: message.id,
+          role: message.role,
+          content: message.content,
+          createdAt: message.created_at
+        })
+      );
   }
 
   private readThreadSummaries(projectId: ProjectId): ProjectThreadSummary[] {
@@ -896,28 +924,53 @@ export class WorkspaceRepository {
       .all(projectId);
 
     return threadRows.map((thread) => {
-      const latestRun = this.readLatestRun(projectId, thread.id as ThreadId);
-      const preview =
-        this.db
-          .query<{ content: string }, [string]>(
-            `SELECT content FROM thread_messages WHERE thread_id = ?1 ORDER BY created_at DESC LIMIT 1`
-          )
-          .get(thread.id)?.content ?? undefined;
-      const messageCount =
-        this.db.query<{ count: number }, [string]>(`SELECT COUNT(*) AS count FROM thread_messages WHERE thread_id = ?1`).get(thread.id)
-          ?.count ?? 0;
+      try {
+        const latestRun = this.readLatestRun(projectId, thread.id as ThreadId);
+        const preview =
+          this.db
+            .query<{ content: string }, [string]>(
+              `SELECT content FROM thread_messages WHERE thread_id = ?1 ORDER BY created_at DESC LIMIT 1`
+            )
+            .get(thread.id)?.content ?? undefined;
+        const messageCount =
+          this.db.query<{ count: number }, [string]>(`SELECT COUNT(*) AS count FROM thread_messages WHERE thread_id = ?1`).get(thread.id)
+            ?.count ?? 0;
 
-      return createProjectThreadSummary({
-        id: thread.id as ThreadId,
-        title: thread.title,
-        titleSource: thread.title_source,
-        badgeState: getThreadBadgeState(latestRun),
-        messageCount,
-        lastMessagePreview: preview ? summarizeMessagePreview(preview) : undefined,
-        updatedAt: thread.updated_at,
-        forkedFromThreadId: thread.forked_from_thread_id as ThreadId | undefined
-      });
+        return createProjectThreadSummary({
+          id: thread.id as ThreadId,
+          title: thread.title,
+          titleSource: thread.title_source,
+          badgeState: getThreadBadgeState(latestRun),
+          messageCount,
+          lastMessagePreview: preview ? summarizeMessagePreview(preview) : undefined,
+          updatedAt: thread.updated_at,
+          forkedFromThreadId: thread.forked_from_thread_id as ThreadId | undefined
+        });
+      } catch (error) {
+        throw new ThreadLoadError(projectId, thread.id as ThreadId, error);
+      }
     });
+  }
+
+  private tryRecoverFromProjectLoadFailure(projectId: ProjectId, error: unknown) {
+    if (!this.allowDevThreadRecovery) {
+      return false;
+    }
+
+    if (error instanceof ThreadLoadError) {
+      this.deleteThreadForRecovery(projectId, error.threadId, error.cause);
+      return true;
+    }
+
+    const activeThreadId = this.db
+      .query<{ active_thread_id: string | null }, [string]>(`SELECT active_thread_id FROM projects WHERE id = ?1`)
+      .get(projectId)?.active_thread_id;
+    if (!activeThreadId) {
+      this.ensureProjectHasUsableThread(projectId, new Date().toISOString());
+      return true;
+    }
+
+    return false;
   }
 
   private assertProjectExists(projectId: ProjectId) {
@@ -1034,7 +1087,7 @@ export class WorkspaceRepository {
       }));
 
     const hasExecutionState = subtasks.length > 0 || Boolean(run.final_execution_brief);
-    return {
+    return agentRunStateSchema.parse({
       id: run.id,
       threadId: run.thread_id as ThreadId,
       status: run.status,
@@ -1052,7 +1105,7 @@ export class WorkspaceRepository {
       createdAt: run.created_at,
       updatedAt: run.updated_at,
       completedAt: run.completed_at ?? undefined
-    };
+    });
   }
 
   private getWorkspaceMetaValue(key: string) {
@@ -1136,6 +1189,47 @@ export class WorkspaceRepository {
       .run(projectId, now);
   }
 
+  private deleteThreadForRecovery(projectId: ProjectId, threadId: ThreadId, cause: unknown) {
+    const now = new Date().toISOString();
+    const message = cause instanceof Error ? cause.message : String(cause);
+    debugLog("workspace.thread-recovery.delete", {
+      projectId,
+      threadId,
+      reason: message
+    });
+
+    const tx = this.db.transaction(() => {
+      this.db.query(`DELETE FROM project_threads WHERE id = ?1 AND project_id = ?2`).run(threadId, projectId);
+      this.ensureProjectHasUsableThread(projectId, now);
+    });
+    tx();
+  }
+
+  private ensureProjectHasUsableThread(projectId: ProjectId, now: string) {
+    const fallbackThread = this.db
+      .query<{ id: string }, [string]>(
+        `SELECT id
+         FROM project_threads
+         WHERE project_id = ?1
+         ORDER BY updated_at DESC, created_at DESC
+         LIMIT 1`
+      )
+      .get(projectId);
+
+    if (fallbackThread) {
+      this.setActiveThread(projectId, fallbackThread.id as ThreadId, now);
+      return;
+    }
+
+    const threadId = createThreadId();
+    this.insertThread(projectId, threadId, {
+      title: "Thread 1",
+      titleSource: "generated",
+      updatedAt: now
+    });
+    this.setActiveThread(projectId, threadId, now);
+  }
+
   private backfillActiveThreadIds() {
     const projects = this.db.query<{ id: string; active_thread_id: string | null }, []>(`SELECT id, active_thread_id FROM projects`).all();
     for (const project of projects) {
@@ -1173,29 +1267,37 @@ export class WorkspaceRepository {
         .all(projectId);
 
       threads.forEach((thread, index) => {
-        const firstUserMessage = this.db
-          .query<{ content: string }, [string]>(
-            `SELECT content FROM thread_messages WHERE thread_id = ?1 AND role = 'user' ORDER BY created_at ASC LIMIT 1`
-          )
-          .get(thread.id)?.content;
-        const latestMessageAt = this.db
-          .query<{ created_at: string }, [string]>(
-            `SELECT created_at FROM thread_messages WHERE thread_id = ?1 ORDER BY created_at DESC LIMIT 1`
-          )
-          .get(thread.id)?.created_at;
+        try {
+          const firstUserMessage = this.db
+            .query<{ content: string }, [string]>(
+              `SELECT content FROM thread_messages WHERE thread_id = ?1 AND role = 'user' ORDER BY created_at ASC LIMIT 1`
+            )
+            .get(thread.id)?.content;
+          const latestMessageAt = this.db
+            .query<{ created_at: string }, [string]>(
+              `SELECT created_at FROM thread_messages WHERE thread_id = ?1 ORDER BY created_at DESC LIMIT 1`
+            )
+            .get(thread.id)?.created_at;
 
-        this.db
-          .query(
-            `UPDATE project_threads
-             SET title = ?2, title_source = ?3, updated_at = ?4
-             WHERE id = ?1`
-          )
-          .run(
-            thread.id,
-            normalizeThreadTitle(thread.title ?? toGeneratedThreadTitle(firstUserMessage, `Thread ${index + 1}`)),
-            thread.title_source ?? "generated",
-            thread.updated_at ?? latestMessageAt ?? thread.created_at
-          );
+          this.db
+            .query(
+              `UPDATE project_threads
+               SET title = ?2, title_source = ?3, updated_at = ?4
+               WHERE id = ?1`
+            )
+            .run(
+              thread.id,
+              normalizeThreadTitle(thread.title ?? toGeneratedThreadTitle(firstUserMessage, `Thread ${index + 1}`)),
+              thread.title_source ?? "generated",
+              thread.updated_at ?? latestMessageAt ?? thread.created_at
+            );
+        } catch (error) {
+          if (!this.allowDevThreadRecovery) {
+            throw error;
+          }
+
+          this.deleteThreadForRecovery(projectId as ProjectId, thread.id as ThreadId, error);
+        }
       });
     }
   }
@@ -1393,5 +1495,17 @@ function ensureDirectoryExists(rootPath: string) {
   const stats = statSync(rootPath, { throwIfNoEntry: false });
   if (!stats || !stats.isDirectory()) {
     throw new Error(`Project path is not a directory: ${rootPath}`);
+  }
+}
+
+class ThreadLoadError extends Error {
+  readonly threadId: ThreadId;
+  readonly cause: unknown;
+
+  constructor(projectId: ProjectId, threadId: ThreadId, cause: unknown) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    super(`Failed to load thread ${threadId} for project ${projectId}: ${detail}`);
+    this.threadId = threadId;
+    this.cause = cause;
   }
 }

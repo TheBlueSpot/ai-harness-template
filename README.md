@@ -34,6 +34,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - Planner traces, stream buffers, and toasts remain transient runtime state
 - Draft text persists per thread in browser localStorage so typed input survives thread switches and reloads
 - Preflight warnings, context meter snapshots, and chat status cards remain transient runtime state
+- In development, malformed legacy thread rows are pruned during migration/load recovery instead of blocking workspace startup
 - Folder browse uses a typed backend bridge; websocket payloads never carry raw shell commands
 
 ## UI Stack
