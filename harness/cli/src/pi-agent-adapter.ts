@@ -9,6 +9,7 @@ import {
   type SessionStats,
   type AgentSessionEvent
 } from "@mariozechner/pi-coding-agent";
+import type { ImageContent } from "@mariozechner/pi-ai";
 import { debugLog } from "./logging";
 
 export type PiAgentPromptKind = "planner" | "executor" | "subagent" | "aggregator" | "merge-resolver";
@@ -18,6 +19,7 @@ export type PiAgentPromptRequest = {
   cwd: string;
   modelId: string;
   prompt: string;
+  images?: ImageContent[];
   abortSignal?: AbortSignal;
   readOnly?: boolean;
   onTextDelta?: (delta: string) => void;
@@ -228,7 +230,7 @@ class PiSdkExecutionController implements PiAgentExecutionController {
 
     this.running = true;
     this.currentResult = (async () => {
-      await this.session.prompt(prompt);
+      await this.session.prompt(prompt, { images: this.request.images });
       const text = this.session.getLastAssistantText()?.trim();
 
       if (!text) {

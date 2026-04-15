@@ -365,6 +365,7 @@ describe("harness server", () => {
     expect(ready.payload.preferences.planExecutionModeDefault).toBe("countdown");
     expect(ready.payload.preferences.planExecutionDelaySecondsDefault).toBe(10);
     expect(ready.payload.preferences.correctnessIterationModeDefault).toBe("ask-before-iterate");
+    expect(ready.payload.preferences.attachmentsEnabled).toBe(false);
     socket.close();
   });
 
@@ -383,6 +384,7 @@ describe("harness server", () => {
           providerBrand: "gemini",
           debugEnabled: true,
           tracePanelDefaultOpen: false,
+          uiModeDefault: "advanced",
           subagentWorktreeStrategyDefault: "separate-worktrees",
           blockChatOnDirtyGitDefault: false,
           dirtyGitChangeLimitDefault: 9,
@@ -401,6 +403,8 @@ describe("harness server", () => {
     expect(saved.payload.providerBrand).toBe("gemini");
     expect(saved.payload.debugEnabledDefault).toBe(true);
     expect(saved.payload.tracePanelDefaultOpen).toBe(false);
+    expect(saved.payload.uiModeDefault).toBe("advanced");
+    expect(saved.payload.attachmentsEnabled).toBe(false);
     expect(saved.payload.subagentWorktreeStrategyDefault).toBe("separate-worktrees");
     expect(saved.payload.blockChatOnDirtyGitDefault).toBe(false);
     expect(saved.payload.dirtyGitChangeLimitDefault).toBe(9);
@@ -530,6 +534,57 @@ describe("harness server", () => {
     expect(planMessage.payload.message.kind).toBe("plan-summary");
     expect(planMessage.payload.state.isStreaming).toBe(false);
     expect(adapter.calls.map((call) => call.kind)).toEqual(["planner"]);
+    socket.close();
+  });
+
+  test("chat.send forwards attachment context into planner prompts", async () => {
+    const socket = createSocket(port);
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot, "req-attach-open");
+    const tinyPng =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9s3FoXcAAAAASUVORK5CYII=";
+    const readyPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "ready");
+
+    socket.send(
+      JSON.stringify(
+        createChatSendCommand({
+          requestId: "req-attach-send",
+          projectId: opened.payload.project.id,
+          threadId: opened.payload.project.activeThreadId,
+          content: "Use attached context",
+          attachments: [
+            {
+              id: "attachment-text",
+              kind: "text",
+              name: "spec.md",
+              mimeType: "text/markdown",
+              sizeBytes: 29,
+              url: "data:text/markdown,Ship%20the%20smallest%20safe%20fix",
+              key: "attachment-text",
+              uploadedAt: new Date().toISOString()
+            },
+            {
+              id: "attachment-image",
+              kind: "image",
+              name: "bug.png",
+              mimeType: "image/png",
+              sizeBytes: tinyPng.length,
+              url: `data:image/png;base64,${tinyPng}`,
+              key: "attachment-image",
+              uploadedAt: new Date().toISOString()
+            }
+          ]
+        })
+      )
+    );
+
+    await readyPromise;
+
+    expect(adapter.calls[0]?.kind).toBe("planner");
+    expect(adapter.calls[0]?.prompt).toContain("Attachment contents:");
+    expect(adapter.calls[0]?.prompt).toContain("Ship the smallest safe fix");
+    expect(adapter.calls[0]?.images).toHaveLength(1);
+    expect(adapter.calls[0]?.images?.[0]?.mimeType).toBe("image/png");
     socket.close();
   });
 
@@ -858,7 +913,10 @@ describe("harness server", () => {
     expect(removed.payload.activeProjectId).toBeUndefined();
     expect(repository.loadWorkspace()).toEqual({
       projects: [],
-      activeProjectId: undefined
+      activeProjectId: undefined,
+      workspaceModes: [],
+      workspaceRuleSource: undefined,
+      workspaceMemorySummary: undefined
     });
     socket.close();
   });
@@ -1252,7 +1310,22 @@ function openProject(socket: WebSocket, rootPath: string, requestId: string = `r
   return openedPromise;
 }
 
-function createChatSendCommand(input: { requestId: string; projectId: string; threadId: string; content: string }) {
+function createChatSendCommand(input: {
+  requestId: string;
+  projectId: string;
+  threadId: string;
+  content: string;
+  attachments?: Array<{
+    id: string;
+    kind: "image" | "text";
+    name: string;
+    mimeType: string;
+    sizeBytes: number;
+    url: string;
+    key: string;
+    uploadedAt: string;
+  }>;
+}) {
   return {
     type: "chat.send",
     requestId: input.requestId,
@@ -1260,7 +1333,8 @@ function createChatSendCommand(input: { requestId: string; projectId: string; th
       projectId: input.projectId,
       threadId: input.threadId,
       agentId: "pi",
-      content: input.content
+      content: input.content,
+      attachments: input.attachments
     }
   };
 }

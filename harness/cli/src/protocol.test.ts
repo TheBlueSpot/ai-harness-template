@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { defaultProviderCapabilities } from "../../shared/capabilities";
 import { parseClientCommand, parseServerEvent, plannerResultSchema } from "../../shared/protocol";
 
 describe("client command validation", () => {
@@ -47,7 +48,10 @@ describe("client command validation", () => {
           openAiApiKey: "",
           providerBrand: "gpt",
           debugEnabled: true,
-          tracePanelDefaultOpen: false
+          tracePanelDefaultOpen: false,
+          uiModeDefault: "simple",
+          attachmentsEnabled: true,
+          capabilities: defaultProviderCapabilities
         }
       })
     ).toThrow();
@@ -72,6 +76,9 @@ describe("client command validation", () => {
           providerBrand: "gpt",
           debugEnabled: true,
           tracePanelDefaultOpen: false,
+          uiModeDefault: "simple",
+          attachmentsEnabled: true,
+          capabilities: defaultProviderCapabilities,
           subagentWorktreeStrategyDefault: "same-worktree",
           blockChatOnDirtyGitDefault: true,
           dirtyGitChangeLimitDefault: 12,
@@ -97,6 +104,33 @@ describe("client command validation", () => {
         }
       }).type
     ).toBe("planning.answer");
+  });
+
+  test("accepts chat.send payloads with attachments", () => {
+    expect(
+      parseClientCommand({
+        type: "chat.send",
+        requestId: "req-attach",
+        payload: {
+          projectId: "project-1",
+          threadId: "thread-1",
+          agentId: "pi",
+          content: "Review attached files",
+          attachments: [
+            {
+              id: "attachment-1",
+              kind: "text",
+              name: "spec.md",
+              mimeType: "text/markdown",
+              sizeBytes: 120,
+              url: "https://example.com/spec.md",
+              key: "spec-key",
+              uploadedAt: new Date().toISOString()
+            }
+          ]
+        }
+      }).type
+    ).toBe("chat.send");
   });
 
   test("rejects empty planning.answer content", () => {
@@ -240,7 +274,10 @@ describe("planner result validation", () => {
                 activeRun: undefined,
                 lastRun: undefined
               }
-            ]
+            ],
+            workspaceModes: [],
+            workspaceRuleSource: undefined,
+            workspaceMemorySummary: undefined
           },
           preferences: {
             hasUsableApiKey: false,
@@ -252,6 +289,9 @@ describe("planner result validation", () => {
             providerBrand: "gpt",
             debugEnabledDefault: false,
             tracePanelDefaultOpen: true,
+            uiModeDefault: "simple",
+            attachmentsEnabled: true,
+            capabilities: defaultProviderCapabilities,
             subagentWorktreeStrategyDefault: "same-worktree",
             blockChatOnDirtyGitDefault: true,
             dirtyGitChangeLimitDefault: 20,
@@ -272,7 +312,10 @@ describe("planner result validation", () => {
           agents: [{ id: "pi", label: "Pi" }],
           workspace: {
             projects: [],
-            activeProjectId: undefined
+            activeProjectId: undefined,
+            workspaceModes: [],
+            workspaceRuleSource: undefined,
+            workspaceMemorySummary: undefined
           },
           preferences: {
             hasUsableApiKey: false,
@@ -284,6 +327,9 @@ describe("planner result validation", () => {
             providerBrand: "gpt",
             debugEnabledDefault: false,
             tracePanelDefaultOpen: true,
+            uiModeDefault: "simple",
+            attachmentsEnabled: true,
+            capabilities: defaultProviderCapabilities,
             subagentWorktreeStrategyDefault: "same-worktree",
             blockChatOnDirtyGitDefault: true,
             dirtyGitChangeLimitDefault: 20,

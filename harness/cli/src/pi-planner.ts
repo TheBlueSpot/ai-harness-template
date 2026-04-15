@@ -2,13 +2,17 @@ import { ZodError } from "zod";
 import {
   plannerTurnResultSchema,
   type ChatMessage,
+  type MemorySummary,
+  type ModeDefinition,
   type ProjectContextUsage,
   type PlannerTurnResult,
   type PlanningQuestion,
   type ProviderBrand,
-  type ProviderModelId
+  type ProviderModelId,
+  type WorkspaceRuleSource
 } from "../../shared/protocol";
 import type { PiAgentAdapter } from "./pi-agent-adapter";
+import { buildPromptAttachmentContext } from "./chat-attachment-prompt";
 
 export const GPT_DEFAULT_PLANNING_MODEL_ID = "openai/gpt-5.4";
 export const GPT_DEFAULT_EXECUTION_MODEL_ID = "openai/gpt-5.4";
@@ -25,12 +29,16 @@ export async function planTask(
     latestUserPrompt: string;
     providerBrand: ProviderBrand;
     executionModelId?: ProviderModelId;
+    mode?: ModeDefinition;
+    ruleSources?: WorkspaceRuleSource[];
+    memorySummaries?: MemorySummary[];
     priorQuestions?: PlanningQuestion[];
     abortSignal?: AbortSignal;
   }
 ): Promise<{ plannerResult: PlannerTurnResult; contextUsage?: ProjectContextUsage }> {
   const requestedExecutionModelId = options.executionModelId ?? getDefaultExecutionModelId(options.providerBrand);
   const defaultPlanningModelId = getDefaultPlanningModelId(options.providerBrand);
+  const attachmentContext = await buildPromptAttachmentContext(options.messages);
   const prompt = [
     "You are the planning stage for a local coding harness.",
     "Return JSON only. Do not wrap it in markdown fences.",
@@ -53,8 +61,27 @@ export async function planTask(
     "- subtasks must be specific and independent when usesSubagents is true.",
     `- Use ${requestedExecutionModelId} unless the user explicitly requires another execution model from the same provider family.`,
     "",
+    options.mode
+      ? [
+          "Active mode:",
+          `- ${options.mode.label}: ${options.mode.description}`,
+          `- Planner guidance: ${options.mode.plannerPrompt}`,
+          `- Execution guidance: ${options.mode.executionPrompt}`,
+          `- Tool policy: ${options.mode.toolPolicy}`
+        ].join("\n")
+      : "",
+    options.ruleSources && options.ruleSources.length > 0
+      ? ["Rule sources:", ...options.ruleSources.map((rule) => `[${rule.scope}] ${rule.label}: ${rule.content}`)].join("\n")
+      : "",
+    options.memorySummaries && options.memorySummaries.length > 0
+      ? [
+          "Memory summaries:",
+          ...options.memorySummaries.map((memory) => `[${memory.scope}] ${memory.label}: ${memory.content}`)
+        ].join("\n")
+      : "",
+    "",
     "Conversation transcript:",
-    formatMessages(options.messages),
+    attachmentContext.transcript,
     "",
     "Prior planning Q/A:",
     formatPlanningQuestions(options.priorQuestions ?? []),
@@ -67,6 +94,7 @@ export async function planTask(
     cwd: options.cwd,
     modelId: defaultPlanningModelId,
     prompt,
+    images: attachmentContext.images,
     abortSignal: options.abortSignal,
     readOnly: true
   });
@@ -94,15 +122,6 @@ export async function planTask(
 
     throw error;
   }
-}
-
-function formatMessages(messages: ChatMessage[]) {
-  const visibleMessages = messages.filter((message) => message.role !== "system");
-  if (visibleMessages.length === 0) {
-    return "(no prior messages)";
-  }
-
-  return visibleMessages.map((message) => `${message.role.toUpperCase()}: ${message.content}`).join("\n");
 }
 
 function formatPlanningQuestions(questions: PlanningQuestion[]) {

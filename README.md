@@ -8,6 +8,9 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - A multi-project workspace where each project root keeps its own local chat history and multiple switchable threads
 - Empty workspace startup with no synthetic default project
 - A single public agent profile, `pi`
+- `UploadThing`-backed attachments for screenshots and text-like specs, persisted with chat history and routed into prompts
+- Capability-aware model metadata so UI can explain tool, vision, browser, context, speed, and cost expectations before execution starts
+- Built-in workflow modes for asking, planning, implementing, debugging, and review, plus local custom modes at workspace or project scope
 - Brand-aware defaults for GPT or Gemini execution
 - Gemini planning defaults to `google/gemini-3-flash-preview`
 - Gemini subagents default to `google/gemini-2.5-flash-lite` when planner difficulty is above 40
@@ -16,6 +19,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - SQLite-backed persistence for projects, active selection, threads, and messages
 - Interactive planning questions that pause execution until the user answers in chat, with three typed quick options and one recommended path
 - Plan-first execution that persists a full execution plan, posts a plan summary into chat, and waits in `ready` before any code work starts
+- Workspace and project instruction context with lightweight working-memory summaries that feed planning and execution
 - Transcript-level plan summary cards with shared plan modal access from chat and trace panel
 - Global execution preferences for dirty-git chat restriction, dirty change threshold, plan gate mode, countdown delay, subagent worktree strategy, and correctness iteration policy
 - Resumable partial subagent runs that keep completed work after failure or stop
@@ -54,11 +58,15 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 ## UI Stack
 
 - SolidJS app shell
+- Task-first empty-state onboarding with import path before provider setup and a sample-task starting point
 - Bun runtime serves explicit built UI assets; the Solid transform runs through one shared build path
 - Tailwind v4 styling processed through Bun's Tailwind plugin path
 - Local Solid primitives for buttons, inputs, dialogs, tooltips, sheets, and toast presentation
 - `lucide-solid` icons across project actions and workspace controls
 - Tooltips render through a body-level portal so panel overflow does not clip them
+- Task cockpit UI groups chat, plan, run, and events into one working surface instead of splitting core flow across disconnected panels
+- Simple and advanced UI modes let new users hide trace-heavy controls while keeping operator visibility available on demand
+- Composer supports attachment chips, UploadThing-backed upload flow, and vision-aware image gating by selected model
 - Chat and trace panel share one execution plan modal that exposes summary, prerequisites, bucket strategy, worktree mode, contracts, verification scope, and correctness history
 
 ## Local Workflow
@@ -85,10 +93,13 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - The backend validates every websocket payload before processing it
 - SQLite persistence stays local-first and single-machine
 - Browser localStorage mirrors API key presence and global workspace defaults for the current browser profile
+- Browser localStorage also mirrors preferred UI mode and import-friendly defaults for the current browser profile
 - Browser localStorage also mirrors execution gate, worktree strategy, countdown, and correctness iteration defaults for the current browser profile
 - Browser localStorage also stores per-thread draft text keyed by project and thread id
 - Provider brand switching is gated by matching saved key presence
 - The UI sends typed project and chat commands only
+- Mode selection, rule sources, and memory summaries travel through typed contracts and persist with workspace state
+- Chat message persistence now includes uploaded attachment metadata, while planner and execution stages resolve remote image/text context on demand
 - Plan execution starts through a typed `run.execute` command after plan presentation, not as an implicit side effect of `chat.send`
 - Ready plans can be replaced through a typed `planning.refine` command that starts a fresh planning cycle in the same thread
 - Project open responses report whether a new project was created or an existing project was reopened with a new thread
@@ -111,6 +122,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 
 ## Context
 
+- Product direction: maximize PMF by reducing setup friction, making capability limits explicit, preserving recoverability, and keeping active context inspectable
 - [Architecture Overview](context/architecture/overview.md)
 - [Websocket Contract](context/command-protocol/websocket-contract.md)
 - [Pi OpenAI Provider Notes](context/model-provider/pi-openai.md)

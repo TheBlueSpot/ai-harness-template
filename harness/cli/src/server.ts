@@ -1,6 +1,9 @@
 import { createUiAssetManager } from "./ui-build";
 import { defaultAgentCatalog } from "../../shared/agent-catalog";
+import { defaultProviderCapabilities } from "../../shared/capabilities";
+import { resolveModeById } from "../../shared/modes";
 import path from "node:path";
+import { createRouteHandler } from "uploadthing/server";
 import {
   createChatMessage,
   createRequestId,
@@ -9,6 +12,8 @@ import {
   type CorrectnessGap,
   type CorrectnessReview,
   type ExecutionPlan,
+  type MemorySummary,
+  type ModeDefinition,
   parseClientCommand,
   type AgentRunState,
   type ClientCommand,
@@ -17,6 +22,7 @@ import {
   type ProjectContextUsage,
   type ProjectId,
   type ServerEvent,
+  type WorkspaceRuleSource,
   type WorkspaceProjectState
 } from "../../shared/protocol";
 import { pickProjectFolder } from "./folder-picker";
@@ -33,6 +39,7 @@ import { getDefaultExecutionModelId, getDefaultPlanningModelId, getDefaultSubage
 import type { SubagentResult } from "./pi-subagents";
 import { WorkspaceRepository } from "./workspace-repository";
 import { WorkspaceRuntimeStore } from "./workspace-runtime-store";
+import { harnessUploadRouter } from "./uploadthing-router";
 
 type HarnessConnection = {
   clientId: string;
@@ -57,6 +64,9 @@ export async function startHarnessServer({
 }: HarnessServerOptions) {
   const runtime = new WorkspaceRuntimeStore(repository.loadWorkspace());
   const uiAssets = serverOnly ? undefined : createUiAssetManager();
+  const uploadthingHandler = createRouteHandler({
+    router: harnessUploadRouter
+  });
   const storedOpenAiApiKey = repository.getStoredOpenAiApiKey();
   const storedGoogleApiKey = repository.getStoredGoogleApiKey();
 
@@ -77,6 +87,10 @@ export async function startHarnessServer({
     port,
     fetch(request, serverInstance) {
       const url = new URL(request.url);
+
+      if (url.pathname === "/api/uploadthing") {
+        return uploadthingHandler(request);
+      }
 
       if (url.pathname === "/ws" && request.headers.get("upgrade")?.toLowerCase() === "websocket") {
         const upgraded = serverInstance.upgrade(request, {
@@ -395,7 +409,16 @@ async function handleCommand(
       runtime.setActiveProject(projectId);
       runtime.clearProjectTransients(projectId);
 
-      const userMessageProject = repository.appendMessage(projectId, "user", command.payload.content, command.payload.threadId);
+      if (command.payload.modeId && command.payload.modeId !== project.selectedModeId) {
+        const modeProject = repository.setProjectSelectedMode(projectId, command.payload.modeId);
+        runtime.upsertPersistedProject(modeProject);
+        emitProjectUpdated(ws, command.requestId, projectId, modeProject);
+      }
+
+      const userMessageProject = repository.appendMessage(projectId, "user", command.payload.content, {
+        threadId: command.payload.threadId,
+        attachments: command.payload.attachments
+      });
       runtime.upsertPersistedProject(userMessageProject);
       emitMessageAppended(ws, command.requestId, runtime, projectId);
 
@@ -805,6 +828,56 @@ async function handleCommand(
 
       return;
     }
+    case "project.mode.select": {
+      const updatedProject = repository.setProjectSelectedMode(command.payload.projectId, command.payload.modeId);
+      runtime.upsertPersistedProject(updatedProject);
+      emitProjectUpdated(ws, command.requestId, command.payload.projectId, updatedProject);
+      return;
+    }
+    case "mode.save": {
+      if (command.payload.scope === "workspace") {
+        const workspace = repository.saveMode("workspace", command.payload.mode) as ReturnType<WorkspaceRepository["loadWorkspace"]>;
+        runtime.replaceWorkspaceState(workspace);
+        emitWorkspaceUpdated(ws, command.requestId, runtime);
+        return;
+      }
+
+      const updatedProject = repository.saveMode("project", command.payload.mode, command.payload.projectId) as WorkspaceProjectState;
+      runtime.upsertPersistedProject(updatedProject);
+      emitProjectUpdated(ws, command.requestId, command.payload.projectId!, updatedProject);
+      return;
+    }
+    case "mode.delete": {
+      if (command.payload.scope === "workspace") {
+        const workspace = repository.deleteMode("workspace", command.payload.modeId) as ReturnType<WorkspaceRepository["loadWorkspace"]>;
+        runtime.replaceWorkspaceState(workspace);
+        emitWorkspaceUpdated(ws, command.requestId, runtime);
+        return;
+      }
+
+      const updatedProject = repository.deleteMode("project", command.payload.modeId, command.payload.projectId) as WorkspaceProjectState;
+      runtime.upsertPersistedProject(updatedProject);
+      emitProjectUpdated(ws, command.requestId, command.payload.projectId!, updatedProject);
+      return;
+    }
+    case "workspace.context.save": {
+      const workspace = repository.saveWorkspaceContext({
+        rulesContent: command.payload.rulesContent,
+        memorySummaryContent: command.payload.memorySummaryContent
+      });
+      runtime.replaceWorkspaceState(workspace);
+      emitWorkspaceUpdated(ws, command.requestId, runtime);
+      return;
+    }
+    case "project.context.save": {
+      const updatedProject = repository.saveProjectContext(command.payload.projectId, {
+        rulesContent: command.payload.rulesContent,
+        threadMemorySummaryContent: command.payload.threadMemorySummaryContent
+      });
+      runtime.upsertPersistedProject(updatedProject);
+      emitProjectUpdated(ws, command.requestId, command.payload.projectId, updatedProject);
+      return;
+    }
     case "preferences.save": {
       if (command.payload.openAiApiKey) {
         repository.setStoredOpenAiApiKey(command.payload.openAiApiKey);
@@ -825,6 +898,7 @@ async function handleCommand(
       repository.setPlanExecutionModeDefault(command.payload.planExecutionModeDefault);
       repository.setPlanExecutionDelaySecondsDefault(command.payload.planExecutionDelaySecondsDefault);
       repository.setCorrectnessIterationModeDefault(command.payload.correctnessIterationModeDefault);
+      repository.setUiModeDefault(command.payload.uiModeDefault);
 
       sendEvent(ws, {
         type: "preferences.saved",
@@ -865,6 +939,18 @@ async function continueRunLifecycle(
 ) {
   const project = runtime.getProject(options.projectId);
   const activeRun = requireActiveRun(project);
+  const mode = resolveModeById(project.selectedModeId, runtime.getWorkspace().workspaceModes, project.projectModes);
+  const planExecutionMode = mode?.planExecutionModeDefault ?? repository.getPlanExecutionModeDefault();
+  const subagentWorktreeStrategy =
+    mode?.subagentWorktreeStrategyDefault ?? repository.getSubagentWorktreeStrategyDefault();
+  const correctnessIterationMode =
+    mode?.correctnessIterationModeDefault ?? repository.getCorrectnessIterationModeDefault();
+  const ruleSources = [runtime.getWorkspace().workspaceRuleSource, project.projectRuleSource].filter(
+    (value): value is WorkspaceRuleSource => Boolean(value)
+  );
+  const memorySummaries = [runtime.getWorkspace().workspaceMemorySummary, project.threadMemorySummary].filter(
+    (value): value is MemorySummary => Boolean(value)
+  );
   const plannerTurn = await runPlannerTurn(adapter, {
     cwd: project.rootPath,
     sessionId: project.session.sessionId,
@@ -873,10 +959,13 @@ async function continueRunLifecycle(
     runId: activeRun.id,
     providerBrand: options.providerBrand,
     executionModelId: options.executionModelId,
-    subagentWorktreeStrategy: repository.getSubagentWorktreeStrategyDefault(),
-    planExecutionMode: repository.getPlanExecutionModeDefault(),
+    subagentWorktreeStrategy,
+    planExecutionMode,
     planExecutionDelaySeconds: repository.getPlanExecutionDelaySecondsDefault(),
-    correctnessIterationMode: repository.getCorrectnessIterationModeDefault(),
+    correctnessIterationMode,
+    mode,
+    ruleSources,
+    memorySummaries,
     priorQuestions: activeRun.questions,
     abortSignal: options.abortSignal,
     callbacks: createExecutionCallbacks(ws, requestId, runtime, repository, options.projectId, activeRun.id)
@@ -1754,6 +1843,32 @@ function emitRunUpdated(ws: Bun.ServerWebSocket<HarnessConnection>, requestId: s
   });
 }
 
+function emitWorkspaceUpdated(ws: Bun.ServerWebSocket<HarnessConnection>, requestId: string, runtime: WorkspaceRuntimeStore) {
+  sendEvent(ws, {
+    type: "workspace.updated",
+    requestId,
+    payload: {
+      workspace: runtime.getWorkspace()
+    }
+  });
+}
+
+function emitProjectUpdated(
+  ws: Bun.ServerWebSocket<HarnessConnection>,
+  requestId: string,
+  projectId: ProjectId,
+  project: WorkspaceProjectState
+) {
+  sendEvent(ws, {
+    type: "project.updated",
+    requestId,
+    payload: {
+      projectId,
+      project
+    }
+  });
+}
+
 async function completeExecutionPlanPrerequisites(
   ws: Bun.ServerWebSocket<HarnessConnection>,
   requestId: string,
@@ -2200,7 +2315,10 @@ function getPreferencesState(repository: WorkspaceRepository, adapter: PiAgentAd
     dirtyGitChangeLimitDefault: repository.getDirtyGitChangeLimitDefault(),
     planExecutionModeDefault: repository.getPlanExecutionModeDefault(),
     planExecutionDelaySecondsDefault: repository.getPlanExecutionDelaySecondsDefault(),
-    correctnessIterationModeDefault: repository.getCorrectnessIterationModeDefault()
+    correctnessIterationModeDefault: repository.getCorrectnessIterationModeDefault(),
+    uiModeDefault: repository.getUiModeDefault(),
+    attachmentsEnabled: Boolean(Bun.env.UPLOADTHING_TOKEN?.trim()),
+    capabilities: defaultProviderCapabilities
   };
 }
 

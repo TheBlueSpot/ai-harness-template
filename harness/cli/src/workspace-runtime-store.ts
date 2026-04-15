@@ -2,8 +2,11 @@ import {
   type AgentPlan,
   type AgentRunState,
   type AgentTrace,
+  type MemorySummary,
+  type ModeDefinition,
   type ProjectContextUsage,
   type ProjectId,
+  type WorkspaceRuleSource,
   type WorkspaceProjectState,
   type WorkspaceState
 } from "../../shared/protocol";
@@ -27,6 +30,9 @@ type RuntimeProjectRecord = {
 export class WorkspaceRuntimeStore {
   private readonly projects = new Map<ProjectId, RuntimeProjectRecord>();
   private activeProjectId?: ProjectId;
+  private workspaceModes: ModeDefinition[];
+  private workspaceRuleSource?: WorkspaceRuleSource;
+  private workspaceMemorySummary?: MemorySummary;
 
   constructor(workspace: WorkspaceState) {
     for (const project of workspace.projects) {
@@ -37,11 +43,17 @@ export class WorkspaceRuntimeStore {
     }
 
     this.activeProjectId = workspace.activeProjectId;
+    this.workspaceModes = [...(workspace.workspaceModes ?? [])];
+    this.workspaceRuleSource = workspace.workspaceRuleSource;
+    this.workspaceMemorySummary = workspace.workspaceMemorySummary;
   }
 
   getWorkspace(): WorkspaceState {
     return {
       projects: Array.from(this.projects.values()).map((record) => stripRuntimeProject(record.project)),
+      workspaceModes: [...this.workspaceModes],
+      workspaceRuleSource: this.workspaceRuleSource,
+      workspaceMemorySummary: this.workspaceMemorySummary,
       activeProjectId: this.activeProjectId
     };
   }
@@ -74,6 +86,13 @@ export class WorkspaceRuntimeStore {
   setActiveProject(projectId: ProjectId) {
     this.getProject(projectId);
     this.activeProjectId = projectId;
+  }
+
+  replaceWorkspaceState(workspace: WorkspaceState) {
+    this.workspaceModes = [...(workspace.workspaceModes ?? [])];
+    this.workspaceRuleSource = workspace.workspaceRuleSource;
+    this.workspaceMemorySummary = workspace.workspaceMemorySummary;
+    this.activeProjectId = workspace.activeProjectId;
   }
 
   setProjectStreaming(projectId: ProjectId, isStreaming: boolean) {

@@ -1,16 +1,22 @@
-import { For, Show, createEffect, createSignal, onCleanup, onMount, type JSX } from "solid-js";
-import { createRequestId, type ClientCommand } from "../../../shared/protocol";
+import { For, Match, Show, Switch, createEffect, createSignal, onCleanup, onMount, type JSX } from "solid-js";
+import { createRequestId, type ChatAttachment, type ClientCommand } from "../../../shared/protocol";
+import { detectChatAttachmentKind, isSupportedChatAttachment, MAX_CHAT_ATTACHMENT_COUNT } from "../../../shared/chat-attachments";
 import {
   getActiveProject,
+  getActiveMode,
+  getCapabilityTags,
   getDefaultExecutionModelIdForProvider,
+  getResolvedModes,
   harnessStore,
   hasUsableApiKeyForProvider,
   isModelIdForProvider
 } from "../harness-store";
 import { isAbsolutePath } from "../lib/utils";
 import { formatContextUsage } from "../lib/run-status";
+import { uploadFiles } from "../lib/uploadthing";
 import { pushToast } from "../toast-store";
 import { ActionButton } from "./action-button";
+import { ModeEditorPanel } from "./mode-editor-panel";
 import { Input } from "./ui/input";
 import { ScrollArea } from "./ui/scroll-area";
 import { Textarea } from "./ui/textarea";
@@ -23,11 +29,13 @@ import {
   GitFork,
   LoaderCircle,
   MessageSquareMore,
+  Paperclip,
   Pause,
   Play,
   RefreshCcw,
   Plus,
-  SendHorizontal
+  SendHorizontal,
+  X
 } from "lucide-solid";
 
 type ChatPanelProps = {
@@ -36,6 +44,7 @@ type ChatPanelProps = {
 
 export function ChatPanel(props: ChatPanelProps) {
   let messageViewport: HTMLDivElement | undefined;
+  let attachmentInput: HTMLInputElement | undefined;
   let countdownTimer: number | undefined;
   const state = harnessStore.state;
   const activeProject = () => getActiveProject(state);
@@ -46,12 +55,26 @@ export function ChatPanel(props: ChatPanelProps) {
   const [countdownRemainingMs, setCountdownRemainingMs] = createSignal(0);
   const [countdownPaused, setCountdownPaused] = createSignal(false);
   const [autoExecutedRunId, setAutoExecutedRunId] = createSignal<string>();
+  const [activeTab, setActiveTab] = createSignal<"chat" | "plan" | "run" | "events">("chat");
+  const [projectRulesDraft, setProjectRulesDraft] = createSignal("");
+  const [threadMemoryDraft, setThreadMemoryDraft] = createSignal("");
+  const [draftAttachments, setDraftAttachments] = createSignal<ChatAttachment[]>([]);
+  const [uploadingAttachments, setUploadingAttachments] = createSignal(false);
   const pendingQuestion = () => activeProject()?.activeRun?.questions.find((question) => question.status === "pending");
   const resumableRun = () => (activeProject()?.activeRun?.resumable ? activeProject()?.activeRun : undefined);
   const retryableRun = () => (activeProject()?.lastRun?.retryable ? activeProject()?.lastRun : undefined);
   const readyRun = () => (activeProject()?.activeRun?.status === "ready" ? activeProject()?.activeRun : undefined);
   const activeThread = () => activeProject()?.threads.find((thread) => thread.id === activeProject()?.activeThreadId);
   const currentExecutionPlan = () => activeProject()?.latestPlan?.executionPlan ?? readyRun()?.plan;
+  const resolvedModes = () => getResolvedModes(state, activeProject());
+  const activeMode = () => getActiveMode(state, activeProject());
+  const capabilityTags = () => getCapabilityTags(state, getEffectiveExecutionModelId());
+  const hasVisionCapability = () => capabilityTags().includes("vision");
+  const hasImageDraftAttachments = () => draftAttachments().some((attachment) => attachment.kind === "image");
+  const visibleTabs = () =>
+    (state.uiMode === "advanced" ? ["chat", "plan", "run", "events"] : ["chat", "plan", "run"]) as Array<
+      "chat" | "plan" | "run" | "events"
+    >;
   const failedSubtaskCount = () =>
     activeProject()?.activeRun?.subtasks.filter((task) => task.status === "failed").length ?? 0;
   const composerContextText = () => {
@@ -64,6 +87,15 @@ export function ChatPanel(props: ChatPanelProps) {
       contextUsage.sourceLabel
     }`;
   };
+  const attachmentButtonDisabled = () => !state.attachmentsEnabled || activeProject()?.session.isStreaming || uploadingAttachments();
+  const attachmentButtonReason = () =>
+    !state.attachmentsEnabled
+      ? "Set UPLOADTHING_TOKEN on the server to enable attachments"
+      : activeProject()?.session.isStreaming
+      ? "Project is streaming"
+      : uploadingAttachments()
+      ? "Attachment upload in progress"
+      : undefined;
 
   const scrollToBottom = (force: boolean = false) => {
     if (!messageViewport || (!force && !stickToBottom())) {
@@ -113,6 +145,16 @@ export function ChatPanel(props: ChatPanelProps) {
     const thread = activeThread();
     setThreadTitleDraft(thread?.title ?? "");
     setEditingThreadTitle(false);
+    setProjectRulesDraft(activeProject()?.projectRuleSource?.content ?? "");
+    setThreadMemoryDraft(activeProject()?.threadMemorySummary?.content ?? "");
+    setDraftAttachments([]);
+    setUploadingAttachments(false);
+  });
+
+  createEffect(() => {
+    if (state.uiMode === "simple" && activeTab() === "events") {
+      setActiveTab("chat");
+    }
   });
 
   createEffect(() => {
@@ -190,6 +232,84 @@ export function ChatPanel(props: ChatPanelProps) {
     harnessStore.setProjectDraft(project.id, "");
   }
 
+  async function handleSelectAttachments(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const project = activeProject();
+    const files = input.files ? [...input.files] : [];
+    input.value = "";
+
+    if (!project || files.length === 0) {
+      return;
+    }
+
+    if (!state.attachmentsEnabled) {
+      pushToast("Attachments unavailable", "Set UPLOADTHING_TOKEN on the server to enable uploads.", "error");
+      return;
+    }
+
+    if (draftAttachments().length + files.length > MAX_CHAT_ATTACHMENT_COUNT) {
+      pushToast("Too many attachments", `Attach at most ${MAX_CHAT_ATTACHMENT_COUNT} files per message.`, "error");
+      return;
+    }
+
+    for (const file of files) {
+      const validation = isSupportedChatAttachment({
+        name: file.name,
+        mimeType: file.type,
+        sizeBytes: file.size
+      });
+      if (!validation.ok) {
+        pushToast("Attachment rejected", `${file.name}: ${validation.reason}`, "error");
+        return;
+      }
+    }
+
+    setUploadingAttachments(true);
+    try {
+      const uploadedFiles = await uploadFiles("chatAttachment", {
+        files,
+        input: {
+          projectId: project.id,
+          threadId: project.activeThreadId
+        }
+      });
+
+      const nextAttachments = uploadedFiles.flatMap((file) => {
+        const kind = detectChatAttachmentKind({ name: file.name, mimeType: file.type });
+        if (!kind) {
+          return [];
+        }
+
+        return [
+          {
+            id: `${file.key}-${file.lastModified ?? Date.now()}`,
+            kind,
+            name: file.name,
+            mimeType: file.type,
+            sizeBytes: file.size,
+            url: file.serverData?.url ?? file.ufsUrl ?? file.url,
+            key: file.serverData?.key ?? file.key,
+            uploadedAt: file.serverData?.uploadedAt ?? new Date().toISOString()
+          } satisfies ChatAttachment
+        ];
+      });
+
+      setDraftAttachments((current) => [...current, ...nextAttachments]);
+    } catch (error) {
+      pushToast(
+        "Attachment upload failed",
+        error instanceof Error ? error.message : "UploadThing could not upload the selected files.",
+        "error"
+      );
+    } finally {
+      setUploadingAttachments(false);
+    }
+  }
+
+  function handleRemoveAttachment(attachmentId: string) {
+    setDraftAttachments((current) => current.filter((attachment) => attachment.id !== attachmentId));
+  }
+
   function handleSubmit(event: SubmitEvent) {
     event.preventDefault();
 
@@ -198,12 +318,35 @@ export function ChatPanel(props: ChatPanelProps) {
       return;
     }
     const content = project.draft.trim();
-    if (!content) {
+    if (!content && draftAttachments().length === 0) {
+      return;
+    }
+    if (!content && draftAttachments().length > 0) {
+      pushToast("Task text required", "Describe what pi should do with the attached files.", "error");
+      return;
+    }
+
+    if (uploadingAttachments()) {
+      pushToast("Upload in progress", "Wait for attachments to finish uploading before sending.", "error");
+      return;
+    }
+
+    if (hasImageDraftAttachments() && !hasVisionCapability()) {
+      pushToast(
+        "Vision model required",
+        "Current model cannot inspect attached images. Switch to a vision-capable model before sending.",
+        "error"
+      );
       return;
     }
 
     const question = pendingQuestion();
     if (question && project.activeRun) {
+      if (draftAttachments().length > 0) {
+        pushToast("Attachments not supported here", "Attachments are only supported on new top-level tasks right now.", "error");
+        return;
+      }
+
       props.sendCommand({
         type: "planning.answer",
         requestId: createRequestId(),
@@ -221,6 +364,11 @@ export function ChatPanel(props: ChatPanelProps) {
     }
 
     if (project.activeRun?.status === "ready") {
+      if (draftAttachments().length > 0) {
+        pushToast("Attachments not supported here", "Attachments are only supported on new top-level tasks right now.", "error");
+        return;
+      }
+
       props.sendCommand({
         type: "planning.refine",
         requestId: createRequestId(),
@@ -270,12 +418,15 @@ export function ChatPanel(props: ChatPanelProps) {
         threadId: project.activeThreadId,
         agentId: project.session.selectedAgentId,
         content,
+        attachments: draftAttachments(),
+        modeId: activeMode()?.id,
         executionModelId,
         debug: state.debugEnabled
       }
     });
 
     harnessStore.setProjectDraft(project.id, "");
+    setDraftAttachments([]);
     harnessStore.clearPendingExecutionModelId(project.id);
   }
 
@@ -519,6 +670,39 @@ export function ChatPanel(props: ChatPanelProps) {
     });
   }
 
+  function handleModeSelect(modeId: string) {
+    const project = activeProject();
+    if (!project) {
+      return;
+    }
+
+    props.sendCommand({
+      type: "project.mode.select",
+      requestId: createRequestId(),
+      payload: {
+        projectId: project.id,
+        modeId
+      }
+    });
+  }
+
+  function handleSaveProjectContext() {
+    const project = activeProject();
+    if (!project) {
+      return;
+    }
+
+    props.sendCommand({
+      type: "project.context.save",
+      requestId: createRequestId(),
+      payload: {
+        projectId: project.id,
+        rulesContent: projectRulesDraft().trim() || undefined,
+        threadMemorySummaryContent: threadMemoryDraft().trim() || undefined
+      }
+    });
+  }
+
   return (
     <section class="panel-shell flex h-full min-h-0 flex-col gap-4 rounded-[2rem] p-4">
       <Show
@@ -527,13 +711,13 @@ export function ChatPanel(props: ChatPanelProps) {
           <div class="flex flex-1 items-center justify-center">
             <div class="w-full max-w-2xl rounded-[1.75rem] border border-dashed border-[color:var(--border)] bg-white/45 p-6 shadow-sm md:p-8">
               <div class="inline-flex items-center gap-2 rounded-full bg-white/65 px-3 py-1 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-[color:var(--muted)]">
-                Empty workspace
+                First run
               </div>
               <h1 class="mt-4 font-display text-[1.75rem] tracking-[-0.06em] text-[color:var(--foreground)] md:text-[2.1rem]">
-                Open project root to start local threads
+                Start with repo, import, or pasted spec
               </h1>
               <p class="mt-3 max-w-2xl text-[0.75rem] leading-6 text-[color:var(--muted)]">
-                Each project keeps isolated thread history, run state, and project-scoped execution context in local SQLite.
+                Task-first flow: open codebase, optionally import local defaults, then ask for plan or implementation. No API-key wall.
               </p>
               <div class="mt-5 space-y-3 rounded-[1.35rem] border border-[color:var(--border)] bg-white/60 p-4">
                 <Input
@@ -561,6 +745,20 @@ export function ChatPanel(props: ChatPanelProps) {
                   >
                     Browse folder
                   </ActionButton>
+                  <ActionButton
+                    tooltip="Open import and workspace setup"
+                    icon={<Edit3 class="h-4 w-4" />}
+                    variant="secondary"
+                    onClick={() => harnessStore.openPreferencesModal()}
+                  >
+                    Import config
+                  </ActionButton>
+                </div>
+                <div class="rounded-[1rem] border border-[color:var(--border)] bg-white/70 p-3 text-[0.675rem] leading-6 text-[color:var(--muted)]">
+                  Sample task: “Inspect recent auth changes, plan fix for flaky login, then implement with tests.”
+                </div>
+                <div class="rounded-[1rem] border border-[color:var(--border)] bg-white/70 p-3 text-[0.675rem] leading-6 text-[color:var(--muted)]">
+                  Open repo, attach screenshots or text-like specs, then ask for a plan. Images route to vision-capable models; text-like files get folded into prompt context.
                 </div>
               </div>
             </div>
@@ -677,20 +875,62 @@ export function ChatPanel(props: ChatPanelProps) {
               </div>
             </div>
 
-            <ScrollArea
-              ref={messageViewport}
-              class="flex-1 min-h-0 space-y-3 pr-2"
-              onScroll={updateScrollLock}
-            >
-              <Show
-                when={project().session.messages.length > 0 || project().streamingAssistantText}
-                fallback={
-                  <div class="flex min-h-56 items-center justify-center rounded-[1.5rem] border border-dashed border-[color:var(--border)] bg-white/40 p-8 text-center text-[0.675rem] text-[color:var(--muted)]">
-                    Choose project, then send task. Each project keeps its own persisted thread history.
+            <div class="rounded-[1.35rem] border border-[color:var(--border)] bg-white/65 p-4 shadow-sm">
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <div class="space-y-1">
+                  <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-[color:var(--muted)]">
+                    Task cockpit
                   </div>
-                }
-              >
-                <div class="space-y-3">
+                  <div class="text-[0.75rem] text-[color:var(--foreground)]">
+                    Status: {project().activeRun?.status ?? project().lastRun?.status ?? "idle"} | Mode: {activeMode()?.label ?? "Implement"} |
+                    Model: {getEffectiveExecutionModelId()}
+                  </div>
+                  <div class="flex flex-wrap gap-2">
+                    <For each={capabilityTags()}>
+                      {(tag) => (
+                        <span class="rounded-full border border-[color:var(--border)] bg-white/75 px-2 py-0.5 text-[0.55rem] font-semibold uppercase tracking-[0.12em] text-[color:var(--muted)]">
+                          {tag}
+                        </span>
+                      )}
+                    </For>
+                  </div>
+                </div>
+                <div class="flex flex-wrap gap-2">
+                  <For each={visibleTabs()}>
+                    {(tab) => (
+                      <button
+                        class={`rounded-full border px-3 py-1.5 text-[0.625rem] font-semibold uppercase tracking-[0.12em] transition ${
+                          activeTab() === tab
+                            ? "border-[color:var(--accent)] bg-[color:var(--accent)] text-white"
+                            : "border-[color:var(--border)] bg-white/70 text-[color:var(--foreground)]"
+                        }`}
+                        type="button"
+                        onClick={() => setActiveTab(tab)}
+                      >
+                        {tab}
+                      </button>
+                    )}
+                  </For>
+                </div>
+              </div>
+            </div>
+
+            <Switch>
+              <Match when={activeTab() === "chat"}>
+                <ScrollArea
+                  ref={messageViewport}
+                  class="flex-1 min-h-0 space-y-3 pr-2"
+                  onScroll={updateScrollLock}
+                >
+                  <Show
+                    when={project().session.messages.length > 0 || project().streamingAssistantText}
+                    fallback={
+                      <div class="flex min-h-56 items-center justify-center rounded-[1.5rem] border border-dashed border-[color:var(--border)] bg-white/40 p-8 text-center text-[0.675rem] text-[color:var(--muted)]">
+                        Choose project, then send task. Each project keeps its own persisted thread history.
+                      </div>
+                    }
+                  >
+                    <div class="space-y-3">
                   <For each={project().session.messages}>
                     {(message) => (
                       <Show
@@ -717,6 +957,22 @@ export function ChatPanel(props: ChatPanelProps) {
                             <div class="whitespace-pre-wrap text-[0.675rem] leading-6 text-[color:var(--foreground)]">
                               {message.content}
                             </div>
+                            <Show when={message.attachments?.length}>
+                              <div class="mt-3 flex flex-wrap gap-2">
+                                <For each={message.attachments}>
+                                  {(attachment) => (
+                                    <a
+                                      class="rounded-full border border-[color:var(--border)] bg-white/75 px-2.5 py-1 text-[0.55rem] font-semibold uppercase tracking-[0.12em] text-[color:var(--muted)] hover:text-[color:var(--foreground)]"
+                                      href={attachment.url}
+                                      rel="noreferrer"
+                                      target="_blank"
+                                    >
+                                      {attachment.kind} | {attachment.name}
+                                    </a>
+                                  )}
+                                </For>
+                              </div>
+                            </Show>
                           </article>
                         }
                       >
@@ -785,9 +1041,158 @@ export function ChatPanel(props: ChatPanelProps) {
                       </div>
                     </article>
                   </Show>
-                </div>
-              </Show>
-            </ScrollArea>
+                    </div>
+                  </Show>
+                </ScrollArea>
+              </Match>
+              <Match when={activeTab() === "plan"}>
+                <ScrollArea class="flex-1 min-h-0 space-y-4 pr-2">
+                  <div class="space-y-4">
+                    <div class="rounded-[1.35rem] border border-[color:var(--border)] bg-white/55 p-4">
+                      <div class="grid gap-3 md:grid-cols-2">
+                        <label class="space-y-2">
+                          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">Active mode</span>
+                          <select
+                            class="flex h-10 w-full rounded-xl border border-[color:var(--border)] bg-white/70 px-3 py-2 text-[0.675rem] text-[color:var(--foreground)] shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-[color:var(--ring)]"
+                            value={activeMode()?.id ?? "implement"}
+                            onInput={(event) => handleModeSelect(event.currentTarget.value)}
+                          >
+                            <For each={resolvedModes()}>
+                              {(mode) => <option value={mode.id}>{mode.label}</option>}
+                            </For>
+                          </select>
+                        </label>
+                        <div class="rounded-[1rem] border border-[color:var(--border)] bg-white/70 p-3 text-[0.675rem] leading-5 text-[color:var(--muted)]">
+                          {activeMode()?.description ?? "Default implementation mode."}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div class="rounded-[1.35rem] border border-[color:var(--border)] bg-white/55 p-4">
+                      <div class="flex items-center justify-between gap-3">
+                        <div>
+                          <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">Project context</div>
+                          <div class="mt-1 text-[0.675rem] leading-5 text-[color:var(--muted)]">
+                            Rules and working memory flow into planner and execution prompts.
+                          </div>
+                        </div>
+                        <ActionButton tooltip="Save project rules and thread memory" size="sm" onClick={handleSaveProjectContext}>
+                          Save context
+                        </ActionButton>
+                      </div>
+                      <div class="mt-4 grid gap-3 md:grid-cols-2">
+                        <label class="space-y-2">
+                          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">Project rules</span>
+                          <Textarea rows="8" value={projectRulesDraft()} onInput={(event) => setProjectRulesDraft(event.currentTarget.value)} />
+                        </label>
+                        <label class="space-y-2">
+                          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">Thread memory</span>
+                          <Textarea rows="8" value={threadMemoryDraft()} onInput={(event) => setThreadMemoryDraft(event.currentTarget.value)} />
+                        </label>
+                      </div>
+                    </div>
+
+                    <ModeEditorPanel
+                      title="Project custom modes"
+                      scope="project"
+                      modes={project().projectModes ?? []}
+                      onSave={(mode) =>
+                        props.sendCommand({
+                          type: "mode.save",
+                          requestId: createRequestId(),
+                          payload: {
+                            scope: "project",
+                            projectId: project().id,
+                            mode
+                          }
+                        })
+                      }
+                      onDelete={(modeId) =>
+                        props.sendCommand({
+                          type: "mode.delete",
+                          requestId: createRequestId(),
+                          payload: {
+                            scope: "project",
+                            projectId: project().id,
+                            modeId
+                          }
+                        })
+                      }
+                    />
+
+                    <Show when={currentExecutionPlan()}>
+                      {(plan) => (
+                        <div class="rounded-[1.35rem] border border-[color:var(--border)] bg-white/55 p-4 text-[0.675rem] leading-6 text-[color:var(--foreground)]">
+                          <div class="flex items-center justify-between gap-3">
+                            <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">Current plan snapshot</div>
+                            <ActionButton tooltip="Open full execution plan" size="sm" variant="secondary" onClick={() => harnessStore.openExecutionPlanDialog(plan())}>
+                              Open plan
+                            </ActionButton>
+                          </div>
+                          <div class="mt-3">{plan().summary}</div>
+                        </div>
+                      )}
+                    </Show>
+                  </div>
+                </ScrollArea>
+              </Match>
+              <Match when={activeTab() === "run"}>
+                <ScrollArea class="flex-1 min-h-0 space-y-4 pr-2">
+                  <div class="space-y-4">
+                    <div class="rounded-[1.35rem] border border-[color:var(--border)] bg-white/55 p-4 text-[0.675rem] leading-6 text-[color:var(--foreground)]">
+                      <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">Run summary</div>
+                      <div class="mt-2">Status: {project().activeRun?.status ?? project().lastRun?.status ?? "idle"}</div>
+                      <div>Retryable: {project().lastRun?.retryable ? "yes" : "no"}</div>
+                      <div>Resumable: {project().activeRun?.resumable ? "yes" : "no"}</div>
+                      <div>Prompt: {project().activeRun?.latestUserPrompt ?? project().lastRun?.latestUserPrompt ?? "n/a"}</div>
+                    </div>
+                    <For each={project().activeRun?.subtasks ?? project().lastRun?.subtasks ?? []}>
+                      {(task) => (
+                        <div class="rounded-[1.2rem] border border-[color:var(--border)] bg-white/60 p-4 text-[0.675rem] leading-6 text-[color:var(--foreground)]">
+                          <div class="font-semibold">{task.title}</div>
+                          <div class="text-[color:var(--muted)]">Status: {task.status} | Attempts: {task.attemptCount}</div>
+                          <Show when={task.output}>
+                            <div class="mt-2 whitespace-pre-wrap">{task.output}</div>
+                          </Show>
+                          <Show when={task.errorMessage}>
+                            <div class="mt-2 whitespace-pre-wrap text-rose-900/80">{task.errorMessage}</div>
+                          </Show>
+                        </div>
+                      )}
+                    </For>
+                  </div>
+                </ScrollArea>
+              </Match>
+              <Match when={activeTab() === "events"}>
+                <ScrollArea class="flex-1 min-h-0 space-y-4 pr-2">
+                  <Show
+                    when={project().traces.length > 0}
+                    fallback={
+                      <div class="flex min-h-56 items-center justify-center rounded-[1.5rem] border border-dashed border-[color:var(--border)] bg-white/40 p-8 text-center text-[0.675rem] text-[color:var(--muted)]">
+                        No execution events yet.
+                      </div>
+                    }
+                  >
+                    <div class="space-y-3">
+                      <For each={project().traces}>
+                        {(trace) => (
+                          <article class="rounded-[1.35rem] border border-[color:var(--border)] bg-white/55 p-4">
+                            <div class="mb-2 flex items-center justify-between gap-3 text-[0.585rem] font-semibold uppercase tracking-[0.16em] text-[color:var(--accent-strong)]">
+                              <span>{trace.stage}</span>
+                              <span>{trace.modelId ?? "n/a"}</span>
+                            </div>
+                            <div class="whitespace-pre-wrap text-[0.675rem] leading-5 text-[color:var(--foreground)]">{trace.message}</div>
+                            <Show when={trace.detail}>
+                              <div class="mt-2 whitespace-pre-wrap text-[0.675rem] leading-5 text-[color:var(--muted)]">{trace.detail}</div>
+                            </Show>
+                          </article>
+                        )}
+                      </For>
+                    </div>
+                  </Show>
+                </ScrollArea>
+              </Match>
+            </Switch>
 
             <Show when={readyRun() && currentExecutionPlan()?.gating.mode === "countdown" && countdownRunId() === readyRun()!.id}>
               <div class="rounded-[1.25rem] border border-[color:var(--border)] bg-white/65 p-3">
@@ -890,13 +1295,81 @@ export function ChatPanel(props: ChatPanelProps) {
                   harnessStore.setProjectDraft(project().id, event.currentTarget.value)
                 }
               />
+              <input
+                ref={attachmentInput}
+                class="hidden"
+                type="file"
+                multiple
+                accept="image/*,.txt,.md,.markdown,.json,.yml,.yaml,.xml,.html,.css,.js,.jsx,.ts,.tsx,.mjs,.cjs,.py,.rb,.go,.rs,.java,.kt,.swift,.sql,.sh,.bash,.zsh,.ini,.toml,.env,.csv,.log"
+                onChange={handleSelectAttachments}
+              />
+
+              <Show when={draftAttachments().length > 0 || uploadingAttachments()}>
+                <div class="flex flex-wrap gap-2">
+                  <For each={draftAttachments()}>
+                    {(attachment) => (
+                      <span class="inline-flex items-center gap-2 rounded-full border border-[color:var(--border)] bg-white/75 px-3 py-1 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-[color:var(--muted)]">
+                        <span>{attachment.kind}</span>
+                        <span class="max-w-56 truncate normal-case tracking-normal">{attachment.name}</span>
+                        <ActionButton
+                          tooltip="Remove attachment"
+                          icon={<X class="h-3 w-3" />}
+                          size="icon"
+                          variant="ghost"
+                          ariaLabel={`Remove ${attachment.name}`}
+                          onClick={() => handleRemoveAttachment(attachment.id)}
+                        />
+                      </span>
+                    )}
+                  </For>
+                  <Show when={uploadingAttachments()}>
+                    <span class="inline-flex items-center gap-2 rounded-full border border-[color:var(--border)] bg-white/75 px-3 py-1 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-[color:var(--muted)]">
+                      <LoaderCircle class="h-3 w-3 animate-spin" />
+                      Uploading attachments
+                    </span>
+                  </Show>
+                </div>
+              </Show>
 
               <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                <div class="space-y-1 text-[0.675rem] text-[color:var(--muted)]">
-                  Agent: {project().session.selectedAgentId ?? "pi"} | Effective model: {getEffectiveExecutionModelId()}
+                <div class="space-y-2 text-[0.675rem] text-[color:var(--muted)]">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span>Mode</span>
+                    <select
+                      class="h-9 rounded-xl border border-[color:var(--border)] bg-white/70 px-3 text-[0.675rem] text-[color:var(--foreground)] shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-[color:var(--ring)]"
+                      value={activeMode()?.id ?? "implement"}
+                      onInput={(event) => handleModeSelect(event.currentTarget.value)}
+                    >
+                      <For each={resolvedModes()}>
+                        {(mode) => <option value={mode.id}>{mode.label}</option>}
+                      </For>
+                    </select>
+                    <span>Agent: {project().session.selectedAgentId ?? "pi"}</span>
+                    <span>Model: {getEffectiveExecutionModelId()}</span>
+                  </div>
+                  <div class="flex flex-wrap gap-2">
+                    <For each={capabilityTags()}>
+                      {(tag) => (
+                        <span class="rounded-full border border-[color:var(--border)] bg-white/70 px-2 py-0.5 text-[0.55rem] font-semibold uppercase tracking-[0.12em] text-[color:var(--muted)]">
+                          {tag}
+                        </span>
+                      )}
+                    </For>
+                  </div>
                   <div>{composerContextText()}</div>
                 </div>
                 <div class="flex flex-wrap gap-2">
+                  <ActionButton
+                    tooltip="Attach screenshots or text-like files"
+                    disabledReason={attachmentButtonReason()}
+                    disabled={attachmentButtonDisabled()}
+                    icon={<Paperclip class="h-4 w-4" />}
+                    type="button"
+                    variant="secondary"
+                    onClick={() => attachmentInput?.click()}
+                  >
+                    Attach files
+                  </ActionButton>
                   <Show when={resumableRun()}>
                     <ActionButton
                       tooltip="Resume failed or pending subagents"
@@ -918,13 +1391,23 @@ export function ChatPanel(props: ChatPanelProps) {
                         : "Send task to pi"
                     }
                     disabledReason={
-                      project().session.isStreaming
+                      uploadingAttachments()
+                        ? "Attachment upload in progress"
+                        : hasImageDraftAttachments() && !hasVisionCapability()
+                        ? "Current model lacks vision support for image attachments"
+                        : project().session.isStreaming
                         ? "Project is streaming"
                         : resumableRun()
                         ? "Use resume failed agents to continue this run"
                         : "Enter task text"
                     }
-                    disabled={!project().draft.trim() || Boolean(resumableRun()) || project().session.isStreaming}
+                    disabled={
+                      !project().draft.trim() ||
+                      Boolean(resumableRun()) ||
+                      project().session.isStreaming ||
+                      uploadingAttachments() ||
+                      (hasImageDraftAttachments() && !hasVisionCapability())
+                    }
                     icon={<SendHorizontal class="h-4 w-4" />}
                     type="submit"
                   >

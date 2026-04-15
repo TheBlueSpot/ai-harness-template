@@ -6,6 +6,8 @@ import {
   type ChatSessionState,
   type CorrectnessIterationMode,
   type ExecutionPlan,
+  type MemorySummary,
+  type ModeDefinition,
   type PlanExecutionMode,
   type PlanPrerequisite,
   type ProjectContextUsage,
@@ -15,7 +17,8 @@ import {
   type ProviderBrand,
   type ProviderModelId,
   type SubagentContract,
-  type SubagentWorktreeStrategy
+  type SubagentWorktreeStrategy,
+  type WorkspaceRuleSource
 } from "../../shared/protocol";
 import type { ManagedExecutionState, ManagedRefreshAction } from "./execution-runtime";
 import { GitWorktreeManager } from "./git-worktree-manager";
@@ -28,6 +31,7 @@ import {
   planTask
 } from "./pi-planner";
 import { executeSubagents, type SubagentResult } from "./pi-subagents";
+import { buildPromptAttachmentContext } from "./chat-attachment-prompt";
 
 export type PiOrchestratorCallbacks = {
   onPlan?: (plan: AgentPlan) => void;
@@ -70,6 +74,9 @@ export async function runPlannerTurn(
     planExecutionMode: PlanExecutionMode;
     planExecutionDelaySeconds: number;
     correctnessIterationMode: CorrectnessIterationMode;
+    mode?: ModeDefinition;
+    ruleSources?: WorkspaceRuleSource[];
+    memorySummaries?: MemorySummary[];
     iteration?: number;
     origin?: ExecutionPlan["origin"];
     priorQuestions?: PlanningQuestion[];
@@ -92,6 +99,9 @@ export async function runPlannerTurn(
     latestUserPrompt: options.latestUserPrompt,
     providerBrand: options.providerBrand,
     executionModelId: options.executionModelId,
+    mode: options.mode,
+    ruleSources: options.ruleSources,
+    memorySummaries: options.memorySummaries,
     priorQuestions: options.priorQuestions,
     abortSignal: options.abortSignal
   });
@@ -125,6 +135,9 @@ export async function runPlannerTurn(
     planExecutionMode: options.planExecutionMode,
     planExecutionDelaySeconds: options.planExecutionDelaySeconds,
     correctnessIterationMode: options.correctnessIterationMode,
+    mode: options.mode,
+    ruleSources: options.ruleSources,
+    memorySummaries: options.memorySummaries,
     iteration: options.iteration ?? 1,
     origin: options.origin ?? "initial"
   });
@@ -192,6 +205,7 @@ export async function executeReadyRun(
           runId: options.runId,
           sessionId: options.sessionId,
           messages: options.messages,
+          executionPlan: options.executionPlan,
           abortSignal: options.abortSignal,
           callbacks: options.callbacks
         },
@@ -221,6 +235,7 @@ export async function executeReadyRun(
         runId: options.runId,
         sessionId: options.sessionId,
         messages: options.messages,
+        executionPlan: options.executionPlan,
         abortSignal: options.abortSignal,
         callbacks: options.callbacks
       },
@@ -375,6 +390,7 @@ export async function executeReadyRun(
       runId: options.runId,
       sessionId: options.sessionId,
       messages: options.messages,
+      executionPlan: options.executionPlan,
       abortSignal: options.abortSignal,
       callbacks: options.callbacks
     },
@@ -532,6 +548,7 @@ async function executeMainAgent(
     runId: string;
     sessionId: string;
     messages: ChatMessage[];
+    executionPlan?: ExecutionPlan;
     abortSignal?: AbortSignal;
     callbacks?: PiOrchestratorCallbacks;
   },
@@ -539,6 +556,13 @@ async function executeMainAgent(
   finalExecutionBrief: string
 ) {
   const startedAt = Date.now();
+  const executionInput = await buildExecutionInput(options.messages, finalExecutionBrief, options.executionPlan);
+  const continuationInput = await buildExecutionInput(
+    options.messages,
+    finalExecutionBrief,
+    options.executionPlan,
+    "continue"
+  );
   emitTrace(options.callbacks, {
     sessionId: options.sessionId,
     stage: "execution-start",
@@ -550,7 +574,8 @@ async function executeMainAgent(
     kind: "executor" as const,
     cwd: options.cwd,
     modelId: executionModelId,
-    prompt: buildExecutionPrompt(options.messages, finalExecutionBrief),
+    prompt: executionInput.prompt,
+    images: executionInput.images,
     onTextDelta(delta: string) {
       options.callbacks?.onDelta?.(delta);
     }
@@ -561,7 +586,8 @@ async function executeMainAgent(
     originalRequest,
     continuationRequest: {
       ...originalRequest,
-      prompt: buildContinuationPrompt("continue", options.messages, finalExecutionBrief)
+      prompt: continuationInput.prompt,
+      images: continuationInput.images
     },
     abortSignal: options.abortSignal,
     store: createExecutionStore(options.callbacks, options.runId, "main"),
@@ -646,6 +672,7 @@ export async function aggregateSubagentResults(
     runId: string;
     sessionId: string;
     messages: ChatMessage[];
+    executionPlan?: ExecutionPlan;
     abortSignal?: AbortSignal;
     callbacks?: PiOrchestratorCallbacks;
   },
@@ -657,6 +684,7 @@ export async function aggregateSubagentResults(
   integrationNote?: string
 ) {
   const startedAt = Date.now();
+  const executionInput = await buildExecutionInput(options.messages, finalExecutionBrief, options.executionPlan);
   emitTrace(options.callbacks, {
     sessionId: options.sessionId,
     stage: "aggregation-start",
@@ -665,7 +693,7 @@ export async function aggregateSubagentResults(
   });
 
   const aggregationPrompt = [
-    buildExecutionPrompt(options.messages, finalExecutionBrief),
+    executionInput.prompt,
     "",
     resumeNote ? `Resume note: ${resumeNote}` : "",
     integrationNote ?? "",
@@ -686,6 +714,7 @@ export async function aggregateSubagentResults(
       cwd: options.cwd,
       modelId: executionModelId,
       prompt: aggregationPrompt,
+      images: executionInput.images,
       onTextDelta(delta: string) {
         options.callbacks?.onDelta?.(delta);
       }
@@ -699,6 +728,7 @@ export async function aggregateSubagentResults(
         "",
         aggregationPrompt
       ].join("\n"),
+      images: executionInput.images,
       onTextDelta(delta: string) {
         options.callbacks?.onDelta?.(delta);
       }
@@ -737,20 +767,87 @@ export async function aggregateSubagentResults(
   return createChatMessage("assistant", result.text.trim());
 }
 
-export function buildExecutionPrompt(messages: ChatMessage[], finalExecutionBrief: string) {
+export function buildExecutionPrompt(messages: ChatMessage[], finalExecutionBrief: string, executionPlan?: ExecutionPlan) {
   return [
     "You are the execution stage for a local coding harness.",
     "Use the available coding tools when needed and respond with the final assistant answer only.",
+    "",
+    executionPlan?.mode
+      ? [
+          "Active mode:",
+          `- ${executionPlan.mode.label}: ${executionPlan.mode.description}`,
+          `- Execution guidance: ${executionPlan.mode.executionPrompt}`,
+          `- Tool policy: ${executionPlan.mode.toolPolicy}`
+        ].join("\n")
+      : "",
+    executionPlan?.ruleSources && executionPlan.ruleSources.length > 0
+      ? ["Rule sources:", ...executionPlan.ruleSources.map((rule) => `[${rule.scope}] ${rule.label}: ${rule.content}`)].join("\n")
+      : "",
+    executionPlan?.memorySummaries && executionPlan.memorySummaries.length > 0
+      ? [
+          "Memory summaries:",
+          ...executionPlan.memorySummaries.map((memory) => `[${memory.scope}] ${memory.label}: ${memory.content}`)
+        ].join("\n")
+      : "",
     "",
     "Conversation transcript:",
     formatMessages(messages),
     "",
     `Execution brief: ${finalExecutionBrief}`
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }
 
-function buildContinuationPrompt(prefix: string, messages: ChatMessage[], finalExecutionBrief: string) {
-  return [prefix, "", buildExecutionPrompt(messages, finalExecutionBrief)].join("\n");
+function buildContinuationPrompt(prefix: string, messages: ChatMessage[], finalExecutionBrief: string, executionPlan?: ExecutionPlan) {
+  return [prefix, "", buildExecutionPrompt(messages, finalExecutionBrief, executionPlan)].join("\n");
+}
+
+async function buildExecutionInput(
+  messages: ChatMessage[],
+  finalExecutionBrief: string,
+  executionPlan?: ExecutionPlan,
+  prefix?: string
+) {
+  const attachmentContext = await buildPromptAttachmentContext(messages);
+  const prompt = [
+    prefix,
+    prefix ? "" : undefined,
+    [
+      "You are the execution stage for a local coding harness.",
+      "Use the available coding tools when needed and respond with the final assistant answer only.",
+      "",
+      executionPlan?.mode
+        ? [
+            "Active mode:",
+            `- ${executionPlan.mode.label}: ${executionPlan.mode.description}`,
+            `- Execution guidance: ${executionPlan.mode.executionPrompt}`,
+            `- Tool policy: ${executionPlan.mode.toolPolicy}`
+          ].join("\n")
+        : "",
+      executionPlan?.ruleSources && executionPlan.ruleSources.length > 0
+        ? ["Rule sources:", ...executionPlan.ruleSources.map((rule) => `[${rule.scope}] ${rule.label}: ${rule.content}`)].join("\n")
+        : "",
+      executionPlan?.memorySummaries && executionPlan.memorySummaries.length > 0
+        ? [
+            "Memory summaries:",
+            ...executionPlan.memorySummaries.map((memory) => `[${memory.scope}] ${memory.label}: ${memory.content}`)
+          ].join("\n")
+        : "",
+      "",
+      "Conversation transcript:",
+      attachmentContext.transcript,
+      "",
+      `Execution brief: ${finalExecutionBrief}`
+    ]
+      .filter(Boolean)
+      .join("\n")
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  return {
+    prompt,
+    images: attachmentContext.images
+  };
 }
 
 function formatMessages(messages: ChatMessage[]) {
@@ -863,6 +960,9 @@ export function buildExecutionPlan(input: {
   planExecutionMode: PlanExecutionMode;
   planExecutionDelaySeconds: number;
   correctnessIterationMode: CorrectnessIterationMode;
+  mode?: ModeDefinition;
+  ruleSources?: WorkspaceRuleSource[];
+  memorySummaries?: MemorySummary[];
   iteration: number;
   origin: ExecutionPlan["origin"];
 }): ExecutionPlan {
@@ -889,6 +989,9 @@ export function buildExecutionPlan(input: {
       mode: input.planExecutionMode,
       delaySeconds: input.planExecutionDelaySeconds
     },
+    mode: input.mode,
+    ruleSources: input.ruleSources,
+    memorySummaries: input.memorySummaries,
     prerequisites,
     contracts,
     correctnessPolicy: input.correctnessIterationMode

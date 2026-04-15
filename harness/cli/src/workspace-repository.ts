@@ -5,6 +5,7 @@ import {
   agentRunStateSchema,
   correctnessReviewSchema,
   chatMessageSchema,
+  chatAttachmentSchema,
   chatMessageMetadataSchema,
   createEmptySession,
   createProjectId,
@@ -15,12 +16,15 @@ import {
   type AgentRunState,
   type AgentRunStatus,
   type ChatMessage,
+  type ChatAttachment,
   type ChatMessageKind,
   type ChatMessageMetadata,
   type ChatRole,
   type CorrectnessIterationMode,
   type CorrectnessReview,
   type ExecutionPlan,
+  type MemorySummary,
+  type ModeDefinition,
   type PlannerReadyTurn,
   type PlanningChoice,
   type PlanningQuestion,
@@ -34,6 +38,8 @@ import {
   type SubagentTaskState,
   type ThreadBadgeState,
   type ThreadId,
+  type UiMode,
+  type WorkspaceRuleSource,
   type WorkspaceProjectState,
   type WorkspaceState
 } from "../../shared/protocol";
@@ -52,12 +58,20 @@ const DIRTY_GIT_CHANGE_LIMIT_DEFAULT_KEY = "dirty_git_change_limit_default";
 const PLAN_EXECUTION_MODE_DEFAULT_KEY = "plan_execution_mode_default";
 const PLAN_EXECUTION_DELAY_SECONDS_DEFAULT_KEY = "plan_execution_delay_seconds_default";
 const CORRECTNESS_ITERATION_MODE_DEFAULT_KEY = "correctness_iteration_mode_default";
+const UI_MODE_DEFAULT_KEY = "ui_mode_default";
+const WORKSPACE_RULES_CONTENT_KEY = "workspace_rules_content";
+const WORKSPACE_RULES_UPDATED_AT_KEY = "workspace_rules_updated_at";
+const WORKSPACE_MEMORY_CONTENT_KEY = "workspace_memory_content";
+const WORKSPACE_MEMORY_UPDATED_AT_KEY = "workspace_memory_updated_at";
 
 type ProjectRow = {
   id: string;
   name: string;
   root_path: string;
   active_thread_id: string | null;
+  selected_mode_id: string | null;
+  rules_content: string | null;
+  rules_updated_at: string | null;
   created_at: string;
   updated_at: string;
   last_opened_at: string;
@@ -71,8 +85,27 @@ type ThreadRow = {
   title_source: "generated" | "custom";
   updated_at: string;
   forked_from_thread_id: string | null;
+  memory_summary_content: string | null;
+  memory_summary_updated_at: string | null;
   created_at: string;
   archived_at: string | null;
+};
+
+type WorkspaceModeRow = {
+  id: string;
+  label: string;
+  description: string;
+  planner_prompt: string;
+  execution_prompt: string;
+  tool_policy: "full-access" | "read-heavy" | "review-only";
+  plan_execution_mode_default: PlanExecutionMode | null;
+  subagent_worktree_strategy_default: SubagentWorktreeStrategy | null;
+  correctness_iteration_mode_default: CorrectnessIterationMode | null;
+  updated_at: string;
+};
+
+type ProjectModeRow = WorkspaceModeRow & {
+  project_id: string;
 };
 
 type MessageRow = {
@@ -81,6 +114,7 @@ type MessageRow = {
   role: ChatRole;
   kind: ChatMessageKind | null;
   content: string;
+  attachments_json: string | null;
   metadata_json: string | null;
   created_at: string;
 };
@@ -162,7 +196,7 @@ export class WorkspaceRepository {
   loadWorkspace(): WorkspaceState {
     const projectRows = this.db
       .query<ProjectRow, []>(
-        `SELECT id, name, root_path, active_thread_id, created_at, updated_at, last_opened_at
+        `SELECT id, name, root_path, active_thread_id, selected_mode_id, rules_content, rules_updated_at, created_at, updated_at, last_opened_at
          FROM projects
          ORDER BY last_opened_at DESC, created_at ASC`
       )
@@ -171,6 +205,9 @@ export class WorkspaceRepository {
     const activeProjectId = this.resolveActiveProjectId(projectRows.map((project) => project.id as ProjectId));
     return {
       projects: projectRows.map((project) => this.readProjectSnapshot(project.id as ProjectId)),
+      workspaceModes: this.readWorkspaceModes(),
+      workspaceRuleSource: this.readWorkspaceRuleSource(),
+      workspaceMemorySummary: this.readWorkspaceMemorySummary(),
       activeProjectId
     };
   }
@@ -181,7 +218,7 @@ export class WorkspaceRepository {
 
     const existingProject = this.db
       .query<ProjectRow, [string]>(
-        `SELECT id, name, root_path, active_thread_id, created_at, updated_at, last_opened_at
+        `SELECT id, name, root_path, active_thread_id, selected_mode_id, rules_content, rules_updated_at, created_at, updated_at, last_opened_at
          FROM projects
          WHERE root_path = ?1`
       )
@@ -200,8 +237,9 @@ export class WorkspaceRepository {
     const tx = this.db.transaction(() => {
       this.db
         .query(
-          `INSERT INTO projects (id, name, root_path, active_thread_id, created_at, updated_at, last_opened_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?5)`
+          `INSERT INTO projects (
+            id, name, root_path, active_thread_id, selected_mode_id, rules_content, rules_updated_at, created_at, updated_at, last_opened_at
+          ) VALUES (?1, ?2, ?3, ?4, 'implement', NULL, NULL, ?5, ?5, ?5)`
         )
         .run(projectId, uniqueName, normalizedRootPath, threadId, now);
       this.insertThread(projectId, threadId, {
@@ -222,7 +260,7 @@ export class WorkspaceRepository {
 
     const existingProject = this.db
       .query<ProjectRow, [string]>(
-        `SELECT id, name, root_path, active_thread_id, created_at, updated_at, last_opened_at
+        `SELECT id, name, root_path, active_thread_id, selected_mode_id, rules_content, rules_updated_at, created_at, updated_at, last_opened_at
          FROM projects
          WHERE root_path = ?1`
       )
@@ -302,8 +340,8 @@ export class WorkspaceRepository {
       for (const message of sourceMessages) {
         this.db
           .query(
-            `INSERT INTO thread_messages (id, thread_id, role, kind, content, metadata_json, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`
+            `INSERT INTO thread_messages (id, thread_id, role, kind, content, attachments_json, metadata_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`
           )
           .run(
             crypto.randomUUID(),
@@ -311,6 +349,7 @@ export class WorkspaceRepository {
             message.role,
             message.kind ?? "plain",
             message.content,
+            message.attachments ? JSON.stringify(message.attachments) : null,
             message.metadata ? JSON.stringify(message.metadata) : null,
             message.createdAt
           );
@@ -365,7 +404,9 @@ export class WorkspaceRepository {
     projectId: ProjectId,
     role: ChatRole,
     content: string,
-    threadIdOrOptions?: ThreadId | { threadId?: ThreadId; kind?: ChatMessageKind; metadata?: ChatMessageMetadata }
+    threadIdOrOptions?:
+      | ThreadId
+      | { threadId?: ThreadId; kind?: ChatMessageKind; attachments?: ChatAttachment[]; metadata?: ChatMessageMetadata }
   ): WorkspaceProjectState {
     const options =
       typeof threadIdOrOptions === "string" || threadIdOrOptions === undefined ? { threadId: threadIdOrOptions } : threadIdOrOptions;
@@ -376,6 +417,7 @@ export class WorkspaceRepository {
       role,
       kind: options.kind ?? "plain",
       content,
+      attachments: options.attachments,
       metadata: options.metadata,
       createdAt: new Date().toISOString()
     } satisfies ChatMessage;
@@ -386,8 +428,8 @@ export class WorkspaceRepository {
     const tx = this.db.transaction(() => {
       this.db
         .query(
-          `INSERT INTO thread_messages (id, thread_id, role, kind, content, metadata_json, created_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`
+          `INSERT INTO thread_messages (id, thread_id, role, kind, content, attachments_json, metadata_json, created_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`
         )
         .run(
           message.id,
@@ -395,6 +437,7 @@ export class WorkspaceRepository {
           message.role,
           message.kind ?? "plain",
           message.content,
+          message.attachments ? JSON.stringify(message.attachments) : null,
           message.metadata ? JSON.stringify(message.metadata) : null,
           message.createdAt
         );
@@ -878,6 +921,156 @@ export class WorkspaceRepository {
     this.setWorkspaceMetaValue(CORRECTNESS_ITERATION_MODE_DEFAULT_KEY, value);
   }
 
+  getUiModeDefault(): UiMode {
+    return this.getWorkspaceMetaValue(UI_MODE_DEFAULT_KEY) === "advanced" ? "advanced" : "simple";
+  }
+
+  setUiModeDefault(value: UiMode) {
+    this.setWorkspaceMetaValue(UI_MODE_DEFAULT_KEY, value);
+  }
+
+  getWorkspaceRuleSource() {
+    return this.readWorkspaceRuleSource();
+  }
+
+  saveWorkspaceContext(input: { rulesContent?: string; memorySummaryContent?: string }) {
+    const now = new Date().toISOString();
+    if (input.rulesContent?.trim()) {
+      this.setWorkspaceMetaValue(WORKSPACE_RULES_CONTENT_KEY, input.rulesContent.trim());
+      this.setWorkspaceMetaValue(WORKSPACE_RULES_UPDATED_AT_KEY, now);
+    } else {
+      this.deleteWorkspaceMetaValue(WORKSPACE_RULES_CONTENT_KEY);
+      this.deleteWorkspaceMetaValue(WORKSPACE_RULES_UPDATED_AT_KEY);
+    }
+
+    if (input.memorySummaryContent?.trim()) {
+      this.setWorkspaceMetaValue(WORKSPACE_MEMORY_CONTENT_KEY, input.memorySummaryContent.trim());
+      this.setWorkspaceMetaValue(WORKSPACE_MEMORY_UPDATED_AT_KEY, now);
+    } else {
+      this.deleteWorkspaceMetaValue(WORKSPACE_MEMORY_CONTENT_KEY);
+      this.deleteWorkspaceMetaValue(WORKSPACE_MEMORY_UPDATED_AT_KEY);
+    }
+
+    return this.loadWorkspace();
+  }
+
+  saveProjectContext(projectId: ProjectId, input: { rulesContent?: string; threadMemorySummaryContent?: string }) {
+    this.assertProjectExists(projectId);
+    const threadId = this.readActiveThreadRow(projectId).id as ThreadId;
+    const now = new Date().toISOString();
+    const tx = this.db.transaction(() => {
+      this.db
+        .query(`UPDATE projects SET rules_content = ?2, rules_updated_at = ?3 WHERE id = ?1`)
+        .run(projectId, input.rulesContent?.trim() || null, input.rulesContent?.trim() ? now : null);
+      this.db
+        .query(`UPDATE project_threads SET memory_summary_content = ?3, memory_summary_updated_at = ?4 WHERE project_id = ?1 AND id = ?2`)
+        .run(projectId, threadId, input.threadMemorySummaryContent?.trim() || null, input.threadMemorySummaryContent?.trim() ? now : null);
+      this.touchProject(projectId, now);
+    });
+    tx();
+
+    return this.readProjectSnapshot(projectId);
+  }
+
+  setProjectSelectedMode(projectId: ProjectId, modeId: string) {
+    this.assertProjectExists(projectId);
+    const now = new Date().toISOString();
+    this.db.query(`UPDATE projects SET selected_mode_id = ?2, updated_at = ?3 WHERE id = ?1`).run(projectId, modeId, now);
+    return this.readProjectSnapshot(projectId);
+  }
+
+  saveMode(scope: "workspace" | "project", mode: Omit<ModeDefinition, "scope"> & { scope: "workspace" | "project" }, projectId?: ProjectId) {
+    const now = new Date().toISOString();
+    if (scope === "workspace") {
+      this.db
+        .query(
+          `INSERT INTO workspace_modes (
+            id, label, description, planner_prompt, execution_prompt, tool_policy,
+            plan_execution_mode_default, subagent_worktree_strategy_default, correctness_iteration_mode_default, updated_at
+          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+          ON CONFLICT(id) DO UPDATE SET
+            label = excluded.label,
+            description = excluded.description,
+            planner_prompt = excluded.planner_prompt,
+            execution_prompt = excluded.execution_prompt,
+            tool_policy = excluded.tool_policy,
+            plan_execution_mode_default = excluded.plan_execution_mode_default,
+            subagent_worktree_strategy_default = excluded.subagent_worktree_strategy_default,
+            correctness_iteration_mode_default = excluded.correctness_iteration_mode_default,
+            updated_at = excluded.updated_at`
+        )
+        .run(
+          mode.id,
+          mode.label,
+          mode.description,
+          mode.plannerPrompt,
+          mode.executionPrompt,
+          mode.toolPolicy,
+          mode.planExecutionModeDefault ?? null,
+          mode.subagentWorktreeStrategyDefault ?? null,
+          mode.correctnessIterationModeDefault ?? null,
+          now
+        );
+      return this.loadWorkspace();
+    }
+
+    if (!projectId) {
+      throw new Error("projectId is required for project mode save");
+    }
+
+    this.assertProjectExists(projectId);
+    this.db
+      .query(
+        `INSERT INTO project_modes (
+          project_id, id, label, description, planner_prompt, execution_prompt, tool_policy,
+          plan_execution_mode_default, subagent_worktree_strategy_default, correctness_iteration_mode_default, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        ON CONFLICT(project_id, id) DO UPDATE SET
+          label = excluded.label,
+          description = excluded.description,
+          planner_prompt = excluded.planner_prompt,
+          execution_prompt = excluded.execution_prompt,
+          tool_policy = excluded.tool_policy,
+          plan_execution_mode_default = excluded.plan_execution_mode_default,
+          subagent_worktree_strategy_default = excluded.subagent_worktree_strategy_default,
+          correctness_iteration_mode_default = excluded.correctness_iteration_mode_default,
+          updated_at = excluded.updated_at`
+      )
+      .run(
+        projectId,
+        mode.id,
+        mode.label,
+        mode.description,
+        mode.plannerPrompt,
+        mode.executionPrompt,
+        mode.toolPolicy,
+        mode.planExecutionModeDefault ?? null,
+        mode.subagentWorktreeStrategyDefault ?? null,
+        mode.correctnessIterationModeDefault ?? null,
+        now
+      );
+    this.touchProject(projectId, now);
+    return this.readProjectSnapshot(projectId);
+  }
+
+  deleteMode(scope: "workspace" | "project", modeId: string, projectId?: ProjectId) {
+    if (scope === "workspace") {
+      this.db.query(`DELETE FROM workspace_modes WHERE id = ?1`).run(modeId);
+      return this.loadWorkspace();
+    }
+
+    if (!projectId) {
+      throw new Error("projectId is required for project mode delete");
+    }
+
+    this.assertProjectExists(projectId);
+    this.db.query(`DELETE FROM project_modes WHERE project_id = ?1 AND id = ?2`).run(projectId, modeId);
+    const now = new Date().toISOString();
+    this.db.query(`UPDATE projects SET selected_mode_id = CASE WHEN selected_mode_id = ?2 THEN 'implement' ELSE selected_mode_id END, updated_at = ?3 WHERE id = ?1`).run(projectId, modeId, now);
+    this.touchProject(projectId, now);
+    return this.readProjectSnapshot(projectId);
+  }
+
   private migrate() {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS projects (
@@ -885,6 +1078,9 @@ export class WorkspaceRepository {
         name TEXT NOT NULL,
         root_path TEXT NOT NULL UNIQUE,
         active_thread_id TEXT NULL,
+        selected_mode_id TEXT NULL,
+        rules_content TEXT NULL,
+        rules_updated_at TEXT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         last_opened_at TEXT NOT NULL
@@ -903,6 +1099,8 @@ export class WorkspaceRepository {
         title_source TEXT NULL,
         updated_at TEXT NULL,
         forked_from_thread_id TEXT NULL,
+        memory_summary_content TEXT NULL,
+        memory_summary_updated_at TEXT NULL,
         created_at TEXT NOT NULL,
         archived_at TEXT NULL,
         FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
@@ -920,6 +1118,7 @@ export class WorkspaceRepository {
         role TEXT NOT NULL CHECK(role IN ('system', 'user', 'assistant')),
         kind TEXT NOT NULL DEFAULT 'plain' CHECK(kind IN ('plain', 'plan-summary')),
         content TEXT NOT NULL,
+        attachments_json TEXT NULL,
         metadata_json TEXT NULL,
         created_at TEXT NOT NULL,
         FOREIGN KEY(thread_id) REFERENCES project_threads(id) ON DELETE CASCADE
@@ -1000,14 +1199,49 @@ export class WorkspaceRepository {
 
       CREATE UNIQUE INDEX IF NOT EXISTS agent_run_subtasks_run_planner_task_idx
       ON agent_run_subtasks(run_id, planner_task_id);
+
+      CREATE TABLE IF NOT EXISTS workspace_modes (
+        id TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        description TEXT NOT NULL,
+        planner_prompt TEXT NOT NULL,
+        execution_prompt TEXT NOT NULL,
+        tool_policy TEXT NOT NULL CHECK(tool_policy IN ('full-access', 'read-heavy', 'review-only')),
+        plan_execution_mode_default TEXT NULL,
+        subagent_worktree_strategy_default TEXT NULL,
+        correctness_iteration_mode_default TEXT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS project_modes (
+        project_id TEXT NOT NULL,
+        id TEXT NOT NULL,
+        label TEXT NOT NULL,
+        description TEXT NOT NULL,
+        planner_prompt TEXT NOT NULL,
+        execution_prompt TEXT NOT NULL,
+        tool_policy TEXT NOT NULL CHECK(tool_policy IN ('full-access', 'read-heavy', 'review-only')),
+        plan_execution_mode_default TEXT NULL,
+        subagent_worktree_strategy_default TEXT NULL,
+        correctness_iteration_mode_default TEXT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, id),
+        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+      );
     `);
 
     this.addColumnIfMissing("projects", "active_thread_id", "TEXT NULL");
+    this.addColumnIfMissing("projects", "selected_mode_id", "TEXT NULL");
+    this.addColumnIfMissing("projects", "rules_content", "TEXT NULL");
+    this.addColumnIfMissing("projects", "rules_updated_at", "TEXT NULL");
     this.addColumnIfMissing("project_threads", "title", "TEXT NULL");
     this.addColumnIfMissing("project_threads", "title_source", "TEXT NULL");
     this.addColumnIfMissing("project_threads", "updated_at", "TEXT NULL");
     this.addColumnIfMissing("project_threads", "forked_from_thread_id", "TEXT NULL");
+    this.addColumnIfMissing("project_threads", "memory_summary_content", "TEXT NULL");
+    this.addColumnIfMissing("project_threads", "memory_summary_updated_at", "TEXT NULL");
     this.addColumnIfMissing("thread_messages", "kind", "TEXT NOT NULL DEFAULT 'plain'");
+    this.addColumnIfMissing("thread_messages", "attachments_json", "TEXT NULL");
     this.addColumnIfMissing("thread_messages", "metadata_json", "TEXT NULL");
     this.addColumnIfMissing("agent_run_questions", "choices_json", "TEXT NULL");
     this.addColumnIfMissing("agent_run_subtasks", "commit_sha", "TEXT NULL");
@@ -1043,7 +1277,7 @@ export class WorkspaceRepository {
   private readProjectSnapshotUnsafe(projectId: ProjectId): WorkspaceProjectState {
     const project = this.db
       .query<ProjectRow, [string]>(
-        `SELECT id, name, root_path, active_thread_id, created_at, updated_at, last_opened_at
+        `SELECT id, name, root_path, active_thread_id, selected_mode_id, rules_content, rules_updated_at, created_at, updated_at, last_opened_at
          FROM projects
          WHERE id = ?1`
       )
@@ -1060,6 +1294,10 @@ export class WorkspaceRepository {
         name: project.name,
         rootPath: project.root_path as ProjectRootPath,
         activeThreadId: activeThread.id as ThreadId,
+        selectedModeId: project.selected_mode_id ?? "implement",
+        projectModes: this.readProjectModes(projectId),
+        projectRuleSource: toProjectRuleSource(project),
+        threadMemorySummary: toThreadMemorySummary(activeThread),
         threads: this.readThreadSummaries(projectId),
         session: {
           ...createEmptySession(activeThread.id as ThreadId),
@@ -1088,7 +1326,7 @@ export class WorkspaceRepository {
   private readThreadRow(projectId: ProjectId, threadId: ThreadId) {
     const thread = this.db
       .query<ThreadRow, [string, string]>(
-        `SELECT id, project_id, status, title, title_source, updated_at, forked_from_thread_id, created_at, archived_at
+        `SELECT id, project_id, status, title, title_source, updated_at, forked_from_thread_id, memory_summary_content, memory_summary_updated_at, created_at, archived_at
          FROM project_threads
          WHERE project_id = ?1 AND id = ?2`
       )
@@ -1104,7 +1342,7 @@ export class WorkspaceRepository {
   private readMessages(threadId: ThreadId) {
     return this.db
       .query<MessageRow, [string]>(
-        `SELECT id, thread_id, role, kind, content, metadata_json, created_at
+        `SELECT id, thread_id, role, kind, content, attachments_json, metadata_json, created_at
          FROM thread_messages
          WHERE thread_id = ?1
          ORDER BY created_at ASC`
@@ -1116,6 +1354,7 @@ export class WorkspaceRepository {
           role: message.role,
           kind: message.kind ?? "plain",
           content: message.content,
+          attachments: parseChatAttachments(message.attachments_json),
           metadata: parseChatMessageMetadata(message.metadata_json),
           createdAt: message.created_at
         })
@@ -1125,7 +1364,9 @@ export class WorkspaceRepository {
   private readThreadSummaries(projectId: ProjectId): ProjectThreadSummary[] {
     const threadRows = this.db
       .query<ThreadRow, [string]>(
-        `SELECT id, project_id, status, title, title_source, updated_at, forked_from_thread_id, created_at, archived_at
+        `SELECT
+          id, project_id, status, title, title_source, updated_at, forked_from_thread_id,
+          memory_summary_content, memory_summary_updated_at, created_at, archived_at
          FROM project_threads
          WHERE project_id = ?1
          ORDER BY updated_at DESC, created_at DESC`
@@ -1170,6 +1411,64 @@ export class WorkspaceRepository {
         throw new ThreadLoadError(projectId, thread.id as ThreadId, error);
       }
     });
+  }
+
+  private readWorkspaceModes() {
+    return this.db
+      .query<WorkspaceModeRow, []>(
+        `SELECT
+          id, label, description, planner_prompt, execution_prompt, tool_policy,
+          plan_execution_mode_default, subagent_worktree_strategy_default, correctness_iteration_mode_default, updated_at
+         FROM workspace_modes
+         ORDER BY updated_at DESC, id ASC`
+      )
+      .all()
+      .map((row) => toModeDefinition(row, "workspace"));
+  }
+
+  private readProjectModes(projectId: ProjectId) {
+    return this.db
+      .query<ProjectModeRow, [string]>(
+        `SELECT
+          project_id, id, label, description, planner_prompt, execution_prompt, tool_policy,
+          plan_execution_mode_default, subagent_worktree_strategy_default, correctness_iteration_mode_default, updated_at
+         FROM project_modes
+         WHERE project_id = ?1
+         ORDER BY updated_at DESC, id ASC`
+      )
+      .all(projectId)
+      .map((row) => toModeDefinition(row, "project"));
+  }
+
+  private readWorkspaceRuleSource() {
+    const content = this.getWorkspaceMetaValue(WORKSPACE_RULES_CONTENT_KEY);
+    if (!content) {
+      return undefined;
+    }
+
+    return {
+      id: "workspace-rules",
+      scope: "workspace",
+      label: "Workspace rules",
+      content,
+      updatedAt: this.getWorkspaceMetaValue(WORKSPACE_RULES_UPDATED_AT_KEY) ?? "unknown"
+    } satisfies WorkspaceRuleSource;
+  }
+
+  private readWorkspaceMemorySummary() {
+    const content = this.getWorkspaceMetaValue(WORKSPACE_MEMORY_CONTENT_KEY);
+    if (!content) {
+      return undefined;
+    }
+
+    return {
+      id: "workspace-memory",
+      scope: "workspace",
+      label: "Workspace memory",
+      content,
+      updatedAt: this.getWorkspaceMetaValue(WORKSPACE_MEMORY_UPDATED_AT_KEY) ?? "unknown",
+      source: "user"
+    } satisfies MemorySummary;
   }
 
   private tryRecoverFromProjectLoadFailure(projectId: ProjectId, error: unknown) {
@@ -1392,8 +1691,9 @@ export class WorkspaceRepository {
     this.db
       .query(
         `INSERT INTO project_threads (
-          id, project_id, status, title, title_source, updated_at, forked_from_thread_id, created_at, archived_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?6, NULL)`
+          id, project_id, status, title, title_source, updated_at, forked_from_thread_id,
+          memory_summary_content, memory_summary_updated_at, created_at, archived_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, ?6, NULL)`
       )
       .run(threadId, projectId, ACTIVE_THREAD_STATUS, input.title, input.titleSource, input.updatedAt, input.forkedFromThreadId ?? null);
   }
@@ -1488,7 +1788,9 @@ export class WorkspaceRepository {
     for (const projectId of projectIds) {
       const threads = this.db
         .query<ThreadRow, [string]>(
-          `SELECT id, project_id, status, title, title_source, updated_at, forked_from_thread_id, created_at, archived_at
+          `SELECT
+            id, project_id, status, title, title_source, updated_at, forked_from_thread_id,
+            memory_summary_content, memory_summary_updated_at, created_at, archived_at
            FROM project_threads
            WHERE project_id = ?1
            ORDER BY created_at ASC`
@@ -1609,6 +1911,51 @@ export class WorkspaceRepository {
   }
 }
 
+function toModeDefinition(row: WorkspaceModeRow | ProjectModeRow, scope: "workspace" | "project"): ModeDefinition {
+  return {
+    id: row.id,
+    scope,
+    label: row.label,
+    description: row.description,
+    plannerPrompt: row.planner_prompt,
+    executionPrompt: row.execution_prompt,
+    toolPolicy: row.tool_policy,
+    planExecutionModeDefault: row.plan_execution_mode_default ?? undefined,
+    subagentWorktreeStrategyDefault: row.subagent_worktree_strategy_default ?? undefined,
+    correctnessIterationModeDefault: row.correctness_iteration_mode_default ?? undefined,
+    updatedAt: row.updated_at
+  };
+}
+
+function toProjectRuleSource(project: ProjectRow): WorkspaceRuleSource | undefined {
+  if (!project.rules_content) {
+    return undefined;
+  }
+
+  return {
+    id: `${project.id}:rules`,
+    scope: "project",
+    label: `${project.name} rules`,
+    content: project.rules_content,
+    updatedAt: project.rules_updated_at ?? "unknown"
+  };
+}
+
+function toThreadMemorySummary(thread: ThreadRow): MemorySummary | undefined {
+  if (!thread.memory_summary_content) {
+    return undefined;
+  }
+
+  return {
+    id: `${thread.id}:memory`,
+    scope: "thread",
+    label: "Thread memory",
+    content: thread.memory_summary_content,
+    updatedAt: thread.memory_summary_updated_at ?? "unknown",
+    source: "user"
+  };
+}
+
 function parsePlanningChoices(input: string | null): PlanningChoice[] {
   if (!input) {
     return createFallbackPlanningChoices("Provide answer");
@@ -1633,6 +1980,18 @@ function parseChatMessageMetadata(input: string | null): ChatMessageMetadata | u
 
   try {
     return chatMessageMetadataSchema.parse(JSON.parse(input));
+  } catch {
+    return undefined;
+  }
+}
+
+function parseChatAttachments(input: string | null): ChatAttachment[] | undefined {
+  if (!input) {
+    return undefined;
+  }
+
+  try {
+    return chatAttachmentSchema.array().parse(JSON.parse(input));
   } catch {
     return undefined;
   }

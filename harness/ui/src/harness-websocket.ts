@@ -57,12 +57,11 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
                 dirtyGitChangeLimitDefault: harnessStore.state.dirtyGitChangeLimitDefault,
                 planExecutionModeDefault: harnessStore.state.planExecutionModeDefault,
                 planExecutionDelaySecondsDefault: harnessStore.state.planExecutionDelaySecondsDefault,
-                correctnessIterationModeDefault: harnessStore.state.correctnessIterationModeDefault
+                correctnessIterationModeDefault: harnessStore.state.correctnessIterationModeDefault,
+                uiModeDefault: harnessStore.state.uiMode
               }
             } satisfies ClientCommand)
           );
-        } else if (!parsed.payload.preferences.hasUsableApiKey) {
-          harnessStore.openPreferencesModal();
         } else if (!canSelectProviderBrand(harnessStore.state, harnessStore.state.providerBrand)) {
           const fallbackProviderBrand = canSelectProviderBrand(harnessStore.state, "gpt") ? "gpt" : "gemini";
           harnessStore.setProviderBrand(fallbackProviderBrand);
@@ -77,7 +76,8 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
             dirtyGitChangeLimitDefault: harnessStore.state.dirtyGitChangeLimitDefault,
             planExecutionModeDefault: harnessStore.state.planExecutionModeDefault,
             planExecutionDelaySecondsDefault: harnessStore.state.planExecutionDelaySecondsDefault,
-            correctnessIterationModeDefault: harnessStore.state.correctnessIterationModeDefault
+            correctnessIterationModeDefault: harnessStore.state.correctnessIterationModeDefault,
+            uiMode: harnessStore.state.uiMode
           });
         }
       }
@@ -96,7 +96,8 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
           dirtyGitChangeLimitDefault: harnessStore.state.dirtyGitChangeLimitDefault,
           planExecutionModeDefault: harnessStore.state.planExecutionModeDefault,
           planExecutionDelaySecondsDefault: harnessStore.state.planExecutionDelaySecondsDefault,
-          correctnessIterationModeDefault: harnessStore.state.correctnessIterationModeDefault
+          correctnessIterationModeDefault: harnessStore.state.correctnessIterationModeDefault,
+          uiMode: harnessStore.state.uiMode
         });
       }
 

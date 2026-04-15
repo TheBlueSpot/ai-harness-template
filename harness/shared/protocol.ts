@@ -7,11 +7,13 @@ export const projectIdSchema = z.string().min(1).max(128);
 export const runIdSchema = z.string().min(1).max(128);
 export const questionIdSchema = z.string().min(1).max(128);
 export const planningChoiceIdSchema = z.string().min(1).max(128);
+export const modeIdSchema = z.string().min(1).max(128);
 export const projectNameSchema = z.string().min(1).max(256);
 export const projectRootPathSchema = z.string().min(1).max(4096);
 export const threadTitleSchema = z.string().trim().min(1).max(256);
 export const agentIdSchema = z.literal("pi");
 export const providerBrandSchema = z.enum(["gpt", "gemini"]);
+export const uiModeSchema = z.enum(["simple", "advanced"]);
 export const subagentWorktreeStrategySchema = z.enum(["same-worktree", "separate-worktrees"]);
 export const planExecutionModeSchema = z.enum(["countdown", "approve", "immediate"]);
 export const correctnessIterationModeSchema = z.enum(["ask-before-iterate", "auto-once", "auto-until-clean"]);
@@ -20,6 +22,10 @@ export const preflightSeveritySchema = z.enum(["warning"]);
 export const preflightKindSchema = z.enum(["git-dirty"]);
 export const threadTitleSourceSchema = z.enum(["generated", "custom"]);
 export const threadBadgeStateSchema = z.enum(["idle", "needs-input", "planning", "executing", "error", "done"]);
+export const modeScopeSchema = z.enum(["builtin", "workspace", "project"]);
+export const modeToolPolicySchema = z.enum(["full-access", "read-heavy", "review-only"]);
+export const capabilityTagSchema = z.enum(["tools", "vision", "browser", "long-context", "fast", "expensive"]);
+export const chatAttachmentKindSchema = z.enum(["image", "text"]);
 export const providerModelIdSchema = z
   .string()
   .min(1)
@@ -113,6 +119,9 @@ export const executionPlanSchema = z.object({
     mode: planExecutionModeSchema,
     delaySeconds: z.number().int().min(0).max(300)
   }),
+  mode: z.lazy(() => modeDefinitionSchema).optional(),
+  ruleSources: z.array(z.lazy(() => workspaceRuleSourceSchema)).max(4).optional(),
+  memorySummaries: z.array(z.lazy(() => memorySummarySchema)).max(4).optional(),
   prerequisites: z.array(planPrerequisiteSchema).max(16),
   contracts: z.array(subagentContractSchema).max(16),
   correctnessPolicy: correctnessIterationModeSchema
@@ -138,11 +147,23 @@ export const planSummaryMessageMetadataSchema = z.object({
 
 export const chatMessageMetadataSchema = z.discriminatedUnion("type", [planSummaryMessageMetadataSchema]);
 
+export const chatAttachmentSchema = z.object({
+  id: z.string().min(1).max(128),
+  kind: chatAttachmentKindSchema,
+  name: z.string().min(1).max(256),
+  mimeType: z.string().min(1).max(256),
+  sizeBytes: z.number().int().min(1).max(16 * 1024 * 1024),
+  url: z.string().url(),
+  key: z.string().min(1).max(512),
+  uploadedAt: z.string().datetime().or(z.string().min(1))
+});
+
 export const chatMessageSchema = z.object({
   id: z.string().min(1).max(128),
   role: chatRoleSchema,
   kind: chatMessageKindSchema.optional(),
   content: z.string().min(1),
+  attachments: z.array(chatAttachmentSchema).max(8).optional(),
   metadata: chatMessageMetadataSchema.optional(),
   createdAt: z.string().datetime().or(z.string().min(1))
 });
@@ -151,6 +172,55 @@ export const agentOptionSchema = z.object({
   id: agentIdSchema,
   label: z.string().min(1),
   description: z.string().min(1).optional()
+});
+
+export const modelCapabilitySchema = z.object({
+  modelId: providerModelIdSchema,
+  providerBrand: providerBrandSchema,
+  label: z.string().min(1).max(128),
+  tags: z.array(capabilityTagSchema).max(8),
+  contextWindow: z.number().int().min(1),
+  summary: z.string().min(1).max(256)
+});
+
+export const providerCapabilitySchema = z.object({
+  providerBrand: providerBrandSchema,
+  label: z.string().min(1).max(64),
+  defaultPlanningModelId: providerModelIdSchema,
+  defaultExecutionModelId: providerModelIdSchema,
+  defaultSubagentModelId: providerModelIdSchema,
+  models: z.array(modelCapabilitySchema).max(16)
+});
+
+export const modeDefinitionSchema = z.object({
+  id: modeIdSchema,
+  scope: modeScopeSchema,
+  label: z.string().min(1).max(64),
+  description: z.string().min(1).max(256),
+  plannerPrompt: z.string().min(1).max(4000),
+  executionPrompt: z.string().min(1).max(4000),
+  toolPolicy: modeToolPolicySchema,
+  planExecutionModeDefault: planExecutionModeSchema.optional(),
+  subagentWorktreeStrategyDefault: subagentWorktreeStrategySchema.optional(),
+  correctnessIterationModeDefault: correctnessIterationModeSchema.optional(),
+  updatedAt: z.string().datetime().or(z.string().min(1))
+});
+
+export const workspaceRuleSourceSchema = z.object({
+  id: z.string().min(1).max(128),
+  scope: z.enum(["workspace", "project"]),
+  label: z.string().min(1).max(128),
+  content: z.string().min(1).max(32000),
+  updatedAt: z.string().datetime().or(z.string().min(1))
+});
+
+export const memorySummarySchema = z.object({
+  id: z.string().min(1).max(128),
+  scope: z.enum(["workspace", "thread"]),
+  label: z.string().min(1).max(128),
+  content: z.string().min(1).max(32000),
+  updatedAt: z.string().datetime().or(z.string().min(1)),
+  source: z.enum(["user", "generated"])
 });
 
 export const preferencesStateSchema = z.object({
@@ -168,7 +238,10 @@ export const preferencesStateSchema = z.object({
   dirtyGitChangeLimitDefault: dirtyGitChangeLimitSchema,
   planExecutionModeDefault: planExecutionModeSchema,
   planExecutionDelaySecondsDefault: z.number().int().min(0).max(300),
-  correctnessIterationModeDefault: correctnessIterationModeSchema
+  correctnessIterationModeDefault: correctnessIterationModeSchema,
+  uiModeDefault: uiModeSchema,
+  attachmentsEnabled: z.boolean(),
+  capabilities: z.array(providerCapabilitySchema).max(4)
 });
 
 export const agentPlanSchema = z.object({
@@ -357,6 +430,10 @@ export const workspaceProjectStateSchema = z.object({
   name: projectNameSchema,
   rootPath: projectRootPathSchema,
   activeThreadId: threadIdSchema,
+  selectedModeId: modeIdSchema.optional(),
+  projectModes: z.array(modeDefinitionSchema).max(16).optional(),
+  projectRuleSource: workspaceRuleSourceSchema.optional(),
+  threadMemorySummary: memorySummarySchema.optional(),
   threads: z.array(projectThreadSummarySchema).min(1),
   session: chatSessionStateSchema,
   activeRun: agentRunStateSchema.optional(),
@@ -373,6 +450,9 @@ export const workspaceProjectStateSchema = z.object({
 
 export const workspaceStateSchema = z.object({
   projects: z.array(workspaceProjectStateSchema),
+  workspaceModes: z.array(modeDefinitionSchema).max(16).optional(),
+  workspaceRuleSource: workspaceRuleSourceSchema.optional(),
+  workspaceMemorySummary: memorySummarySchema.optional(),
   activeProjectId: projectIdSchema.optional()
 }).superRefine((workspace, ctx) => {
   if (workspace.projects.length === 0) {
@@ -498,6 +578,8 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       threadId: threadIdSchema,
       agentId: agentIdSchema,
       content: z.string().min(1).max(32000),
+      attachments: z.array(chatAttachmentSchema).max(8).optional(),
+      modeId: modeIdSchema.optional(),
       executionModelId: providerModelIdSchema.optional(),
       debug: z.boolean().optional()
     })
@@ -564,6 +646,71 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     })
   }),
   z.object({
+    type: z.literal("project.mode.select"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      modeId: modeIdSchema
+    })
+  }),
+  z.object({
+    type: z.literal("mode.save"),
+    requestId: requestIdSchema,
+    payload: z
+      .object({
+        scope: z.enum(["workspace", "project"]),
+        projectId: projectIdSchema.optional(),
+        mode: modeDefinitionSchema.omit({ scope: true }).extend({
+          scope: z.enum(["workspace", "project"])
+        })
+      })
+      .superRefine((payload, ctx) => {
+        if (payload.scope === "project" && !payload.projectId) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "projectId is required for project-scoped modes",
+            path: ["projectId"]
+          });
+        }
+      })
+  }),
+  z.object({
+    type: z.literal("mode.delete"),
+    requestId: requestIdSchema,
+    payload: z
+      .object({
+        scope: z.enum(["workspace", "project"]),
+        projectId: projectIdSchema.optional(),
+        modeId: modeIdSchema
+      })
+      .superRefine((payload, ctx) => {
+        if (payload.scope === "project" && !payload.projectId) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "projectId is required for project-scoped modes",
+            path: ["projectId"]
+          });
+        }
+      })
+  }),
+  z.object({
+    type: z.literal("workspace.context.save"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      rulesContent: z.string().max(32000).optional(),
+      memorySummaryContent: z.string().max(32000).optional()
+    })
+  }),
+  z.object({
+    type: z.literal("project.context.save"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      rulesContent: z.string().max(32000).optional(),
+      threadMemorySummaryContent: z.string().max(32000).optional()
+    })
+  }),
+  z.object({
     type: z.literal("preferences.save"),
     requestId: requestIdSchema,
     payload: z.object({
@@ -577,7 +724,8 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       dirtyGitChangeLimitDefault: dirtyGitChangeLimitSchema,
       planExecutionModeDefault: planExecutionModeSchema,
       planExecutionDelaySecondsDefault: z.number().int().min(0).max(300),
-      correctnessIterationModeDefault: correctnessIterationModeSchema
+      correctnessIterationModeDefault: correctnessIterationModeSchema,
+      uiModeDefault: uiModeSchema
     })
   }),
   z.object({
@@ -633,6 +781,21 @@ export const serverEventSchema = z.discriminatedUnion("type", [
     requestId: requestIdSchema,
     payload: z.object({
       projectId: projectIdSchema
+    })
+  }),
+  z.object({
+    type: z.literal("workspace.updated"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      workspace: workspaceStateSchema
+    })
+  }),
+  z.object({
+    type: z.literal("project.updated"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      project: workspaceProjectStateSchema
     })
   }),
   z.object({
@@ -792,11 +955,13 @@ export type ProjectId = z.infer<typeof projectIdSchema>;
 export type RunId = z.infer<typeof runIdSchema>;
 export type QuestionId = z.infer<typeof questionIdSchema>;
 export type PlanningChoiceId = z.infer<typeof planningChoiceIdSchema>;
+export type ModeId = z.infer<typeof modeIdSchema>;
 export type ProjectName = z.infer<typeof projectNameSchema>;
 export type ProjectRootPath = z.infer<typeof projectRootPathSchema>;
 export type ThreadTitle = z.infer<typeof threadTitleSchema>;
 export type AgentId = z.infer<typeof agentIdSchema>;
 export type ProviderBrand = z.infer<typeof providerBrandSchema>;
+export type UiMode = z.infer<typeof uiModeSchema>;
 export type SubagentWorktreeStrategy = z.infer<typeof subagentWorktreeStrategySchema>;
 export type PlanExecutionMode = z.infer<typeof planExecutionModeSchema>;
 export type CorrectnessIterationMode = z.infer<typeof correctnessIterationModeSchema>;
@@ -805,6 +970,10 @@ export type PreflightSeverity = z.infer<typeof preflightSeveritySchema>;
 export type PreflightKind = z.infer<typeof preflightKindSchema>;
 export type ThreadTitleSource = z.infer<typeof threadTitleSourceSchema>;
 export type ThreadBadgeState = z.infer<typeof threadBadgeStateSchema>;
+export type ModeScope = z.infer<typeof modeScopeSchema>;
+export type ModeToolPolicy = z.infer<typeof modeToolPolicySchema>;
+export type CapabilityTag = z.infer<typeof capabilityTagSchema>;
+export type ChatAttachmentKind = z.infer<typeof chatAttachmentKindSchema>;
 export type ProviderModelId = z.infer<typeof providerModelIdSchema>;
 export type ChatRole = z.infer<typeof chatRoleSchema>;
 export type ChatMessageKind = z.infer<typeof chatMessageKindSchema>;
@@ -815,8 +984,14 @@ export type ExecutionPlan = z.infer<typeof executionPlanSchema>;
 export type CorrectnessReview = z.infer<typeof correctnessReviewSchema>;
 export type PlanSummaryMessageMetadata = z.infer<typeof planSummaryMessageMetadataSchema>;
 export type ChatMessageMetadata = z.infer<typeof chatMessageMetadataSchema>;
+export type ChatAttachment = z.infer<typeof chatAttachmentSchema>;
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
 export type AgentOption = z.infer<typeof agentOptionSchema>;
+export type ModelCapability = z.infer<typeof modelCapabilitySchema>;
+export type ProviderCapability = z.infer<typeof providerCapabilitySchema>;
+export type ModeDefinition = z.infer<typeof modeDefinitionSchema>;
+export type WorkspaceRuleSource = z.infer<typeof workspaceRuleSourceSchema>;
+export type MemorySummary = z.infer<typeof memorySummarySchema>;
 export type PreferencesState = z.infer<typeof preferencesStateSchema>;
 export type ConnectionState = z.infer<typeof connectionStateSchema>;
 export type AgentPlan = z.infer<typeof agentPlanSchema>;
@@ -876,6 +1051,7 @@ export function createChatMessage(
   content: string,
   options: {
     kind?: ChatMessageKind;
+    attachments?: ChatAttachment[];
     metadata?: ChatMessageMetadata;
     id?: string;
   } = {}
@@ -885,6 +1061,7 @@ export function createChatMessage(
     role,
     kind: options.kind ?? "plain",
     content,
+    attachments: options.attachments,
     metadata: options.metadata,
     createdAt: new Date().toISOString()
   };
@@ -921,6 +1098,10 @@ export function createWorkspaceProjectState(
     activeThreadId?: ThreadId;
     session?: ChatSessionState;
     threads?: ProjectThreadSummary[];
+    selectedModeId?: ModeId;
+    projectModes?: ModeDefinition[];
+    projectRuleSource?: WorkspaceRuleSource;
+    threadMemorySummary?: MemorySummary;
   }
 ): WorkspaceProjectState {
   const activeThreadId = input.activeThreadId ?? createThreadId();
@@ -929,6 +1110,10 @@ export function createWorkspaceProjectState(
     name: input.name,
     rootPath: input.rootPath,
     activeThreadId,
+    selectedModeId: input.selectedModeId ?? "implement",
+    projectModes: input.projectModes ?? [],
+    projectRuleSource: input.projectRuleSource,
+    threadMemorySummary: input.threadMemorySummary,
     threads:
       input.threads ??
       [

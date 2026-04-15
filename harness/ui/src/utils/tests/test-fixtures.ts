@@ -11,6 +11,7 @@ import {
   type PreferencesState,
   type SubagentTaskState
 } from "../../../../shared/protocol";
+import { defaultProviderCapabilities } from "../../../../shared/capabilities";
 import { createInitialViewState, type HarnessViewState, type ViewProjectState } from "../../harness-store";
 
 export const defaultPreferencesFixture: PreferencesState = {
@@ -28,7 +29,10 @@ export const defaultPreferencesFixture: PreferencesState = {
   dirtyGitChangeLimitDefault: 20,
   planExecutionModeDefault: "countdown",
   planExecutionDelaySecondsDefault: 10,
-  correctnessIterationModeDefault: "ask-before-iterate"
+  correctnessIterationModeDefault: "ask-before-iterate",
+  uiModeDefault: "simple",
+  attachmentsEnabled: true,
+  capabilities: [...defaultProviderCapabilities]
 };
 
 export function createExecutionPlanFixture(overrides: Partial<ExecutionPlan> = {}): ExecutionPlan {

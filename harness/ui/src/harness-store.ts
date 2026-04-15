@@ -1,16 +1,24 @@
 import { createStore, reconcile } from "solid-js/store";
 import { defaultAgentCatalog } from "../../shared/agent-catalog";
+import { defaultProviderCapabilities } from "../../shared/capabilities";
+import { DEFAULT_MODE_ID, resolveModeById, resolveModeCatalog } from "../../shared/modes";
 import {
   type AgentPlan,
   type AgentTrace,
+  type MemorySummary,
+  type ModelCapability,
+  type ModeDefinition,
   type ProjectContextUsage,
   type ProviderBrand,
   type AgentOption,
   type ConnectionState,
   type PreferencesState,
+  type ProviderCapability,
   type RunPreflight,
   type ServerEvent,
   type ExecutionPlan,
+  type UiMode,
+  type WorkspaceRuleSource,
   type WorkspaceProjectState,
   type WorkspaceState
 } from "../../shared/protocol";
@@ -26,6 +34,7 @@ export const DIRTY_GIT_CHANGE_LIMIT_DEFAULT_STORAGE_KEY = "dirty_git_change_limi
 export const PLAN_EXECUTION_MODE_DEFAULT_STORAGE_KEY = "plan_execution_mode_default";
 export const PLAN_EXECUTION_DELAY_SECONDS_DEFAULT_STORAGE_KEY = "plan_execution_delay_seconds_default";
 export const CORRECTNESS_ITERATION_MODE_DEFAULT_STORAGE_KEY = "correctness_iteration_mode_default";
+export const UI_MODE_DEFAULT_STORAGE_KEY = "ui_mode_default";
 export const THREAD_DRAFT_STORAGE_KEY_PREFIX = "pi-harness:thread-draft:v1";
 
 export type ViewProjectState = WorkspaceProjectState & {
@@ -40,6 +49,9 @@ export type ViewProjectState = WorkspaceProjectState & {
 export type ViewWorkspaceState = {
   activeProjectId?: string;
   projects: ViewProjectState[];
+  workspaceModes?: ModeDefinition[];
+  workspaceRuleSource?: WorkspaceRuleSource;
+  workspaceMemorySummary?: MemorySummary;
 };
 
 export type HarnessViewState = {
@@ -60,6 +72,9 @@ export type HarnessViewState = {
   planExecutionModeDefault: "countdown" | "approve" | "immediate";
   planExecutionDelaySecondsDefault: number;
   correctnessIterationModeDefault: "ask-before-iterate" | "auto-once" | "auto-until-clean";
+  uiMode: UiMode;
+  attachmentsEnabled: boolean;
+  capabilities: ProviderCapability[];
   preferencesModalOpen: boolean;
   hasUsableApiKey: boolean;
   hasStoredApiKey: boolean;
@@ -82,6 +97,7 @@ export type HarnessViewState = {
   hasLocalPlanExecutionModePreference: boolean;
   hasLocalPlanExecutionDelaySecondsPreference: boolean;
   hasLocalCorrectnessIterationModePreference: boolean;
+  hasLocalUiModePreference: boolean;
   projectPreflights: Record<string, { requestId: string; preflight: RunPreflight } | undefined>;
 };
 
@@ -97,12 +113,16 @@ export type LocalPreferencesState = {
   planExecutionModeDefault?: "countdown" | "approve" | "immediate";
   planExecutionDelaySecondsDefault?: number;
   correctnessIterationModeDefault?: "ask-before-iterate" | "auto-once" | "auto-until-clean";
+  uiMode?: UiMode;
 };
 
 export function createInitialWorkspaceState(): ViewWorkspaceState {
   return {
     activeProjectId: undefined,
-    projects: []
+    projects: [],
+    workspaceModes: [],
+    workspaceRuleSource: undefined,
+    workspaceMemorySummary: undefined
   };
 }
 
@@ -125,6 +145,9 @@ export function createInitialViewState(): HarnessViewState {
     planExecutionModeDefault: "countdown",
     planExecutionDelaySecondsDefault: 10,
     correctnessIterationModeDefault: "ask-before-iterate",
+    uiMode: "simple",
+    attachmentsEnabled: false,
+    capabilities: [...defaultProviderCapabilities],
     preferencesModalOpen: false,
     hasUsableApiKey: false,
     hasStoredApiKey: false,
@@ -147,6 +170,7 @@ export function createInitialViewState(): HarnessViewState {
     hasLocalPlanExecutionModePreference: false,
     hasLocalPlanExecutionDelaySecondsPreference: false,
     hasLocalCorrectnessIterationModePreference: false,
+    hasLocalUiModePreference: false,
     projectPreflights: {}
   };
 }
@@ -193,6 +217,25 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
         workspace: {
           ...state.workspace,
           activeProjectId: event.payload.projectId
+        }
+      };
+    case "workspace.updated":
+      return {
+        ...state,
+        workspace: mergeIncomingWorkspace(state.workspace, hydrateWorkspace(event.payload.workspace))
+      };
+    case "project.updated":
+      return {
+        ...state,
+        workspace: {
+          ...state.workspace,
+          projects: upsertProject(
+            state.workspace.projects,
+            mergeIncomingProject(
+              state.workspace.projects.find((project) => project.id === event.payload.projectId) ?? toViewProject(event.payload.project),
+              toViewProject(event.payload.project)
+            )
+          )
         }
       };
     case "thread.created":
@@ -453,6 +496,12 @@ export function createHarnessStore() {
     setCorrectnessIterationModeDefault(correctnessIterationModeDefault: "ask-before-iterate" | "auto-once" | "auto-until-clean") {
       setState({ correctnessIterationModeDefault });
     },
+    setUiMode(uiMode: UiMode) {
+      setState({
+        uiMode,
+        tracePanelOpen: uiMode === "advanced" ? state.tracePanelOpen : false
+      });
+    },
     openPreferencesModal() {
       setState({ preferencesModalOpen: true });
     },
@@ -478,10 +527,15 @@ export function createHarnessStore() {
       });
     },
     commitLocalPreferences(localPreferences: LocalPreferencesState) {
+      const nextUiMode = localPreferences.uiMode ?? state.uiMode;
       setState({
         providerBrand: localPreferences.providerBrand ?? state.providerBrand,
         debugEnabled: localPreferences.debugEnabled ?? state.debugEnabled,
         tracePanelDefaultOpen: localPreferences.tracePanelDefaultOpen ?? state.tracePanelDefaultOpen,
+        tracePanelOpen:
+          nextUiMode === "advanced"
+            ? localPreferences.tracePanelDefaultOpen ?? state.tracePanelDefaultOpen
+            : false,
         subagentWorktreeStrategyDefault:
           localPreferences.subagentWorktreeStrategyDefault ?? state.subagentWorktreeStrategyDefault,
         blockChatOnDirtyGitDefault: localPreferences.blockChatOnDirtyGitDefault ?? state.blockChatOnDirtyGitDefault,
@@ -491,6 +545,7 @@ export function createHarnessStore() {
           localPreferences.planExecutionDelaySecondsDefault ?? state.planExecutionDelaySecondsDefault,
         correctnessIterationModeDefault:
           localPreferences.correctnessIterationModeDefault ?? state.correctnessIterationModeDefault,
+        uiMode: nextUiMode,
         openAiApiKeyDraft: localPreferences.openAiApiKey ?? "",
         googleApiKeyDraft: localPreferences.googleApiKey ?? "",
         apiKeyDirty: false,
@@ -504,7 +559,8 @@ export function createHarnessStore() {
         hasLocalDirtyGitChangeLimitPreference: localPreferences.dirtyGitChangeLimitDefault !== undefined,
         hasLocalPlanExecutionModePreference: localPreferences.planExecutionModeDefault !== undefined,
         hasLocalPlanExecutionDelaySecondsPreference: localPreferences.planExecutionDelaySecondsDefault !== undefined,
-        hasLocalCorrectnessIterationModePreference: localPreferences.correctnessIterationModeDefault !== undefined
+        hasLocalCorrectnessIterationModePreference: localPreferences.correctnessIterationModeDefault !== undefined,
+        hasLocalUiModePreference: localPreferences.uiMode !== undefined
       });
     },
     setHasUsableApiKey(hasUsableApiKey: boolean) {
@@ -512,11 +568,15 @@ export function createHarnessStore() {
     },
     hydrateLocalPreferences() {
       const localPreferences = readLocalPreferences();
+      const nextUiMode = localPreferences.uiMode ?? state.uiMode;
       setState({
         providerBrand: localPreferences.providerBrand ?? state.providerBrand,
         debugEnabled: localPreferences.debugEnabled ?? state.debugEnabled,
         tracePanelDefaultOpen: localPreferences.tracePanelDefaultOpen ?? state.tracePanelDefaultOpen,
-        tracePanelOpen: localPreferences.tracePanelDefaultOpen ?? state.tracePanelOpen,
+        tracePanelOpen:
+          nextUiMode === "advanced"
+            ? localPreferences.tracePanelDefaultOpen ?? state.tracePanelOpen
+            : false,
         subagentWorktreeStrategyDefault:
           localPreferences.subagentWorktreeStrategyDefault ?? state.subagentWorktreeStrategyDefault,
         blockChatOnDirtyGitDefault: localPreferences.blockChatOnDirtyGitDefault ?? state.blockChatOnDirtyGitDefault,
@@ -526,6 +586,7 @@ export function createHarnessStore() {
           localPreferences.planExecutionDelaySecondsDefault ?? state.planExecutionDelaySecondsDefault,
         correctnessIterationModeDefault:
           localPreferences.correctnessIterationModeDefault ?? state.correctnessIterationModeDefault,
+        uiMode: nextUiMode,
         openAiApiKeyDraft: localPreferences.openAiApiKey ?? "",
         googleApiKeyDraft: localPreferences.googleApiKey ?? "",
         apiKeyDirty: false,
@@ -539,7 +600,8 @@ export function createHarnessStore() {
         hasLocalDirtyGitChangeLimitPreference: localPreferences.dirtyGitChangeLimitDefault !== undefined,
         hasLocalPlanExecutionModePreference: localPreferences.planExecutionModeDefault !== undefined,
         hasLocalPlanExecutionDelaySecondsPreference: localPreferences.planExecutionDelaySecondsDefault !== undefined,
-        hasLocalCorrectnessIterationModePreference: localPreferences.correctnessIterationModeDefault !== undefined
+        hasLocalCorrectnessIterationModePreference: localPreferences.correctnessIterationModeDefault !== undefined,
+        hasLocalUiModePreference: localPreferences.uiMode !== undefined
       });
       return localPreferences;
     },
@@ -595,7 +657,23 @@ function upsertProject(projects: ViewProjectState[], nextProject: ViewProjectSta
 function hydrateWorkspace(workspace: WorkspaceState): ViewWorkspaceState {
   return {
     activeProjectId: workspace.activeProjectId,
-    projects: workspace.projects.map((project) => toViewProject(project))
+    projects: workspace.projects.map((project) => toViewProject(project)),
+    workspaceModes: workspace.workspaceModes ?? [],
+    workspaceRuleSource: workspace.workspaceRuleSource,
+    workspaceMemorySummary: workspace.workspaceMemorySummary
+  };
+}
+
+function mergeIncomingWorkspace(existing: ViewWorkspaceState, incoming: ViewWorkspaceState): ViewWorkspaceState {
+  return {
+    activeProjectId: incoming.activeProjectId,
+    workspaceModes: incoming.workspaceModes,
+    workspaceRuleSource: incoming.workspaceRuleSource,
+    workspaceMemorySummary: incoming.workspaceMemorySummary,
+    projects: incoming.projects.map((project) => {
+      const prior = existing.projects.find((entry) => entry.id === project.id);
+      return prior ? mergeIncomingProject(prior, project) : project;
+    })
   };
 }
 
@@ -656,6 +734,10 @@ function badgeFromRunStatus(status: NonNullable<ViewProjectState["lastRun"]>["st
 
 function applyReadyPreferencesState(state: HarnessViewState, preferences: PreferencesState) {
   const providerBrand = resolveProviderBrand(state, preferences);
+  const uiMode = state.hasLocalUiModePreference ? state.uiMode : preferences.uiModeDefault;
+  const tracePanelDefaultOpen = state.hasLocalTracePreference
+    ? state.tracePanelDefaultOpen
+    : preferences.tracePanelDefaultOpen;
 
   return {
     hasUsableApiKey: preferences.hasUsableApiKey,
@@ -666,10 +748,8 @@ function applyReadyPreferencesState(state: HarnessViewState, preferences: Prefer
     hasStoredGoogleApiKey: preferences.hasStoredGoogleApiKey,
     providerBrand,
     debugEnabled: state.hasLocalDebugPreference ? state.debugEnabled : preferences.debugEnabledDefault,
-    tracePanelDefaultOpen: state.hasLocalTracePreference
-      ? state.tracePanelDefaultOpen
-      : preferences.tracePanelDefaultOpen,
-    tracePanelOpen: state.hasLocalTracePreference ? state.tracePanelOpen : preferences.tracePanelDefaultOpen,
+    tracePanelDefaultOpen,
+    tracePanelOpen: uiMode === "advanced" ? (state.hasLocalTracePreference ? state.tracePanelOpen : tracePanelDefaultOpen) : false,
     subagentWorktreeStrategyDefault: state.hasLocalSubagentWorktreeStrategyPreference
       ? state.subagentWorktreeStrategyDefault
       : preferences.subagentWorktreeStrategyDefault,
@@ -687,7 +767,10 @@ function applyReadyPreferencesState(state: HarnessViewState, preferences: Prefer
       : preferences.planExecutionDelaySecondsDefault,
     correctnessIterationModeDefault: state.hasLocalCorrectnessIterationModePreference
       ? state.correctnessIterationModeDefault
-      : preferences.correctnessIterationModeDefault
+      : preferences.correctnessIterationModeDefault,
+    uiMode,
+    attachmentsEnabled: preferences.attachmentsEnabled,
+    capabilities: preferences.capabilities
   };
 }
 
@@ -725,6 +808,7 @@ export function readLocalPreferences(): LocalPreferencesState {
   const correctnessIterationModeDefault = parseCorrectnessIterationModeStorageValue(
     window.localStorage.getItem(CORRECTNESS_ITERATION_MODE_DEFAULT_STORAGE_KEY)
   );
+  const uiMode = parseUiModeStorageValue(window.localStorage.getItem(UI_MODE_DEFAULT_STORAGE_KEY));
 
   return {
     openAiApiKey,
@@ -737,7 +821,8 @@ export function readLocalPreferences(): LocalPreferencesState {
     dirtyGitChangeLimitDefault,
     planExecutionModeDefault,
     planExecutionDelaySecondsDefault,
-    correctnessIterationModeDefault
+    correctnessIterationModeDefault,
+    uiMode
   };
 }
 
@@ -783,6 +868,7 @@ export function persistLocalPreferences(input: LocalPreferencesState) {
   persistStorageValue(PLAN_EXECUTION_MODE_DEFAULT_STORAGE_KEY, input.planExecutionModeDefault);
   persistIntegerStorageValue(PLAN_EXECUTION_DELAY_SECONDS_DEFAULT_STORAGE_KEY, input.planExecutionDelaySecondsDefault, 0, 300);
   persistStorageValue(CORRECTNESS_ITERATION_MODE_DEFAULT_STORAGE_KEY, input.correctnessIterationModeDefault);
+  persistStorageValue(UI_MODE_DEFAULT_STORAGE_KEY, input.uiMode);
 }
 
 function parseBooleanStorageValue(value: string | null) {
@@ -811,6 +897,10 @@ function parsePlanExecutionModeStorageValue(value: string | null) {
 
 function parseCorrectnessIterationModeStorageValue(value: string | null) {
   return value === "ask-before-iterate" || value === "auto-once" || value === "auto-until-clean" ? value : undefined;
+}
+
+function parseUiModeStorageValue(value: string | null) {
+  return value === "advanced" || value === "simple" ? value : undefined;
 }
 
 function parseBoundedIntegerStorageValue(value: string | null, min: number, max: number) {
@@ -936,6 +1026,26 @@ export function canSelectProviderBrand(state: HarnessViewState, providerBrand: P
 
 export function getDefaultExecutionModelIdForProvider(providerBrand: ProviderBrand) {
   return providerBrand === "gemini" ? "google/gemini-2.5-flash" : "openai/gpt-5.4";
+}
+
+export function getResolvedModes(state: HarnessViewState, project = getActiveProject(state)) {
+  return resolveModeCatalog(state.workspace.workspaceModes, project?.projectModes ?? []);
+}
+
+export function getActiveMode(state: HarnessViewState, project = getActiveProject(state)) {
+  return resolveModeById(project?.selectedModeId ?? DEFAULT_MODE_ID, state.workspace.workspaceModes, project?.projectModes ?? []);
+}
+
+export function getModelCapability(state: HarnessViewState, modelId: string | undefined): ModelCapability | undefined {
+  if (!modelId) {
+    return undefined;
+  }
+
+  return state.capabilities.flatMap((provider) => provider.models).find((model) => model.modelId === modelId);
+}
+
+export function getCapabilityTags(state: HarnessViewState, modelId: string | undefined) {
+  return getModelCapability(state, modelId)?.tags ?? [];
 }
 
 export function isModelIdForProvider(modelId: string | undefined, providerBrand: ProviderBrand) {

@@ -8,7 +8,8 @@ import {
   type ServerEvent,
   type WorkspaceProjectState
 } from "../../../shared/protocol";
-import { createInitialViewState, reduceServerEvent } from "../harness-store";
+import { defaultProviderCapabilities } from "../../../shared/capabilities";
+import { createInitialViewState, getActiveMode, getResolvedModes, reduceServerEvent } from "../harness-store";
 
 const defaultPreferences: PreferencesState = {
   hasUsableApiKey: false,
@@ -25,7 +26,10 @@ const defaultPreferences: PreferencesState = {
   dirtyGitChangeLimitDefault: 20,
   planExecutionModeDefault: "countdown",
   planExecutionDelaySecondsDefault: 10,
-  correctnessIterationModeDefault: "ask-before-iterate"
+  correctnessIterationModeDefault: "ask-before-iterate",
+  uiModeDefault: "simple",
+  attachmentsEnabled: true,
+  capabilities: [...defaultProviderCapabilities]
 };
 
 function createConnectedState(project?: WorkspaceProjectState) {
@@ -746,7 +750,10 @@ describe("harness store reducer", () => {
           dirtyGitChangeLimitDefault: 6,
           planExecutionModeDefault: "countdown",
           planExecutionDelaySecondsDefault: 10,
-          correctnessIterationModeDefault: "ask-before-iterate"
+          correctnessIterationModeDefault: "ask-before-iterate",
+          uiModeDefault: "simple",
+          attachmentsEnabled: true,
+          capabilities: [...defaultProviderCapabilities]
         }
       }
     });
@@ -759,6 +766,50 @@ describe("harness store reducer", () => {
     expect(nextState.tracePanelOpen).toBe(false);
     expect(nextState.blockChatOnDirtyGitDefault).toBe(false);
     expect(nextState.dirtyGitChangeLimitDefault).toBe(6);
+  });
+
+  test("uses server ui mode and capabilities when no local preference exists", () => {
+    const nextState = reduceServerEvent(createInitialViewState(), {
+      type: "connection.ready",
+      payload: {
+        agents: [{ id: "pi", label: "Pi" }],
+        workspace: {
+          projects: [],
+          activeProjectId: undefined,
+          workspaceModes: [],
+          workspaceRuleSource: undefined,
+          workspaceMemorySummary: undefined
+        },
+        preferences: {
+          ...defaultPreferences,
+          uiModeDefault: "advanced",
+          attachmentsEnabled: true,
+          capabilities: [
+            {
+              providerBrand: "gpt",
+              label: "OpenAI",
+              defaultPlanningModelId: "openai/gpt-5.4",
+              defaultExecutionModelId: "openai/gpt-5.4",
+              defaultSubagentModelId: "openai/gpt-5.4-mini",
+              models: [
+                {
+                  modelId: "openai/gpt-5.4",
+                  providerBrand: "gpt",
+                  label: "GPT 5.4",
+                  tags: ["tools", "long-context", "fast"],
+                  contextWindow: 256000,
+                  summary: "Primary model."
+                }
+              ]
+            }
+          ]
+        }
+      }
+    });
+
+    expect(nextState.uiMode).toBe("advanced");
+    expect(nextState.tracePanelOpen).toBe(true);
+    expect(nextState.capabilities[0]?.models[0]?.tags).toEqual(["tools", "long-context", "fast"]);
   });
 
   test("updates usable key state from preferences events", () => {
@@ -780,7 +831,10 @@ describe("harness store reducer", () => {
         dirtyGitChangeLimitDefault: 20,
         planExecutionModeDefault: "countdown",
         planExecutionDelaySecondsDefault: 10,
-        correctnessIterationModeDefault: "ask-before-iterate"
+        correctnessIterationModeDefault: "ask-before-iterate",
+        uiModeDefault: "simple",
+        attachmentsEnabled: true,
+        capabilities: [...defaultProviderCapabilities]
       }
     });
 
@@ -789,6 +843,95 @@ describe("harness store reducer", () => {
     expect(nextState.hasUsableOpenAiApiKey).toBe(true);
     expect(nextState.blockChatOnDirtyGitDefault).toBe(true);
     expect(nextState.dirtyGitChangeLimitDefault).toBe(20);
+  });
+
+  test("merges workspace and project context updates into active mode resolution", () => {
+    const project = createProject();
+    const connectedState = createConnectedState(project);
+
+    const workspaceUpdated = reduceServerEvent(connectedState, {
+      type: "workspace.updated",
+      requestId: "req-workspace-updated",
+      payload: {
+        workspace: {
+          ...connectedState.workspace,
+          workspaceModes: [
+            {
+              id: "ship-fast",
+              scope: "workspace",
+              label: "Ship Fast",
+              description: "Direct delivery mode.",
+              plannerPrompt: "Bias toward direct implementation.",
+              executionPrompt: "Implement smallest safe change.",
+              toolPolicy: "full-access",
+              updatedAt: new Date().toISOString()
+            }
+          ],
+          workspaceRuleSource: {
+            id: "workspace-rules",
+            scope: "workspace",
+            label: "Workspace Rules",
+            content: "Keep updates concise.",
+            updatedAt: new Date().toISOString()
+          },
+          workspaceMemorySummary: {
+            id: "workspace-memory",
+            scope: "workspace",
+            label: "Workspace Memory",
+            content: "User cares about fast iteration.",
+            updatedAt: new Date().toISOString(),
+            source: "user"
+          }
+        }
+      }
+    });
+
+    const projectUpdated = reduceServerEvent(workspaceUpdated, {
+      type: "project.updated",
+      requestId: "req-project-updated",
+      payload: {
+        projectId: project.id,
+        project: {
+          ...workspaceUpdated.workspace.projects[0]!,
+          selectedModeId: "focus-fix",
+          projectModes: [
+            {
+              id: "focus-fix",
+              scope: "project",
+              label: "Focus Fix",
+              description: "Small targeted repair mode.",
+              plannerPrompt: "Keep scope narrow.",
+              executionPrompt: "Touch smallest safe slice.",
+              toolPolicy: "read-heavy",
+              updatedAt: new Date().toISOString()
+            }
+          ],
+          projectRuleSource: {
+            id: "project-rules",
+            scope: "project",
+            label: "Project Rules",
+            content: "Stay inside selected package.",
+            updatedAt: new Date().toISOString()
+          },
+          threadMemorySummary: {
+            id: "thread-memory",
+            scope: "thread",
+            label: "Thread Memory",
+            content: "Current work is planner bugfix.",
+            updatedAt: new Date().toISOString(),
+            source: "generated"
+          }
+        }
+      }
+    });
+
+    expect(projectUpdated.workspace.workspaceRuleSource?.content).toBe("Keep updates concise.");
+    expect(projectUpdated.workspace.workspaceMemorySummary?.content).toBe("User cares about fast iteration.");
+    expect(projectUpdated.workspace.projects[0]?.projectRuleSource?.content).toBe("Stay inside selected package.");
+    expect(projectUpdated.workspace.projects[0]?.threadMemorySummary?.content).toBe("Current work is planner bugfix.");
+    expect(getResolvedModes(projectUpdated).map((mode) => mode.id)).toContain("ship-fast");
+    expect(getResolvedModes(projectUpdated).map((mode) => mode.id)).toContain("focus-fix");
+    expect(getActiveMode(projectUpdated)?.id).toBe("focus-fix");
   });
 });
 

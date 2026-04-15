@@ -1,9 +1,11 @@
 import { createRequestId, type ClientCommand } from "../../../shared/protocol";
 import { canSelectProviderBrand, harnessStore, persistLocalPreferences } from "../harness-store";
 import { pushToast } from "../toast-store";
+import { ModeEditorPanel } from "./mode-editor-panel";
 import { Button } from "./ui/button";
 import { Dialog } from "./ui/dialog";
 import { Input } from "./ui/input";
+import { Textarea } from "./ui/textarea";
 
 type PreferencesModalProps = {
   sendCommand: (command: ClientCommand) => void;
@@ -11,6 +13,11 @@ type PreferencesModalProps = {
 
 export function PreferencesModal(props: PreferencesModalProps) {
   const state = harnessStore.state;
+  let importInput: HTMLInputElement | undefined;
+
+  const workspaceModes = () => state.workspace.workspaceModes ?? [];
+  const workspaceRuleDraft = () => state.workspace.workspaceRuleSource?.content ?? "";
+  const workspaceMemoryDraft = () => state.workspace.workspaceMemorySummary?.content ?? "";
 
   function handleSave() {
     const openAiApiKey = state.openAiApiKeyDraft.trim() || undefined;
@@ -37,7 +44,8 @@ export function PreferencesModal(props: PreferencesModalProps) {
       dirtyGitChangeLimitDefault: state.dirtyGitChangeLimitDefault,
       planExecutionModeDefault: state.planExecutionModeDefault,
       planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
-      correctnessIterationModeDefault: state.correctnessIterationModeDefault
+      correctnessIterationModeDefault: state.correctnessIterationModeDefault,
+      uiMode: state.uiMode
     });
     harnessStore.commitLocalPreferences({
       openAiApiKey,
@@ -50,7 +58,8 @@ export function PreferencesModal(props: PreferencesModalProps) {
       dirtyGitChangeLimitDefault: state.dirtyGitChangeLimitDefault,
       planExecutionModeDefault: state.planExecutionModeDefault,
       planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
-      correctnessIterationModeDefault: state.correctnessIterationModeDefault
+      correctnessIterationModeDefault: state.correctnessIterationModeDefault,
+      uiMode: state.uiMode
     });
 
     props.sendCommand({
@@ -67,7 +76,8 @@ export function PreferencesModal(props: PreferencesModalProps) {
         dirtyGitChangeLimitDefault: state.dirtyGitChangeLimitDefault,
         planExecutionModeDefault: state.planExecutionModeDefault,
         planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
-        correctnessIterationModeDefault: state.correctnessIterationModeDefault
+        correctnessIterationModeDefault: state.correctnessIterationModeDefault,
+        uiModeDefault: state.uiMode
       }
     });
 
@@ -108,6 +118,95 @@ export function PreferencesModal(props: PreferencesModalProps) {
     });
   }
 
+  function handleExportPreferences() {
+    const payload = {
+      providerBrand: state.providerBrand,
+      debugEnabled: state.debugEnabled,
+      tracePanelDefaultOpen: state.tracePanelDefaultOpen,
+      subagentWorktreeStrategyDefault: state.subagentWorktreeStrategyDefault,
+      blockChatOnDirtyGitDefault: state.blockChatOnDirtyGitDefault,
+      dirtyGitChangeLimitDefault: state.dirtyGitChangeLimitDefault,
+      planExecutionModeDefault: state.planExecutionModeDefault,
+      planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
+      correctnessIterationModeDefault: state.correctnessIterationModeDefault,
+      uiMode: state.uiMode
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "pi-harness-preferences.json";
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function handleImportPreferences(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(await file.text()) as Partial<{
+        providerBrand: "gpt" | "gemini";
+        debugEnabled: boolean;
+        tracePanelDefaultOpen: boolean;
+        subagentWorktreeStrategyDefault: "same-worktree" | "separate-worktrees";
+        blockChatOnDirtyGitDefault: boolean;
+        dirtyGitChangeLimitDefault: number;
+        planExecutionModeDefault: "countdown" | "approve" | "immediate";
+        planExecutionDelaySecondsDefault: number;
+        correctnessIterationModeDefault: "ask-before-iterate" | "auto-once" | "auto-until-clean";
+        uiMode: "simple" | "advanced";
+      }>;
+
+      harnessStore.commitLocalPreferences({
+        providerBrand: parsed.providerBrand,
+        debugEnabled: parsed.debugEnabled,
+        tracePanelDefaultOpen: parsed.tracePanelDefaultOpen,
+        subagentWorktreeStrategyDefault: parsed.subagentWorktreeStrategyDefault,
+        blockChatOnDirtyGitDefault: parsed.blockChatOnDirtyGitDefault,
+        dirtyGitChangeLimitDefault: parsed.dirtyGitChangeLimitDefault,
+        planExecutionModeDefault: parsed.planExecutionModeDefault,
+        planExecutionDelaySecondsDefault: parsed.planExecutionDelaySecondsDefault,
+        correctnessIterationModeDefault: parsed.correctnessIterationModeDefault,
+        uiMode: parsed.uiMode
+      });
+      persistLocalPreferences({
+        openAiApiKey: state.openAiApiKeyDraft.trim() || undefined,
+        googleApiKey: state.googleApiKeyDraft.trim() || undefined,
+        providerBrand: parsed.providerBrand ?? state.providerBrand,
+        debugEnabled: parsed.debugEnabled ?? state.debugEnabled,
+        tracePanelDefaultOpen: parsed.tracePanelDefaultOpen ?? state.tracePanelDefaultOpen,
+        subagentWorktreeStrategyDefault: parsed.subagentWorktreeStrategyDefault ?? state.subagentWorktreeStrategyDefault,
+        blockChatOnDirtyGitDefault: parsed.blockChatOnDirtyGitDefault ?? state.blockChatOnDirtyGitDefault,
+        dirtyGitChangeLimitDefault: parsed.dirtyGitChangeLimitDefault ?? state.dirtyGitChangeLimitDefault,
+        planExecutionModeDefault: parsed.planExecutionModeDefault ?? state.planExecutionModeDefault,
+        planExecutionDelaySecondsDefault: parsed.planExecutionDelaySecondsDefault ?? state.planExecutionDelaySecondsDefault,
+        correctnessIterationModeDefault: parsed.correctnessIterationModeDefault ?? state.correctnessIterationModeDefault,
+        uiMode: parsed.uiMode ?? state.uiMode
+      });
+      pushToast("Preferences imported", "Local defaults updated. Save to sync machine-level defaults.");
+    } catch (error) {
+      pushToast("Import failed", error instanceof Error ? error.message : "Invalid JSON file.", "error");
+    } finally {
+      input.value = "";
+    }
+  }
+
+  function handleSaveWorkspaceContext() {
+    props.sendCommand({
+      type: "workspace.context.save",
+      requestId: createRequestId(),
+      payload: {
+        rulesContent: workspaceRuleDraft() || undefined,
+        memorySummaryContent: workspaceMemoryDraft() || undefined
+      }
+    });
+    pushToast("Workspace context saved", "Rules and workspace memory updated.");
+  }
+
   return (
     <Dialog
       open={state.preferencesModalOpen}
@@ -120,6 +219,12 @@ export function PreferencesModal(props: PreferencesModalProps) {
           <Button variant="ghost" onClick={() => harnessStore.closePreferencesModal()}>
             Dismiss
           </Button>
+          <Button variant="ghost" onClick={handleExportPreferences}>
+            Export prefs
+          </Button>
+          <Button variant="ghost" onClick={() => importInput?.click()}>
+            Import prefs
+          </Button>
           <Button variant="secondary" onClick={handleClearApiKey}>
             Clear keys
           </Button>
@@ -127,6 +232,7 @@ export function PreferencesModal(props: PreferencesModalProps) {
         </>
       }
     >
+      <input ref={importInput} type="file" accept="application/json" class="hidden" onChange={handleImportPreferences} />
       <div class="grid gap-3">
         <label class="space-y-2">
           <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">
@@ -178,6 +284,20 @@ export function PreferencesModal(props: PreferencesModalProps) {
         <p class="text-[0.675rem] leading-5 text-[color:var(--muted)]">
           Keys stored in browser storage and local workspace storage on this machine.
         </p>
+      </div>
+
+      <div class="grid gap-3 md:grid-cols-2">
+        <label class="space-y-2 rounded-[1.25rem] border border-[color:var(--border)] bg-white/55 px-4 py-3">
+          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">Default UI</span>
+          <select
+            class="flex h-9 w-full rounded-xl border border-[color:var(--border)] bg-white/70 px-3 py-2 text-[0.675rem] text-[color:var(--foreground)] shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-[color:var(--ring)]"
+            value={state.uiMode}
+            onInput={(event) => harnessStore.setUiMode(event.currentTarget.value as "simple" | "advanced")}
+          >
+            <option value="simple">Simple</option>
+            <option value="advanced">Advanced</option>
+          </select>
+        </label>
       </div>
 
       <div class="grid gap-3 md:grid-cols-2">
@@ -310,6 +430,109 @@ export function PreferencesModal(props: PreferencesModalProps) {
           </select>
         </label>
       </div>
+
+      <section class="grid gap-3 rounded-[1.25rem] border border-[color:var(--border)] bg-white/55 px-4 py-4">
+        <div class="flex items-center justify-between gap-3">
+          <div>
+            <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">Workspace context</div>
+            <div class="mt-1 text-[0.675rem] leading-5 text-[color:var(--muted)]">
+              Shared rules and memory apply before project-specific context.
+            </div>
+          </div>
+          <Button variant="secondary" onClick={handleSaveWorkspaceContext}>
+            Save workspace context
+          </Button>
+        </div>
+        <label class="space-y-2">
+          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">Workspace rules</span>
+          <Textarea
+            rows="5"
+            value={workspaceRuleDraft()}
+            onInput={(event) =>
+              harnessStore.applyServerEvent({
+                type: "workspace.updated",
+                requestId: "local-workspace-rules",
+                payload: {
+                  workspace: {
+                    ...state.workspace,
+                    projects: state.workspace.projects,
+                    workspaceModes: state.workspace.workspaceModes ?? [],
+                    workspaceRuleSource: event.currentTarget.value.trim()
+                      ? {
+                          id: "workspace-rules",
+                          scope: "workspace",
+                          label: "Workspace rules",
+                          content: event.currentTarget.value,
+                          updatedAt: new Date().toISOString()
+                        }
+                      : undefined,
+                    workspaceMemorySummary: state.workspace.workspaceMemorySummary,
+                    activeProjectId: state.workspace.activeProjectId
+                  }
+                }
+              })
+            }
+          />
+        </label>
+        <label class="space-y-2">
+          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">Workspace memory</span>
+          <Textarea
+            rows="5"
+            value={workspaceMemoryDraft()}
+            onInput={(event) =>
+              harnessStore.applyServerEvent({
+                type: "workspace.updated",
+                requestId: "local-workspace-memory",
+                payload: {
+                  workspace: {
+                    ...state.workspace,
+                    projects: state.workspace.projects,
+                    workspaceModes: state.workspace.workspaceModes ?? [],
+                    workspaceRuleSource: state.workspace.workspaceRuleSource,
+                    workspaceMemorySummary: event.currentTarget.value.trim()
+                      ? {
+                          id: "workspace-memory",
+                          scope: "workspace",
+                          label: "Workspace memory",
+                          content: event.currentTarget.value,
+                          updatedAt: new Date().toISOString(),
+                          source: "user"
+                        }
+                      : undefined,
+                    activeProjectId: state.workspace.activeProjectId
+                  }
+                }
+              })
+            }
+          />
+        </label>
+      </section>
+
+      <ModeEditorPanel
+        title="Workspace custom modes"
+        scope="workspace"
+        modes={workspaceModes()}
+        onSave={(mode) =>
+          props.sendCommand({
+            type: "mode.save",
+            requestId: createRequestId(),
+            payload: {
+              scope: "workspace",
+              mode
+            }
+          })
+        }
+        onDelete={(modeId) =>
+          props.sendCommand({
+            type: "mode.delete",
+            requestId: createRequestId(),
+            payload: {
+              scope: "workspace",
+              modeId
+            }
+          })
+        }
+      />
     </Dialog>
   );
 }

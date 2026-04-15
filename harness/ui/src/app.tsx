@@ -11,7 +11,7 @@ import { TracePanel } from "./components/trace-panel";
 import { ActionButton } from "./components/action-button";
 import { SheetContent, SheetRoot, SheetTrigger } from "./components/ui/sheet";
 import { connectHarnessWebSocket } from "./harness-websocket";
-import { canSelectProviderBrand, getActiveProject, harnessStore, persistLocalPreferences } from "./harness-store";
+import { canSelectProviderBrand, getActiveProject, getCapabilityTags, harnessStore, persistLocalPreferences } from "./harness-store";
 import { pushToast, reportUiError } from "./toast-store";
 
 export function App() {
@@ -44,6 +44,7 @@ export function App() {
 
   const state = harnessStore.state;
   const activeProject = () => getActiveProject(state);
+  const activeCapabilityTags = () => getCapabilityTags(state, activeProject()?.session.executionModelId);
   const activeThreadTitle = () =>
     activeProject()?.threads.find((thread) => thread.id === activeProject()?.activeThreadId)?.title ?? activeProject()?.activeThreadId;
   const sendCommand = (command: Parameters<NonNullable<typeof connection>["sendCommand"]>[0]) => {
@@ -73,7 +74,8 @@ export function App() {
       dirtyGitChangeLimitDefault: state.dirtyGitChangeLimitDefault,
       planExecutionModeDefault: state.planExecutionModeDefault,
       planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
-      correctnessIterationModeDefault: state.correctnessIterationModeDefault
+      correctnessIterationModeDefault: state.correctnessIterationModeDefault,
+      uiMode: state.uiMode
     });
 
     if (!connection) {
@@ -94,7 +96,8 @@ export function App() {
         dirtyGitChangeLimitDefault: state.dirtyGitChangeLimitDefault,
         planExecutionModeDefault: state.planExecutionModeDefault,
         planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
-        correctnessIterationModeDefault: state.correctnessIterationModeDefault
+        correctnessIterationModeDefault: state.correctnessIterationModeDefault,
+        uiModeDefault: state.uiMode
       }
     });
   };
@@ -127,8 +130,17 @@ export function App() {
               </div>
               <Show when={activeProject()}>
                 {(project) => (
-                  <div class="text-[0.675rem] text-[color:var(--foreground)]">
-                    {project().name} <span class="text-[color:var(--muted)]">| {activeThreadTitle()}</span>
+                  <div class="space-y-1">
+                    <div class="text-[0.675rem] text-[color:var(--foreground)]">
+                      {project().name} <span class="text-[color:var(--muted)]">| {activeThreadTitle()}</span>
+                    </div>
+                    <div class="flex flex-wrap gap-2">
+                      {activeCapabilityTags().map((tag) => (
+                        <span class="rounded-full border border-[color:var(--border)] bg-white/70 px-2 py-0.5 text-[0.55rem] font-semibold uppercase tracking-[0.12em] text-[color:var(--muted)]">
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
                   </div>
                 )}
               </Show>
@@ -137,6 +149,31 @@ export function App() {
 
           <div class="flex flex-wrap items-center gap-3">
             <ConnectionBanner />
+            <select
+              class="h-11 rounded-[1.1rem] border border-[color:var(--border)] bg-white/65 px-3 text-[0.675rem] font-semibold uppercase tracking-[0.16em] text-[color:var(--foreground)] shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-[color:var(--ring)]"
+              value={state.uiMode}
+              onInput={(event) => {
+                const uiMode = event.currentTarget.value as "simple" | "advanced";
+                harnessStore.setUiMode(uiMode);
+                persistLocalPreferences({
+                  openAiApiKey: state.openAiApiKeyDraft.trim() || undefined,
+                  googleApiKey: state.googleApiKeyDraft.trim() || undefined,
+                  providerBrand: state.providerBrand,
+                  debugEnabled: state.debugEnabled,
+                  tracePanelDefaultOpen: state.tracePanelDefaultOpen,
+                  subagentWorktreeStrategyDefault: state.subagentWorktreeStrategyDefault,
+                  blockChatOnDirtyGitDefault: state.blockChatOnDirtyGitDefault,
+                  dirtyGitChangeLimitDefault: state.dirtyGitChangeLimitDefault,
+                  planExecutionModeDefault: state.planExecutionModeDefault,
+                  planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
+                  correctnessIterationModeDefault: state.correctnessIterationModeDefault,
+                  uiMode
+                });
+              }}
+            >
+              <option value="simple">Simple</option>
+              <option value="advanced">Advanced</option>
+            </select>
             <select
               class="h-11 rounded-[1.1rem] border border-[color:var(--border)] bg-white/65 px-3 text-[0.675rem] font-semibold uppercase tracking-[0.16em] text-[color:var(--foreground)] shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-[color:var(--ring)]"
               value={state.providerBrand}
@@ -157,14 +194,16 @@ export function App() {
               ariaLabel="Open workspace preferences"
               onClick={() => harnessStore.openPreferencesModal()}
             />
-            <ActionButton
-              tooltip={state.tracePanelOpen ? "Hide developer trace panel" : "Show developer trace panel"}
-              icon={<PanelsTopLeft class="h-4 w-4" />}
-              variant="secondary"
-              onClick={() => harnessStore.toggleTracePanel()}
-            >
-              {state.tracePanelOpen ? "Hide trace" : "Show trace"}
-            </ActionButton>
+            <Show when={state.uiMode === "advanced"}>
+              <ActionButton
+                tooltip={state.tracePanelOpen ? "Hide developer trace panel" : "Show developer trace panel"}
+                icon={<PanelsTopLeft class="h-4 w-4" />}
+                variant="secondary"
+                onClick={() => harnessStore.toggleTracePanel()}
+              >
+                {state.tracePanelOpen ? "Hide trace" : "Show trace"}
+              </ActionButton>
+            </Show>
           </div>
         </header>
 

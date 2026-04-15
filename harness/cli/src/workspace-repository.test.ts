@@ -27,7 +27,10 @@ describe("workspace repository", () => {
 
     expect(repository.loadWorkspace()).toEqual({
       projects: [],
-      activeProjectId: undefined
+      activeProjectId: undefined,
+      workspaceModes: [],
+      workspaceRuleSource: undefined,
+      workspaceMemorySummary: undefined
     });
   });
 
@@ -70,7 +73,10 @@ describe("workspace repository", () => {
     expect(repository.removeProject(project.id).activeProjectId).toBeUndefined();
     expect(repository.loadWorkspace()).toEqual({
       projects: [],
-      activeProjectId: undefined
+      activeProjectId: undefined,
+      workspaceModes: [],
+      workspaceRuleSource: undefined,
+      workspaceMemorySummary: undefined
     });
   });
 
@@ -109,6 +115,95 @@ describe("workspace repository", () => {
     reloadedRepository.clearStoredGoogleApiKey();
     expect(reloadedRepository.getStoredOpenAiApiKey()).toBeUndefined();
     expect(reloadedRepository.getStoredGoogleApiKey()).toBeUndefined();
+  });
+
+  test("persists ui mode, workspace context, and workspace modes across reload", () => {
+    const repository = createRepository();
+
+    repository.setUiModeDefault("advanced");
+    repository.saveWorkspaceContext({
+      rulesContent: " Prefer plan-first work. ",
+      memorySummaryContent: " User likes concise updates. "
+    });
+    repository.saveMode("workspace", {
+      id: "ship-fast",
+      scope: "workspace",
+      label: "Ship Fast",
+      description: "Bias toward direct implementation.",
+      plannerPrompt: "Plan for direct delivery.",
+      executionPrompt: "Implement with minimal ceremony.",
+      toolPolicy: "full-access",
+      updatedAt: new Date().toISOString()
+    });
+
+    const reloadedRepository = new WorkspaceRepository((repository as any).dbPath, process.cwd());
+    const workspace = reloadedRepository.loadWorkspace();
+
+    expect(reloadedRepository.getUiModeDefault()).toBe("advanced");
+    expect(workspace.workspaceRuleSource?.content).toBe("Prefer plan-first work.");
+    expect(workspace.workspaceMemorySummary?.content).toBe("User likes concise updates.");
+    expect((workspace.workspaceModes ?? []).map((mode) => mode.id)).toContain("ship-fast");
+  });
+
+  test("persists project context, selected mode, and project modes across reload", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+
+    repository.saveMode("project", {
+      id: "focus-fix",
+      scope: "project",
+      label: "Focus Fix",
+      description: "Small targeted repair mode.",
+      plannerPrompt: "Keep scope narrow.",
+      executionPrompt: "Touch smallest safe slice.",
+      toolPolicy: "read-heavy",
+      planExecutionModeDefault: "approve",
+      updatedAt: new Date().toISOString()
+    }, project.id);
+    repository.setProjectSelectedMode(project.id, "focus-fix");
+    repository.saveProjectContext(project.id, {
+      rulesContent: " Stay inside selected package. ",
+      threadMemorySummaryContent: " Current bug around planner refinement. "
+    });
+
+    const reloadedRepository = new WorkspaceRepository((repository as any).dbPath, process.cwd());
+    const restoredProject = reloadedRepository.getProject(project.id);
+
+    expect(restoredProject.selectedModeId).toBe("focus-fix");
+    expect(restoredProject.projectRuleSource?.content).toBe("Stay inside selected package.");
+    expect(restoredProject.threadMemorySummary?.content).toBe("Current bug around planner refinement.");
+    expect((restoredProject.projectModes ?? []).map((mode) => mode.id)).toContain("focus-fix");
+
+    reloadedRepository.deleteMode("project", "focus-fix", project.id);
+    const afterDelete = reloadedRepository.getProject(project.id);
+    expect(afterDelete.selectedModeId).toBe("implement");
+    expect((afterDelete.projectModes ?? []).map((mode) => mode.id)).not.toContain("focus-fix");
+  });
+
+  test("persists message attachments across reload", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+
+    repository.appendMessage(project.id, "user", "Review attachment", {
+      attachments: [
+        {
+          id: "attachment-1",
+          kind: "text",
+          name: "spec.md",
+          mimeType: "text/markdown",
+          sizeBytes: 128,
+          url: "https://example.com/spec.md",
+          key: "spec-key",
+          uploadedAt: new Date().toISOString()
+        }
+      ]
+    });
+
+    const reloadedRepository = new WorkspaceRepository((repository as any).dbPath, process.cwd());
+    const restoredProject = reloadedRepository.getProject(project.id);
+
+    expect(restoredProject.session.messages[0]?.attachments?.[0]?.name).toBe("spec.md");
+    expect(restoredProject.session.messages[0]?.attachments?.[0]?.kind).toBe("text");
   });
 
   test("persists active run questions and resumable subtasks across reload", () => {
