@@ -13,6 +13,10 @@ Workspace state is split into two layers:
 - SQLite-backed persistent state for projects, active project selection, thread summaries, active thread selection, chat messages, agent runs, planning questions, and subtask progress
 - transient runtime state for traces, active stream buffers, abort controllers, local drafts, toast notifications, preflight warnings, and context meter snapshots
 
+Workspace can be empty.
+No synthetic default project is created at startup.
+When a known root is opened again, backend reuses project identity and creates a fresh active thread instead of rejecting the request.
+
 Each project is now a thread container, not a single transcript.
 Users can create blank threads or use `Pi fork` to branch from an existing transcript.
 Forking copies message history only.
@@ -43,6 +47,7 @@ Completed runs also persist enough state to remain retryable after success, refr
 Project and thread history persist locally in SQLite.
 Per-thread draft text persists in browser localStorage so in-progress input survives reload and thread switches.
 Planner traces and stream buffers stay transient for current process only.
+Development browser builds emit source maps, and swallowed UI command errors are rethrown after toast display during local debugging so mapped stacks stay visible.
 Before execution starts, the backend can run a dirty-git preflight.
 Small working tree drift surfaces as a warning while larger drift is rejected before the run begins.
 

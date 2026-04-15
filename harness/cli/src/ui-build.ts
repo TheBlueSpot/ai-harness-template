@@ -23,13 +23,13 @@ export async function buildUiBundle({ minify = false }: UiBuildOptions = {}) {
     outdir: uiOutDir,
     format: "iife",
     target: "browser",
-    sourcemap: minify ? "none" : "inline",
+    sourcemap: minify ? "none" : "external",
     minify,
     plugins: [
       SolidPlugin({
         generate: "dom",
         hydratable: false,
-        sourceMaps: !minify ? "inline" : false,
+        sourceMaps: !minify,
         debug: Bun.env.HARNESS_UI_DEBUG === "1"
       }),
       tailwindPlugin

@@ -8,7 +8,11 @@ export function SheetRoot(props: { open: boolean; onOpenChange: (open: boolean) 
 
 export function SheetTrigger(props: JSX.IntrinsicElements["button"]) {
   return (
-    <button {...props} type={props.type ?? "button"}>
+    <button
+      {...props}
+      class={cn("cursor-pointer disabled:cursor-not-allowed", props.class)}
+      type={props.type ?? "button"}
+    >
       {props.children}
     </button>
   );
@@ -33,7 +37,7 @@ export function SheetContent(props: {
         <div class="mb-4 flex items-center justify-between gap-3">
           <div class="text-xs font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">{props.title}</div>
           <button
-            class="inline-flex h-9 w-9 items-center justify-center rounded-lg text-[color:var(--foreground)] hover:bg-[color:var(--panel-strong)]"
+            class="inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg text-[color:var(--foreground)] transition hover:bg-[color:var(--panel-strong)] disabled:cursor-not-allowed"
             type="button"
             aria-label="Close sheet"
             onClick={() => props.onClose?.()}

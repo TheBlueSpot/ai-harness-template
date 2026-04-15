@@ -3,16 +3,60 @@ import {
   createEmptySession,
   createProjectId,
   createWorkspaceProjectState,
-  type ServerEvent
+  type PreferencesState,
+  type ServerEvent,
+  type WorkspaceProjectState
 } from "../../../shared/protocol";
 import { createInitialViewState, reduceServerEvent } from "../harness-store";
 
+const defaultPreferences: PreferencesState = {
+  hasUsableApiKey: false,
+  hasStoredApiKey: false,
+  hasUsableOpenAiApiKey: false,
+  hasStoredOpenAiApiKey: false,
+  hasUsableGoogleApiKey: false,
+  hasStoredGoogleApiKey: false,
+  providerBrand: "gpt",
+  debugEnabledDefault: false,
+  tracePanelDefaultOpen: true
+};
+
+function createConnectedState(project?: WorkspaceProjectState) {
+  return reduceServerEvent(createInitialViewState(), {
+    type: "connection.ready",
+    payload: {
+      agents: [{ id: "pi", label: "Pi" }],
+      workspace: {
+        projects: project ? [project] : [],
+        activeProjectId: project?.id
+      },
+      preferences: defaultPreferences
+    }
+  });
+}
+
+function createProject() {
+  return createWorkspaceProjectState({
+    id: createProjectId(),
+    name: "repo-one",
+    rootPath: "C:\\repo-one"
+  });
+}
+
 describe("harness store reducer", () => {
-  test("records plans and traces on active project without polluting messages", () => {
+  test("starts with empty workspace", () => {
     const initialState = createInitialViewState();
-    const projectId = initialState.workspace.activeProjectId;
-    const threadId = initialState.workspace.projects[0].activeThreadId;
-    const sessionId = initialState.workspace.projects[0].session.sessionId;
+
+    expect(initialState.workspace.projects).toHaveLength(0);
+    expect(initialState.workspace.activeProjectId).toBeUndefined();
+  });
+
+  test("records plans and traces on active project without polluting messages", () => {
+    const initialProject = createProject();
+    const initialState = createConnectedState(initialProject);
+    const projectId = initialProject.id;
+    const threadId = initialProject.activeThreadId;
+    const sessionId = initialProject.session.sessionId;
 
     const nextState = reduceServerEvent(initialState, {
       type: "agent.plan",
@@ -55,16 +99,17 @@ describe("harness store reducer", () => {
   });
 
   test("clears traces and plan on session reset", () => {
-    const initialState = createInitialViewState();
-    const projectId = initialState.workspace.activeProjectId;
+    const initialProject = createProject();
+    const initialState = createConnectedState(initialProject);
+    const projectId = initialProject.id;
     const stateWithTrace = reduceServerEvent(initialState, {
       type: "agent.trace",
       requestId: "req-2",
       payload: {
         projectId,
-        threadId: initialState.workspace.projects[0].activeThreadId,
+        threadId: initialProject.activeThreadId,
         trace: {
-          sessionId: initialState.workspace.projects[0].session.sessionId,
+          sessionId: initialProject.session.sessionId,
           stage: "planning",
           message: "Planning"
         }
@@ -89,9 +134,10 @@ describe("harness store reducer", () => {
   });
 
   test("stores streaming deltas until completion for matching project", () => {
-    const initialState = createInitialViewState();
-    const projectId = initialState.workspace.activeProjectId;
-    const threadId = initialState.workspace.projects[0].activeThreadId;
+    const initialProject = createProject();
+    const initialState = createConnectedState(initialProject);
+    const projectId = initialProject.id;
+    const threadId = initialProject.activeThreadId;
     const deltaState = reduceServerEvent(initialState, {
       type: "chat.delta",
       requestId: "req-4",
@@ -106,10 +152,10 @@ describe("harness store reducer", () => {
     const completeEvent: ServerEvent = {
       type: "chat.complete",
       requestId: "req-4",
-        payload: {
-          projectId,
-          threadId,
-          sessionId: threadId,
+      payload: {
+        projectId,
+        threadId,
+        sessionId: threadId,
         assistantMessage: {
           id: "assistant-1",
           role: "assistant",
@@ -139,9 +185,10 @@ describe("harness store reducer", () => {
   });
 
   test("appends chat messages without waiting for completion", () => {
-    const initialState = createInitialViewState();
-    const projectId = initialState.workspace.activeProjectId;
-    const threadId = initialState.workspace.projects[0].activeThreadId;
+    const initialProject = createProject();
+    const initialState = createConnectedState(initialProject);
+    const projectId = initialProject.id;
+    const threadId = initialProject.activeThreadId;
     const nextState = reduceServerEvent(initialState, {
       type: "chat.message-appended",
       requestId: "req-append",
@@ -175,9 +222,10 @@ describe("harness store reducer", () => {
   });
 
   test("hydrates active run and clears it", () => {
-    const initialState = createInitialViewState();
-    const projectId = initialState.workspace.activeProjectId;
-    const threadId = initialState.workspace.projects[0].activeThreadId;
+    const initialProject = createProject();
+    const initialState = createConnectedState(initialProject);
+    const projectId = initialProject.id;
+    const threadId = initialProject.activeThreadId;
     const stateWithRun = reduceServerEvent(initialState, {
       type: "run.updated",
       requestId: "req-run",
@@ -237,9 +285,10 @@ describe("harness store reducer", () => {
   });
 
   test("stores completed runs as lastRun but clears activeRun", () => {
-    const initialState = createInitialViewState();
-    const projectId = initialState.workspace.activeProjectId;
-    const threadId = initialState.workspace.projects[0].activeThreadId;
+    const initialProject = createProject();
+    const initialState = createConnectedState(initialProject);
+    const projectId = initialProject.id;
+    const threadId = initialProject.activeThreadId;
     const nextState = reduceServerEvent(initialState, {
       type: "run.updated",
       requestId: "req-run-complete",
@@ -268,14 +317,15 @@ describe("harness store reducer", () => {
   });
 
   test("stores transient preflight warning by project", () => {
-    const initialState = createInitialViewState();
-    const projectId = initialState.workspace.activeProjectId;
+    const initialProject = createProject();
+    const initialState = createConnectedState(initialProject);
+    const projectId = initialProject.id;
     const nextState = reduceServerEvent(initialState, {
       type: "run.preflight",
       requestId: "req-preflight",
       payload: {
         projectId,
-        threadId: initialState.workspace.projects[0].activeThreadId,
+        threadId: initialProject.activeThreadId,
         preflight: {
           severity: "warning",
           kind: "git-dirty",
@@ -289,14 +339,15 @@ describe("harness store reducer", () => {
   });
 
   test("stores project context usage snapshots", () => {
-    const initialState = createInitialViewState();
-    const projectId = initialState.workspace.activeProjectId;
+    const initialProject = createProject();
+    const initialState = createConnectedState(initialProject);
+    const projectId = initialProject.id;
     const nextState = reduceServerEvent(initialState, {
       type: "project.context",
       requestId: "req-context",
       payload: {
         projectId,
-        threadId: initialState.workspace.projects[0].activeThreadId,
+        threadId: initialProject.activeThreadId,
         contextUsage: {
           sourceKind: "planner",
           sourceLabel: "planner",
@@ -313,35 +364,50 @@ describe("harness store reducer", () => {
     expect(nextState.workspace.projects[0]?.contextUsage?.sourceKind).toBe("planner");
   });
 
-  test("adds project and activates it", () => {
+  test("opens project and activates it", () => {
     const initialState = createInitialViewState();
-    const projectId = createProjectId();
-    const nextProject = createWorkspaceProjectState({
-      id: projectId,
-      name: "repo-two",
-      rootPath: "C:\\repo-two"
-    });
+    const project = createProject();
 
     const nextState = reduceServerEvent(initialState, {
-      type: "project.added",
+      type: "project.opened",
       requestId: "req-5",
       payload: {
-        project: nextProject,
-        activeProjectId: projectId
+        project,
+        activeProjectId: project.id,
+        resolution: "created-project"
       }
     });
 
-    expect(nextState.workspace.activeProjectId).toBe(projectId);
-    expect(nextState.workspace.projects.some((project) => project.id === projectId)).toBe(true);
+    expect(nextState.workspace.activeProjectId).toBe(project.id);
+    expect(nextState.workspace.projects.some((entry) => entry.id === project.id)).toBe(true);
+  });
+
+  test("removes last project and leaves empty workspace", () => {
+    const initialProject = createProject();
+    const initialState = createConnectedState(initialProject);
+
+    const nextState = reduceServerEvent(initialState, {
+      type: "project.removed",
+      requestId: "req-remove",
+      payload: {
+        projectId: initialProject.id,
+        activeProjectId: undefined
+      }
+    });
+
+    expect(nextState.workspace.projects).toHaveLength(0);
+    expect(nextState.workspace.activeProjectId).toBeUndefined();
   });
 
   test("applies server preference payload on connection ready", () => {
-    const initialState = createInitialViewState();
-    const nextState = reduceServerEvent(initialState, {
+    const nextState = reduceServerEvent(createInitialViewState(), {
       type: "connection.ready",
       payload: {
         agents: [{ id: "pi", label: "Pi" }],
-        workspace: initialState.workspace,
+        workspace: {
+          projects: [],
+          activeProjectId: undefined
+        },
         preferences: {
           hasUsableApiKey: true,
           hasStoredApiKey: true,
@@ -365,8 +431,7 @@ describe("harness store reducer", () => {
   });
 
   test("updates usable key state from preferences events", () => {
-    const initialState = createInitialViewState();
-    const nextState = reduceServerEvent(initialState, {
+    const nextState = reduceServerEvent(createInitialViewState(), {
       type: "preferences.saved",
       requestId: "req-6",
       payload: {

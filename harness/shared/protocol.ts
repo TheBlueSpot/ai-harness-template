@@ -257,11 +257,47 @@ export const workspaceProjectStateSchema = z.object({
   session: chatSessionStateSchema,
   activeRun: agentRunStateSchema.optional(),
   lastRun: agentRunStateSchema.optional()
+}).superRefine((project, ctx) => {
+  if (!project.threads.some((thread) => thread.id === project.activeThreadId)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Project activeThreadId must reference an existing thread",
+      path: ["activeThreadId"]
+    });
+  }
 });
 
 export const workspaceStateSchema = z.object({
-  projects: z.array(workspaceProjectStateSchema).min(1),
-  activeProjectId: projectIdSchema
+  projects: z.array(workspaceProjectStateSchema),
+  activeProjectId: projectIdSchema.optional()
+}).superRefine((workspace, ctx) => {
+  if (workspace.projects.length === 0) {
+    if (workspace.activeProjectId !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Workspace activeProjectId must be undefined when no projects exist",
+        path: ["activeProjectId"]
+      });
+    }
+    return;
+  }
+
+  if (!workspace.activeProjectId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Workspace activeProjectId is required when projects exist",
+      path: ["activeProjectId"]
+    });
+    return;
+  }
+
+  if (!workspace.projects.some((project) => project.id === workspace.activeProjectId)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Workspace activeProjectId must reference an existing project",
+      path: ["activeProjectId"]
+    });
+  }
 });
 
 export const clientCommandSchema = z.discriminatedUnion("type", [
@@ -437,11 +473,12 @@ export const serverEventSchema = z.discriminatedUnion("type", [
     })
   }),
   z.object({
-    type: z.literal("project.added"),
+    type: z.literal("project.opened"),
     requestId: requestIdSchema,
     payload: z.object({
       project: workspaceProjectStateSchema,
-      activeProjectId: projectIdSchema
+      activeProjectId: projectIdSchema,
+      resolution: z.enum(["created-project", "existing-project-new-thread"])
     })
   }),
   z.object({
@@ -449,7 +486,7 @@ export const serverEventSchema = z.discriminatedUnion("type", [
     requestId: requestIdSchema,
     payload: z.object({
       projectId: projectIdSchema,
-      activeProjectId: projectIdSchema
+      activeProjectId: projectIdSchema.optional()
     })
   }),
   z.object({

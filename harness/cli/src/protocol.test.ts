@@ -193,6 +193,78 @@ describe("planner result validation", () => {
     ).toBe("connection.ready");
   });
 
+  test("accepts empty workspace payload", () => {
+    expect(
+      parseServerEvent({
+        type: "connection.ready",
+        payload: {
+          agents: [{ id: "pi", label: "Pi" }],
+          workspace: {
+            projects: [],
+            activeProjectId: undefined
+          },
+          preferences: {
+            hasUsableApiKey: false,
+            hasStoredApiKey: false,
+            hasUsableOpenAiApiKey: false,
+            hasStoredOpenAiApiKey: false,
+            hasUsableGoogleApiKey: false,
+            hasStoredGoogleApiKey: false,
+            providerBrand: "gpt",
+            debugEnabledDefault: false,
+            tracePanelDefaultOpen: true
+          }
+        }
+      }).type
+    ).toBe("connection.ready");
+  });
+
+  test("accepts project.opened payload", () => {
+    expect(
+      parseServerEvent({
+        type: "project.opened",
+        requestId: "req-open",
+        payload: {
+          activeProjectId: "project-1",
+          resolution: "existing-project-new-thread",
+          project: {
+            id: "project-1",
+            name: "Example",
+            rootPath: "C:\\repo",
+            activeThreadId: "thread-2",
+            threads: [
+              {
+                id: "thread-1",
+                title: "Thread 1",
+                titleSource: "generated",
+                badgeState: "idle",
+                messageCount: 0,
+                updatedAt: new Date().toISOString()
+              },
+              {
+                id: "thread-2",
+                title: "Thread 2",
+                titleSource: "generated",
+                badgeState: "idle",
+                messageCount: 0,
+                updatedAt: new Date().toISOString()
+              }
+            ],
+            session: {
+              sessionId: "thread-2",
+              selectedAgentId: "pi",
+              executionModelId: "openai/gpt-5.4",
+              messages: [],
+              isStreaming: false
+            },
+            activeRun: undefined,
+            lastRun: undefined
+          }
+        }
+      }).type
+    ).toBe("project.opened");
+  });
+
   test("accepts planner question payloads", () => {
     expect(
       plannerResultSchema.parse({

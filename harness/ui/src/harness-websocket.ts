@@ -83,7 +83,9 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
       }
 
       if (parsed.type === "chat.error") {
-        reportUiError(parsed.payload.detail ?? parsed.payload.message, parsed.payload.message, parsed.payload.projectId);
+        reportUiError(parsed.payload.detail ?? parsed.payload.message, parsed.payload.message, {
+          projectId: parsed.payload.projectId
+        });
       }
 
       if (parsed.type === "run.preflight") {
@@ -91,7 +93,9 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
       }
 
       if (parsed.type === "command.rejected") {
-        reportUiError(parsed.payload.detail ?? parsed.payload.message, parsed.payload.message);
+        reportUiError(parsed.payload.detail ?? parsed.payload.message, parsed.payload.message, {
+          rethrow: "dev-only"
+        });
       }
 
       if (parsed.type === "run.updated" && previousRun?.status !== parsed.payload.run.status) {
@@ -112,7 +116,7 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
         "error",
         error instanceof Error ? error.message : "Invalid server event"
       );
-      reportUiError(error, "Invalid server event");
+      reportUiError(error, "Invalid server event", { rethrow: "dev-only" });
     }
   });
 
@@ -129,7 +133,7 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
     sendCommand(command) {
       if (socket.readyState !== WebSocket.OPEN) {
         const error = new Error("Websocket is not connected");
-        reportUiError(error, "Command send failed");
+        reportUiError(error, "Command send failed", { rethrow: "dev-only" });
         throw error;
       }
 

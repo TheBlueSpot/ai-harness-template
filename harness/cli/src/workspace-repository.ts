@@ -114,20 +114,29 @@ type AgentRunSubtaskRow = {
   updated_at: string;
 };
 
+type OpenProjectResult = {
+  project: WorkspaceProjectState;
+  resolution: "created-project" | "existing-project-new-thread";
+};
+
 export class WorkspaceRepository {
   private readonly db: Database;
   private readonly dbPath: string;
   private readonly allowDevThreadRecovery: boolean;
 
-  constructor(dbPath?: string, defaultRootPath: string = process.cwd()) {
+  constructor(dbPath?: string, _defaultRootPath: string = process.cwd()) {
     this.dbPath = dbPath ?? path.join(process.cwd(), ".local", "harness.db");
     this.allowDevThreadRecovery = Bun.env.NODE_ENV !== "production";
     mkdirSync(path.dirname(this.dbPath), { recursive: true });
     this.db = new Database(this.dbPath, { create: true, strict: true });
-    this.db.exec("PRAGMA foreign_keys = ON;");
-    this.db.exec("PRAGMA journal_mode = WAL;");
-    this.migrate();
-    this.bootstrapDefaultProject(defaultRootPath);
+    try {
+      this.db.exec("PRAGMA foreign_keys = ON;");
+      this.db.exec("PRAGMA journal_mode = WAL;");
+      this.migrate();
+    } catch (error) {
+      this.db.close(false);
+      throw error;
+    }
   }
 
   loadWorkspace(): WorkspaceState {
@@ -138,10 +147,6 @@ export class WorkspaceRepository {
          ORDER BY last_opened_at DESC, created_at ASC`
       )
       .all();
-
-    if (projectRows.length === 0) {
-      throw new Error("Workspace bootstrap failed: no projects found");
-    }
 
     const activeProjectId = this.resolveActiveProjectId(projectRows.map((project) => project.id as ProjectId));
     return {
@@ -191,6 +196,31 @@ export class WorkspaceRepository {
     return this.readProjectSnapshot(projectId);
   }
 
+  openProject(rootPath: string): OpenProjectResult {
+    const normalizedRootPath = normalizeProjectRootPath(rootPath);
+    ensureDirectoryExists(normalizedRootPath);
+
+    const existingProject = this.db
+      .query<ProjectRow, [string]>(
+        `SELECT id, name, root_path, active_thread_id, created_at, updated_at, last_opened_at
+         FROM projects
+         WHERE root_path = ?1`
+      )
+      .get(normalizedRootPath);
+
+    if (!existingProject) {
+      return {
+        project: this.addProject(normalizedRootPath),
+        resolution: "created-project"
+      };
+    }
+
+    return {
+      project: this.createThread(existingProject.id as ProjectId),
+      resolution: "existing-project-new-thread"
+    };
+  }
+
   activateProject(projectId: ProjectId) {
     this.assertProjectExists(projectId);
     const now = new Date().toISOString();
@@ -198,21 +228,20 @@ export class WorkspaceRepository {
     this.setWorkspaceMetaValue(ACTIVE_PROJECT_KEY, projectId);
   }
 
-  removeProject(projectId: ProjectId): { activeProjectId: ProjectId } {
+  removeProject(projectId: ProjectId): { activeProjectId?: ProjectId } {
     this.assertProjectExists(projectId);
     const remainingProjectIds = this.db
       .query<{ id: string }, [string]>(`SELECT id FROM projects WHERE id != ?1 ORDER BY last_opened_at DESC, created_at ASC`)
       .all(projectId)
       .map((project) => project.id as ProjectId);
-
-    if (remainingProjectIds.length === 0) {
-      throw new Error("At least one project must remain");
-    }
-
     const nextActiveProjectId = remainingProjectIds[0];
     const tx = this.db.transaction(() => {
       this.db.query(`DELETE FROM projects WHERE id = ?1`).run(projectId);
-      this.setWorkspaceMetaValue(ACTIVE_PROJECT_KEY, nextActiveProjectId);
+      if (nextActiveProjectId) {
+        this.setWorkspaceMetaValue(ACTIVE_PROJECT_KEY, nextActiveProjectId);
+      } else {
+        this.deleteWorkspaceMetaValue(ACTIVE_PROJECT_KEY);
+      }
     });
     tx();
 
@@ -648,37 +677,6 @@ export class WorkspaceRepository {
     this.setWorkspaceMetaValue(TRACE_PANEL_DEFAULT_OPEN_KEY, String(tracePanelDefaultOpen));
   }
 
-  private bootstrapDefaultProject(defaultRootPath: string) {
-    const count = this.db.query<{ count: number }, []>(`SELECT COUNT(*) AS count FROM projects`).get()?.count ?? 0;
-    if (count > 0) {
-      return;
-    }
-
-    const normalizedRootPath = normalizeProjectRootPath(defaultRootPath);
-    ensureDirectoryExists(normalizedRootPath);
-
-    const now = new Date().toISOString();
-    const projectId = createProjectId();
-    const threadId = createThreadId();
-    const projectName = path.basename(normalizedRootPath);
-
-    const tx = this.db.transaction(() => {
-      this.db
-        .query(
-          `INSERT INTO projects (id, name, root_path, active_thread_id, created_at, updated_at, last_opened_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?5)`
-        )
-        .run(projectId, projectName, normalizedRootPath, threadId, now);
-      this.insertThread(projectId, threadId, {
-        title: "Thread 1",
-        titleSource: "generated",
-        updatedAt: now
-      });
-      this.db.query(`INSERT INTO workspace_meta (key, value) VALUES (?1, ?2)`).run(ACTIVE_PROJECT_KEY, projectId);
-    });
-    tx();
-  }
-
   private migrate() {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS projects (
@@ -944,7 +942,7 @@ export class WorkspaceRepository {
           messageCount,
           lastMessagePreview: preview ? summarizeMessagePreview(preview) : undefined,
           updatedAt: thread.updated_at,
-          forkedFromThreadId: thread.forked_from_thread_id as ThreadId | undefined
+          forkedFromThreadId: (thread.forked_from_thread_id ?? undefined) as ThreadId | undefined
         });
       } catch (error) {
         throw new ThreadLoadError(projectId, thread.id as ThreadId, error);
@@ -991,6 +989,11 @@ export class WorkspaceRepository {
   }
 
   private resolveActiveProjectId(projectIds: ProjectId[]) {
+    if (projectIds.length === 0) {
+      this.deleteWorkspaceMetaValue(ACTIVE_PROJECT_KEY);
+      return undefined;
+    }
+
     const activeProjectId = this.db
       .query<{ value: string }, [string]>(`SELECT value FROM workspace_meta WHERE key = ?1`)
       .get(ACTIVE_PROJECT_KEY)?.value as ProjectId | undefined;
@@ -1000,7 +1003,7 @@ export class WorkspaceRepository {
     }
 
     const fallbackProjectId = projectIds[0];
-    this.activateProject(fallbackProjectId);
+    this.setWorkspaceMetaValue(ACTIVE_PROJECT_KEY, fallbackProjectId);
     return fallbackProjectId;
   }
 

@@ -22,7 +22,7 @@ export function Toaster() {
                 </Show>
               </div>
               <button
-                class="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[color:var(--muted)] transition hover:bg-[color:var(--panel-strong)] hover:text-[color:var(--foreground)]"
+                class="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg text-[color:var(--muted)] transition hover:bg-[color:var(--panel-strong)] hover:text-[color:var(--foreground)] disabled:cursor-not-allowed"
                 type="button"
                 aria-label="Dismiss toast"
                 onClick={() => toastStore.dismiss(toast.id)}

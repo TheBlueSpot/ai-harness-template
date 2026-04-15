@@ -145,162 +145,170 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
       <Separator />
 
       <ScrollArea class="flex-1 min-h-0 pr-1">
-        <div class="space-y-3">
-          <For each={state.workspace.projects}>
-            {(project) => {
-              const isActiveProject = () => project.id === state.workspace.activeProjectId;
-              const disableProjectActions = () => project.session.isStreaming;
-              const removeDisabledReason = () => {
-                if (state.workspace.projects.length <= 1) {
-                  return "At least one project must remain";
-                }
-                return disableProjectActions() ? "Project is streaming" : undefined;
-              };
+        <Show
+          when={state.workspace.projects.length > 0}
+          fallback={
+            <div class="rounded-[1.5rem] border border-dashed border-[color:var(--border)] bg-white/40 p-5 text-[0.675rem] leading-5 text-[color:var(--muted)]">
+              No workspace roots yet. Add path or browse folder to start isolated project threads.
+            </div>
+          }
+        >
+          <div class="space-y-3">
+            <For each={state.workspace.projects}>
+              {(project) => {
+                const isActiveProject = () => project.id === state.workspace.activeProjectId;
+                const disableProjectActions = () => project.session.isStreaming;
+                const removeDisabledReason = () => (disableProjectActions() ? "Project is streaming" : undefined);
 
-              return (
-                <section
-                  class={`rounded-[1.4rem] border p-3 transition ${
-                    isActiveProject()
-                      ? "border-[color:var(--accent)] bg-[linear-gradient(135deg,rgba(15,118,110,0.18),rgba(255,255,255,0.9))] shadow-md"
-                      : "border-[color:var(--border)] bg-white/55"
-                  }`}
-                >
-                  <div class="flex items-start gap-2">
-                    <ActionButton
-                      tooltip={isActiveProject() ? `${project.name} is active` : `Switch to ${project.name}`}
-                      disabledReason="Project already active"
-                      disabled={isActiveProject()}
-                      icon={<Folder class="h-4 w-4" />}
-                      variant={isActiveProject() ? "secondary" : "ghost"}
-                      class="min-h-[2.75rem] flex-1 justify-start rounded-[1rem] px-3 py-2"
-                      onClick={() => handleActivateProject(project.id)}
-                    >
-                      <div class="min-w-0 text-left">
-                        <div class="truncate text-[0.675rem] font-semibold text-[color:var(--foreground)]">{project.name}</div>
-                        <div class="truncate text-[0.585rem] text-[color:var(--muted)]">
-                          {truncateMiddle(project.rootPath, props.compact ? 24 : 30)}
+                return (
+                  <section
+                    class={`rounded-[1.4rem] border p-3 transition ${
+                      isActiveProject()
+                        ? "border-[color:var(--accent)] bg-[linear-gradient(135deg,rgba(15,118,110,0.18),rgba(255,255,255,0.9))] shadow-md"
+                        : "border-[color:var(--border)] bg-white/55"
+                    }`}
+                  >
+                    <div class="flex items-start gap-2">
+                      <ActionButton
+                        tooltip={isActiveProject() ? `${project.name} is active` : `Switch to ${project.name}`}
+                        disabledReason="Project already active"
+                        disabled={isActiveProject()}
+                        icon={<Folder class="h-4 w-4" />}
+                        variant={isActiveProject() ? "secondary" : "ghost"}
+                        class="min-h-[2.75rem] flex-1 justify-start rounded-[1rem] px-3 py-2"
+                        onClick={() => handleActivateProject(project.id)}
+                      >
+                        <div class="min-w-0 text-left">
+                          <div class="truncate text-[0.675rem] font-semibold text-[color:var(--foreground)]">{project.name}</div>
+                          <div class="truncate text-[0.585rem] text-[color:var(--muted)]">
+                            {truncateMiddle(project.rootPath, props.compact ? 24 : 30)}
+                          </div>
+                          <div class="mt-1.5 flex flex-wrap gap-2 text-[0.6rem] uppercase tracking-[0.16em] text-[color:var(--muted)]">
+                            <span>{project.threads.length} threads</span>
+                            {project.session.isStreaming ? <span>streaming</span> : null}
+                            {isActiveProject() ? <span>active</span> : null}
+                          </div>
                         </div>
-                        <div class="mt-1.5 flex flex-wrap gap-2 text-[0.6rem] uppercase tracking-[0.16em] text-[color:var(--muted)]">
-                          <span>{project.threads.length} threads</span>
-                          {project.session.isStreaming ? <span>streaming</span> : null}
-                          {isActiveProject() ? <span>active</span> : null}
-                        </div>
-                      </div>
-                    </ActionButton>
+                      </ActionButton>
 
-                    <ActionButton
-                      tooltip={`Remove ${project.name}`}
-                      disabledReason={removeDisabledReason()}
-                      disabled={Boolean(removeDisabledReason())}
-                      icon={<Trash2 class="h-4 w-4" />}
-                      variant="ghost"
-                      size="icon"
-                      ariaLabel={`Remove ${project.name}`}
-                      onClick={() => handleRemoveProject(project.id)}
-                    />
-                  </div>
+                      <ActionButton
+                        tooltip={`Remove ${project.name}`}
+                        disabledReason={removeDisabledReason()}
+                        disabled={Boolean(removeDisabledReason())}
+                        icon={<Trash2 class="h-4 w-4" />}
+                        variant="ghost"
+                        size="icon"
+                        ariaLabel={`Remove ${project.name}`}
+                        onClick={() => handleRemoveProject(project.id)}
+                      />
+                    </div>
 
-                  <div class="mt-3 flex gap-2">
-                    <ActionButton
-                      tooltip="Create a new thread in this project"
-                      disabledReason="Project is streaming"
-                      disabled={disableProjectActions()}
-                      icon={<Plus class="h-4 w-4" />}
-                      variant="secondary"
-                      class="flex-1"
-                      onClick={() => handleCreateThread(project.id)}
-                    >
-                      New thread
-                    </ActionButton>
-                  </div>
+                    <div class="mt-3 flex gap-2">
+                      <ActionButton
+                        tooltip="Create a new thread in this project"
+                        disabledReason="Project is streaming"
+                        disabled={disableProjectActions()}
+                        icon={<Plus class="h-4 w-4" />}
+                        variant="secondary"
+                        class="flex-1"
+                        onClick={() => handleCreateThread(project.id)}
+                      >
+                        New thread
+                      </ActionButton>
+                    </div>
 
-                  <div class="mt-3 space-y-2">
-                    <For each={project.threads}>
-                      {(thread) => {
-                        const isActiveThread = () => project.activeThreadId === thread.id;
-                        const isEditing = () => editingThreadId() === thread.id;
-                        const badgeStyle = badgeClass(thread.badgeState);
-                        return (
-                          <div class={`rounded-[1rem] border px-3 py-2 ${isActiveThread() ? "border-teal-500/50 bg-white/80" : "border-[color:var(--border)] bg-white/60"}`}>
-                            <div class="flex items-start justify-between gap-2">
-                              <button
-                                class="min-w-0 flex-1 text-left"
-                                disabled={isActiveThread() || disableProjectActions()}
-                                onClick={() => handleActivateThread(project.id, thread.id)}
-                              >
-                                <Show
-                                  when={isEditing()}
-                                  fallback={<div class="truncate text-[0.675rem] font-semibold text-[color:var(--foreground)]">{thread.title}</div>}
+                    <div class="mt-3 space-y-2">
+                      <For each={project.threads}>
+                        {(thread) => {
+                          const isActiveThread = () => project.activeThreadId === thread.id;
+                          const isEditing = () => editingThreadId() === thread.id;
+                          const badgeStyle = badgeClass(thread.badgeState);
+                          return (
+                            <div class={`rounded-[1rem] border px-3 py-2 ${isActiveThread() ? "border-teal-500/50 bg-white/80" : "border-[color:var(--border)] bg-white/60"}`}>
+                              <div class="flex items-start justify-between gap-2">
+                                <button
+                                  class="min-w-0 flex-1 cursor-pointer text-left disabled:cursor-not-allowed"
+                                  disabled={isActiveThread() || disableProjectActions()}
+                                  onClick={() => handleActivateThread(project.id, thread.id)}
                                 >
-                                  <Input
-                                    value={threadTitleDraft()}
-                                    onInput={(event: InputEvent & { currentTarget: HTMLInputElement; target: Element }) =>
-                                      setThreadTitleDraft(event.currentTarget.value)
-                                    }
-                                    onBlur={() => commitRename(project.id, thread.id)}
-                                    onKeyDown={(event) => {
-                                      if (event.key === "Enter") {
-                                        event.preventDefault();
-                                        commitRename(project.id, thread.id);
+                                  <Show
+                                    when={isEditing()}
+                                    fallback={<div class="truncate text-[0.675rem] font-semibold text-[color:var(--foreground)]">{thread.title}</div>}
+                                  >
+                                    <Input
+                                      value={threadTitleDraft()}
+                                      onInput={(event: InputEvent & { currentTarget: HTMLInputElement; target: Element }) =>
+                                        setThreadTitleDraft(event.currentTarget.value)
                                       }
-                                      if (event.key === "Escape") {
-                                        setEditingThreadId(undefined);
-                                      }
-                                    }}
-                                  />
-                                </Show>
-                                <div class="mt-1 flex flex-wrap items-center gap-2 text-[0.575rem] uppercase tracking-[0.14em] text-[color:var(--muted)]">
-                                  <Show when={thread.badgeState !== "idle"}>
-                                    <span class={`rounded-full px-2 py-0.5 ${badgeStyle}`}>{badgeLabel(thread.badgeState)}</span>
+                                      onBlur={() => commitRename(project.id, thread.id)}
+                                      onKeyDown={(event) => {
+                                        if (event.key === "Enter") {
+                                          event.preventDefault();
+                                          commitRename(project.id, thread.id);
+                                        }
+                                        if (event.key === "Escape") {
+                                          setEditingThreadId(undefined);
+                                        }
+                                      }}
+                                    />
                                   </Show>
-                                  <span>{thread.messageCount} msgs</span>
-                                  <Show when={thread.lastMessagePreview}>
-                                    <span class="normal-case tracking-normal text-[0.625rem]">{thread.lastMessagePreview}</span>
-                                  </Show>
-                                </div>
-                              </button>
+                                  <div class="mt-1 flex flex-wrap items-center gap-2 text-[0.575rem] uppercase tracking-[0.14em] text-[color:var(--muted)]">
+                                    <Show when={thread.badgeState !== "idle"}>
+                                      <span class={`rounded-full px-2 py-0.5 ${badgeStyle}`}>{badgeLabel(thread.badgeState)}</span>
+                                    </Show>
+                                    <span>{thread.messageCount} msgs</span>
+                                    <Show when={thread.lastMessagePreview}>
+                                      <span class="normal-case tracking-normal text-[0.625rem]">{thread.lastMessagePreview}</span>
+                                    </Show>
+                                  </div>
+                                </button>
 
-                              <div class="flex gap-1">
-                                <ActionButton
-                                  tooltip="Fork this thread"
-                                  disabledReason="Project is streaming"
-                                  disabled={disableProjectActions()}
-                                  icon={<GitFork class="h-3.5 w-3.5" />}
-                                  variant="ghost"
-                                  size="icon"
-                                  ariaLabel={`Fork ${thread.title}`}
-                                  onClick={() => handleForkThread(project.id, thread.id)}
-                                />
-                                <ActionButton
-                                  tooltip="Rename this thread"
-                                  disabledReason="Project is streaming"
-                                  disabled={disableProjectActions()}
-                                  icon={<Edit3 class="h-3.5 w-3.5" />}
-                                  variant="ghost"
-                                  size="icon"
-                                  ariaLabel={`Rename ${thread.title}`}
-                                  onClick={() => startRename(thread.id, thread.title)}
-                                />
+                                <div class="flex gap-1">
+                                  <ActionButton
+                                    tooltip="Fork this thread"
+                                    disabledReason="Project is streaming"
+                                    disabled={disableProjectActions()}
+                                    icon={<GitFork class="h-3.5 w-3.5" />}
+                                    variant="ghost"
+                                    size="icon"
+                                    ariaLabel={`Fork ${thread.title}`}
+                                    onClick={() => handleForkThread(project.id, thread.id)}
+                                  />
+                                  <ActionButton
+                                    tooltip="Rename this thread"
+                                    disabledReason="Project is streaming"
+                                    disabled={disableProjectActions()}
+                                    icon={<Edit3 class="h-3.5 w-3.5" />}
+                                    variant="ghost"
+                                    size="icon"
+                                    ariaLabel={`Rename ${thread.title}`}
+                                    onClick={() => startRename(thread.id, thread.title)}
+                                  />
+                                </div>
                               </div>
                             </div>
-                          </div>
-                        );
-                      }}
-                    </For>
-                  </div>
-                </section>
-              );
-            }}
-          </For>
-        </div>
+                          );
+                        }}
+                      </For>
+                    </div>
+                  </section>
+                );
+              }}
+            </For>
+          </div>
+        </Show>
       </ScrollArea>
 
-      <div class="rounded-[1.35rem] border border-[color:var(--border)] bg-white/45 px-4 py-3 text-[0.585rem] uppercase tracking-[0.16em] text-[color:var(--muted)]">
-        Active root
-        <div class="mt-2 break-all font-mono text-[0.675rem] normal-case tracking-normal text-[color:var(--foreground)]">
-          {activeProject().rootPath}
-        </div>
-      </div>
+      <Show when={activeProject()}>
+        {(project) => (
+          <div class="rounded-[1.35rem] border border-[color:var(--border)] bg-white/45 px-4 py-3 text-[0.585rem] uppercase tracking-[0.16em] text-[color:var(--muted)]">
+            Active root
+            <div class="mt-2 break-all font-mono text-[0.675rem] normal-case tracking-normal text-[color:var(--foreground)]">
+              {project().rootPath}
+            </div>
+          </div>
+        )}
+      </Show>
     </div>
   );
 }

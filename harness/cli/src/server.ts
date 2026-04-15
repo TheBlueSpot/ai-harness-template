@@ -117,6 +117,9 @@ export async function startHarnessServer({
         }
 
         void handleCommand(ws, command, runtime, repository, adapter, pickFolder).catch((error) => {
+          if (Bun.env.NODE_ENV !== "production") {
+            console.error(error);
+          }
           sendCommandRejected(
             ws,
             "Harness command failed",
@@ -166,15 +169,16 @@ async function handleCommand(
       return;
     }
     case "project.add": {
-      const project = repository.addProject(command.payload.rootPath);
-      runtime.upsertPersistedProject(project);
-      runtime.setActiveProject(project.id);
+      const result = repository.openProject(command.payload.rootPath);
+      runtime.upsertPersistedProject(result.project);
+      runtime.setActiveProject(result.project.id);
       sendEvent(ws, {
-        type: "project.added",
+        type: "project.opened",
         requestId: command.requestId,
         payload: {
-          project: runtime.getProject(project.id),
-          activeProjectId: runtime.getWorkspace().activeProjectId
+          project: runtime.getProject(result.project.id),
+          activeProjectId: runtime.getWorkspace().activeProjectId!,
+          resolution: result.resolution
         }
       });
       return;
@@ -185,15 +189,16 @@ async function handleCommand(
         return;
       }
 
-      const project = repository.addProject(selectedPath);
-      runtime.upsertPersistedProject(project);
-      runtime.setActiveProject(project.id);
+      const result = repository.openProject(selectedPath);
+      runtime.upsertPersistedProject(result.project);
+      runtime.setActiveProject(result.project.id);
       sendEvent(ws, {
-        type: "project.added",
+        type: "project.opened",
         requestId: command.requestId,
         payload: {
-          project: runtime.getProject(project.id),
-          activeProjectId: runtime.getWorkspace().activeProjectId
+          project: runtime.getProject(result.project.id),
+          activeProjectId: runtime.getWorkspace().activeProjectId!,
+          resolution: result.resolution
         }
       });
       return;

@@ -44,7 +44,7 @@ export function App() {
   const state = harnessStore.state;
   const activeProject = () => getActiveProject(state);
   const activeThreadTitle = () =>
-    activeProject().threads.find((thread) => thread.id === activeProject().activeThreadId)?.title ?? activeProject().activeThreadId;
+    activeProject()?.threads.find((thread) => thread.id === activeProject()?.activeThreadId)?.title ?? activeProject()?.activeThreadId;
   const sendCommand = (command: Parameters<NonNullable<typeof connection>["sendCommand"]>[0]) => {
     if (!connection) {
       pushToast("Connection unavailable", "Wait for workspace connection before sending commands.", "error");
@@ -112,9 +112,13 @@ export function App() {
                 <Workflow class="h-3.5 w-3.5" />
                 AI harness workspace
               </div>
-              <div class="text-[0.675rem] text-[color:var(--foreground)]">
-                {activeProject().name} <span class="text-[color:var(--muted)]">| {activeThreadTitle()}</span>
-              </div>
+              <Show when={activeProject()}>
+                {(project) => (
+                  <div class="text-[0.675rem] text-[color:var(--foreground)]">
+                    {project().name} <span class="text-[color:var(--muted)]">| {activeThreadTitle()}</span>
+                  </div>
+                )}
+              </Show>
             </div>
           </div>
 

@@ -25,7 +25,7 @@ Server responses are structured events that report:
 
 - readiness and workspace state
 - agent catalogs
-- project additions, removals, and activation changes
+- project open results, removals, and activation changes
 - thread creation, activation, and rename changes
 - planner summaries
 - developer trace updates
@@ -83,7 +83,7 @@ Thread management requests carry:
 Connection readiness reports:
 
 - full workspace snapshot
-- active project id
+- optional active project id when at least one project exists
 - active thread id per project
 - thread summary list per project
 - persisted active thread messages for each project
@@ -153,6 +153,10 @@ Project context events report:
 
 Folder browsing is backend-owned.
 The UI issues a typed browse request and the backend decides whether native folder selection is available.
+
+Project open results are unified.
+Opening new root reports created project.
+Opening known root reports same project plus new active thread.
 
 All payloads must be validated before they are processed.
 Invalid payloads are rejected immediately.

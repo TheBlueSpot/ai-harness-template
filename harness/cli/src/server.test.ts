@@ -266,8 +266,8 @@ describe("harness server", () => {
     const ready = await waitForEvent(socket, "connection.ready");
 
     expect(ready.payload.agents[0].id).toBe("pi");
-    expect(ready.payload.workspace.projects).toHaveLength(1);
-    expect(ready.payload.workspace.projects[0].session.messages).toHaveLength(0);
+    expect(ready.payload.workspace.projects).toHaveLength(0);
+    expect(ready.payload.workspace.activeProjectId).toBeUndefined();
     expect(ready.payload.preferences.hasUsableApiKey).toBe(false);
     expect(ready.payload.preferences.hasUsableOpenAiApiKey).toBe(false);
     expect(ready.payload.preferences.hasUsableGoogleApiKey).toBe(false);
@@ -339,9 +339,10 @@ describe("harness server", () => {
     adapter.setApiKey("google", "AIza-gemini-123");
 
     const socket = new WebSocket("ws://localhost:8790/ws");
-    const ready = await waitForEvent(socket, "connection.ready");
-    const projectId = ready.payload.workspace.activeProjectId;
-    const threadId = ready.payload.workspace.projects[0].activeThreadId;
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot);
+    const projectId = opened.payload.project.id;
+    const threadId = opened.payload.project.activeThreadId;
     const completePromise = waitForEvent(socket, "chat.complete");
 
     socket.send(
@@ -365,9 +366,10 @@ describe("harness server", () => {
 
   test("runs low difficulty tasks on the main executor only", async () => {
     const socket = new WebSocket("ws://localhost:8790/ws");
-    const ready = await waitForEvent(socket, "connection.ready");
-    const projectId = ready.payload.workspace.activeProjectId;
-    const threadId = ready.payload.workspace.projects[0].activeThreadId;
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot);
+    const projectId = opened.payload.project.id;
+    const threadId = opened.payload.project.activeThreadId;
     const completePromise = waitForEvent(socket, "chat.complete");
 
     socket.send(
@@ -392,9 +394,10 @@ describe("harness server", () => {
 
   test("runs high difficulty tasks with subagents and aggregation", async () => {
     const socket = new WebSocket("ws://localhost:8790/ws");
-    const ready = await waitForEvent(socket, "connection.ready");
-    const projectId = ready.payload.workspace.activeProjectId;
-    const threadId = ready.payload.workspace.projects[0].activeThreadId;
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot);
+    const projectId = opened.payload.project.id;
+    const threadId = opened.payload.project.activeThreadId;
     const planPromise = waitForEvent(socket, "agent.plan");
     const completePromise = waitForEvent(socket, "chat.complete");
 
@@ -429,9 +432,10 @@ describe("harness server", () => {
 
   test("asks planner question before execution and resumes after answer", async () => {
     const socket = new WebSocket("ws://localhost:8790/ws");
-    const ready = await waitForEvent(socket, "connection.ready");
-    const projectId = ready.payload.workspace.activeProjectId;
-    const threadId = ready.payload.workspace.projects[0].activeThreadId;
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot);
+    const projectId = opened.payload.project.id;
+    const threadId = opened.payload.project.activeThreadId;
     const runPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "awaiting-user-input");
     const questionMessagePromise = waitForEvent(
       socket,
@@ -483,9 +487,10 @@ describe("harness server", () => {
 
   test("keeps partial result resumable and persists completed commit metadata", async () => {
     const socket = new WebSocket("ws://localhost:8790/ws");
-    const ready = await waitForEvent(socket, "connection.ready");
-    const projectId = ready.payload.workspace.activeProjectId;
-    const threadId = ready.payload.workspace.projects[0].activeThreadId;
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot);
+    const projectId = opened.payload.project.id;
+    const threadId = opened.payload.project.activeThreadId;
     const partialRunPromise = waitForEvent(
       socket,
       "run.updated",
@@ -521,9 +526,10 @@ describe("harness server", () => {
 
   test("chat.stop aborts running work", async () => {
     const socket = new WebSocket("ws://localhost:8790/ws");
-    const ready = await waitForEvent(socket, "connection.ready");
-    const projectId = ready.payload.workspace.activeProjectId;
-    const threadId = ready.payload.workspace.projects[0].activeThreadId;
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot);
+    const projectId = opened.payload.project.id;
+    const threadId = opened.payload.project.activeThreadId;
     const planPromise = waitForEvent(socket, "agent.plan");
 
     socket.send(
@@ -558,10 +564,10 @@ describe("harness server", () => {
     socket.close();
   });
 
-  test("adds project through typed folder browse command", async () => {
+  test("opens project through typed folder browse command", async () => {
     const socket = new WebSocket("ws://localhost:8790/ws");
     await waitForEvent(socket, "connection.ready");
-    const addedPromise = waitForEvent(socket, "project.added");
+    const addedPromise = waitForEvent(socket, "project.opened");
 
     socket.send(
       JSON.stringify({
@@ -573,14 +579,56 @@ describe("harness server", () => {
     const added = await addedPromise;
     expect(added.payload.project.rootPath).toBe(extraProjectRoot);
     expect(added.payload.activeProjectId).toBe(added.payload.project.id);
+    expect(added.payload.resolution).toBe("created-project");
+    socket.close();
+  });
+
+  test("reopens existing project by creating a new thread", async () => {
+    const socket = new WebSocket("ws://localhost:8790/ws");
+    await waitForEvent(socket, "connection.ready");
+    const firstOpened = await openProject(socket, projectRoot, "req-open-existing-1");
+    const secondOpened = await openProject(socket, projectRoot, "req-open-existing-2");
+
+    expect(firstOpened.payload.resolution).toBe("created-project");
+    expect(secondOpened.payload.resolution).toBe("existing-project-new-thread");
+    expect(secondOpened.payload.project.id).toBe(firstOpened.payload.project.id);
+    expect(secondOpened.payload.project.threads).toHaveLength(2);
+    expect(secondOpened.payload.project.activeThreadId).not.toBe(firstOpened.payload.project.activeThreadId);
+    socket.close();
+  });
+
+  test("removes final project and returns to empty workspace", async () => {
+    const socket = new WebSocket("ws://localhost:8790/ws");
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot, "req-remove-open");
+    const removedPromise = waitForEvent(socket, "project.removed");
+
+    socket.send(
+      JSON.stringify({
+        type: "project.remove",
+        requestId: "req-remove-last",
+        payload: {
+          projectId: opened.payload.project.id
+        }
+      })
+    );
+
+    const removed = await removedPromise;
+    expect(removed.payload.projectId).toBe(opened.payload.project.id);
+    expect(removed.payload.activeProjectId).toBeUndefined();
+    expect(repository.loadWorkspace()).toEqual({
+      projects: [],
+      activeProjectId: undefined
+    });
     socket.close();
   });
 
   test("restores persisted chat history after restart", async () => {
     const socket = new WebSocket("ws://localhost:8790/ws");
-    const ready = await waitForEvent(socket, "connection.ready");
-    const projectId = ready.payload.workspace.activeProjectId;
-    const threadId = ready.payload.workspace.projects[0].activeThreadId;
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot);
+    const projectId = opened.payload.project.id;
+    const threadId = opened.payload.project.activeThreadId;
     const completePromise = waitForEvent(socket, "chat.complete");
 
     socket.send(
@@ -622,9 +670,10 @@ describe("harness server", () => {
   test("emits dirty git warning and still runs when change count is within threshold", async () => {
     writeFileSync(path.join(projectRoot, "dirty-warning.txt"), "warn\n");
     const socket = new WebSocket("ws://localhost:8790/ws");
-    const ready = await waitForEvent(socket, "connection.ready");
-    const projectId = ready.payload.workspace.activeProjectId;
-    const threadId = ready.payload.workspace.projects[0].activeThreadId;
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot);
+    const projectId = opened.payload.project.id;
+    const threadId = opened.payload.project.activeThreadId;
     const preflightPromise = waitForEvent(socket, "run.preflight");
     const completePromise = waitForEvent(socket, "chat.complete");
 
@@ -654,9 +703,10 @@ describe("harness server", () => {
     }
 
     const socket = new WebSocket("ws://localhost:8790/ws");
-    const ready = await waitForEvent(socket, "connection.ready");
-    const projectId = ready.payload.workspace.activeProjectId;
-    const threadId = ready.payload.workspace.projects[0].activeThreadId;
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot);
+    const projectId = opened.payload.project.id;
+    const threadId = opened.payload.project.activeThreadId;
     const rejectedPromise = waitForEvent(socket, "command.rejected");
 
     socket.send(
@@ -679,9 +729,10 @@ describe("harness server", () => {
 
   test("retries completed main run with a fresh planner + executor pass", async () => {
     const socket = new WebSocket("ws://localhost:8790/ws");
-    const ready = await waitForEvent(socket, "connection.ready");
-    const projectId = ready.payload.workspace.activeProjectId;
-    const threadId = ready.payload.workspace.projects[0].activeThreadId;
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot);
+    const projectId = opened.payload.project.id;
+    const threadId = opened.payload.project.activeThreadId;
     const firstCompletePromise = waitForEvent(socket, "chat.complete");
     const firstRunPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "completed");
 
@@ -721,9 +772,10 @@ describe("harness server", () => {
 
   test("retries a selected subagent and re-aggregates", async () => {
     const socket = new WebSocket("ws://localhost:8790/ws");
-    const ready = await waitForEvent(socket, "connection.ready");
-    const projectId = ready.payload.workspace.activeProjectId;
-    const threadId = ready.payload.workspace.projects[0].activeThreadId;
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot);
+    const projectId = opened.payload.project.id;
+    const threadId = opened.payload.project.activeThreadId;
     const partialRunPromise = waitForEvent(
       socket,
       "run.updated",
@@ -771,9 +823,10 @@ describe("harness server", () => {
 
   test("emits project context usage updates for planner and executor", async () => {
     const socket = new WebSocket("ws://localhost:8790/ws");
-    const ready = await waitForEvent(socket, "connection.ready");
-    const projectId = ready.payload.workspace.activeProjectId;
-    const threadId = ready.payload.workspace.projects[0].activeThreadId;
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot);
+    const projectId = opened.payload.project.id;
+    const threadId = opened.payload.project.activeThreadId;
     const contextEvents: any[] = [];
     const listener = (event: MessageEvent) => {
       const payload = JSON.parse(event.data as string);
@@ -852,6 +905,20 @@ function runSync(command: string[], cwd: string) {
       `${command.join(" ")} failed: ${(new TextDecoder().decode(proc.stderr) || new TextDecoder().decode(proc.stdout)).trim()}`
     );
   }
+}
+
+function openProject(socket: WebSocket, rootPath: string, requestId: string = `req-open-${crypto.randomUUID()}`) {
+  const openedPromise = waitForEvent(socket, "project.opened");
+  socket.send(
+    JSON.stringify({
+      type: "project.add",
+      requestId,
+      payload: {
+        rootPath
+      }
+    })
+  );
+  return openedPromise;
 }
 
 function waitForEvent(socket: WebSocket, type: string, predicate?: (payload: any) => boolean, timeoutMs: number = 5000) {

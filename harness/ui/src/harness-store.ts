@@ -3,9 +3,6 @@ import { defaultAgentCatalog } from "../../shared/agent-catalog";
 import {
   type AgentPlan,
   type AgentTrace,
-  createEmptySession,
-  createProjectId,
-  createProjectThreadSummary,
   type ProjectContextUsage,
   type ProviderBrand,
   type AgentOption,
@@ -34,7 +31,7 @@ export type ViewProjectState = WorkspaceProjectState & {
 };
 
 export type ViewWorkspaceState = {
-  activeProjectId: string;
+  activeProjectId?: string;
   projects: ViewProjectState[];
 };
 
@@ -76,34 +73,9 @@ export type LocalPreferencesState = {
 };
 
 export function createInitialWorkspaceState(): ViewWorkspaceState {
-  const initialProjectId = createProjectId();
-  const initialThreadId = crypto.randomUUID();
   return {
-    activeProjectId: initialProjectId,
-    projects: [
-      {
-        id: initialProjectId,
-        name: "Loading workspace",
-        rootPath: "C:\\loading",
-        activeThreadId: initialThreadId,
-        threads: [
-          createProjectThreadSummary({
-            id: initialThreadId,
-            title: "Thread 1",
-            titleSource: "generated",
-            updatedAt: new Date().toISOString()
-          })
-        ],
-        session: createEmptySession(initialThreadId),
-        activeRun: undefined,
-        lastRun: undefined,
-        contextUsage: undefined,
-        traces: [],
-        streamingAssistantText: "",
-        draft: "",
-        lastError: undefined
-      }
-    ]
+    activeProjectId: undefined,
+    projects: []
   };
 }
 
@@ -139,10 +111,7 @@ export function createInitialViewState(): HarnessViewState {
 }
 
 export function getActiveProject(state: HarnessViewState) {
-  return (
-    state.workspace.projects.find((project) => project.id === state.workspace.activeProjectId) ??
-    state.workspace.projects[0]
-  );
+  return state.workspace.projects.find((project) => project.id === state.workspace.activeProjectId);
 }
 
 export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): HarnessViewState {
@@ -160,7 +129,7 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
         ...state,
         availableAgents: [...event.payload.agents]
       };
-    case "project.added":
+    case "project.opened":
       return {
         ...state,
         projectInput: "",
@@ -459,6 +428,10 @@ function updateProjectState(
   projectId: string,
   updater: (project: ViewProjectState) => ViewProjectState
 ): HarnessViewState {
+  if (!state.workspace.projects.some((project) => project.id === projectId)) {
+    return state;
+  }
+
   return {
     ...state,
     workspace: {
@@ -716,6 +689,15 @@ function isProviderBrandSelectable(
 
 export function hasUsableApiKeyForProvider(state: HarnessViewState, providerBrand: ProviderBrand) {
   return providerBrand === "gemini" ? state.hasUsableGoogleApiKey : state.hasUsableOpenAiApiKey;
+}
+
+export function requireActiveProject(state: HarnessViewState) {
+  const project = getActiveProject(state);
+  if (!project) {
+    throw new Error("No active project");
+  }
+
+  return project;
 }
 
 export function canSelectProviderBrand(state: HarnessViewState, providerBrand: ProviderBrand) {

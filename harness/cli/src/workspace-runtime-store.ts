@@ -24,7 +24,7 @@ type RuntimeProjectRecord = {
 
 export class WorkspaceRuntimeStore {
   private readonly projects = new Map<ProjectId, RuntimeProjectRecord>();
-  private activeProjectId: ProjectId;
+  private activeProjectId?: ProjectId;
 
   constructor(workspace: WorkspaceState) {
     for (const project of workspace.projects) {
@@ -62,7 +62,7 @@ export class WorkspaceRuntimeStore {
     });
   }
 
-  removeProject(projectId: ProjectId, activeProjectId: ProjectId) {
+  removeProject(projectId: ProjectId, activeProjectId?: ProjectId) {
     this.projects.delete(projectId);
     this.activeProjectId = activeProjectId;
   }

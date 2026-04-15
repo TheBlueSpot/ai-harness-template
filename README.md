@@ -6,6 +6,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 
 - A same-origin web app and websocket server started through Bun
 - A multi-project workspace where each project root keeps its own local chat history and multiple switchable threads
+- Empty workspace startup with no synthetic default project
 - A single public agent profile, `pi`
 - Brand-aware defaults for GPT or Gemini execution
 - Gemini planning defaults to `google/gemini-3-flash-preview`
@@ -22,8 +23,10 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 ## Workspace Model
 
 - Each project maps to a validated local folder path
+- Workspaces can start empty and return to empty after removing the final project
 - Each project keeps multiple named threads and one selected active thread
 - `New thread` creates blank thread in same project and switches to it immediately
+- Reopening an already-known project root creates and activates a fresh thread instead of rejecting the action
 - `Pi fork` clones only source transcript into new thread and leaves run state, traces, errors, and drafts behind
 - Thread titles auto-generate from first user message until user renames them
 - Thread badges summarize status: purple `User Input`, orange `Planning`, yellow `Executing`, red `Error`, green `Done`
@@ -36,6 +39,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - Preflight warnings, context meter snapshots, and chat status cards remain transient runtime state
 - In development, malformed legacy thread rows are pruned during migration/load recovery instead of blocking workspace startup
 - Folder browse uses a typed backend bridge; websocket payloads never carry raw shell commands
+- Project open flows resolve through one typed result path whether root is new or already known
 
 ## UI Stack
 
@@ -51,8 +55,10 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - `bun run dev` starts the Bun server with hot reload and serves the Solid app
 - `bun run dev:cli` starts the websocket server without the UI route
 - `bun run build:ui` builds the browser bundle through `Bun.build(...)` with Solid and Tailwind plugin support
+- Development UI builds emit external source maps for browser debugging
 - `bun run test` runs the Bun test suite
 - `bun run typecheck` validates TypeScript contracts
+- Development startup auto-purges broken local SQLite artifacts, retries delete on transient Windows file locks, then retries boot once if legacy migration drift makes the dev DB unloadable
 
 ## Runtime Shape
 
@@ -62,6 +68,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - Browser localStorage also stores per-thread draft text keyed by project and thread id
 - Provider brand switching is gated by matching saved key presence
 - The UI sends typed project and chat commands only
+- Project open responses report whether a new project was created or an existing project was reopened with a new thread
 - Thread lifecycle, planning answers, resume requests, retry requests, and preflight warnings use typed websocket contracts
 - pi tool use stays behind the backend adapter boundary
 - Subagent edits merge inside a separate integration worktree before verified changes sync back to the main project root
@@ -69,6 +76,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - Developer traces stay out of the user-visible transcript
 - Significant orchestration milestones can surface in chat as transient status cards
 - Caught UI and command errors surface through toast notifications
+- Development builds re-surface swallowed UI and command errors after toast display so local debugging keeps mapped stacks visible
 
 ## Context
 
