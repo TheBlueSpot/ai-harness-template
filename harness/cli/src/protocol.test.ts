@@ -133,6 +133,34 @@ describe("client command validation", () => {
     ).toBe("chat.send");
   });
 
+  test("accepts chat.send payloads with document attachments", () => {
+    expect(
+      parseClientCommand({
+        type: "chat.send",
+        requestId: "req-attach-doc",
+        payload: {
+          projectId: "project-1",
+          threadId: "thread-1",
+          agentId: "pi",
+          content: "Review attached documents",
+          attachments: [
+            {
+              id: "attachment-doc-1",
+              kind: "document",
+              documentType: "pdf",
+              name: "spec.pdf",
+              mimeType: "application/pdf",
+              sizeBytes: 2048,
+              url: "https://example.com/spec.pdf",
+              key: "spec-pdf",
+              uploadedAt: new Date().toISOString()
+            }
+          ]
+        }
+      }).type
+    ).toBe("chat.send");
+  });
+
   test("rejects empty planning.answer content", () => {
     expect(() =>
       parseClientCommand({

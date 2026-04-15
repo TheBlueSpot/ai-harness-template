@@ -1,4 +1,6 @@
 import {
+  type BrowserActivity,
+  type BrowserSession,
   createChatMessage,
   createEmptySession,
   createProjectId,
@@ -129,11 +131,49 @@ export function createRunFixture(overrides: Partial<AgentRunState> = {}): AgentR
     correctnessReview: overrides.correctnessReview,
     questions: overrides.questions ?? [],
     subtasks: overrides.subtasks ?? [],
+    browserSessions: overrides.browserSessions,
     resumable: overrides.resumable ?? false,
     retryable: overrides.retryable ?? true,
     createdAt: overrides.createdAt ?? new Date().toISOString(),
     updatedAt: overrides.updatedAt ?? new Date().toISOString(),
     completedAt: overrides.completedAt
+  };
+}
+
+export function createBrowserActivityFixture(overrides: Partial<BrowserActivity> = {}): BrowserActivity {
+  return {
+    id: overrides.id ?? "browser-activity-1",
+    toolCallId: overrides.toolCallId ?? "tool-call-1",
+    toolName: overrides.toolName ?? "playwright-browser",
+    kind: overrides.kind ?? "navigate",
+    label: overrides.label ?? "Open https://example.com",
+    inputSummary: overrides.inputSummary ?? "{\"url\":\"https://example.com\"}",
+    outputSummary: overrides.outputSummary,
+    status: overrides.status ?? "completed",
+    startedAt: overrides.startedAt ?? new Date().toISOString(),
+    updatedAt: overrides.updatedAt ?? new Date().toISOString(),
+    completedAt: overrides.completedAt,
+    errorMessage: overrides.errorMessage,
+    approval: overrides.approval,
+    replay: overrides.replay ?? [],
+    verification: overrides.verification ?? []
+  };
+}
+
+export function createBrowserSessionFixture(overrides: Partial<BrowserSession> = {}): BrowserSession {
+  return {
+    id: overrides.id ?? "browser-session-1",
+    runId: overrides.runId ?? "run-1",
+    owner: overrides.owner ?? "main",
+    subagentId: overrides.subagentId,
+    status: overrides.status ?? "completed",
+    approvalMode: "per-tool",
+    lastActivityLabel: overrides.lastActivityLabel ?? "Open https://example.com",
+    startedAt: overrides.startedAt ?? new Date().toISOString(),
+    updatedAt: overrides.updatedAt ?? new Date().toISOString(),
+    completedAt: overrides.completedAt,
+    pendingApproval: overrides.pendingApproval,
+    activities: overrides.activities ?? [createBrowserActivityFixture()]
   };
 }
 

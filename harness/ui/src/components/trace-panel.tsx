@@ -3,9 +3,10 @@ import { createRequestId, type ClientCommand } from "../../../shared/protocol";
 import { getActiveProject, harnessStore } from "../harness-store";
 import { getLatestTaskStatusText, getRunRefreshState, isRunWorking } from "../lib/run-status";
 import { ActionButton } from "./action-button";
+import { MarkdownContent } from "./markdown-content";
 import { Input } from "./ui/input";
 import { ScrollArea } from "./ui/scroll-area";
-import { CheckCircle2, Circle, CircleAlert, ClipboardList, LoaderCircle, RefreshCcw } from "lucide-solid";
+import { CheckCircle2, Circle, CircleAlert, ClipboardList, LoaderCircle, RefreshCcw, ShieldCheck, ShieldX } from "lucide-solid";
 
 type TracePanelProps = {
   sendCommand: (command: ClientCommand) => void;
@@ -99,6 +100,27 @@ export function TracePanel(props: TracePanelProps) {
         threadId: project.activeThreadId,
         runId: run.id,
         subagentId
+      }
+    });
+  }
+
+  function handleResolveBrowserApproval(sessionId: string, toolCallId: string, approved: boolean) {
+    const project = activeProject();
+    const run = project?.activeRun ?? project?.lastRun;
+    if (!project || !run) {
+      return;
+    }
+
+    props.sendCommand({
+      type: "browser.approval.resolve",
+      requestId: createRequestId(),
+      payload: {
+        projectId: project.id,
+        threadId: project.activeThreadId,
+        runId: run.id,
+        sessionId,
+        toolCallId,
+        approved
       }
     });
   }
@@ -265,7 +287,7 @@ export function TracePanel(props: TracePanelProps) {
                               </Show>
                             </div>
                             <Show when={task.errorMessage}>
-                              <div class="mt-1 whitespace-pre-wrap text-rose-900/80">{task.errorMessage}</div>
+                              <MarkdownContent content={() => task.errorMessage ?? ""} class="mt-1" size="compact" tone="danger" />
                             </Show>
                           </div>
                         )}
@@ -273,6 +295,90 @@ export function TracePanel(props: TracePanelProps) {
                     </div>
                   </div>
                 </Show>
+              </div>
+            </Show>
+
+            <Show when={runToShow()?.browserSessions?.length}>
+              <div class="rounded-[1.5rem] border border-[color:var(--border)] bg-white/55 p-3">
+                <div class="mb-3 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-[color:var(--muted)]">
+                  Browser sessions
+                </div>
+                <div class="space-y-3">
+                  <For each={runToShow()?.browserSessions ?? []}>
+                    {(session) => (
+                      <article class="rounded-2xl border border-[color:var(--border)] bg-white/70 p-3 text-[0.675rem]">
+                        <div class="flex items-center justify-between gap-3 text-[color:var(--foreground)]">
+                          <div class="font-semibold">
+                            {session.owner === "subagent" ? `Subagent ${session.subagentId}` : session.owner}
+                          </div>
+                          <div class="uppercase tracking-[0.14em] text-[color:var(--accent-strong)]">{session.status}</div>
+                        </div>
+                        <Show when={session.pendingApproval}>
+                          {(approval) => (
+                            <div class="mt-3 rounded-xl border border-amber-300/70 bg-amber-50/80 p-3">
+                              <div class="font-semibold text-amber-900">Approval needed</div>
+                              <div class="mt-1 text-amber-900/80">{approval().label}</div>
+                              <Show when={approval().inputSummary}>
+                                <div class="mt-1 whitespace-pre-wrap text-amber-900/70">{approval().inputSummary}</div>
+                              </Show>
+                              <div class="mt-3 flex flex-wrap gap-2">
+                                <ActionButton
+                                  tooltip="Approve this browser step"
+                                  icon={<ShieldCheck class="h-3.5 w-3.5" />}
+                                  size="sm"
+                                  variant="secondary"
+                                  onClick={() => handleResolveBrowserApproval(session.id, approval().toolCallId, true)}
+                                >
+                                  Approve
+                                </ActionButton>
+                                <ActionButton
+                                  tooltip="Reject this browser step"
+                                  icon={<ShieldX class="h-3.5 w-3.5" />}
+                                  size="sm"
+                                  variant="secondary"
+                                  onClick={() => handleResolveBrowserApproval(session.id, approval().toolCallId, false)}
+                                >
+                                  Reject
+                                </ActionButton>
+                              </div>
+                            </div>
+                          )}
+                        </Show>
+
+                        <div class="mt-3 space-y-2">
+                          <For each={session.activities}>
+                            {(activity) => (
+                              <div class="rounded-xl border border-[color:var(--border)] bg-white/80 p-3">
+                                <div class="flex items-center justify-between gap-3 text-[color:var(--foreground)]">
+                                  <span class="font-semibold">{activity.label}</span>
+                                  <span class="uppercase tracking-[0.14em] text-[color:var(--muted)]">{activity.status}</span>
+                                </div>
+                                <div class="mt-1 text-[color:var(--muted)]">
+                                  {activity.toolName} | {activity.kind}
+                                </div>
+                                <Show when={activity.outputSummary}>
+                                  <MarkdownContent content={() => activity.outputSummary ?? ""} class="mt-2" size="compact" />
+                                </Show>
+                                <Show when={activity.replay.length > 0}>
+                                  <div class="mt-2 space-y-1 text-[color:var(--muted)]">
+                                    <For each={activity.replay.slice(-3)}>
+                                      {(entry) => <div>{entry.summary}</div>}
+                                    </For>
+                                  </div>
+                                </Show>
+                                <Show when={activity.verification.length > 0}>
+                                  <div class="mt-2 text-emerald-800/80">
+                                    {formatVerificationSummary(activity.verification)}
+                                  </div>
+                                </Show>
+                              </div>
+                            )}
+                          </For>
+                        </div>
+                      </article>
+                    )}
+                  </For>
+                </div>
               </div>
             </Show>
 
@@ -293,13 +399,9 @@ export function TracePanel(props: TracePanelProps) {
                           <span>{trace.stage}</span>
                           <span>{trace.modelId ?? "n/a"}</span>
                         </div>
-                        <div class="whitespace-pre-wrap text-[0.675rem] leading-5 text-[color:var(--foreground)]">
-                          {trace.message}
-                        </div>
+                        <MarkdownContent content={() => trace.message} size="compact" />
                         <Show when={trace.detail}>
-                          <div class="mt-2 whitespace-pre-wrap text-[0.675rem] leading-5 text-[color:var(--muted)]">
-                            {trace.detail}
-                          </div>
+                          <MarkdownContent content={() => trace.detail ?? ""} class="mt-2" size="compact" tone="muted" />
                         </Show>
                       </article>
                     )}
@@ -326,4 +428,11 @@ function TaskStatusIcon(props: { status: "pending" | "running" | "completed" | "
     default:
       return <Circle class="h-3.5 w-3.5 text-[color:var(--muted)]" aria-label="Subtask pending" />;
   }
+}
+
+function formatVerificationSummary(verification: Array<{ status: "passed" | "failed" | "unknown" }>) {
+  const passed = verification.filter((entry) => entry.status === "passed").length;
+  const failed = verification.filter((entry) => entry.status === "failed").length;
+  const unknown = verification.filter((entry) => entry.status === "unknown").length;
+  return `Verification: ${passed} pass, ${failed} fail, ${unknown} unknown`;
 }

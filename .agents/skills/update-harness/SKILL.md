@@ -46,6 +46,7 @@ Apply when work touches harness behavior, defaults, protocol shape, runtime wiri
 
 - Keep filenames and directories in kebab-case.
 - Use Bun latest syntax for scripts, tests, and generated files.
+- For script invocation and repo automation glue, prefer TypeScript executed with Bun over Python or shell when adding new paths.
 - Prefer Bun-native build and runtime APIs such as `Bun.build`, `Bun.file`, `Bun.write`, `Bun.spawn`, and `bun test` when they fit.
 - Do not require `bun run build:ui` by default for routine dev-feature work when typecheck and tests already cover the change.
 - Consider `bun run build:ui` when work touches production build behavior, deployment wiring, asset serving, bundling, or build complexity high enough that test plus typecheck coverage is not convincing.

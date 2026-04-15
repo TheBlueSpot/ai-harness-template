@@ -33,13 +33,21 @@ import {
 import { runGitPreflight } from "./git-preflight";
 import { debugLog } from "./logging";
 import { runManagedAgentExecution } from "./managed-agent-execution";
-import { PiSdkAgentAdapter, type PiAgentAdapter } from "./pi-agent-adapter";
+import { PiSdkAgentAdapter, type PiAgentAdapter, type PiAgentExecutionEvent } from "./pi-agent-adapter";
 import { aggregateSubagentResults, executeReadyRun, executionPlanToTasks, runPlannerTurn } from "./pi-orchestrator";
 import { getDefaultExecutionModelId, getDefaultPlanningModelId, getDefaultSubagentModelId } from "./pi-planner";
 import type { SubagentResult } from "./pi-subagents";
 import { WorkspaceRepository } from "./workspace-repository";
 import { WorkspaceRuntimeStore } from "./workspace-runtime-store";
 import { harnessUploadRouter } from "./uploadthing-router";
+import {
+  findPendingBrowserApproval,
+  recordBrowserToolEnd,
+  recordBrowserToolStart,
+  recordBrowserToolUpdate,
+  requestBrowserApproval as requestBrowserApprovalState,
+  resolveBrowserApproval
+} from "./browser-session-state";
 
 type HarnessConnection = {
   clientId: string;
@@ -55,6 +63,11 @@ type HarnessServerOptions = {
 
 type ProjectLike = Pick<WorkspaceProjectState, "id" | "rootPath" | "activeThreadId" | "session" | "activeRun" | "lastRun">;
 
+type PendingBrowserApproval = {
+  resolve: (approved: boolean) => void;
+  reject: (error: Error) => void;
+};
+
 export async function startHarnessServer({
   port,
   adapter = new PiSdkAgentAdapter(),
@@ -63,6 +76,7 @@ export async function startHarnessServer({
   serverOnly = false
 }: HarnessServerOptions) {
   const runtime = new WorkspaceRuntimeStore(repository.loadWorkspace());
+  const pendingBrowserApprovals = new Map<string, PendingBrowserApproval>();
   const uiAssets = serverOnly ? undefined : createUiAssetManager();
   const uploadthingHandler = createRouteHandler({
     router: harnessUploadRouter
@@ -141,7 +155,7 @@ export async function startHarnessServer({
           return;
         }
 
-        void handleCommand(ws, command, runtime, repository, adapter, pickFolder).catch((error) => {
+        void handleCommand(ws, command, runtime, repository, adapter, pickFolder, pendingBrowserApprovals).catch((error) => {
           if (Bun.env.NODE_ENV !== "production") {
             console.error(error);
           }
@@ -172,7 +186,8 @@ async function handleCommand(
   runtime: WorkspaceRuntimeStore,
   repository: WorkspaceRepository,
   adapter: PiAgentAdapter,
-  pickFolder: typeof pickProjectFolder
+  pickFolder: typeof pickProjectFolder,
+  pendingBrowserApprovals: Map<string, PendingBrowserApproval>
 ) {
   switch (command.type) {
     case "connection.ping": {
@@ -371,6 +386,7 @@ async function handleCommand(
       runtime.setProjectError(command.payload.projectId, "Chat request stopped by user");
 
       if (activeRun) {
+        rejectPendingBrowserApprovalsForRun(pendingBrowserApprovals, command.payload.projectId, activeRun.id, "Run stopped");
         const stoppedProject = repository.setAgentRunStatus(command.payload.projectId, activeRun.id, "stopped");
         runtime.upsertPersistedProject(stoppedProject);
         emitRunUpdated(ws, command.requestId, runtime.getProject(command.payload.projectId));
@@ -440,7 +456,7 @@ async function handleCommand(
       runtime.setAbortController(projectId, abortController);
 
       try {
-        await continueRunLifecycle(ws, command.requestId, runtime, repository, adapter, {
+        await continueRunLifecycle(ws, command.requestId, runtime, repository, adapter, pendingBrowserApprovals, {
           projectId,
           providerBrand,
           debugEnabled,
@@ -453,7 +469,7 @@ async function handleCommand(
         }
 
         const message = error instanceof Error ? error.message : "Unknown pi agent error";
-        await handleRunFailure(ws, command.requestId, runtime, repository, projectId, message);
+        await handleRunFailure(ws, command.requestId, runtime, repository, pendingBrowserApprovals, projectId, message);
       } finally {
         runtime.setProjectStreaming(projectId, false);
         runtime.setAbortController(projectId, undefined);
@@ -502,7 +518,7 @@ async function handleCommand(
       runtime.setAbortController(projectId, abortController);
 
       try {
-        await continueRunLifecycle(ws, command.requestId, runtime, repository, adapter, {
+        await continueRunLifecycle(ws, command.requestId, runtime, repository, adapter, pendingBrowserApprovals, {
           projectId,
           providerBrand,
           debugEnabled,
@@ -515,7 +531,7 @@ async function handleCommand(
         }
 
         const message = error instanceof Error ? error.message : "Unknown pi agent error";
-        await handleRunFailure(ws, command.requestId, runtime, repository, projectId, message);
+        await handleRunFailure(ws, command.requestId, runtime, repository, pendingBrowserApprovals, projectId, message);
       } finally {
         runtime.setProjectStreaming(projectId, false);
         runtime.setAbortController(projectId, undefined);
@@ -557,7 +573,7 @@ async function handleCommand(
       runtime.setAbortController(projectId, abortController);
 
       try {
-        await continueRunLifecycle(ws, command.requestId, runtime, repository, adapter, {
+        await continueRunLifecycle(ws, command.requestId, runtime, repository, adapter, pendingBrowserApprovals, {
           projectId,
           providerBrand,
           debugEnabled: repository.getDebugEnabledDefault(),
@@ -573,7 +589,7 @@ async function handleCommand(
         }
 
         const message = error instanceof Error ? error.message : "Unknown pi agent error";
-        await handleRunFailure(ws, command.requestId, runtime, repository, projectId, message);
+        await handleRunFailure(ws, command.requestId, runtime, repository, pendingBrowserApprovals, projectId, message);
       } finally {
         runtime.setProjectStreaming(projectId, false);
         runtime.setAbortController(projectId, undefined);
@@ -600,7 +616,7 @@ async function handleCommand(
       runtime.setAbortController(projectId, abortController);
 
       try {
-        await executeRunLifecycle(ws, command.requestId, runtime, repository, adapter, {
+        await executeRunLifecycle(ws, command.requestId, runtime, repository, adapter, pendingBrowserApprovals, {
           projectId,
           providerBrand,
           debugEnabled: repository.getDebugEnabledDefault(),
@@ -615,7 +631,7 @@ async function handleCommand(
         }
 
         const message = error instanceof Error ? error.message : "Unknown pi agent error";
-        await handleRunFailure(ws, command.requestId, runtime, repository, projectId, message);
+        await handleRunFailure(ws, command.requestId, runtime, repository, pendingBrowserApprovals, projectId, message);
       } finally {
         runtime.setProjectStreaming(projectId, false);
         runtime.setAbortController(projectId, undefined);
@@ -648,7 +664,7 @@ async function handleCommand(
       runtime.setAbortController(projectId, abortController);
 
       try {
-        await resumeRunLifecycle(ws, command.requestId, runtime, repository, adapter, {
+        await resumeRunLifecycle(ws, command.requestId, runtime, repository, adapter, pendingBrowserApprovals, {
           projectId,
           providerBrand,
           debugEnabled: repository.getDebugEnabledDefault(),
@@ -663,7 +679,7 @@ async function handleCommand(
         }
 
         const message = error instanceof Error ? error.message : "Unknown pi agent error";
-        await handleRunFailure(ws, command.requestId, runtime, repository, projectId, message);
+        await handleRunFailure(ws, command.requestId, runtime, repository, pendingBrowserApprovals, projectId, message);
       } finally {
         runtime.setProjectStreaming(projectId, false);
         runtime.setAbortController(projectId, undefined);
@@ -705,7 +721,7 @@ async function handleCommand(
           emitRunUpdated(ws, command.requestId, runtime.getProject(projectId));
           runtime.setProjectExecutionModel(projectId, executionModelId);
 
-          await continueRunLifecycle(ws, command.requestId, runtime, repository, adapter, {
+          await continueRunLifecycle(ws, command.requestId, runtime, repository, adapter, pendingBrowserApprovals, {
             projectId,
             providerBrand,
             debugEnabled,
@@ -772,15 +788,23 @@ async function handleCommand(
           runtime.upsertPersistedProject(runProject);
           emitRunUpdated(ws, command.requestId, runtime.getProject(projectId));
           runtime.setProjectExecutionModel(projectId, executionModelId);
-          await executeInlineSubagentRetryLifecycle(ws, command.requestId, runtime, repository, adapter, {
-            projectId,
-            providerBrand,
-            runId: nextRunId,
-            sourceRun: retryRun,
-            targetTask,
-            readyPlan,
-            abortSignal: abortController.signal
-          });
+          await executeInlineSubagentRetryLifecycle(
+            ws,
+            command.requestId,
+            runtime,
+            repository,
+            adapter,
+            pendingBrowserApprovals,
+            {
+              projectId,
+              providerBrand,
+              runId: nextRunId,
+              sourceRun: retryRun,
+              targetTask,
+              readyPlan,
+              abortSignal: abortController.signal
+            }
+          );
         }
       } catch (error) {
         if (abortController.signal.aborted) {
@@ -788,7 +812,7 @@ async function handleCommand(
         }
 
         const message = error instanceof Error ? error.message : "Unknown pi agent error";
-        await handleRunFailure(ws, command.requestId, runtime, repository, projectId, message);
+        await handleRunFailure(ws, command.requestId, runtime, repository, pendingBrowserApprovals, projectId, message);
       } finally {
         runtime.setProjectStreaming(projectId, false);
         runtime.setAbortController(projectId, undefined);
@@ -826,6 +850,47 @@ async function handleCommand(
         );
       }
 
+      return;
+    }
+    case "browser.approval.resolve": {
+      const project = runtime.getProject(command.payload.projectId);
+      assertActiveThread(project, command.payload.threadId);
+      const run = [project.activeRun, project.lastRun].find((entry) => entry?.id === command.payload.runId);
+      if (!run) {
+        throw new Error(`Run ${command.payload.runId} is not available`);
+      }
+
+      const pendingActivity = findPendingBrowserApproval(run.browserSessions ?? [], {
+        sessionId: command.payload.sessionId,
+        toolCallId: command.payload.toolCallId
+      });
+      if (!pendingActivity?.approval) {
+        throw new Error("Browser approval is not pending");
+      }
+
+      const nextProject = repository.setAgentRunBrowserSessions(
+        command.payload.projectId,
+        command.payload.runId,
+        resolveBrowserApproval(structuredClone(run.browserSessions ?? []), {
+          runId: command.payload.runId,
+          owner: "main",
+          sessionId: command.payload.sessionId,
+          toolCallId: command.payload.toolCallId,
+          approved: command.payload.approved
+        })
+      );
+      runtime.upsertPersistedProject(nextProject);
+      emitRunUpdated(ws, command.requestId, nextProject);
+
+      const approvalKey = createBrowserApprovalKey(
+        command.payload.projectId,
+        command.payload.runId,
+        command.payload.sessionId,
+        command.payload.toolCallId
+      );
+      const pendingApproval = pendingBrowserApprovals.get(approvalKey);
+      pendingBrowserApprovals.delete(approvalKey);
+      pendingApproval?.resolve(command.payload.approved);
       return;
     }
     case "project.mode.select": {
@@ -929,6 +994,7 @@ async function continueRunLifecycle(
   runtime: WorkspaceRuntimeStore,
   repository: WorkspaceRepository,
   adapter: PiAgentAdapter,
+  pendingBrowserApprovals: Map<string, PendingBrowserApproval>,
   options: {
     projectId: ProjectId;
     providerBrand: "gpt" | "gemini";
@@ -968,7 +1034,16 @@ async function continueRunLifecycle(
     memorySummaries,
     priorQuestions: activeRun.questions,
     abortSignal: options.abortSignal,
-    callbacks: createExecutionCallbacks(ws, requestId, runtime, repository, options.projectId, activeRun.id)
+    callbacks: createExecutionCallbacks(
+      ws,
+      requestId,
+      runtime,
+      repository,
+      options.projectId,
+      activeRun.id,
+      pendingBrowserApprovals,
+      options.abortSignal
+    )
   });
 
   if (plannerTurn.plannerResult.type === "question") {
@@ -1044,6 +1119,7 @@ async function resumeRunLifecycle(
   runtime: WorkspaceRuntimeStore,
   repository: WorkspaceRepository,
   adapter: PiAgentAdapter,
+  pendingBrowserApprovals: Map<string, PendingBrowserApproval>,
   options: {
     projectId: ProjectId;
     providerBrand: "gpt" | "gemini";
@@ -1092,7 +1168,7 @@ async function resumeRunLifecycle(
   runtime.upsertPersistedProject(resumingProject);
   emitRunUpdated(ws, requestId, resumingProject);
 
-  await executeRunLifecycle(ws, requestId, runtime, repository, adapter, {
+  await executeRunLifecycle(ws, requestId, runtime, repository, adapter, pendingBrowserApprovals, {
     projectId: options.projectId,
     providerBrand: options.providerBrand,
     debugEnabled: options.debugEnabled,
@@ -1112,6 +1188,7 @@ async function executeRunLifecycle(
   runtime: WorkspaceRuntimeStore,
   repository: WorkspaceRepository,
   adapter: PiAgentAdapter,
+  pendingBrowserApprovals: Map<string, PendingBrowserApproval>,
   options: {
     projectId: ProjectId;
     providerBrand: "gpt" | "gemini";
@@ -1155,7 +1232,16 @@ async function executeRunLifecycle(
     tasksToRun: options.tasksToRun,
     resumeNote: options.resumeNote,
     executionPlan,
-    callbacks: createExecutionCallbacks(ws, requestId, runtime, repository, options.projectId, options.runId)
+    callbacks: createExecutionCallbacks(
+      ws,
+      requestId,
+      runtime,
+      repository,
+      options.projectId,
+      options.runId,
+      pendingBrowserApprovals,
+      options.abortSignal
+    )
   });
 
   runtime.clearStreaming(options.projectId);
@@ -1184,7 +1270,7 @@ async function executeRunLifecycle(
       correctnessReview.recommendedPlan.correctnessPolicy === "auto-once" &&
       correctnessReview.recommendedPlan.iteration <= 2
     ) {
-      await executeRunLifecycle(ws, requestId, runtime, repository, adapter, {
+      await executeRunLifecycle(ws, requestId, runtime, repository, adapter, pendingBrowserApprovals, {
         ...options,
         readyPlan: buildReadyPlanFromExecutionPlan(correctnessReview.recommendedPlan),
         executionPlan: correctnessReview.recommendedPlan
@@ -1196,7 +1282,7 @@ async function executeRunLifecycle(
       correctnessReview.recommendedPlan.correctnessPolicy === "auto-until-clean" &&
       correctnessReview.recommendedPlan.iteration < 5
     ) {
-      await executeRunLifecycle(ws, requestId, runtime, repository, adapter, {
+      await executeRunLifecycle(ws, requestId, runtime, repository, adapter, pendingBrowserApprovals, {
         ...options,
         readyPlan: buildReadyPlanFromExecutionPlan(correctnessReview.recommendedPlan),
         executionPlan: correctnessReview.recommendedPlan
@@ -1250,6 +1336,7 @@ async function executeInlineSubagentRetryLifecycle(
   runtime: WorkspaceRuntimeStore,
   repository: WorkspaceRepository,
   adapter: PiAgentAdapter,
+  pendingBrowserApprovals: Map<string, PendingBrowserApproval>,
   options: {
     projectId: ProjectId;
     providerBrand: "gpt" | "gemini";
@@ -1265,7 +1352,16 @@ async function executeInlineSubagentRetryLifecycle(
   runtime.upsertPersistedProject(startedProject);
   emitRunUpdated(ws, requestId, startedProject);
 
-  const callbacks = createExecutionCallbacks(ws, requestId, runtime, repository, options.projectId, options.runId);
+  const callbacks = createExecutionCallbacks(
+    ws,
+    requestId,
+    runtime,
+    repository,
+    options.projectId,
+    options.runId,
+    pendingBrowserApprovals,
+    options.abortSignal
+  );
   const sessionId = project.session.sessionId;
   const subagentModelId = getDefaultSubagentModelId(options.providerBrand);
   const existingResults = options.sourceRun.subtasks
@@ -1383,7 +1479,9 @@ function createExecutionCallbacks(
   runtime: WorkspaceRuntimeStore,
   repository: WorkspaceRepository,
   projectId: ProjectId,
-  runId: string
+  runId: string,
+  pendingBrowserApprovals: Map<string, PendingBrowserApproval>,
+  abortSignal?: AbortSignal
 ) {
   return {
     onTrace(trace: AgentTrace) {
@@ -1470,6 +1568,116 @@ function createExecutionCallbacks(
     },
     clearExecutionState(input: Pick<ManagedExecutionState, "runId" | "kind" | "subagentId">) {
       runtime.clearExecutionState(projectId, input);
+    },
+    onExecutionEvent(input: { owner: "main" | "subagent" | "aggregator"; subagentId?: string; event: PiAgentExecutionEvent }) {
+      const project = runtime.getProject(projectId);
+      const run = [project.activeRun, project.lastRun].find((entry) => entry?.id === runId);
+      if (!run) {
+        return;
+      }
+
+      let nextSessions = structuredClone(run.browserSessions ?? []);
+      switch (input.event.type) {
+        case "tool-start":
+          nextSessions = recordBrowserToolStart(nextSessions, {
+            runId,
+            owner: input.owner,
+            subagentId: input.subagentId,
+            toolCallId: input.event.toolCallId,
+            toolName: input.event.toolName,
+            args: input.event.args
+          });
+          break;
+        case "tool-update":
+          nextSessions = recordBrowserToolUpdate(nextSessions, {
+            runId,
+            owner: input.owner,
+            subagentId: input.subagentId,
+            toolCallId: input.event.toolCallId,
+            toolName: input.event.toolName,
+            args: input.event.args,
+            partialResult: input.event.partialResult
+          });
+          break;
+        case "tool-end":
+          nextSessions = recordBrowserToolEnd(nextSessions, {
+            runId,
+            owner: input.owner,
+            subagentId: input.subagentId,
+            toolCallId: input.event.toolCallId,
+            toolName: input.event.toolName,
+            result: input.event.result,
+            isError: input.event.isError
+          });
+          break;
+        default:
+          return;
+      }
+
+      if (JSON.stringify(run.browserSessions ?? []) === JSON.stringify(nextSessions)) {
+        return;
+      }
+
+      const nextProject = repository.setAgentRunBrowserSessions(projectId, runId, nextSessions);
+      runtime.upsertPersistedProject(nextProject);
+      emitRunUpdated(ws, requestId, nextProject);
+    },
+    requestBrowserApproval(input: {
+      owner: "main" | "subagent" | "aggregator";
+      subagentId?: string;
+      toolCallId: string;
+      toolName: string;
+      args: unknown;
+    }) {
+      const project = runtime.getProject(projectId);
+      const run = [project.activeRun, project.lastRun].find((entry) => entry?.id === runId);
+      if (!run) {
+        return Promise.resolve({ approved: false });
+      }
+
+      const nextSessions = requestBrowserApprovalState(structuredClone(run.browserSessions ?? []), {
+        runId,
+        owner: input.owner,
+        subagentId: input.subagentId,
+        toolCallId: input.toolCallId,
+        toolName: input.toolName,
+        args: input.args
+      });
+      const session = nextSessions.find(
+        (entry) =>
+          entry.runId === runId && entry.owner === input.owner && (entry.subagentId ?? undefined) === input.subagentId
+      );
+      const pendingActivity = session?.activities.find((entry) => entry.toolCallId === input.toolCallId);
+      if (!session || !pendingActivity) {
+        return Promise.resolve({ approved: true });
+      }
+
+      const nextProject = repository.setAgentRunBrowserSessions(projectId, runId, nextSessions);
+      runtime.upsertPersistedProject(nextProject);
+      emitRunUpdated(ws, requestId, nextProject);
+
+      const approvalKey = createBrowserApprovalKey(projectId, runId, session.id, input.toolCallId);
+      return new Promise<{ approved: boolean }>((resolve, reject) => {
+        pendingBrowserApprovals.set(approvalKey, {
+          resolve(approved) {
+            resolve({ approved });
+          },
+          reject
+        });
+
+        abortSignal?.addEventListener(
+          "abort",
+          () => {
+            if (!pendingBrowserApprovals.has(approvalKey)) {
+              return;
+            }
+
+            pendingBrowserApprovals.delete(approvalKey);
+            reject(new Error("Browser approval aborted"));
+          },
+          { once: true }
+        );
+      });
     }
   };
 }
@@ -1512,13 +1720,41 @@ async function runInlineSubagentRetry(
           kind: "subagent",
           cwd: options.cwd,
           modelId: subagentModelId,
-          prompt: basePrompt
+          prompt: basePrompt,
+          onExecutionEvent(event: PiAgentExecutionEvent) {
+            void options.callbacks.onExecutionEvent?.({
+              owner: "subagent",
+              subagentId: options.task.id,
+              event
+            });
+          },
+          requestBrowserApproval(input: { toolCallId: string; toolName: string; args: unknown }) {
+            return options.callbacks.requestBrowserApproval?.({
+              owner: "subagent",
+              subagentId: options.task.id,
+              ...input
+            }) ?? Promise.resolve({ approved: true });
+          }
         },
         continuationRequest: {
           kind: "subagent",
           cwd: options.cwd,
           modelId: subagentModelId,
-          prompt: ["continue", "", basePrompt].join("\n")
+          prompt: ["continue", "", basePrompt].join("\n"),
+          onExecutionEvent(event: PiAgentExecutionEvent) {
+            void options.callbacks.onExecutionEvent?.({
+              owner: "subagent",
+              subagentId: options.task.id,
+              event
+            });
+          },
+          requestBrowserApproval(input: { toolCallId: string; toolName: string; args: unknown }) {
+            return options.callbacks.requestBrowserApproval?.({
+              owner: "subagent",
+              subagentId: options.task.id,
+              ...input
+            }) ?? Promise.resolve({ approved: true });
+          }
         },
         abortSignal: options.abortSignal,
         store: {
@@ -1622,11 +1858,13 @@ async function handleRunFailure(
   requestId: string,
   runtime: WorkspaceRuntimeStore,
   repository: WorkspaceRepository,
+  pendingBrowserApprovals: Map<string, PendingBrowserApproval>,
   projectId: ProjectId,
   message: string
 ) {
   const project = runtime.getProject(projectId);
   if (project.activeRun) {
+    rejectPendingBrowserApprovalsForRun(pendingBrowserApprovals, projectId, project.activeRun.id, "Run failed");
     const failedProject = repository.setAgentRunStatus(projectId, project.activeRun.id, "failed", message);
     runtime.upsertPersistedProject(failedProject);
     emitRunUpdated(ws, requestId, failedProject);
@@ -1652,6 +1890,26 @@ async function handleRunFailure(
     projectId,
     detail: message
   });
+}
+
+function createBrowserApprovalKey(projectId: ProjectId, runId: string, sessionId: string, toolCallId: string) {
+  return [projectId, runId, sessionId, toolCallId].join(":");
+}
+
+function rejectPendingBrowserApprovalsForRun(
+  pendingBrowserApprovals: Map<string, PendingBrowserApproval>,
+  projectId: ProjectId,
+  runId: string,
+  reason: string
+) {
+  for (const [key, approval] of pendingBrowserApprovals.entries()) {
+    if (!key.startsWith(`${projectId}:${runId}:`)) {
+      continue;
+    }
+
+    pendingBrowserApprovals.delete(key);
+    approval.reject(new Error(reason));
+  }
 }
 
 function appendSystemStatus(

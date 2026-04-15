@@ -25,7 +25,8 @@ export const threadBadgeStateSchema = z.enum(["idle", "needs-input", "planning",
 export const modeScopeSchema = z.enum(["builtin", "workspace", "project"]);
 export const modeToolPolicySchema = z.enum(["full-access", "read-heavy", "review-only"]);
 export const capabilityTagSchema = z.enum(["tools", "vision", "browser", "long-context", "fast", "expensive"]);
-export const chatAttachmentKindSchema = z.enum(["image", "text"]);
+export const chatAttachmentKindSchema = z.enum(["image", "text", "document"]);
+export const chatDocumentTypeSchema = z.enum(["pdf", "docx", "xlsx", "pptx", "odt"]);
 export const providerModelIdSchema = z
   .string()
   .min(1)
@@ -150,6 +151,7 @@ export const chatMessageMetadataSchema = z.discriminatedUnion("type", [planSumma
 export const chatAttachmentSchema = z.object({
   id: z.string().min(1).max(128),
   kind: chatAttachmentKindSchema,
+  documentType: chatDocumentTypeSchema.optional(),
   name: z.string().min(1).max(256),
   mimeType: z.string().min(1).max(256),
   sizeBytes: z.number().int().min(1).max(16 * 1024 * 1024),
@@ -267,6 +269,71 @@ export const agentTraceSchema = z.object({
 
 export const projectContextSourceKindSchema = z.enum(["planner", "main", "subagent", "aggregator"]);
 
+export const browserApprovalStatusSchema = z.enum(["pending", "approved", "rejected"]);
+export const browserSessionStatusSchema = z.enum(["idle", "awaiting-approval", "running", "blocked", "completed", "failed"]);
+export const browserActivityKindSchema = z.enum(["navigate", "click", "input", "capture", "extract", "verify", "tool", "unknown"]);
+export const browserActivityStatusSchema = z.enum(["pending-approval", "running", "completed", "blocked", "failed"]);
+
+export const browserApprovalSchema = z.object({
+  toolCallId: z.string().min(1).max(256),
+  toolName: z.string().min(1).max(128),
+  kind: browserActivityKindSchema,
+  label: z.string().min(1).max(256),
+  inputSummary: z.string().min(1).max(4000).optional(),
+  status: browserApprovalStatusSchema,
+  requestedAt: z.string().datetime().or(z.string().min(1)),
+  resolvedAt: z.string().datetime().or(z.string().min(1)).optional(),
+  resolutionReason: z.string().min(1).max(4000).optional()
+});
+
+export const browserReplayEntrySchema = z.object({
+  id: z.string().min(1).max(128),
+  status: browserActivityStatusSchema,
+  summary: z.string().min(1).max(4000),
+  createdAt: z.string().datetime().or(z.string().min(1))
+});
+
+export const browserVerificationSchema = z.object({
+  id: z.string().min(1).max(128),
+  label: z.string().min(1).max(256),
+  status: z.enum(["passed", "failed", "unknown"]),
+  detail: z.string().min(1).max(4000).optional(),
+  createdAt: z.string().datetime().or(z.string().min(1))
+});
+
+export const browserActivitySchema = z.object({
+  id: z.string().min(1).max(128),
+  toolCallId: z.string().min(1).max(256),
+  toolName: z.string().min(1).max(128),
+  kind: browserActivityKindSchema,
+  label: z.string().min(1).max(256),
+  inputSummary: z.string().min(1).max(4000).optional(),
+  outputSummary: z.string().min(1).max(4000).optional(),
+  status: browserActivityStatusSchema,
+  startedAt: z.string().datetime().or(z.string().min(1)),
+  updatedAt: z.string().datetime().or(z.string().min(1)),
+  completedAt: z.string().datetime().or(z.string().min(1)).optional(),
+  errorMessage: z.string().min(1).max(4000).optional(),
+  approval: browserApprovalSchema.optional(),
+  replay: z.array(browserReplayEntrySchema).max(64),
+  verification: z.array(browserVerificationSchema).max(32)
+});
+
+export const browserSessionSchema = z.object({
+  id: z.string().min(1).max(128),
+  runId: runIdSchema,
+  owner: z.enum(["main", "subagent", "aggregator"]),
+  subagentId: z.string().min(1).max(128).optional(),
+  status: browserSessionStatusSchema,
+  approvalMode: z.literal("per-tool"),
+  lastActivityLabel: z.string().min(1).max(256).optional(),
+  startedAt: z.string().datetime().or(z.string().min(1)),
+  updatedAt: z.string().datetime().or(z.string().min(1)),
+  completedAt: z.string().datetime().or(z.string().min(1)).optional(),
+  pendingApproval: browserApprovalSchema.optional(),
+  activities: z.array(browserActivitySchema).max(256)
+});
+
 export const projectContextUsageSchema = z.object({
   sourceKind: projectContextSourceKindSchema,
   sourceLabel: z.string().min(1).max(128),
@@ -362,6 +429,7 @@ export const agentRunStateSchema = z.object({
   correctnessReview: correctnessReviewSchema.optional(),
   questions: z.array(planningQuestionSchema),
   subtasks: z.array(subagentTaskStateSchema),
+  browserSessions: z.array(browserSessionSchema).max(32).optional(),
   resumable: z.boolean(),
   retryable: z.boolean(),
   createdAt: z.string().datetime().or(z.string().min(1)),
@@ -643,6 +711,18 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       threadId: threadIdSchema,
       runId: runIdSchema,
       subagentId: z.string().min(1).max(128).optional()
+    })
+  }),
+  z.object({
+    type: z.literal("browser.approval.resolve"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      threadId: threadIdSchema,
+      runId: runIdSchema,
+      sessionId: z.string().min(1).max(128),
+      toolCallId: z.string().min(1).max(256),
+      approved: z.boolean()
     })
   }),
   z.object({
@@ -974,6 +1054,7 @@ export type ModeScope = z.infer<typeof modeScopeSchema>;
 export type ModeToolPolicy = z.infer<typeof modeToolPolicySchema>;
 export type CapabilityTag = z.infer<typeof capabilityTagSchema>;
 export type ChatAttachmentKind = z.infer<typeof chatAttachmentKindSchema>;
+export type ChatDocumentType = z.infer<typeof chatDocumentTypeSchema>;
 export type ProviderModelId = z.infer<typeof providerModelIdSchema>;
 export type ChatRole = z.infer<typeof chatRoleSchema>;
 export type ChatMessageKind = z.infer<typeof chatMessageKindSchema>;
@@ -997,6 +1078,15 @@ export type ConnectionState = z.infer<typeof connectionStateSchema>;
 export type AgentPlan = z.infer<typeof agentPlanSchema>;
 export type AgentTrace = z.infer<typeof agentTraceSchema>;
 export type ProjectContextSourceKind = z.infer<typeof projectContextSourceKindSchema>;
+export type BrowserApprovalStatus = z.infer<typeof browserApprovalStatusSchema>;
+export type BrowserSessionStatus = z.infer<typeof browserSessionStatusSchema>;
+export type BrowserActivityKind = z.infer<typeof browserActivityKindSchema>;
+export type BrowserActivityStatus = z.infer<typeof browserActivityStatusSchema>;
+export type BrowserApproval = z.infer<typeof browserApprovalSchema>;
+export type BrowserReplayEntry = z.infer<typeof browserReplayEntrySchema>;
+export type BrowserVerification = z.infer<typeof browserVerificationSchema>;
+export type BrowserActivity = z.infer<typeof browserActivitySchema>;
+export type BrowserSession = z.infer<typeof browserSessionSchema>;
 export type ProjectContextUsage = z.infer<typeof projectContextUsageSchema>;
 export type RunPreflight = z.infer<typeof runPreflightSchema>;
 export type PlannerSubtask = z.infer<typeof plannerSubtaskSchema>;

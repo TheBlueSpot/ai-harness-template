@@ -8,8 +8,9 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - A multi-project workspace where each project root keeps its own local chat history and multiple switchable threads
 - Empty workspace startup with no synthetic default project
 - A single public agent profile, `pi`
-- `UploadThing`-backed attachments for screenshots and text-like specs, persisted with chat history and routed into prompts
+- `UploadThing`-backed attachments for screenshots, PDFs, and text or office-doc specs, persisted with chat history and routed into prompts
 - Capability-aware model metadata so UI can explain tool, vision, browser, context, speed, and cost expectations before execution starts
+- Typed browser session tracking with explicit per-step approval gates when browser-capable tools are active
 - Built-in workflow modes for asking, planning, implementing, debugging, and review, plus local custom modes at workspace or project scope
 - Brand-aware defaults for GPT or Gemini execution
 - Gemini planning defaults to `google/gemini-3-flash-preview`
@@ -19,6 +20,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - SQLite-backed persistence for projects, active selection, threads, and messages
 - Interactive planning questions that pause execution until the user answers in chat, with three typed quick options and one recommended path
 - Plan-first execution that persists a full execution plan, posts a plan summary into chat, and waits in `ready` before any code work starts
+- Formatted markdown rendering across chat, plan, and trace surfaces with safe links, GFM tables and task lists, footnotes, and copyable highlighted code blocks
 - Workspace and project instruction context with lightweight working-memory summaries that feed planning and execution
 - Transcript-level plan summary cards with shared plan modal access from chat and trace panel
 - Global execution preferences for dirty-git chat restriction, dirty change threshold, plan gate mode, countdown delay, subagent worktree strategy, and correctness iteration policy
@@ -66,8 +68,10 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - Tooltips render through a body-level portal so panel overflow does not clip them
 - Task cockpit UI groups chat, plan, run, and events into one working surface instead of splitting core flow across disconnected panels
 - Simple and advanced UI modes let new users hide trace-heavy controls while keeping operator visibility available on demand
-- Composer supports attachment chips, UploadThing-backed upload flow, and vision-aware image gating by selected model
+- Composer supports attachment chips, UploadThing-backed upload flow, vision-aware image gating by selected model, and document ingestion for PDF, DOCX, XLSX, PPTX, and ODT on new top-level tasks
+- Transcript, plan, run, and trace surfaces render readable markdown with code fences, tables, blockquotes, and safe external-link behavior
 - Chat and trace panel share one execution plan modal that exposes summary, prerequisites, bucket strategy, worktree mode, contracts, verification scope, and correctness history
+- Trace panel surfaces browser activity, pending approvals, replay snippets, and lightweight verification results when a run touches browser tools
 
 ## Local Workflow
 
@@ -99,11 +103,12 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - Provider brand switching is gated by matching saved key presence
 - The UI sends typed project and chat commands only
 - Mode selection, rule sources, and memory summaries travel through typed contracts and persist with workspace state
-- Chat message persistence now includes uploaded attachment metadata, while planner and execution stages resolve remote image/text context on demand
+- Chat message persistence now includes uploaded attachment metadata, while planner and execution stages resolve remote image, text, and supported document context on demand
 - Plan execution starts through a typed `run.execute` command after plan presentation, not as an implicit side effect of `chat.send`
 - Ready plans can be replaced through a typed `planning.refine` command that starts a fresh planning cycle in the same thread
 - Project open responses report whether a new project was created or an existing project was reopened with a new thread
 - Thread lifecycle, planning answers, resume requests, retry requests, and preflight warnings use typed websocket contracts
+- Browser approval decisions use a typed websocket command and persist on the active run record
 - Refresh requests use a typed `run.refresh` command for active run-level and subagent-level recovery
 - pi tool use stays behind the backend adapter boundary
 - Same-worktree subagent mode is the default when contracts can be cleanly path-split; broader or overlapping work falls back to isolated worktree flow

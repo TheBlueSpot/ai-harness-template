@@ -1,6 +1,10 @@
 import { For, Match, Show, Switch, createEffect, createSignal, onCleanup, onMount, type JSX } from "solid-js";
 import { createRequestId, type ChatAttachment, type ClientCommand } from "../../../shared/protocol";
-import { detectChatAttachmentKind, isSupportedChatAttachment, MAX_CHAT_ATTACHMENT_COUNT } from "../../../shared/chat-attachments";
+import {
+  detectSupportedChatAttachment,
+  isSupportedChatAttachment,
+  MAX_CHAT_ATTACHMENT_COUNT
+} from "../../../shared/chat-attachments";
 import {
   getActiveProject,
   getActiveMode,
@@ -16,6 +20,7 @@ import { formatContextUsage } from "../lib/run-status";
 import { uploadFiles } from "../lib/uploadthing";
 import { pushToast } from "../toast-store";
 import { ActionButton } from "./action-button";
+import { MarkdownContent } from "./markdown-content";
 import { ModeEditorPanel } from "./mode-editor-panel";
 import { Input } from "./ui/input";
 import { ScrollArea } from "./ui/scroll-area";
@@ -275,15 +280,16 @@ export function ChatPanel(props: ChatPanelProps) {
       });
 
       const nextAttachments = uploadedFiles.flatMap((file) => {
-        const kind = detectChatAttachmentKind({ name: file.name, mimeType: file.type });
-        if (!kind) {
+        const detectedAttachment = detectSupportedChatAttachment({ name: file.name, mimeType: file.type });
+        if (!detectedAttachment) {
           return [];
         }
 
         return [
           {
             id: `${file.key}-${file.lastModified ?? Date.now()}`,
-            kind,
+            kind: detectedAttachment.kind,
+            documentType: detectedAttachment.kind === "document" ? detectedAttachment.documentType : undefined,
             name: file.name,
             mimeType: file.type,
             sizeBytes: file.size,
@@ -758,7 +764,7 @@ export function ChatPanel(props: ChatPanelProps) {
                   Sample task: “Inspect recent auth changes, plan fix for flaky login, then implement with tests.”
                 </div>
                 <div class="rounded-[1rem] border border-[color:var(--border)] bg-white/70 p-3 text-[0.675rem] leading-6 text-[color:var(--muted)]">
-                  Open repo, attach screenshots or text-like specs, then ask for a plan. Images route to vision-capable models; text-like files get folded into prompt context.
+                  Open repo, attach screenshots, PDFs, or office docs, then ask for a plan. Images route to vision-capable models; text and document files get folded into prompt context.
                 </div>
               </div>
             </div>
@@ -954,9 +960,7 @@ export function ChatPanel(props: ChatPanelProps) {
                             >
                               {message.role === "system" ? "status" : message.role}
                             </div>
-                            <div class="whitespace-pre-wrap text-[0.675rem] leading-6 text-[color:var(--foreground)]">
-                              {message.content}
-                            </div>
+                            <MarkdownContent content={() => message.content} size="compact" />
                             <Show when={message.attachments?.length}>
                               <div class="mt-3 flex flex-wrap gap-2">
                                 <For each={message.attachments}>
@@ -981,9 +985,7 @@ export function ChatPanel(props: ChatPanelProps) {
                             <Clipboard class="h-3.5 w-3.5" />
                             Plan summary
                           </div>
-                          <div class="text-[0.75rem] leading-6 text-[color:var(--foreground)]">
-                            {message.metadata?.plan.summary}
-                          </div>
+                          <MarkdownContent content={() => message.metadata?.plan.summary ?? ""} />
                           <div class="mt-3 grid gap-2 text-[0.675rem] text-[color:var(--muted)] md:grid-cols-2">
                             <div>Route: {message.metadata?.plan.route}</div>
                             <div>Difficulty: {message.metadata?.plan.difficultyScore}%</div>
@@ -1036,9 +1038,7 @@ export function ChatPanel(props: ChatPanelProps) {
                       <div class="mb-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-[color:var(--accent-strong)]">
                         assistant (streaming)
                       </div>
-                      <div class="whitespace-pre-wrap text-[0.675rem] leading-6 text-[color:var(--foreground)]">
-                        {project().streamingAssistantText}
-                      </div>
+                      <MarkdownContent content={() => project().streamingAssistantText} size="compact" live />
                     </article>
                   </Show>
                     </div>
@@ -1129,7 +1129,7 @@ export function ChatPanel(props: ChatPanelProps) {
                               Open plan
                             </ActionButton>
                           </div>
-                          <div class="mt-3">{plan().summary}</div>
+                          <MarkdownContent content={() => plan().summary} class="mt-3" size="compact" />
                         </div>
                       )}
                     </Show>
@@ -1152,10 +1152,10 @@ export function ChatPanel(props: ChatPanelProps) {
                           <div class="font-semibold">{task.title}</div>
                           <div class="text-[color:var(--muted)]">Status: {task.status} | Attempts: {task.attemptCount}</div>
                           <Show when={task.output}>
-                            <div class="mt-2 whitespace-pre-wrap">{task.output}</div>
+                            <MarkdownContent content={() => task.output ?? ""} class="mt-2" size="compact" />
                           </Show>
                           <Show when={task.errorMessage}>
-                            <div class="mt-2 whitespace-pre-wrap text-rose-900/80">{task.errorMessage}</div>
+                            <MarkdownContent content={() => task.errorMessage ?? ""} class="mt-2" size="compact" tone="danger" />
                           </Show>
                         </div>
                       )}
@@ -1181,9 +1181,9 @@ export function ChatPanel(props: ChatPanelProps) {
                               <span>{trace.stage}</span>
                               <span>{trace.modelId ?? "n/a"}</span>
                             </div>
-                            <div class="whitespace-pre-wrap text-[0.675rem] leading-5 text-[color:var(--foreground)]">{trace.message}</div>
+                            <MarkdownContent content={() => trace.message} size="compact" />
                             <Show when={trace.detail}>
-                              <div class="mt-2 whitespace-pre-wrap text-[0.675rem] leading-5 text-[color:var(--muted)]">{trace.detail}</div>
+                              <MarkdownContent content={() => trace.detail ?? ""} class="mt-2" size="compact" tone="muted" />
                             </Show>
                           </article>
                         )}
@@ -1300,7 +1300,7 @@ export function ChatPanel(props: ChatPanelProps) {
                 class="hidden"
                 type="file"
                 multiple
-                accept="image/*,.txt,.md,.markdown,.json,.yml,.yaml,.xml,.html,.css,.js,.jsx,.ts,.tsx,.mjs,.cjs,.py,.rb,.go,.rs,.java,.kt,.swift,.sql,.sh,.bash,.zsh,.ini,.toml,.env,.csv,.log"
+                accept="image/*,.pdf,.docx,.xlsx,.pptx,.odt,.txt,.md,.markdown,.json,.yml,.yaml,.xml,.html,.css,.js,.jsx,.ts,.tsx,.mjs,.cjs,.py,.rb,.go,.rs,.java,.kt,.swift,.sql,.sh,.bash,.zsh,.ini,.toml,.env,.csv,.log"
                 onChange={handleSelectAttachments}
               />
 
@@ -1360,7 +1360,7 @@ export function ChatPanel(props: ChatPanelProps) {
                 </div>
                 <div class="flex flex-wrap gap-2">
                   <ActionButton
-                    tooltip="Attach screenshots or text-like files"
+                    tooltip="Attach screenshots, PDFs, or office docs"
                     disabledReason={attachmentButtonReason()}
                     disabled={attachmentButtonDisabled()}
                     icon={<Paperclip class="h-4 w-4" />}

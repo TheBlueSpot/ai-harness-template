@@ -3,6 +3,7 @@ import { mkdirSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import {
   agentRunStateSchema,
+  browserSessionSchema,
   correctnessReviewSchema,
   chatMessageSchema,
   chatAttachmentSchema,
@@ -15,6 +16,7 @@ import {
   executionPlanSchema,
   type AgentRunState,
   type AgentRunStatus,
+  type BrowserSession,
   type ChatMessage,
   type ChatAttachment,
   type ChatMessageKind,
@@ -133,6 +135,7 @@ type AgentRunRow = {
   failure_message: string | null;
   plan_json: string | null;
   correctness_review_json: string | null;
+  browser_sessions_json: string | null;
   created_at: string;
   updated_at: string;
   completed_at: string | null;
@@ -477,10 +480,11 @@ export class WorkspaceRepository {
           failure_message,
           plan_json,
           correctness_review_json,
+          browser_sessions_json,
           created_at,
           updated_at,
           completed_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?7, ?7, NULL)`
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?7, ?7, NULL)`
       )
       .run(runId, projectId, resolvedThreadId, "planning", latestUserPrompt, planningModelId ?? null, now);
 
@@ -726,6 +730,24 @@ export class WorkspaceRepository {
         executionPlan.executionModelId,
         now
       );
+
+    if (updated.changes === 0) {
+      throw new Error(`Unknown agent run: ${runId}`);
+    }
+
+    return this.readProjectSnapshot(projectId);
+  }
+
+  setAgentRunBrowserSessions(projectId: ProjectId, runId: string, browserSessions: BrowserSession[]) {
+    const now = new Date().toISOString();
+    const updated = this.db
+      .query(
+        `UPDATE agent_runs
+         SET browser_sessions_json = ?3,
+             updated_at = ?4
+         WHERE id = ?1 AND project_id = ?2`
+      )
+      .run(runId, projectId, JSON.stringify(browserSessions), now);
 
     if (updated.changes === 0) {
       throw new Error(`Unknown agent run: ${runId}`);
@@ -1152,6 +1174,7 @@ export class WorkspaceRepository {
         failure_message TEXT NULL,
         plan_json TEXT NULL,
         correctness_review_json TEXT NULL,
+        browser_sessions_json TEXT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         completed_at TEXT NULL,
@@ -1248,6 +1271,7 @@ export class WorkspaceRepository {
     this.addColumnIfMissing("agent_run_subtasks", "worktree_path", "TEXT NULL");
     this.addColumnIfMissing("agent_runs", "plan_json", "TEXT NULL");
     this.addColumnIfMissing("agent_runs", "correctness_review_json", "TEXT NULL");
+    this.addColumnIfMissing("agent_runs", "browser_sessions_json", "TEXT NULL");
 
     this.db.exec(`DROP INDEX IF EXISTS project_threads_active_project_idx;`);
     this.db.exec(`UPDATE project_threads SET status = 'active' WHERE status = 'archived';`);
@@ -1538,6 +1562,7 @@ export class WorkspaceRepository {
         `SELECT
           id, project_id, thread_id, status, latest_user_prompt, planning_model_id, execution_model_id,
           difficulty_score, summary, final_execution_brief, failure_message, plan_json, correctness_review_json,
+          browser_sessions_json,
           created_at, updated_at, completed_at
          FROM agent_runs
          WHERE project_id = ?1 AND thread_id = ?2 AND status != 'completed'
@@ -1555,6 +1580,7 @@ export class WorkspaceRepository {
         `SELECT
           id, project_id, thread_id, status, latest_user_prompt, planning_model_id, execution_model_id,
           difficulty_score, summary, final_execution_brief, failure_message, plan_json, correctness_review_json,
+          browser_sessions_json,
           created_at, updated_at, completed_at
          FROM agent_runs
          WHERE project_id = ?1 AND thread_id = ?2
@@ -1628,6 +1654,7 @@ export class WorkspaceRepository {
       correctnessReview: parseCorrectnessReview(run.correctness_review_json),
       questions,
       subtasks,
+      browserSessions: parseBrowserSessions(run.browser_sessions_json),
       resumable: isRunResumable(run.status, hasExecutionState),
       retryable: isRunRetryable(run.status, hasExecutionState),
       createdAt: run.created_at,
@@ -2016,6 +2043,18 @@ function parseCorrectnessReview(input: string | null): CorrectnessReview | undef
 
   try {
     return correctnessReviewSchema.parse(JSON.parse(input));
+  } catch {
+    return undefined;
+  }
+}
+
+function parseBrowserSessions(input: string | null): BrowserSession[] | undefined {
+  if (!input) {
+    return undefined;
+  }
+
+  try {
+    return browserSessionSchema.array().parse(JSON.parse(input));
   } catch {
     return undefined;
   }

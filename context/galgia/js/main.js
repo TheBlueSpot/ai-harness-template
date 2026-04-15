@@ -21,6 +21,7 @@ let screenShakeIntensity = 0;
 let originalCameraPosition = new THREE.Vector3();
 
 function init() {
+    console.log("main.js loaded and init() called");
     // Scene setup
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x050510);
@@ -71,7 +72,7 @@ function startGame() {
     Enemies.reset();
     Bullets.reset();
     lastSpawnTime = performance.now() / 1000;
-    // console.log('Game Started!');
+    console.log('Game Started!');
 }
 
 function restartGame() {

@@ -3,6 +3,7 @@ import {
   createAgentSession,
   createCodingTools,
   createReadOnlyTools,
+  DefaultResourceLoader,
   ModelRegistry,
   SessionManager,
   SettingsManager,
@@ -10,6 +11,7 @@ import {
   type AgentSessionEvent
 } from "@mariozechner/pi-coding-agent";
 import type { ImageContent } from "@mariozechner/pi-ai";
+import { isBrowserToolName } from "./browser-session-state";
 import { debugLog } from "./logging";
 
 export type PiAgentPromptKind = "planner" | "executor" | "subagent" | "aggregator" | "merge-resolver";
@@ -24,6 +26,7 @@ export type PiAgentPromptRequest = {
   readOnly?: boolean;
   onTextDelta?: (delta: string) => void;
   onExecutionEvent?: (event: PiAgentExecutionEvent) => void;
+  requestBrowserApproval?: (input: { toolCallId: string; toolName: string; args: unknown }) => Promise<{ approved: boolean }>;
 };
 
 export type PiAgentPromptResult = {
@@ -39,8 +42,9 @@ export type PiAgentPromptResult = {
 export type PiAgentExecutionEvent =
   | { type: "session-created" }
   | { type: "activity" }
-  | { type: "tool-start"; toolName: string }
-  | { type: "tool-end"; toolName: string; isError: boolean };
+  | { type: "tool-start"; toolCallId: string; toolName: string; args: unknown }
+  | { type: "tool-update"; toolCallId: string; toolName: string; args: unknown; partialResult: unknown }
+  | { type: "tool-end"; toolCallId: string; toolName: string; result: unknown; isError: boolean };
 
 export interface PiAgentExecutionController {
   readonly result: Promise<PiAgentPromptResult>;
@@ -97,12 +101,16 @@ export class PiSdkAgentAdapter implements PiAgentAdapter {
   async startExecution(request: PiAgentPromptRequest): Promise<PiAgentExecutionController> {
     const model = this.resolveOpenAiModel(request.modelId);
     const toolset = request.readOnly ? createReadOnlyTools(request.cwd) : createCodingTools(request.cwd);
+    const resourceLoader = request.requestBrowserApproval
+      ? await this.createResourceLoader(request)
+      : undefined;
     const { session } = await createAgentSession({
       cwd: request.cwd,
       authStorage: this.authStorage,
       modelRegistry: this.modelRegistry,
       model,
       tools: toolset,
+      resourceLoader,
       sessionManager: SessionManager.inMemory(request.cwd),
       settingsManager: this.settingsManager
     });
@@ -136,7 +144,9 @@ export class PiSdkAgentAdapter implements PiAgentAdapter {
       request.onExecutionEvent?.({ type: "activity" });
       request.onExecutionEvent?.({
         type: "tool-start",
-        toolName: event.toolName
+        toolCallId: event.toolCallId,
+        toolName: event.toolName,
+        args: event.args
       });
       debugLog("agent.tool.start", {
         kind: request.kind,
@@ -146,11 +156,25 @@ export class PiSdkAgentAdapter implements PiAgentAdapter {
       return;
     }
 
+    if (event.type === "tool_execution_update") {
+      request.onExecutionEvent?.({ type: "activity" });
+      request.onExecutionEvent?.({
+        type: "tool-update",
+        toolCallId: event.toolCallId,
+        toolName: event.toolName,
+        args: event.args,
+        partialResult: event.partialResult
+      });
+      return;
+    }
+
     if (event.type === "tool_execution_end") {
       request.onExecutionEvent?.({ type: "activity" });
       request.onExecutionEvent?.({
         type: "tool-end",
+        toolCallId: event.toolCallId,
         toolName: event.toolName,
+        result: event.result,
         isError: event.isError
       });
       debugLog("agent.tool.end", {
@@ -160,6 +184,38 @@ export class PiSdkAgentAdapter implements PiAgentAdapter {
         isError: event.isError
       });
     }
+  }
+
+  private async createResourceLoader(request: PiAgentPromptRequest) {
+    const loader = new DefaultResourceLoader({
+      cwd: request.cwd,
+      settingsManager: this.settingsManager,
+      extensionFactories: [
+        (pi) => {
+          pi.on("tool_call", async (event) => {
+            if (!request.requestBrowserApproval || !isBrowserToolName(event.toolName)) {
+              return;
+            }
+
+            const decision = await request.requestBrowserApproval({
+              toolCallId: event.toolCallId,
+              toolName: event.toolName,
+              args: event.input
+            });
+            if (decision.approved) {
+              return;
+            }
+
+            return {
+              block: true,
+              reason: "Browser action rejected in harness approval gate"
+            };
+          });
+        }
+      ]
+    });
+    await loader.reload();
+    return loader;
   }
 
 }

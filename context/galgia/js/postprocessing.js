@@ -8,12 +8,12 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 // Specific post-processing effects
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
-import { ChromaticAberrationShader } from 'three/addons/shaders/ChromaticAberrationShader.js';
+
 import { GlitchPass } from 'three/addons/postprocessing/GlitchPass.js';
 import { VignetteShader } from 'three/addons/shaders/VignetteShader.js';
 import { FilmShader } from 'three/addons/shaders/FilmShader.js';
-import { RGBShiftShader } from 'three/addons/shaders/RGBShiftShader.js';
-import { PixelShader } from 'three/addons/shaders/PixelShader.js';
+import { RGBShiftShader } from 'three/examples/jsm/shaders/RGBShiftShader.js';
+import { PixelShader } from 'three/examples/jsm/shaders/PixelShader.js';
 import { BokehShader } from 'three/addons/shaders/BokehShader.js'; // Radial Blur approximation
 import { CopyShader } from 'three/addons/shaders/CopyShader.js';
 
@@ -148,10 +148,10 @@ export const PostProcessing = {
         this.composer.addPass(this.bloomPass);
 
         // 2. Chromatic Aberration
-        this.chromaticAberrationPass = new ShaderPass(ChromaticAberrationShader);
+        this.chromaticAberrationPass = new ShaderPass(RGBShiftShader);
         this.chromaticAberrationPass.uniforms['resolution'].value.set(width, height);
-        this.chromaticAberrationPass.uniforms['radialIntensity'].value = 0.5;
-        this.chromaticAberrationPass.uniforms['scatter'].value = 0.5;
+        this.chromaticAberrationPass.uniforms['amount'].value = 0.002;
+        this.chromaticAberrationPass.uniforms['angle'].value = 0.0;
         this.composer.addPass(this.chromaticAberrationPass);
 
         // 3. CRT Scanlines (using custom shader for now, will enhance)
@@ -228,11 +228,7 @@ export const PostProcessing = {
         // this.retroDitheringPass = new ShaderPass(ditheringShader);
         // this.composer.addPass(this.retroDitheringPass);
 
-        // 19. Chromatic Distortion (Can use RGBShiftShader or enhance ChromaticAberration)
-        this.rgbShiftPass = new ShaderPass(RGBShiftShader);
-        this.rgbShiftPass.uniforms['amount'].value = 0.002; // Small shift for subtle distortion
-        this.rgbShiftPass.uniforms['angle'].value = 0.0;
-        this.composer.addPass(this.rgbShiftPass);
+
 
         // 20. Heat Haze (Complex, custom shader with noise and distortion. Placeholder)
         // this.heatHazePass = ...;
@@ -293,7 +289,7 @@ export const PostProcessing = {
     setSize(width, height) {
         this.composer.setSize(width, height);
         if (this.bloomPass) this.bloomPass.resolution.set(width, height);
-        if (this.chromaticAberrationPass) this.chromaticAberrationPass.uniforms['resolution'].value.set(width, height);
+        if (this.chromaticAberrationPass) { this.chromaticAberrationPass.uniforms['resolution'].value.set(width, height); }
         if (this.crtPass) this.crtPass.uniforms['resolution'].value.set(width, height);
         if (this.pixelatePass) this.pixelatePass.uniforms['resolution'].value.set(width, height);
     },

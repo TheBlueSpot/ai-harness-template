@@ -244,7 +244,7 @@ createUiTest("ChatPanel", () => {
   it("shows streaming assistant text only when a stream exists", () => {
     const project = createViewProjectFixture({
       id: "project-stream",
-      streamingAssistantText: "partial output"
+      streamingAssistantText: "# Partial output"
     });
     seedHarnessStoreForTests(
       createHarnessStateFixture({
@@ -257,7 +257,7 @@ createUiTest("ChatPanel", () => {
 
     render(() => <ChatPanel sendCommand={() => undefined} />);
     expect(screen.getByText("assistant (streaming)")).not.toBeNull();
-    expect(screen.getByText("partial output")).not.toBeNull();
+    expect(screen.getByRole("heading", { name: "Partial output" })).not.toBeNull();
 
     const clearedProject = createViewProjectFixture({
       ...project,
@@ -282,6 +282,63 @@ createUiTest("ChatPanel", () => {
     cleanup();
     render(() => <ChatPanel sendCommand={() => undefined} />);
     expect(screen.queryByText("assistant (streaming)")).toBeNull();
+  });
+
+  it("renders streamed markdown content from chat.delta state", async () => {
+    const project = createViewProjectFixture({
+      id: "project-stream-delta",
+      session: {
+        ...createViewProjectFixture().session,
+        messages: []
+      }
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ChatPanel sendCommand={() => undefined} />);
+    harnessStore.applyServerEvent({
+      type: "chat.delta",
+      requestId: "req-stream-delta",
+      payload: {
+        projectId: project.id,
+        threadId: project.activeThreadId,
+        sessionId: project.session.sessionId,
+        delta: "```ts\nconst streamed = true;\n```"
+      }
+    });
+
+    cleanup();
+    render(() => <ChatPanel sendCommand={() => undefined} />);
+    expect(screen.getByRole("button", { name: "Copy code block" })).not.toBeNull();
+    expect(document.querySelector(".markdown-code-content")?.textContent).toContain("const streamed = true;");
+  });
+
+  it("renders transcript markdown instead of raw plain text", () => {
+    const project = createViewProjectFixture({
+      id: "project-markdown",
+      session: {
+        ...createViewProjectFixture().session,
+        messages: [createChatMessage("assistant", "Use **bold** and [docs](https://example.com).")]
+      }
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ChatPanel sendCommand={() => undefined} />);
+    expect(screen.getByText("bold").tagName).toBe("STRONG");
+    expect(screen.getByRole("link", { name: "docs" }).getAttribute("target")).toBe("_blank");
   });
 
   it("stops treating the thread as streaming after chat.message-appended resets isStreaming", () => {

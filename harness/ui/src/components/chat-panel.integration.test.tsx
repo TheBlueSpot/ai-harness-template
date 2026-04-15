@@ -95,6 +95,7 @@ createUiTest("ChatPanel followup integration", () => {
     expect(screen.queryByText("assistant (streaming)")).toBeNull();
     cleanup();
     render(() => <ChatPanel sendCommand={(command) => commands.push(command)} />);
+    expect(screen.getAllByText(plan.summary).length).toBeGreaterThan(0);
     expect(harnessStore.state.workspace.projects[0]?.session.isStreaming).toBe(false);
     expect((screen.getByRole("button", { name: "Refine plan before execution" }) as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "Refine plan before execution" }));

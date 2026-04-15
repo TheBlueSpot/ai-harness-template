@@ -7,8 +7,18 @@ import type {
   PiAgentPromptRequest,
   PiAgentPromptResult
 } from "./pi-agent-adapter";
+import {
+  createDataUrl,
+  createSampleDocxBuffer,
+  createSampleOdtBuffer,
+  createSamplePdfBuffer,
+  createSamplePptxBuffer,
+  createSampleXlsxBuffer
+} from "./document-extractors/test-fixtures";
 import { startHarnessServer } from "./server";
 import { WorkspaceRepository } from "./workspace-repository";
+
+const EXPECT_ATTACHMENTS_ENABLED = Boolean(Bun.env.UPLOADTHING_TOKEN?.trim());
 
 class FakePiAgentAdapter implements PiAgentAdapter {
   readonly calls: PiAgentPromptRequest[] = [];
@@ -365,7 +375,7 @@ describe("harness server", () => {
     expect(ready.payload.preferences.planExecutionModeDefault).toBe("countdown");
     expect(ready.payload.preferences.planExecutionDelaySecondsDefault).toBe(10);
     expect(ready.payload.preferences.correctnessIterationModeDefault).toBe("ask-before-iterate");
-    expect(ready.payload.preferences.attachmentsEnabled).toBe(false);
+    expect(ready.payload.preferences.attachmentsEnabled).toBe(EXPECT_ATTACHMENTS_ENABLED);
     socket.close();
   });
 
@@ -404,7 +414,7 @@ describe("harness server", () => {
     expect(saved.payload.debugEnabledDefault).toBe(true);
     expect(saved.payload.tracePanelDefaultOpen).toBe(false);
     expect(saved.payload.uiModeDefault).toBe("advanced");
-    expect(saved.payload.attachmentsEnabled).toBe(false);
+    expect(saved.payload.attachmentsEnabled).toBe(EXPECT_ATTACHMENTS_ENABLED);
     expect(saved.payload.subagentWorktreeStrategyDefault).toBe("separate-worktrees");
     expect(saved.payload.blockChatOnDirtyGitDefault).toBe(false);
     expect(saved.payload.dirtyGitChangeLimitDefault).toBe(9);
@@ -585,6 +595,138 @@ describe("harness server", () => {
     expect(adapter.calls[0]?.prompt).toContain("Ship the smallest safe fix");
     expect(adapter.calls[0]?.images).toHaveLength(1);
     expect(adapter.calls[0]?.images?.[0]?.mimeType).toBe("image/png");
+    socket.close();
+  });
+
+  test("chat.send forwards extracted office document context into planner prompts", async () => {
+    const socket = createSocket(port);
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot, "req-doc-open");
+    const readyPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "ready");
+
+    socket.send(
+      JSON.stringify(
+        createChatSendCommand({
+          requestId: "req-doc-send",
+          projectId: opened.payload.project.id,
+          threadId: opened.payload.project.activeThreadId,
+          content: "Use attached office docs",
+          attachments: [
+            {
+              id: "attachment-pdf",
+              kind: "document",
+              documentType: "pdf",
+              name: "spec.pdf",
+              mimeType: "application/pdf",
+              sizeBytes: createSamplePdfBuffer().length,
+              url: createDataUrl("application/pdf", createSamplePdfBuffer()),
+              key: "attachment-pdf",
+              uploadedAt: new Date().toISOString()
+            },
+            {
+              id: "attachment-docx",
+              kind: "document",
+              documentType: "docx",
+              name: "brief.docx",
+              mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              sizeBytes: createSampleDocxBuffer().length,
+              url: createDataUrl(
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                createSampleDocxBuffer()
+              ),
+              key: "attachment-docx",
+              uploadedAt: new Date().toISOString()
+            },
+            {
+              id: "attachment-xlsx",
+              kind: "document",
+              documentType: "xlsx",
+              name: "backlog.xlsx",
+              mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+              sizeBytes: createSampleXlsxBuffer().length,
+              url: createDataUrl(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                createSampleXlsxBuffer()
+              ),
+              key: "attachment-xlsx",
+              uploadedAt: new Date().toISOString()
+            },
+            {
+              id: "attachment-pptx",
+              kind: "document",
+              documentType: "pptx",
+              name: "deck.pptx",
+              mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+              sizeBytes: createSamplePptxBuffer().length,
+              url: createDataUrl(
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                createSamplePptxBuffer()
+              ),
+              key: "attachment-pptx",
+              uploadedAt: new Date().toISOString()
+            },
+            {
+              id: "attachment-odt",
+              kind: "document",
+              documentType: "odt",
+              name: "notes.odt",
+              mimeType: "application/vnd.oasis.opendocument.text",
+              sizeBytes: createSampleOdtBuffer().length,
+              url: createDataUrl("application/vnd.oasis.opendocument.text", createSampleOdtBuffer()),
+              key: "attachment-odt",
+              uploadedAt: new Date().toISOString()
+            }
+          ]
+        })
+      )
+    );
+
+    await readyPromise;
+
+    expect(adapter.calls[0]?.prompt).toContain("Hello PDF extraction");
+    expect(adapter.calls[0]?.prompt).toContain("Docx intro");
+    expect(adapter.calls[0]?.prompt).toContain("Sheet: Backlog");
+    expect(adapter.calls[0]?.prompt).toContain("Slide 1");
+    expect(adapter.calls[0]?.prompt).toContain("ODT heading");
+    socket.close();
+  });
+
+  test("chat.send keeps malformed document attachments explicit without crashing planning", async () => {
+    const socket = createSocket(port);
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot, "req-bad-doc-open");
+    const readyPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "ready");
+
+    socket.send(
+      JSON.stringify(
+        createChatSendCommand({
+          requestId: "req-bad-doc-send",
+          projectId: opened.payload.project.id,
+          threadId: opened.payload.project.activeThreadId,
+          content: "Handle malformed document",
+          attachments: [
+            {
+              id: "attachment-bad-docx",
+              kind: "document",
+              documentType: "docx",
+              name: "broken.docx",
+              mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              sizeBytes: 9,
+              url: createDataUrl(
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                Buffer.from("not-a-zip")
+              ),
+              key: "attachment-bad-docx",
+              uploadedAt: new Date().toISOString()
+            }
+          ]
+        })
+      )
+    );
+
+    await readyPromise;
+
+    expect(adapter.calls[0]?.prompt).toContain("[Attachment document unavailable] broken.docx:");
     socket.close();
   });
 
@@ -1317,7 +1459,8 @@ function createChatSendCommand(input: {
   content: string;
   attachments?: Array<{
     id: string;
-    kind: "image" | "text";
+    kind: "image" | "text" | "document";
+    documentType?: "pdf" | "docx" | "xlsx" | "pptx" | "odt";
     name: string;
     mimeType: string;
     sizeBytes: number;

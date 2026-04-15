@@ -4,7 +4,7 @@ import { GitWorktreeManager } from "./git-worktree-manager";
 import { debugLog } from "./logging";
 import { runManagedAgentExecution } from "./managed-agent-execution";
 import { getDefaultSubagentModelId } from "./pi-planner";
-import type { PiAgentAdapter } from "./pi-agent-adapter";
+import type { PiAgentAdapter, PiAgentExecutionEvent } from "./pi-agent-adapter";
 
 export type SubagentResult = {
   id: string;
@@ -31,6 +31,14 @@ export type SubagentProgressCallbacks = {
   setExecutionState?: (state: ManagedExecutionState) => void;
   getExecutionState?: (input: Pick<ManagedExecutionState, "runId" | "kind" | "subagentId">) => ManagedExecutionState | undefined;
   clearExecutionState?: (input: Pick<ManagedExecutionState, "runId" | "kind" | "subagentId">) => void;
+  onExecutionEvent?: (input: { owner: "subagent"; subagentId: string; event: PiAgentExecutionEvent }) => void | Promise<void>;
+  requestBrowserApproval?: (input: {
+    owner: "subagent";
+    subagentId: string;
+    toolCallId: string;
+    toolName: string;
+    args: unknown;
+  }) => Promise<{ approved: boolean }>;
 };
 
 const MAX_CONCURRENCY = 4;
@@ -135,13 +143,41 @@ async function executeSubagentWithRetry(
           kind: "subagent",
           cwd: lease.worktreePath,
           modelId: subagentModelId,
-          prompt: basePrompt
+          prompt: basePrompt,
+          onExecutionEvent(event: PiAgentExecutionEvent) {
+            void options.callbacks?.onExecutionEvent?.({
+              owner: "subagent",
+              subagentId: task.id,
+              event
+            });
+          },
+          requestBrowserApproval(input: { toolCallId: string; toolName: string; args: unknown }) {
+            return options.callbacks?.requestBrowserApproval?.({
+              owner: "subagent",
+              subagentId: task.id,
+              ...input
+            }) ?? Promise.resolve({ approved: true });
+          }
         },
         continuationRequest: {
           kind: "subagent",
           cwd: lease.worktreePath,
           modelId: subagentModelId,
-          prompt: ["continue", "", basePrompt].join("\n")
+          prompt: ["continue", "", basePrompt].join("\n"),
+          onExecutionEvent(event: PiAgentExecutionEvent) {
+            void options.callbacks?.onExecutionEvent?.({
+              owner: "subagent",
+              subagentId: task.id,
+              event
+            });
+          },
+          requestBrowserApproval(input: { toolCallId: string; toolName: string; args: unknown }) {
+            return options.callbacks?.requestBrowserApproval?.({
+              owner: "subagent",
+              subagentId: task.id,
+              ...input
+            }) ?? Promise.resolve({ approved: true });
+          }
         },
         abortSignal: options.abortSignal,
         store: createExecutionStore(options.callbacks, options.runId, task.id, {

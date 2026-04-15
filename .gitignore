@@ -5,4 +5,4 @@ harness/ui/dist
 .local
 .tmp-test-data
 .DS_Store
-
+.env

@@ -279,6 +279,59 @@ describe("workspace repository", () => {
     expect(restoredProject.activeRun?.resumable).toBe(true);
   });
 
+  test("persists browser sessions on active runs across reload", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+
+    repository.appendMessage(project.id, "user", "verify ui");
+    const withRun = repository.createAgentRun(project.id, "verify ui", "openai/gpt-5.4");
+    const runId = withRun.activeRun?.id;
+    expect(runId).toBeDefined();
+
+    repository.setAgentRunBrowserSessions(project.id, runId!, [
+      {
+        id: "browser-session-1",
+        runId: runId!,
+        owner: "main",
+        status: "awaiting-approval",
+        approvalMode: "per-tool",
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        pendingApproval: {
+          toolCallId: "tool-call-1",
+          toolName: "playwright-browser",
+          kind: "navigate",
+          label: "Open https://example.com",
+          inputSummary: "{\"url\":\"https://example.com\"}",
+          status: "pending",
+          requestedAt: new Date().toISOString()
+        },
+        activities: [
+          {
+            id: "browser-activity-1",
+            toolCallId: "tool-call-1",
+            toolName: "playwright-browser",
+            kind: "navigate",
+            label: "Open https://example.com",
+            inputSummary: "{\"url\":\"https://example.com\"}",
+            status: "pending-approval",
+            startedAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            replay: [],
+            verification: []
+          }
+        ]
+      }
+    ]);
+
+    const reloadedRepository = new WorkspaceRepository((repository as any).dbPath, process.cwd());
+    const restoredProject = reloadedRepository.getProject(project.id);
+
+    expect(restoredProject.activeRun?.browserSessions).toHaveLength(1);
+    expect(restoredProject.activeRun?.browserSessions?.[0]?.pendingApproval?.toolCallId).toBe("tool-call-1");
+    expect(restoredProject.activeRun?.browserSessions?.[0]?.activities[0]?.status).toBe("pending-approval");
+  });
+
   test("normalizes doubled Windows separators", () => {
     expect(normalizeWindowsEscapedPath("C:\\\\repo\\\\project")).toBe("C:\\repo\\project");
     expect(normalizeWindowsEscapedPath("C:\\repo\\project")).toBe("C:\\repo\\project");

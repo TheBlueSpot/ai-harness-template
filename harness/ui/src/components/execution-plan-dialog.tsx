@@ -1,6 +1,7 @@
 import { For, Show } from "solid-js";
 import type { ExecutionPlan } from "../../../shared/protocol";
 import { harnessStore } from "../harness-store";
+import { MarkdownContent } from "./markdown-content";
 import { Dialog } from "./ui/dialog";
 
 type ExecutionPlanDialogProps = {
@@ -44,14 +45,14 @@ export function ExecutionPlanDialog(props: ExecutionPlanDialogProps) {
               <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-[color:var(--muted)]">
                 Summary
               </div>
-              <div class="mt-2 whitespace-pre-wrap">{executionPlan().summary}</div>
+              <MarkdownContent content={() => executionPlan().summary} class="mt-2" />
             </section>
 
             <section>
               <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-[color:var(--muted)]">
                 Execution brief
               </div>
-              <div class="mt-2 whitespace-pre-wrap">{executionPlan().finalExecutionBrief}</div>
+              <MarkdownContent content={() => executionPlan().finalExecutionBrief} class="mt-2" />
             </section>
 
             <section>
@@ -67,8 +68,9 @@ export function ExecutionPlanDialog(props: ExecutionPlanDialogProps) {
                     {(prerequisite) => (
                       <div class="rounded-2xl border border-[color:var(--border)] bg-white/60 p-3">
                         <div class="font-semibold">{prerequisite.title}</div>
-                        <div class="mt-1 text-[color:var(--muted)]">{prerequisite.instruction}</div>
-                        <div class="mt-1 text-[color:var(--muted)]">Reason: {prerequisite.reason}</div>
+                        <MarkdownContent content={() => prerequisite.instruction} class="mt-1" tone="muted" size="compact" />
+                        <div class="mt-1 text-[color:var(--muted)]">Reason:</div>
+                        <MarkdownContent content={() => prerequisite.reason} tone="muted" size="compact" />
                         <div class="mt-1 text-[color:var(--muted)]">Owner: {prerequisite.owner}</div>
                       </div>
                     )}
@@ -86,7 +88,7 @@ export function ExecutionPlanDialog(props: ExecutionPlanDialogProps) {
                   {(contract) => (
                     <div class="rounded-2xl border border-[color:var(--border)] bg-white/60 p-3">
                       <div class="font-semibold">{contract.title}</div>
-                      <div class="mt-1 whitespace-pre-wrap text-[color:var(--muted)]">{contract.instruction}</div>
+                      <MarkdownContent content={() => contract.instruction} class="mt-1" tone="muted" size="compact" />
                       <div class="mt-1 text-[color:var(--muted)]">Owned paths: {contract.ownedPaths.join(", ")}</div>
                       <div class="mt-1 text-[color:var(--muted)]">Deliverables: {contract.deliverables.join(", ")}</div>
                       <div class="mt-1 text-[color:var(--muted)]">Integrates with: {contract.integrationPoints.join(", ") || "none"}</div>

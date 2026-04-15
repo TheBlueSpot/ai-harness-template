@@ -21,6 +21,7 @@ Client commands are restricted to a fixed set of actions:
 - run resume
 - run retry
 - run refresh
+- browser approval resolve
 - chat stop
 - session reset as legacy alias for thread create
 
@@ -96,6 +97,15 @@ Refresh requests carry:
 - run id
 - optional subagent id
 
+Browser approval requests carry:
+
+- project id
+- thread id
+- run id
+- browser session id
+- tool call id
+- approval decision
+
 Thread management requests carry:
 
 - project id
@@ -157,6 +167,7 @@ Run update events report:
 - project id
 - thread id
 - run status
+- persisted browser sessions and pending browser approvals when present
 - persisted planning questions
 - persisted subtask progress
 - persisted execution plan when available
@@ -199,3 +210,6 @@ Each question must include exactly three typed choices and exactly one recommend
 Plan presentation and execution are split.
 `chat.send`, `planning.answer`, and `planning.refine` can end with run status `ready` after plan persistence and plan-summary delivery.
 Execution begins only after `run.execute` or an approved auto-run policy on the client side.
+
+Browser approvals are explicit when browser-capable tools are active.
+The UI resolves those approvals through a typed command, and the active run updates in place with session activity plus approval state.

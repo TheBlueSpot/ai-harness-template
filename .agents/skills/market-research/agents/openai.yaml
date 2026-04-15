@@ -1,0 +1,4 @@
+interface:
+  display_name: "Market Research"
+  short_description: "Research links and refine roadmap bets"
+  default_prompt: "Use $market-research to analyze these links, summarize PMF signals, and update our roadmap todos."

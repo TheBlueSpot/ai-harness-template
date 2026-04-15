@@ -24,7 +24,7 @@ import type { ManagedExecutionState, ManagedRefreshAction } from "./execution-ru
 import { GitWorktreeManager } from "./git-worktree-manager";
 import { debugLog } from "./logging";
 import { runManagedAgentExecution } from "./managed-agent-execution";
-import type { PiAgentAdapter } from "./pi-agent-adapter";
+import type { PiAgentAdapter, PiAgentExecutionEvent } from "./pi-agent-adapter";
 import {
   getDefaultPlanningModelId,
   getDefaultSubagentModelId,
@@ -43,6 +43,18 @@ export type PiOrchestratorCallbacks = {
   setExecutionState?: (state: ManagedExecutionState) => void;
   getExecutionState?: (input: Pick<ManagedExecutionState, "runId" | "kind" | "subagentId">) => ManagedExecutionState | undefined;
   clearExecutionState?: (input: Pick<ManagedExecutionState, "runId" | "kind" | "subagentId">) => void;
+  onExecutionEvent?: (input: {
+    owner: "main" | "subagent" | "aggregator";
+    subagentId?: string;
+    event: PiAgentExecutionEvent;
+  }) => void | Promise<void>;
+  requestBrowserApproval?: (input: {
+    owner: "main" | "subagent" | "aggregator";
+    subagentId?: string;
+    toolCallId: string;
+    toolName: string;
+    args: unknown;
+  }) => Promise<{ approved: boolean }>;
 };
 
 export type PlannerTurnOutcome = {
@@ -471,13 +483,41 @@ async function executeSameWorktreeSubagents(
           kind: "subagent",
           cwd: options.cwd,
           modelId: subagentModelId,
-          prompt: basePrompt
+          prompt: basePrompt,
+          onExecutionEvent(event: PiAgentExecutionEvent) {
+            void options.callbacks?.onExecutionEvent?.({
+              owner: "subagent",
+              subagentId: task.id,
+              event
+            });
+          },
+          requestBrowserApproval(input: { toolCallId: string; toolName: string; args: unknown }) {
+            return options.callbacks?.requestBrowserApproval?.({
+              owner: "subagent",
+              subagentId: task.id,
+              ...input
+            }) ?? Promise.resolve({ approved: true });
+          }
         },
         continuationRequest: {
           kind: "subagent",
           cwd: options.cwd,
           modelId: subagentModelId,
-          prompt: ["continue", "", basePrompt].join("\n")
+          prompt: ["continue", "", basePrompt].join("\n"),
+          onExecutionEvent(event: PiAgentExecutionEvent) {
+            void options.callbacks?.onExecutionEvent?.({
+              owner: "subagent",
+              subagentId: task.id,
+              event
+            });
+          },
+          requestBrowserApproval(input: { toolCallId: string; toolName: string; args: unknown }) {
+            return options.callbacks?.requestBrowserApproval?.({
+              owner: "subagent",
+              subagentId: task.id,
+              ...input
+            }) ?? Promise.resolve({ approved: true });
+          }
         },
         abortSignal: options.abortSignal,
         store: createExecutionStore(options.callbacks, options.runId, "subagent", task.id)
@@ -578,6 +618,18 @@ async function executeMainAgent(
     images: executionInput.images,
     onTextDelta(delta: string) {
       options.callbacks?.onDelta?.(delta);
+    },
+    onExecutionEvent(event: PiAgentExecutionEvent) {
+      void options.callbacks?.onExecutionEvent?.({
+        owner: "main",
+        event
+      });
+    },
+    requestBrowserApproval(input: { toolCallId: string; toolName: string; args: unknown }) {
+      return options.callbacks?.requestBrowserApproval?.({
+        owner: "main",
+        ...input
+      }) ?? Promise.resolve({ approved: true });
     }
   };
   const result = await runManagedAgentExecution(adapter, {
@@ -717,6 +769,18 @@ export async function aggregateSubagentResults(
       images: executionInput.images,
       onTextDelta(delta: string) {
         options.callbacks?.onDelta?.(delta);
+      },
+      onExecutionEvent(event: PiAgentExecutionEvent) {
+        void options.callbacks?.onExecutionEvent?.({
+          owner: "aggregator",
+          event
+        });
+      },
+      requestBrowserApproval(input: { toolCallId: string; toolName: string; args: unknown }) {
+        return options.callbacks?.requestBrowserApproval?.({
+          owner: "aggregator",
+          ...input
+        }) ?? Promise.resolve({ approved: true });
       }
     },
     continuationRequest: {
@@ -731,6 +795,18 @@ export async function aggregateSubagentResults(
       images: executionInput.images,
       onTextDelta(delta: string) {
         options.callbacks?.onDelta?.(delta);
+      },
+      onExecutionEvent(event: PiAgentExecutionEvent) {
+        void options.callbacks?.onExecutionEvent?.({
+          owner: "aggregator",
+          event
+        });
+      },
+      requestBrowserApproval(input: { toolCallId: string; toolName: string; args: unknown }) {
+        return options.callbacks?.requestBrowserApproval?.({
+          owner: "aggregator",
+          ...input
+        }) ?? Promise.resolve({ approved: true });
       }
     },
     abortSignal: options.abortSignal,

@@ -13,7 +13,36 @@ createUiTest("ExecutionPlanDialog", () => {
   });
 
   it("renders execution plan details from store state", () => {
-    const plan = createExecutionPlanFixture();
+    const plan = createExecutionPlanFixture({
+      summary: "# Ship markdown",
+      finalExecutionBrief: "Use **safe** markdown.",
+      prerequisites: [
+        {
+          id: "prereq-1",
+          title: "Prep",
+          instruction: "- install deps",
+          reason: "Need [docs](https://example.com)",
+          requiredForTaskIds: ["task-1"],
+          owner: "main",
+          status: "pending"
+        }
+      ],
+      contracts: [
+        {
+          taskId: "task-1",
+          title: "Inspect",
+          instruction: "Render ```ts\ncode\n```",
+          effortPoints: 2,
+          ownedPaths: ["src"],
+          dependsOnPrerequisiteIds: ["prereq-1"],
+          deliverables: ["inspection"],
+          integrationPoints: ["chat"],
+          verificationScope: "owned-files-only",
+          verificationCommands: ["bun test"],
+          mergeNotes: "Merge cleanly"
+        }
+      ]
+    });
     seedHarnessStoreForTests(
       createHarnessStateFixture({
         executionPlanDialogOpen: true,
@@ -25,9 +54,11 @@ createUiTest("ExecutionPlanDialog", () => {
 
     const dialog = screen.getByRole("dialog", { name: "Execution plan" });
     expect(dialog).not.toBeNull();
-    expect(screen.getByText(plan.summary)).not.toBeNull();
+    expect(screen.getByRole("heading", { name: "Ship markdown" })).not.toBeNull();
+    expect(screen.getByText("safe").tagName).toBe("STRONG");
     expect(screen.getByText(plan.prerequisites[0]!.title)).not.toBeNull();
     expect(screen.getByText(plan.contracts[0]!.title)).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Copy code block" })).not.toBeNull();
     expect(dialog.querySelector(".max-h-\\[80vh\\]")).not.toBeNull();
     expect(dialog.querySelector(".overflow-auto")).not.toBeNull();
   });
