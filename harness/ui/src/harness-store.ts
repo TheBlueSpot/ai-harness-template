@@ -21,6 +21,8 @@ export const PROVIDER_BRAND_STORAGE_KEY = "provider_brand";
 export const DEBUG_ENABLED_STORAGE_KEY = "debug_enabled";
 export const TRACE_PANEL_DEFAULT_OPEN_STORAGE_KEY = "trace_panel_default_open";
 export const SUBAGENT_WORKTREE_STRATEGY_DEFAULT_STORAGE_KEY = "subagent_worktree_strategy_default";
+export const BLOCK_CHAT_ON_DIRTY_GIT_DEFAULT_STORAGE_KEY = "block_chat_on_dirty_git_default";
+export const DIRTY_GIT_CHANGE_LIMIT_DEFAULT_STORAGE_KEY = "dirty_git_change_limit_default";
 export const PLAN_EXECUTION_MODE_DEFAULT_STORAGE_KEY = "plan_execution_mode_default";
 export const PLAN_EXECUTION_DELAY_SECONDS_DEFAULT_STORAGE_KEY = "plan_execution_delay_seconds_default";
 export const CORRECTNESS_ITERATION_MODE_DEFAULT_STORAGE_KEY = "correctness_iteration_mode_default";
@@ -53,6 +55,8 @@ export type HarnessViewState = {
   executionPlanDialogOpen: boolean;
   selectedExecutionPlan?: ExecutionPlan;
   subagentWorktreeStrategyDefault: "same-worktree" | "separate-worktrees";
+  blockChatOnDirtyGitDefault: boolean;
+  dirtyGitChangeLimitDefault: number;
   planExecutionModeDefault: "countdown" | "approve" | "immediate";
   planExecutionDelaySecondsDefault: number;
   correctnessIterationModeDefault: "ask-before-iterate" | "auto-once" | "auto-until-clean";
@@ -73,6 +77,8 @@ export type HarnessViewState = {
   hasLocalDebugPreference: boolean;
   hasLocalTracePreference: boolean;
   hasLocalSubagentWorktreeStrategyPreference: boolean;
+  hasLocalBlockChatOnDirtyGitPreference: boolean;
+  hasLocalDirtyGitChangeLimitPreference: boolean;
   hasLocalPlanExecutionModePreference: boolean;
   hasLocalPlanExecutionDelaySecondsPreference: boolean;
   hasLocalCorrectnessIterationModePreference: boolean;
@@ -86,6 +92,8 @@ export type LocalPreferencesState = {
   debugEnabled?: boolean;
   tracePanelDefaultOpen?: boolean;
   subagentWorktreeStrategyDefault?: "same-worktree" | "separate-worktrees";
+  blockChatOnDirtyGitDefault?: boolean;
+  dirtyGitChangeLimitDefault?: number;
   planExecutionModeDefault?: "countdown" | "approve" | "immediate";
   planExecutionDelaySecondsDefault?: number;
   correctnessIterationModeDefault?: "ask-before-iterate" | "auto-once" | "auto-until-clean";
@@ -112,6 +120,8 @@ export function createInitialViewState(): HarnessViewState {
     executionPlanDialogOpen: false,
     selectedExecutionPlan: undefined,
     subagentWorktreeStrategyDefault: "same-worktree",
+    blockChatOnDirtyGitDefault: true,
+    dirtyGitChangeLimitDefault: 20,
     planExecutionModeDefault: "countdown",
     planExecutionDelaySecondsDefault: 10,
     correctnessIterationModeDefault: "ask-before-iterate",
@@ -132,6 +142,8 @@ export function createInitialViewState(): HarnessViewState {
     hasLocalDebugPreference: false,
     hasLocalTracePreference: false,
     hasLocalSubagentWorktreeStrategyPreference: false,
+    hasLocalBlockChatOnDirtyGitPreference: false,
+    hasLocalDirtyGitChangeLimitPreference: false,
     hasLocalPlanExecutionModePreference: false,
     hasLocalPlanExecutionDelaySecondsPreference: false,
     hasLocalCorrectnessIterationModePreference: false,
@@ -426,6 +438,12 @@ export function createHarnessStore() {
     setSubagentWorktreeStrategyDefault(subagentWorktreeStrategyDefault: "same-worktree" | "separate-worktrees") {
       setState({ subagentWorktreeStrategyDefault });
     },
+    setBlockChatOnDirtyGitDefault(blockChatOnDirtyGitDefault: boolean) {
+      setState({ blockChatOnDirtyGitDefault });
+    },
+    setDirtyGitChangeLimitDefault(dirtyGitChangeLimitDefault: number) {
+      setState({ dirtyGitChangeLimitDefault: Math.max(0, Math.min(10000, Math.round(dirtyGitChangeLimitDefault))) });
+    },
     setPlanExecutionModeDefault(planExecutionModeDefault: "countdown" | "approve" | "immediate") {
       setState({ planExecutionModeDefault });
     },
@@ -466,6 +484,8 @@ export function createHarnessStore() {
         tracePanelDefaultOpen: localPreferences.tracePanelDefaultOpen ?? state.tracePanelDefaultOpen,
         subagentWorktreeStrategyDefault:
           localPreferences.subagentWorktreeStrategyDefault ?? state.subagentWorktreeStrategyDefault,
+        blockChatOnDirtyGitDefault: localPreferences.blockChatOnDirtyGitDefault ?? state.blockChatOnDirtyGitDefault,
+        dirtyGitChangeLimitDefault: localPreferences.dirtyGitChangeLimitDefault ?? state.dirtyGitChangeLimitDefault,
         planExecutionModeDefault: localPreferences.planExecutionModeDefault ?? state.planExecutionModeDefault,
         planExecutionDelaySecondsDefault:
           localPreferences.planExecutionDelaySecondsDefault ?? state.planExecutionDelaySecondsDefault,
@@ -480,6 +500,8 @@ export function createHarnessStore() {
         hasLocalDebugPreference: localPreferences.debugEnabled !== undefined,
         hasLocalTracePreference: localPreferences.tracePanelDefaultOpen !== undefined,
         hasLocalSubagentWorktreeStrategyPreference: localPreferences.subagentWorktreeStrategyDefault !== undefined,
+        hasLocalBlockChatOnDirtyGitPreference: localPreferences.blockChatOnDirtyGitDefault !== undefined,
+        hasLocalDirtyGitChangeLimitPreference: localPreferences.dirtyGitChangeLimitDefault !== undefined,
         hasLocalPlanExecutionModePreference: localPreferences.planExecutionModeDefault !== undefined,
         hasLocalPlanExecutionDelaySecondsPreference: localPreferences.planExecutionDelaySecondsDefault !== undefined,
         hasLocalCorrectnessIterationModePreference: localPreferences.correctnessIterationModeDefault !== undefined
@@ -497,6 +519,8 @@ export function createHarnessStore() {
         tracePanelOpen: localPreferences.tracePanelDefaultOpen ?? state.tracePanelOpen,
         subagentWorktreeStrategyDefault:
           localPreferences.subagentWorktreeStrategyDefault ?? state.subagentWorktreeStrategyDefault,
+        blockChatOnDirtyGitDefault: localPreferences.blockChatOnDirtyGitDefault ?? state.blockChatOnDirtyGitDefault,
+        dirtyGitChangeLimitDefault: localPreferences.dirtyGitChangeLimitDefault ?? state.dirtyGitChangeLimitDefault,
         planExecutionModeDefault: localPreferences.planExecutionModeDefault ?? state.planExecutionModeDefault,
         planExecutionDelaySecondsDefault:
           localPreferences.planExecutionDelaySecondsDefault ?? state.planExecutionDelaySecondsDefault,
@@ -511,6 +535,8 @@ export function createHarnessStore() {
         hasLocalDebugPreference: localPreferences.debugEnabled !== undefined,
         hasLocalTracePreference: localPreferences.tracePanelDefaultOpen !== undefined,
         hasLocalSubagentWorktreeStrategyPreference: localPreferences.subagentWorktreeStrategyDefault !== undefined,
+        hasLocalBlockChatOnDirtyGitPreference: localPreferences.blockChatOnDirtyGitDefault !== undefined,
+        hasLocalDirtyGitChangeLimitPreference: localPreferences.dirtyGitChangeLimitDefault !== undefined,
         hasLocalPlanExecutionModePreference: localPreferences.planExecutionModeDefault !== undefined,
         hasLocalPlanExecutionDelaySecondsPreference: localPreferences.planExecutionDelaySecondsDefault !== undefined,
         hasLocalCorrectnessIterationModePreference: localPreferences.correctnessIterationModeDefault !== undefined
@@ -647,6 +673,12 @@ function applyReadyPreferencesState(state: HarnessViewState, preferences: Prefer
     subagentWorktreeStrategyDefault: state.hasLocalSubagentWorktreeStrategyPreference
       ? state.subagentWorktreeStrategyDefault
       : preferences.subagentWorktreeStrategyDefault,
+    blockChatOnDirtyGitDefault: state.hasLocalBlockChatOnDirtyGitPreference
+      ? state.blockChatOnDirtyGitDefault
+      : preferences.blockChatOnDirtyGitDefault,
+    dirtyGitChangeLimitDefault: state.hasLocalDirtyGitChangeLimitPreference
+      ? state.dirtyGitChangeLimitDefault
+      : preferences.dirtyGitChangeLimitDefault,
     planExecutionModeDefault: state.hasLocalPlanExecutionModePreference
       ? state.planExecutionModeDefault
       : preferences.planExecutionModeDefault,
@@ -674,11 +706,21 @@ export function readLocalPreferences(): LocalPreferencesState {
   const subagentWorktreeStrategyDefault = parseSubagentWorktreeStrategyStorageValue(
     window.localStorage.getItem(SUBAGENT_WORKTREE_STRATEGY_DEFAULT_STORAGE_KEY)
   );
+  const blockChatOnDirtyGitDefault = parseBooleanStorageValue(
+    window.localStorage.getItem(BLOCK_CHAT_ON_DIRTY_GIT_DEFAULT_STORAGE_KEY)
+  );
+  const dirtyGitChangeLimitDefault = parseBoundedIntegerStorageValue(
+    window.localStorage.getItem(DIRTY_GIT_CHANGE_LIMIT_DEFAULT_STORAGE_KEY),
+    0,
+    10000
+  );
   const planExecutionModeDefault = parsePlanExecutionModeStorageValue(
     window.localStorage.getItem(PLAN_EXECUTION_MODE_DEFAULT_STORAGE_KEY)
   );
-  const planExecutionDelaySecondsDefault = parseIntegerStorageValue(
-    window.localStorage.getItem(PLAN_EXECUTION_DELAY_SECONDS_DEFAULT_STORAGE_KEY)
+  const planExecutionDelaySecondsDefault = parseBoundedIntegerStorageValue(
+    window.localStorage.getItem(PLAN_EXECUTION_DELAY_SECONDS_DEFAULT_STORAGE_KEY),
+    0,
+    300
   );
   const correctnessIterationModeDefault = parseCorrectnessIterationModeStorageValue(
     window.localStorage.getItem(CORRECTNESS_ITERATION_MODE_DEFAULT_STORAGE_KEY)
@@ -691,6 +733,8 @@ export function readLocalPreferences(): LocalPreferencesState {
     debugEnabled,
     tracePanelDefaultOpen,
     subagentWorktreeStrategyDefault,
+    blockChatOnDirtyGitDefault,
+    dirtyGitChangeLimitDefault,
     planExecutionModeDefault,
     planExecutionDelaySecondsDefault,
     correctnessIterationModeDefault
@@ -734,8 +778,10 @@ export function persistLocalPreferences(input: LocalPreferencesState) {
   persistBooleanStorageValue(DEBUG_ENABLED_STORAGE_KEY, input.debugEnabled);
   persistBooleanStorageValue(TRACE_PANEL_DEFAULT_OPEN_STORAGE_KEY, input.tracePanelDefaultOpen);
   persistStorageValue(SUBAGENT_WORKTREE_STRATEGY_DEFAULT_STORAGE_KEY, input.subagentWorktreeStrategyDefault);
+  persistBooleanStorageValue(BLOCK_CHAT_ON_DIRTY_GIT_DEFAULT_STORAGE_KEY, input.blockChatOnDirtyGitDefault);
+  persistIntegerStorageValue(DIRTY_GIT_CHANGE_LIMIT_DEFAULT_STORAGE_KEY, input.dirtyGitChangeLimitDefault, 0, 10000);
   persistStorageValue(PLAN_EXECUTION_MODE_DEFAULT_STORAGE_KEY, input.planExecutionModeDefault);
-  persistIntegerStorageValue(PLAN_EXECUTION_DELAY_SECONDS_DEFAULT_STORAGE_KEY, input.planExecutionDelaySecondsDefault);
+  persistIntegerStorageValue(PLAN_EXECUTION_DELAY_SECONDS_DEFAULT_STORAGE_KEY, input.planExecutionDelaySecondsDefault, 0, 300);
   persistStorageValue(CORRECTNESS_ITERATION_MODE_DEFAULT_STORAGE_KEY, input.correctnessIterationModeDefault);
 }
 
@@ -767,13 +813,13 @@ function parseCorrectnessIterationModeStorageValue(value: string | null) {
   return value === "ask-before-iterate" || value === "auto-once" || value === "auto-until-clean" ? value : undefined;
 }
 
-function parseIntegerStorageValue(value: string | null) {
+function parseBoundedIntegerStorageValue(value: string | null, min: number, max: number) {
   if (!value) {
     return undefined;
   }
 
   const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) ? parsed : undefined;
+  return Number.isFinite(parsed) ? Math.max(min, Math.min(max, Math.round(parsed))) : undefined;
 }
 
 function persistStorageValue(key: string, value: string | undefined) {
@@ -794,13 +840,13 @@ function persistBooleanStorageValue(key: string, value: boolean | undefined) {
   window.localStorage.setItem(key, String(value));
 }
 
-function persistIntegerStorageValue(key: string, value: number | undefined) {
+function persistIntegerStorageValue(key: string, value: number | undefined, min: number, max: number) {
   if (value === undefined) {
     window.localStorage.removeItem(key);
     return;
   }
 
-  window.localStorage.setItem(key, String(Math.round(value)));
+  window.localStorage.setItem(key, String(Math.max(min, Math.min(max, Math.round(value)))));
 }
 
 function persistProviderBrandStorageValue(key: string, value: ProviderBrand | undefined) {

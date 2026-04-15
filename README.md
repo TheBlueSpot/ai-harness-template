@@ -17,11 +17,11 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - Interactive planning questions that pause execution until the user answers in chat, with three typed quick options and one recommended path
 - Plan-first execution that persists a full execution plan, posts a plan summary into chat, and waits in `ready` before any code work starts
 - Transcript-level plan summary cards with shared plan modal access from chat and trace panel
-- Global execution preferences for plan gate mode, countdown delay, subagent worktree strategy, and correctness iteration policy
+- Global execution preferences for dirty-git chat restriction, dirty change threshold, plan gate mode, countdown delay, subagent worktree strategy, and correctness iteration policy
 - Resumable partial subagent runs that keep completed work after failure or stop
 - Persistent retry for full runs and individual subagents, including successful runs
 - Manual refresh for active runs and active subagents, with deferred refresh while work is still streaming
-- Dirty-git preflight that warns on small working tree drift and refuses very dirty repos
+- Dirty-git preflight with a configurable chat-run restriction toggle and tracked plus untracked change threshold
 - Live context usage meter sourced from pi session context stats
 
 ## Workspace Model

@@ -93,6 +93,8 @@ describe("workspace repository", () => {
     repository.setProviderBrand("gemini");
     repository.setDebugEnabledDefault(true);
     repository.setTracePanelDefaultOpen(false);
+    repository.setBlockChatOnDirtyGitDefault(false);
+    repository.setDirtyGitChangeLimitDefault(7);
 
     const reloadedRepository = new WorkspaceRepository((repository as any).dbPath, process.cwd());
     expect(reloadedRepository.getStoredOpenAiApiKey()).toBe("sk-test-123");
@@ -100,6 +102,8 @@ describe("workspace repository", () => {
     expect(reloadedRepository.getProviderBrand()).toBe("gemini");
     expect(reloadedRepository.getDebugEnabledDefault()).toBe(true);
     expect(reloadedRepository.getTracePanelDefaultOpen()).toBe(false);
+    expect(reloadedRepository.getBlockChatOnDirtyGitDefault()).toBe(false);
+    expect(reloadedRepository.getDirtyGitChangeLimitDefault()).toBe(7);
 
     reloadedRepository.clearStoredOpenAiApiKey();
     reloadedRepository.clearStoredGoogleApiKey();

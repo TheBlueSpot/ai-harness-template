@@ -3,6 +3,7 @@ import {
   createEmptySession,
   createProjectId,
   createWorkspaceProjectState,
+  type ExecutionPlan,
   type PreferencesState,
   type ServerEvent,
   type WorkspaceProjectState
@@ -20,6 +21,8 @@ const defaultPreferences: PreferencesState = {
   debugEnabledDefault: false,
   tracePanelDefaultOpen: true,
   subagentWorktreeStrategyDefault: "same-worktree",
+  blockChatOnDirtyGitDefault: true,
+  dirtyGitChangeLimitDefault: 20,
   planExecutionModeDefault: "countdown",
   planExecutionDelaySecondsDefault: 10,
   correctnessIterationModeDefault: "ask-before-iterate"
@@ -571,30 +574,32 @@ describe("harness store reducer", () => {
         }
       }
     });
+    const selectedExecutionPlan: ExecutionPlan = {
+      runId: "run-1",
+      origin: "initial",
+      iteration: 1,
+      summary: "Plan",
+      finalExecutionBrief: "Do work",
+      difficultyScore: 20,
+      planningModelId: "openai/gpt-5.4",
+      executionModelId: "openai/gpt-5.4",
+      route: "main",
+      subagentWorktreeStrategy: "same-worktree",
+      targetSubagentCount: 0,
+      actualSubagentCount: 0,
+      gating: {
+        mode: "approve",
+        delaySeconds: 0
+      },
+      prerequisites: [],
+      contracts: [],
+      correctnessPolicy: "ask-before-iterate"
+    };
+
     const stateWithDialog = {
       ...seededRunState,
       executionPlanDialogOpen: true,
-      selectedExecutionPlan: {
-        runId: "run-1",
-        origin: "initial",
-        iteration: 1,
-        summary: "Plan",
-        finalExecutionBrief: "Do work",
-        difficultyScore: 20,
-        planningModelId: "openai/gpt-5.4",
-        executionModelId: "openai/gpt-5.4",
-        route: "main",
-        subagentWorktreeStrategy: "same-worktree",
-        targetSubagentCount: 0,
-        actualSubagentCount: 0,
-        gating: {
-          mode: "approve",
-          delaySeconds: 0
-        },
-        prerequisites: [],
-        contracts: [],
-        correctnessPolicy: "ask-before-iterate"
-      }
+      selectedExecutionPlan
     };
 
     const resetState = reduceServerEvent(stateWithDialog, {
@@ -737,6 +742,8 @@ describe("harness store reducer", () => {
           debugEnabledDefault: true,
           tracePanelDefaultOpen: false,
           subagentWorktreeStrategyDefault: "same-worktree",
+          blockChatOnDirtyGitDefault: false,
+          dirtyGitChangeLimitDefault: 6,
           planExecutionModeDefault: "countdown",
           planExecutionDelaySecondsDefault: 10,
           correctnessIterationModeDefault: "ask-before-iterate"
@@ -750,6 +757,8 @@ describe("harness store reducer", () => {
     expect(nextState.providerBrand).toBe("gemini");
     expect(nextState.debugEnabled).toBe(true);
     expect(nextState.tracePanelOpen).toBe(false);
+    expect(nextState.blockChatOnDirtyGitDefault).toBe(false);
+    expect(nextState.dirtyGitChangeLimitDefault).toBe(6);
   });
 
   test("updates usable key state from preferences events", () => {
@@ -767,6 +776,8 @@ describe("harness store reducer", () => {
         debugEnabledDefault: false,
         tracePanelDefaultOpen: true,
         subagentWorktreeStrategyDefault: "same-worktree",
+        blockChatOnDirtyGitDefault: true,
+        dirtyGitChangeLimitDefault: 20,
         planExecutionModeDefault: "countdown",
         planExecutionDelaySecondsDefault: 10,
         correctnessIterationModeDefault: "ask-before-iterate"
@@ -776,6 +787,8 @@ describe("harness store reducer", () => {
     expect(nextState.hasUsableApiKey).toBe(true);
     expect(nextState.hasStoredApiKey).toBe(true);
     expect(nextState.hasUsableOpenAiApiKey).toBe(true);
+    expect(nextState.blockChatOnDirtyGitDefault).toBe(true);
+    expect(nextState.dirtyGitChangeLimitDefault).toBe(20);
   });
 });
 

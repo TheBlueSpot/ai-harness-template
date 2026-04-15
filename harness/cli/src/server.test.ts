@@ -360,6 +360,8 @@ describe("harness server", () => {
     expect(ready.payload.preferences.providerBrand).toBe("gpt");
     expect(ready.payload.preferences.tracePanelDefaultOpen).toBe(true);
     expect(ready.payload.preferences.subagentWorktreeStrategyDefault).toBe("same-worktree");
+    expect(ready.payload.preferences.blockChatOnDirtyGitDefault).toBe(true);
+    expect(ready.payload.preferences.dirtyGitChangeLimitDefault).toBe(20);
     expect(ready.payload.preferences.planExecutionModeDefault).toBe("countdown");
     expect(ready.payload.preferences.planExecutionDelaySecondsDefault).toBe(10);
     expect(ready.payload.preferences.correctnessIterationModeDefault).toBe("ask-before-iterate");
@@ -382,6 +384,8 @@ describe("harness server", () => {
           debugEnabled: true,
           tracePanelDefaultOpen: false,
           subagentWorktreeStrategyDefault: "separate-worktrees",
+          blockChatOnDirtyGitDefault: false,
+          dirtyGitChangeLimitDefault: 9,
           planExecutionModeDefault: "approve",
           planExecutionDelaySecondsDefault: 15,
           correctnessIterationModeDefault: "auto-once"
@@ -398,6 +402,8 @@ describe("harness server", () => {
     expect(saved.payload.debugEnabledDefault).toBe(true);
     expect(saved.payload.tracePanelDefaultOpen).toBe(false);
     expect(saved.payload.subagentWorktreeStrategyDefault).toBe("separate-worktrees");
+    expect(saved.payload.blockChatOnDirtyGitDefault).toBe(false);
+    expect(saved.payload.dirtyGitChangeLimitDefault).toBe(9);
     expect(saved.payload.planExecutionModeDefault).toBe("approve");
     expect(saved.payload.planExecutionDelaySecondsDefault).toBe(15);
     expect(saved.payload.correctnessIterationModeDefault).toBe("auto-once");
@@ -947,6 +953,64 @@ describe("harness server", () => {
 
     const rejected = await rejectedPromise;
     expect(rejected.payload.detail).toContain("21 changed files");
+    socket.close();
+  });
+
+  test("honors custom dirty git change limit", async () => {
+    repository.setDirtyGitChangeLimitDefault(1);
+    writeFileSync(path.join(projectRoot, "dirty-limit-1.txt"), "1\n");
+    writeFileSync(path.join(projectRoot, "dirty-limit-2.txt"), "2\n");
+
+    const socket = createSocket(port);
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot);
+    const projectId = opened.payload.project.id;
+    const threadId = opened.payload.project.activeThreadId;
+    const rejectedPromise = waitForEvent(socket, "command.rejected");
+
+    socket.send(
+      JSON.stringify({
+        type: "chat.send",
+        requestId: "req-dirty-custom-limit",
+        payload: {
+          projectId,
+          threadId,
+          agentId: "pi",
+          content: "simple task"
+        }
+      })
+    );
+
+    const rejected = await rejectedPromise;
+    expect(rejected.payload.detail).toContain("Refusing run above 1 files");
+    socket.close();
+  });
+
+  test("allows chat runs on dirty repos when dirty git restriction is disabled", async () => {
+    repository.setBlockChatOnDirtyGitDefault(false);
+    for (let index = 0; index < 21; index += 1) {
+      writeFileSync(path.join(projectRoot, `dirty-disabled-${index}.txt`), `${index}\n`);
+    }
+
+    const socket = createSocket(port);
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot);
+    const projectId = opened.payload.project.id;
+    const threadId = opened.payload.project.activeThreadId;
+    const ready = await sendChatUntilReady(socket, {
+      requestId: "req-dirty-disabled",
+      projectId,
+      threadId,
+      content: "simple task"
+    });
+
+    await executeReadyRun(socket, {
+      requestId: "req-dirty-disabled-execute",
+      projectId,
+      threadId,
+      runId: ready.payload.run.id
+    });
+
     socket.close();
   });
 

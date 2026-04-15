@@ -820,6 +820,8 @@ async function handleCommand(
       repository.setDebugEnabledDefault(command.payload.debugEnabled);
       repository.setTracePanelDefaultOpen(command.payload.tracePanelDefaultOpen);
       repository.setSubagentWorktreeStrategyDefault(command.payload.subagentWorktreeStrategyDefault);
+      repository.setBlockChatOnDirtyGitDefault(command.payload.blockChatOnDirtyGitDefault);
+      repository.setDirtyGitChangeLimitDefault(command.payload.dirtyGitChangeLimitDefault);
       repository.setPlanExecutionModeDefault(command.payload.planExecutionModeDefault);
       repository.setPlanExecutionDelaySecondsDefault(command.payload.planExecutionDelaySecondsDefault);
       repository.setCorrectnessIterationModeDefault(command.payload.correctnessIterationModeDefault);
@@ -2126,7 +2128,11 @@ async function enforceExecutionPreflight(
   repository: WorkspaceRepository,
   project: ProjectLike
 ) {
-  const result = await runGitPreflight(project.rootPath);
+  const maxDirtyFileCount = repository.getDirtyGitChangeLimitDefault();
+  const result = await runGitPreflight(project.rootPath, {
+    enabled: repository.getBlockChatOnDirtyGitDefault(),
+    maxDirtyFileCount
+  });
   if (result.status === "warning") {
     appendSystemStatus(ws, requestId, runtime, repository, project.id, result.preflight.message);
     sendEvent(ws, {
@@ -2142,7 +2148,7 @@ async function enforceExecutionPreflight(
   }
 
   if (result.status === "blocked") {
-    throw new Error(`Git dirty: ${result.changedFileCount} changed files. Refusing run above 20 files.`);
+    throw new Error(`Git dirty: ${result.changedFileCount} changed files. Refusing run above ${maxDirtyFileCount} files.`);
   }
 }
 
@@ -2190,6 +2196,8 @@ function getPreferencesState(repository: WorkspaceRepository, adapter: PiAgentAd
     debugEnabledDefault: repository.getDebugEnabledDefault(),
     tracePanelDefaultOpen: repository.getTracePanelDefaultOpen(),
     subagentWorktreeStrategyDefault: repository.getSubagentWorktreeStrategyDefault(),
+    blockChatOnDirtyGitDefault: repository.getBlockChatOnDirtyGitDefault(),
+    dirtyGitChangeLimitDefault: repository.getDirtyGitChangeLimitDefault(),
     planExecutionModeDefault: repository.getPlanExecutionModeDefault(),
     planExecutionDelaySecondsDefault: repository.getPlanExecutionDelaySecondsDefault(),
     correctnessIterationModeDefault: repository.getCorrectnessIterationModeDefault()

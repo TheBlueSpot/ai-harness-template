@@ -47,6 +47,8 @@ const PROVIDER_BRAND_KEY = "provider_brand";
 const DEBUG_ENABLED_KEY = "debug_enabled";
 const TRACE_PANEL_DEFAULT_OPEN_KEY = "trace_panel_default_open";
 const SUBAGENT_WORKTREE_STRATEGY_DEFAULT_KEY = "subagent_worktree_strategy_default";
+const BLOCK_CHAT_ON_DIRTY_GIT_DEFAULT_KEY = "block_chat_on_dirty_git_default";
+const DIRTY_GIT_CHANGE_LIMIT_DEFAULT_KEY = "dirty_git_change_limit_default";
 const PLAN_EXECUTION_MODE_DEFAULT_KEY = "plan_execution_mode_default";
 const PLAN_EXECUTION_DELAY_SECONDS_DEFAULT_KEY = "plan_execution_delay_seconds_default";
 const CORRECTNESS_ITERATION_MODE_DEFAULT_KEY = "correctness_iteration_mode_default";
@@ -825,6 +827,24 @@ export class WorkspaceRepository {
 
   setSubagentWorktreeStrategyDefault(value: SubagentWorktreeStrategy) {
     this.setWorkspaceMetaValue(SUBAGENT_WORKTREE_STRATEGY_DEFAULT_KEY, value);
+  }
+
+  getBlockChatOnDirtyGitDefault() {
+    const value = this.getWorkspaceMetaValue(BLOCK_CHAT_ON_DIRTY_GIT_DEFAULT_KEY);
+    return value === undefined ? true : value === "true";
+  }
+
+  setBlockChatOnDirtyGitDefault(value: boolean) {
+    this.setWorkspaceMetaValue(BLOCK_CHAT_ON_DIRTY_GIT_DEFAULT_KEY, String(value));
+  }
+
+  getDirtyGitChangeLimitDefault() {
+    const value = Number(this.getWorkspaceMetaValue(DIRTY_GIT_CHANGE_LIMIT_DEFAULT_KEY));
+    return Number.isFinite(value) && value >= 0 ? Math.min(10000, Math.round(value)) : 20;
+  }
+
+  setDirtyGitChangeLimitDefault(value: number) {
+    this.setWorkspaceMetaValue(DIRTY_GIT_CHANGE_LIMIT_DEFAULT_KEY, String(Math.max(0, Math.min(10000, Math.round(value)))));
   }
 
   getPlanExecutionModeDefault(): PlanExecutionMode {

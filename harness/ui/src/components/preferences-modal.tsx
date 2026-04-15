@@ -33,6 +33,8 @@ export function PreferencesModal(props: PreferencesModalProps) {
       debugEnabled: state.debugEnabled,
       tracePanelDefaultOpen: state.tracePanelDefaultOpen,
       subagentWorktreeStrategyDefault: state.subagentWorktreeStrategyDefault,
+      blockChatOnDirtyGitDefault: state.blockChatOnDirtyGitDefault,
+      dirtyGitChangeLimitDefault: state.dirtyGitChangeLimitDefault,
       planExecutionModeDefault: state.planExecutionModeDefault,
       planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
       correctnessIterationModeDefault: state.correctnessIterationModeDefault
@@ -44,6 +46,8 @@ export function PreferencesModal(props: PreferencesModalProps) {
       debugEnabled: state.debugEnabled,
       tracePanelDefaultOpen: state.tracePanelDefaultOpen,
       subagentWorktreeStrategyDefault: state.subagentWorktreeStrategyDefault,
+      blockChatOnDirtyGitDefault: state.blockChatOnDirtyGitDefault,
+      dirtyGitChangeLimitDefault: state.dirtyGitChangeLimitDefault,
       planExecutionModeDefault: state.planExecutionModeDefault,
       planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
       correctnessIterationModeDefault: state.correctnessIterationModeDefault
@@ -59,6 +63,8 @@ export function PreferencesModal(props: PreferencesModalProps) {
         debugEnabled: state.debugEnabled,
         tracePanelDefaultOpen: state.tracePanelDefaultOpen,
         subagentWorktreeStrategyDefault: state.subagentWorktreeStrategyDefault,
+        blockChatOnDirtyGitDefault: state.blockChatOnDirtyGitDefault,
+        dirtyGitChangeLimitDefault: state.dirtyGitChangeLimitDefault,
         planExecutionModeDefault: state.planExecutionModeDefault,
         planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
         correctnessIterationModeDefault: state.correctnessIterationModeDefault
@@ -76,6 +82,8 @@ export function PreferencesModal(props: PreferencesModalProps) {
       debugEnabled: state.debugEnabled,
       tracePanelDefaultOpen: state.tracePanelDefaultOpen,
       subagentWorktreeStrategyDefault: state.subagentWorktreeStrategyDefault,
+      blockChatOnDirtyGitDefault: state.blockChatOnDirtyGitDefault,
+      dirtyGitChangeLimitDefault: state.dirtyGitChangeLimitDefault,
       planExecutionModeDefault: state.planExecutionModeDefault,
       planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
       correctnessIterationModeDefault: state.correctnessIterationModeDefault
@@ -87,6 +95,8 @@ export function PreferencesModal(props: PreferencesModalProps) {
       debugEnabled: state.debugEnabled,
       tracePanelDefaultOpen: state.tracePanelDefaultOpen,
       subagentWorktreeStrategyDefault: state.subagentWorktreeStrategyDefault,
+      blockChatOnDirtyGitDefault: state.blockChatOnDirtyGitDefault,
+      dirtyGitChangeLimitDefault: state.dirtyGitChangeLimitDefault,
       planExecutionModeDefault: state.planExecutionModeDefault,
       planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
       correctnessIterationModeDefault: state.correctnessIterationModeDefault
@@ -230,6 +240,40 @@ export function PreferencesModal(props: PreferencesModalProps) {
             <option value="approve">Approve first</option>
             <option value="immediate">Immediate</option>
           </select>
+        </label>
+
+        <label class="flex items-start gap-3 rounded-[1.25rem] border border-[color:var(--border)] bg-white/55 px-4 py-3">
+          <input
+            class="mt-1"
+            type="checkbox"
+            checked={state.blockChatOnDirtyGitDefault}
+            onInput={(event) => harnessStore.setBlockChatOnDirtyGitDefault(event.currentTarget.checked)}
+          />
+          <div>
+            <div class="text-[0.675rem] font-semibold text-[color:var(--foreground)]">Restrict chat on dirty git</div>
+            <div class="mt-1 text-[0.675rem] leading-5 text-[color:var(--muted)]">
+              Warn on dirty repos and block chat-triggered runs above the configured tracked plus untracked change limit.
+            </div>
+          </div>
+        </label>
+
+        <label class="space-y-2 rounded-[1.25rem] border border-[color:var(--border)] bg-white/55 px-4 py-3">
+          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">
+            Dirty git change limit
+          </span>
+          <Input
+            type="number"
+            min="0"
+            max="10000"
+            disabled={!state.blockChatOnDirtyGitDefault}
+            value={String(state.dirtyGitChangeLimitDefault)}
+            onInput={(event: InputEvent & { currentTarget: HTMLInputElement; target: Element }) =>
+              harnessStore.setDirtyGitChangeLimitDefault(Math.max(0, Math.min(10000, Number(event.currentTarget.value) || 0)))
+            }
+          />
+          <p class="text-[0.675rem] leading-5 text-[color:var(--muted)]">
+            Counts tracked and untracked git status entries before chat-triggered runs are refused.
+          </p>
         </label>
 
         <label class="space-y-2 rounded-[1.25rem] border border-[color:var(--border)] bg-white/55 px-4 py-3">

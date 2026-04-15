@@ -53,6 +53,8 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
                 debugEnabled: harnessStore.state.debugEnabled,
                 tracePanelDefaultOpen: harnessStore.state.tracePanelDefaultOpen,
                 subagentWorktreeStrategyDefault: harnessStore.state.subagentWorktreeStrategyDefault,
+                blockChatOnDirtyGitDefault: harnessStore.state.blockChatOnDirtyGitDefault,
+                dirtyGitChangeLimitDefault: harnessStore.state.dirtyGitChangeLimitDefault,
                 planExecutionModeDefault: harnessStore.state.planExecutionModeDefault,
                 planExecutionDelaySecondsDefault: harnessStore.state.planExecutionDelaySecondsDefault,
                 correctnessIterationModeDefault: harnessStore.state.correctnessIterationModeDefault
@@ -71,6 +73,8 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
             debugEnabled: harnessStore.state.debugEnabled,
             tracePanelDefaultOpen: harnessStore.state.tracePanelDefaultOpen,
             subagentWorktreeStrategyDefault: harnessStore.state.subagentWorktreeStrategyDefault,
+            blockChatOnDirtyGitDefault: harnessStore.state.blockChatOnDirtyGitDefault,
+            dirtyGitChangeLimitDefault: harnessStore.state.dirtyGitChangeLimitDefault,
             planExecutionModeDefault: harnessStore.state.planExecutionModeDefault,
             planExecutionDelaySecondsDefault: harnessStore.state.planExecutionDelaySecondsDefault,
             correctnessIterationModeDefault: harnessStore.state.correctnessIterationModeDefault
@@ -88,6 +92,8 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
           debugEnabled: harnessStore.state.debugEnabled,
           tracePanelDefaultOpen: harnessStore.state.tracePanelDefaultOpen,
           subagentWorktreeStrategyDefault: harnessStore.state.subagentWorktreeStrategyDefault,
+          blockChatOnDirtyGitDefault: harnessStore.state.blockChatOnDirtyGitDefault,
+          dirtyGitChangeLimitDefault: harnessStore.state.dirtyGitChangeLimitDefault,
           planExecutionModeDefault: harnessStore.state.planExecutionModeDefault,
           planExecutionDelaySecondsDefault: harnessStore.state.planExecutionDelaySecondsDefault,
           correctnessIterationModeDefault: harnessStore.state.correctnessIterationModeDefault

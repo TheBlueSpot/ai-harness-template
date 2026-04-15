@@ -6,7 +6,22 @@ export type GitPreflightResult =
   | { status: "not-git" | "clean"; changedFileCount: 0 }
   | { status: "warning" | "blocked"; changedFileCount: number; preflight: RunPreflight };
 
-export async function runGitPreflight(rootPath: string): Promise<GitPreflightResult> {
+type GitPreflightOptions = {
+  enabled?: boolean;
+  maxDirtyFileCount?: number;
+};
+
+export async function runGitPreflight(
+  rootPath: string,
+  { enabled = true, maxDirtyFileCount = MAX_DIRTY_FILE_COUNT }: GitPreflightOptions = {}
+): Promise<GitPreflightResult> {
+  if (!enabled) {
+    return {
+      status: "clean",
+      changedFileCount: 0
+    };
+  }
+
   const insideWorktree = await runGit(["rev-parse", "--is-inside-work-tree"], rootPath);
   if (insideWorktree.exitCode !== 0 || insideWorktree.stdout.trim() !== "true") {
     return {
@@ -39,14 +54,14 @@ export async function runGitPreflight(rootPath: string): Promise<GitPreflightRes
     severity: "warning",
     kind: "git-dirty",
     message:
-      changedFileCount > MAX_DIRTY_FILE_COUNT
+      changedFileCount > maxDirtyFileCount
         ? `Git dirty. ${changedFileCount} files changed. Refuse run.`
         : `Git dirty. ${changedFileCount} files changed. Run anyway.`,
     changedFileCount
   };
 
   return {
-    status: changedFileCount > MAX_DIRTY_FILE_COUNT ? "blocked" : "warning",
+    status: changedFileCount > maxDirtyFileCount ? "blocked" : "warning",
     changedFileCount,
     preflight
   };

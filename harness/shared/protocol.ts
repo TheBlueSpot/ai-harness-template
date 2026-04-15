@@ -15,6 +15,7 @@ export const providerBrandSchema = z.enum(["gpt", "gemini"]);
 export const subagentWorktreeStrategySchema = z.enum(["same-worktree", "separate-worktrees"]);
 export const planExecutionModeSchema = z.enum(["countdown", "approve", "immediate"]);
 export const correctnessIterationModeSchema = z.enum(["ask-before-iterate", "auto-once", "auto-until-clean"]);
+export const dirtyGitChangeLimitSchema = z.number().int().min(0).max(10000);
 export const preflightSeveritySchema = z.enum(["warning"]);
 export const preflightKindSchema = z.enum(["git-dirty"]);
 export const threadTitleSourceSchema = z.enum(["generated", "custom"]);
@@ -163,6 +164,8 @@ export const preferencesStateSchema = z.object({
   debugEnabledDefault: z.boolean(),
   tracePanelDefaultOpen: z.boolean(),
   subagentWorktreeStrategyDefault: subagentWorktreeStrategySchema,
+  blockChatOnDirtyGitDefault: z.boolean(),
+  dirtyGitChangeLimitDefault: dirtyGitChangeLimitSchema,
   planExecutionModeDefault: planExecutionModeSchema,
   planExecutionDelaySecondsDefault: z.number().int().min(0).max(300),
   correctnessIterationModeDefault: correctnessIterationModeSchema
@@ -570,6 +573,8 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       debugEnabled: z.boolean(),
       tracePanelDefaultOpen: z.boolean(),
       subagentWorktreeStrategyDefault: subagentWorktreeStrategySchema,
+      blockChatOnDirtyGitDefault: z.boolean(),
+      dirtyGitChangeLimitDefault: dirtyGitChangeLimitSchema,
       planExecutionModeDefault: planExecutionModeSchema,
       planExecutionDelaySecondsDefault: z.number().int().min(0).max(300),
       correctnessIterationModeDefault: correctnessIterationModeSchema
@@ -795,6 +800,7 @@ export type ProviderBrand = z.infer<typeof providerBrandSchema>;
 export type SubagentWorktreeStrategy = z.infer<typeof subagentWorktreeStrategySchema>;
 export type PlanExecutionMode = z.infer<typeof planExecutionModeSchema>;
 export type CorrectnessIterationMode = z.infer<typeof correctnessIterationModeSchema>;
+export type DirtyGitChangeLimit = z.infer<typeof dirtyGitChangeLimitSchema>;
 export type PreflightSeverity = z.infer<typeof preflightSeveritySchema>;
 export type PreflightKind = z.infer<typeof preflightKindSchema>;
 export type ThreadTitleSource = z.infer<typeof threadTitleSourceSchema>;

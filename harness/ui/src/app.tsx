@@ -69,6 +69,8 @@ export function App() {
       debugEnabled: state.debugEnabled,
       tracePanelDefaultOpen: state.tracePanelDefaultOpen,
       subagentWorktreeStrategyDefault: state.subagentWorktreeStrategyDefault,
+      blockChatOnDirtyGitDefault: state.blockChatOnDirtyGitDefault,
+      dirtyGitChangeLimitDefault: state.dirtyGitChangeLimitDefault,
       planExecutionModeDefault: state.planExecutionModeDefault,
       planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
       correctnessIterationModeDefault: state.correctnessIterationModeDefault
@@ -88,6 +90,8 @@ export function App() {
         debugEnabled: state.debugEnabled,
         tracePanelDefaultOpen: state.tracePanelDefaultOpen,
         subagentWorktreeStrategyDefault: state.subagentWorktreeStrategyDefault,
+        blockChatOnDirtyGitDefault: state.blockChatOnDirtyGitDefault,
+        dirtyGitChangeLimitDefault: state.dirtyGitChangeLimitDefault,
         planExecutionModeDefault: state.planExecutionModeDefault,
         planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
         correctnessIterationModeDefault: state.correctnessIterationModeDefault

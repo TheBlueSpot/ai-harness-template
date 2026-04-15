@@ -24,6 +24,8 @@ export const defaultPreferencesFixture: PreferencesState = {
   debugEnabledDefault: false,
   tracePanelDefaultOpen: true,
   subagentWorktreeStrategyDefault: "same-worktree",
+  blockChatOnDirtyGitDefault: true,
+  dirtyGitChangeLimitDefault: 20,
   planExecutionModeDefault: "countdown",
   planExecutionDelaySecondsDefault: 10,
   correctnessIterationModeDefault: "ask-before-iterate"

@@ -62,6 +62,27 @@ describe("client command validation", () => {
     ).toBe("preferences.clearApiKey");
   });
 
+  test("accepts preferences.save payloads with dirty git controls", () => {
+    expect(
+      parseClientCommand({
+        type: "preferences.save",
+        requestId: "req-pref-valid",
+        payload: {
+          openAiApiKey: "sk-local-123",
+          providerBrand: "gpt",
+          debugEnabled: true,
+          tracePanelDefaultOpen: false,
+          subagentWorktreeStrategyDefault: "same-worktree",
+          blockChatOnDirtyGitDefault: true,
+          dirtyGitChangeLimitDefault: 12,
+          planExecutionModeDefault: "countdown",
+          planExecutionDelaySecondsDefault: 10,
+          correctnessIterationModeDefault: "ask-before-iterate"
+        }
+      }).type
+    ).toBe("preferences.save");
+  });
+
   test("accepts planning.answer payloads", () => {
     expect(
       parseClientCommand({
@@ -232,6 +253,8 @@ describe("planner result validation", () => {
             debugEnabledDefault: false,
             tracePanelDefaultOpen: true,
             subagentWorktreeStrategyDefault: "same-worktree",
+            blockChatOnDirtyGitDefault: true,
+            dirtyGitChangeLimitDefault: 20,
             planExecutionModeDefault: "countdown",
             planExecutionDelaySecondsDefault: 10,
             correctnessIterationModeDefault: "ask-before-iterate"
@@ -262,6 +285,8 @@ describe("planner result validation", () => {
             debugEnabledDefault: false,
             tracePanelDefaultOpen: true,
             subagentWorktreeStrategyDefault: "same-worktree",
+            blockChatOnDirtyGitDefault: true,
+            dirtyGitChangeLimitDefault: 20,
             planExecutionModeDefault: "countdown",
             planExecutionDelaySecondsDefault: 10,
             correctnessIterationModeDefault: "ask-before-iterate"
