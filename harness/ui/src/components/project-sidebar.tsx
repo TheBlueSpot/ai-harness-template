@@ -1,37 +1,27 @@
 import { For, Show, createSignal } from "solid-js";
-import { createRequestId, type ClientCommand } from "../../../shared/protocol";
+import { createRequestId } from "../../../shared/protocol";
 import { getActiveProject, harnessStore } from "../harness-store";
-import { isAbsolutePath, truncateMiddle } from "../lib/utils";
+import { truncateMiddle } from "../lib/utils";
 import { ActionButton } from "./action-button";
-import { Input } from "./ui/input";
-import { ScrollArea } from "./ui/scroll-area";
-import { Separator } from "./ui/separator";
-import { Edit3, Folder, FolderOpen, FolderPlus, GitFork, Plus, Trash2 } from "lucide-solid";
+import { Input } from "./primitives/input";
+import { ScrollArea } from "./primitives/scroll-area";
+import { Separator } from "./primitives/separator";
+import { Edit3, Folder, FolderOpen, GitFork, Plus, Trash2 } from "lucide-solid";
 
 type ProjectSidebarProps = {
-  sendCommand: (command: ClientCommand) => void;
   compact?: boolean;
   onNavigate?: () => void;
 };
 
 export function ProjectSidebar(props: ProjectSidebarProps) {
   const state = harnessStore.state;
+  const sendCommand = harnessStore.actions.sendCommand;
   const activeProject = () => getActiveProject(state);
-  const trimmedInput = () => state.projectInput.trim();
-  const canAddManualProject = () => trimmedInput().length > 0 && isAbsolutePath(trimmedInput());
   const [editingThreadId, setEditingThreadId] = createSignal<string>();
   const [threadTitleDraft, setThreadTitleDraft] = createSignal("");
 
-  function handleAddProject() {
-    props.sendCommand({
-      type: "project.add",
-      requestId: createRequestId(),
-      payload: { rootPath: trimmedInput() }
-    });
-  }
-
   function handleBrowseProject() {
-    props.sendCommand({ type: "project.browse", requestId: createRequestId() });
+    sendCommand({ type: "project.browse", requestId: createRequestId() });
   }
 
   function handleActivateProject(projectId: string) {
@@ -39,7 +29,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
       return;
     }
 
-    props.sendCommand({
+    sendCommand({
       type: "project.activate",
       requestId: createRequestId(),
       payload: { projectId }
@@ -48,7 +38,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
   }
 
   function handleActivateThread(projectId: string, threadId: string) {
-    props.sendCommand({
+    sendCommand({
       type: "thread.activate",
       requestId: createRequestId(),
       payload: { projectId, threadId }
@@ -57,7 +47,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
   }
 
   function handleCreateThread(projectId: string) {
-    props.sendCommand({
+    sendCommand({
       type: "thread.create",
       requestId: createRequestId(),
       payload: { projectId }
@@ -65,7 +55,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
   }
 
   function handleForkThread(projectId: string, sourceThreadId: string) {
-    props.sendCommand({
+    sendCommand({
       type: "thread.fork",
       requestId: createRequestId(),
       payload: { projectId, sourceThreadId }
@@ -73,7 +63,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
   }
 
   function handleRemoveProject(projectId: string) {
-    props.sendCommand({
+    sendCommand({
       type: "project.remove",
       requestId: createRequestId(),
       payload: { projectId }
@@ -92,7 +82,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
       return;
     }
 
-    props.sendCommand({
+    sendCommand({
       type: "thread.rename",
       requestId: createRequestId(),
       payload: { projectId, threadId, title }
@@ -101,44 +91,33 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
   }
 
   return (
-    <div class="panel-shell flex h-full min-h-0 flex-col gap-4 rounded-[2rem] p-[0.8rem]">
+    <div data-test-project-sidebar="" class="panel-shell flex h-full min-h-0 flex-col gap-4 rounded-2xl border-t-0 p-[0.8rem]">
       <div class="space-y-2">
-        <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-[color:var(--muted)]">Projects</div>
-        <h2 class="text-[1.125rem] font-semibold tracking-[-0.04em] text-[color:var(--foreground)]">Workspace roots</h2>
-        <p class="text-[0.675rem] leading-5 text-[color:var(--muted)]">
+        <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--muted)">Projects</div>
+        <h2 class="text-[1.125rem] font-semibold tracking-[-0.04em] text-(--foreground)">Workspace roots</h2>
+        <p class="text-[0.675rem] leading-5 text-(--muted)">
           Each project root keeps its own selectable threads, local chat history, and project-scoped execution context.
         </p>
       </div>
 
-      <div class="rounded-[1.5rem] border border-[color:var(--border)] bg-white/50 p-3">
-        <div class="space-y-3">
-          <Input
-            value={state.projectInput}
-            placeholder="C:\\repo\\project"
-            onInput={(event: InputEvent & { currentTarget: HTMLInputElement; target: Element }) =>
-              harnessStore.setProjectInput(event.currentTarget.value)
-            }
+      <div class="rounded-3xl border border-(--border) bg-white/50 p-3">
+        <div class="flex gap-2">
+          <ActionButton
+            tooltip="Open project switcher"
+            icon={<Folder class="h-4 w-4" />}
+            class="flex-1"
+            onClick={() => harnessStore.openProjectSwitcher()}
+          >
+            Open project
+          </ActionButton>
+          <ActionButton
+            tooltip="Browse for project folder"
+            icon={<FolderOpen class="h-4 w-4" />}
+            variant="secondary"
+            size="icon"
+            ariaLabel="Browse for project folder"
+            onClick={handleBrowseProject}
           />
-          <div class="flex gap-2">
-            <ActionButton
-              tooltip="Add project from typed absolute path"
-              disabledReason={trimmedInput().length === 0 ? "Enter absolute folder path" : "Project path must be absolute"}
-              disabled={!canAddManualProject()}
-              icon={<FolderPlus class="h-4 w-4" />}
-              class="flex-1"
-              onClick={handleAddProject}
-            >
-              Add path
-            </ActionButton>
-            <ActionButton
-              tooltip="Browse for project folder"
-              icon={<FolderOpen class="h-4 w-4" />}
-              variant="secondary"
-              size="icon"
-              ariaLabel="Browse for project folder"
-              onClick={handleBrowseProject}
-            />
-          </div>
         </div>
       </div>
 
@@ -148,14 +127,15 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
         <Show
           when={state.workspace.projects.length > 0}
           fallback={
-            <div class="rounded-[1.5rem] border border-dashed border-[color:var(--border)] bg-white/40 p-5 text-[0.675rem] leading-5 text-[color:var(--muted)]">
-              No workspace roots yet. Add path or browse folder to start isolated project threads.
+            <div class="rounded-3xl border border-dashed border-(--border) bg-white/40 p-5 text-[0.675rem] leading-5 text-(--muted)">
+              No workspace roots yet. Open project switcher or browse folder to start isolated project threads.
             </div>
           }
         >
           <div class="space-y-3">
             <For each={state.workspace.projects}>
               {(project) => {
+                const visibleThreads = () => project.threads.filter((thread) => thread.kind === "user");
                 const isActiveProject = () => project.id === state.workspace.activeProjectId;
                 const disableProjectActions = () => project.session.isStreaming;
                 const removeDisabledReason = () => (disableProjectActions() ? "Project is streaming" : undefined);
@@ -164,8 +144,8 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
                   <section
                     class={`rounded-[1.4rem] border p-3 transition ${
                       isActiveProject()
-                        ? "border-[color:var(--accent)] bg-[linear-gradient(135deg,rgba(15,118,110,0.18),rgba(255,255,255,0.9))] shadow-md"
-                        : "border-[color:var(--border)] bg-white/55"
+                        ? "border-(--accent) bg-[linear-gradient(135deg,rgba(15,118,110,0.18),rgba(255,255,255,0.9))] shadow-md"
+                        : "border-(--border) bg-white/55"
                     }`}
                   >
                     <div class="flex items-start gap-2">
@@ -175,16 +155,16 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
                         disabled={isActiveProject()}
                         icon={<Folder class="h-4 w-4" />}
                         variant={isActiveProject() ? "secondary" : "ghost"}
-                        class="min-h-[2.75rem] flex-1 justify-start rounded-[1rem] px-3 py-2"
+                        class="min-h-[2.75rem] flex-1 justify-start rounded-2xl px-3 py-2"
                         onClick={() => handleActivateProject(project.id)}
                       >
                         <div class="min-w-0 text-left">
-                          <div class="truncate text-[0.675rem] font-semibold text-[color:var(--foreground)]">{project.name}</div>
-                          <div class="truncate text-[0.585rem] text-[color:var(--muted)]">
+                          <div class="truncate text-[0.675rem] font-semibold text-(--foreground)">{project.name}</div>
+                          <div class="truncate text-[0.585rem] text-(--muted)">
                             {truncateMiddle(project.rootPath, props.compact ? 24 : 30)}
                           </div>
-                          <div class="mt-1.5 flex flex-wrap gap-2 text-[0.6rem] uppercase tracking-[0.16em] text-[color:var(--muted)]">
-                            <span>{project.threads.length} threads</span>
+                          <div class="mt-1.5 flex flex-wrap gap-2 text-[0.6rem] uppercase tracking-[0.16em] text-(--muted)">
+                            <span>{visibleThreads().length} threads</span>
                             {project.session.isStreaming ? <span>streaming</span> : null}
                             {isActiveProject() ? <span>active</span> : null}
                           </div>
@@ -218,13 +198,13 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
                     </div>
 
                     <div class="mt-3 space-y-2">
-                      <For each={project.threads}>
+                      <For each={visibleThreads()}>
                         {(thread) => {
                           const isActiveThread = () => project.activeThreadId === thread.id;
                           const isEditing = () => editingThreadId() === thread.id;
                           const badgeStyle = badgeClass(thread.badgeState);
                           return (
-                            <div class={`rounded-[1rem] border px-3 py-2 ${isActiveThread() ? "border-teal-500/50 bg-white/80" : "border-[color:var(--border)] bg-white/60"}`}>
+                            <div class={`rounded-2xl border px-3 py-2 ${isActiveThread() ? "border-teal-500/50 bg-white/80" : "border-(--border) bg-white/60"}`}>
                               <div class="flex items-start justify-between gap-2">
                                 <button
                                   class="min-w-0 flex-1 cursor-pointer text-left disabled:cursor-not-allowed"
@@ -233,7 +213,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
                                 >
                                   <Show
                                     when={isEditing()}
-                                    fallback={<div class="truncate text-[0.675rem] font-semibold text-[color:var(--foreground)]">{thread.title}</div>}
+                                    fallback={<div class="truncate text-[0.675rem] font-semibold text-(--foreground)">{thread.title}</div>}
                                   >
                                     <Input
                                       value={threadTitleDraft()}
@@ -252,7 +232,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
                                       }}
                                     />
                                   </Show>
-                                  <div class="mt-1 flex flex-wrap items-center gap-2 text-[0.575rem] uppercase tracking-[0.14em] text-[color:var(--muted)]">
+                                  <div class="mt-1 flex flex-wrap items-center gap-2 text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">
                                     <Show when={thread.badgeState !== "idle"}>
                                       <span class={`rounded-full px-2 py-0.5 ${badgeStyle}`}>{badgeLabel(thread.badgeState)}</span>
                                     </Show>
@@ -301,9 +281,9 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
 
       <Show when={activeProject()}>
         {(project) => (
-          <div class="rounded-[1.35rem] border border-[color:var(--border)] bg-white/45 px-4 py-3 text-[0.585rem] uppercase tracking-[0.16em] text-[color:var(--muted)]">
+          <div class="rounded-[1.35rem] border border-(--border) bg-white/45 px-4 py-3 text-[0.585rem] uppercase tracking-[0.16em] text-(--muted)">
             Active root
-            <div class="mt-2 break-all font-mono text-[0.675rem] normal-case tracking-normal text-[color:var(--foreground)]">
+            <div class="mt-2 break-all font-mono text-[0.675rem] normal-case tracking-normal text-(--foreground)">
               {project().rootPath}
             </div>
           </div>
@@ -346,3 +326,4 @@ function badgeClass(value: string) {
       return "bg-slate-200 text-slate-800";
   }
 }
+

@@ -11,7 +11,7 @@ export const builtinModes: ModeDefinition[] = [
     plannerPrompt: "Prefer explanation, code reading, and minimal edits unless the user clearly asks for implementation.",
     executionPrompt: "Favor analysis, concise answers, and low-impact changes. Explain tradeoffs clearly.",
     toolPolicy: "read-heavy",
-    planExecutionModeDefault: "approve",
+    planExecutionModeDefault: "immediate",
     correctnessIterationModeDefault: "ask-before-iterate",
     updatedAt: "builtin"
   },
@@ -35,7 +35,7 @@ export const builtinModes: ModeDefinition[] = [
     plannerPrompt: "Bias toward implementation, verification, and concrete contracts. Use subagents when path ownership is clean.",
     executionPrompt: "Implement requested changes efficiently, verify important behavior, and summarize real outcomes only.",
     toolPolicy: "full-access",
-    planExecutionModeDefault: "countdown",
+    planExecutionModeDefault: "immediate",
     subagentWorktreeStrategyDefault: "same-worktree",
     correctnessIterationModeDefault: "ask-before-iterate",
     updatedAt: "builtin"
@@ -48,7 +48,7 @@ export const builtinModes: ModeDefinition[] = [
     plannerPrompt: "Prioritize reproduction steps, root-cause hypotheses, and smallest safe fix first.",
     executionPrompt: "Prove or disprove root cause, then apply narrow fix and verify failing path explicitly.",
     toolPolicy: "full-access",
-    planExecutionModeDefault: "approve",
+    planExecutionModeDefault: "immediate",
     correctnessIterationModeDefault: "auto-once",
     updatedAt: "builtin"
   },
@@ -60,7 +60,7 @@ export const builtinModes: ModeDefinition[] = [
     plannerPrompt: "Default to review mindset: identify bugs, regressions, missing tests, and weak assumptions before edits.",
     executionPrompt: "Return findings first, ordered by severity. Do not make broad edits unless the user explicitly asks.",
     toolPolicy: "review-only",
-    planExecutionModeDefault: "approve",
+    planExecutionModeDefault: "immediate",
     correctnessIterationModeDefault: "ask-before-iterate",
     updatedAt: "builtin"
   }

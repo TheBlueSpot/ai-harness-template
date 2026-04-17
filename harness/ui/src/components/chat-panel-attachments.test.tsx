@@ -2,7 +2,7 @@
 import { beforeEach, expect, it, mock } from "bun:test";
 import { createUiTest } from "../utils/tests/test-harness";
 import { cleanup, fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
-import { clearBrowserStateForTests, seedHarnessStoreForTests } from "../utils/tests/store-test-utils";
+import { captureDispatchedCommands, clearBrowserStateForTests, seedHarnessStoreForTests } from "../utils/tests/store-test-utils";
 import { createExecutionPlanFixture, createHarnessStateFixture, createRunFixture, createViewProjectFixture } from "../utils/tests/test-fixtures";
 import { toastStore } from "../toast-store";
 
@@ -78,7 +78,8 @@ createUiTest("ChatPanel attachment guardrails", () => {
       })
     );
 
-    const rendered = render(() => <ChatPanel sendCommand={(command) => commands.push(command)} />);
+    captureDispatchedCommands(commands as never[]);
+    const rendered = render(() => <ChatPanel />);
     const input = rendered.container.querySelector('input[type="file"]') as HTMLInputElement | null;
     if (!input) {
       throw new Error("Expected attachment input");

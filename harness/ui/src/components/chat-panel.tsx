@@ -1,37 +1,46 @@
-import { For, Match, Show, Switch, createEffect, createSignal, onCleanup, onMount, type JSX } from "solid-js";
-import { createRequestId, type ChatAttachment, type ClientCommand } from "../../../shared/protocol";
+import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { createRequestId, type ChatAttachment, type SetupAction } from "../../../shared/protocol";
 import {
   detectSupportedChatAttachment,
   isSupportedChatAttachment,
   MAX_CHAT_ATTACHMENT_COUNT
 } from "../../../shared/chat-attachments";
 import {
+  canSelectProviderBrand,
+  getEffectiveProviderBrandForAgent,
   getActiveProject,
   getActiveMode,
   getCapabilityTags,
-  getDefaultExecutionModelIdForProvider,
+  getBlockingSetupCheck,
+  getExecutionModelOptionsForAgent,
+  getFallbackExecutionModelIdForAgent,
   getResolvedModes,
   harnessStore,
   hasUsableApiKeyForProvider,
-  isModelIdForProvider
+  persistLocalPreferences,
+  shouldShowSetupChecklist
 } from "../harness-store";
-import { isAbsolutePath } from "../lib/utils";
-import { formatContextUsage } from "../lib/run-status";
 import { uploadFiles } from "../lib/uploadthing";
 import { pushToast } from "../toast-store";
 import { ActionButton } from "./action-button";
+import { CliSessionPanel } from "./cli-session-panel";
 import { MarkdownContent } from "./markdown-content";
 import { ModeEditorPanel } from "./mode-editor-panel";
-import { Input } from "./ui/input";
-import { ScrollArea } from "./ui/scroll-area";
-import { Textarea } from "./ui/textarea";
+import { SetupChecklistCard } from "./setup-checklist-card";
+import { Dialog } from "./primitives/dialog";
+import { Input } from "./primitives/input";
+import { ScrollArea } from "./primitives/scroll-area";
+import { Textarea } from "./primitives/textarea";
+import { Tooltip } from "./primitives/tooltip";
 import {
+  Activity,
+  Brain,
+  ClipboardList,
   Clipboard,
   Copy,
   Edit3,
   FolderOpen,
-  FolderPlus,
-  GitFork,
+  Folder,
   LoaderCircle,
   MessageSquareMore,
   Paperclip,
@@ -40,18 +49,16 @@ import {
   RefreshCcw,
   Plus,
   SendHorizontal,
-  X
+  X,
+  Split
 } from "lucide-solid";
 
-type ChatPanelProps = {
-  sendCommand: (command: ClientCommand) => void;
-};
-
-export function ChatPanel(props: ChatPanelProps) {
+export function ChatPanel() {
   let messageViewport: HTMLDivElement | undefined;
   let attachmentInput: HTMLInputElement | undefined;
   let countdownTimer: number | undefined;
   const state = harnessStore.state;
+  const sendCommand = harnessStore.actions.sendCommand;
   const activeProject = () => getActiveProject(state);
   const [stickToBottom, setStickToBottom] = createSignal(true);
   const [editingThreadTitle, setEditingThreadTitle] = createSignal(false);
@@ -59,8 +66,11 @@ export function ChatPanel(props: ChatPanelProps) {
   const [countdownRunId, setCountdownRunId] = createSignal<string>();
   const [countdownRemainingMs, setCountdownRemainingMs] = createSignal(0);
   const [countdownPaused, setCountdownPaused] = createSignal(false);
+  const [countdownFrozenByExecutionPause, setCountdownFrozenByExecutionPause] = createSignal(false);
   const [autoExecutedRunId, setAutoExecutedRunId] = createSignal<string>();
-  const [activeTab, setActiveTab] = createSignal<"chat" | "plan" | "run" | "events">("chat");
+  const [activeTab, setActiveTab] = createSignal<"chat" | "plan" | "run" | "events" | "memory">("chat");
+  const currentTab = createMemo(activeTab);
+  const [experimentDialogOpen, setExperimentDialogOpen] = createSignal(false);
   const [projectRulesDraft, setProjectRulesDraft] = createSignal("");
   const [threadMemoryDraft, setThreadMemoryDraft] = createSignal("");
   const [draftAttachments, setDraftAttachments] = createSignal<ChatAttachment[]>([]);
@@ -74,33 +84,52 @@ export function ChatPanel(props: ChatPanelProps) {
   const resolvedModes = () => getResolvedModes(state, activeProject());
   const activeMode = () => getActiveMode(state, activeProject());
   const capabilityTags = () => getCapabilityTags(state, getEffectiveExecutionModelId());
-  const hasVisionCapability = () => capabilityTags().includes("vision");
-  const hasImageDraftAttachments = () => draftAttachments().some((attachment) => attachment.kind === "image");
-  const visibleTabs = () =>
-    (state.uiMode === "advanced" ? ["chat", "plan", "run", "events"] : ["chat", "plan", "run"]) as Array<
-      "chat" | "plan" | "run" | "events"
-    >;
-  const failedSubtaskCount = () =>
-    activeProject()?.activeRun?.subtasks.filter((task) => task.status === "failed").length ?? 0;
-  const composerContextText = () => {
-    const contextUsage = activeProject()?.contextUsage;
-    if (!contextUsage) {
-      return "Ctx ? / ?";
+  const selectedAgentId = () => state.selectedAgentId;
+  const selectedProviderBrand = () => getEffectiveProviderBrandForAgent(selectedAgentId(), state.providerBrand);
+  const availableExecutionModels = () => getExecutionModelOptionsForAgent(state, selectedAgentId(), state.providerBrand);
+  const selectedAgentRuntime = () => state.agentRuntimes.find((runtime) => runtime.agentId === selectedAgentId());
+  const selectedAgentHealthMessage = () => {
+    const runtime = selectedAgentRuntime();
+    if (!runtime || runtime.agentId === "pi") {
+      return undefined;
     }
 
-    return `${formatContextUsage(contextUsage.tokens, contextUsage.contextWindow, contextUsage.usagePercent)} | ${
-      contextUsage.sourceLabel
-    }`;
+    if (!runtime.installed || !runtime.authenticated) {
+      return runtime.healthMessage ?? `${runtime.label} unavailable`;
+    }
+
+    return runtime.healthMessage;
   };
+  const hasVisionCapability = () => capabilityTags().includes("vision");
+  const hasImageDraftAttachments = () => draftAttachments().some((attachment) => attachment.kind === "image");
+  const blockingSetupCheck = () => getBlockingSetupCheck(state);
+  const visibleTabs = () =>
+    [
+      { id: "chat" as const, label: "Chat", icon: <MessageSquareMore class="h-3.5 w-3.5" />, tooltip: "Open transcript and plan cards" },
+      { id: "plan" as const, label: "Plan", icon: <ClipboardList class="h-3.5 w-3.5" />, tooltip: "Open planning context and saved plan tools" },
+      { id: "run" as const, label: "Run", icon: <Play class="h-3.5 w-3.5" />, tooltip: "Open run status, subtasks, and experiment actions" },
+      { id: "memory" as const, label: "Memory", icon: <Brain class="h-3.5 w-3.5" />, tooltip: "Open shared memory entries" },
+      { id: "events" as const, label: "Events", icon: <Activity class="h-3.5 w-3.5" />, tooltip: "Open execution event history" }
+    ] as const;
+  const experimentRun = () => activeProject()?.activeRun?.experiment ?? activeProject()?.lastRun?.experiment;
+  const failedSubtaskCount = () =>
+    activeProject()?.activeRun?.subtasks.filter((task) => task.status === "failed").length ?? 0;
+  const contextUsage = () => activeProject()?.contextUsage;
   const attachmentButtonDisabled = () => !state.attachmentsEnabled || activeProject()?.session.isStreaming || uploadingAttachments();
   const attachmentButtonReason = () =>
     !state.attachmentsEnabled
       ? "Set UPLOADTHING_TOKEN on the server to enable attachments"
       : activeProject()?.session.isStreaming
-      ? "Project is streaming"
-      : uploadingAttachments()
-      ? "Attachment upload in progress"
-      : undefined;
+        ? "Project is streaming"
+        : uploadingAttachments()
+          ? "Attachment upload in progress"
+          : undefined;
+  const requiresFreshTopLevelSend = () =>
+    !pendingQuestion() && activeProject()?.activeRun?.status !== "ready" && !resumableRun();
+  const executionPaused = () => state.executionControl.isPaused;
+  const executionPauseReason = () => "Global execution pause is active";
+  const setupBlockedReason = () =>
+    requiresFreshTopLevelSend() && blockingSetupCheck() ? blockingSetupCheck()!.summary : undefined;
 
   const scrollToBottom = (force: boolean = false) => {
     if (!messageViewport || (!force && !stickToBottom())) {
@@ -157,8 +186,8 @@ export function ChatPanel(props: ChatPanelProps) {
   });
 
   createEffect(() => {
-    if (state.uiMode === "simple" && activeTab() === "events") {
-      setActiveTab("chat");
+    if (currentTab() === "memory" && activeProject()) {
+      handleLoadMemoryEntries();
     }
   });
 
@@ -172,7 +201,7 @@ export function ChatPanel(props: ChatPanelProps) {
 
     if (executionPlan.gating.mode === "immediate") {
       clearCountdown();
-      if (autoExecutedRunId() !== run.id) {
+      if (!executionPaused() && autoExecutedRunId() !== run.id) {
         handleExecuteRun(run.id);
         setAutoExecutedRunId(run.id);
       }
@@ -185,25 +214,100 @@ export function ChatPanel(props: ChatPanelProps) {
     }
 
     if (countdownRunId() === run.id) {
+      if (!executionPaused() && countdownTimer === undefined && !countdownPaused() && countdownRemainingMs() > 0) {
+        startCountdown(run.id);
+      }
       return;
     }
 
     clearCountdown();
     setCountdownRunId(run.id);
     setCountdownPaused(false);
+    setCountdownFrozenByExecutionPause(false);
     setCountdownRemainingMs(executionPlan.gating.delaySeconds * 1000);
+    if (!executionPaused()) {
+      startCountdown(run.id);
+    }
+  });
+
+  createEffect(() => {
+    const run = readyRun();
+    if (!run || countdownRunId() !== run.id) {
+      setCountdownFrozenByExecutionPause(false);
+      return;
+    }
+
+    if (executionPaused()) {
+      if (countdownTimer !== undefined) {
+        window.clearInterval(countdownTimer);
+        countdownTimer = undefined;
+      }
+      setCountdownFrozenByExecutionPause(true);
+      return;
+    }
+
+    if (countdownFrozenByExecutionPause() && countdownTimer === undefined && !countdownPaused() && countdownRemainingMs() > 0) {
+      setCountdownFrozenByExecutionPause(false);
+      startCountdown(run.id);
+    }
+  });
+
+  function startCountdown(runId: string) {
+    if (countdownTimer !== undefined) {
+      window.clearInterval(countdownTimer);
+    }
+
     countdownTimer = window.setInterval(() => {
       setCountdownRemainingMs((value) => {
         const next = Math.max(0, value - 100);
-        if (next === 0 && readyRun()?.id === run.id && autoExecutedRunId() !== run.id) {
+        if (next === 0 && readyRun()?.id === runId && autoExecutedRunId() !== runId && !executionPaused()) {
           clearCountdown();
-          handleExecuteRun(run.id);
-          setAutoExecutedRunId(run.id);
+          handleExecuteRun(runId);
+          setAutoExecutedRunId(runId);
         }
         return next;
       });
     }, 100);
-  });
+  }
+
+  async function handleSetupAction(action: SetupAction) {
+    switch (action.kind) {
+      case "open-project-switcher":
+        harnessStore.openProjectSwitcher();
+        return;
+      case "open-preferences":
+        harnessStore.openPreferencesModal();
+        return;
+      case "refresh-runtime-health":
+        sendCommand({
+          type: "agent.runtime.refresh",
+          requestId: createRequestId()
+        });
+        return;
+      case "copy-command":
+        if (!action.value) {
+          return;
+        }
+
+        try {
+          await navigator.clipboard.writeText(action.value);
+          pushToast("Command copied", action.value);
+        } catch {
+          pushToast("Clipboard blocked", action.value, "error");
+        }
+        return;
+      case "open-url":
+        if (action.value) {
+          window.open(action.value, "_blank", "noopener,noreferrer");
+        }
+        return;
+      case "start-tutorial":
+        if (action.value) {
+          harnessStore.startTutorial(action.value);
+        }
+        return;
+    }
+  }
 
   function clearCountdown() {
     if (countdownTimer !== undefined) {
@@ -213,16 +317,20 @@ export function ChatPanel(props: ChatPanelProps) {
     setCountdownRunId(undefined);
     setCountdownRemainingMs(0);
     setCountdownPaused(false);
+    setCountdownFrozenByExecutionPause(false);
   }
 
   function handleQuestionChoice(answerText: string) {
+    if (executionPaused()) {
+      return;
+    }
     const project = activeProject();
     const question = pendingQuestion();
     if (!project || !question || !project.activeRun) {
       return;
     }
 
-    props.sendCommand({
+    sendCommand({
       type: "planning.answer",
       requestId: createRequestId(),
       payload: {
@@ -319,6 +427,10 @@ export function ChatPanel(props: ChatPanelProps) {
   function handleSubmit(event: SubmitEvent) {
     event.preventDefault();
 
+    if (executionPaused()) {
+      return;
+    }
+
     const project = activeProject();
     if (!project) {
       return;
@@ -353,7 +465,7 @@ export function ChatPanel(props: ChatPanelProps) {
         return;
       }
 
-      props.sendCommand({
+      sendCommand({
         type: "planning.answer",
         requestId: createRequestId(),
         payload: {
@@ -375,7 +487,7 @@ export function ChatPanel(props: ChatPanelProps) {
         return;
       }
 
-      props.sendCommand({
+      sendCommand({
         type: "planning.refine",
         requestId: createRequestId(),
         payload: {
@@ -400,11 +512,7 @@ export function ChatPanel(props: ChatPanelProps) {
       return;
     }
 
-    if (!project.session.selectedAgentId) {
-      return;
-    }
-
-    if (!hasUsableApiKeyForProvider(state, state.providerBrand)) {
+    if (selectedAgentId() === "pi" && !hasUsableApiKeyForProvider(state, state.providerBrand)) {
       pushToast(
         `${state.providerBrand === "gemini" ? "Gemini" : "GPT"} API key required`,
         "Open preferences and add matching provider key before sending chat.",
@@ -414,15 +522,23 @@ export function ChatPanel(props: ChatPanelProps) {
       return;
     }
 
+    if (selectedAgentId() !== "pi") {
+      const runtime = selectedAgentRuntime();
+      if (!runtime?.installed || !runtime.authenticated) {
+        pushToast("CLI runtime unavailable", runtime?.healthMessage ?? "Install and authenticate selected runtime first.", "error");
+        return;
+      }
+    }
+
     const executionModelId = getEffectiveExecutionModelId();
 
-    props.sendCommand({
+    sendCommand({
       type: "chat.send",
       requestId: createRequestId(),
       payload: {
         projectId: project.id,
         threadId: project.activeThreadId,
-        agentId: project.session.selectedAgentId,
+        agentId: selectedAgentId(),
         content,
         attachments: draftAttachments(),
         modeId: activeMode()?.id,
@@ -433,34 +549,161 @@ export function ChatPanel(props: ChatPanelProps) {
 
     harnessStore.setProjectDraft(project.id, "");
     setDraftAttachments([]);
-    harnessStore.clearPendingExecutionModelId(project.id);
+  }
+
+  function handleSelectAgent(agentId: "pi" | "copilot-cli" | "codex-cli") {
+    harnessStore.setSelectedAgentId(agentId);
+  }
+
+  function handleStartLiveSession() {
+    if (executionPaused()) {
+      return;
+    }
+    const project = activeProject();
+    const runtime = selectedAgentRuntime();
+    if (!project || !runtime || runtime.agentId === "pi") {
+      return;
+    }
+
+    sendCommand({
+      type: "cli-session.start",
+      requestId: createRequestId(),
+      payload: {
+        projectId: project.id,
+        threadId: project.activeThreadId,
+        agentId: runtime.agentId,
+        cols: 120,
+        rows: 32,
+        prompt: project.draft.trim() || undefined,
+        runId: project.activeRun?.id
+      }
+    });
   }
 
   function handleExecuteRun(runId: string) {
+    handleExecuteRunTarget(runId, "current-project");
+  }
+
+  function handleExecuteRunTarget(runId: string, target: "current-project" | "ephemeral-experiment") {
+    if (executionPaused()) {
+      return;
+    }
     const project = activeProject();
     if (!project) {
       return;
     }
 
-    props.sendCommand({
+    sendCommand({
       type: "run.execute",
       requestId: createRequestId(),
       payload: {
         projectId: project.id,
         threadId: project.activeThreadId,
-        runId
+        runId,
+        target
+      }
+    });
+  }
+
+  function handleInspectExperiment() {
+    const project = activeProject();
+    const run = activeProject()?.activeRun ?? activeProject()?.lastRun;
+    if (!project || !run?.experiment) {
+      return;
+    }
+
+    setExperimentDialogOpen(true);
+    sendCommand({
+      type: "experiment.inspect",
+      requestId: createRequestId(),
+      payload: {
+        projectId: project.id,
+        runId: run.id
+      }
+    });
+  }
+
+  function handlePromoteExperiment() {
+    const project = activeProject();
+    const run = activeProject()?.activeRun ?? activeProject()?.lastRun;
+    if (!project || !run?.experiment) {
+      return;
+    }
+
+    sendCommand({
+      type: "experiment.promote",
+      requestId: createRequestId(),
+      payload: {
+        projectId: project.id,
+        runId: run.id
+      }
+    });
+  }
+
+  function handleDiscardExperiment() {
+    const project = activeProject();
+    const run = activeProject()?.activeRun ?? activeProject()?.lastRun;
+    if (!project || !run?.experiment) {
+      return;
+    }
+
+    sendCommand({
+      type: "experiment.discard",
+      requestId: createRequestId(),
+      payload: {
+        projectId: project.id,
+        runId: run.id
+      }
+    });
+  }
+
+  function handleLoadMemoryEntries() {
+    const project = activeProject();
+    if (!project) {
+      return;
+    }
+
+    sendCommand({
+      type: "memory.list",
+      requestId: createRequestId(),
+      payload: {
+        projectId: project.id
+      }
+    });
+  }
+
+  function handleUpdateMemory(entryId: string, patch: { pinned?: boolean; status?: "active" | "archived" }) {
+    sendCommand({
+      type: "memory.update",
+      requestId: createRequestId(),
+      payload: {
+        memoryEntryId: entryId,
+        ...patch
+      }
+    });
+  }
+
+  function handleDeleteMemory(entryId: string) {
+    sendCommand({
+      type: "memory.delete",
+      requestId: createRequestId(),
+      payload: {
+        memoryEntryId: entryId
       }
     });
   }
 
   function handleResume() {
+    if (executionPaused()) {
+      return;
+    }
     const project = activeProject();
     const run = resumableRun();
     if (!project || !run) {
       return;
     }
 
-    props.sendCommand({
+    sendCommand({
       type: "run.resume",
       requestId: createRequestId(),
       payload: {
@@ -479,7 +722,7 @@ export function ChatPanel(props: ChatPanelProps) {
     if (!project) {
       return;
     }
-    props.sendCommand({
+    sendCommand({
       type: "thread.create",
       requestId: createRequestId(),
       payload: {
@@ -493,7 +736,7 @@ export function ChatPanel(props: ChatPanelProps) {
     if (!project) {
       return;
     }
-    props.sendCommand({
+    sendCommand({
       type: "thread.fork",
       requestId: createRequestId(),
       payload: {
@@ -508,7 +751,7 @@ export function ChatPanel(props: ChatPanelProps) {
     if (!project) {
       return;
     }
-    props.sendCommand({
+    sendCommand({
       type: "chat.stop",
       requestId: createRequestId(),
       payload: {
@@ -519,13 +762,16 @@ export function ChatPanel(props: ChatPanelProps) {
   }
 
   function handleRetry() {
+    if (executionPaused()) {
+      return;
+    }
     const project = activeProject();
     const run = retryableRun();
     if (!project || !run) {
       return;
     }
 
-    props.sendCommand({
+    sendCommand({
       type: "run.retry",
       requestId: createRequestId(),
       payload: {
@@ -537,7 +783,7 @@ export function ChatPanel(props: ChatPanelProps) {
   }
 
   function handlePauseAutoRun() {
-    if (countdownRunId() === undefined) {
+    if (countdownRunId() === undefined || executionPaused()) {
       return;
     }
 
@@ -551,22 +797,12 @@ export function ChatPanel(props: ChatPanelProps) {
   function handleResumeAutoRun() {
     const runId = countdownRunId();
     const run = readyRun();
-    if (!runId || !run || run.id !== runId || countdownRemainingMs() <= 0) {
+    if (!runId || !run || run.id !== runId || countdownRemainingMs() <= 0 || executionPaused()) {
       return;
     }
 
     setCountdownPaused(false);
-    countdownTimer = window.setInterval(() => {
-      setCountdownRemainingMs((value) => {
-        const next = Math.max(0, value - 100);
-        if (next === 0 && readyRun()?.id === run.id && autoExecutedRunId() !== run.id) {
-          clearCountdown();
-          handleExecuteRun(run.id);
-          setAutoExecutedRunId(run.id);
-        }
-        return next;
-      });
-    }, 100);
+    startCountdown(run.id);
   }
 
   function handleCopyThreadId() {
@@ -600,7 +836,7 @@ export function ChatPanel(props: ChatPanelProps) {
       return;
     }
 
-    props.sendCommand({
+    sendCommand({
       type: "thread.rename",
       requestId: createRequestId(),
       payload: {
@@ -617,20 +853,74 @@ export function ChatPanel(props: ChatPanelProps) {
   }
 
   function getEffectiveExecutionModelId() {
-    const project = activeProject();
-    if (!project) {
-      return getDefaultExecutionModelIdForProvider(state.providerBrand);
-    }
-    const pendingModelId = state.pendingExecutionModelIds[project.id];
-    if (pendingModelId) {
-      return pendingModelId;
+    return state.selectedExecutionModelId ?? getFallbackExecutionModelIdForAgent(state, selectedAgentId(), state.providerBrand);
+  }
+
+  function getContextUsageTooltip() {
+    const usage = contextUsage();
+    if (!usage) {
+      return undefined;
     }
 
-    if (isModelIdForProvider(project.session.executionModelId, state.providerBrand)) {
-      return project.session.executionModelId;
+    const summary = `${Math.round(usage.usagePercent ?? 0)}% · ${formatTokenCount(usage.tokens)} / ${formatTokenCount(usage.contextWindow)} context used`;
+    const totalProcessedLine =
+      usage.totalProcessedTokens === undefined ? undefined : `Total processed: ${formatTokenCount(usage.totalProcessedTokens)} tokens`;
+    return [summary, totalProcessedLine, "Automatically compacts its context when needed."].filter(Boolean).join("\n");
+  }
+
+  function handleProviderBrandSelect(providerBrand: "gpt" | "gemini") {
+    if (!canSelectProviderBrand(state, providerBrand)) {
+      pushToast("Provider key required", `Saved ${providerBrand === "gemini" ? "Gemini" : "GPT"} key required.`, "error");
+      return;
     }
 
-    return getDefaultExecutionModelIdForProvider(state.providerBrand);
+    harnessStore.setProviderBrand(providerBrand);
+    persistProviderPreferences(providerBrand);
+  }
+
+  function persistProviderPreferences(providerBrand: "gpt" | "gemini") {
+    persistLocalPreferences({
+      openAiApiKey: state.openAiApiKeyDraft.trim() || undefined,
+      googleApiKey: state.googleApiKeyDraft.trim() || undefined,
+      providerBrand,
+      debugEnabled: state.debugEnabled,
+      tracePanelDefaultOpen: state.tracePanelDefaultOpen,
+      subagentWorktreeStrategyDefault: state.subagentWorktreeStrategyDefault,
+      blockChatOnDirtyGitDefault: state.blockChatOnDirtyGitDefault,
+      dirtyGitChangeLimitDefault: state.dirtyGitChangeLimitDefault,
+      autoCompactContextThresholdPercentDefault: state.autoCompactContextThresholdPercentDefault,
+      planExecutionModeDefault: state.planExecutionModeDefault,
+      planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
+      correctnessIterationModeDefault: state.correctnessIterationModeDefault,
+      backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
+      backgroundJobNotificationsEnabled: state.backgroundJobNotificationsEnabled,
+      memoryBankEnabledDefault: state.memoryBankEnabledDefault
+    });
+
+    sendCommand({
+      type: "preferences.save",
+      requestId: createRequestId(),
+      payload: {
+        openAiApiKey: state.openAiApiKeyDraft.trim() || undefined,
+        googleApiKey: state.googleApiKeyDraft.trim() || undefined,
+        providerBrand,
+        debugEnabled: state.debugEnabled,
+        tracePanelDefaultOpen: state.tracePanelDefaultOpen,
+        subagentWorktreeStrategyDefault: state.subagentWorktreeStrategyDefault,
+        blockChatOnDirtyGitDefault: state.blockChatOnDirtyGitDefault,
+        dirtyGitChangeLimitDefault: state.dirtyGitChangeLimitDefault,
+        autoCompactContextThresholdPercentDefault: state.autoCompactContextThresholdPercentDefault,
+        planExecutionModeDefault: state.planExecutionModeDefault,
+        planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
+        correctnessIterationModeDefault: state.correctnessIterationModeDefault,
+        backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
+        memoryBankEnabledDefault: state.memoryBankEnabledDefault
+      }
+    });
+  }
+
+  function handleExecutionModelSelect(modelId: string) {
+    harnessStore.setSelectedExecutionModelId(modelId);
   }
 
   function getComposerPlaceholder() {
@@ -651,45 +941,18 @@ export function ChatPanel(props: ChatPanelProps) {
       return "Refine plan before execution...";
     }
 
-    return `Ask pi to work inside ${project.rootPath}...`;
-  }
-
-  function handleOpenProject() {
-    const rootPath = state.projectInput.trim();
-    if (!isAbsolutePath(rootPath)) {
-      return;
-    }
-
-    props.sendCommand({
-      type: "project.add",
-      requestId: createRequestId(),
-      payload: {
-        rootPath
-      }
-    });
+    return `Ask ${selectedAgentId()} to work inside ${project.rootPath}...`;
   }
 
   function handleBrowseProject() {
-    props.sendCommand({
+    sendCommand({
       type: "project.browse",
       requestId: createRequestId()
     });
   }
 
   function handleModeSelect(modeId: string) {
-    const project = activeProject();
-    if (!project) {
-      return;
-    }
-
-    props.sendCommand({
-      type: "project.mode.select",
-      requestId: createRequestId(),
-      payload: {
-        projectId: project.id,
-        modeId
-      }
-    });
+    harnessStore.setSelectedModeId(modeId);
   }
 
   function handleSaveProjectContext() {
@@ -698,7 +961,7 @@ export function ChatPanel(props: ChatPanelProps) {
       return;
     }
 
-    props.sendCommand({
+    sendCommand({
       type: "project.context.save",
       requestId: createRequestId(),
       payload: {
@@ -709,39 +972,81 @@ export function ChatPanel(props: ChatPanelProps) {
     });
   }
 
+  function handlePromoteScheduledRun(runId?: string) {
+    const project = activeProject();
+    if (!project) {
+      return;
+    }
+
+    const run = [project.activeRun, project.lastRun].find((entry) => entry?.id === runId) ?? project.activeRun ?? project.lastRun;
+    if (!run) {
+      pushToast("Run required", "No AI run available to promote.", "error");
+      return;
+    }
+
+    const suggestedName =
+      run.summary?.split(".")[0]?.trim() ||
+      run.latestUserPrompt.replace(/\s+/g, " ").trim().slice(0, 64) ||
+      "Scheduled task";
+
+    harnessStore.openBackgroundJobEditor({
+      source: "promote",
+      projectId: project.id,
+      createdFromRunId: run.id,
+      kind: "ai-routine",
+      name: suggestedName,
+      description: "",
+      scheduleInput: "",
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+      aiPrompt: run.latestUserPrompt,
+      aiModeId: activeMode()?.id,
+      aiExecutionModelId: run.executionModelId ?? getEffectiveExecutionModelId(),
+      aiPlanExecutionMode: run.plan?.gating.mode ?? state.planExecutionModeDefault,
+      aiSubagentWorktreeStrategy: run.plan?.subagentWorktreeStrategy ?? state.subagentWorktreeStrategyDefault,
+      shellExecutable: "",
+      shellArgsText: "",
+      shellCwd: "",
+      shellEnvRefsText: "",
+      shellTimeoutSeconds: 600,
+      shellNetworkAccess: false
+    });
+  }
+
   return (
-    <section class="panel-shell flex h-full min-h-0 flex-col gap-4 rounded-[2rem] p-4">
+    <section data-test-chat-panel="" class="panel-shell flex h-full min-h-0 flex-col gap-4 rounded-2xl border-t-0 p-4">
+      <Show when={shouldShowSetupChecklist(state)}>
+        <SetupChecklistCard
+          checks={state.setup.checks}
+          readyRequiredCount={state.setup.readyRequiredCount}
+          totalRequiredCount={state.setup.totalRequiredCount}
+          onAction={handleSetupAction}
+          onOpenHelp={() => harnessStore.openHelpDialog()}
+          onDismiss={() => harnessStore.closeSetupChecklist()}
+        />
+      </Show>
       <Show
         when={activeProject()}
         fallback={
           <div class="flex flex-1 items-center justify-center">
-            <div class="w-full max-w-2xl rounded-[1.75rem] border border-dashed border-[color:var(--border)] bg-white/45 p-6 shadow-sm md:p-8">
-              <div class="inline-flex items-center gap-2 rounded-full bg-white/65 px-3 py-1 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-[color:var(--muted)]">
+            <div class="w-full max-w-2xl rounded-[1.75rem] border border-dashed border-(--border) bg-white/45 p-6 shadow-sm md:p-8">
+              <div class="inline-flex items-center gap-2 rounded-full bg-white/65 px-3 py-1 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--muted)">
                 First run
               </div>
-              <h1 class="mt-4 font-display text-[1.75rem] tracking-[-0.06em] text-[color:var(--foreground)] md:text-[2.1rem]">
+              <h1 class="mt-4 font-display text-[1.75rem] tracking-[-0.06em] text-(--foreground) md:text-[2.1rem]">
                 Start with repo, import, or pasted spec
               </h1>
-              <p class="mt-3 max-w-2xl text-[0.75rem] leading-6 text-[color:var(--muted)]">
+              <p class="mt-3 max-w-2xl text-[0.75rem] leading-6 text-(--muted)">
                 Task-first flow: open codebase, optionally import local defaults, then ask for plan or implementation. No API-key wall.
               </p>
-              <div class="mt-5 space-y-3 rounded-[1.35rem] border border-[color:var(--border)] bg-white/60 p-4">
-                <Input
-                  value={state.projectInput}
-                  placeholder="C:\\repo\\project"
-                  onInput={(event: InputEvent & { currentTarget: HTMLInputElement; target: Element }) =>
-                    harnessStore.setProjectInput(event.currentTarget.value)
-                  }
-                />
+              <div class="mt-5 space-y-3 rounded-[1.35rem] border border-(--border) bg-white/60 p-4">
                 <div class="flex flex-wrap gap-2">
                   <ActionButton
-                    tooltip="Open project from typed absolute path"
-                    disabledReason={state.projectInput.trim() ? "Project path must be absolute" : "Enter absolute folder path"}
-                    disabled={!isAbsolutePath(state.projectInput.trim())}
-                    icon={<FolderPlus class="h-4 w-4" />}
-                    onClick={handleOpenProject}
+                    tooltip="Open project switcher"
+                    icon={<Folder class="h-4 w-4" />}
+                    dataTourId="open-project"
+                    onClick={() => harnessStore.openProjectSwitcher()}
                   >
-                    Add path
+                    Open project
                   </ActionButton>
                   <ActionButton
                     tooltip="Browse for project folder"
@@ -755,15 +1060,16 @@ export function ChatPanel(props: ChatPanelProps) {
                     tooltip="Open import and workspace setup"
                     icon={<Edit3 class="h-4 w-4" />}
                     variant="secondary"
+                    dataTourId="help-preferences"
                     onClick={() => harnessStore.openPreferencesModal()}
                   >
                     Import config
                   </ActionButton>
                 </div>
-                <div class="rounded-[1rem] border border-[color:var(--border)] bg-white/70 p-3 text-[0.675rem] leading-6 text-[color:var(--muted)]">
+                <div class="rounded-2xl border border-(--border) bg-white/70 p-3 text-[0.675rem] leading-6 text-(--muted)">
                   Sample task: “Inspect recent auth changes, plan fix for flaky login, then implement with tests.”
                 </div>
-                <div class="rounded-[1rem] border border-[color:var(--border)] bg-white/70 p-3 text-[0.675rem] leading-6 text-[color:var(--muted)]">
+                <div class="rounded-2xl border border-(--border) bg-white/70 p-3 text-[0.675rem] leading-6 text-(--muted)">
                   Open repo, attach screenshots, PDFs, or office docs, then ask for a plan. Images route to vision-capable models; text and document files get folded into prompt context.
                 </div>
               </div>
@@ -775,16 +1081,16 @@ export function ChatPanel(props: ChatPanelProps) {
           <>
             <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div class="space-y-2">
-                <div class="inline-flex items-center gap-2 rounded-full bg-white/60 px-3 py-1 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-[color:var(--muted)]">
+                <div class="inline-flex items-center gap-2 rounded-full bg-white/60 px-3 py-1 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--muted)">
                   Active project
-                  <span class="text-[color:var(--foreground)]">{project().name}</span>
+                  <span class="text-(--foreground)">{project().name}</span>
                 </div>
                 <div>
                   <div class="flex flex-wrap items-center gap-2">
                     <Show
                       when={editingThreadTitle()}
                       fallback={
-                        <h1 class="font-display text-[1.6875rem] tracking-[-0.06em] text-[color:var(--foreground)] md:text-[2.025rem]">
+                        <h1 class="font-display text-[1.6875rem] tracking-[-0.06em] text-(--foreground) md:text-[2.025rem]">
                           {activeThread()?.title ?? "Thread"}
                         </h1>
                       }
@@ -817,7 +1123,7 @@ export function ChatPanel(props: ChatPanelProps) {
                       onClick={handleStartRenameThread}
                     />
                   </div>
-                  <div class="mt-2 flex flex-wrap items-center gap-2 text-[0.625rem] text-[color:var(--muted)]">
+                  <div class="mt-2 flex flex-wrap items-center gap-2 text-[0.625rem] text-(--muted)">
                     <span>thread-id</span>
                     <span class="font-mono text-[0.6rem]">{activeThread()?.id}</span>
                     <ActionButton
@@ -829,9 +1135,6 @@ export function ChatPanel(props: ChatPanelProps) {
                       onClick={handleCopyThreadId}
                     />
                   </div>
-                  <p class="mt-2 max-w-3xl text-[0.675rem] leading-5 text-[color:var(--muted)] md:text-[0.7875rem]">
-                    SQLite-backed project chats, GPT or Gemini orchestration, and project-local traces without mixing execution context.
-                  </p>
                 </div>
               </div>
 
@@ -843,19 +1146,15 @@ export function ChatPanel(props: ChatPanelProps) {
                   icon={<Plus class="h-4 w-4" />}
                   variant="secondary"
                   onClick={handleReset}
-                >
-                  New thread
-                </ActionButton>
+                />
                 <ActionButton
                   tooltip="Fork current thread into a new thread"
                   disabledReason="Project is streaming"
                   disabled={project().session.isStreaming}
-                  icon={<GitFork class="h-4 w-4" />}
+                  icon={<Split class="h-4 w-4" />}
                   variant="secondary"
                   onClick={handleForkThread}
-                >
-                  Pi fork
-                </ActionButton>
+                />
                 <ActionButton
                   tooltip="Stop active run"
                   disabledReason="No running task"
@@ -881,48 +1180,42 @@ export function ChatPanel(props: ChatPanelProps) {
               </div>
             </div>
 
-            <div class="rounded-[1.35rem] border border-[color:var(--border)] bg-white/65 p-4 shadow-sm">
-              <div class="flex flex-wrap items-center justify-between gap-3">
-                <div class="space-y-1">
-                  <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-[color:var(--muted)]">
-                    Task cockpit
-                  </div>
-                  <div class="text-[0.75rem] text-[color:var(--foreground)]">
-                    Status: {project().activeRun?.status ?? project().lastRun?.status ?? "idle"} | Mode: {activeMode()?.label ?? "Implement"} |
-                    Model: {getEffectiveExecutionModelId()}
-                  </div>
-                  <div class="flex flex-wrap gap-2">
-                    <For each={capabilityTags()}>
-                      {(tag) => (
-                        <span class="rounded-full border border-[color:var(--border)] bg-white/75 px-2 py-0.5 text-[0.55rem] font-semibold uppercase tracking-[0.12em] text-[color:var(--muted)]">
-                          {tag}
-                        </span>
-                      )}
-                    </For>
-                  </div>
-                </div>
-                <div class="flex flex-wrap gap-2">
-                  <For each={visibleTabs()}>
-                    {(tab) => (
-                      <button
-                        class={`rounded-full border px-3 py-1.5 text-[0.625rem] font-semibold uppercase tracking-[0.12em] transition ${
-                          activeTab() === tab
-                            ? "border-[color:var(--accent)] bg-[color:var(--accent)] text-white"
-                            : "border-[color:var(--border)] bg-white/70 text-[color:var(--foreground)]"
-                        }`}
-                        type="button"
-                        onClick={() => setActiveTab(tab)}
-                      >
-                        {tab}
-                      </button>
-                    )}
-                  </For>
-                </div>
-              </div>
-            </div>
+            <Show when={currentTab()} keyed>
+              {(selectedTab) => (
+                <>
+                  <div data-test-chat-pane-nav="" class="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-(--border) bg-white/45 px-3 py-2">
+                    <div class="flex flex-wrap items-center gap-1.5">
+                      <For each={visibleTabs()}>
+                        {(tab) => {
+                          const pressed = selectedTab === tab.id;
 
-            <Switch>
-              <Match when={activeTab() === "chat"}>
+                          return (
+                            <button
+                              type="button"
+                              class={`rounded-full border text-[0.625rem] ${pressed
+                                ? "inline-flex h-8 items-center gap-2 rounded-full border border-(--accent) bg-(--accent) px-3 text-(--accent-foreground) transition hover:bg-(--accent-strong)"
+                                : "inline-flex h-8 items-center gap-2 rounded-full border border-(--border) bg-white/70 px-3 text-(--foreground) transition hover:bg-white/90"
+                                }`}
+                              aria-label={`Open ${tab.label.toLowerCase()} pane`}
+                              attr:aria-pressed={pressed ? "true" : "false"}
+                              data-test-chat-pane-tab={tab.id}
+                              title={tab.tooltip}
+                              onClick={() => setActiveTab(tab.id)}
+                            >
+                              {tab.icon}
+                              <span>{tab.label}</span>
+                            </button>
+                          );
+                        }}
+                      </For>
+                    </div>
+                    <div class="text-[0.585rem] font-semibold uppercase tracking-[0.16em] text-(--muted)">
+                      {selectedTab === "chat" ? "Transcript" : `${selectedTab} pane`} | {project().activeRun?.status ?? project().lastRun?.status ?? "idle"}
+                    </div>
+                  </div>
+
+                  <Switch>
+                    <Match when={selectedTab === "chat"}>
                 <ScrollArea
                   ref={messageViewport}
                   class="flex-1 min-h-0 space-y-3 pr-2"
@@ -931,129 +1224,149 @@ export function ChatPanel(props: ChatPanelProps) {
                   <Show
                     when={project().session.messages.length > 0 || project().streamingAssistantText}
                     fallback={
-                      <div class="flex min-h-56 items-center justify-center rounded-[1.5rem] border border-dashed border-[color:var(--border)] bg-white/40 p-8 text-center text-[0.675rem] text-[color:var(--muted)]">
+                      <div class="flex min-h-56 items-center justify-center rounded-3xl border border-dashed border-(--border) bg-white/40 p-8 text-center text-[0.675rem] text-(--muted)">
                         Choose project, then send task. Each project keeps its own persisted thread history.
                       </div>
                     }
                   >
                     <div class="space-y-3">
-                  <For each={project().session.messages}>
-                    {(message) => (
-                      <Show
-                        when={message.kind === "plan-summary" && message.metadata?.type === "plan-summary"}
-                        fallback={
-                          <article
-                            class={`border border-[color:var(--border)] p-3 shadow-sm ${
-                              message.role === "system"
-                                ? "rounded-[1.15rem] bg-slate-100/85"
-                                : message.role === "assistant"
-                                ? "rounded-[1.5rem] bg-teal-950/5"
-                                : "rounded-[1.5rem] bg-white/60"
-                            }`}
+                      <For each={project().session.messages}>
+                        {(message) => (
+                          <Show
+                            when={message.kind === "plan-summary" && message.metadata?.type === "plan-summary"}
+                            fallback={
+                              <article
+                                class={`border border-(--border) p-3 shadow-sm ${message.role === "system"
+                                  ? "rounded-[1.15rem] bg-slate-100/85"
+                                  : message.role === "assistant"
+                                    ? "rounded-3xl bg-teal-950/5"
+                                    : "rounded-3xl bg-white/60"
+                                  }`}
+                              >
+                                <div
+                                  class={`mb-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] ${message.role === "system"
+                                    ? "text-(--muted)"
+                                    : "text-(--accent-strong)"
+                                    }`}
+                                >
+                                  {message.role === "system" ? "status" : message.role}
+                                </div>
+                                <MarkdownContent content={() => message.content} size="compact" />
+                                <Show when={message.attachments?.length}>
+                                  <div class="mt-3 flex flex-wrap gap-2">
+                                    <For each={message.attachments}>
+                                      {(attachment) => (
+                                        <a
+                                          class="rounded-full border border-(--border) bg-white/75 px-2.5 py-1 text-[0.55rem] font-semibold uppercase tracking-[0.12em] text-(--muted) hover:text-(--foreground)"
+                                          href={attachment.url}
+                                          rel="noreferrer"
+                                          target="_blank"
+                                        >
+                                          {attachment.kind} | {attachment.name}
+                                        </a>
+                                      )}
+                                    </For>
+                                  </div>
+                                </Show>
+                              </article>
+                            }
                           >
-                            <div
-                              class={`mb-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] ${
-                                message.role === "system"
-                                  ? "text-[color:var(--muted)]"
-                                  : "text-[color:var(--accent-strong)]"
-                              }`}
-                            >
-                              {message.role === "system" ? "status" : message.role}
-                            </div>
-                            <MarkdownContent content={() => message.content} size="compact" />
-                            <Show when={message.attachments?.length}>
-                              <div class="mt-3 flex flex-wrap gap-2">
-                                <For each={message.attachments}>
-                                  {(attachment) => (
-                                    <a
-                                      class="rounded-full border border-[color:var(--border)] bg-white/75 px-2.5 py-1 text-[0.55rem] font-semibold uppercase tracking-[0.12em] text-[color:var(--muted)] hover:text-[color:var(--foreground)]"
-                                      href={attachment.url}
-                                      rel="noreferrer"
-                                      target="_blank"
-                                    >
-                                      {attachment.kind} | {attachment.name}
-                                    </a>
-                                  )}
-                                </For>
+                            <article class="rounded-3xl border border-(--border) bg-[linear-gradient(135deg,rgba(15,118,110,0.12),rgba(255,255,255,0.92))] p-4 shadow-sm">
+                              <div class="mb-2 flex items-center gap-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--accent-strong)">
+                                <Clipboard class="h-3.5 w-3.5" />
+                                Plan summary
                               </div>
-                            </Show>
-                          </article>
-                        }
-                      >
-                        <article class="rounded-[1.5rem] border border-[color:var(--border)] bg-[linear-gradient(135deg,rgba(15,118,110,0.12),rgba(255,255,255,0.92))] p-4 shadow-sm">
-                          <div class="mb-2 flex items-center gap-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-[color:var(--accent-strong)]">
-                            <Clipboard class="h-3.5 w-3.5" />
-                            Plan summary
+                              <MarkdownContent content={() => message.metadata?.plan.summary ?? ""} />
+                              <div class="mt-3 grid gap-2 text-[0.675rem] text-(--muted) md:grid-cols-2">
+                                <div>Route: {message.metadata?.plan.route}</div>
+                                <div>Difficulty: {message.metadata?.plan.difficultyScore}%</div>
+                                <div>Prereqs: {message.metadata?.plan.prerequisites.length}</div>
+                                <div>Contracts: {message.metadata?.plan.contracts.length}</div>
+                                <div>Worktree: {message.metadata?.plan.subagentWorktreeStrategy}</div>
+                                <div>Correctness: {message.metadata?.plan.correctnessPolicy}</div>
+                              </div>
+                              <div class="mt-3 flex flex-wrap gap-2">
+                                <ActionButton
+                                  tooltip="Open full execution plan"
+                                  icon={<Clipboard class="h-3.5 w-3.5" />}
+                                  size="sm"
+                                  variant="secondary"
+                                  onClick={() => message.metadata?.plan && harnessStore.openExecutionPlanDialog(message.metadata.plan)}
+                                >
+                                  Open plan
+                                </ActionButton>
+                                <ActionButton tooltip="Promote this run into scheduled task" size="sm" variant="secondary" onClick={() => handlePromoteScheduledRun(message.metadata?.runId)}>
+                                  Schedule
+                                </ActionButton>
+                                <Show when={message.metadata?.plan.gating.mode === "approve"}>
+                                  <ActionButton
+                                    tooltip="Start execution with this plan"
+                                    disabledReason={executionPaused() ? executionPauseReason() : "This plan is no longer active"}
+                                    disabled={executionPaused() || !isReadyPlanMessage(message.metadata!.runId)}
+                                    icon={<Play class="h-3.5 w-3.5" />}
+                                    size="sm"
+                                    dataTourId="plan-start"
+                                    onClick={() => handleExecuteRun(message.metadata!.runId)}
+                                  >
+                                    Start now
+                                  </ActionButton>
+                                  <ActionButton
+                                    tooltip="Run this plan in isolated virtual branch"
+                                    disabledReason={executionPaused() ? executionPauseReason() : "This plan is no longer active"}
+                                    disabled={executionPaused() || !isReadyPlanMessage(message.metadata!.runId)}
+                                    size="sm"
+                                    variant="secondary"
+                                    onClick={() => handleExecuteRunTarget(message.metadata!.runId, "ephemeral-experiment")}
+                                  >
+                                    Try experiment
+                                  </ActionButton>
+                                </Show>
+                                <Show when={message.metadata?.plan.gating.mode === "countdown" && isReadyPlanMessage(message.metadata!.runId)}>
+                                  <ActionButton
+                                    tooltip={
+                                      executionPaused()
+                                        ? "Global pause freezes automatic execution countdown"
+                                        : countdownPaused()
+                                          ? "Resume automatic execution countdown"
+                                          : "Pause automatic execution countdown"
+                                    }
+                                    disabled={executionPaused()}
+                                    disabledReason={executionPauseReason()}
+                                    icon={countdownPaused() ? <Play class="h-3.5 w-3.5" /> : <Pause class="h-3.5 w-3.5" />}
+                                    size="sm"
+                                    variant="secondary"
+                                    onClick={() => (countdownPaused() ? handleResumeAutoRun() : handlePauseAutoRun())}
+                                  >
+                                    {countdownPaused() ? "Resume auto-run" : "Pause auto-run"}
+                                  </ActionButton>
+                                </Show>
+                              </div>
+                            </article>
+                          </Show>
+                        )}
+                      </For>
+
+                      <Show when={project().streamingAssistantText}>
+                        <article class="rounded-3xl border border-(--border) bg-teal-950/5 p-3 shadow-sm">
+                          <div class="mb-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--accent-strong)">
+                            assistant (streaming)
                           </div>
-                          <MarkdownContent content={() => message.metadata?.plan.summary ?? ""} />
-                          <div class="mt-3 grid gap-2 text-[0.675rem] text-[color:var(--muted)] md:grid-cols-2">
-                            <div>Route: {message.metadata?.plan.route}</div>
-                            <div>Difficulty: {message.metadata?.plan.difficultyScore}%</div>
-                            <div>Prereqs: {message.metadata?.plan.prerequisites.length}</div>
-                            <div>Contracts: {message.metadata?.plan.contracts.length}</div>
-                            <div>Worktree: {message.metadata?.plan.subagentWorktreeStrategy}</div>
-                            <div>Correctness: {message.metadata?.plan.correctnessPolicy}</div>
-                          </div>
-                          <div class="mt-3 flex flex-wrap gap-2">
-                            <ActionButton
-                              tooltip="Open full execution plan"
-                              icon={<Clipboard class="h-3.5 w-3.5" />}
-                              size="sm"
-                              variant="secondary"
-                              onClick={() => message.metadata?.plan && harnessStore.openExecutionPlanDialog(message.metadata.plan)}
-                            >
-                              Open plan
-                            </ActionButton>
-                            <Show when={message.metadata?.plan.gating.mode === "approve"}>
-                              <ActionButton
-                                tooltip="Start execution with this plan"
-                                disabledReason="This plan is no longer active"
-                                disabled={!isReadyPlanMessage(message.metadata!.runId)}
-                                icon={<Play class="h-3.5 w-3.5" />}
-                                size="sm"
-                                onClick={() => handleExecuteRun(message.metadata!.runId)}
-                              >
-                                Start now
-                              </ActionButton>
-                            </Show>
-                            <Show when={message.metadata?.plan.gating.mode === "countdown" && isReadyPlanMessage(message.metadata!.runId)}>
-                              <ActionButton
-                                tooltip={countdownPaused() ? "Resume automatic execution countdown" : "Pause automatic execution countdown"}
-                                icon={countdownPaused() ? <Play class="h-3.5 w-3.5" /> : <Pause class="h-3.5 w-3.5" />}
-                                size="sm"
-                                variant="secondary"
-                                onClick={() => (countdownPaused() ? handleResumeAutoRun() : handlePauseAutoRun())}
-                              >
-                                {countdownPaused() ? "Resume auto-run" : "Pause auto-run"}
-                              </ActionButton>
-                            </Show>
-                          </div>
+                          <MarkdownContent content={() => project().streamingAssistantText} size="compact" live />
                         </article>
                       </Show>
-                    )}
-                  </For>
-
-                  <Show when={project().streamingAssistantText}>
-                    <article class="rounded-[1.5rem] border border-[color:var(--border)] bg-teal-950/5 p-3 shadow-sm">
-                      <div class="mb-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-[color:var(--accent-strong)]">
-                        assistant (streaming)
-                      </div>
-                      <MarkdownContent content={() => project().streamingAssistantText} size="compact" live />
-                    </article>
-                  </Show>
                     </div>
                   </Show>
                 </ScrollArea>
-              </Match>
-              <Match when={activeTab() === "plan"}>
+                    </Match>
+                    <Match when={selectedTab === "plan"}>
                 <ScrollArea class="flex-1 min-h-0 space-y-4 pr-2">
                   <div class="space-y-4">
-                    <div class="rounded-[1.35rem] border border-[color:var(--border)] bg-white/55 p-4">
+                    <div class="rounded-[1.35rem] border border-(--border) bg-white/55 p-4">
                       <div class="grid gap-3 md:grid-cols-2">
                         <label class="space-y-2">
-                          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">Active mode</span>
+                          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Active mode</span>
                           <select
-                            class="flex h-10 w-full rounded-xl border border-[color:var(--border)] bg-white/70 px-3 py-2 text-[0.675rem] text-[color:var(--foreground)] shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-[color:var(--ring)]"
+                            class="flex h-10 w-full rounded-xl border border-(--border) bg-white/70 px-3 py-2 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
                             value={activeMode()?.id ?? "implement"}
                             onInput={(event) => handleModeSelect(event.currentTarget.value)}
                           >
@@ -1062,17 +1375,17 @@ export function ChatPanel(props: ChatPanelProps) {
                             </For>
                           </select>
                         </label>
-                        <div class="rounded-[1rem] border border-[color:var(--border)] bg-white/70 p-3 text-[0.675rem] leading-5 text-[color:var(--muted)]">
+                        <div class="rounded-2xl border border-(--border) bg-white/70 p-3 text-[0.675rem] leading-5 text-(--muted)">
                           {activeMode()?.description ?? "Default implementation mode."}
                         </div>
                       </div>
                     </div>
 
-                    <div class="rounded-[1.35rem] border border-[color:var(--border)] bg-white/55 p-4">
+                    <div class="rounded-[1.35rem] border border-(--border) bg-white/55 p-4">
                       <div class="flex items-center justify-between gap-3">
                         <div>
-                          <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">Project context</div>
-                          <div class="mt-1 text-[0.675rem] leading-5 text-[color:var(--muted)]">
+                          <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Project context</div>
+                          <div class="mt-1 text-[0.675rem] leading-5 text-(--muted)">
                             Rules and working memory flow into planner and execution prompts.
                           </div>
                         </div>
@@ -1082,11 +1395,11 @@ export function ChatPanel(props: ChatPanelProps) {
                       </div>
                       <div class="mt-4 grid gap-3 md:grid-cols-2">
                         <label class="space-y-2">
-                          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">Project rules</span>
+                          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Project rules</span>
                           <Textarea rows="8" value={projectRulesDraft()} onInput={(event) => setProjectRulesDraft(event.currentTarget.value)} />
                         </label>
                         <label class="space-y-2">
-                          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">Thread memory</span>
+                          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Thread memory</span>
                           <Textarea rows="8" value={threadMemoryDraft()} onInput={(event) => setThreadMemoryDraft(event.currentTarget.value)} />
                         </label>
                       </div>
@@ -1097,7 +1410,7 @@ export function ChatPanel(props: ChatPanelProps) {
                       scope="project"
                       modes={project().projectModes ?? []}
                       onSave={(mode) =>
-                        props.sendCommand({
+                        sendCommand({
                           type: "mode.save",
                           requestId: createRequestId(),
                           payload: {
@@ -1108,7 +1421,7 @@ export function ChatPanel(props: ChatPanelProps) {
                         })
                       }
                       onDelete={(modeId) =>
-                        props.sendCommand({
+                        sendCommand({
                           type: "mode.delete",
                           requestId: createRequestId(),
                           payload: {
@@ -1122,9 +1435,9 @@ export function ChatPanel(props: ChatPanelProps) {
 
                     <Show when={currentExecutionPlan()}>
                       {(plan) => (
-                        <div class="rounded-[1.35rem] border border-[color:var(--border)] bg-white/55 p-4 text-[0.675rem] leading-6 text-[color:var(--foreground)]">
+                        <div class="rounded-[1.35rem] border border-(--border) bg-white/55 p-4 text-[0.675rem] leading-6 text-(--foreground)">
                           <div class="flex items-center justify-between gap-3">
-                            <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">Current plan snapshot</div>
+                            <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Current plan snapshot</div>
                             <ActionButton tooltip="Open full execution plan" size="sm" variant="secondary" onClick={() => harnessStore.openExecutionPlanDialog(plan())}>
                               Open plan
                             </ActionButton>
@@ -1135,22 +1448,48 @@ export function ChatPanel(props: ChatPanelProps) {
                     </Show>
                   </div>
                 </ScrollArea>
-              </Match>
-              <Match when={activeTab() === "run"}>
+                    </Match>
+                    <Match when={selectedTab === "run"}>
                 <ScrollArea class="flex-1 min-h-0 space-y-4 pr-2">
                   <div class="space-y-4">
-                    <div class="rounded-[1.35rem] border border-[color:var(--border)] bg-white/55 p-4 text-[0.675rem] leading-6 text-[color:var(--foreground)]">
-                      <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">Run summary</div>
+                    <CliSessionPanel />
+                    <div class="rounded-[1.35rem] border border-(--border) bg-white/55 p-4 text-[0.675rem] leading-6 text-(--foreground)">
+                      <div class="flex items-center justify-between gap-3">
+                        <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Run summary</div>
+                        <div class="flex flex-wrap items-center gap-2">
+                          <ActionButton tooltip="Promote latest run into scheduled task" size="sm" variant="secondary" onClick={() => handlePromoteScheduledRun()}>
+                            Schedule
+                          </ActionButton>
+                          <Show when={experimentRun()}>
+                            <ActionButton tooltip="Review virtual branch diff" size="sm" variant="secondary" onClick={handleInspectExperiment}>
+                              Review experiment
+                            </ActionButton>
+                            <ActionButton tooltip="Flush experiment changes into project and commit" size="sm" onClick={handlePromoteExperiment}>
+                              Promote
+                            </ActionButton>
+                            <ActionButton tooltip="Discard virtual branch changes" size="sm" variant="secondary" onClick={handleDiscardExperiment}>
+                              Discard
+                            </ActionButton>
+                          </Show>
+                        </div>
+                      </div>
                       <div class="mt-2">Status: {project().activeRun?.status ?? project().lastRun?.status ?? "idle"}</div>
                       <div>Retryable: {project().lastRun?.retryable ? "yes" : "no"}</div>
                       <div>Resumable: {project().activeRun?.resumable ? "yes" : "no"}</div>
                       <div>Prompt: {project().activeRun?.latestUserPrompt ?? project().lastRun?.latestUserPrompt ?? "n/a"}</div>
+                      <Show when={experimentRun()}>
+                        <div class="mt-2">Virtual branch: {experimentRun()!.virtualBranchName}</div>
+                        <div>Mount: {experimentRun()!.projectMountPath}</div>
+                        <div>
+                          Diff: {experimentRun()!.filesChanged} files, +{experimentRun()!.insertions} / -{experimentRun()!.deletions}
+                        </div>
+                      </Show>
                     </div>
                     <For each={project().activeRun?.subtasks ?? project().lastRun?.subtasks ?? []}>
                       {(task) => (
-                        <div class="rounded-[1.2rem] border border-[color:var(--border)] bg-white/60 p-4 text-[0.675rem] leading-6 text-[color:var(--foreground)]">
+                        <div class="rounded-[1.2rem] border border-(--border) bg-white/60 p-4 text-[0.675rem] leading-6 text-(--foreground)">
                           <div class="font-semibold">{task.title}</div>
-                          <div class="text-[color:var(--muted)]">Status: {task.status} | Attempts: {task.attemptCount}</div>
+                          <div class="text-(--muted)">Status: {task.status} | Attempts: {task.attemptCount}</div>
                           <Show when={task.output}>
                             <MarkdownContent content={() => task.output ?? ""} class="mt-2" size="compact" />
                           </Show>
@@ -1162,13 +1501,13 @@ export function ChatPanel(props: ChatPanelProps) {
                     </For>
                   </div>
                 </ScrollArea>
-              </Match>
-              <Match when={activeTab() === "events"}>
+                    </Match>
+                    <Match when={selectedTab === "events"}>
                 <ScrollArea class="flex-1 min-h-0 space-y-4 pr-2">
                   <Show
                     when={project().traces.length > 0}
                     fallback={
-                      <div class="flex min-h-56 items-center justify-center rounded-[1.5rem] border border-dashed border-[color:var(--border)] bg-white/40 p-8 text-center text-[0.675rem] text-[color:var(--muted)]">
+                      <div class="flex min-h-56 items-center justify-center rounded-3xl border border-dashed border-(--border) bg-white/40 p-8 text-center text-[0.675rem] text-(--muted)">
                         No execution events yet.
                       </div>
                     }
@@ -1176,8 +1515,8 @@ export function ChatPanel(props: ChatPanelProps) {
                     <div class="space-y-3">
                       <For each={project().traces}>
                         {(trace) => (
-                          <article class="rounded-[1.35rem] border border-[color:var(--border)] bg-white/55 p-4">
-                            <div class="mb-2 flex items-center justify-between gap-3 text-[0.585rem] font-semibold uppercase tracking-[0.16em] text-[color:var(--accent-strong)]">
+                          <article class="rounded-[1.35rem] border border-(--border) bg-white/55 p-4">
+                            <div class="mb-2 flex items-center justify-between gap-3 text-[0.585rem] font-semibold uppercase tracking-[0.16em] text-(--accent-strong)">
                               <span>{trace.stage}</span>
                               <span>{trace.modelId ?? "n/a"}</span>
                             </div>
@@ -1191,17 +1530,89 @@ export function ChatPanel(props: ChatPanelProps) {
                     </div>
                   </Show>
                 </ScrollArea>
-              </Match>
-            </Switch>
+                    </Match>
+                    <Match when={selectedTab === "memory"}>
+                <ScrollArea class="flex-1 min-h-0 space-y-4 pr-2">
+                  <Show
+                    when={project().memoryEntries.length > 0}
+                    fallback={
+                      <div class="flex min-h-56 items-center justify-center rounded-3xl border border-dashed border-(--border) bg-white/40 p-8 text-center text-[0.675rem] text-(--muted)">
+                        No shared memory yet.
+                      </div>
+                    }
+                  >
+                    <div class="space-y-3">
+                      <For each={project().memoryEntries}>
+                        {(entry) => (
+                          <article class="rounded-[1.35rem] border border-(--border) bg-white/55 p-4">
+                            <div class="flex items-center justify-between gap-3">
+                              <div>
+                                <div class="text-[0.585rem] font-semibold uppercase tracking-[0.16em] text-(--accent-strong)">
+                                  {entry.kind}
+                                </div>
+                                <div class="font-semibold">{entry.title}</div>
+                              </div>
+                              <div class="flex flex-wrap items-center gap-2">
+                                <ActionButton
+                                  tooltip={entry.pinned ? "Unpin memory entry" : "Pin memory entry"}
+                                  size="sm"
+                                  variant="secondary"
+                                  onClick={() => handleUpdateMemory(entry.id, { pinned: !entry.pinned })}
+                                >
+                                  {entry.pinned ? "Unpin" : "Pin"}
+                                </ActionButton>
+                                <ActionButton
+                                  tooltip={entry.status === "active" ? "Archive memory entry" : "Restore memory entry"}
+                                  size="sm"
+                                  variant="secondary"
+                                  onClick={() =>
+                                    handleUpdateMemory(entry.id, {
+                                      status: entry.status === "active" ? "archived" : "active"
+                                    })
+                                  }
+                                >
+                                  {entry.status === "active" ? "Archive" : "Restore"}
+                                </ActionButton>
+                                <ActionButton tooltip="Delete memory entry" size="sm" variant="secondary" onClick={() => handleDeleteMemory(entry.id)}>
+                                  Delete
+                                </ActionButton>
+                              </div>
+                            </div>
+                            <div class="mt-2 text-(--muted)">
+                              {entry.confidence} | {entry.freshness} | hits {entry.hitCount}
+                            </div>
+                            <MarkdownContent content={() => entry.summary} class="mt-2" size="compact" />
+                            <Show when={entry.evidence}>
+                              <MarkdownContent content={() => entry.evidence ?? ""} class="mt-2" size="compact" tone="muted" />
+                            </Show>
+                          </article>
+                        )}
+                      </For>
+                    </div>
+                  </Show>
+                </ScrollArea>
+                    </Match>
+                  </Switch>
+                </>
+              )}
+            </Show>
 
             <Show when={readyRun() && currentExecutionPlan()?.gating.mode === "countdown" && countdownRunId() === readyRun()!.id}>
-              <div class="rounded-[1.25rem] border border-[color:var(--border)] bg-white/65 p-3">
-                <div class="flex flex-wrap items-center justify-between gap-3 text-[0.675rem] text-[color:var(--muted)]">
+              <div class="rounded-[1.25rem] border border-(--border) bg-white/65 p-3">
+                <div class="flex flex-wrap items-center justify-between gap-3 text-[0.675rem] text-(--muted)">
                   <span>
                     Auto-run {countdownPaused() ? "paused" : "in progress"} for {currentExecutionPlan()?.gating.delaySeconds}s gate.
                   </span>
                   <ActionButton
-                    tooltip={countdownPaused() ? "Resume automatic execution countdown" : "Pause automatic execution countdown"}
+                    tooltip={
+                      executionPaused()
+                        ? "Global pause freezes automatic execution countdown"
+                        : countdownPaused()
+                          ? "Resume automatic execution countdown"
+                          : "Pause automatic execution countdown"
+                    }
+                    disabled={executionPaused()}
+                    disabledReason={executionPauseReason()}
                     icon={countdownPaused() ? <Play class="h-3.5 w-3.5" /> : <Pause class="h-3.5 w-3.5" />}
                     size="sm"
                     variant="secondary"
@@ -1210,18 +1621,18 @@ export function ChatPanel(props: ChatPanelProps) {
                     {countdownPaused() ? "Resume auto-run" : "Pause auto-run"}
                   </ActionButton>
                 </div>
-                <div class="mt-3 h-2 overflow-hidden rounded-full bg-[color:var(--border)]">
+                <div class="mt-3 h-2 overflow-hidden rounded-full bg-(--border)">
                   <div
-                    class="h-full rounded-full bg-[color:var(--accent)] transition-[width]"
+                    class="h-full rounded-full bg-(--accent) transition-[width]"
                     style={{
                       width: `${Math.max(
                         0,
                         Math.min(
                           100,
                           100 -
-                            (countdownRemainingMs() /
-                              Math.max(1, (currentExecutionPlan()?.gating.delaySeconds ?? 1) * 1000)) *
-                              100
+                          (countdownRemainingMs() /
+                            Math.max(1, (currentExecutionPlan()?.gating.delaySeconds ?? 1) * 1000)) *
+                          100
                         )
                       )}%`
                     }}
@@ -1230,10 +1641,10 @@ export function ChatPanel(props: ChatPanelProps) {
               </div>
             </Show>
 
-            <form class="space-y-3" onSubmit={handleSubmit}>
+            <form data-test-chat-composer="" class="space-y-3" onSubmit={handleSubmit}>
               <Show when={pendingQuestion()}>
                 {(question) => (
-                  <div class="rounded-[1.5rem] border border-amber-300/70 bg-amber-50/80 p-4 shadow-sm">
+                  <div class="rounded-3xl border border-amber-300/70 bg-amber-50/80 p-4 shadow-sm">
                     <div class="mb-2 flex items-center gap-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-amber-800">
                       <MessageSquareMore class="h-3.5 w-3.5" />
                       Planner question
@@ -1246,12 +1657,12 @@ export function ChatPanel(props: ChatPanelProps) {
                       <For each={question().choices}>
                         {(choice) => (
                           <button
-                            class={`cursor-pointer rounded-[1.1rem] border px-3 py-2 text-left text-[0.675rem] transition disabled:cursor-not-allowed ${
-                              choice.recommended
-                                ? "border-amber-500 bg-white text-amber-950"
-                                : "border-amber-200/80 bg-white/70 text-amber-900"
-                            }`}
+                            class={`cursor-pointer rounded-[1.1rem] border px-3 py-2 text-left text-[0.675rem] transition disabled:cursor-not-allowed ${choice.recommended
+                              ? "border-amber-500 bg-white text-amber-950"
+                              : "border-amber-200/80 bg-white/70 text-amber-900"
+                              }`}
                             type="button"
+                            disabled={executionPaused()}
                             onClick={() => handleQuestionChoice(choice.answerText)}
                           >
                             <div class="flex items-center justify-between gap-2 font-semibold">
@@ -1267,13 +1678,18 @@ export function ChatPanel(props: ChatPanelProps) {
                         )}
                       </For>
                     </div>
+                    <Show when={executionPaused()}>
+                      <div class="mt-3 text-[0.625rem] text-amber-900/75">
+                        Global pause active. Send answer after resume.
+                      </div>
+                    </Show>
                   </div>
                 )}
               </Show>
 
               <Show when={resumableRun()}>
                 {(run) => (
-                  <div class="rounded-[1.5rem] border border-rose-300/70 bg-rose-50/80 p-4 shadow-sm">
+                  <div class="rounded-3xl border border-rose-300/70 bg-rose-50/80 p-4 shadow-sm">
                     <div class="mb-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-rose-800">
                       Resumable run
                     </div>
@@ -1287,10 +1703,20 @@ export function ChatPanel(props: ChatPanelProps) {
                 )}
               </Show>
 
+              <Show when={selectedAgentHealthMessage()}>
+                {(message) => (
+                  <div class="rounded-[1.2rem] border border-sky-200 bg-sky-50/80 p-3 text-[0.675rem] leading-6 text-sky-950">
+                    {message()}
+                  </div>
+                )}
+              </Show>
+
               <Textarea
+                data-tour-id="chat-composer"
                 rows="4"
                 value={project().draft}
                 placeholder={getComposerPlaceholder()}
+                disabled={executionPaused()}
                 onInput={(event: InputEvent & { currentTarget: HTMLTextAreaElement; target: Element }) =>
                   harnessStore.setProjectDraft(project().id, event.currentTarget.value)
                 }
@@ -1308,7 +1734,7 @@ export function ChatPanel(props: ChatPanelProps) {
                 <div class="flex flex-wrap gap-2">
                   <For each={draftAttachments()}>
                     {(attachment) => (
-                      <span class="inline-flex items-center gap-2 rounded-full border border-[color:var(--border)] bg-white/75 px-3 py-1 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-[color:var(--muted)]">
+                      <span class="inline-flex items-center gap-2 rounded-full border border-(--border) bg-white/75 px-3 py-1 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-(--muted)">
                         <span>{attachment.kind}</span>
                         <span class="max-w-56 truncate normal-case tracking-normal">{attachment.name}</span>
                         <ActionButton
@@ -1323,7 +1749,7 @@ export function ChatPanel(props: ChatPanelProps) {
                     )}
                   </For>
                   <Show when={uploadingAttachments()}>
-                    <span class="inline-flex items-center gap-2 rounded-full border border-[color:var(--border)] bg-white/75 px-3 py-1 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-[color:var(--muted)]">
+                    <span class="inline-flex items-center gap-2 rounded-full border border-(--border) bg-white/75 px-3 py-1 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-(--muted)">
                       <LoaderCircle class="h-3 w-3 animate-spin" />
                       Uploading attachments
                     </span>
@@ -1332,11 +1758,12 @@ export function ChatPanel(props: ChatPanelProps) {
               </Show>
 
               <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                <div class="space-y-2 text-[0.675rem] text-[color:var(--muted)]">
+                <div class="space-y-2 text-[0.675rem] text-(--muted)">
                   <div class="flex flex-wrap items-center gap-2">
                     <span>Mode</span>
                     <select
-                      class="h-9 rounded-xl border border-[color:var(--border)] bg-white/70 px-3 text-[0.675rem] text-[color:var(--foreground)] shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-[color:var(--ring)]"
+                      data-test-mode-select=""
+                      class="h-9 rounded-xl border border-(--border) bg-white/70 px-3 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
                       value={activeMode()?.id ?? "implement"}
                       onInput={(event) => handleModeSelect(event.currentTarget.value)}
                     >
@@ -1344,25 +1771,93 @@ export function ChatPanel(props: ChatPanelProps) {
                         {(mode) => <option value={mode.id}>{mode.label}</option>}
                       </For>
                     </select>
-                    <span>Agent: {project().session.selectedAgentId ?? "pi"}</span>
-                    <span>Model: {getEffectiveExecutionModelId()}</span>
+                    <span>Agent</span>
+                    <select
+                      data-test-agent-select=""
+                      data-tour-id="agent-select"
+                      class="h-9 rounded-xl border border-(--border) bg-white/70 px-3 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
+                      value={selectedAgentId()}
+                      onInput={(event) => handleSelectAgent(event.currentTarget.value as "pi" | "copilot-cli" | "codex-cli")}
+                    >
+                      <For each={state.availableAgents}>
+                        {(agent) => <option value={agent.id}>{agent.label}</option>}
+                      </For>
+                    </select>
+                    <Show when={selectedProviderBrand()}>
+                      {(providerBrand) => (
+                        <>
+                          <span>Provider</span>
+                          <select
+                            data-test-provider-select=""
+                            class="h-9 rounded-xl border border-(--border) bg-white/70 px-3 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring) disabled:cursor-not-allowed disabled:opacity-60"
+                            value={providerBrand()}
+                            disabled={selectedAgentId() === "codex-cli"}
+                            onInput={(event) => handleProviderBrandSelect(event.currentTarget.value as "gpt" | "gemini")}
+                          >
+                            <option value="gpt">GPT</option>
+                            <Show when={selectedAgentId() === "pi"}>
+                              <option value="gemini">Gemini</option>
+                            </Show>
+                          </select>
+                        </>
+                      )}
+                    </Show>
+                    <span>Model</span>
+                    <Tooltip content={availableExecutionModels().length === 0 ? "No available models discovered for the selected runtime yet." : undefined}>
+                      <span class="inline-flex">
+                        <select
+                          data-test-model-select=""
+                          class="h-9 rounded-xl border border-(--border) bg-white/70 px-3 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring) disabled:cursor-not-allowed disabled:opacity-60"
+                          value={getEffectiveExecutionModelId()}
+                          disabled={availableExecutionModels().length === 0}
+                          onInput={(event) => handleExecutionModelSelect(event.currentTarget.value)}
+                        >
+                          <For each={availableExecutionModels()}>
+                            {(model) => <option value={model.modelId}>{model.label}</option>}
+                          </For>
+                        </select>
+                      </span>
+                    </Tooltip>
                   </div>
                   <div class="flex flex-wrap gap-2">
                     <For each={capabilityTags()}>
                       {(tag) => (
-                        <span class="rounded-full border border-[color:var(--border)] bg-white/70 px-2 py-0.5 text-[0.55rem] font-semibold uppercase tracking-[0.12em] text-[color:var(--muted)]">
+                        <span class="rounded-full border border-(--border) bg-white/70 px-2 py-0.5 text-[0.55rem] font-semibold uppercase tracking-[0.12em] text-(--muted)">
                           {tag}
                         </span>
                       )}
                     </For>
                   </div>
-                  <div>{composerContextText()}</div>
+                  <Show when={contextUsage()}>
+                    {(usage) => (
+                      <Tooltip content={getContextUsageTooltip()}>
+                        <span class="inline-flex items-center gap-3 rounded-full border border-(--border) bg-white/75 px-2.5 py-1.5 text-[0.675rem] text-(--foreground)">
+                          <span
+                            class="relative flex h-9 w-9 items-center justify-center rounded-full"
+                            style={{
+                              background: `conic-gradient(var(--accent) ${Math.max(
+                                0,
+                                Math.min(100, Math.round(usage().usagePercent ?? 0))
+                              )}%, rgba(38, 22, 15, 0.12) 0%)`
+                            }}
+                          >
+                            <span class="flex h-7 w-7 items-center justify-center rounded-full bg-(--panel) text-[0.5rem] font-semibold text-(--foreground)">
+                              {Math.round(usage().usagePercent ?? 0)}%
+                            </span>
+                          </span>
+                          <span>{`${Math.round(usage().usagePercent ?? 0)}% · ${formatTokenCount(usage().tokens)}/${formatTokenCount(
+                            usage().contextWindow
+                          )} context used`}</span>
+                        </span>
+                      </Tooltip>
+                    )}
+                  </Show>
                 </div>
                 <div class="flex flex-wrap gap-2">
                   <ActionButton
                     tooltip="Attach screenshots, PDFs, or office docs"
-                    disabledReason={attachmentButtonReason()}
-                    disabled={attachmentButtonDisabled()}
+                    disabledReason={executionPaused() ? executionPauseReason() : attachmentButtonReason()}
+                    disabled={executionPaused() || attachmentButtonDisabled()}
                     icon={<Paperclip class="h-4 w-4" />}
                     type="button"
                     variant="secondary"
@@ -1373,8 +1868,14 @@ export function ChatPanel(props: ChatPanelProps) {
                   <Show when={resumableRun()}>
                     <ActionButton
                       tooltip="Resume failed or pending subagents"
-                      disabledReason={project().session.isStreaming ? "Project is streaming" : "No resumable run"}
-                      disabled={!resumableRun() || project().session.isStreaming}
+                      disabledReason={
+                        executionPaused()
+                          ? executionPauseReason()
+                          : project().session.isStreaming
+                            ? "Project is streaming"
+                            : "No resumable run"
+                      }
+                      disabled={executionPaused() || !resumableRun() || project().session.isStreaming}
                       icon={<RefreshCcw class="h-4 w-4" />}
                       type="button"
                       onClick={handleResume}
@@ -1382,47 +1883,117 @@ export function ChatPanel(props: ChatPanelProps) {
                       Resume failed agents
                     </ActionButton>
                   </Show>
+                  <Show when={selectedAgentRuntime()?.agentId !== "pi"}>
+                    <ActionButton
+                      tooltip="Open live pipe-based CLI session"
+                      disabledReason={
+                        executionPaused()
+                          ? executionPauseReason()
+                          : !selectedAgentRuntime()?.installed
+                            ? selectedAgentRuntime()?.healthMessage ?? "Runtime not installed"
+                            : !selectedAgentRuntime()?.authenticated
+                              ? selectedAgentRuntime()?.healthMessage ?? "Runtime not authenticated"
+                              : !selectedAgentRuntime()?.interactivePipeCompatible
+                                ? selectedAgentRuntime()?.healthMessage ?? "Interactive mode unavailable"
+                                : undefined
+                      }
+                      disabled={
+                        executionPaused() ||
+                        !selectedAgentRuntime()?.installed ||
+                        !selectedAgentRuntime()?.authenticated ||
+                        !selectedAgentRuntime()?.interactivePipeCompatible
+                      }
+                      type="button"
+                      variant="secondary"
+                      onClick={handleStartLiveSession}
+                    >
+                      Open live session
+                    </ActionButton>
+                  </Show>
                   <ActionButton
                     tooltip={
                       pendingQuestion()
                         ? "Send planner answer"
                         : project().activeRun?.status === "ready"
-                        ? "Refine plan before execution"
-                        : "Send task to pi"
+                          ? "Refine plan before execution"
+                          : "Send task to pi"
                     }
                     disabledReason={
                       uploadingAttachments()
                         ? "Attachment upload in progress"
-                        : hasImageDraftAttachments() && !hasVisionCapability()
-                        ? "Current model lacks vision support for image attachments"
-                        : project().session.isStreaming
-                        ? "Project is streaming"
-                        : resumableRun()
-                        ? "Use resume failed agents to continue this run"
-                        : "Enter task text"
+                        : executionPaused()
+                          ? executionPauseReason()
+                          : hasImageDraftAttachments() && !hasVisionCapability()
+                            ? "Current model lacks vision support for image attachments"
+                            : setupBlockedReason()
+                              ? setupBlockedReason()
+                              : project().session.isStreaming
+                                ? "Project is streaming"
+                                : resumableRun()
+                                  ? "Use resume failed agents to continue this run"
+                                  : "Enter task text"
                     }
                     disabled={
                       !project().draft.trim() ||
+                      executionPaused() ||
                       Boolean(resumableRun()) ||
                       project().session.isStreaming ||
                       uploadingAttachments() ||
+                      Boolean(setupBlockedReason()) ||
                       (hasImageDraftAttachments() && !hasVisionCapability())
                     }
                     icon={<SendHorizontal class="h-4 w-4" />}
                     type="submit"
+                    dataTourId="chat-send"
                   >
                     {pendingQuestion()
                       ? "Answer question"
                       : project().activeRun?.status === "ready"
-                      ? "Refine plan"
-                      : "Send task"}
+                        ? "Refine plan"
+                        : "Send task"}
                   </ActionButton>
                 </div>
               </div>
             </form>
+            <Dialog open={experimentDialogOpen()} onClose={() => setExperimentDialogOpen(false)} title="Experiment review">
+              <div class="space-y-3 text-[0.7rem] leading-6 text-(--foreground)">
+                <Show when={experimentRun()}>
+                  <div>
+                    <div class="font-semibold">{experimentRun()!.virtualBranchName}</div>
+                    <div class="text-(--muted)">
+                      {experimentRun()!.filesChanged} files | +{experimentRun()!.insertions} / -{experimentRun()!.deletions}
+                    </div>
+                  </div>
+                </Show>
+                <Show
+                  when={activeProject()?.experimentInspection}
+                  fallback={<div class="text-(--muted)">Loading experiment diff...</div>}
+                >
+                  {(inspection) => <MarkdownContent content={() => `\`\`\`diff\n${inspection().diffText}\n\`\`\``} size="compact" />}
+                </Show>
+              </div>
+            </Dialog>
           </>
         )}
       </Show>
     </section>
   );
+}
+
+function formatTokenCount(value: number | undefined) {
+  if (value === undefined) {
+    return "?";
+  }
+
+  if (value < 1_000) {
+    return String(value);
+  }
+
+  if (value < 1_000_000) {
+    const scaled = value / 1_000;
+    return `${scaled >= 100 ? Math.round(scaled) : Number(scaled.toFixed(1))}k`;
+  }
+
+  const scaled = value / 1_000_000;
+  return `${scaled >= 100 ? Math.round(scaled) : Number(scaled.toFixed(1))}m`;
 }

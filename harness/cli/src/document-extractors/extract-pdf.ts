@@ -1,4 +1,4 @@
-import { getDocument } from "pdfjs-dist";
+import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { normalizeExtractedText } from "./extract-office-zip";
 import type { DocumentExtractionResult } from "./types";
 

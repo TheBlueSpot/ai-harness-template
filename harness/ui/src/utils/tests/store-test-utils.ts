@@ -3,6 +3,7 @@ import { resetToastStoreForTests as clearToastStore } from "../../toast-store";
 
 export function resetHarnessStoreForTests() {
   harnessStore.replaceStateForTests(createInitialViewState());
+  harnessStore.actions.setCommandDispatcher(() => undefined);
 }
 
 export function seedHarnessStoreForTests(stateOverride: Partial<HarnessViewState>) {
@@ -23,6 +24,7 @@ export function seedHarnessStoreForTests(stateOverride: Partial<HarnessViewState
       ...stateOverride.projectPreflights
     }
   });
+  harnessStore.actions.setCommandDispatcher(() => undefined);
 }
 
 export function resetToastStoreForTests() {
@@ -32,6 +34,7 @@ export function resetToastStoreForTests() {
 export function clearBrowserStateForTests() {
   resetHarnessStoreForTests();
   resetToastStoreForTests();
+  harnessStore.actions.setCommandDispatcher(() => undefined);
 
   if (typeof window !== "undefined") {
     window.localStorage.clear();
@@ -49,4 +52,10 @@ export function clearBrowserStateForTests() {
       }
     });
   }
+}
+
+export function captureDispatchedCommands(commands: unknown[]) {
+  harnessStore.actions.setCommandDispatcher((command) => {
+    commands.push(command);
+  });
 }

@@ -1,18 +1,15 @@
-import { createRequestId, type ClientCommand } from "../../../shared/protocol";
+import { createRequestId } from "../../../shared/protocol";
 import { canSelectProviderBrand, harnessStore, persistLocalPreferences } from "../harness-store";
 import { pushToast } from "../toast-store";
 import { ModeEditorPanel } from "./mode-editor-panel";
-import { Button } from "./ui/button";
-import { Dialog } from "./ui/dialog";
-import { Input } from "./ui/input";
-import { Textarea } from "./ui/textarea";
+import { Button } from "./primitives/button";
+import { Dialog } from "./primitives/dialog";
+import { Input } from "./primitives/input";
+import { Textarea } from "./primitives/textarea";
 
-type PreferencesModalProps = {
-  sendCommand: (command: ClientCommand) => void;
-};
-
-export function PreferencesModal(props: PreferencesModalProps) {
+export function PreferencesModal() {
   const state = harnessStore.state;
+  const sendCommand = harnessStore.actions.sendCommand;
   let importInput: HTMLInputElement | undefined;
 
   const workspaceModes = () => state.workspace.workspaceModes ?? [];
@@ -42,10 +39,12 @@ export function PreferencesModal(props: PreferencesModalProps) {
       subagentWorktreeStrategyDefault: state.subagentWorktreeStrategyDefault,
       blockChatOnDirtyGitDefault: state.blockChatOnDirtyGitDefault,
       dirtyGitChangeLimitDefault: state.dirtyGitChangeLimitDefault,
+      autoCompactContextThresholdPercentDefault: state.autoCompactContextThresholdPercentDefault,
       planExecutionModeDefault: state.planExecutionModeDefault,
       planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
       correctnessIterationModeDefault: state.correctnessIterationModeDefault,
-      uiMode: state.uiMode
+      backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
+      backgroundJobNotificationsEnabled: state.backgroundJobNotificationsEnabled
     });
     harnessStore.commitLocalPreferences({
       openAiApiKey,
@@ -56,13 +55,15 @@ export function PreferencesModal(props: PreferencesModalProps) {
       subagentWorktreeStrategyDefault: state.subagentWorktreeStrategyDefault,
       blockChatOnDirtyGitDefault: state.blockChatOnDirtyGitDefault,
       dirtyGitChangeLimitDefault: state.dirtyGitChangeLimitDefault,
+      autoCompactContextThresholdPercentDefault: state.autoCompactContextThresholdPercentDefault,
       planExecutionModeDefault: state.planExecutionModeDefault,
       planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
       correctnessIterationModeDefault: state.correctnessIterationModeDefault,
-      uiMode: state.uiMode
+      backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
+      backgroundJobNotificationsEnabled: state.backgroundJobNotificationsEnabled
     });
 
-    props.sendCommand({
+    sendCommand({
       type: "preferences.save",
       requestId: createRequestId(),
       payload: {
@@ -74,10 +75,12 @@ export function PreferencesModal(props: PreferencesModalProps) {
         subagentWorktreeStrategyDefault: state.subagentWorktreeStrategyDefault,
         blockChatOnDirtyGitDefault: state.blockChatOnDirtyGitDefault,
         dirtyGitChangeLimitDefault: state.dirtyGitChangeLimitDefault,
+        autoCompactContextThresholdPercentDefault: state.autoCompactContextThresholdPercentDefault,
         planExecutionModeDefault: state.planExecutionModeDefault,
         planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
         correctnessIterationModeDefault: state.correctnessIterationModeDefault,
-        uiModeDefault: state.uiMode
+        backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
+        memoryBankEnabledDefault: state.memoryBankEnabledDefault
       }
     });
 
@@ -94,9 +97,12 @@ export function PreferencesModal(props: PreferencesModalProps) {
       subagentWorktreeStrategyDefault: state.subagentWorktreeStrategyDefault,
       blockChatOnDirtyGitDefault: state.blockChatOnDirtyGitDefault,
       dirtyGitChangeLimitDefault: state.dirtyGitChangeLimitDefault,
+      autoCompactContextThresholdPercentDefault: state.autoCompactContextThresholdPercentDefault,
       planExecutionModeDefault: state.planExecutionModeDefault,
       planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
-      correctnessIterationModeDefault: state.correctnessIterationModeDefault
+      correctnessIterationModeDefault: state.correctnessIterationModeDefault,
+      backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
+      backgroundJobNotificationsEnabled: state.backgroundJobNotificationsEnabled
     });
     harnessStore.commitLocalPreferences({
       openAiApiKey: undefined,
@@ -107,12 +113,15 @@ export function PreferencesModal(props: PreferencesModalProps) {
       subagentWorktreeStrategyDefault: state.subagentWorktreeStrategyDefault,
       blockChatOnDirtyGitDefault: state.blockChatOnDirtyGitDefault,
       dirtyGitChangeLimitDefault: state.dirtyGitChangeLimitDefault,
+      autoCompactContextThresholdPercentDefault: state.autoCompactContextThresholdPercentDefault,
       planExecutionModeDefault: state.planExecutionModeDefault,
       planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
-      correctnessIterationModeDefault: state.correctnessIterationModeDefault
+      correctnessIterationModeDefault: state.correctnessIterationModeDefault,
+      backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
+      backgroundJobNotificationsEnabled: state.backgroundJobNotificationsEnabled
     });
 
-    props.sendCommand({
+    sendCommand({
       type: "preferences.clearApiKey",
       requestId: createRequestId()
     });
@@ -126,10 +135,12 @@ export function PreferencesModal(props: PreferencesModalProps) {
       subagentWorktreeStrategyDefault: state.subagentWorktreeStrategyDefault,
       blockChatOnDirtyGitDefault: state.blockChatOnDirtyGitDefault,
       dirtyGitChangeLimitDefault: state.dirtyGitChangeLimitDefault,
+      autoCompactContextThresholdPercentDefault: state.autoCompactContextThresholdPercentDefault,
       planExecutionModeDefault: state.planExecutionModeDefault,
       planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
       correctnessIterationModeDefault: state.correctnessIterationModeDefault,
-      uiMode: state.uiMode
+      backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
+      memoryBankEnabledDefault: state.memoryBankEnabledDefault
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -155,10 +166,12 @@ export function PreferencesModal(props: PreferencesModalProps) {
         subagentWorktreeStrategyDefault: "same-worktree" | "separate-worktrees";
         blockChatOnDirtyGitDefault: boolean;
         dirtyGitChangeLimitDefault: number;
+        autoCompactContextThresholdPercentDefault: number;
         planExecutionModeDefault: "countdown" | "approve" | "immediate";
         planExecutionDelaySecondsDefault: number;
         correctnessIterationModeDefault: "ask-before-iterate" | "auto-once" | "auto-until-clean";
-        uiMode: "simple" | "advanced";
+        backgroundJobApprovalPolicyDefault: "allow-all" | "allow-safe" | "ask-risky" | "always-ask";
+        memoryBankEnabledDefault: boolean;
       }>;
 
       harnessStore.commitLocalPreferences({
@@ -168,10 +181,12 @@ export function PreferencesModal(props: PreferencesModalProps) {
         subagentWorktreeStrategyDefault: parsed.subagentWorktreeStrategyDefault,
         blockChatOnDirtyGitDefault: parsed.blockChatOnDirtyGitDefault,
         dirtyGitChangeLimitDefault: parsed.dirtyGitChangeLimitDefault,
+        autoCompactContextThresholdPercentDefault: parsed.autoCompactContextThresholdPercentDefault,
         planExecutionModeDefault: parsed.planExecutionModeDefault,
         planExecutionDelaySecondsDefault: parsed.planExecutionDelaySecondsDefault,
         correctnessIterationModeDefault: parsed.correctnessIterationModeDefault,
-        uiMode: parsed.uiMode
+        backgroundJobApprovalPolicyDefault: parsed.backgroundJobApprovalPolicyDefault,
+        memoryBankEnabledDefault: parsed.memoryBankEnabledDefault
       });
       persistLocalPreferences({
         openAiApiKey: state.openAiApiKeyDraft.trim() || undefined,
@@ -182,10 +197,15 @@ export function PreferencesModal(props: PreferencesModalProps) {
         subagentWorktreeStrategyDefault: parsed.subagentWorktreeStrategyDefault ?? state.subagentWorktreeStrategyDefault,
         blockChatOnDirtyGitDefault: parsed.blockChatOnDirtyGitDefault ?? state.blockChatOnDirtyGitDefault,
         dirtyGitChangeLimitDefault: parsed.dirtyGitChangeLimitDefault ?? state.dirtyGitChangeLimitDefault,
+        autoCompactContextThresholdPercentDefault:
+          parsed.autoCompactContextThresholdPercentDefault ?? state.autoCompactContextThresholdPercentDefault,
         planExecutionModeDefault: parsed.planExecutionModeDefault ?? state.planExecutionModeDefault,
         planExecutionDelaySecondsDefault: parsed.planExecutionDelaySecondsDefault ?? state.planExecutionDelaySecondsDefault,
         correctnessIterationModeDefault: parsed.correctnessIterationModeDefault ?? state.correctnessIterationModeDefault,
-        uiMode: parsed.uiMode ?? state.uiMode
+        backgroundJobApprovalPolicyDefault:
+          parsed.backgroundJobApprovalPolicyDefault ?? state.backgroundJobApprovalPolicyDefault,
+        backgroundJobNotificationsEnabled: state.backgroundJobNotificationsEnabled,
+        memoryBankEnabledDefault: parsed.memoryBankEnabledDefault ?? state.memoryBankEnabledDefault
       });
       pushToast("Preferences imported", "Local defaults updated. Save to sync machine-level defaults.");
     } catch (error) {
@@ -196,7 +216,7 @@ export function PreferencesModal(props: PreferencesModalProps) {
   }
 
   function handleSaveWorkspaceContext() {
-    props.sendCommand({
+    sendCommand({
       type: "workspace.context.save",
       requestId: createRequestId(),
       payload: {
@@ -235,11 +255,11 @@ export function PreferencesModal(props: PreferencesModalProps) {
       <input ref={importInput} type="file" accept="application/json" class="hidden" onChange={handleImportPreferences} />
       <div class="grid gap-3">
         <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">
+          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">
             Active brand
           </span>
           <select
-            class="flex h-9 w-full rounded-xl border border-[color:var(--border)] bg-white/70 px-3 py-2 text-[0.675rem] text-[color:var(--foreground)] shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-[color:var(--ring)]"
+            class="flex h-9 w-full rounded-xl border border-(--border) bg-white/70 px-3 py-2 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
             value={state.providerBrand}
             onInput={(event) => harnessStore.setProviderBrand(event.currentTarget.value as "gpt" | "gemini")}
           >
@@ -250,11 +270,11 @@ export function PreferencesModal(props: PreferencesModalProps) {
               Gemini
             </option>
           </select>
-          <p class="text-[0.675rem] leading-5 text-[color:var(--muted)]">Brand switch stays disabled until matching key exists or you type one here.</p>
+          <p class="text-[0.675rem] leading-5 text-(--muted)">Brand switch stays disabled until matching key exists or you type one here.</p>
         </label>
 
         <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">
+          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">
             OpenAI API key
           </span>
           <Input
@@ -268,7 +288,7 @@ export function PreferencesModal(props: PreferencesModalProps) {
         </label>
 
         <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">
+          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">
             Google API key
           </span>
           <Input
@@ -281,27 +301,13 @@ export function PreferencesModal(props: PreferencesModalProps) {
           />
         </label>
 
-        <p class="text-[0.675rem] leading-5 text-[color:var(--muted)]">
+        <p class="text-[0.675rem] leading-5 text-(--muted)">
           Keys stored in browser storage and local workspace storage on this machine.
         </p>
       </div>
 
       <div class="grid gap-3 md:grid-cols-2">
-        <label class="space-y-2 rounded-[1.25rem] border border-[color:var(--border)] bg-white/55 px-4 py-3">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">Default UI</span>
-          <select
-            class="flex h-9 w-full rounded-xl border border-[color:var(--border)] bg-white/70 px-3 py-2 text-[0.675rem] text-[color:var(--foreground)] shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-[color:var(--ring)]"
-            value={state.uiMode}
-            onInput={(event) => harnessStore.setUiMode(event.currentTarget.value as "simple" | "advanced")}
-          >
-            <option value="simple">Simple</option>
-            <option value="advanced">Advanced</option>
-          </select>
-        </label>
-      </div>
-
-      <div class="grid gap-3 md:grid-cols-2">
-        <label class="flex items-start gap-3 rounded-[1.25rem] border border-[color:var(--border)] bg-white/55 px-4 py-3">
+        <label class="flex items-start gap-3 rounded-[1.25rem] border border-(--border) bg-white/55 px-4 py-3">
           <input
             class="mt-1"
             type="checkbox"
@@ -309,12 +315,12 @@ export function PreferencesModal(props: PreferencesModalProps) {
             onInput={(event) => harnessStore.setDebugEnabled(event.currentTarget.checked)}
           />
           <div>
-            <div class="text-[0.675rem] font-semibold text-[color:var(--foreground)]">Verbose developer logging</div>
-            <div class="mt-1 text-[0.675rem] leading-5 text-[color:var(--muted)]">Default on for new runs in this browser.</div>
+            <div class="text-[0.675rem] font-semibold text-(--foreground)">Verbose developer logging</div>
+            <div class="mt-1 text-[0.675rem] leading-5 text-(--muted)">Default on for new runs in this browser.</div>
           </div>
         </label>
 
-        <label class="flex items-start gap-3 rounded-[1.25rem] border border-[color:var(--border)] bg-white/55 px-4 py-3">
+        <label class="flex items-start gap-3 rounded-[1.25rem] border border-(--border) bg-white/55 px-4 py-3">
           <input
             class="mt-1"
             type="checkbox"
@@ -322,19 +328,19 @@ export function PreferencesModal(props: PreferencesModalProps) {
             onInput={(event) => harnessStore.setTracePanelDefaultOpen(event.currentTarget.checked)}
           />
           <div>
-            <div class="text-[0.675rem] font-semibold text-[color:var(--foreground)]">Open trace panel by default</div>
-            <div class="mt-1 text-[0.675rem] leading-5 text-[color:var(--muted)]">Controls initial layout after refresh.</div>
+            <div class="text-[0.675rem] font-semibold text-(--foreground)">Open trace panel by default</div>
+            <div class="mt-1 text-[0.675rem] leading-5 text-(--muted)">Controls initial layout after refresh.</div>
           </div>
         </label>
       </div>
 
       <div class="grid gap-3 md:grid-cols-2">
-        <label class="space-y-2 rounded-[1.25rem] border border-[color:var(--border)] bg-white/55 px-4 py-3">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">
+        <label class="space-y-2 rounded-[1.25rem] border border-(--border) bg-white/55 px-4 py-3">
+          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">
             Subagent worktree
           </span>
           <select
-            class="flex h-9 w-full rounded-xl border border-[color:var(--border)] bg-white/70 px-3 py-2 text-[0.675rem] text-[color:var(--foreground)] shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-[color:var(--ring)]"
+            class="flex h-9 w-full rounded-xl border border-(--border) bg-white/70 px-3 py-2 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
             value={state.subagentWorktreeStrategyDefault}
             onInput={(event) =>
               harnessStore.setSubagentWorktreeStrategyDefault(event.currentTarget.value as "same-worktree" | "separate-worktrees")
@@ -345,12 +351,12 @@ export function PreferencesModal(props: PreferencesModalProps) {
           </select>
         </label>
 
-        <label class="space-y-2 rounded-[1.25rem] border border-[color:var(--border)] bg-white/55 px-4 py-3">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">
+        <label class="space-y-2 rounded-[1.25rem] border border-(--border) bg-white/55 px-4 py-3">
+          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">
             Plan gate mode
           </span>
           <select
-            class="flex h-9 w-full rounded-xl border border-[color:var(--border)] bg-white/70 px-3 py-2 text-[0.675rem] text-[color:var(--foreground)] shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-[color:var(--ring)]"
+            class="flex h-9 w-full rounded-xl border border-(--border) bg-white/70 px-3 py-2 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
             value={state.planExecutionModeDefault}
             onInput={(event) =>
               harnessStore.setPlanExecutionModeDefault(event.currentTarget.value as "countdown" | "approve" | "immediate")
@@ -362,7 +368,7 @@ export function PreferencesModal(props: PreferencesModalProps) {
           </select>
         </label>
 
-        <label class="flex items-start gap-3 rounded-[1.25rem] border border-[color:var(--border)] bg-white/55 px-4 py-3">
+        <label class="flex items-start gap-3 rounded-[1.25rem] border border-(--border) bg-white/55 px-4 py-3">
           <input
             class="mt-1"
             type="checkbox"
@@ -370,15 +376,15 @@ export function PreferencesModal(props: PreferencesModalProps) {
             onInput={(event) => harnessStore.setBlockChatOnDirtyGitDefault(event.currentTarget.checked)}
           />
           <div>
-            <div class="text-[0.675rem] font-semibold text-[color:var(--foreground)]">Restrict chat on dirty git</div>
-            <div class="mt-1 text-[0.675rem] leading-5 text-[color:var(--muted)]">
+            <div class="text-[0.675rem] font-semibold text-(--foreground)">Restrict chat on dirty git</div>
+            <div class="mt-1 text-[0.675rem] leading-5 text-(--muted)">
               Warn on dirty repos and block chat-triggered runs above the configured tracked plus untracked change limit.
             </div>
           </div>
         </label>
 
-        <label class="space-y-2 rounded-[1.25rem] border border-[color:var(--border)] bg-white/55 px-4 py-3">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">
+        <label class="space-y-2 rounded-[1.25rem] border border-(--border) bg-white/55 px-4 py-3">
+          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">
             Dirty git change limit
           </span>
           <Input
@@ -391,13 +397,33 @@ export function PreferencesModal(props: PreferencesModalProps) {
               harnessStore.setDirtyGitChangeLimitDefault(Math.max(0, Math.min(10000, Number(event.currentTarget.value) || 0)))
             }
           />
-          <p class="text-[0.675rem] leading-5 text-[color:var(--muted)]">
+          <p class="text-[0.675rem] leading-5 text-(--muted)">
             Counts tracked and untracked git status entries before chat-triggered runs are refused.
           </p>
         </label>
 
-        <label class="space-y-2 rounded-[1.25rem] border border-[color:var(--border)] bg-white/55 px-4 py-3">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">
+        <label class="space-y-2 rounded-[1.25rem] border border-(--border) bg-white/55 px-4 py-3">
+          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">
+            Auto-compact at
+          </span>
+          <Input
+            type="number"
+            min="10"
+            max="95"
+            value={String(state.autoCompactContextThresholdPercentDefault)}
+            onInput={(event: InputEvent & { currentTarget: HTMLInputElement; target: Element }) =>
+              harnessStore.setAutoCompactContextThresholdPercentDefault(
+                Math.max(10, Math.min(95, Number(event.currentTarget.value) || 10))
+              )
+            }
+          />
+          <p class="text-[0.675rem] leading-5 text-(--muted)">
+            Pi compacts session context once usage crosses this percent, then continues with reduced history.
+          </p>
+        </label>
+
+        <label class="space-y-2 rounded-[1.25rem] border border-(--border) bg-white/55 px-4 py-3">
+          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">
             Countdown seconds
           </span>
           <Input
@@ -411,12 +437,12 @@ export function PreferencesModal(props: PreferencesModalProps) {
           />
         </label>
 
-        <label class="space-y-2 rounded-[1.25rem] border border-[color:var(--border)] bg-white/55 px-4 py-3">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">
+        <label class="space-y-2 rounded-[1.25rem] border border-(--border) bg-white/55 px-4 py-3">
+          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">
             Correctness iteration
           </span>
           <select
-            class="flex h-9 w-full rounded-xl border border-[color:var(--border)] bg-white/70 px-3 py-2 text-[0.675rem] text-[color:var(--foreground)] shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-[color:var(--ring)]"
+            class="flex h-9 w-full rounded-xl border border-(--border) bg-white/70 px-3 py-2 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
             value={state.correctnessIterationModeDefault}
             onInput={(event) =>
               harnessStore.setCorrectnessIterationModeDefault(
@@ -429,13 +455,33 @@ export function PreferencesModal(props: PreferencesModalProps) {
             <option value="auto-until-clean">Auto until clean</option>
           </select>
         </label>
+
+        <label class="space-y-2 rounded-[1.25rem] border border-(--border) bg-white/55 px-4 py-3">
+          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">
+            Background approvals
+          </span>
+          <select
+            class="flex h-9 w-full rounded-xl border border-(--border) bg-white/70 px-3 py-2 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
+            value={state.backgroundJobApprovalPolicyDefault}
+            onInput={(event) =>
+              harnessStore.setBackgroundJobApprovalPolicyDefault(
+                event.currentTarget.value as "allow-all" | "allow-safe" | "ask-risky" | "always-ask"
+              )
+            }
+          >
+            <option value="allow-all">Allow all</option>
+            <option value="allow-safe">Allow safe</option>
+            <option value="ask-risky">Ask risky</option>
+            <option value="always-ask">Always ask</option>
+          </select>
+        </label>
       </div>
 
-      <section class="grid gap-3 rounded-[1.25rem] border border-[color:var(--border)] bg-white/55 px-4 py-4">
+      <section class="grid gap-3 rounded-[1.25rem] border border-(--border) bg-white/55 px-4 py-4">
         <div class="flex items-center justify-between gap-3">
           <div>
-            <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">Workspace context</div>
-            <div class="mt-1 text-[0.675rem] leading-5 text-[color:var(--muted)]">
+            <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Workspace context</div>
+            <div class="mt-1 text-[0.675rem] leading-5 text-(--muted)">
               Shared rules and memory apply before project-specific context.
             </div>
           </div>
@@ -444,7 +490,7 @@ export function PreferencesModal(props: PreferencesModalProps) {
           </Button>
         </div>
         <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">Workspace rules</span>
+          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Workspace rules</span>
           <Textarea
             rows="5"
             value={workspaceRuleDraft()}
@@ -475,7 +521,7 @@ export function PreferencesModal(props: PreferencesModalProps) {
           />
         </label>
         <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">Workspace memory</span>
+          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Workspace memory</span>
           <Textarea
             rows="5"
             value={workspaceMemoryDraft()}
@@ -513,7 +559,7 @@ export function PreferencesModal(props: PreferencesModalProps) {
         scope="workspace"
         modes={workspaceModes()}
         onSave={(mode) =>
-          props.sendCommand({
+          sendCommand({
             type: "mode.save",
             requestId: createRequestId(),
             payload: {
@@ -523,7 +569,7 @@ export function PreferencesModal(props: PreferencesModalProps) {
           })
         }
         onDelete={(modeId) =>
-          props.sendCommand({
+          sendCommand({
             type: "mode.delete",
             requestId: createRequestId(),
             payload: {
@@ -536,3 +582,4 @@ export function PreferencesModal(props: PreferencesModalProps) {
     </Dialog>
   );
 }
+

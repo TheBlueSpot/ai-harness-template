@@ -20,7 +20,7 @@ createUiTest("Modal dismiss integration", () => {
       })
     );
 
-    render(() => <PreferencesModal sendCommand={() => undefined} />);
+    render(() => <PreferencesModal />);
     const dialog = screen.getByRole("dialog", { name: "Workspace preferences" });
     const backdrop = dialog.parentElement?.previousElementSibling as HTMLElement | null;
     if (!backdrop) {

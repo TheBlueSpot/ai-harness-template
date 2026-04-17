@@ -18,8 +18,8 @@ export type MarkdownContentProps = {
 };
 
 const toneClassNames: Record<NonNullable<MarkdownContentProps["tone"]>, string> = {
-  default: "text-[color:var(--foreground)]",
-  muted: "text-[color:var(--muted)]",
+  default: "text-(--foreground)",
+  muted: "text-(--muted)",
   danger: "text-rose-900/80",
   warning: "text-amber-900/80"
 };

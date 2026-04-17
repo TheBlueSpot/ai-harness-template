@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { PiSdkAgentAdapter } from "./pi-agent-adapter";
+import {
+  buildPiAutoCompactionSettings,
+  clampAutoCompactContextThresholdPercent,
+  PiSdkAgentAdapter
+} from "./pi-agent-adapter";
 
 describe("pi sdk adapter", () => {
   test("rejects non-openai model ids before invoking pi", async () => {
@@ -13,5 +17,15 @@ describe("pi sdk adapter", () => {
         prompt: "test"
       })
     ).rejects.toThrow("Unsupported provider");
+  });
+
+  test("clamps threshold and derives compaction settings from context window", () => {
+    expect(clampAutoCompactContextThresholdPercent(3)).toBe(10);
+    expect(clampAutoCompactContextThresholdPercent(97)).toBe(95);
+    expect(buildPiAutoCompactionSettings(200000, 40)).toEqual({
+      enabled: true,
+      reserveTokens: 120000,
+      keepRecentTokens: 20000
+    });
   });
 });

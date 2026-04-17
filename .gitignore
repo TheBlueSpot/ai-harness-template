@@ -6,3 +6,4 @@ harness/ui/dist
 .tmp-test-data
 .DS_Store
 .env
+release

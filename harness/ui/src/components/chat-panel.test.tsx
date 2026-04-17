@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
 import { ChatPanel } from "./chat-panel";
 import { harnessStore } from "../harness-store";
 import { toastStore } from "../toast-store";
-import { clearBrowserStateForTests, seedHarnessStoreForTests } from "../utils/tests/store-test-utils";
+import { captureDispatchedCommands, clearBrowserStateForTests, seedHarnessStoreForTests } from "../utils/tests/store-test-utils";
 import {
   createExecutionPlanFixture,
   createHarnessStateFixture,
@@ -72,7 +72,8 @@ createUiTest("ChatPanel", () => {
       })
     );
 
-    render(() => <ChatPanel sendCommand={(command) => commands.push(command)} />);
+    captureDispatchedCommands(commands as never[]);
+    render(() => <ChatPanel />);
     fireEvent.click(screen.getByRole("button", { name: "Send planner answer" }));
 
     expect(commands.length).toBe(1);
@@ -115,11 +116,35 @@ createUiTest("ChatPanel", () => {
       })
     );
 
-    render(() => <ChatPanel sendCommand={(command) => commands.push(command)} />);
+    captureDispatchedCommands(commands as never[]);
+    render(() => <ChatPanel />);
     fireEvent.click(screen.getByRole("button", { name: "Refine plan before execution" }));
 
     expect(commands.length).toBe(1);
     expect((commands[0] as { type: string }).type).toBe("planning.refine");
+  });
+
+  it("switches between compact chat panes without the old cockpit card", () => {
+    const project = createViewProjectFixture({
+      id: "project-pane-nav"
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ChatPanel />);
+
+    expect(document.querySelector("[data-test-task-cockpit]")).toBeNull();
+    expect(screen.getByRole("button", { name: "Open chat pane" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Open plan pane" })).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Open run pane" })).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Open memory pane" })).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Open events pane" })).not.toBeNull();
   });
 
   it("blocks plain submit for resumable runs and shows toast", () => {
@@ -143,7 +168,8 @@ createUiTest("ChatPanel", () => {
       })
     );
 
-    render(() => <ChatPanel sendCommand={(command) => commands.push(command)} />);
+    captureDispatchedCommands(commands as never[]);
+    render(() => <ChatPanel />);
     const textbox = screen.getByRole("textbox");
     const form = textbox.closest("form");
     if (!form) {
@@ -172,11 +198,59 @@ createUiTest("ChatPanel", () => {
       })
     );
 
-    render(() => <ChatPanel sendCommand={(command) => commands.push(command)} />);
+    captureDispatchedCommands(commands as never[]);
+    render(() => <ChatPanel />);
     fireEvent.click(screen.getByRole("button", { name: "Send task to pi" }));
 
     expect(commands.length).toBe(1);
     expect((commands[0] as { type: string }).type).toBe("chat.send");
+  });
+
+  it("does not render a transcript plan card when the backend suppresses ask-mode summaries", () => {
+    const plan = createExecutionPlanFixture({
+      gating: {
+        mode: "immediate",
+        delaySeconds: 0
+      },
+      route: "main",
+      targetSubagentCount: 0,
+      actualSubagentCount: 0
+    });
+    const readyProject = createViewProjectFixture({
+      id: "project-immediate",
+      session: {
+        ...createViewProjectFixture().session,
+        messages: []
+      },
+      activeRun: createRunFixture({
+        id: "run-immediate",
+        threadId: "thread-1",
+        status: "ready",
+        plan
+      }),
+      latestPlan: {
+        sessionId: "session-1",
+        agentId: "pi",
+        planningModelId: "openai/gpt-5.4",
+        difficultyScore: 20,
+        usesSubagents: false,
+        executionModelId: "openai/gpt-5.4",
+        subtaskCount: 0,
+        executionPlan: plan
+      }
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: readyProject.id,
+          projects: [readyProject]
+        }
+      })
+    );
+
+    render(() => <ChatPanel />);
+    expect(screen.queryByText("Plan summary")).toBeNull();
+    expect(screen.queryByText(plan.summary)).toBeNull();
   });
 
   it("sends resume and retry commands when the thread is idle", () => {
@@ -208,7 +282,8 @@ createUiTest("ChatPanel", () => {
       })
     );
 
-    render(() => <ChatPanel sendCommand={(command) => commands.push(command)} />);
+    captureDispatchedCommands(commands as never[]);
+    render(() => <ChatPanel />);
 
     fireEvent.click(screen.getByRole("button", { name: "Resume failed or pending subagents" }));
     fireEvent.click(screen.getByRole("button", { name: "Retry last pi run" }));
@@ -235,7 +310,8 @@ createUiTest("ChatPanel", () => {
       })
     );
 
-    render(() => <ChatPanel sendCommand={(command) => commands.push(command)} />);
+    captureDispatchedCommands(commands as never[]);
+    render(() => <ChatPanel />);
     fireEvent.click(screen.getByRole("button", { name: "Stop active run" }));
 
     expect(commands.map((command) => (command as { type: string }).type)).toEqual(["chat.stop"]);
@@ -255,7 +331,7 @@ createUiTest("ChatPanel", () => {
       })
     );
 
-    render(() => <ChatPanel sendCommand={() => undefined} />);
+    render(() => <ChatPanel />);
     expect(screen.getByText("assistant (streaming)")).not.toBeNull();
     expect(screen.getByRole("heading", { name: "Partial output" })).not.toBeNull();
 
@@ -280,7 +356,7 @@ createUiTest("ChatPanel", () => {
       })
     );
     cleanup();
-    render(() => <ChatPanel sendCommand={() => undefined} />);
+    render(() => <ChatPanel />);
     expect(screen.queryByText("assistant (streaming)")).toBeNull();
   });
 
@@ -301,7 +377,7 @@ createUiTest("ChatPanel", () => {
       })
     );
 
-    render(() => <ChatPanel sendCommand={() => undefined} />);
+    render(() => <ChatPanel />);
     harnessStore.applyServerEvent({
       type: "chat.delta",
       requestId: "req-stream-delta",
@@ -314,7 +390,7 @@ createUiTest("ChatPanel", () => {
     });
 
     cleanup();
-    render(() => <ChatPanel sendCommand={() => undefined} />);
+    render(() => <ChatPanel />);
     expect(screen.getByRole("button", { name: "Copy code block" })).not.toBeNull();
     expect(document.querySelector(".markdown-code-content")?.textContent).toContain("const streamed = true;");
   });
@@ -336,7 +412,7 @@ createUiTest("ChatPanel", () => {
       })
     );
 
-    render(() => <ChatPanel sendCommand={() => undefined} />);
+    render(() => <ChatPanel />);
     expect(screen.getByText("bold").tagName).toBe("STRONG");
     expect(screen.getByRole("link", { name: "docs" }).getAttribute("target")).toBe("_blank");
   });
@@ -383,7 +459,8 @@ createUiTest("ChatPanel", () => {
       })
     );
 
-    render(() => <ChatPanel sendCommand={(command) => commands.push(command)} />);
+    captureDispatchedCommands(commands as never[]);
+    render(() => <ChatPanel />);
     expect((screen.getByRole("button", { name: "Refine plan before execution" }) as HTMLButtonElement).disabled).toBe(true);
 
     harnessStore.applyServerEvent({
@@ -403,10 +480,118 @@ createUiTest("ChatPanel", () => {
     });
 
     cleanup();
-    render(() => <ChatPanel sendCommand={(command) => commands.push(command)} />);
+    captureDispatchedCommands(commands as never[]);
+    render(() => <ChatPanel />);
     expect(harnessStore.state.workspace.projects[0]?.session.isStreaming).toBe(false);
     expect((screen.getByRole("button", { name: "Refine plan before execution" }) as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "Refine plan before execution" }));
     expect((commands[0] as { type: string }).type).toBe("planning.refine");
+  });
+
+  it("keeps approve-gated implement subagent plans startable from the transcript card", () => {
+    const commands: unknown[] = [];
+    const plan = createExecutionPlanFixture({
+      runId: "run-subagents-approve",
+      gating: {
+        mode: "approve",
+        delaySeconds: 0
+      },
+      route: "pi-subagents",
+      targetSubagentCount: 2,
+      actualSubagentCount: 2
+    });
+    const planMessage = createPlanSummaryMessage("run-subagents-approve", plan);
+    const project = createViewProjectFixture({
+      id: "project-subagents-approve",
+      session: {
+        ...createViewProjectFixture().session,
+        messages: [planMessage]
+      },
+      activeRun: createRunFixture({
+        id: "run-subagents-approve",
+        status: "ready",
+        plan
+      }),
+      latestPlan: {
+        sessionId: "session-1",
+        agentId: "pi",
+        planningModelId: "openai/gpt-5.4",
+        difficultyScore: 72,
+        usesSubagents: true,
+        executionModelId: "openai/gpt-5.4",
+        subtaskCount: 2,
+        executionPlan: plan
+      }
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    captureDispatchedCommands(commands as never[]);
+    render(() => <ChatPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "Start execution with this plan" }));
+
+    expect(commands.length).toBe(1);
+    expect((commands[0] as { type: string }).type).toBe("run.execute");
+  });
+
+  it("starts virtual branch experiments from the transcript card", () => {
+    const commands: unknown[] = [];
+    const plan = createExecutionPlanFixture({
+      runId: "run-experiment",
+      gating: {
+        mode: "approve",
+        delaySeconds: 0
+      }
+    });
+    const planMessage = createPlanSummaryMessage("run-experiment", plan);
+    const project = createViewProjectFixture({
+      id: "project-experiment",
+      session: {
+        ...createViewProjectFixture().session,
+        messages: [planMessage]
+      },
+      activeRun: createRunFixture({
+        id: "run-experiment",
+        status: "ready",
+        plan
+      }),
+      latestPlan: {
+        sessionId: "session-1",
+        agentId: "pi",
+        planningModelId: "openai/gpt-5.4",
+        difficultyScore: 72,
+        usesSubagents: true,
+        executionModelId: "openai/gpt-5.4",
+        subtaskCount: 2,
+        executionPlan: plan
+      }
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    captureDispatchedCommands(commands as never[]);
+    render(() => <ChatPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "Run this plan in isolated virtual branch" }));
+
+    expect(commands.length).toBe(1);
+    expect(commands[0]).toMatchObject({
+      type: "run.execute",
+      payload: {
+        runId: "run-experiment",
+        target: "ephemeral-experiment"
+      }
+    });
   });
 });

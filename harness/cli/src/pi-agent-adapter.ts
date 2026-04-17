@@ -60,19 +60,46 @@ export interface PiAgentAdapter {
   hasApiKey(provider: "openai" | "google"): boolean;
 }
 
+const DEFAULT_AUTO_COMPACT_CONTEXT_THRESHOLD_PERCENT = 40;
+const MIN_AUTO_COMPACT_CONTEXT_THRESHOLD_PERCENT = 10;
+const MAX_AUTO_COMPACT_CONTEXT_THRESHOLD_PERCENT = 95;
+const MIN_AUTO_COMPACTION_RESERVE_TOKENS = 8192;
+const MIN_AUTO_COMPACTION_KEEP_RECENT_TOKENS = 4000;
+const DEFAULT_AUTO_COMPACTION_KEEP_RECENT_TOKENS = 20000;
+
+export function clampAutoCompactContextThresholdPercent(value: number) {
+  return Math.max(
+    MIN_AUTO_COMPACT_CONTEXT_THRESHOLD_PERCENT,
+    Math.min(MAX_AUTO_COMPACT_CONTEXT_THRESHOLD_PERCENT, Math.round(value))
+  );
+}
+
+export function buildPiAutoCompactionSettings(contextWindow: number, thresholdPercent: number) {
+  const normalizedThresholdPercent = clampAutoCompactContextThresholdPercent(thresholdPercent);
+  const reserveTokens = Math.max(
+    MIN_AUTO_COMPACTION_RESERVE_TOKENS,
+    Math.round(contextWindow * (1 - normalizedThresholdPercent / 100))
+  );
+  const keepRecentTokens = Math.max(
+    MIN_AUTO_COMPACTION_KEEP_RECENT_TOKENS,
+    Math.min(DEFAULT_AUTO_COMPACTION_KEEP_RECENT_TOKENS, Math.floor(contextWindow * 0.1))
+  );
+
+  return {
+    enabled: true,
+    reserveTokens,
+    keepRecentTokens
+  };
+}
+
 export class PiSdkAgentAdapter implements PiAgentAdapter {
   private readonly authStorage: AuthStorage;
   private readonly modelRegistry: ModelRegistry;
-  private readonly settingsManager: SettingsManager;
+  private autoCompactContextThresholdPercent = DEFAULT_AUTO_COMPACT_CONTEXT_THRESHOLD_PERCENT;
 
   constructor() {
     this.authStorage = AuthStorage.create();
-
     this.modelRegistry = ModelRegistry.create(this.authStorage);
-    this.settingsManager = SettingsManager.inMemory({
-      compaction: { enabled: false },
-      retry: { enabled: true, maxRetries: 1 }
-    });
   }
 
   setApiKey(provider: "openai" | "google", apiKey: string | undefined) {
@@ -89,6 +116,10 @@ export class PiSdkAgentAdapter implements PiAgentAdapter {
     return this.authStorage.hasAuth(provider);
   }
 
+  setAutoCompactContextThresholdPercent(thresholdPercent: number) {
+    this.autoCompactContextThresholdPercent = clampAutoCompactContextThresholdPercent(thresholdPercent);
+  }
+
   async runPrompt(request: PiAgentPromptRequest): Promise<PiAgentPromptResult> {
     const controller = await this.startExecution(request);
     try {
@@ -101,8 +132,12 @@ export class PiSdkAgentAdapter implements PiAgentAdapter {
   async startExecution(request: PiAgentPromptRequest): Promise<PiAgentExecutionController> {
     const model = this.resolveOpenAiModel(request.modelId);
     const toolset = request.readOnly ? createReadOnlyTools(request.cwd) : createCodingTools(request.cwd);
+    const settingsManager = SettingsManager.inMemory({
+      compaction: buildPiAutoCompactionSettings(model.contextWindow, this.autoCompactContextThresholdPercent),
+      retry: { enabled: true, maxRetries: 1 }
+    });
     const resourceLoader = request.requestBrowserApproval
-      ? await this.createResourceLoader(request)
+      ? await this.createResourceLoader(request, settingsManager)
       : undefined;
     const { session } = await createAgentSession({
       cwd: request.cwd,
@@ -112,7 +147,7 @@ export class PiSdkAgentAdapter implements PiAgentAdapter {
       tools: toolset,
       resourceLoader,
       sessionManager: SessionManager.inMemory(request.cwd),
-      settingsManager: this.settingsManager
+      settingsManager
     });
 
     return new PiSdkExecutionController(session, request, model.contextWindow, (event) => this.handleEvent(event, request));
@@ -186,10 +221,10 @@ export class PiSdkAgentAdapter implements PiAgentAdapter {
     }
   }
 
-  private async createResourceLoader(request: PiAgentPromptRequest) {
+  private async createResourceLoader(request: PiAgentPromptRequest, settingsManager: SettingsManager) {
     const loader = new DefaultResourceLoader({
       cwd: request.cwd,
-      settingsManager: this.settingsManager,
+      settingsManager,
       extensionFactories: [
         (pi) => {
           pi.on("tool_call", async (event) => {

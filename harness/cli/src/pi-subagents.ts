@@ -17,6 +17,7 @@ export type SubagentResult = {
   durationMs: number;
   commitSha?: string;
   branchName?: string;
+  mountPath?: string;
   worktreePath?: string;
   contextUsage?: ProjectContextUsage;
 };
@@ -204,6 +205,7 @@ async function executeSubagentWithRetry(
           tokens: response.contextUsage.tokens,
           contextWindow: response.contextUsage.contextWindow,
           usagePercent: response.contextUsage.usagePercent,
+          totalProcessedTokens: response.contextUsage.sessionStats.tokens.total,
           updatedAt: new Date().toISOString()
         });
       }
@@ -230,6 +232,7 @@ async function executeSubagentWithRetry(
         durationMs: Date.now() - startedAt,
         commitSha: commit.commitSha,
         branchName: commit.branchName,
+        mountPath: commit.worktreePath,
         worktreePath: commit.worktreePath,
         contextUsage: response.contextUsage
           ? {
@@ -239,6 +242,7 @@ async function executeSubagentWithRetry(
               tokens: response.contextUsage.tokens,
               contextWindow: response.contextUsage.contextWindow,
               usagePercent: response.contextUsage.usagePercent,
+              totalProcessedTokens: response.contextUsage.sessionStats.tokens.total,
               updatedAt: new Date().toISOString()
             }
           : undefined
@@ -271,6 +275,7 @@ async function executeSubagentWithRetry(
           attemptCount: attempt,
           durationMs: Date.now() - startedAt,
           branchName: lease.branchName,
+          mountPath: options.debugEnabled ? lease.worktreePath : undefined,
           worktreePath: options.debugEnabled ? lease.worktreePath : undefined
         };
       }

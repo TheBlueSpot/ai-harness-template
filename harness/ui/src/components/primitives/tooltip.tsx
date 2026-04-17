@@ -62,6 +62,7 @@ export function Tooltip(props: { content?: string; children: JSX.Element }) {
   return (
     <span
       ref={triggerRef}
+      data-test-tooltip=""
       class="inline-flex"
       onMouseEnter={handleShow}
       onMouseLeave={handleHide}
@@ -73,7 +74,8 @@ export function Tooltip(props: { content?: string; children: JSX.Element }) {
         <Show when={props.content && open()}>
           <span
             ref={tooltipRef}
-            class="pointer-events-none fixed z-[90] max-w-xs rounded-lg border border-[color:var(--border)] bg-[color:var(--foreground)] px-3 py-1.5 text-center text-xs text-[color:var(--surface-foreground)] shadow-xl"
+            data-test-tooltip-content=""
+            class="pointer-events-none fixed z-[90] max-w-xs whitespace-pre-line rounded-lg border border-(--border) bg-(--foreground) px-3 py-1.5 text-center text-xs text-(--surface-foreground) shadow-xl"
             style={{
               top: `${position().top}px`,
               left: `${position().left}px`

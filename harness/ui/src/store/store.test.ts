@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import {
   createEmptySession,
   createProjectId,
+  createProjectThreadSummary,
+  type ProjectSearchResult,
   createWorkspaceProjectState,
   type ExecutionPlan,
   type PreferencesState,
@@ -9,7 +11,21 @@ import {
   type WorkspaceProjectState
 } from "../../../shared/protocol";
 import { defaultProviderCapabilities } from "../../../shared/capabilities";
-import { createInitialViewState, getActiveMode, getResolvedModes, reduceServerEvent } from "../harness-store";
+import {
+  BROWSER_UI_SESSION_STORAGE_KEY,
+  createEmptyAssistantsState,
+  createEmptyBackgroundJobsState,
+  createHarnessStore,
+  createInitialExecutionControlState,
+  createInitialSetupState,
+  createInitialViewState,
+  getBrowserUiSessionRestoreCommands,
+  getActiveMode,
+  getResolvedModes,
+  persistBrowserUiSession,
+  readBrowserUiSession,
+  reduceServerEvent
+} from "../harness-store";
 
 const defaultPreferences: PreferencesState = {
   hasUsableApiKey: false,
@@ -24,13 +40,19 @@ const defaultPreferences: PreferencesState = {
   subagentWorktreeStrategyDefault: "same-worktree",
   blockChatOnDirtyGitDefault: true,
   dirtyGitChangeLimitDefault: 20,
+  autoCompactContextThresholdPercentDefault: 40,
   planExecutionModeDefault: "countdown",
   planExecutionDelaySecondsDefault: 10,
   correctnessIterationModeDefault: "ask-before-iterate",
-  uiModeDefault: "simple",
+  backgroundJobApprovalPolicyDefault: "ask-risky",
+  memoryBankEnabledDefault: true,
   attachmentsEnabled: true,
-  capabilities: [...defaultProviderCapabilities]
+  capabilities: [...defaultProviderCapabilities],
+  agentRuntimes: []
 };
+
+const defaultExecutionControl = createInitialExecutionControlState();
+const defaultSetup = createInitialSetupState();
 
 function createConnectedState(project?: WorkspaceProjectState) {
   return reduceServerEvent(createInitialViewState(), {
@@ -41,7 +63,11 @@ function createConnectedState(project?: WorkspaceProjectState) {
         projects: project ? [project] : [],
         activeProjectId: project?.id
       },
-      preferences: defaultPreferences
+      preferences: defaultPreferences,
+      setup: defaultSetup,
+      backgroundJobs: createEmptyBackgroundJobsState(),
+      assistants: createEmptyAssistantsState(),
+      executionControl: defaultExecutionControl
     }
   });
 }
@@ -54,12 +80,394 @@ function createProject() {
   });
 }
 
+function clearBrowserUiSessionStorage() {
+  globalThis.localStorage?.removeItem(BROWSER_UI_SESSION_STORAGE_KEY);
+}
+
 describe("harness store reducer", () => {
+  test("browser trace session override beats default trace preference on ready", () => {
+    clearBrowserUiSessionStorage();
+    persistBrowserUiSession({ tracePanelOpen: false });
+
+    const store = createHarnessStore();
+    store.actions.hydrateBrowserUiSession();
+    store.applyServerEvent({
+      type: "connection.ready",
+      payload: {
+        agents: [{ id: "pi", label: "Pi" }],
+        workspace: {
+          projects: [],
+          activeProjectId: undefined
+        },
+        preferences: {
+          ...defaultPreferences,
+          tracePanelDefaultOpen: true
+        },
+        setup: defaultSetup,
+        backgroundJobs: createEmptyBackgroundJobsState(),
+        assistants: createEmptyAssistantsState(),
+        executionControl: defaultExecutionControl
+      }
+    });
+
+    expect(store.state.tracePanelOpen).toBe(false);
+    expect(store.state.hasPersistedTracePanelOpen).toBe(true);
+  });
+
+  test("repairs invalid browser ui session selections during hydrate", () => {
+    clearBrowserUiSessionStorage();
+    globalThis.localStorage?.setItem(
+      BROWSER_UI_SESSION_STORAGE_KEY,
+      JSON.stringify({
+        selectedModeId: "missing-mode"
+      })
+    );
+
+    const store = createHarnessStore();
+    store.actions.hydrateBrowserUiSession();
+
+    expect(store.state.selectedModeId).toBe("implement");
+    expect(store.state.hasGlobalSelectedModeId).toBe(true);
+    expect(readBrowserUiSession().selectedModeId).toBe("implement");
+  });
+
+  test("explicit global mode override beats later project mode updates", () => {
+    clearBrowserUiSessionStorage();
+    const store = createHarnessStore();
+    const project = createProject();
+
+    store.applyServerEvent({
+      type: "connection.ready",
+      payload: {
+        agents: [{ id: "pi", label: "Pi" }],
+        workspace: {
+          projects: [
+            {
+              ...project,
+              selectedModeId: "debug"
+            }
+          ],
+          activeProjectId: project.id
+        },
+        preferences: defaultPreferences,
+        setup: defaultSetup,
+        backgroundJobs: createEmptyBackgroundJobsState(),
+        assistants: createEmptyAssistantsState(),
+        executionControl: defaultExecutionControl
+      }
+    });
+
+    store.setSelectedModeId("plan");
+    store.applyServerEvent({
+      type: "project.updated",
+      requestId: "req-project-updated",
+      payload: {
+        projectId: project.id,
+        project: {
+          ...project,
+          selectedModeId: "review"
+        }
+      }
+    });
+
+    expect(getActiveMode(store.state)?.id).toBe("plan");
+    expect(readBrowserUiSession()).toEqual({
+      selectedModeId: "plan",
+      lastActiveProjectId: project.id,
+      lastActiveThreadByProjectId: {
+        [project.id]: project.activeThreadId
+      }
+    });
+  });
+
+  test("persists active project and per-project last thread after thread activation", () => {
+    clearBrowserUiSessionStorage();
+    const project = createWorkspaceProjectState({
+      id: createProjectId(),
+      name: "repo-one",
+      rootPath: "C:\\repo-one",
+      activeThreadId: "thread-1",
+      threads: [
+        createProjectThreadSummary({
+          id: "thread-1",
+          title: "Thread 1",
+          titleSource: "generated",
+          updatedAt: new Date().toISOString()
+        }),
+        createProjectThreadSummary({
+          id: "thread-2",
+          title: "Thread 2",
+          titleSource: "generated",
+          updatedAt: new Date().toISOString()
+        })
+      ]
+    });
+    const store = createHarnessStore();
+
+    store.applyServerEvent({
+      type: "connection.ready",
+      payload: {
+        agents: [{ id: "pi", label: "Pi" }],
+        workspace: {
+          projects: [project],
+          activeProjectId: project.id
+        },
+        preferences: defaultPreferences,
+        setup: defaultSetup,
+        backgroundJobs: createEmptyBackgroundJobsState(),
+        assistants: createEmptyAssistantsState(),
+        executionControl: defaultExecutionControl
+      }
+    });
+    store.applyServerEvent({
+      type: "thread.activated",
+      requestId: "req-thread-activated",
+      payload: {
+        projectId: project.id,
+        project: {
+          ...project,
+          activeThreadId: "thread-2"
+        }
+      }
+    });
+
+    expect(readBrowserUiSession()).toEqual({
+      lastActiveProjectId: project.id,
+      lastActiveThreadByProjectId: {
+        [project.id]: "thread-2"
+      }
+    });
+  });
+
+  test("builds restore commands for saved project and thread on reopen", () => {
+    const projectA = createWorkspaceProjectState({
+      id: "project-a",
+      name: "repo-a",
+      rootPath: "C:\\repo-a",
+      activeThreadId: "thread-a-1",
+      threads: [
+        createProjectThreadSummary({
+          id: "thread-a-1",
+          title: "A1",
+          titleSource: "generated",
+          updatedAt: new Date().toISOString()
+        })
+      ]
+    });
+    const projectB = createWorkspaceProjectState({
+      id: "project-b",
+      name: "repo-b",
+      rootPath: "C:\\repo-b",
+      activeThreadId: "thread-b-1",
+      threads: [
+        createProjectThreadSummary({
+          id: "thread-b-1",
+          title: "B1",
+          titleSource: "generated",
+          updatedAt: new Date().toISOString()
+        }),
+        createProjectThreadSummary({
+          id: "thread-b-2",
+          title: "B2",
+          titleSource: "generated",
+          updatedAt: new Date().toISOString()
+        })
+      ]
+    });
+    const state = reduceServerEvent(createInitialViewState(), {
+      type: "connection.ready",
+      payload: {
+        agents: [{ id: "pi", label: "Pi" }],
+        workspace: {
+          projects: [projectA, projectB],
+          activeProjectId: projectA.id
+        },
+        preferences: defaultPreferences,
+        setup: defaultSetup,
+        backgroundJobs: createEmptyBackgroundJobsState(),
+        assistants: createEmptyAssistantsState(),
+        executionControl: defaultExecutionControl
+      }
+    });
+
+    const commands = getBrowserUiSessionRestoreCommands(state, {
+      lastActiveProjectId: projectB.id,
+      lastActiveThreadByProjectId: {
+        [projectB.id]: "thread-b-2"
+      }
+    });
+
+    expect(commands).toHaveLength(2);
+    expect(commands[0]?.type).toBe("project.activate");
+    expect(commands[1]?.type).toBe("thread.activate");
+    if (commands[0]?.type !== "project.activate" || commands[1]?.type !== "thread.activate") {
+      throw new Error("Expected restore commands to activate saved project and thread.");
+    }
+    expect(commands[0].payload).toEqual({
+      projectId: projectB.id
+    });
+    expect(commands[1].payload).toEqual({
+      projectId: projectB.id,
+      threadId: "thread-b-2"
+    });
+  });
+
   test("starts with empty workspace", () => {
     const initialState = createInitialViewState();
 
     expect(initialState.workspace.projects).toHaveLength(0);
     expect(initialState.workspace.activeProjectId).toBeUndefined();
+  });
+
+  test("hydrates and updates background jobs state", () => {
+    const connectedState = createConnectedState();
+    const queuedState = reduceServerEvent(connectedState, {
+      type: "background-jobs.updated",
+      requestId: "bg-1",
+      payload: {
+        backgroundJobs: {
+          jobs: [
+            {
+              id: "job-1",
+              projectId: "project-1",
+              automationThreadId: "thread-auto-1",
+              kind: "ai-routine",
+              name: "Nightly review",
+              status: "enabled",
+              riskLevel: "unsafe",
+              definition: {
+                kind: "ai-routine",
+                prompt: "Review repo"
+              },
+              schedule: {
+                type: "interval",
+                intervalSeconds: 3600,
+                nextRunAt: "2026-04-16T13:00:00.000Z",
+                sourceText: "1h"
+              },
+              scheduleInput: "1h",
+              nextRunAt: "2026-04-16T13:00:00.000Z",
+              createdAt: "2026-04-16T12:00:00.000Z",
+              updatedAt: "2026-04-16T12:00:00.000Z"
+            }
+          ],
+          runs: [],
+          templates: []
+        }
+      }
+    });
+
+    const nextState = reduceServerEvent(queuedState, {
+      type: "background-job-run.updated",
+      requestId: "bg-2",
+      payload: {
+        run: {
+          id: "run-1",
+          jobId: "job-1",
+          projectId: "project-1",
+          automationThreadId: "thread-auto-1",
+          triggerSource: "schedule",
+          status: "failed",
+          riskLevel: "unsafe",
+          approvalStatus: "approved",
+          skippedOccurrenceCount: 0,
+          summary: "Review failed",
+          failureMessage: "Planner needed clarification",
+          queuedAt: "2026-04-16T12:00:00.000Z",
+          startedAt: "2026-04-16T12:00:10.000Z",
+          completedAt: "2026-04-16T12:00:20.000Z",
+          createdAt: "2026-04-16T12:00:00.000Z",
+          updatedAt: "2026-04-16T12:00:20.000Z",
+          events: []
+        }
+      }
+    });
+
+    expect(nextState.backgroundJobs.jobs[0]?.name).toBe("Nightly review");
+    expect(nextState.backgroundJobs.runs[0]?.status).toBe("failed");
+    expect(nextState.backgroundJobs.runs[0]?.failureMessage).toContain("clarification");
+  });
+
+  test("hydrates assistant state and routes assistant events into inspector state", () => {
+    const project = createProject();
+    const connectedState = createConnectedState(project);
+    const assistantId = "assistant-1";
+
+    const hydratedState = reduceServerEvent(connectedState, {
+      type: "assistants.updated",
+      requestId: "assistant-1",
+      payload: {
+        assistants: {
+          assistants: [
+            {
+              id: assistantId,
+              name: "Mr Miyagi",
+              scope: "project",
+              projectId: project.id,
+              description: "Karate mentor",
+              personalityPrompt: "Patient, direct, calm.",
+              jobPrompt: "Teach fundamentals first.",
+              agentId: "pi",
+              modeId: undefined,
+              executionModelId: undefined,
+              runState: "active",
+              bootstrapState: "completed",
+              clonedFromAssistantId: undefined,
+              failureStreakCount: 0,
+              circuitBreakerState: "closed",
+              circuitBreakerReason: undefined,
+              deletedAt: undefined,
+              latestActivityAt: new Date().toISOString(),
+              unreadQuestionCount: 1,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            }
+          ],
+          threads: [],
+          todos: [],
+          learnings: [],
+          questions: [],
+          logs: [],
+          assetRefs: []
+        }
+      }
+    });
+
+    const withCreatedCard = reduceServerEvent(hydratedState, {
+      type: "assistant.created-card",
+      requestId: "assistant-2",
+      payload: {
+        assistant: hydratedState.assistants.assistants[0]!
+      }
+    });
+    const withDelta = reduceServerEvent(withCreatedCard, {
+      type: "assistant.chat.delta",
+      requestId: "assistant-3",
+      payload: {
+        assistantId,
+        sessionId: "session-1",
+        delta: "wax on"
+      }
+    });
+    const withQuestion = reduceServerEvent(withDelta, {
+      type: "assistant.question.updated",
+      requestId: "assistant-4",
+      payload: {
+        question: {
+          id: "question-1",
+          assistantId,
+          prompt: "Kata or sparring?",
+          status: "pending",
+          linkedTodoIds: [],
+          askedAt: new Date().toISOString()
+        }
+      }
+    });
+
+    expect(withCreatedCard.activeSurface).toBe("assistants");
+    expect(withCreatedCard.assistants.selectedAssistantId).toBe(assistantId);
+    expect(withDelta.assistants.streamingByAssistantId[assistantId]).toBe("wax on");
+    expect(withQuestion.assistants.questions[0]?.prompt).toContain("Kata");
   });
 
   test("records plans and traces on active project without polluting messages", () => {
@@ -709,6 +1117,47 @@ describe("harness store reducer", () => {
     expect(nextState.workspace.projects.some((entry) => entry.id === project.id)).toBe(true);
   });
 
+  test("stores fresh project search results and ignores stale ones", () => {
+    const results: ProjectSearchResult[] = [
+      {
+        id: "C:\\repo-one",
+        name: "repo-one",
+        rootPath: "C:\\repo-one",
+        repoKind: "git-repo",
+        matchKind: "name-prefix"
+      }
+    ];
+    const seededState = {
+      ...createInitialViewState(),
+      projectSwitcherOpen: true,
+      projectSearchQuery: "repo",
+      projectSearchLoading: true,
+      projectSearchPendingRequestId: "req-search"
+    };
+
+    const staleState = reduceServerEvent(seededState, {
+      type: "project.search.results",
+      requestId: "req-stale",
+      payload: {
+        query: "repo",
+        results
+      }
+    });
+    const nextState = reduceServerEvent(seededState, {
+      type: "project.search.results",
+      requestId: "req-search",
+      payload: {
+        query: "repo",
+        results
+      }
+    });
+
+    expect(staleState.projectSearchFilesystemResults).toHaveLength(0);
+    expect(nextState.projectSearchFilesystemResults).toHaveLength(1);
+    expect(nextState.projectSearchLoading).toBe(false);
+    expect(nextState.projectSearchPendingRequestId).toBeUndefined();
+  });
+
   test("removes last project and leaves empty workspace", () => {
     const initialProject = createProject();
     const initialState = createConnectedState(initialProject);
@@ -724,6 +1173,23 @@ describe("harness store reducer", () => {
 
     expect(nextState.workspace.projects).toHaveLength(0);
     expect(nextState.workspace.activeProjectId).toBeUndefined();
+  });
+
+  test("opens and closes project switcher transient state", () => {
+    const store = createHarnessStore();
+    store.openProjectSwitcher("repo");
+
+    expect(store.state.projectSwitcherOpen).toBe(true);
+    expect(store.state.projectSearchQuery).toBe("repo");
+
+    store.startProjectSearch("req-search", "repo");
+    expect(store.state.projectSearchLoading).toBe(true);
+    expect(store.state.projectSearchPendingRequestId).toBe("req-search");
+
+    store.closeProjectSwitcher();
+    expect(store.state.projectSwitcherOpen).toBe(false);
+    expect(store.state.projectSearchQuery).toBe("");
+    expect(store.state.projectSearchFilesystemResults).toHaveLength(0);
   });
 
   test("applies server preference payload on connection ready", () => {
@@ -748,12 +1214,23 @@ describe("harness store reducer", () => {
           subagentWorktreeStrategyDefault: "same-worktree",
           blockChatOnDirtyGitDefault: false,
           dirtyGitChangeLimitDefault: 6,
+          autoCompactContextThresholdPercentDefault: 44,
           planExecutionModeDefault: "countdown",
           planExecutionDelaySecondsDefault: 10,
           correctnessIterationModeDefault: "ask-before-iterate",
-          uiModeDefault: "simple",
+          backgroundJobApprovalPolicyDefault: "ask-risky",
+          memoryBankEnabledDefault: true,
           attachmentsEnabled: true,
-          capabilities: [...defaultProviderCapabilities]
+          capabilities: [...defaultProviderCapabilities],
+          agentRuntimes: []
+        },
+        setup: defaultSetup,
+        backgroundJobs: createEmptyBackgroundJobsState(),
+        assistants: createEmptyAssistantsState(),
+        executionControl: {
+          ...defaultExecutionControl,
+          isPaused: true,
+          deferredPlanningQuestionCount: 2
         }
       }
     });
@@ -766,9 +1243,12 @@ describe("harness store reducer", () => {
     expect(nextState.tracePanelOpen).toBe(false);
     expect(nextState.blockChatOnDirtyGitDefault).toBe(false);
     expect(nextState.dirtyGitChangeLimitDefault).toBe(6);
+    expect(nextState.autoCompactContextThresholdPercentDefault).toBe(44);
+    expect(nextState.executionControl.isPaused).toBe(true);
+    expect(nextState.executionControl.deferredPlanningQuestionCount).toBe(2);
   });
 
-  test("uses server ui mode and capabilities when no local preference exists", () => {
+  test("uses server trace preference and capabilities on connection ready", () => {
     const nextState = reduceServerEvent(createInitialViewState(), {
       type: "connection.ready",
       payload: {
@@ -782,7 +1262,6 @@ describe("harness store reducer", () => {
         },
         preferences: {
           ...defaultPreferences,
-          uiModeDefault: "advanced",
           attachmentsEnabled: true,
           capabilities: [
             {
@@ -803,13 +1282,64 @@ describe("harness store reducer", () => {
               ]
             }
           ]
+        },
+        setup: defaultSetup,
+        backgroundJobs: createEmptyBackgroundJobsState(),
+        assistants: createEmptyAssistantsState(),
+        executionControl: defaultExecutionControl
+      }
+    });
+
+    expect(nextState.tracePanelOpen).toBe(true);
+    expect(nextState.capabilities[0]?.models[0]?.tags).toEqual(["tools", "long-context", "fast"]);
+  });
+
+  test("updates execution control from websocket events", () => {
+    const nextState = reduceServerEvent(createConnectedState(), {
+      type: "execution-control.updated",
+      requestId: "req-execution-control",
+      payload: {
+        executionControl: {
+          isPaused: true,
+          deferredPlanningQuestionCount: 1,
+          deferredAssistantQuestionCount: 2,
+          deferredBrowserApprovalCount: 3
         }
       }
     });
 
-    expect(nextState.uiMode).toBe("advanced");
-    expect(nextState.tracePanelOpen).toBe(true);
-    expect(nextState.capabilities[0]?.models[0]?.tags).toEqual(["tools", "long-context", "fast"]);
+    expect(nextState.executionControl.isPaused).toBe(true);
+    expect(nextState.executionControl.deferredAssistantQuestionCount).toBe(2);
+    expect(nextState.executionControl.deferredBrowserApprovalCount).toBe(3);
+  });
+
+  test("updates setup state from websocket events", () => {
+    const nextState = reduceServerEvent(createConnectedState(), {
+      type: "setup.updated",
+      requestId: "req-setup",
+      payload: {
+        setup: {
+          launchMode: "portable-launcher",
+          updatedAt: new Date().toISOString(),
+          readyRequiredCount: 2,
+          totalRequiredCount: 4,
+          checks: [
+            {
+              id: "project-selected",
+              title: "Project selected",
+              summary: "Repo ready",
+              status: "ready",
+              requiredForFirstTask: true,
+              updatedAt: new Date().toISOString()
+            }
+          ]
+        }
+      }
+    });
+
+    expect(nextState.setup.launchMode).toBe("portable-launcher");
+    expect(nextState.setup.readyRequiredCount).toBe(2);
+    expect(nextState.setup.checks[0]?.id).toBe("project-selected");
   });
 
   test("updates usable key state from preferences events", () => {
@@ -829,12 +1359,16 @@ describe("harness store reducer", () => {
         subagentWorktreeStrategyDefault: "same-worktree",
         blockChatOnDirtyGitDefault: true,
         dirtyGitChangeLimitDefault: 20,
+        autoCompactContextThresholdPercentDefault: 40,
         planExecutionModeDefault: "countdown",
         planExecutionDelaySecondsDefault: 10,
         correctnessIterationModeDefault: "ask-before-iterate",
-        uiModeDefault: "simple",
+        backgroundJobApprovalPolicyDefault: "ask-risky",
+        memoryBankEnabledDefault: true,
         attachmentsEnabled: true,
-        capabilities: [...defaultProviderCapabilities]
+        capabilities: [...defaultProviderCapabilities],
+        agentRuntimes: [],
+        setup: defaultSetup
       }
     });
 
@@ -843,6 +1377,7 @@ describe("harness store reducer", () => {
     expect(nextState.hasUsableOpenAiApiKey).toBe(true);
     expect(nextState.blockChatOnDirtyGitDefault).toBe(true);
     expect(nextState.dirtyGitChangeLimitDefault).toBe(20);
+    expect(nextState.autoCompactContextThresholdPercentDefault).toBe(40);
   });
 
   test("merges workspace and project context updates into active mode resolution", () => {

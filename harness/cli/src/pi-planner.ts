@@ -111,6 +111,7 @@ export async function planTask(
             tokens: result.contextUsage.tokens,
             contextWindow: result.contextUsage.contextWindow,
             usagePercent: result.contextUsage.usagePercent,
+            totalProcessedTokens: result.contextUsage.sessionStats.tokens.total,
             updatedAt: new Date().toISOString()
           }
         : undefined

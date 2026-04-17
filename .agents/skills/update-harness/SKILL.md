@@ -53,8 +53,28 @@ Apply when work touches harness behavior, defaults, protocol shape, runtime wiri
 
 ## UI Preferences
 
+- Harness UI should stay tight by default. New chrome must earn its visual footprint in dense workflows.
+- Do not duplicate status, controls, or summaries across header, chat, trace, and local subpanes unless the duplication removes a real workflow break.
+- Prefer compact embedded tab strips, pills, or progressive disclosure over large standalone cockpit cards when exposing secondary panes inside an existing surface.
 - Prefer shadcn-style Solid components for UI primitives already established in repo.
 - Prefer `lucide-solid` for icons.
+- If a UI pattern, interaction pattern, or UI-adjacent behavior is likely to be reused, create or extend a shared primitive immediately instead of duplicating markup, classes, or behavior.
+- Do not wait for a third copy. First-use is enough when reuse is likely.
+- Shared visual behavior belongs in `harness/ui/src/components/primitives/**`.
+- Shared higher-level UI behavior belongs in a dedicated wrapper component near the feature or in `components/primitives/**` if broadly reusable.
+- Shared primitives and main reusable containers must expose root `data-test-${component-name}` hooks in kebab-case.
+- All modal and dialog surfaces must use the shared `Dialog` primitive.
+- Dialogs must keep `title` required, close on `Escape`, and default their content body to `max-height: 80vh` plus `overflow: auto`.
+- Dialog call sites should not reimplement shell layout, close behavior, or scroll containment unless a documented exception exists.
+- All button-like interactions must use `Button`, `ActionButton`, or a derivative built on top of them.
+- Preserve existing shared button interaction rules, including `cursor: pointer`.
+- Repeated icon-dismiss actions should become a shared derivative instead of repeated raw button markup.
+- Checkbox, switch, and toggle-style controls must use a shared primitive rather than repeated checkbox-plus-label card markup.
+- Shared toggle primitives must own consistent label, description, disabled, cursor, and click-target behavior.
+- When behavior is likely to be reused but is not visual, extract a shared helper, hook, or adapter at introduction time rather than duplicating logic.
+- Repeated prop pass-through is a smell. Shared commands and shared state should move into Solid store or context instead of being drilled through intermediate components.
+- Keep Tailwind classes in canonical form. Prefer official utilities and canonical CSS variable shorthand over arbitrary-value spellings when Tailwind can express same style directly.
+- Treat Tailwind canonical-class diagnostics as part of normal quality bar. Editor hints should stay clean, and lint should enforce same preference in CI.
 - Every button must have tooltip copy.
 - Disabled buttons must explain why in tooltip copy.
 - Icon-only list actions must use icons plus accessible labels.
@@ -75,3 +95,4 @@ Apply when work touches harness behavior, defaults, protocol shape, runtime wiri
 
 - Keep README updates high-level.
 - Prefer linking to context and skill docs over embedding code-heavy explanations.
+

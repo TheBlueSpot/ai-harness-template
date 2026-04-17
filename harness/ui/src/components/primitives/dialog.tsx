@@ -46,13 +46,14 @@ export function Dialog(props: DialogProps) {
 
   const content = (
     <Show when={props.open}>
-      <div class="fixed inset-0 z-[80] bg-black/45 backdrop-blur-sm" onClick={() => props.onClose?.()} />
+      <div data-test-dialog-backdrop="" class="fixed inset-0 z-[80] bg-black/45 backdrop-blur-sm" onClick={() => props.onClose?.()} />
       <div class="fixed inset-0 z-[81] flex items-center justify-center px-3 py-3 md:px-5 md:py-5">
         <section
           class={cn(
-            "panel-shell flex w-full max-w-xl flex-col gap-4 rounded-[1.75rem] p-5 shadow-2xl",
+            "panel-shell flex max-h-[90vh] w-full max-w-xl flex-col gap-4 rounded-[1.75rem] p-5 shadow-2xl",
             props.class
           )}
+          data-test-dialog=""
           role="dialog"
           aria-modal="true"
           aria-label={props.title}
@@ -67,16 +68,16 @@ export function Dialog(props: DialogProps) {
         >
           <div class="flex items-start justify-between gap-3">
             <div class="space-y-1">
-              <div class="text-[0.65rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">
+              <div class="text-[0.65rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">
                 {props.eyebrow ?? "Dialog"}
               </div>
-              <h2 class="text-xl font-semibold tracking-[-0.04em] text-[color:var(--foreground)]">{props.title}</h2>
+              <h2 class="text-xl font-semibold tracking-[-0.04em] text-(--foreground)">{props.title}</h2>
               <Show when={props.description}>
-                <p class="text-xs leading-5 text-[color:var(--muted)]">{props.description}</p>
+                <p class="text-xs leading-5 text-(--muted)">{props.description}</p>
               </Show>
             </div>
             <button
-              class="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg text-[color:var(--muted)] transition hover:bg-[color:var(--panel-strong)] hover:text-[color:var(--foreground)] disabled:cursor-not-allowed"
+              class="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg text-(--muted) transition hover:bg-(--panel-strong) hover:text-(--foreground) disabled:cursor-not-allowed"
               type="button"
               aria-label="Close dialog"
               onClick={() => props.onClose?.()}
@@ -85,7 +86,7 @@ export function Dialog(props: DialogProps) {
             </button>
           </div>
 
-          <div class={cn("flex flex-col gap-4", props.contentClass)}>{props.children}</div>
+          <div data-test-dialog-content="" class={cn("flex max-h-[70%] flex-col gap-4 overflow-auto", props.contentClass)}>{props.children}</div>
 
           <Show when={props.footer}>
             <div class="flex flex-wrap justify-end gap-2">{props.footer}</div>

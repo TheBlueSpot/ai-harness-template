@@ -5,7 +5,7 @@ import { fireEvent, render, screen } from "@solidjs/testing-library";
 import type { ClientCommand } from "../../../shared/protocol";
 import { TracePanel } from "./trace-panel";
 import { harnessStore } from "../harness-store";
-import { clearBrowserStateForTests, seedHarnessStoreForTests } from "../utils/tests/store-test-utils";
+import { captureDispatchedCommands, clearBrowserStateForTests, seedHarnessStoreForTests } from "../utils/tests/store-test-utils";
 import {
   createBrowserActivityFixture,
   createBrowserSessionFixture,
@@ -66,7 +66,7 @@ createUiTest("TracePanel", () => {
       })
     );
 
-    render(() => <TracePanel sendCommand={() => undefined} />);
+    render(() => <TracePanel />);
 
     expect(screen.getByLabelText("Subtask running")).not.toBeNull();
     expect(screen.getByLabelText("Subtask completed")).not.toBeNull();
@@ -90,7 +90,7 @@ createUiTest("TracePanel", () => {
       })
     );
 
-    render(() => <TracePanel sendCommand={() => undefined} />);
+    render(() => <TracePanel />);
     expect(screen.queryByRole("button", { name: "Refresh the active run" })).toBeNull();
   });
 
@@ -122,7 +122,7 @@ createUiTest("TracePanel", () => {
       })
     );
 
-    render(() => <TracePanel sendCommand={() => undefined} />);
+    render(() => <TracePanel />);
 
     expect((screen.getByRole("button", { name: "Refresh the active run" }) as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByRole("button", { name: "Refresh this active subagent" }) as HTMLButtonElement).disabled).toBe(true);
@@ -176,7 +176,8 @@ createUiTest("TracePanel", () => {
       })
     );
 
-    render(() => <TracePanel sendCommand={(command) => commands.push(command)} />);
+    captureDispatchedCommands(commands);
+    render(() => <TracePanel />);
     expect(screen.getByRole("button", { name: "Copy code block" })).not.toBeNull();
     expect(document.querySelector(".markdown-code-content")?.textContent).toContain("{\"ok\":true}");
     expect(screen.getByText("{\"url\":\"https://example.com\"}").closest("a")).toBeNull();

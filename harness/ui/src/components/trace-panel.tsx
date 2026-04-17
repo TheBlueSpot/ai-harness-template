@@ -1,21 +1,20 @@
 import { For, Show } from "solid-js";
-import { createRequestId, type ClientCommand } from "../../../shared/protocol";
+import { createRequestId } from "../../../shared/protocol";
 import { getActiveProject, harnessStore } from "../harness-store";
 import { getLatestTaskStatusText, getRunRefreshState, isRunWorking } from "../lib/run-status";
 import { ActionButton } from "./action-button";
 import { MarkdownContent } from "./markdown-content";
-import { Input } from "./ui/input";
-import { ScrollArea } from "./ui/scroll-area";
+import { ScrollArea } from "./primitives/scroll-area";
 import { CheckCircle2, Circle, CircleAlert, ClipboardList, LoaderCircle, RefreshCcw, ShieldCheck, ShieldX } from "lucide-solid";
 
-type TracePanelProps = {
-  sendCommand: (command: ClientCommand) => void;
-};
-
-export function TracePanel(props: TracePanelProps) {
+export function TracePanel() {
   const state = harnessStore.state;
+  const sendCommand = harnessStore.actions.sendCommand;
   const activeProject = () => getActiveProject(state);
+  const executionPaused = () => state.executionControl.isPaused;
+  const executionPauseReason = "Global execution pause is active";
   const runToShow = () => activeProject()?.activeRun ?? activeProject()?.lastRun;
+  const deferredBrowserApprovalCount = () => state.executionControl.deferredBrowserApprovalCount;
   const canRetryRun = () => Boolean(activeProject()?.lastRun?.retryable);
   const refreshState = () => {
     const project = activeProject();
@@ -34,7 +33,7 @@ export function TracePanel(props: TracePanelProps) {
       return;
     }
 
-    props.sendCommand({
+    sendCommand({
       type: "run.retry",
       requestId: createRequestId(),
       payload: {
@@ -55,7 +54,7 @@ export function TracePanel(props: TracePanelProps) {
       return;
     }
 
-    props.sendCommand({
+    sendCommand({
       type: "run.retry",
       requestId: createRequestId(),
       payload: {
@@ -74,7 +73,7 @@ export function TracePanel(props: TracePanelProps) {
       return;
     }
 
-    props.sendCommand({
+    sendCommand({
       type: "run.refresh",
       requestId: createRequestId(),
       payload: {
@@ -92,7 +91,7 @@ export function TracePanel(props: TracePanelProps) {
       return;
     }
 
-    props.sendCommand({
+    sendCommand({
       type: "run.refresh",
       requestId: createRequestId(),
       payload: {
@@ -111,7 +110,7 @@ export function TracePanel(props: TracePanelProps) {
       return;
     }
 
-    props.sendCommand({
+    sendCommand({
       type: "browser.approval.resolve",
       requestId: createRequestId(),
       payload: {
@@ -126,15 +125,15 @@ export function TracePanel(props: TracePanelProps) {
   }
 
   return (
-    <aside class="panel-shell flex h-full min-h-0 flex-col gap-4 rounded-[2rem] p-[0.8rem]">
+    <aside data-test-trace-panel="" class="panel-shell flex h-full min-h-0 flex-col gap-4 rounded-2xl border-t-0 p-[0.8rem]">
       <div>
-        <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-[color:var(--muted)]">
+        <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--muted)">
           Developer trace
         </div>
-        <h2 class="mt-2 text-[1.125rem] font-semibold tracking-[-0.04em] text-[color:var(--foreground)]">
+        <h2 class="mt-2 text-[1.125rem] font-semibold tracking-[-0.04em] text-(--foreground)">
           Planner + routing
         </h2>
-        <p class="mt-2 text-[0.675rem] leading-5 text-[color:var(--muted)]">
+        <p class="mt-2 text-[0.675rem] leading-5 text-(--muted)">
           Project-scoped plan and trace events stay here, separate from user-visible chat history.
         </p>
       </div>
@@ -143,30 +142,17 @@ export function TracePanel(props: TracePanelProps) {
         when={activeProject()}
         fallback={
           <div class="flex flex-1 items-center">
-            <div class="w-full rounded-[1.5rem] border border-dashed border-[color:var(--border)] bg-white/40 p-5 text-[0.675rem] leading-5 text-[color:var(--muted)]">
-              Open project root to inspect plans, retries, model overrides, and trace events.
+            <div class="w-full rounded-3xl border border-dashed border-(--border) bg-white/40 p-5 text-[0.675rem] leading-5 text-(--muted)">
+              Open project root to inspect plans, retries, and trace events.
             </div>
           </div>
         }
       >
         {(project) => (
           <>
-            <label class="space-y-2">
-              <span class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-[color:var(--muted)]">
-                Next execution model override
-              </span>
-              <Input
-                value={state.pendingExecutionModelIds[project().id] ?? ""}
-                placeholder={project().session.executionModelId ?? "openai/gpt-5.4"}
-                onInput={(event: InputEvent & { currentTarget: HTMLInputElement; target: Element }) =>
-                  harnessStore.setPendingExecutionModelId(project().id, event.currentTarget.value)
-                }
-              />
-            </label>
-
             <Show when={project().latestPlan}>
-              <div class="rounded-[1.5rem] border border-[color:var(--border)] bg-white/55 p-3">
-                <div class="mb-3 flex items-center justify-between gap-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-[color:var(--muted)]">
+              <div class="rounded-3xl border border-(--border) bg-white/55 p-3">
+                <div class="mb-3 flex items-center justify-between gap-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--muted)">
                   <span>Latest plan</span>
                   <Show when={hasPlanDetails()}>
                     <ActionButton
@@ -185,7 +171,7 @@ export function TracePanel(props: TracePanelProps) {
                     </ActionButton>
                   </Show>
                 </div>
-                <div class="grid grid-cols-2 gap-2 text-[0.675rem] text-[color:var(--muted)]">
+                <div class="grid grid-cols-2 gap-2 text-[0.675rem] text-(--muted)">
                   <div>Difficulty: {project().latestPlan?.difficultyScore}%</div>
                   <div>Route: {project().latestPlan?.usesSubagents ? "pi-subagents" : "main pi"}</div>
                   <div>Planner: {project().latestPlan?.planningModelId}</div>
@@ -197,8 +183,8 @@ export function TracePanel(props: TracePanelProps) {
             </Show>
 
             <Show when={runToShow()}>
-              <div class="rounded-[1.5rem] border border-[color:var(--border)] bg-white/55 p-3">
-                <div class="mb-3 flex items-center justify-between gap-3 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-[color:var(--muted)]">
+              <div class="rounded-3xl border border-(--border) bg-white/55 p-3">
+                <div class="mb-3 flex items-center justify-between gap-3 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--muted)">
                   <div class="flex items-center gap-2">
                     <Show when={runToShow() && isRunWorking(runToShow()!.status)}>
                       <LoaderCircle class="h-3.5 w-3.5 animate-spin" />
@@ -208,8 +194,8 @@ export function TracePanel(props: TracePanelProps) {
                   <div class="flex items-center gap-2">
                     <ActionButton
                       tooltip="Refresh the active run"
-                      disabledReason={refreshState().disabledReason}
-                      disabled={refreshState().disabled}
+                      disabledReason={executionPaused() ? executionPauseReason : refreshState().disabledReason}
+                      disabled={executionPaused() || refreshState().disabled}
                       icon={<RefreshCcw class="h-3.5 w-3.5" />}
                       size="sm"
                       variant="secondary"
@@ -220,8 +206,8 @@ export function TracePanel(props: TracePanelProps) {
                     <Show when={canRetryRun()}>
                       <ActionButton
                         tooltip="Retry last pi run"
-                        disabledReason="Project is streaming"
-                        disabled={project().session.isStreaming}
+                        disabledReason={executionPaused() ? executionPauseReason : "Project is streaming"}
+                        disabled={executionPaused() || project().session.isStreaming}
                         icon={<RefreshCcw class="h-3.5 w-3.5" />}
                         size="sm"
                         variant="secondary"
@@ -232,7 +218,7 @@ export function TracePanel(props: TracePanelProps) {
                     </Show>
                   </div>
                 </div>
-                <div class="space-y-2 text-[0.675rem] text-[color:var(--muted)]">
+                <div class="space-y-2 text-[0.675rem] text-(--muted)">
                   <div>Status: {runToShow()?.status}</div>
                   <div>Retryable: {runToShow()?.retryable ? "yes" : "no"}</div>
                   <div>Resumable: {runToShow()?.resumable ? "yes" : "no"}</div>
@@ -244,27 +230,31 @@ export function TracePanel(props: TracePanelProps) {
 
                 <Show when={runToShow()?.subtasks.length}>
                   <div class="mt-4 space-y-2">
-                    <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-[color:var(--muted)]">
+                    <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--muted)">
                       Subtasks
                     </div>
                     <div class="space-y-2">
                       <For each={runToShow()?.subtasks}>
                         {(task) => (
-                          <div class="rounded-2xl border border-[color:var(--border)] bg-white/70 p-3 text-[0.675rem]">
-                            <div class="flex items-center justify-between gap-3 text-[color:var(--foreground)]">
+                          <div class="rounded-2xl border border-(--border) bg-white/70 p-3 text-[0.675rem]">
+                            <div class="flex items-center justify-between gap-3 text-(--foreground)">
                               <span class="flex items-center gap-2 font-semibold">
                                 <TaskStatusIcon status={task.status} />
                                 {task.title}
                               </span>
-                              <span class="uppercase tracking-[0.14em] text-[color:var(--accent-strong)]">{task.status}</span>
+                              <span class="uppercase tracking-[0.14em] text-(--accent-strong)">{task.status}</span>
                             </div>
-                            <div class="mt-1 text-[color:var(--muted)]">Attempts: {task.attemptCount}</div>
-                            <div class="mt-1 text-[color:var(--muted)]">Latest status: {getLatestTaskStatusText(project(), task)}</div>
+                            <div class="mt-1 text-(--muted)">Attempts: {task.attemptCount}</div>
+                            <div class="mt-1 text-(--muted)">Latest status: {getLatestTaskStatusText(project(), task)}</div>
                             <div class="mt-2 flex flex-wrap gap-2">
                               <ActionButton
                                 tooltip="Refresh this active subagent"
-                                disabledReason={getRunRefreshState(project(), project().activeRun, task.id).disabledReason}
-                                disabled={getRunRefreshState(project(), project().activeRun, task.id).disabled}
+                                disabledReason={
+                                  executionPaused()
+                                    ? executionPauseReason
+                                    : getRunRefreshState(project(), project().activeRun, task.id).disabledReason
+                                }
+                                disabled={executionPaused() || getRunRefreshState(project(), project().activeRun, task.id).disabled}
                                 icon={<RefreshCcw class="h-3.5 w-3.5" />}
                                 size="sm"
                                 variant="secondary"
@@ -275,8 +265,8 @@ export function TracePanel(props: TracePanelProps) {
                               <Show when={project().lastRun?.retryable}>
                                 <ActionButton
                                   tooltip="Retry this subagent"
-                                  disabledReason="Project is streaming"
-                                  disabled={project().session.isStreaming}
+                                  disabledReason={executionPaused() ? executionPauseReason : "Project is streaming"}
+                                  disabled={executionPaused() || project().session.isStreaming}
                                   icon={<RefreshCcw class="h-3.5 w-3.5" />}
                                   size="sm"
                                   variant="secondary"
@@ -299,19 +289,24 @@ export function TracePanel(props: TracePanelProps) {
             </Show>
 
             <Show when={runToShow()?.browserSessions?.length}>
-              <div class="rounded-[1.5rem] border border-[color:var(--border)] bg-white/55 p-3">
-                <div class="mb-3 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-[color:var(--muted)]">
+              <div class="rounded-3xl border border-(--border) bg-white/55 p-3">
+                <div class="mb-3 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--muted)">
                   Browser sessions
                 </div>
+                <Show when={executionPaused() && deferredBrowserApprovalCount() > 0}>
+                  <div class="mb-3 rounded-xl border border-amber-300/70 bg-amber-50/80 p-3 text-[0.675rem] text-amber-900">
+                    {deferredBrowserApprovalCount()} browser approvals queued until resume.
+                  </div>
+                </Show>
                 <div class="space-y-3">
                   <For each={runToShow()?.browserSessions ?? []}>
                     {(session) => (
-                      <article class="rounded-2xl border border-[color:var(--border)] bg-white/70 p-3 text-[0.675rem]">
-                        <div class="flex items-center justify-between gap-3 text-[color:var(--foreground)]">
+                      <article class="rounded-2xl border border-(--border) bg-white/70 p-3 text-[0.675rem]">
+                        <div class="flex items-center justify-between gap-3 text-(--foreground)">
                           <div class="font-semibold">
                             {session.owner === "subagent" ? `Subagent ${session.subagentId}` : session.owner}
                           </div>
-                          <div class="uppercase tracking-[0.14em] text-[color:var(--accent-strong)]">{session.status}</div>
+                          <div class="uppercase tracking-[0.14em] text-(--accent-strong)">{session.status}</div>
                         </div>
                         <Show when={session.pendingApproval}>
                           {(approval) => (
@@ -324,6 +319,8 @@ export function TracePanel(props: TracePanelProps) {
                               <div class="mt-3 flex flex-wrap gap-2">
                                 <ActionButton
                                   tooltip="Approve this browser step"
+                                  disabled={executionPaused()}
+                                  disabledReason={executionPauseReason}
                                   icon={<ShieldCheck class="h-3.5 w-3.5" />}
                                   size="sm"
                                   variant="secondary"
@@ -348,19 +345,20 @@ export function TracePanel(props: TracePanelProps) {
                         <div class="mt-3 space-y-2">
                           <For each={session.activities}>
                             {(activity) => (
-                              <div class="rounded-xl border border-[color:var(--border)] bg-white/80 p-3">
-                                <div class="flex items-center justify-between gap-3 text-[color:var(--foreground)]">
+                              <Show when={activity.approval?.status !== "deferred"}>
+                              <div class="rounded-xl border border-(--border) bg-white/80 p-3">
+                                <div class="flex items-center justify-between gap-3 text-(--foreground)">
                                   <span class="font-semibold">{activity.label}</span>
-                                  <span class="uppercase tracking-[0.14em] text-[color:var(--muted)]">{activity.status}</span>
+                                  <span class="uppercase tracking-[0.14em] text-(--muted)">{activity.status}</span>
                                 </div>
-                                <div class="mt-1 text-[color:var(--muted)]">
+                                <div class="mt-1 text-(--muted)">
                                   {activity.toolName} | {activity.kind}
                                 </div>
                                 <Show when={activity.outputSummary}>
                                   <MarkdownContent content={() => activity.outputSummary ?? ""} class="mt-2" size="compact" />
                                 </Show>
                                 <Show when={activity.replay.length > 0}>
-                                  <div class="mt-2 space-y-1 text-[color:var(--muted)]">
+                                  <div class="mt-2 space-y-1 text-(--muted)">
                                     <For each={activity.replay.slice(-3)}>
                                       {(entry) => <div>{entry.summary}</div>}
                                     </For>
@@ -372,6 +370,7 @@ export function TracePanel(props: TracePanelProps) {
                                   </div>
                                 </Show>
                               </div>
+                              </Show>
                             )}
                           </For>
                         </div>
@@ -386,7 +385,7 @@ export function TracePanel(props: TracePanelProps) {
               <Show
                 when={project().traces.length > 0}
                 fallback={
-                  <div class="rounded-[1.5rem] border border-dashed border-[color:var(--border)] bg-white/40 p-5 text-[0.675rem] text-[color:var(--muted)]">
+                  <div class="rounded-3xl border border-dashed border-(--border) bg-white/40 p-5 text-[0.675rem] text-(--muted)">
                     No trace events yet.
                   </div>
                 }
@@ -394,8 +393,8 @@ export function TracePanel(props: TracePanelProps) {
                 <div class="space-y-3">
                   <For each={project().traces}>
                     {(trace) => (
-                      <article class="rounded-[1.5rem] border border-[color:var(--border)] bg-white/55 p-3">
-                        <div class="mb-2 flex items-center justify-between gap-3 text-[0.585rem] font-semibold uppercase tracking-[0.16em] text-[color:var(--accent-strong)]">
+                      <article class="rounded-3xl border border-(--border) bg-white/55 p-3">
+                        <div class="mb-2 flex items-center justify-between gap-3 text-[0.585rem] font-semibold uppercase tracking-[0.16em] text-(--accent-strong)">
                           <span>{trace.stage}</span>
                           <span>{trace.modelId ?? "n/a"}</span>
                         </div>
@@ -426,7 +425,7 @@ function TaskStatusIcon(props: { status: "pending" | "running" | "completed" | "
     case "failed":
       return <CircleAlert class="h-3.5 w-3.5 text-rose-600" aria-label="Subtask failed" />;
     default:
-      return <Circle class="h-3.5 w-3.5 text-[color:var(--muted)]" aria-label="Subtask pending" />;
+      return <Circle class="h-3.5 w-3.5 text-(--muted)" aria-label="Subtask pending" />;
   }
 }
 
@@ -436,3 +435,4 @@ function formatVerificationSummary(verification: Array<{ status: "passed" | "fai
   const unknown = verification.filter((entry) => entry.status === "unknown").length;
   return `Verification: ${passed} pass, ${failed} fail, ${unknown} unknown`;
 }
+

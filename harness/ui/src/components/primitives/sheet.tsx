@@ -3,13 +3,14 @@ import { X } from "lucide-solid";
 import { cn } from "../../lib/utils";
 
 export function SheetRoot(props: { open: boolean; onOpenChange: (open: boolean) => void; children: JSX.Element }) {
-  return props.children;
+  return <div data-test-sheet-root="">{props.children}</div>;
 }
 
 export function SheetTrigger(props: JSX.IntrinsicElements["button"]) {
   return (
     <button
       {...props}
+      data-test-sheet-trigger=""
       class={cn("cursor-pointer disabled:cursor-not-allowed", props.class)}
       type={props.type ?? "button"}
     >
@@ -51,12 +52,13 @@ export function SheetContent(props: {
 
   return (
     <Show when={props.open}>
-      <div class="fixed inset-0 z-40 bg-black/45 backdrop-blur-sm" onClick={() => props.onClose?.()} />
+      <div data-test-sheet-backdrop="" class="fixed inset-0 z-40 bg-black/45 backdrop-blur-sm" onClick={() => props.onClose?.()} />
       <aside
         class={cn(
-          "fixed inset-y-0 left-0 z-50 flex w-[88vw] max-w-sm flex-col border-r border-[color:var(--border)] bg-[color:var(--panel)] p-3 shadow-2xl",
+          "fixed inset-y-0 left-0 z-50 flex w-[88vw] max-w-sm flex-col border-r border-(--border) bg-(--panel) p-3 shadow-2xl",
           props.class
         )}
+        data-test-sheet=""
         tabindex="-1"
         ref={surfaceRef}
         onKeyDown={(event) => {
@@ -67,9 +69,9 @@ export function SheetContent(props: {
         onClick={(event) => event.stopPropagation()}
       >
         <div class="mb-4 flex items-center justify-between gap-3">
-          <div class="text-xs font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">{props.title}</div>
+          <div class="text-xs font-semibold uppercase tracking-[0.18em] text-(--muted)">{props.title}</div>
           <button
-            class="inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg text-[color:var(--foreground)] transition hover:bg-[color:var(--panel-strong)] disabled:cursor-not-allowed"
+            class="inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg text-(--foreground) transition hover:bg-(--panel-strong) disabled:cursor-not-allowed"
             type="button"
             aria-label="Close sheet"
             onClick={() => props.onClose?.()}

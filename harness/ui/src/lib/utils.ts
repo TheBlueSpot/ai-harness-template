@@ -26,3 +26,18 @@ export function isAbsolutePath(value: string) {
   const normalizedValue = normalizeWindowsEscapedPath(value.trim());
   return /^[a-zA-Z]:\\/.test(normalizedValue) || normalizedValue.startsWith("/");
 }
+
+export function normalizePathForComparison(value: string) {
+  const normalizedValue = normalizeWindowsEscapedPath(value.trim()).replace(/[\\/]+$/, "");
+  return isWindowsPlatform() ? normalizedValue.toLowerCase() : normalizedValue;
+}
+
+export function isPathPrefixMatch(query: string, candidate: string) {
+  const normalizedQuery = normalizePathForComparison(query);
+  const normalizedCandidate = normalizePathForComparison(candidate);
+  return normalizedCandidate.startsWith(normalizedQuery);
+}
+
+function isWindowsPlatform() {
+  return typeof navigator !== "undefined" ? navigator.userAgent.toLowerCase().includes("windows") : false;
+}

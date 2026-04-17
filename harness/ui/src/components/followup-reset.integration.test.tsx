@@ -58,7 +58,7 @@ createUiTest("Followup reset integration", () => {
       })
     );
 
-    render(() => <ChatPanel sendCommand={() => undefined} />);
+    render(() => <ChatPanel />);
     expect(screen.getByText("Old answer")).not.toBeNull();
 
     harnessStore.applyServerEvent({

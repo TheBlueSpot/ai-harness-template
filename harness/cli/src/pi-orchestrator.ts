@@ -1,5 +1,6 @@
 import {
   createChatMessage,
+  type AgentId,
   type AgentPlan,
   type AgentTrace,
   type ChatMessage,
@@ -72,6 +73,18 @@ export type ExecutionOutcome = {
   partialReason?: string;
 };
 
+export function resolveExecutionPlanGateMode(
+  mode: Pick<ModeDefinition, "id"> | undefined,
+  requestedGateMode: PlanExecutionMode,
+  actualSubagentCount: number
+): PlanExecutionMode {
+  if (mode?.id === "implement" && actualSubagentCount > 1) {
+    return "approve";
+  }
+
+  return requestedGateMode;
+}
+
 export async function runPlannerTurn(
   adapter: PiAgentAdapter,
   options: {
@@ -80,6 +93,7 @@ export async function runPlannerTurn(
     messages: ChatMessage[];
     latestUserPrompt: string;
     runId: string;
+    agentId?: AgentId;
     providerBrand: ProviderBrand;
     executionModelId?: ProviderModelId;
     subagentWorktreeStrategy: SubagentWorktreeStrategy;
@@ -162,7 +176,7 @@ export async function runPlannerTurn(
 
   const plan: AgentPlan = {
     sessionId: options.sessionId,
-    agentId: "pi",
+    agentId: options.agentId ?? "pi",
     planningModelId,
     difficultyScore: Math.round(executionPlan.difficultyScore),
     usesSubagents: executionTasks.length > 0,
@@ -660,6 +674,7 @@ async function executeMainAgent(
       tokens: result.contextUsage.tokens,
       contextWindow: result.contextUsage.contextWindow,
       usagePercent: result.contextUsage.usagePercent,
+      totalProcessedTokens: result.contextUsage.sessionStats.tokens.total,
       updatedAt: new Date().toISOString()
     });
   }
@@ -828,6 +843,7 @@ export async function aggregateSubagentResults(
       tokens: result.contextUsage.tokens,
       contextWindow: result.contextUsage.contextWindow,
       usagePercent: result.contextUsage.usagePercent,
+      totalProcessedTokens: result.contextUsage.sessionStats.tokens.total,
       updatedAt: new Date().toISOString()
     });
   }
@@ -1047,6 +1063,7 @@ export function buildExecutionPlan(input: {
   const targetSubagentCount = contracts.length === 0 ? 0 : getTargetSubagentCount(input.plannerResult.difficultyScore);
   const actualSubagentCount =
     targetSubagentCount < 2 ? 0 : getActualSubagentCount(contracts, targetSubagentCount, input.subagentWorktreeStrategy);
+  const gateMode = resolveExecutionPlanGateMode(input.mode, input.planExecutionMode, actualSubagentCount);
 
   return {
     runId: input.runId,
@@ -1062,7 +1079,7 @@ export function buildExecutionPlan(input: {
     targetSubagentCount,
     actualSubagentCount: actualSubagentCount > 1 ? actualSubagentCount : 0,
     gating: {
-      mode: input.planExecutionMode,
+      mode: gateMode,
       delaySeconds: input.planExecutionDelaySeconds
     },
     mode: input.mode,

@@ -2,7 +2,7 @@ import { For, Show } from "solid-js";
 import type { ExecutionPlan } from "../../../shared/protocol";
 import { harnessStore } from "../harness-store";
 import { MarkdownContent } from "./markdown-content";
-import { Dialog } from "./ui/dialog";
+import { Dialog } from "./primitives/dialog";
 
 type ExecutionPlanDialogProps = {
   executionPlan?: ExecutionPlan;
@@ -23,7 +23,7 @@ export function ExecutionPlanDialog(props: ExecutionPlanDialogProps) {
     >
       <Show when={props.executionPlan}>
         {(executionPlan) => (
-          <div class="space-y-5 text-[0.75rem] leading-6 text-[color:var(--foreground)]">
+          <div class="space-y-5 text-[0.75rem] leading-6 text-(--foreground)">
             <div class="grid gap-2 md:grid-cols-2">
               <div>Run: {executionPlan().runId}</div>
               <div>Iteration: {executionPlan().iteration}</div>
@@ -42,36 +42,36 @@ export function ExecutionPlanDialog(props: ExecutionPlanDialogProps) {
             </div>
 
             <section>
-              <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-[color:var(--muted)]">
+              <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--muted)">
                 Summary
               </div>
               <MarkdownContent content={() => executionPlan().summary} class="mt-2" />
             </section>
 
             <section>
-              <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-[color:var(--muted)]">
+              <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--muted)">
                 Execution brief
               </div>
               <MarkdownContent content={() => executionPlan().finalExecutionBrief} class="mt-2" />
             </section>
 
             <section>
-              <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-[color:var(--muted)]">
+              <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--muted)">
                 Prerequisites
               </div>
               <Show
                 when={executionPlan().prerequisites.length > 0}
-                fallback={<div class="mt-2 text-[color:var(--muted)]">No explicit prerequisites.</div>}
+                fallback={<div class="mt-2 text-(--muted)">No explicit prerequisites.</div>}
               >
                 <div class="mt-2 space-y-2">
                   <For each={executionPlan().prerequisites}>
                     {(prerequisite) => (
-                      <div class="rounded-2xl border border-[color:var(--border)] bg-white/60 p-3">
+                      <div class="rounded-2xl border border-(--border) bg-white/60 p-3">
                         <div class="font-semibold">{prerequisite.title}</div>
                         <MarkdownContent content={() => prerequisite.instruction} class="mt-1" tone="muted" size="compact" />
-                        <div class="mt-1 text-[color:var(--muted)]">Reason:</div>
+                        <div class="mt-1 text-(--muted)">Reason:</div>
                         <MarkdownContent content={() => prerequisite.reason} tone="muted" size="compact" />
-                        <div class="mt-1 text-[color:var(--muted)]">Owner: {prerequisite.owner}</div>
+                        <div class="mt-1 text-(--muted)">Owner: {prerequisite.owner}</div>
                       </div>
                     )}
                   </For>
@@ -80,20 +80,20 @@ export function ExecutionPlanDialog(props: ExecutionPlanDialogProps) {
             </section>
 
             <section>
-              <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-[color:var(--muted)]">
+              <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--muted)">
                 Contracts
               </div>
               <div class="mt-2 space-y-2">
                 <For each={executionPlan().contracts}>
                   {(contract) => (
-                    <div class="rounded-2xl border border-[color:var(--border)] bg-white/60 p-3">
+                    <div class="rounded-2xl border border-(--border) bg-white/60 p-3">
                       <div class="font-semibold">{contract.title}</div>
                       <MarkdownContent content={() => contract.instruction} class="mt-1" tone="muted" size="compact" />
-                      <div class="mt-1 text-[color:var(--muted)]">Owned paths: {contract.ownedPaths.join(", ")}</div>
-                      <div class="mt-1 text-[color:var(--muted)]">Deliverables: {contract.deliverables.join(", ")}</div>
-                      <div class="mt-1 text-[color:var(--muted)]">Integrates with: {contract.integrationPoints.join(", ") || "none"}</div>
-                      <div class="mt-1 text-[color:var(--muted)]">Verify: {contract.verificationCommands.join(" && ")}</div>
-                      <div class="mt-1 text-[color:var(--muted)]">Merge notes: {contract.mergeNotes}</div>
+                      <div class="mt-1 text-(--muted)">Owned paths: {contract.ownedPaths.join(", ")}</div>
+                      <div class="mt-1 text-(--muted)">Deliverables: {contract.deliverables.join(", ")}</div>
+                      <div class="mt-1 text-(--muted)">Integrates with: {contract.integrationPoints.join(", ") || "none"}</div>
+                      <div class="mt-1 text-(--muted)">Verify: {contract.verificationCommands.join(" && ")}</div>
+                      <div class="mt-1 text-(--muted)">Merge notes: {contract.mergeNotes}</div>
                     </div>
                   )}
                 </For>
@@ -105,3 +105,4 @@ export function ExecutionPlanDialog(props: ExecutionPlanDialogProps) {
     </Dialog>
   );
 }
+

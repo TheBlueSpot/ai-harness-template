@@ -4,7 +4,7 @@ import { createUiTest } from "../utils/tests/test-harness";
 import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
 import { ChatPanel } from "./chat-panel";
 import { harnessStore } from "../harness-store";
-import { clearBrowserStateForTests, seedHarnessStoreForTests } from "../utils/tests/store-test-utils";
+import { captureDispatchedCommands, clearBrowserStateForTests, seedHarnessStoreForTests } from "../utils/tests/store-test-utils";
 import {
   createAgentPlanFixture,
   createExecutionPlanFixture,
@@ -46,7 +46,8 @@ createUiTest("ChatPanel followup integration", () => {
       })
     );
 
-    render(() => <ChatPanel sendCommand={(command) => commands.push(command)} />);
+    captureDispatchedCommands(commands as never[]);
+    render(() => <ChatPanel />);
 
     harnessStore.applyServerEvent({
       type: "run.updated",
@@ -94,7 +95,8 @@ createUiTest("ChatPanel followup integration", () => {
 
     expect(screen.queryByText("assistant (streaming)")).toBeNull();
     cleanup();
-    render(() => <ChatPanel sendCommand={(command) => commands.push(command)} />);
+    captureDispatchedCommands(commands as never[]);
+    render(() => <ChatPanel />);
     expect(screen.getAllByText(plan.summary).length).toBeGreaterThan(0);
     expect(harnessStore.state.workspace.projects[0]?.session.isStreaming).toBe(false);
     expect((screen.getByRole("button", { name: "Refine plan before execution" }) as HTMLButtonElement).disabled).toBe(false);

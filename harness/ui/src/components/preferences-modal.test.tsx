@@ -5,7 +5,7 @@ import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { PreferencesModal } from "./preferences-modal";
 import { harnessStore } from "../harness-store";
 import { toastStore } from "../toast-store";
-import { clearBrowserStateForTests, seedHarnessStoreForTests } from "../utils/tests/store-test-utils";
+import { captureDispatchedCommands, clearBrowserStateForTests, seedHarnessStoreForTests } from "../utils/tests/store-test-utils";
 import { createHarnessStateFixture } from "../utils/tests/test-fixtures";
 
 createUiTest("PreferencesModal", () => {
@@ -20,7 +20,7 @@ createUiTest("PreferencesModal", () => {
       })
     );
 
-    render(() => <PreferencesModal sendCommand={() => undefined} />);
+    render(() => <PreferencesModal />);
     expect(screen.getByRole("dialog", { name: "Workspace preferences" })).not.toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
@@ -44,7 +44,7 @@ createUiTest("PreferencesModal", () => {
       })
     );
 
-    render(() => <PreferencesModal sendCommand={() => undefined} />);
+    render(() => <PreferencesModal />);
     fireEvent.click(screen.getByRole("button", { name: "Save preferences" }));
 
     expect(toastStore.toasts.length).toBe(1);
@@ -65,7 +65,7 @@ createUiTest("PreferencesModal", () => {
       })
     );
 
-    render(() => <PreferencesModal sendCommand={() => undefined} />);
+    render(() => <PreferencesModal />);
     fireEvent.click(screen.getByRole("button", { name: "Save preferences" }));
 
     expect(toastStore.toasts.length).toBe(1);
@@ -80,6 +80,7 @@ createUiTest("PreferencesModal", () => {
         openAiApiKeyDraft: "sk-local-123",
         blockChatOnDirtyGitDefault: false,
         dirtyGitChangeLimitDefault: 4,
+        autoCompactContextThresholdPercentDefault: 55,
         hasUsableApiKey: true,
         hasStoredApiKey: true,
         hasUsableOpenAiApiKey: true,
@@ -87,19 +88,41 @@ createUiTest("PreferencesModal", () => {
       })
     );
 
-    render(() => <PreferencesModal sendCommand={(command) => commands.push(command)} />);
+    captureDispatchedCommands(commands as never[]);
+    render(() => <PreferencesModal />);
     fireEvent.click(screen.getByRole("button", { name: "Save preferences" }));
 
     expect(commands.length).toBe(1);
     expect((commands[0] as { type: string }).type).toBe("preferences.save");
     expect(
-      (commands[0] as { payload: { blockChatOnDirtyGitDefault: boolean; dirtyGitChangeLimitDefault: number } }).payload
+      (commands[0] as {
+        payload: {
+          blockChatOnDirtyGitDefault: boolean;
+          dirtyGitChangeLimitDefault: number;
+          autoCompactContextThresholdPercentDefault: number;
+        };
+      }).payload
         .blockChatOnDirtyGitDefault
     ).toBe(false);
     expect(
-      (commands[0] as { payload: { blockChatOnDirtyGitDefault: boolean; dirtyGitChangeLimitDefault: number } }).payload
+      (commands[0] as {
+        payload: {
+          blockChatOnDirtyGitDefault: boolean;
+          dirtyGitChangeLimitDefault: number;
+          autoCompactContextThresholdPercentDefault: number;
+        };
+      }).payload
         .dirtyGitChangeLimitDefault
     ).toBe(4);
+    expect(
+      (commands[0] as {
+        payload: {
+          blockChatOnDirtyGitDefault: boolean;
+          dirtyGitChangeLimitDefault: number;
+          autoCompactContextThresholdPercentDefault: number;
+        };
+      }).payload.autoCompactContextThresholdPercentDefault
+    ).toBe(55);
     expect(harnessStore.state.preferencesModalOpen).toBe(false);
   });
 
@@ -111,7 +134,7 @@ createUiTest("PreferencesModal", () => {
       })
     );
 
-    render(() => <PreferencesModal sendCommand={() => undefined} />);
+    render(() => <PreferencesModal />);
     expect((screen.getByLabelText(/Dirty git change limit/i) as HTMLInputElement).disabled).toBe(true);
   });
 
@@ -125,7 +148,8 @@ createUiTest("PreferencesModal", () => {
       })
     );
 
-    render(() => <PreferencesModal sendCommand={(command) => commands.push(command)} />);
+    captureDispatchedCommands(commands as never[]);
+    render(() => <PreferencesModal />);
     fireEvent.click(screen.getByRole("button", { name: "Clear keys" }));
 
     expect(commands.length).toBe(1);

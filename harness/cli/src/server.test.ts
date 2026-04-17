@@ -71,6 +71,10 @@ class FakePiAgentAdapter implements PiAgentAdapter {
     });
 
     if (request.kind === "planner") {
+      if (request.prompt.includes("slow needs clarification")) {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+      }
+
       if (request.prompt.includes("needs clarification")) {
         if (request.prompt.includes("Prior planning Q/A:\n(none)")) {
           return withUsage(
@@ -372,10 +376,181 @@ describe("harness server", () => {
     expect(ready.payload.preferences.subagentWorktreeStrategyDefault).toBe("same-worktree");
     expect(ready.payload.preferences.blockChatOnDirtyGitDefault).toBe(true);
     expect(ready.payload.preferences.dirtyGitChangeLimitDefault).toBe(20);
+    expect(ready.payload.preferences.autoCompactContextThresholdPercentDefault).toBe(40);
     expect(ready.payload.preferences.planExecutionModeDefault).toBe("countdown");
     expect(ready.payload.preferences.planExecutionDelaySecondsDefault).toBe(10);
     expect(ready.payload.preferences.correctnessIterationModeDefault).toBe("ask-before-iterate");
     expect(ready.payload.preferences.attachmentsEnabled).toBe(EXPECT_ATTACHMENTS_ENABLED);
+    expect(ready.payload.setup.launchMode).toBe("source");
+    expect(ready.payload.setup.checks.some((check: { id: string }) => check.id === "project-selected")).toBe(true);
+    expect(ready.payload.executionControl.isPaused).toBe(false);
+    expect(ready.payload.executionControl.deferredPlanningQuestionCount).toBe(0);
+    socket.close();
+  });
+
+  test("emits setup.updated on explicit setup refresh and project activation changes", async () => {
+    const socket = createSocket(port);
+    await waitForEvent(socket, "connection.ready");
+    const activatedSetupPromise = waitForEvent(
+      socket,
+      "setup.updated",
+      (event) =>
+        event.requestId === "req-setup-open" &&
+        event.payload.setup.checks.some(
+          (check: { id: string; status: string }) => check.id === "project-selected" && check.status === "ready"
+        )
+    );
+    const opened = await openProject(socket, projectRoot, "req-setup-open");
+
+    await activatedSetupPromise;
+
+    const refreshedSetupPromise = waitForEvent(socket, "setup.updated", (event) => event.requestId === "req-setup-refresh");
+    socket.send(
+      JSON.stringify({
+        type: "setup.refresh",
+        requestId: "req-setup-refresh"
+      })
+    );
+
+    const refreshed = await refreshedSetupPromise;
+    expect(refreshed.payload.setup.readyRequiredCount).toBeGreaterThan(0);
+    expect(refreshed.payload.setup.checks.some((check: { id: string }) => check.id === "git-available")).toBe(true);
+    expect(opened.payload.project.id).toBe(repository.loadWorkspace().activeProjectId);
+    socket.close();
+  });
+
+  test("pauses globally, persists state, and rejects new execution starts until resume", async () => {
+    const socket = createSocket(port);
+    await waitForEvent(socket, "connection.ready");
+    const secondSocket = createSocket(port);
+    await waitForEvent(secondSocket, "connection.ready");
+    const opened = await openProject(socket, projectRoot, "req-pause-open");
+
+    const pausedOnFirst = waitForEvent(
+      socket,
+      "execution-control.updated",
+      (event) => event.payload.executionControl.isPaused === true
+    );
+    const pausedOnSecond = waitForEvent(
+      secondSocket,
+      "execution-control.updated",
+      (event) => event.payload.executionControl.isPaused === true
+    );
+    socket.send(
+      JSON.stringify({
+        type: "execution.pause-all",
+        requestId: "req-pause-all"
+      })
+    );
+
+    await pausedOnFirst;
+    await pausedOnSecond;
+    expect(repository.getGlobalExecutionPaused()).toBe(true);
+
+    const rejectedPromise = waitForEvent(socket, "command.rejected");
+    socket.send(
+      JSON.stringify(
+        createChatSendCommand({
+          requestId: "req-paused-send",
+          projectId: opened.payload.project.id,
+          threadId: opened.payload.project.activeThreadId,
+          content: "single-step while paused"
+        })
+      )
+    );
+
+    const rejected = await rejectedPromise;
+    expect(rejected.payload.message).toBe("Harness command failed");
+    expect(rejected.payload.detail).toContain("Global execution is paused");
+
+    const resumePromise = waitForEvent(
+      socket,
+      "execution-control.updated",
+      (event) => event.payload.executionControl.isPaused === false
+    );
+    socket.send(
+      JSON.stringify({
+        type: "execution.resume-all",
+        requestId: "req-resume-all"
+      })
+    );
+    await resumePromise;
+    expect(repository.getGlobalExecutionPaused()).toBe(false);
+
+    secondSocket.close();
+    socket.close();
+  });
+
+  test("defers planner questions raised during pause and surfaces them on resume", async () => {
+    const socket = createSocket(port);
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot, "req-deferred-question-open");
+
+    socket.send(
+      JSON.stringify(
+        createChatSendCommand({
+          requestId: "req-slow-question",
+          projectId: opened.payload.project.id,
+          threadId: opened.payload.project.activeThreadId,
+          content: "slow needs clarification"
+        })
+      )
+    );
+
+    const pausedPromise = waitForEvent(
+      socket,
+      "execution-control.updated",
+      (event) => event.payload.executionControl.isPaused === true
+    );
+    socket.send(
+      JSON.stringify({
+        type: "execution.pause-all",
+        requestId: "req-pause-before-question"
+      })
+    );
+    await pausedPromise;
+
+    await Bun.sleep(250);
+
+    const deferredRun = repository.getProject(opened.payload.project.id).activeRun;
+    expect(deferredRun?.status).toBe("awaiting-user-input");
+    expect(deferredRun?.questions[0]?.status).toBe("deferred");
+    expect(
+      repository
+        .getProject(opened.payload.project.id)
+        .session.messages.some((message) => message.role === "assistant" && message.content.includes("Which route should handle this?"))
+    ).toBe(false);
+
+    const resumedPromise = waitForEvent(
+      socket,
+      "execution-control.updated",
+      (event) =>
+        event.payload.executionControl.isPaused === false &&
+        event.payload.executionControl.deferredPlanningQuestionCount === 0
+    );
+    const pendingRunPromise = waitForEvent(
+      socket,
+      "run.updated",
+      (event) =>
+        event.payload.projectId === opened.payload.project.id &&
+        event.payload.run.status === "awaiting-user-input" &&
+        event.payload.run.questions[0]?.status === "pending"
+    );
+    const questionMessagePromise = waitForEvent(
+      socket,
+      "chat.message-appended",
+      (event) => event.payload.message.content.includes("Which route should handle this?")
+    );
+    socket.send(
+      JSON.stringify({
+        type: "execution.resume-all",
+        requestId: "req-resume-question"
+      })
+    );
+
+    await resumedPromise;
+    await pendingRunPromise;
+    await questionMessagePromise;
     socket.close();
   });
 
@@ -394,13 +569,14 @@ describe("harness server", () => {
           providerBrand: "gemini",
           debugEnabled: true,
           tracePanelDefaultOpen: false,
-          uiModeDefault: "advanced",
           subagentWorktreeStrategyDefault: "separate-worktrees",
           blockChatOnDirtyGitDefault: false,
           dirtyGitChangeLimitDefault: 9,
+          autoCompactContextThresholdPercentDefault: 55,
           planExecutionModeDefault: "approve",
           planExecutionDelaySecondsDefault: 15,
-          correctnessIterationModeDefault: "auto-once"
+          correctnessIterationModeDefault: "auto-once",
+          backgroundJobApprovalPolicyDefault: "ask-risky"
         }
       })
     );
@@ -413,16 +589,19 @@ describe("harness server", () => {
     expect(saved.payload.providerBrand).toBe("gemini");
     expect(saved.payload.debugEnabledDefault).toBe(true);
     expect(saved.payload.tracePanelDefaultOpen).toBe(false);
-    expect(saved.payload.uiModeDefault).toBe("advanced");
     expect(saved.payload.attachmentsEnabled).toBe(EXPECT_ATTACHMENTS_ENABLED);
     expect(saved.payload.subagentWorktreeStrategyDefault).toBe("separate-worktrees");
     expect(saved.payload.blockChatOnDirtyGitDefault).toBe(false);
     expect(saved.payload.dirtyGitChangeLimitDefault).toBe(9);
+    expect(saved.payload.autoCompactContextThresholdPercentDefault).toBe(55);
     expect(saved.payload.planExecutionModeDefault).toBe("approve");
     expect(saved.payload.planExecutionDelaySecondsDefault).toBe(15);
     expect(saved.payload.correctnessIterationModeDefault).toBe("auto-once");
+    expect(saved.payload.backgroundJobApprovalPolicyDefault).toBe("ask-risky");
+    expect(saved.payload.setup.checks.some((check: { id: string }) => check.id === "provider-auth")).toBe(true);
     expect(repository.getStoredOpenAiApiKey()).toBe("sk-local-123");
     expect(repository.getStoredGoogleApiKey()).toBe("AIza-local-456");
+    expect(repository.getAutoCompactContextThresholdPercentDefault()).toBe(55);
     socket.close();
   });
 
@@ -446,6 +625,7 @@ describe("harness server", () => {
     const cleared = await clearedPromise;
     expect(cleared.payload.hasUsableApiKey).toBe(false);
     expect(cleared.payload.hasStoredApiKey).toBe(false);
+    expect(cleared.payload.setup.checks.some((check: { id: string; status: string }) => check.id === "provider-auth")).toBe(true);
     expect(repository.getStoredOpenAiApiKey()).toBeUndefined();
     expect(repository.getStoredGoogleApiKey()).toBeUndefined();
     socket.close();
@@ -508,6 +688,78 @@ describe("harness server", () => {
     socket.close();
   });
 
+  test("runs experiments in virtual branch mode and exposes shared memory entries", async () => {
+    const socket = createSocket(port);
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot, "req-experiment-open");
+    const projectId = opened.payload.project.id;
+    const threadId = opened.payload.project.activeThreadId;
+    const ready = await sendChatUntilReady(
+      socket,
+      {
+        requestId: "req-experiment-ready",
+        projectId,
+        threadId,
+        content: "simple task"
+      },
+      10000
+    );
+
+    const runUpdatedPromise = waitForEvent(
+      socket,
+      "run.updated",
+      (event) => event.payload.run.id === ready.payload.run.id && event.payload.run.status === "completed",
+      10000
+    );
+    const completePromise = waitForEvent(socket, "chat.complete", undefined, 10000);
+    socket.send(
+      JSON.stringify({
+        type: "run.execute",
+        requestId: "req-experiment-execute",
+        payload: {
+          projectId,
+          threadId,
+          runId: ready.payload.run.id,
+          target: "ephemeral-experiment"
+        }
+      })
+    );
+
+    const runUpdated = await runUpdatedPromise;
+    await completePromise;
+
+    expect(runUpdated.payload.run.executionTarget).toBe("ephemeral-experiment");
+    expect(runUpdated.payload.run.experiment?.virtualBranchName).toContain(ready.payload.run.id);
+
+    const listedPromise = waitForEvent(socket, "memory.listed", undefined, 10000);
+    socket.send(
+      JSON.stringify({
+        type: "memory.list",
+        requestId: "req-memory-list",
+        payload: {
+          projectId
+        }
+      })
+    );
+    const listed = await listedPromise;
+    expect(listed.payload.entries.length).toBeGreaterThan(0);
+
+    const inspectedPromise = waitForEvent(socket, "experiment.inspected", undefined, 10000);
+    socket.send(
+      JSON.stringify({
+        type: "experiment.inspect",
+        requestId: "req-experiment-inspect",
+        payload: {
+          projectId,
+          runId: ready.payload.run.id
+        }
+      })
+    );
+    const inspected = await inspectedPromise;
+    expect(inspected.payload.inspection.experiment.virtualBranchName).toContain(ready.payload.run.id);
+    socket.close();
+  });
+
   test("chat.send presents a ready plan before execution", async () => {
     const socket = createSocket(port);
     await waitForEvent(socket, "connection.ready");
@@ -544,6 +796,198 @@ describe("harness server", () => {
     expect(planMessage.payload.message.kind).toBe("plan-summary");
     expect(planMessage.payload.state.isStreaming).toBe(false);
     expect(adapter.calls.map((call) => call.kind)).toEqual(["planner"]);
+    socket.close();
+  });
+
+  test("ask mode auto-runs immediately without appending a plan summary message", async () => {
+    const socket = createSocket(port);
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot, "req-ask-open");
+    const projectId = opened.payload.project.id;
+    const threadId = opened.payload.project.activeThreadId;
+    const readyPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "ready");
+    const planPromise = waitForEvent(socket, "agent.plan");
+    let planMessageSeen = false;
+    socket.addEventListener("message", (event) => {
+      const payload = JSON.parse(event.data as string);
+      if (payload.type === "chat.message-appended" && payload.payload?.message?.kind === "plan-summary") {
+        planMessageSeen = true;
+      }
+    });
+
+    socket.send(
+      JSON.stringify(
+        createChatSendCommand({
+          requestId: "req-ask-send",
+          projectId,
+          threadId,
+          content: "What do each of the different modes do?",
+          modeId: "ask"
+        })
+      )
+    );
+
+    const ready = await readyPromise;
+    const plan = await planPromise;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(ready.payload.run.plan?.gating.mode).toBe("immediate");
+    expect(plan.payload.plan.executionPlan?.gating.mode).toBe("immediate");
+    expect(planMessageSeen).toBe(false);
+    expect(adapter.calls.map((call) => call.kind)).toEqual(["planner"]);
+    socket.close();
+  });
+
+  test("plan mode preserves approval-first gating", async () => {
+    const socket = createSocket(port);
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot, "req-plan-mode-open");
+    const projectId = opened.payload.project.id;
+    const threadId = opened.payload.project.activeThreadId;
+    const readyPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "ready");
+
+    socket.send(
+      JSON.stringify(
+        createChatSendCommand({
+          requestId: "req-plan-mode-send",
+          projectId,
+          threadId,
+          content: "Plan the safest rollout strategy before implementing anything.",
+          modeId: "plan"
+        })
+      )
+    );
+
+    const ready = await readyPromise;
+    expect(ready.payload.run.plan?.gating.mode).toBe("approve");
+    socket.close();
+  });
+
+  test("implement mode uses immediate gating for main-route plans", async () => {
+    const socket = createSocket(port);
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot, "req-impl-main-open");
+    const projectId = opened.payload.project.id;
+    const threadId = opened.payload.project.activeThreadId;
+    const readyPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "ready");
+
+    socket.send(
+      JSON.stringify(
+        createChatSendCommand({
+          requestId: "req-impl-main-send",
+          projectId,
+          threadId,
+          content: "simple task"
+        })
+      )
+    );
+
+    const ready = await readyPromise;
+    expect(ready.payload.run.plan?.gating.mode).toBe("immediate");
+    socket.close();
+  });
+
+  test("implement mode upgrades multi-subagent plans to approval-first gating", async () => {
+    const socket = createSocket(port);
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot, "req-impl-subagents-open");
+    const projectId = opened.payload.project.id;
+    const threadId = opened.payload.project.activeThreadId;
+    const readyPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "ready");
+    const planMessagePromise = waitForEvent(
+      socket,
+      "chat.message-appended",
+      (event) => event.payload.message.kind === "plan-summary"
+    );
+
+    socket.send(
+      JSON.stringify(
+        createChatSendCommand({
+          requestId: "req-impl-subagents-send",
+          projectId,
+          threadId,
+          content: "complex task"
+        })
+      )
+    );
+
+    const ready = await readyPromise;
+    const planMessage = await planMessagePromise;
+    expect(ready.payload.run.plan?.gating.mode).toBe("approve");
+    expect(ready.payload.run.plan?.actualSubagentCount).toBeGreaterThan(1);
+    expect(planMessage.payload.message.kind).toBe("plan-summary");
+    socket.close();
+  });
+
+  test("debug and review modes default to immediate gating", async () => {
+    const socket = createSocket(port);
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot, "req-debug-review-open");
+    const projectId = opened.payload.project.id;
+    const debugThreadId = opened.payload.project.activeThreadId;
+    const debugReadyPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "ready");
+
+    socket.send(
+      JSON.stringify(
+        createChatSendCommand({
+          requestId: "req-debug-send",
+          projectId,
+          threadId: debugThreadId,
+          content: "Debug this flaky login bug and find root cause.",
+          modeId: "debug"
+        })
+      )
+    );
+    const debugReady = await debugReadyPromise;
+    expect(debugReady.payload.run.plan?.gating.mode).toBe("immediate");
+    const reopened = await openProject(socket, projectRoot, "req-debug-review-reopen");
+    const reviewThreadId = reopened.payload.project.activeThreadId;
+    const reviewReadyPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "ready");
+
+    socket.send(
+      JSON.stringify(
+        createChatSendCommand({
+          requestId: "req-review-send",
+          projectId,
+          threadId: reviewThreadId,
+          content: "Review this PR diff for regressions and missing tests.",
+          modeId: "review"
+        })
+      )
+    );
+    const reviewReady = await reviewReadyPromise;
+    expect(reviewReady.payload.run.plan?.gating.mode).toBe("immediate");
+    socket.close();
+  });
+
+  test("chat.send auto-switches project mode when prompt intent strongly matches a builtin mode", async () => {
+    const socket = createSocket(port);
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot, "req-auto-mode-open");
+    const projectId = opened.payload.project.id;
+    const threadId = opened.payload.project.activeThreadId;
+    const projectUpdatedPromise = waitForEvent(
+      socket,
+      "project.updated",
+      (event) => event.payload.projectId === projectId && event.payload.project.selectedModeId === "ask"
+    );
+    const readyPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "ready");
+
+    socket.send(
+      JSON.stringify(
+        createChatSendCommand({
+          requestId: "req-auto-mode-send",
+          projectId,
+          threadId,
+          content: "What do each of the different modes do?"
+        })
+      )
+    );
+
+    const projectUpdated = await projectUpdatedPromise;
+    const ready = await readyPromise;
+    expect(projectUpdated.payload.project.selectedModeId).toBe("ask");
+    expect(ready.payload.run.plan?.mode?.id).toBe("ask");
     socket.close();
   });
 
@@ -862,9 +1306,51 @@ describe("harness server", () => {
     const correctiveReady = await correctiveReadyPromise;
     const correctivePlanMessage = await correctivePlanMessagePromise;
     expect(correctiveReady.payload.run.plan?.origin).toBe("correctness-followup");
+    expect(correctiveReady.payload.run.plan?.gating.mode).toBe("immediate");
     expect(correctiveReady.payload.run.plan?.summary).toContain("TypeScript modules directly");
     expect(correctivePlanMessage.payload.message.metadata.plan.origin).toBe("correctness-followup");
     expect(correctivePlanMessage.payload.message.metadata.plan.summary).toContain("TypeScript modules directly");
+    socket.close();
+  }, 15000);
+
+  test("corrective follow-up upgrades implement mode to approval when gaps can parallelize", async () => {
+    writeFileSync(
+      path.join(projectRoot, "index.html"),
+      '<!doctype html><html><body><script type="module" src="./app.ts"></script></body></html>\n'
+    );
+    writeFileSync(path.join(projectRoot, "app.ts"), 'console.log("hello");\n');
+    writeFileSync(path.join(projectRoot, "temp-helper.ts"), "export const temp = true;\n");
+
+    const socket = createSocket(port);
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot, "req-corrective-parallel-open");
+    const projectId = opened.payload.project.id;
+    const threadId = opened.payload.project.activeThreadId;
+    const correctiveReadyPromise = waitForEvent(
+      socket,
+      "run.updated",
+      (event) => event.payload.run.status === "ready" && event.payload.run.plan?.origin === "correctness-followup",
+      10000
+    );
+
+    const initialReady = await sendChatUntilReady(socket, {
+      requestId: "req-corrective-parallel-send",
+      projectId,
+      threadId,
+      content: "simple task"
+    });
+    await executeReadyRun(socket, {
+      requestId: "req-corrective-parallel-execute",
+      projectId,
+      threadId,
+      runId: initialReady.payload.run.id
+    }, 10000).catch(() => undefined);
+
+    const correctiveReady = await correctiveReadyPromise;
+    expect(correctiveReady.payload.run.plan?.origin).toBe("correctness-followup");
+    expect(correctiveReady.payload.run.plan?.route).toBe("pi-subagents");
+    expect(correctiveReady.payload.run.plan?.actualSubagentCount).toBeGreaterThan(1);
+    expect(correctiveReady.payload.run.plan?.gating.mode).toBe("approve");
     socket.close();
   }, 15000);
 
@@ -1017,6 +1503,30 @@ describe("harness server", () => {
     expect(added.payload.project.rootPath).toBe(extraProjectRoot);
     expect(added.payload.activeProjectId).toBe(added.payload.project.id);
     expect(added.payload.resolution).toBe("created-project");
+    socket.close();
+  });
+
+  test("returns ranked filesystem suggestions through project.search", async () => {
+    const socket = createSocket(port);
+    await waitForEvent(socket, "connection.ready");
+    await openProject(socket, projectRoot, "req-project-search-open");
+    const searchPromise = waitForEvent(socket, "project.search.results");
+
+    socket.send(
+      JSON.stringify({
+        type: "project.search",
+        requestId: "req-project-search",
+        payload: {
+          query: "repo"
+        }
+      })
+    );
+
+    const searchResults = await searchPromise;
+    expect(searchResults.payload.query).toBe("repo");
+    expect(searchResults.payload.results.length).toBeGreaterThan(0);
+    expect(searchResults.payload.results[0]?.repoKind).toBe("git-repo");
+    expect(typeof searchResults.payload.results[0]?.rootPath).toBe("string");
     socket.close();
   });
 
@@ -1457,6 +1967,7 @@ function createChatSendCommand(input: {
   projectId: string;
   threadId: string;
   content: string;
+  modeId?: string;
   attachments?: Array<{
     id: string;
     kind: "image" | "text" | "document";
@@ -1477,6 +1988,7 @@ function createChatSendCommand(input: {
       threadId: input.threadId,
       agentId: "pi",
       content: input.content,
+      modeId: input.modeId,
       attachments: input.attachments
     }
   };

@@ -2,6 +2,21 @@ import { describe, expect, test } from "bun:test";
 import { defaultProviderCapabilities } from "../../shared/capabilities";
 import { parseClientCommand, parseServerEvent, plannerResultSchema } from "../../shared/protocol";
 
+const defaultExecutionControl = {
+  isPaused: false,
+  deferredPlanningQuestionCount: 0,
+  deferredAssistantQuestionCount: 0,
+  deferredBrowserApprovalCount: 0
+} as const;
+
+const defaultSetup = {
+  launchMode: "source",
+  updatedAt: new Date().toISOString(),
+  readyRequiredCount: 0,
+  totalRequiredCount: 0,
+  checks: []
+} as const;
+
 describe("client command validation", () => {
   test("rejects malformed chat.send payloads", () => {
     expect(() =>
@@ -39,6 +54,18 @@ describe("client command validation", () => {
     ).toThrow();
   });
 
+  test("accepts project.search payloads", () => {
+    expect(
+      parseClientCommand({
+        type: "project.search",
+        requestId: "req-search",
+        payload: {
+          query: "repo"
+        }
+      }).type
+    ).toBe("project.search");
+  });
+
   test("rejects malformed preferences.save payloads", () => {
     expect(() =>
       parseClientCommand({
@@ -49,7 +76,6 @@ describe("client command validation", () => {
           providerBrand: "gpt",
           debugEnabled: true,
           tracePanelDefaultOpen: false,
-          uiModeDefault: "simple",
           attachmentsEnabled: true,
           capabilities: defaultProviderCapabilities
         }
@@ -76,15 +102,16 @@ describe("client command validation", () => {
           providerBrand: "gpt",
           debugEnabled: true,
           tracePanelDefaultOpen: false,
-          uiModeDefault: "simple",
           attachmentsEnabled: true,
           capabilities: defaultProviderCapabilities,
           subagentWorktreeStrategyDefault: "same-worktree",
           blockChatOnDirtyGitDefault: true,
           dirtyGitChangeLimitDefault: 12,
+          autoCompactContextThresholdPercentDefault: 40,
           planExecutionModeDefault: "countdown",
           planExecutionDelaySecondsDefault: 10,
-          correctnessIterationModeDefault: "ask-before-iterate"
+          correctnessIterationModeDefault: "ask-before-iterate",
+          backgroundJobApprovalPolicyDefault: "ask-risky"
         }
       }).type
     ).toBe("preferences.save");
@@ -192,6 +219,23 @@ describe("client command validation", () => {
     ).toBe("planning.refine");
   });
 
+  test("accepts cli-session.start payloads", () => {
+    expect(
+      parseClientCommand({
+        type: "cli-session.start",
+        requestId: "req-cli-start",
+        payload: {
+          projectId: "project-1",
+          threadId: "thread-1",
+          agentId: "codex-cli",
+          cols: 120,
+          rows: 32,
+          prompt: "Inspect this repo"
+        }
+      }).type
+    ).toBe("cli-session.start");
+  });
+
   test("accepts run.execute payloads", () => {
     expect(
       parseClientCommand({
@@ -251,6 +295,22 @@ describe("client command validation", () => {
       }).type
     ).toBe("run.refresh");
   });
+
+  test("accepts execution pause and resume commands", () => {
+    expect(
+      parseClientCommand({
+        type: "execution.pause-all",
+        requestId: "req-pause"
+      }).type
+    ).toBe("execution.pause-all");
+
+    expect(
+      parseClientCommand({
+        type: "execution.resume-all",
+        requestId: "req-resume-all"
+      }).type
+    ).toBe("execution.resume-all");
+  });
 });
 
 describe("planner result validation", () => {
@@ -285,6 +345,7 @@ describe("planner result validation", () => {
                 threads: [
                   {
                     id: "thread-1",
+                    kind: "user",
                     title: "Thread 1",
                     titleSource: "generated",
                     badgeState: "idle",
@@ -317,16 +378,35 @@ describe("planner result validation", () => {
             providerBrand: "gpt",
             debugEnabledDefault: false,
             tracePanelDefaultOpen: true,
-            uiModeDefault: "simple",
             attachmentsEnabled: true,
             capabilities: defaultProviderCapabilities,
+            agentRuntimes: [],
             subagentWorktreeStrategyDefault: "same-worktree",
             blockChatOnDirtyGitDefault: true,
             dirtyGitChangeLimitDefault: 20,
+            autoCompactContextThresholdPercentDefault: 40,
             planExecutionModeDefault: "countdown",
             planExecutionDelaySecondsDefault: 10,
-            correctnessIterationModeDefault: "ask-before-iterate"
-          }
+            correctnessIterationModeDefault: "ask-before-iterate",
+            backgroundJobApprovalPolicyDefault: "ask-risky",
+            memoryBankEnabledDefault: true
+          },
+          setup: defaultSetup,
+          backgroundJobs: {
+            jobs: [],
+            runs: [],
+            templates: []
+          },
+          assistants: {
+            assistants: [],
+            threads: [],
+            todos: [],
+            learnings: [],
+            questions: [],
+            logs: [],
+            assetRefs: []
+          },
+          executionControl: defaultExecutionControl
         }
       }).type
     ).toBe("connection.ready");
@@ -355,19 +435,55 @@ describe("planner result validation", () => {
             providerBrand: "gpt",
             debugEnabledDefault: false,
             tracePanelDefaultOpen: true,
-            uiModeDefault: "simple",
             attachmentsEnabled: true,
             capabilities: defaultProviderCapabilities,
+            agentRuntimes: [],
             subagentWorktreeStrategyDefault: "same-worktree",
             blockChatOnDirtyGitDefault: true,
             dirtyGitChangeLimitDefault: 20,
+            autoCompactContextThresholdPercentDefault: 40,
             planExecutionModeDefault: "countdown",
             planExecutionDelaySecondsDefault: 10,
-            correctnessIterationModeDefault: "ask-before-iterate"
-          }
+            correctnessIterationModeDefault: "ask-before-iterate",
+            backgroundJobApprovalPolicyDefault: "ask-risky",
+            memoryBankEnabledDefault: true
+          },
+          setup: defaultSetup,
+          backgroundJobs: {
+            jobs: [],
+            runs: [],
+            templates: []
+          },
+          assistants: {
+            assistants: [],
+            threads: [],
+            todos: [],
+            learnings: [],
+            questions: [],
+            logs: [],
+            assetRefs: []
+          },
+          executionControl: defaultExecutionControl
         }
       }).type
     ).toBe("connection.ready");
+  });
+
+  test("accepts execution-control.updated payload", () => {
+    expect(
+      parseServerEvent({
+        type: "execution-control.updated",
+        requestId: "req-execution-control",
+        payload: {
+          executionControl: {
+            isPaused: true,
+            deferredPlanningQuestionCount: 1,
+            deferredAssistantQuestionCount: 2,
+            deferredBrowserApprovalCount: 3
+          }
+        }
+      }).type
+    ).toBe("execution-control.updated");
   });
 
   test("accepts project.opened payload", () => {
@@ -386,6 +502,7 @@ describe("planner result validation", () => {
             threads: [
               {
                 id: "thread-1",
+                kind: "user",
                 title: "Thread 1",
                 titleSource: "generated",
                 badgeState: "idle",
@@ -394,6 +511,7 @@ describe("planner result validation", () => {
               },
               {
                 id: "thread-2",
+                kind: "user",
                 title: "Thread 2",
                 titleSource: "generated",
                 badgeState: "idle",
@@ -414,6 +532,27 @@ describe("planner result validation", () => {
         }
       }).type
     ).toBe("project.opened");
+  });
+
+  test("accepts project.search.results payload", () => {
+    expect(
+      parseServerEvent({
+        type: "project.search.results",
+        requestId: "req-search-results",
+        payload: {
+          query: "repo",
+          results: [
+            {
+              id: "C:\\repo-one",
+              name: "repo-one",
+              rootPath: "C:\\repo-one",
+              repoKind: "git-repo",
+              matchKind: "name-prefix"
+            }
+          ]
+        }
+      }).type
+    ).toBe("project.search.results");
   });
 
   test("accepts planner question payloads", () => {

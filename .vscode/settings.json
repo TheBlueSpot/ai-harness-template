@@ -1,0 +1,5 @@
+{
+  "tailwindCSS.experimental.configFile": "harness/ui/src/styles.css",
+  "tailwindCSS.validate": true,
+  "tailwindCSS.lint.suggestCanonicalClasses": "error"
+}

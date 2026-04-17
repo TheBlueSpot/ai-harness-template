@@ -1,8 +1,8 @@
 import { For, createEffect, createSignal } from "solid-js";
 import type { ModeDefinition } from "../../../shared/protocol";
 import { ActionButton } from "./action-button";
-import { Input } from "./ui/input";
-import { Textarea } from "./ui/textarea";
+import { Input } from "./primitives/input";
+import { Textarea } from "./primitives/textarea";
 
 type ModeEditorPanelProps = {
   title: string;
@@ -114,11 +114,11 @@ export function ModeEditorPanel(props: ModeEditorPanelProps) {
   };
 
   return (
-    <section class="rounded-[1.25rem] border border-[color:var(--border)] bg-white/55 p-4">
+    <section class="rounded-[1.25rem] border border-(--border) bg-white/55 p-4">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">{props.title}</div>
-          <div class="mt-1 text-[0.675rem] leading-5 text-[color:var(--muted)]">
+          <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">{props.title}</div>
+          <div class="mt-1 text-[0.675rem] leading-5 text-(--muted)">
             Custom modes override built-ins inside {props.scope} scope.
           </div>
         </div>
@@ -148,8 +148,8 @@ export function ModeEditorPanel(props: ModeEditorPanelProps) {
             <button
               class={`rounded-full border px-3 py-1 text-[0.625rem] font-semibold transition ${
                 selectedModeId() === mode.id
-                  ? "border-[color:var(--accent)] bg-[color:var(--accent)] text-white"
-                  : "border-[color:var(--border)] bg-white/70 text-[color:var(--foreground)]"
+                  ? "border-(--accent) bg-(--accent) text-white"
+                  : "border-(--border) bg-white/70 text-(--foreground)"
               }`}
               type="button"
               onClick={() => setSelectedModeId(mode.id)}
@@ -162,36 +162,36 @@ export function ModeEditorPanel(props: ModeEditorPanelProps) {
 
       <div class="mt-4 grid gap-3 md:grid-cols-2">
         <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">Mode id</span>
+          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Mode id</span>
           <Input value={draft().id} onInput={(event) => updateDraft("id", event.currentTarget.value)} />
         </label>
         <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">Label</span>
+          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Label</span>
           <Input value={draft().label} onInput={(event) => updateDraft("label", event.currentTarget.value)} />
         </label>
       </div>
 
       <label class="mt-3 block space-y-2">
-        <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">Description</span>
+        <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Description</span>
         <Input value={draft().description} onInput={(event) => updateDraft("description", event.currentTarget.value)} />
       </label>
 
       <div class="mt-3 grid gap-3 md:grid-cols-2">
         <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">Planner prompt</span>
+          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Planner prompt</span>
           <Textarea rows="5" value={draft().plannerPrompt} onInput={(event) => updateDraft("plannerPrompt", event.currentTarget.value)} />
         </label>
         <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">Execution prompt</span>
+          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Execution prompt</span>
           <Textarea rows="5" value={draft().executionPrompt} onInput={(event) => updateDraft("executionPrompt", event.currentTarget.value)} />
         </label>
       </div>
 
       <div class="mt-3 grid gap-3 md:grid-cols-3">
         <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">Tool policy</span>
+          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Tool policy</span>
           <select
-            class="flex h-9 w-full rounded-xl border border-[color:var(--border)] bg-white/70 px-3 py-2 text-[0.675rem] text-[color:var(--foreground)] shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-[color:var(--ring)]"
+            class="flex h-9 w-full rounded-xl border border-(--border) bg-white/70 px-3 py-2 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
             value={draft().toolPolicy}
             onInput={(event) => updateDraft("toolPolicy", event.currentTarget.value as ModeDraft["toolPolicy"])}
           >
@@ -201,9 +201,9 @@ export function ModeEditorPanel(props: ModeEditorPanelProps) {
           </select>
         </label>
         <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">Plan gate</span>
+          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Plan gate</span>
           <select
-            class="flex h-9 w-full rounded-xl border border-[color:var(--border)] bg-white/70 px-3 py-2 text-[0.675rem] text-[color:var(--foreground)] shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-[color:var(--ring)]"
+            class="flex h-9 w-full rounded-xl border border-(--border) bg-white/70 px-3 py-2 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
             value={draft().planExecutionModeDefault}
             onInput={(event) => updateDraft("planExecutionModeDefault", event.currentTarget.value as ModeDraft["planExecutionModeDefault"])}
           >
@@ -213,9 +213,9 @@ export function ModeEditorPanel(props: ModeEditorPanelProps) {
           </select>
         </label>
         <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">Correctness</span>
+          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Correctness</span>
           <select
-            class="flex h-9 w-full rounded-xl border border-[color:var(--border)] bg-white/70 px-3 py-2 text-[0.675rem] text-[color:var(--foreground)] shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-[color:var(--ring)]"
+            class="flex h-9 w-full rounded-xl border border-(--border) bg-white/70 px-3 py-2 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
             value={draft().correctnessIterationModeDefault}
             onInput={(event) =>
               updateDraft("correctnessIterationModeDefault", event.currentTarget.value as ModeDraft["correctnessIterationModeDefault"])
@@ -230,3 +230,4 @@ export function ModeEditorPanel(props: ModeEditorPanelProps) {
     </section>
   );
 }
+

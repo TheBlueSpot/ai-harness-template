@@ -1,5 +1,6 @@
 import {
   type AgentPlan,
+  type CliSession,
   type AgentRunState,
   type AgentTrace,
   type MemorySummary,
@@ -126,6 +127,16 @@ export class WorkspaceRuntimeStore {
     }));
   }
 
+  setProjectSelectedAgentId(projectId: ProjectId, selectedAgentId?: RuntimeProjectState["session"]["selectedAgentId"]) {
+    this.updateProject(projectId, (project) => ({
+      ...project,
+      session: {
+        ...project.session,
+        selectedAgentId
+      }
+    }));
+  }
+
   setProjectPlan(projectId: ProjectId, latestPlan?: AgentPlan) {
     this.updateProject(projectId, (project) => ({
       ...project,
@@ -137,6 +148,13 @@ export class WorkspaceRuntimeStore {
     this.updateProject(projectId, (project) => ({
       ...project,
       activeRun
+    }));
+  }
+
+  setProjectCliSession(projectId: ProjectId, activeCliSession?: CliSession) {
+    this.updateProject(projectId, (project) => ({
+      ...project,
+      activeCliSession
     }));
   }
 
@@ -172,6 +190,7 @@ export class WorkspaceRuntimeStore {
     this.updateProject(projectId, (project) => ({
       ...project,
       latestPlan: undefined,
+      activeCliSession: undefined,
       activeRun: undefined,
       contextUsage: undefined,
       traces: [],
@@ -270,6 +289,7 @@ function stripRuntimeProject(project: RuntimeProjectState): WorkspaceProjectStat
     activeThreadId: project.activeThreadId,
     threads: project.threads,
     session: project.session,
+    activeCliSession: project.activeCliSession,
     activeRun: project.activeRun,
     lastRun: project.lastRun
   };

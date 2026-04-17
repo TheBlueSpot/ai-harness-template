@@ -18,9 +18,18 @@ Client commands are restricted to a fixed set of actions:
 - planning refine
 - planning answer
 - run execute
+- experiment inspect
+- experiment promote
+- experiment discard
 - run resume
 - run retry
 - run refresh
+- memory list
+- memory inspect
+- memory update
+- memory delete
+- execution pause all
+- execution resume all
 - browser approval resolve
 - chat stop
 - session reset as legacy alias for thread create
@@ -28,6 +37,7 @@ Client commands are restricted to a fixed set of actions:
 Server responses are structured events that report:
 
 - readiness and workspace state
+- execution control state changes
 - agent catalogs
 - project open results, removals, and activation changes
 - thread creation, activation, and rename changes
@@ -37,6 +47,8 @@ Server responses are structured events that report:
 - project context usage updates
 - assistant message updates
 - agent run updates
+- experiment review payloads
+- shared memory listing and mutation results
 - structured errors
 - session resets
 
@@ -66,6 +78,7 @@ Run execute requests carry:
 - project id
 - thread id
 - run id
+- optional execution target for current project or virtual branch experiment
 
 Planning answer requests carry:
 
@@ -106,6 +119,11 @@ Browser approval requests carry:
 - tool call id
 - approval decision
 
+Execution control requests carry:
+
+- request id only
+- server-owned workspace pause or resume intent
+
 Thread management requests carry:
 
 - project id
@@ -121,6 +139,7 @@ Connection readiness reports:
 - thread summary list per project
 - persisted active thread messages for each project
 - persisted workspace defaults for execution gate, countdown delay, worktree strategy, and correctness iteration mode
+- execution control state including whether the workspace is paused and how many planner questions, assistant questions, and browser approvals are deferred
 
 Planner events report:
 
@@ -174,6 +193,15 @@ Run update events report:
 - persisted correctness review when available
 - resumable state
 - retryable state
+- planning questions may be `pending`, `answered`, or `deferred`
+- browser approval state may be `pending`, `approved`, `rejected`, or `deferred`
+
+Execution control update events report:
+
+- whether the workspace is paused
+- deferred planner question count
+- deferred assistant question count
+- deferred browser approval count
 
 Execution preflight events report:
 
@@ -213,3 +241,10 @@ Execution begins only after `run.execute` or an approved auto-run policy on the 
 
 Browser approvals are explicit when browser-capable tools are active.
 The UI resolves those approvals through a typed command, and the active run updates in place with session activity plus approval state.
+
+Workspace-global pause is operational state, not a preference.
+Pause blocks new execution starts and approval accepts, but it does not stop work already in progress.
+Planner questions, assistant questions, and browser approvals created during pause remain deferred until resume.
+
+Assistant questions follow the same deferred model.
+Assistant question status may be `pending`, `answered`, or `deferred`.

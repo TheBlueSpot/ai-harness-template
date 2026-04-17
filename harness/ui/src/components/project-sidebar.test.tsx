@@ -22,6 +22,7 @@ createUiTest("ProjectSidebar", () => {
       threads: [
         {
           id: "thread-1",
+          kind: "user",
           title: "Thread 1",
           titleSource: "generated",
           badgeState: "executing",
@@ -30,6 +31,7 @@ createUiTest("ProjectSidebar", () => {
         },
         {
           id: "thread-2",
+          kind: "user",
           title: "Thread 2",
           titleSource: "generated",
           badgeState: "planning",
@@ -47,7 +49,7 @@ createUiTest("ProjectSidebar", () => {
       })
     );
 
-    render(() => <ProjectSidebar sendCommand={() => undefined} />);
+    render(() => <ProjectSidebar />);
 
     expect(screen.getByText("streaming")).not.toBeNull();
     expect((screen.getByRole("button", { name: "Create a new thread in this project" }) as HTMLButtonElement).disabled).toBe(true);
@@ -62,6 +64,7 @@ createUiTest("ProjectSidebar", () => {
       threads: [
         {
           id: "thread-1",
+          kind: "user",
           title: "Thread 1",
           titleSource: "generated",
           badgeState: "done",
@@ -79,10 +82,50 @@ createUiTest("ProjectSidebar", () => {
       })
     );
 
-    render(() => <ProjectSidebar sendCommand={() => undefined} />);
+    render(() => <ProjectSidebar />);
 
     const doneBadge = screen.getByText("Done");
     expect(doneBadge.className).toContain("bg-emerald-600");
     expect((screen.getByRole("button", { name: `Remove ${project.name}` }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("hides automation threads from sidebar thread list", () => {
+    const project = createViewProjectFixture({
+      id: "project-automation",
+      threads: [
+        {
+          id: "thread-1",
+          kind: "user",
+          title: "Visible thread",
+          titleSource: "generated",
+          badgeState: "idle",
+          messageCount: 1,
+          updatedAt: new Date().toISOString()
+        },
+        {
+          id: "thread-auto-1",
+          kind: "automation",
+          title: "Hidden automation thread",
+          titleSource: "generated",
+          badgeState: "idle",
+          messageCount: 2,
+          updatedAt: new Date().toISOString()
+        }
+      ]
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ProjectSidebar />);
+
+    expect(screen.getByText("1 threads")).not.toBeNull();
+    expect(screen.queryByText("Hidden automation thread")).toBeNull();
+    expect(screen.getByText("Visible thread")).not.toBeNull();
   });
 });

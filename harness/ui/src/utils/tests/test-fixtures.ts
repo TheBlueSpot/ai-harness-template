@@ -29,12 +29,15 @@ export const defaultPreferencesFixture: PreferencesState = {
   subagentWorktreeStrategyDefault: "same-worktree",
   blockChatOnDirtyGitDefault: true,
   dirtyGitChangeLimitDefault: 20,
+  autoCompactContextThresholdPercentDefault: 40,
   planExecutionModeDefault: "countdown",
   planExecutionDelaySecondsDefault: 10,
   correctnessIterationModeDefault: "ask-before-iterate",
-  uiModeDefault: "simple",
+  backgroundJobApprovalPolicyDefault: "ask-risky",
+  memoryBankEnabledDefault: true,
   attachmentsEnabled: true,
-  capabilities: [...defaultProviderCapabilities]
+  capabilities: [...defaultProviderCapabilities],
+  agentRuntimes: []
 };
 
 export function createExecutionPlanFixture(overrides: Partial<ExecutionPlan> = {}): ExecutionPlan {
@@ -223,6 +226,8 @@ export function createViewProjectFixture(overrides: Partial<ViewProjectState> = 
     streamingAssistantText: overrides.streamingAssistantText ?? "",
     draft: overrides.draft ?? "",
     lastError: overrides.lastError,
+    experimentInspection: overrides.experimentInspection,
+    memoryEntries: overrides.memoryEntries ?? [],
     activeRun: overrides.activeRun ?? baseProject.activeRun,
     lastRun: overrides.lastRun ?? baseProject.lastRun
   };

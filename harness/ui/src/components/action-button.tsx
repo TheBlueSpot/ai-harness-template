@@ -1,6 +1,6 @@
 import type { JSX } from "solid-js";
-import { Button, type buttonVariants } from "./ui/button";
-import { Tooltip } from "./ui/tooltip";
+import { Button, type buttonVariants } from "./primitives/button";
+import { Tooltip } from "./primitives/tooltip";
 
 type ActionButtonProps = {
   tooltip: string;
@@ -13,6 +13,7 @@ type ActionButtonProps = {
   variant?: NonNullable<Parameters<typeof buttonVariants>[0]>["variant"];
   size?: NonNullable<Parameters<typeof buttonVariants>[0]>["size"];
   disabled?: boolean;
+  dataTourId?: string;
   onClick?: JSX.EventHandlerUnion<HTMLButtonElement, MouseEvent>;
 };
 
@@ -28,6 +29,7 @@ export function ActionButton(props: ActionButtonProps) {
           variant={props.variant}
           size={props.size}
           disabled={props.disabled}
+          data-tour-id={props.dataTourId}
           aria-label={props.ariaLabel ?? props.tooltip}
           onClick={props.onClick}
         >
@@ -38,3 +40,4 @@ export function ActionButton(props: ActionButtonProps) {
     </Tooltip>
   );
 }
+

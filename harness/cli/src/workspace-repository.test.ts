@@ -1,6 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
+import {
+  createAssistantId,
+  createAssistantLearningId,
+  createAssistantLogEntryId,
+  createAssistantQuestionId,
+  createAssistantTodoId,
+  createBackgroundJobId,
+  createExperimentId,
+  createMemoryEntryId,
+  createMemoryRetrievalId
+} from "../../shared/protocol";
 import { normalizeWindowsEscapedPath, WorkspaceRepository } from "./workspace-repository";
 
 function createTempDir() {
@@ -101,6 +112,7 @@ describe("workspace repository", () => {
     repository.setTracePanelDefaultOpen(false);
     repository.setBlockChatOnDirtyGitDefault(false);
     repository.setDirtyGitChangeLimitDefault(7);
+    repository.setAutoCompactContextThresholdPercentDefault(45);
 
     const reloadedRepository = new WorkspaceRepository((repository as any).dbPath, process.cwd());
     expect(reloadedRepository.getStoredOpenAiApiKey()).toBe("sk-test-123");
@@ -110,6 +122,7 @@ describe("workspace repository", () => {
     expect(reloadedRepository.getTracePanelDefaultOpen()).toBe(false);
     expect(reloadedRepository.getBlockChatOnDirtyGitDefault()).toBe(false);
     expect(reloadedRepository.getDirtyGitChangeLimitDefault()).toBe(7);
+    expect(reloadedRepository.getAutoCompactContextThresholdPercentDefault()).toBe(45);
 
     reloadedRepository.clearStoredOpenAiApiKey();
     reloadedRepository.clearStoredGoogleApiKey();
@@ -117,10 +130,9 @@ describe("workspace repository", () => {
     expect(reloadedRepository.getStoredGoogleApiKey()).toBeUndefined();
   });
 
-  test("persists ui mode, workspace context, and workspace modes across reload", () => {
+  test("persists workspace context and workspace modes across reload", () => {
     const repository = createRepository();
 
-    repository.setUiModeDefault("advanced");
     repository.saveWorkspaceContext({
       rulesContent: " Prefer plan-first work. ",
       memorySummaryContent: " User likes concise updates. "
@@ -139,7 +151,6 @@ describe("workspace repository", () => {
     const reloadedRepository = new WorkspaceRepository((repository as any).dbPath, process.cwd());
     const workspace = reloadedRepository.loadWorkspace();
 
-    expect(reloadedRepository.getUiModeDefault()).toBe("advanced");
     expect(workspace.workspaceRuleSource?.content).toBe("Prefer plan-first work.");
     expect(workspace.workspaceMemorySummary?.content).toBe("User likes concise updates.");
     expect((workspace.workspaceModes ?? []).map((mode) => mode.id)).toContain("ship-fast");
@@ -204,6 +215,130 @@ describe("workspace repository", () => {
 
     expect(restoredProject.session.messages[0]?.attachments?.[0]?.name).toBe("spec.md");
     expect(restoredProject.session.messages[0]?.attachments?.[0]?.kind).toBe("text");
+  });
+
+  test("persists assistant state and purges assistant jobs on delete", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    const assistantId = createAssistantId();
+    const now = new Date().toISOString();
+
+    repository.saveAssistant({
+      id: assistantId,
+      name: "Mr Miyagi",
+      scope: "project",
+      projectId: project.id,
+      description: "Karate mentor",
+      personalityPrompt: "Patient, direct, calm.",
+      jobPrompt: "Teach karate. Research first, then act when needed.",
+      agentId: "pi",
+      modeId: undefined,
+      executionModelId: undefined,
+      runState: "active",
+      bootstrapState: "pending",
+      clonedFromAssistantId: undefined,
+      failureStreakCount: 0,
+      circuitBreakerState: "closed",
+      circuitBreakerReason: undefined,
+      deletedAt: undefined,
+      latestActivityAt: now,
+      unreadQuestionCount: 0,
+      createdAt: now,
+      updatedAt: now
+    });
+    repository.appendAssistantMessage(assistantId, "user", "Teach me balance.");
+    repository.saveAssistantTodo({
+      id: createAssistantTodoId(),
+      assistantId,
+      title: "Research basic karate stance lesson",
+      description: undefined,
+      state: "pending",
+      sortOrder: 0,
+      source: "bootstrap",
+      createdAt: now,
+      updatedAt: now
+    });
+    repository.saveAssistantLearning({
+      id: createAssistantLearningId(),
+      assistantId,
+      summary: "User prefers fundamentals first.",
+      source: "bootstrap",
+      confidence: "high",
+      createdAt: now
+    });
+    repository.saveAssistantQuestion({
+      id: createAssistantQuestionId(),
+      assistantId,
+      prompt: "Do you want kata or sparring first?",
+      status: "pending",
+      linkedTodoIds: [],
+      askedAt: now
+    });
+    repository.appendAssistantLogEntry({
+      id: createAssistantLogEntryId(),
+      assistantId,
+      level: "info",
+      summary: "Bootstrap started",
+      detail: "Researching karate mentor role.",
+      detailsJson: { stage: "bootstrap" },
+      createdAt: now
+    });
+
+    repository.saveBackgroundJob({
+      id: createBackgroundJobId(),
+      projectId: project.id,
+      assistantId,
+      automationThreadId: project.activeThreadId,
+      templateId: undefined,
+      createdFromRunId: undefined,
+      kind: "ai-routine",
+      name: "Morning kata",
+      description: "Daily practice prompt",
+      status: "enabled",
+      riskLevel: "unsafe",
+      definition: {
+        kind: "ai-routine",
+        prompt: "Plan today's kata."
+      },
+      schedule: {
+        type: "interval",
+        intervalSeconds: 3600,
+        nextRunAt: now,
+        sourceText: "1h"
+      },
+      scheduleInput: "1h",
+      timezone: "America/New_York",
+      nextRunAt: now,
+      lastRunAt: undefined,
+      lastEnqueuedAt: undefined,
+      createdAt: now,
+      updatedAt: now
+    });
+    const savedJob = repository.loadBackgroundJobsState().jobs[0];
+    expect(savedJob?.assistantId).toBe(assistantId);
+    const savedRun = repository.createBackgroundJobRun({
+      jobId: savedJob!.id,
+      projectId: project.id,
+      assistantId,
+      automationThreadId: project.activeThreadId,
+      triggerSource: "manual",
+      status: "running",
+      riskLevel: "unsafe",
+      approvalStatus: "approved"
+    });
+
+    const assistants = repository.loadAssistantsState();
+    expect(assistants.assistants[0]?.id).toBe(assistantId);
+    expect(assistants.threads[0]?.messages[0]?.content).toBe("Teach me balance.");
+    expect(assistants.todos[0]?.title).toContain("karate stance");
+    expect(assistants.questions[0]?.prompt).toContain("kata");
+
+    repository.deleteAssistant(assistantId);
+
+    expect(repository.getAssistant(assistantId, true)?.deletedAt).toBeDefined();
+    expect(repository.loadAssistantsState().assistants).toHaveLength(0);
+    expect(repository.loadBackgroundJobsState().jobs).toHaveLength(0);
+    expect(repository.getBackgroundJobRun(savedRun.id)).toBeUndefined();
   });
 
   test("persists active run questions and resumable subtasks across reload", () => {
@@ -330,6 +465,67 @@ describe("workspace repository", () => {
     expect(restoredProject.activeRun?.browserSessions).toHaveLength(1);
     expect(restoredProject.activeRun?.browserSessions?.[0]?.pendingApproval?.toolCallId).toBe("tool-call-1");
     expect(restoredProject.activeRun?.browserSessions?.[0]?.activities[0]?.status).toBe("pending-approval");
+  });
+
+  test("persists experiment metadata and shared memory retrievals across reload", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    const runProject = repository.createAgentRun(project.id, "try experiment", "openai/gpt-5.4");
+    const runId = runProject.activeRun!.id;
+
+    repository.setAgentRunExecutionTarget(project.id, runId, "ephemeral-experiment");
+    repository.saveExperimentRun(project.id, runId, {
+      id: createExperimentId(),
+      runId,
+      status: "running",
+      virtualBranchName: `ai-experiment/${runId}`,
+      repoMountPath: path.join(project.rootPath, ".local", "branchfs", runId, "mount"),
+      projectMountPath: path.join(project.rootPath, ".local", "branchfs", runId, "mount"),
+      baseCommitSha: "abc123",
+      baseBranchName: "main",
+      baseDirtyFingerprint: "fingerprint",
+      filesChanged: 2,
+      insertions: 10,
+      deletions: 4,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+    const memoryEntry = repository.saveMemoryEntry({
+      id: createMemoryEntryId(),
+      projectId: project.id,
+      threadId: runProject.activeRun!.threadId,
+      runId,
+      kind: "task-summary",
+      status: "active",
+      title: "Experiment summary",
+      summary: "Use virtual branch for risky edits.",
+      evidence: "Review before promote.",
+      tags: ["experiment"],
+      pathGlobs: ["src/**"],
+      confidence: "high",
+      freshness: "fresh",
+      pinned: false,
+      hitCount: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+
+    repository.logMemoryRetrieval({
+      id: createMemoryRetrievalId(),
+      runId,
+      owner: "planner",
+      queryText: "virtual branch",
+      entryIds: [memoryEntry!.id],
+      createdAt: new Date().toISOString()
+    });
+
+    const reloadedRepository = new WorkspaceRepository((repository as any).dbPath, process.cwd());
+    const restoredProject = reloadedRepository.getProject(project.id);
+
+    expect(restoredProject.activeRun?.executionTarget).toBe("ephemeral-experiment");
+    expect(restoredProject.activeRun?.experiment?.virtualBranchName).toBe(`ai-experiment/${runId}`);
+    expect(restoredProject.activeRun?.memoryRetrievals?.[0]?.owner).toBe("planner");
+    expect(reloadedRepository.listMemoryEntries(project.id)[0]?.title).toBe("Experiment summary");
   });
 
   test("normalizes doubled Windows separators", () => {

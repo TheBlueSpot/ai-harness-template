@@ -2,20 +2,62 @@ import { Database } from "bun:sqlite";
 import { mkdirSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import {
+  assistantsStateSchema,
   agentRunStateSchema,
+  assistantAssetRefSchema,
+  assistantLearningSchema,
+  assistantLogEntrySchema,
+  assistantQuestionSchema,
+  assistantSchema,
+  assistantThreadSchema,
+  assistantTodoSchema,
+  backgroundJobRunSchema,
+  backgroundJobSchema,
+  backgroundJobsStateSchema,
+  backgroundJobTemplateSchema,
   browserSessionSchema,
   correctnessReviewSchema,
   chatMessageSchema,
   chatAttachmentSchema,
   chatMessageMetadataSchema,
+  createBackgroundJobRunId,
+  createAssistantThreadId,
+  createAssistantTodoId,
+  createExperimentId,
   createEmptySession,
+  createMemoryEntryId,
+  createMemoryRetrievalId,
+  createSessionId,
   createProjectId,
   createProjectThreadSummary,
   createRunId,
   createThreadId,
+  experimentRunSchema,
   executionPlanSchema,
+  memoryEntrySchema,
+  memoryFreshnessSchema,
+  memoryRetrievalSchema,
+  type Assistant,
+  type AssistantAssetRef,
+  type AssistantLearning,
+  type AssistantLogEntry,
+  type AssistantQuestion,
+  type AssistantQuestionStatus,
+  type AssistantThread,
+  type AssistantTodo,
+  type AssistantTodoState,
+  type AssistantsState,
+  type AgentId,
   type AgentRunState,
   type AgentRunStatus,
+  type BackgroundJob,
+  type BackgroundJobApprovalPolicy,
+  type BackgroundJobRun,
+  type BackgroundJobRunStatus,
+  type BackgroundJobSchedule,
+  type BackgroundJobsState,
+  type BackgroundJobTemplate,
+  type BackgroundJobThreadKind,
   type BrowserSession,
   type ChatMessage,
   type ChatAttachment,
@@ -24,8 +66,14 @@ import {
   type ChatRole,
   type CorrectnessIterationMode,
   type CorrectnessReview,
+  type ExecutionControlState,
   type ExecutionPlan,
+  type ExperimentRun,
   type MemorySummary,
+  type MemoryEntry,
+  type MemoryEntryKind,
+  type MemoryEntryStatus,
+  type MemoryRetrieval,
   type ModeDefinition,
   type PlannerReadyTurn,
   type PlanningChoice,
@@ -36,15 +84,17 @@ import {
   type ProjectRootPath,
   type ProjectThreadSummary,
   type QuestionId,
+  type SessionId,
   type SubagentWorktreeStrategy,
   type SubagentTaskState,
   type ThreadBadgeState,
   type ThreadId,
-  type UiMode,
+  type RunExecutionTarget,
   type WorkspaceRuleSource,
   type WorkspaceProjectState,
   type WorkspaceState
 } from "../../shared/protocol";
+import { defaultBackgroundJobTemplates } from "../../shared/background-job-templates";
 import { debugLog } from "./logging";
 
 const ACTIVE_THREAD_STATUS = "active";
@@ -57,10 +107,13 @@ const TRACE_PANEL_DEFAULT_OPEN_KEY = "trace_panel_default_open";
 const SUBAGENT_WORKTREE_STRATEGY_DEFAULT_KEY = "subagent_worktree_strategy_default";
 const BLOCK_CHAT_ON_DIRTY_GIT_DEFAULT_KEY = "block_chat_on_dirty_git_default";
 const DIRTY_GIT_CHANGE_LIMIT_DEFAULT_KEY = "dirty_git_change_limit_default";
+const AUTO_COMPACT_CONTEXT_THRESHOLD_PERCENT_DEFAULT_KEY = "auto_compact_context_threshold_percent_default";
 const PLAN_EXECUTION_MODE_DEFAULT_KEY = "plan_execution_mode_default";
 const PLAN_EXECUTION_DELAY_SECONDS_DEFAULT_KEY = "plan_execution_delay_seconds_default";
 const CORRECTNESS_ITERATION_MODE_DEFAULT_KEY = "correctness_iteration_mode_default";
-const UI_MODE_DEFAULT_KEY = "ui_mode_default";
+const BACKGROUND_JOB_APPROVAL_POLICY_DEFAULT_KEY = "background_job_approval_policy_default";
+const MEMORY_BANK_ENABLED_DEFAULT_KEY = "memory_bank_enabled_default";
+const GLOBAL_EXECUTION_PAUSED_KEY = "global_execution_paused";
 const WORKSPACE_RULES_CONTENT_KEY = "workspace_rules_content";
 const WORKSPACE_RULES_UPDATED_AT_KEY = "workspace_rules_updated_at";
 const WORKSPACE_MEMORY_CONTENT_KEY = "workspace_memory_content";
@@ -83,6 +136,7 @@ type ThreadRow = {
   id: string;
   project_id: string;
   status: string;
+  kind: BackgroundJobThreadKind;
   title: string;
   title_source: "generated" | "custom";
   updated_at: string;
@@ -126,6 +180,7 @@ type AgentRunRow = {
   project_id: string;
   thread_id: string;
   status: AgentRunStatus;
+  execution_target: RunExecutionTarget | null;
   latest_user_prompt: string;
   planning_model_id: string | null;
   execution_model_id: string | null;
@@ -148,7 +203,7 @@ type AgentRunQuestionRow = {
   prompt: string;
   placeholder: string | null;
   choices_json: string | null;
-  status: "pending" | "answered";
+  status: "pending" | "deferred" | "answered";
   answer_text: string | null;
   asked_at: string;
   answered_at: string | null;
@@ -166,9 +221,214 @@ type AgentRunSubtaskRow = {
   error_message: string | null;
   commit_sha: string | null;
   worktree_path: string | null;
+  mount_path: string | null;
   started_at: string | null;
   completed_at: string | null;
   updated_at: string;
+};
+
+type AgentRunExperimentRow = {
+  id: string;
+  run_id: string;
+  status: ExperimentRun["status"];
+  virtual_branch_name: string;
+  repo_mount_path: string;
+  project_mount_path: string;
+  base_commit_sha: string | null;
+  base_branch_name: string | null;
+  base_dirty_fingerprint: string;
+  head_commit_sha: string | null;
+  files_changed: number;
+  insertions: number;
+  deletions: number;
+  promoted_at: string | null;
+  discarded_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type MemoryEntryRow = {
+  id: string;
+  project_id: string | null;
+  thread_id: string | null;
+  run_id: string | null;
+  kind: MemoryEntryKind;
+  status: MemoryEntryStatus;
+  title: string;
+  summary: string;
+  evidence: string | null;
+  tags_json: string | null;
+  path_globs_json: string | null;
+  confidence: MemoryEntry["confidence"];
+  pinned: number;
+  hit_count: number;
+  last_hit_at: string | null;
+  source_commit_sha: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type MemoryRetrievalRow = {
+  id: string;
+  run_id: string;
+  owner: MemoryRetrieval["owner"];
+  subagent_id: string | null;
+  query_text: string;
+  entry_ids_json: string;
+  created_at: string;
+};
+
+type BackgroundJobRow = {
+  id: string;
+  project_id: string;
+  assistant_id: string | null;
+  automation_thread_id: string;
+  template_id: string | null;
+  created_from_run_id: string | null;
+  kind: BackgroundJob["kind"];
+  name: string;
+  description: string | null;
+  definition_json: string;
+  schedule_json: string;
+  schedule_input: string;
+  timezone: string | null;
+  status: BackgroundJob["status"];
+  risk_level: BackgroundJob["riskLevel"];
+  next_run_at: string | null;
+  last_run_at: string | null;
+  last_enqueued_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type BackgroundJobRunRow = {
+  id: string;
+  job_id: string;
+  project_id: string;
+  assistant_id: string | null;
+  automation_thread_id: string;
+  trigger_source: BackgroundJobRun["triggerSource"];
+  status: BackgroundJobRunStatus;
+  risk_level: BackgroundJobRun["riskLevel"];
+  approval_status: BackgroundJobRun["approvalStatus"];
+  skipped_occurrence_count: number;
+  linked_agent_run_id: string | null;
+  summary: string | null;
+  failure_message: string | null;
+  queued_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type BackgroundJobRunEventRow = {
+  id: string;
+  run_id: string;
+  ordinal: number;
+  stage: string;
+  message: string;
+  detail_json: string | null;
+  created_at: string;
+};
+
+type AssistantRow = {
+  id: string;
+  name: string;
+  scope: "global" | "project";
+  project_id: string | null;
+  description: string | null;
+  personality_prompt: string;
+  job_prompt: string;
+  agent_id: AgentId;
+  mode_id: string | null;
+  execution_model_id: string | null;
+  run_state: "active" | "paused";
+  bootstrap_state: "pending" | "running" | "completed" | "failed";
+  cloned_from_assistant_id: string | null;
+  failure_streak_count: number;
+  circuit_breaker_state: "closed" | "tripped";
+  circuit_breaker_reason: string | null;
+  pending_reprioritize_reason: string | null;
+  pending_reprioritize_requested_at: string | null;
+  deleted_at: string | null;
+  latest_activity_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type AssistantThreadRow = {
+  id: string;
+  assistant_id: string;
+  session_id: string;
+  memory_summary_content: string | null;
+  memory_summary_updated_at: string | null;
+  updated_at: string;
+  created_at: string;
+};
+
+type AssistantMessageRow = {
+  id: string;
+  assistant_thread_id: string;
+  role: ChatRole;
+  kind: ChatMessageKind | null;
+  content: string;
+  metadata_json: string | null;
+  created_at: string;
+};
+
+type AssistantTodoRow = {
+  id: string;
+  assistant_id: string;
+  title: string;
+  description: string | null;
+  state: AssistantTodoState;
+  sort_order: number;
+  blocker_reason: string | null;
+  source: "user" | "assistant" | "bootstrap" | "job" | "question" | null;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+  cancelled_at: string | null;
+};
+
+type AssistantLearningRow = {
+  id: string;
+  assistant_id: string;
+  summary: string;
+  source: string;
+  confidence: "low" | "medium" | "high";
+  created_at: string;
+};
+
+type AssistantQuestionRow = {
+  id: string;
+  assistant_id: string;
+  prompt: string;
+  status: AssistantQuestionStatus;
+  answer_text: string | null;
+  linked_todo_ids_json: string | null;
+  asked_at: string;
+  answered_at: string | null;
+};
+
+type AssistantLogEntryRow = {
+  id: string;
+  assistant_id: string;
+  level: "info" | "warning" | "error" | "critical";
+  summary: string;
+  detail: string | null;
+  details_json: string | null;
+  created_at: string;
+};
+
+type AssistantAssetRefRow = {
+  id: string;
+  assistant_id: string;
+  kind: "skill" | "script" | "mode" | "background-template";
+  label: string;
+  value: string;
+  created_at: string;
 };
 
 type OpenProjectResult = {
@@ -189,6 +449,7 @@ export class WorkspaceRepository {
     try {
       this.db.exec("PRAGMA foreign_keys = ON;");
       this.db.exec("PRAGMA journal_mode = WAL;");
+      this.db.exec("PRAGMA busy_timeout = 5000;");
       this.migrate();
     } catch (error) {
       this.db.close(false);
@@ -471,6 +732,7 @@ export class WorkspaceRepository {
           project_id,
           thread_id,
           status,
+          execution_target,
           latest_user_prompt,
           planning_model_id,
           execution_model_id,
@@ -484,7 +746,7 @@ export class WorkspaceRepository {
           created_at,
           updated_at,
           completed_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?7, ?7, NULL)`
+        ) VALUES (?1, ?2, ?3, ?4, 'current-project', ?5, ?6, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?7, ?7, NULL)`
       )
       .run(runId, projectId, resolvedThreadId, "planning", latestUserPrompt, planningModelId ?? null, now);
 
@@ -496,7 +758,8 @@ export class WorkspaceRepository {
   appendPlanningQuestion(
     projectId: ProjectId,
     runId: string,
-    question: Pick<PlanningQuestion, "id" | "prompt" | "placeholder" | "choices" | "required">
+    question: Pick<PlanningQuestion, "id" | "prompt" | "placeholder" | "choices" | "required">,
+    status: Extract<PlanningQuestion["status"], "pending" | "deferred"> = "pending"
   ) {
     const now = new Date().toISOString();
     const ordinal =
@@ -519,9 +782,18 @@ export class WorkspaceRepository {
             answer_text,
             asked_at,
             answered_at
-          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', NULL, ?7, NULL)`
+          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, NULL)`
         )
-        .run(question.id, runId, ordinal, question.prompt, question.placeholder ?? null, JSON.stringify(question.choices), now);
+        .run(
+          question.id,
+          runId,
+          ordinal,
+          question.prompt,
+          question.placeholder ?? null,
+          JSON.stringify(question.choices),
+          status,
+          now
+        );
 
       this.db
         .query(
@@ -534,6 +806,52 @@ export class WorkspaceRepository {
     tx();
 
     return this.readProjectSnapshot(projectId);
+  }
+
+  promoteDeferredPlanningQuestions() {
+    const now = new Date().toISOString();
+    const deferred = this.db
+      .query<{ project_id: string; thread_id: string; run_id: string }, []>(
+        `SELECT agent_runs.project_id, agent_runs.thread_id, agent_run_questions.run_id
+         FROM agent_run_questions
+         INNER JOIN agent_runs ON agent_runs.id = agent_run_questions.run_id
+         WHERE agent_run_questions.status = 'deferred'
+         ORDER BY agent_runs.updated_at ASC, agent_run_questions.ordinal ASC`
+      )
+      .all();
+
+    const tx = this.db.transaction(() => {
+      this.db
+        .query(`UPDATE agent_run_questions SET status = 'pending' WHERE status = 'deferred'`)
+        .run();
+      this.db
+        .query(
+          `UPDATE agent_runs
+           SET status = 'awaiting-user-input',
+               summary = (
+                 SELECT prompt
+                 FROM agent_run_questions
+                 WHERE run_id = agent_runs.id AND status = 'pending'
+                 ORDER BY ordinal ASC
+                 LIMIT 1
+               ),
+               updated_at = ?1
+           WHERE id IN (SELECT DISTINCT run_id FROM agent_run_questions WHERE status = 'pending')`
+        )
+        .run(now);
+    });
+    tx();
+
+    return [...new Map(
+      deferred.map((entry) => [
+        entry.run_id,
+        {
+          projectId: entry.project_id as ProjectId,
+          threadId: entry.thread_id as ThreadId,
+          runId: entry.run_id
+        }
+      ])
+    ).values()];
   }
 
   answerPlanningQuestion(projectId: ProjectId, runId: string, questionId: QuestionId, answerText: string) {
@@ -689,6 +1007,24 @@ export class WorkspaceRepository {
     return this.readProjectSnapshot(projectId);
   }
 
+  setAgentRunExecutionTarget(projectId: ProjectId, runId: string, target: RunExecutionTarget) {
+    const now = new Date().toISOString();
+    const updated = this.db
+      .query(
+        `UPDATE agent_runs
+         SET execution_target = ?3,
+             updated_at = ?4
+         WHERE id = ?1 AND project_id = ?2`
+      )
+      .run(runId, projectId, target, now);
+
+    if (updated.changes === 0) {
+      throw new Error(`Unknown agent run: ${runId}`);
+    }
+
+    return this.readProjectSnapshot(projectId);
+  }
+
   setAgentRunCorrectnessReview(projectId: ProjectId, runId: string, correctnessReview?: CorrectnessReview) {
     const now = new Date().toISOString();
     const updated = this.db
@@ -774,7 +1110,8 @@ export class WorkspaceRepository {
     output: string,
     attemptCount: number,
     commitSha?: string,
-    worktreePath?: string
+    worktreePath?: string,
+    mountPath?: string
   ) {
     const now = new Date().toISOString();
     return this.updateSubtask(projectId, runId, taskId, {
@@ -784,7 +1121,8 @@ export class WorkspaceRepository {
       output,
       errorMessage: null,
       commitSha: commitSha ?? null,
-      worktreePath: worktreePath ?? null
+      worktreePath: worktreePath ?? null,
+      mountPath: mountPath ?? null
     });
   }
 
@@ -794,7 +1132,8 @@ export class WorkspaceRepository {
     taskId: string,
     errorMessage: string,
     attemptCount: number,
-    worktreePath?: string
+    worktreePath?: string,
+    mountPath?: string
   ) {
     const now = new Date().toISOString();
     return this.updateSubtask(projectId, runId, taskId, {
@@ -804,7 +1143,8 @@ export class WorkspaceRepository {
       output: null,
       errorMessage,
       commitSha: null,
-      worktreePath: worktreePath ?? null
+      worktreePath: worktreePath ?? null,
+      mountPath: mountPath ?? null
     });
   }
 
@@ -822,6 +1162,1007 @@ export class WorkspaceRepository {
 
   getProject(projectId: ProjectId): WorkspaceProjectState {
     return this.readProjectSnapshot(projectId);
+  }
+
+  getThreadMessages(projectId: ProjectId, threadId: ThreadId) {
+    this.readThreadRow(projectId, threadId);
+    return this.readMessages(threadId);
+  }
+
+  saveExperimentRun(projectId: ProjectId, runId: string, experiment: ExperimentRun) {
+    this.assertRunExists(projectId, runId);
+    this.db
+      .query(
+        `INSERT INTO agent_run_experiments (
+          id,
+          run_id,
+          status,
+          virtual_branch_name,
+          repo_mount_path,
+          project_mount_path,
+          base_commit_sha,
+          base_branch_name,
+          base_dirty_fingerprint,
+          head_commit_sha,
+          files_changed,
+          insertions,
+          deletions,
+          promoted_at,
+          discarded_at,
+          created_at,
+          updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+        ON CONFLICT(run_id) DO UPDATE SET
+          status = excluded.status,
+          virtual_branch_name = excluded.virtual_branch_name,
+          repo_mount_path = excluded.repo_mount_path,
+          project_mount_path = excluded.project_mount_path,
+          base_commit_sha = excluded.base_commit_sha,
+          base_branch_name = excluded.base_branch_name,
+          base_dirty_fingerprint = excluded.base_dirty_fingerprint,
+          head_commit_sha = excluded.head_commit_sha,
+          files_changed = excluded.files_changed,
+          insertions = excluded.insertions,
+          deletions = excluded.deletions,
+          promoted_at = excluded.promoted_at,
+          discarded_at = excluded.discarded_at,
+          updated_at = excluded.updated_at`
+      )
+      .run(
+        experiment.id,
+        runId,
+        experiment.status,
+        experiment.virtualBranchName,
+        experiment.repoMountPath,
+        experiment.projectMountPath,
+        experiment.baseCommitSha ?? null,
+        experiment.baseBranchName ?? null,
+        experiment.baseDirtyFingerprint,
+        experiment.headCommitSha ?? null,
+        experiment.filesChanged,
+        experiment.insertions,
+        experiment.deletions,
+        experiment.promotedAt ?? null,
+        experiment.discardedAt ?? null,
+        experiment.createdAt,
+        experiment.updatedAt
+      );
+
+    return this.readProjectSnapshot(projectId);
+  }
+
+  getExperimentRun(projectId: ProjectId, runId: string) {
+    this.assertRunExists(projectId, runId);
+    const row = this.db
+      .query<AgentRunExperimentRow, [string]>(
+        `SELECT
+          id,
+          run_id,
+          status,
+          virtual_branch_name,
+          repo_mount_path,
+          project_mount_path,
+          base_commit_sha,
+          base_branch_name,
+          base_dirty_fingerprint,
+          head_commit_sha,
+          files_changed,
+          insertions,
+          deletions,
+          promoted_at,
+          discarded_at,
+          created_at,
+          updated_at
+         FROM agent_run_experiments
+         WHERE run_id = ?1`
+      )
+      .get(runId);
+
+    return row ? this.hydrateExperimentRun(row) : undefined;
+  }
+
+  listMemoryEntries(
+    projectId?: ProjectId,
+    filters: {
+      query?: string;
+      kind?: MemoryEntryKind;
+      status?: MemoryEntryStatus;
+    } = {}
+  ) {
+    const rows = this.db
+      .query<MemoryEntryRow, []>(
+        `SELECT
+          id, project_id, thread_id, run_id, kind, status, title, summary, evidence, tags_json, path_globs_json,
+          confidence, pinned, hit_count, last_hit_at, source_commit_sha, created_at, updated_at
+         FROM memory_entries
+         ORDER BY pinned DESC, updated_at DESC, created_at DESC`
+      )
+      .all();
+
+    return rows
+      .map((row) => this.hydrateMemoryEntry(row))
+      .filter((entry) => (projectId ? !entry.projectId || entry.projectId === projectId : true))
+      .filter((entry) => (filters.kind ? entry.kind === filters.kind : true))
+      .filter((entry) => (filters.status ? entry.status === filters.status : true))
+      .filter((entry) => {
+        if (!filters.query?.trim()) {
+          return true;
+        }
+
+        const query = filters.query.toLowerCase();
+        return [entry.title, entry.summary, entry.evidence ?? "", entry.tags.join(" "), entry.pathGlobs.join(" ")]
+          .join("\n")
+          .toLowerCase()
+          .includes(query);
+      });
+  }
+
+  getMemoryEntry(entryId: string) {
+    const row = this.db
+      .query<MemoryEntryRow, [string]>(
+        `SELECT
+          id, project_id, thread_id, run_id, kind, status, title, summary, evidence, tags_json, path_globs_json,
+          confidence, pinned, hit_count, last_hit_at, source_commit_sha, created_at, updated_at
+         FROM memory_entries
+         WHERE id = ?1`
+      )
+      .get(entryId);
+
+    return row ? this.hydrateMemoryEntry(row) : undefined;
+  }
+
+  saveMemoryEntry(entry: MemoryEntry) {
+    this.db
+      .query(
+        `INSERT INTO memory_entries (
+          id, project_id, thread_id, run_id, kind, status, title, summary, evidence, tags_json, path_globs_json,
+          confidence, pinned, hit_count, last_hit_at, source_commit_sha, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+        ON CONFLICT(id) DO UPDATE SET
+          project_id = excluded.project_id,
+          thread_id = excluded.thread_id,
+          run_id = excluded.run_id,
+          kind = excluded.kind,
+          status = excluded.status,
+          title = excluded.title,
+          summary = excluded.summary,
+          evidence = excluded.evidence,
+          tags_json = excluded.tags_json,
+          path_globs_json = excluded.path_globs_json,
+          confidence = excluded.confidence,
+          pinned = excluded.pinned,
+          hit_count = excluded.hit_count,
+          last_hit_at = excluded.last_hit_at,
+          source_commit_sha = excluded.source_commit_sha,
+          updated_at = excluded.updated_at`
+      )
+      .run(
+        entry.id,
+        entry.projectId ?? null,
+        entry.threadId ?? null,
+        entry.runId ?? null,
+        entry.kind,
+        entry.status,
+        entry.title,
+        entry.summary,
+        entry.evidence ?? null,
+        JSON.stringify(entry.tags),
+        JSON.stringify(entry.pathGlobs),
+        entry.confidence,
+        entry.pinned ? 1 : 0,
+        entry.hitCount,
+        entry.lastHitAt ?? null,
+        entry.sourceCommitSha ?? null,
+        entry.createdAt,
+        entry.updatedAt
+      );
+    return this.getMemoryEntry(entry.id);
+  }
+
+  deleteMemoryEntry(entryId: string) {
+    this.db.query(`DELETE FROM memory_entries WHERE id = ?1`).run(entryId);
+  }
+
+  logMemoryRetrieval(retrieval: MemoryRetrieval) {
+    this.db
+      .query(
+        `INSERT INTO memory_retrievals (id, run_id, owner, subagent_id, query_text, entry_ids_json, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`
+      )
+      .run(
+        retrieval.id,
+        retrieval.runId,
+        retrieval.owner,
+        retrieval.subagentId ?? null,
+        retrieval.queryText,
+        JSON.stringify(retrieval.entryIds),
+        retrieval.createdAt
+      );
+  }
+
+  getThreadMemorySummary(projectId: ProjectId, threadId: ThreadId) {
+    return toThreadMemorySummary(this.readThreadRow(projectId, threadId));
+  }
+
+  getLatestThreadRun(projectId: ProjectId, threadId: ThreadId) {
+    this.readThreadRow(projectId, threadId);
+    return this.readLatestRun(projectId, threadId);
+  }
+
+  getRun(projectId: ProjectId, runId: string) {
+    this.assertRunExists(projectId, runId);
+    const row = this.db
+      .query<AgentRunRow, [string, string]>(
+        `SELECT
+          id, project_id, thread_id, status, execution_target, latest_user_prompt, planning_model_id, execution_model_id,
+          difficulty_score, summary, final_execution_brief, failure_message, plan_json, correctness_review_json,
+          browser_sessions_json,
+          created_at, updated_at, completed_at
+         FROM agent_runs
+         WHERE id = ?1 AND project_id = ?2`
+      )
+      .get(runId, projectId);
+    return row ? this.hydrateRunState(row) : undefined;
+  }
+
+  loadAssistantsState(): AssistantsState {
+    return assistantsStateSchema.parse({
+      assistants: this.readAssistants(),
+      threads: this.readAssistantThreads(),
+      todos: this.readAssistantTodos(),
+      learnings: this.readAssistantLearnings(),
+      questions: this.readAssistantQuestions(),
+      logs: this.readAssistantLogEntries(),
+      assetRefs: this.readAssistantAssetRefs()
+    });
+  }
+
+  getAssistant(assistantId: string, includeDeleted: boolean = false) {
+    const row = this.db
+      .query<AssistantRow, [string]>(
+        `SELECT
+          id, name, scope, project_id, description, personality_prompt, job_prompt, agent_id, mode_id,
+          execution_model_id, run_state, bootstrap_state, cloned_from_assistant_id, failure_streak_count,
+          circuit_breaker_state, circuit_breaker_reason, pending_reprioritize_reason, pending_reprioritize_requested_at,
+          deleted_at, latest_activity_at, created_at, updated_at
+         FROM assistants
+         WHERE id = ?1`
+      )
+      .get(assistantId);
+    if (!row) {
+      return undefined;
+    }
+    if (!includeDeleted && row.deleted_at) {
+      return undefined;
+    }
+    return this.hydrateAssistant(row);
+  }
+
+  saveAssistant(assistant: Assistant, assetRefs: AssistantAssetRef[] = []) {
+    if (assistant.scope === "project" && assistant.projectId) {
+      this.assertProjectExists(assistant.projectId);
+    }
+
+    const now = new Date().toISOString();
+    const tx = this.db.transaction(() => {
+      this.db
+        .query(
+          `INSERT INTO assistants (
+            id, name, scope, project_id, description, personality_prompt, job_prompt, agent_id, mode_id,
+            execution_model_id, run_state, bootstrap_state, cloned_from_assistant_id, failure_streak_count,
+            circuit_breaker_state, circuit_breaker_reason, pending_reprioritize_reason, pending_reprioritize_requested_at,
+            deleted_at, latest_activity_at, created_at, updated_at
+          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, NULL, NULL, ?17, ?18, ?19, ?20)
+          ON CONFLICT(id) DO UPDATE SET
+            name = excluded.name,
+            scope = excluded.scope,
+            project_id = excluded.project_id,
+            description = excluded.description,
+            personality_prompt = excluded.personality_prompt,
+            job_prompt = excluded.job_prompt,
+            agent_id = excluded.agent_id,
+            mode_id = excluded.mode_id,
+            execution_model_id = excluded.execution_model_id,
+            run_state = excluded.run_state,
+            bootstrap_state = excluded.bootstrap_state,
+            cloned_from_assistant_id = excluded.cloned_from_assistant_id,
+            failure_streak_count = excluded.failure_streak_count,
+            circuit_breaker_state = excluded.circuit_breaker_state,
+            circuit_breaker_reason = excluded.circuit_breaker_reason,
+            deleted_at = excluded.deleted_at,
+            latest_activity_at = excluded.latest_activity_at,
+            updated_at = excluded.updated_at`
+        )
+        .run(
+          assistant.id,
+          assistant.name,
+          assistant.scope,
+          assistant.projectId ?? null,
+          assistant.description ?? null,
+          assistant.personalityPrompt,
+          assistant.jobPrompt,
+          assistant.agentId,
+          assistant.modeId ?? null,
+          assistant.executionModelId ?? null,
+          assistant.runState,
+          assistant.bootstrapState,
+          assistant.clonedFromAssistantId ?? null,
+          assistant.failureStreakCount,
+          assistant.circuitBreakerState,
+          assistant.circuitBreakerReason ?? null,
+          assistant.deletedAt ?? null,
+          assistant.latestActivityAt ?? now,
+          assistant.createdAt,
+          now
+        );
+
+      const existingThread = this.db
+        .query<{ id: string }, [string]>(`SELECT id FROM assistant_threads WHERE assistant_id = ?1`)
+        .get(assistant.id);
+      if (!existingThread) {
+        this.db
+          .query(
+            `INSERT INTO assistant_threads (
+              id, assistant_id, session_id, memory_summary_content, memory_summary_updated_at, updated_at, created_at
+            ) VALUES (?1, ?2, ?3, NULL, NULL, ?4, ?4)`
+          )
+          .run(createAssistantThreadId(), assistant.id, createSessionId(), now);
+      }
+
+      this.db.query(`DELETE FROM assistant_asset_refs WHERE assistant_id = ?1`).run(assistant.id);
+      for (const assetRef of assetRefs) {
+        this.db
+          .query(
+            `INSERT INTO assistant_asset_refs (id, assistant_id, kind, label, value, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)`
+          )
+          .run(assetRef.id, assistant.id, assetRef.kind, assetRef.label, assetRef.value, assetRef.createdAt);
+      }
+    });
+    tx();
+
+    return this.getAssistant(assistant.id)!;
+  }
+
+  saveAssistantTodo(todo: AssistantTodo) {
+    this.assertAssistantExists(todo.assistantId);
+    this.db
+      .query(
+        `INSERT INTO assistant_todos (
+          id, assistant_id, title, description, state, sort_order, blocker_reason, source,
+          created_at, updated_at, completed_at, cancelled_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+        ON CONFLICT(id) DO UPDATE SET
+          title = excluded.title,
+          description = excluded.description,
+          state = excluded.state,
+          sort_order = excluded.sort_order,
+          blocker_reason = excluded.blocker_reason,
+          source = excluded.source,
+          updated_at = excluded.updated_at,
+          completed_at = excluded.completed_at,
+          cancelled_at = excluded.cancelled_at`
+      )
+      .run(
+        todo.id,
+        todo.assistantId,
+        todo.title,
+        todo.description ?? null,
+        todo.state,
+        todo.sortOrder,
+        todo.blockerReason ?? null,
+        todo.source ?? null,
+        todo.createdAt,
+        todo.updatedAt,
+        todo.completedAt ?? null,
+        todo.cancelledAt ?? null
+      );
+    this.touchAssistant(todo.assistantId);
+    return this.getAssistantTodo(todo.id)!;
+  }
+
+  reorderAssistantTodos(assistantId: string, todoIds: string[]) {
+    this.assertAssistantExists(assistantId);
+    const now = new Date().toISOString();
+    const tx = this.db.transaction(() => {
+      todoIds.forEach((todoId, index) => {
+        this.db
+          .query(`UPDATE assistant_todos SET sort_order = ?3, updated_at = ?4 WHERE id = ?1 AND assistant_id = ?2`)
+          .run(todoId, assistantId, index, now);
+      });
+    });
+    tx();
+    this.touchAssistant(assistantId, now);
+  }
+
+  saveAssistantLearning(learning: AssistantLearning) {
+    this.assertAssistantExists(learning.assistantId);
+    this.db
+      .query(
+        `INSERT INTO assistant_learnings (id, assistant_id, summary, source, confidence, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(id) DO UPDATE SET
+           summary = excluded.summary,
+           source = excluded.source,
+           confidence = excluded.confidence`
+      )
+      .run(learning.id, learning.assistantId, learning.summary, learning.source, learning.confidence, learning.createdAt);
+    this.touchAssistant(learning.assistantId, learning.createdAt);
+    return this.getAssistantLearning(learning.id)!;
+  }
+
+  saveAssistantQuestion(question: AssistantQuestion) {
+    this.assertAssistantExists(question.assistantId);
+    this.db
+      .query(
+        `INSERT INTO assistant_questions (id, assistant_id, prompt, status, answer_text, linked_todo_ids_json, asked_at, answered_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(id) DO UPDATE SET
+           prompt = excluded.prompt,
+           status = excluded.status,
+           answer_text = excluded.answer_text,
+           linked_todo_ids_json = excluded.linked_todo_ids_json,
+           answered_at = excluded.answered_at`
+      )
+      .run(
+        question.id,
+        question.assistantId,
+        question.prompt,
+        question.status,
+        question.answerText ?? null,
+        question.linkedTodoIds ? JSON.stringify(question.linkedTodoIds) : null,
+        question.askedAt,
+        question.answeredAt ?? null
+      );
+    this.touchAssistant(question.assistantId, question.answeredAt ?? question.askedAt);
+    return this.getAssistantQuestion(question.id)!;
+  }
+
+  answerAssistantQuestion(assistantId: string, questionId: string, answerText: string) {
+    this.assertAssistantExists(assistantId);
+    const now = new Date().toISOString();
+    this.db
+      .query(
+        `UPDATE assistant_questions
+         SET status = 'answered', answer_text = ?3, answered_at = ?4
+         WHERE id = ?1 AND assistant_id = ?2`
+      )
+      .run(questionId, assistantId, answerText.trim(), now);
+    this.touchAssistant(assistantId, now);
+    return this.getAssistantQuestion(questionId)!;
+  }
+
+  promoteDeferredAssistantQuestions() {
+    const questionIds = this.db
+      .query<{ id: string }, []>(`SELECT id FROM assistant_questions WHERE status = 'deferred' ORDER BY asked_at ASC`)
+      .all()
+      .map((row) => row.id);
+
+    this.db.query(`UPDATE assistant_questions SET status = 'pending' WHERE status = 'deferred'`).run();
+    return questionIds.map((questionId) => this.getAssistantQuestion(questionId)!).filter(Boolean);
+  }
+
+  appendAssistantLogEntry(entry: AssistantLogEntry) {
+    this.assertAssistantExists(entry.assistantId);
+    this.db
+      .query(
+        `INSERT INTO assistant_log_entries (id, assistant_id, level, summary, detail, details_json, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`
+      )
+      .run(
+        entry.id,
+        entry.assistantId,
+        entry.level,
+        entry.summary,
+        entry.detail ?? null,
+        entry.detailsJson === undefined ? null : JSON.stringify(entry.detailsJson),
+        entry.createdAt
+      );
+    this.touchAssistant(entry.assistantId, entry.createdAt);
+    return this.getAssistantLogEntry(entry.id)!;
+  }
+
+  appendAssistantMessage(
+    assistantId: string,
+    role: ChatRole,
+    content: string,
+    options: {
+      kind?: ChatMessageKind;
+      metadata?: ChatMessageMetadata;
+      id?: string;
+      createdAt?: string;
+    } = {}
+  ) {
+    this.assertAssistantExists(assistantId);
+    const thread = this.readAssistantThreadRowByAssistantId(assistantId);
+    const createdAt = options.createdAt ?? new Date().toISOString();
+    this.db
+      .query(
+        `INSERT INTO assistant_messages (id, assistant_thread_id, role, kind, content, metadata_json, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`
+      )
+      .run(
+        options.id ?? crypto.randomUUID(),
+        thread.id,
+        role,
+        options.kind ?? "plain",
+        content,
+        options.metadata ? JSON.stringify(options.metadata) : null,
+        createdAt
+      );
+    this.db.query(`UPDATE assistant_threads SET updated_at = ?2 WHERE id = ?1`).run(thread.id, createdAt);
+    this.touchAssistant(assistantId, createdAt);
+    return this.getAssistantThread(assistantId)!;
+  }
+
+  getAssistantThread(assistantId: string) {
+    this.assertAssistantExists(assistantId);
+    const row = this.readAssistantThreadRowByAssistantId(assistantId);
+    return this.hydrateAssistantThread(row);
+  }
+
+  getAssistantTodos(assistantId: string) {
+    this.assertAssistantExists(assistantId);
+    return this.readAssistantTodos().filter((todo) => todo.assistantId === assistantId);
+  }
+
+  getAssistantLearnings(assistantId: string) {
+    this.assertAssistantExists(assistantId);
+    return this.readAssistantLearningsByAssistantId(assistantId);
+  }
+
+  getAssistantQuestions(assistantId: string) {
+    this.assertAssistantExists(assistantId);
+    return this.readAssistantQuestions().filter((question) => question.assistantId === assistantId);
+  }
+
+  getAssistantsAwaitingBootstrap() {
+    return this.readAssistants().filter((assistant) => assistant.bootstrapState === "pending");
+  }
+
+  markAssistantPendingReprioritize(assistantId: string, reason: string) {
+    this.assertAssistantExists(assistantId);
+    const now = new Date().toISOString();
+    this.db
+      .query(
+        `UPDATE assistants
+         SET pending_reprioritize_reason = ?2,
+             pending_reprioritize_requested_at = ?3,
+             updated_at = ?3,
+             latest_activity_at = ?3
+         WHERE id = ?1`
+      )
+      .run(assistantId, reason.trim(), now);
+  }
+
+  clearAssistantPendingReprioritize(assistantId: string) {
+    this.assertAssistantExists(assistantId);
+    const now = new Date().toISOString();
+    this.db
+      .query(
+        `UPDATE assistants
+         SET pending_reprioritize_reason = NULL,
+             pending_reprioritize_requested_at = NULL,
+             updated_at = ?2,
+             latest_activity_at = ?2
+         WHERE id = ?1`
+      )
+      .run(assistantId, now);
+  }
+
+  consumeAssistantsPendingReprioritize() {
+    const assistants = this.db
+      .query<{ id: string; reason: string }, []>(
+        `SELECT id, pending_reprioritize_reason AS reason
+         FROM assistants
+         WHERE deleted_at IS NULL
+           AND pending_reprioritize_reason IS NOT NULL
+         ORDER BY pending_reprioritize_requested_at ASC, updated_at ASC`
+      )
+      .all();
+
+    this.db
+      .query(
+        `UPDATE assistants
+         SET pending_reprioritize_reason = NULL,
+             pending_reprioritize_requested_at = NULL
+         WHERE pending_reprioritize_reason IS NOT NULL`
+      )
+      .run();
+
+    return assistants.map((assistant) => ({
+      assistantId: assistant.id,
+      reason: assistant.reason
+    }));
+  }
+
+  getAssistantAssetRefs(assistantId: string) {
+    this.assertAssistantExists(assistantId);
+    return this.readAssistantAssetRefs().filter((assetRef) => assetRef.assistantId === assistantId);
+  }
+
+  getAssistantLogEntries(assistantId: string) {
+    this.assertAssistantExists(assistantId);
+    return this.readAssistantLogEntries().filter((entry) => entry.assistantId === assistantId);
+  }
+
+  setAssistantThreadMemorySummary(assistantId: string, content: string | undefined) {
+    this.assertAssistantExists(assistantId);
+    const thread = this.readAssistantThreadRowByAssistantId(assistantId);
+    const now = new Date().toISOString();
+    this.db
+      .query(
+        `UPDATE assistant_threads
+         SET memory_summary_content = ?2, memory_summary_updated_at = ?3, updated_at = ?3
+         WHERE id = ?1`
+      )
+      .run(thread.id, content?.trim() || null, content?.trim() ? now : null);
+    this.touchAssistant(assistantId, now);
+    return this.getAssistantThread(assistantId)!;
+  }
+
+  setAssistantRunState(assistantId: string, runState: Assistant["runState"], reason?: string) {
+    this.assertAssistantExists(assistantId);
+    const now = new Date().toISOString();
+    this.db
+      .query(
+        `UPDATE assistants
+         SET run_state = ?2,
+             circuit_breaker_reason = COALESCE(?3, circuit_breaker_reason),
+             updated_at = ?4,
+             latest_activity_at = ?4
+         WHERE id = ?1`
+      )
+      .run(assistantId, runState, reason ?? null, now);
+    return this.getAssistant(assistantId)!;
+  }
+
+  setAssistantBootstrapState(assistantId: string, bootstrapState: Assistant["bootstrapState"]) {
+    this.assertAssistantExists(assistantId);
+    const now = new Date().toISOString();
+    this.db
+      .query(`UPDATE assistants SET bootstrap_state = ?2, updated_at = ?3, latest_activity_at = ?3 WHERE id = ?1`)
+      .run(assistantId, bootstrapState, now);
+    return this.getAssistant(assistantId)!;
+  }
+
+  updateAssistantFailureState(
+    assistantId: string,
+    input: {
+      failureStreakCount: number;
+      circuitBreakerState?: Assistant["circuitBreakerState"];
+      circuitBreakerReason?: string;
+      runState?: Assistant["runState"];
+    }
+  ) {
+    this.assertAssistantExists(assistantId);
+    const now = new Date().toISOString();
+    this.db
+      .query(
+        `UPDATE assistants
+         SET failure_streak_count = ?2,
+             circuit_breaker_state = COALESCE(?3, circuit_breaker_state),
+             circuit_breaker_reason = ?4,
+             run_state = COALESCE(?5, run_state),
+             updated_at = ?6,
+             latest_activity_at = ?6
+         WHERE id = ?1`
+      )
+      .run(
+        assistantId,
+        input.failureStreakCount,
+        input.circuitBreakerState ?? null,
+        input.circuitBreakerReason ?? null,
+        input.runState ?? null,
+        now
+      );
+    return this.getAssistant(assistantId)!;
+  }
+
+  cloneAssistantToProject(assistantId: string, projectId: ProjectId, cloneAssistant: Assistant, assetRefs: AssistantAssetRef[] = []) {
+    this.assertAssistantExists(assistantId);
+    this.assertProjectExists(projectId);
+    const sourceLearnings = this.readAssistantLearningsByAssistantId(assistantId).slice(0, 12);
+    const savedAssistant = this.saveAssistant(cloneAssistant, assetRefs);
+    if (sourceLearnings.length > 0) {
+      this.saveAssistantLearning({
+        id: crypto.randomUUID(),
+        assistantId: savedAssistant.id,
+        summary: `Cloned learnings: ${sourceLearnings.map((entry) => entry.summary).join(" | ").slice(0, 3800)}`,
+        source: `clone:${assistantId}`,
+        confidence: "medium",
+        createdAt: new Date().toISOString()
+      });
+    }
+    return savedAssistant;
+  }
+
+  deleteAssistant(assistantId: string) {
+    this.assertAssistantExists(assistantId);
+    const now = new Date().toISOString();
+    const tx = this.db.transaction(() => {
+      this.db.query(`UPDATE assistants SET deleted_at = ?2, run_state = 'paused', updated_at = ?2 WHERE id = ?1`).run(assistantId, now);
+      this.db.query(`UPDATE background_jobs SET status = 'disabled', updated_at = ?2 WHERE assistant_id = ?1`).run(assistantId, now);
+      this.db
+        .query(
+          `UPDATE background_job_runs
+           SET status = 'cancelled', failure_message = 'Assistant deleted', completed_at = ?2, updated_at = ?2
+           WHERE assistant_id = ?1 AND status IN ('queued', 'awaiting-approval', 'running')`
+        )
+        .run(assistantId, now);
+      this.db.query(`DELETE FROM background_jobs WHERE assistant_id = ?1`).run(assistantId);
+    });
+    tx();
+  }
+
+  loadBackgroundJobsState(): BackgroundJobsState {
+    return backgroundJobsStateSchema.parse({
+      jobs: this.readBackgroundJobs(),
+      runs: this.readBackgroundJobRuns(),
+      templates: this.readBackgroundJobTemplates()
+    });
+  }
+
+  saveBackgroundJob(job: BackgroundJob) {
+    this.assertProjectExists(job.projectId);
+    if (job.assistantId) {
+      this.assertAssistantExists(job.assistantId);
+    }
+    const now = new Date().toISOString();
+    const automationThreadId = this.ensureAutomationThread(job.projectId, job.automationThreadId, job.name, now);
+    this.db
+      .query(
+        `INSERT INTO background_jobs (
+          id, project_id, assistant_id, automation_thread_id, template_id, created_from_run_id, kind, name, description,
+          definition_json, schedule_json, schedule_input, timezone, status, risk_level, next_run_at,
+          last_run_at, last_enqueued_at, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+        ON CONFLICT(id) DO UPDATE SET
+          project_id = excluded.project_id,
+          assistant_id = excluded.assistant_id,
+          automation_thread_id = excluded.automation_thread_id,
+          template_id = excluded.template_id,
+          created_from_run_id = excluded.created_from_run_id,
+          kind = excluded.kind,
+          name = excluded.name,
+          description = excluded.description,
+          definition_json = excluded.definition_json,
+          schedule_json = excluded.schedule_json,
+          schedule_input = excluded.schedule_input,
+          timezone = excluded.timezone,
+          status = excluded.status,
+          risk_level = excluded.risk_level,
+          next_run_at = excluded.next_run_at,
+          last_run_at = excluded.last_run_at,
+          last_enqueued_at = excluded.last_enqueued_at,
+          updated_at = excluded.updated_at`
+      )
+      .run(
+        job.id,
+        job.projectId,
+        job.assistantId ?? null,
+        automationThreadId,
+        job.templateId ?? null,
+        job.createdFromRunId ?? null,
+        job.kind,
+        job.name,
+        job.description ?? null,
+        JSON.stringify(job.definition),
+        JSON.stringify(job.schedule),
+        job.scheduleInput,
+        job.timezone ?? null,
+        job.status,
+        job.riskLevel,
+        job.nextRunAt ?? null,
+        job.lastRunAt ?? null,
+        job.lastEnqueuedAt ?? null,
+        job.createdAt,
+        now
+      );
+    this.touchProject(job.projectId, now);
+    return this.loadBackgroundJobsState();
+  }
+
+  deleteBackgroundJob(projectId: ProjectId, jobId: string) {
+    this.db.query(`DELETE FROM background_jobs WHERE id = ?1 AND project_id = ?2`).run(jobId, projectId);
+    return this.loadBackgroundJobsState();
+  }
+
+  setBackgroundJobStatus(projectId: ProjectId, jobId: string, status: BackgroundJob["status"]) {
+    const now = new Date().toISOString();
+    this.db
+      .query(`UPDATE background_jobs SET status = ?3, updated_at = ?4 WHERE id = ?1 AND project_id = ?2`)
+      .run(jobId, projectId, status, now);
+    return this.loadBackgroundJobsState();
+  }
+
+  getBackgroundJob(jobId: string) {
+    const row = this.db
+      .query<BackgroundJobRow, [string]>(
+        `SELECT
+          id, project_id, assistant_id, automation_thread_id, template_id, created_from_run_id, kind, name, description,
+          definition_json, schedule_json, schedule_input, timezone, status, risk_level, next_run_at,
+          last_run_at, last_enqueued_at, created_at, updated_at
+         FROM background_jobs
+         WHERE id = ?1`
+      )
+      .get(jobId);
+    return row ? this.hydrateBackgroundJob(row) : undefined;
+  }
+
+  getBackgroundJobRun(runId: string) {
+    const row = this.db
+      .query<BackgroundJobRunRow, [string]>(
+        `SELECT
+          id, job_id, project_id, assistant_id, automation_thread_id, trigger_source, status, risk_level, approval_status,
+          skipped_occurrence_count, linked_agent_run_id, summary, failure_message, queued_at, started_at,
+          completed_at, created_at, updated_at
+         FROM background_job_runs
+         WHERE id = ?1`
+      )
+      .get(runId);
+    return row ? this.hydrateBackgroundJobRun(row) : undefined;
+  }
+
+  getQueuedBackgroundJobRuns() {
+    return this.db
+      .query<{ id: string }, []>(
+        `SELECT id
+         FROM background_job_runs
+         WHERE status = 'queued'
+         ORDER BY queued_at ASC, created_at ASC`
+      )
+      .all()
+      .map((row) => this.getBackgroundJobRun(row.id)!)
+      .filter(Boolean);
+  }
+
+  createBackgroundJobRun(
+    input: Pick<
+      BackgroundJobRun,
+      "jobId" | "projectId" | "assistantId" | "automationThreadId" | "triggerSource" | "status" | "riskLevel" | "approvalStatus"
+    > & {
+      skippedOccurrenceCount?: number;
+    }
+  ) {
+    const now = new Date().toISOString();
+    const runId = createBackgroundJobRunId();
+    this.db
+      .query(
+        `INSERT INTO background_job_runs (
+          id, job_id, project_id, assistant_id, automation_thread_id, trigger_source, status, risk_level, approval_status,
+          skipped_occurrence_count, linked_agent_run_id, summary, failure_message, queued_at, started_at,
+          completed_at, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, NULL, NULL, ?11, NULL, NULL, ?11, ?11)`
+      )
+      .run(
+        runId,
+        input.jobId,
+        input.projectId,
+        input.assistantId ?? null,
+        input.automationThreadId,
+        input.triggerSource,
+        input.status,
+        input.riskLevel,
+        input.approvalStatus,
+        input.skippedOccurrenceCount ?? 0,
+        now
+      );
+    this.db
+      .query(`UPDATE background_jobs SET last_enqueued_at = ?2, updated_at = ?2 WHERE id = ?1`)
+      .run(input.jobId, now);
+    return this.getBackgroundJobRun(runId)!;
+  }
+
+  appendBackgroundJobRunEvent(runId: string, stage: string, message: string, detail?: string) {
+    const now = new Date().toISOString();
+    const ordinal =
+      (this.db
+        .query<{ count: number }, [string]>(`SELECT COUNT(*) AS count FROM background_job_run_events WHERE run_id = ?1`)
+        .get(runId)?.count ?? 0) + 1;
+    this.db
+      .query(
+        `INSERT INTO background_job_run_events (id, run_id, ordinal, stage, message, detail_json, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`
+      )
+      .run(crypto.randomUUID(), runId, ordinal, stage, message, detail ?? null, now);
+    this.db.query(`UPDATE background_job_runs SET updated_at = ?2 WHERE id = ?1`).run(runId, now);
+    return this.getBackgroundJobRun(runId)!;
+  }
+
+  setBackgroundJobRunStatus(
+    runId: string,
+    status: BackgroundJobRunStatus,
+    input: { summary?: string; failureMessage?: string; linkedAgentRunId?: string; approvalStatus?: BackgroundJobRun["approvalStatus"] } = {}
+  ) {
+    const now = new Date().toISOString();
+    this.db
+      .query(
+        `UPDATE background_job_runs
+         SET status = ?2,
+             summary = COALESCE(?3, summary),
+             failure_message = ?4,
+             linked_agent_run_id = COALESCE(?5, linked_agent_run_id),
+             approval_status = COALESCE(?6, approval_status),
+             started_at = CASE WHEN ?2 = 'running' AND started_at IS NULL THEN ?7 ELSE started_at END,
+             completed_at = CASE WHEN ?2 IN ('succeeded', 'failed', 'cancelled', 'skipped') THEN ?7 ELSE completed_at END,
+             updated_at = ?7
+         WHERE id = ?1`
+      )
+      .run(runId, status, input.summary ?? null, input.failureMessage ?? null, input.linkedAgentRunId ?? null, input.approvalStatus ?? null, now);
+    return this.getBackgroundJobRun(runId)!;
+  }
+
+  promoteDeferredBrowserApprovals() {
+    const promoted = new Map<string, { projectId: ProjectId; threadId: ThreadId; runId: string }>();
+    const rows = this.db
+      .query<{ id: string; project_id: string; thread_id: string; browser_sessions_json: string | null }, []>(
+        `SELECT id, project_id, thread_id, browser_sessions_json
+         FROM agent_runs
+         WHERE browser_sessions_json IS NOT NULL`
+      )
+      .all();
+
+    for (const row of rows) {
+      const sessions = parseBrowserSessions(row.browser_sessions_json) ?? [];
+      let changed = false;
+      const nextSessions = sessions.map((session) => {
+        const nextActivities = session.activities.map((activity) => {
+          if (activity.approval?.status !== "deferred") {
+            return activity;
+          }
+
+          changed = true;
+          return {
+            ...activity,
+            approval: {
+              ...activity.approval,
+              status: "pending"
+            }
+          };
+        });
+        const pendingApproval = nextActivities.find((activity) => activity.approval?.status === "pending")?.approval;
+        return {
+          ...session,
+          pendingApproval,
+          status: pendingApproval ? "awaiting-approval" : session.status,
+          activities: nextActivities
+        };
+      });
+
+      if (!changed) {
+        continue;
+      }
+
+      this.db
+        .query(`UPDATE agent_runs SET browser_sessions_json = ?2 WHERE id = ?1`)
+        .run(row.id, JSON.stringify(nextSessions));
+      promoted.set(row.id, {
+        projectId: row.project_id as ProjectId,
+        threadId: row.thread_id as ThreadId,
+        runId: row.id
+      });
+    }
+
+    return [...promoted.values()];
+  }
+
+  updateBackgroundJobSchedule(
+    jobId: string,
+    input: { schedule?: BackgroundJobSchedule; nextRunAt?: string; lastRunAt?: string }
+  ) {
+    const now = new Date().toISOString();
+    this.db
+      .query(
+        `UPDATE background_jobs
+         SET schedule_json = COALESCE(?2, schedule_json),
+             next_run_at = ?3,
+             last_run_at = COALESCE(?4, last_run_at),
+             updated_at = ?5
+         WHERE id = ?1`
+      )
+      .run(jobId, input.schedule ? JSON.stringify(input.schedule) : null, input.nextRunAt ?? null, input.lastRunAt ?? null, now);
+    return this.getBackgroundJob(jobId)!;
   }
 
   getStoredOpenAiApiKey() {
@@ -912,6 +2253,18 @@ export class WorkspaceRepository {
     this.setWorkspaceMetaValue(DIRTY_GIT_CHANGE_LIMIT_DEFAULT_KEY, String(Math.max(0, Math.min(10000, Math.round(value)))));
   }
 
+  getAutoCompactContextThresholdPercentDefault() {
+    const value = Number(this.getWorkspaceMetaValue(AUTO_COMPACT_CONTEXT_THRESHOLD_PERCENT_DEFAULT_KEY));
+    return Number.isFinite(value) ? Math.max(10, Math.min(95, Math.round(value))) : 40;
+  }
+
+  setAutoCompactContextThresholdPercentDefault(value: number) {
+    this.setWorkspaceMetaValue(
+      AUTO_COMPACT_CONTEXT_THRESHOLD_PERCENT_DEFAULT_KEY,
+      String(Math.max(10, Math.min(95, Math.round(value))))
+    );
+  }
+
   getPlanExecutionModeDefault(): PlanExecutionMode {
     const value = this.getWorkspaceMetaValue(PLAN_EXECUTION_MODE_DEFAULT_KEY);
     return value === "approve" || value === "immediate" ? value : "countdown";
@@ -943,12 +2296,68 @@ export class WorkspaceRepository {
     this.setWorkspaceMetaValue(CORRECTNESS_ITERATION_MODE_DEFAULT_KEY, value);
   }
 
-  getUiModeDefault(): UiMode {
-    return this.getWorkspaceMetaValue(UI_MODE_DEFAULT_KEY) === "advanced" ? "advanced" : "simple";
+  getBackgroundJobApprovalPolicyDefault(): BackgroundJobApprovalPolicy {
+    const value = this.getWorkspaceMetaValue(BACKGROUND_JOB_APPROVAL_POLICY_DEFAULT_KEY);
+    if (value === "allow-all" || value === "allow-safe" || value === "ask-risky") {
+      return value;
+    }
+
+    return "always-ask";
   }
 
-  setUiModeDefault(value: UiMode) {
-    this.setWorkspaceMetaValue(UI_MODE_DEFAULT_KEY, value);
+  setBackgroundJobApprovalPolicyDefault(value: BackgroundJobApprovalPolicy) {
+    this.setWorkspaceMetaValue(BACKGROUND_JOB_APPROVAL_POLICY_DEFAULT_KEY, value);
+  }
+
+  getMemoryBankEnabledDefault() {
+    const value = this.getWorkspaceMetaValue(MEMORY_BANK_ENABLED_DEFAULT_KEY);
+    return value === undefined ? true : value === "true";
+  }
+
+  setMemoryBankEnabledDefault(value: boolean) {
+    this.setWorkspaceMetaValue(MEMORY_BANK_ENABLED_DEFAULT_KEY, String(value));
+  }
+
+  getGlobalExecutionPaused() {
+    return this.getWorkspaceMetaValue(GLOBAL_EXECUTION_PAUSED_KEY) === "true";
+  }
+
+  setGlobalExecutionPaused(isPaused: boolean) {
+    this.setWorkspaceMetaValue(GLOBAL_EXECUTION_PAUSED_KEY, String(isPaused));
+  }
+
+  getExecutionControlState(): ExecutionControlState {
+    const deferredPlanningQuestionCount =
+      this.db
+        .query<{ count: number }, []>(`SELECT COUNT(*) AS count FROM agent_run_questions WHERE status = 'deferred'`)
+        .get()?.count ?? 0;
+    const deferredAssistantQuestionCount =
+      this.db
+        .query<{ count: number }, []>(`SELECT COUNT(*) AS count FROM assistant_questions WHERE status = 'deferred'`)
+        .get()?.count ?? 0;
+    const deferredBrowserApprovalCount =
+      this.db
+        .query<{ browser_sessions_json: string | null }, []>(
+          `SELECT browser_sessions_json
+           FROM agent_runs
+           WHERE browser_sessions_json IS NOT NULL`
+        )
+        .all()
+        .reduce(
+          (count, row) =>
+            count +
+            (parseBrowserSessions(row.browser_sessions_json) ?? [])
+              .flatMap((session) => session.activities)
+              .filter((activity) => activity.approval?.status === "deferred").length,
+          0
+        );
+
+    return {
+      isPaused: this.getGlobalExecutionPaused(),
+      deferredPlanningQuestionCount,
+      deferredAssistantQuestionCount,
+      deferredBrowserApprovalCount
+    };
   }
 
   getWorkspaceRuleSource() {
@@ -1117,6 +2526,7 @@ export class WorkspaceRepository {
         id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL,
         status TEXT NOT NULL CHECK(status IN ('active', 'archived')),
+        kind TEXT NOT NULL DEFAULT 'user' CHECK(kind IN ('user', 'automation')),
         title TEXT NULL,
         title_source TEXT NULL,
         updated_at TEXT NULL,
@@ -1165,6 +2575,7 @@ export class WorkspaceRepository {
           'stopped',
           'failed'
         )),
+        execution_target TEXT NULL CHECK(execution_target IN ('current-project', 'ephemeral-experiment')),
         latest_user_prompt TEXT NOT NULL,
         planning_model_id TEXT NULL,
         execution_model_id TEXT NULL,
@@ -1192,7 +2603,7 @@ export class WorkspaceRepository {
         prompt TEXT NOT NULL,
         placeholder TEXT NULL,
         choices_json TEXT NULL,
-        status TEXT NOT NULL CHECK(status IN ('pending', 'answered')),
+        status TEXT NOT NULL CHECK(status IN ('pending', 'deferred', 'answered')),
         answer_text TEXT NULL,
         asked_at TEXT NOT NULL,
         answered_at TEXT NULL,
@@ -1223,6 +2634,62 @@ export class WorkspaceRepository {
       CREATE UNIQUE INDEX IF NOT EXISTS agent_run_subtasks_run_planner_task_idx
       ON agent_run_subtasks(run_id, planner_task_id);
 
+      CREATE TABLE IF NOT EXISTS agent_run_experiments (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL CHECK(status IN ('prepared', 'running', 'completed', 'partial-complete', 'failed', 'promoted', 'discarded')),
+        virtual_branch_name TEXT NOT NULL,
+        repo_mount_path TEXT NOT NULL,
+        project_mount_path TEXT NOT NULL,
+        base_commit_sha TEXT NULL,
+        base_branch_name TEXT NULL,
+        base_dirty_fingerprint TEXT NOT NULL,
+        head_commit_sha TEXT NULL,
+        files_changed INTEGER NOT NULL DEFAULT 0,
+        insertions INTEGER NOT NULL DEFAULT 0,
+        deletions INTEGER NOT NULL DEFAULT 0,
+        promoted_at TEXT NULL,
+        discarded_at TEXT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(run_id) REFERENCES agent_runs(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS memory_entries (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NULL,
+        thread_id TEXT NULL,
+        run_id TEXT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('repo-fact', 'task-summary', 'success-pattern', 'failure-pattern', 'verification-recipe', 'fallback-strategy', 'prompt-fragment', 'user-correction')),
+        status TEXT NOT NULL CHECK(status IN ('active', 'archived')),
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        evidence TEXT NULL,
+        tags_json TEXT NULL,
+        path_globs_json TEXT NULL,
+        confidence TEXT NOT NULL CHECK(confidence IN ('low', 'medium', 'high')),
+        pinned INTEGER NOT NULL DEFAULT 0,
+        hit_count INTEGER NOT NULL DEFAULT 0,
+        last_hit_at TEXT NULL,
+        source_commit_sha TEXT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+        FOREIGN KEY(thread_id) REFERENCES project_threads(id) ON DELETE CASCADE,
+        FOREIGN KEY(run_id) REFERENCES agent_runs(id) ON DELETE SET NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS memory_retrievals (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        owner TEXT NOT NULL CHECK(owner IN ('planner', 'main', 'subagent')),
+        subagent_id TEXT NULL,
+        query_text TEXT NOT NULL,
+        entry_ids_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(run_id) REFERENCES agent_runs(id) ON DELETE CASCADE
+      );
+
       CREATE TABLE IF NOT EXISTS workspace_modes (
         id TEXT PRIMARY KEY,
         label TEXT NOT NULL,
@@ -1251,12 +2718,220 @@ export class WorkspaceRepository {
         PRIMARY KEY (project_id, id),
         FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
       );
+
+      CREATE TABLE IF NOT EXISTS background_jobs (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        assistant_id TEXT NULL,
+        automation_thread_id TEXT NOT NULL,
+        template_id TEXT NULL,
+        created_from_run_id TEXT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('ai-routine', 'shell')),
+        name TEXT NOT NULL,
+        description TEXT NULL,
+        definition_json TEXT NOT NULL,
+        schedule_json TEXT NOT NULL,
+        schedule_input TEXT NOT NULL,
+        timezone TEXT NULL,
+        status TEXT NOT NULL CHECK(status IN ('enabled', 'paused', 'disabled')),
+        risk_level TEXT NOT NULL CHECK(risk_level IN ('safe', 'slightly-unsafe', 'unsafe')),
+        next_run_at TEXT NULL,
+        last_run_at TEXT NULL,
+        last_enqueued_at TEXT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+        FOREIGN KEY(assistant_id) REFERENCES assistants(id) ON DELETE CASCADE,
+        FOREIGN KEY(automation_thread_id) REFERENCES project_threads(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS background_jobs_project_next_run_idx
+      ON background_jobs(project_id, next_run_at ASC);
+
+      CREATE TABLE IF NOT EXISTS background_job_runs (
+        id TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        assistant_id TEXT NULL,
+        automation_thread_id TEXT NOT NULL,
+        trigger_source TEXT NOT NULL CHECK(trigger_source IN ('schedule', 'startup-catchup', 'manual', 'approval-release', 'retry')),
+        status TEXT NOT NULL CHECK(status IN ('queued', 'awaiting-approval', 'running', 'succeeded', 'failed', 'cancelled', 'skipped')),
+        risk_level TEXT NOT NULL CHECK(risk_level IN ('safe', 'slightly-unsafe', 'unsafe')),
+        approval_status TEXT NOT NULL CHECK(approval_status IN ('not-needed', 'pending', 'approved', 'rejected')),
+        skipped_occurrence_count INTEGER NOT NULL DEFAULT 0,
+        linked_agent_run_id TEXT NULL,
+        summary TEXT NULL,
+        failure_message TEXT NULL,
+        queued_at TEXT NOT NULL,
+        started_at TEXT NULL,
+        completed_at TEXT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(job_id) REFERENCES background_jobs(id) ON DELETE CASCADE,
+        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+        FOREIGN KEY(assistant_id) REFERENCES assistants(id) ON DELETE CASCADE,
+        FOREIGN KEY(automation_thread_id) REFERENCES project_threads(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS background_job_runs_job_updated_idx
+      ON background_job_runs(job_id, updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS background_job_run_events (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        ordinal INTEGER NOT NULL,
+        stage TEXT NOT NULL,
+        message TEXT NOT NULL,
+        detail_json TEXT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(run_id) REFERENCES background_job_runs(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS background_job_run_events_run_ordinal_idx
+      ON background_job_run_events(run_id, ordinal ASC);
+
+      CREATE TABLE IF NOT EXISTS background_job_templates (
+        id TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        description TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('ai-routine', 'shell')),
+        definition_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS assistants (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        scope TEXT NOT NULL CHECK(scope IN ('global', 'project')),
+        project_id TEXT NULL,
+        description TEXT NULL,
+        personality_prompt TEXT NOT NULL,
+        job_prompt TEXT NOT NULL,
+        agent_id TEXT NOT NULL CHECK(agent_id IN ('pi', 'copilot-cli', 'codex-cli')),
+        mode_id TEXT NULL,
+        execution_model_id TEXT NULL,
+        run_state TEXT NOT NULL CHECK(run_state IN ('active', 'paused')),
+        bootstrap_state TEXT NOT NULL CHECK(bootstrap_state IN ('pending', 'running', 'completed', 'failed')),
+        cloned_from_assistant_id TEXT NULL,
+        failure_streak_count INTEGER NOT NULL DEFAULT 0,
+        circuit_breaker_state TEXT NOT NULL DEFAULT 'closed' CHECK(circuit_breaker_state IN ('closed', 'tripped')),
+        circuit_breaker_reason TEXT NULL,
+        pending_reprioritize_reason TEXT NULL,
+        pending_reprioritize_requested_at TEXT NULL,
+        deleted_at TEXT NULL,
+        latest_activity_at TEXT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+        FOREIGN KEY(cloned_from_assistant_id) REFERENCES assistants(id) ON DELETE SET NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS assistants_scope_project_idx
+      ON assistants(scope, project_id, updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS assistant_threads (
+        id TEXT PRIMARY KEY,
+        assistant_id TEXT NOT NULL UNIQUE,
+        session_id TEXT NOT NULL,
+        memory_summary_content TEXT NULL,
+        memory_summary_updated_at TEXT NULL,
+        updated_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(assistant_id) REFERENCES assistants(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS assistant_messages (
+        id TEXT PRIMARY KEY,
+        assistant_thread_id TEXT NOT NULL,
+        role TEXT NOT NULL CHECK(role IN ('system', 'user', 'assistant')),
+        kind TEXT NOT NULL DEFAULT 'plain' CHECK(kind IN ('plain', 'plan-summary')),
+        content TEXT NOT NULL,
+        metadata_json TEXT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(assistant_thread_id) REFERENCES assistant_threads(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS assistant_messages_thread_created_idx
+      ON assistant_messages(assistant_thread_id, created_at);
+
+      CREATE TABLE IF NOT EXISTS assistant_todos (
+        id TEXT PRIMARY KEY,
+        assistant_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        description TEXT NULL,
+        state TEXT NOT NULL CHECK(state IN ('pending', 'in-progress', 'blocked', 'completed', 'failed', 'cancelled')),
+        sort_order INTEGER NOT NULL,
+        blocker_reason TEXT NULL,
+        source TEXT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT NULL,
+        cancelled_at TEXT NULL,
+        FOREIGN KEY(assistant_id) REFERENCES assistants(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS assistant_todos_assistant_sort_idx
+      ON assistant_todos(assistant_id, sort_order ASC, updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS assistant_learnings (
+        id TEXT PRIMARY KEY,
+        assistant_id TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        source TEXT NOT NULL,
+        confidence TEXT NOT NULL CHECK(confidence IN ('low', 'medium', 'high')),
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(assistant_id) REFERENCES assistants(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS assistant_learnings_assistant_created_idx
+      ON assistant_learnings(assistant_id, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS assistant_questions (
+        id TEXT PRIMARY KEY,
+        assistant_id TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('pending', 'deferred', 'answered', 'dismissed')),
+        answer_text TEXT NULL,
+        linked_todo_ids_json TEXT NULL,
+        asked_at TEXT NOT NULL,
+        answered_at TEXT NULL,
+        FOREIGN KEY(assistant_id) REFERENCES assistants(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS assistant_questions_assistant_status_idx
+      ON assistant_questions(assistant_id, status, asked_at DESC);
+
+      CREATE TABLE IF NOT EXISTS assistant_log_entries (
+        id TEXT PRIMARY KEY,
+        assistant_id TEXT NOT NULL,
+        level TEXT NOT NULL CHECK(level IN ('info', 'warning', 'error', 'critical')),
+        summary TEXT NOT NULL,
+        detail TEXT NULL,
+        details_json TEXT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(assistant_id) REFERENCES assistants(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS assistant_log_entries_assistant_created_idx
+      ON assistant_log_entries(assistant_id, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS assistant_asset_refs (
+        id TEXT PRIMARY KEY,
+        assistant_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('skill', 'script', 'mode', 'background-template')),
+        label TEXT NOT NULL,
+        value TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(assistant_id) REFERENCES assistants(id) ON DELETE CASCADE
+      );
     `);
 
     this.addColumnIfMissing("projects", "active_thread_id", "TEXT NULL");
     this.addColumnIfMissing("projects", "selected_mode_id", "TEXT NULL");
     this.addColumnIfMissing("projects", "rules_content", "TEXT NULL");
     this.addColumnIfMissing("projects", "rules_updated_at", "TEXT NULL");
+    this.addColumnIfMissing("project_threads", "kind", "TEXT NOT NULL DEFAULT 'user'");
     this.addColumnIfMissing("project_threads", "title", "TEXT NULL");
     this.addColumnIfMissing("project_threads", "title_source", "TEXT NULL");
     this.addColumnIfMissing("project_threads", "updated_at", "TEXT NULL");
@@ -1269,16 +2944,26 @@ export class WorkspaceRepository {
     this.addColumnIfMissing("agent_run_questions", "choices_json", "TEXT NULL");
     this.addColumnIfMissing("agent_run_subtasks", "commit_sha", "TEXT NULL");
     this.addColumnIfMissing("agent_run_subtasks", "worktree_path", "TEXT NULL");
+    this.addColumnIfMissing("agent_run_subtasks", "mount_path", "TEXT NULL");
+    this.addColumnIfMissing("agent_runs", "execution_target", "TEXT NULL");
     this.addColumnIfMissing("agent_runs", "plan_json", "TEXT NULL");
     this.addColumnIfMissing("agent_runs", "correctness_review_json", "TEXT NULL");
     this.addColumnIfMissing("agent_runs", "browser_sessions_json", "TEXT NULL");
+    this.addColumnIfMissing("background_jobs", "assistant_id", "TEXT NULL");
+    this.addColumnIfMissing("background_job_runs", "assistant_id", "TEXT NULL");
+    this.addColumnIfMissing("assistants", "pending_reprioritize_reason", "TEXT NULL");
+    this.addColumnIfMissing("assistants", "pending_reprioritize_requested_at", "TEXT NULL");
 
     this.db.exec(`DROP INDEX IF EXISTS project_threads_active_project_idx;`);
     this.db.exec(`UPDATE project_threads SET status = 'active' WHERE status = 'archived';`);
 
+    this.rebuildAgentRunQuestionsTableIfNeeded();
+    this.rebuildAssistantQuestionsTableIfNeeded();
     this.backfillActiveThreadIds();
     this.backfillThreadMetadata();
     this.backfillQuestionChoices();
+    this.backfillExecutionTargets();
+    this.seedBackgroundJobTemplates();
   }
 
   private readProjectSnapshot(projectId: ProjectId): WorkspaceProjectState {
@@ -1350,7 +3035,7 @@ export class WorkspaceRepository {
   private readThreadRow(projectId: ProjectId, threadId: ThreadId) {
     const thread = this.db
       .query<ThreadRow, [string, string]>(
-        `SELECT id, project_id, status, title, title_source, updated_at, forked_from_thread_id, memory_summary_content, memory_summary_updated_at, created_at, archived_at
+        `SELECT id, project_id, status, kind, title, title_source, updated_at, forked_from_thread_id, memory_summary_content, memory_summary_updated_at, created_at, archived_at
          FROM project_threads
          WHERE project_id = ?1 AND id = ?2`
       )
@@ -1389,7 +3074,7 @@ export class WorkspaceRepository {
     const threadRows = this.db
       .query<ThreadRow, [string]>(
         `SELECT
-          id, project_id, status, title, title_source, updated_at, forked_from_thread_id,
+          id, project_id, status, kind, title, title_source, updated_at, forked_from_thread_id,
           memory_summary_content, memory_summary_updated_at, created_at, archived_at
          FROM project_threads
          WHERE project_id = ?1
@@ -1423,6 +3108,7 @@ export class WorkspaceRepository {
 
         return createProjectThreadSummary({
           id: thread.id as ThreadId,
+          kind: thread.kind,
           title: thread.title,
           titleSource: thread.title_source,
           badgeState: getThreadBadgeState(latestRun),
@@ -1495,6 +3181,309 @@ export class WorkspaceRepository {
     } satisfies MemorySummary;
   }
 
+  private readAssistants() {
+    return this.db
+      .query<AssistantRow, []>(
+        `SELECT
+          id, name, scope, project_id, description, personality_prompt, job_prompt, agent_id, mode_id,
+          execution_model_id, run_state, bootstrap_state, cloned_from_assistant_id, failure_streak_count,
+          circuit_breaker_state, circuit_breaker_reason, pending_reprioritize_reason, pending_reprioritize_requested_at,
+          deleted_at, latest_activity_at, created_at, updated_at
+         FROM assistants
+         WHERE deleted_at IS NULL
+         ORDER BY updated_at DESC, created_at DESC`
+      )
+      .all()
+      .map((row) => this.hydrateAssistant(row));
+  }
+
+  private readAssistantThreadRowByAssistantId(assistantId: string) {
+    const row = this.db
+      .query<AssistantThreadRow, [string]>(
+        `SELECT
+          id, assistant_id, session_id, memory_summary_content, memory_summary_updated_at, updated_at, created_at
+         FROM assistant_threads
+         WHERE assistant_id = ?1`
+      )
+      .get(assistantId);
+    if (!row) {
+      throw new Error(`Assistant ${assistantId} has no thread`);
+    }
+    return row;
+  }
+
+  private readAssistantThreads() {
+    return this.db
+      .query<AssistantThreadRow, []>(
+        `SELECT
+          id, assistant_id, session_id, memory_summary_content, memory_summary_updated_at, updated_at, created_at
+         FROM assistant_threads
+         WHERE assistant_id IN (SELECT id FROM assistants WHERE deleted_at IS NULL)
+         ORDER BY updated_at DESC`
+      )
+      .all()
+      .map((row) => this.hydrateAssistantThread(row));
+  }
+
+  private readAssistantMessages(threadId: string) {
+    return this.db
+      .query<AssistantMessageRow, [string]>(
+        `SELECT id, assistant_thread_id, role, kind, content, metadata_json, created_at
+         FROM assistant_messages
+         WHERE assistant_thread_id = ?1
+         ORDER BY created_at ASC`
+      )
+      .all(threadId)
+      .map((message) =>
+        chatMessageSchema.parse({
+          id: message.id,
+          role: message.role,
+          kind: message.kind ?? "plain",
+          content: message.content,
+          metadata: parseChatMessageMetadata(message.metadata_json),
+          createdAt: message.created_at
+        })
+      );
+  }
+
+  private readAssistantTodos() {
+    return this.db
+      .query<AssistantTodoRow, []>(
+        `SELECT
+          id, assistant_id, title, description, state, sort_order, blocker_reason, source,
+          created_at, updated_at, completed_at, cancelled_at
+         FROM assistant_todos
+         WHERE assistant_id IN (SELECT id FROM assistants WHERE deleted_at IS NULL)
+         ORDER BY sort_order ASC, updated_at DESC`
+      )
+      .all()
+      .map((row) => this.hydrateAssistantTodo(row));
+  }
+
+  private readAssistantLearnings() {
+    return this.db
+      .query<AssistantLearningRow, []>(
+        `SELECT id, assistant_id, summary, source, confidence, created_at
+         FROM assistant_learnings
+         WHERE assistant_id IN (SELECT id FROM assistants WHERE deleted_at IS NULL)
+         ORDER BY created_at DESC`
+      )
+      .all()
+      .map((row) => this.hydrateAssistantLearning(row));
+  }
+
+  private readAssistantLearningsByAssistantId(assistantId: string) {
+    return this.db
+      .query<AssistantLearningRow, [string]>(
+        `SELECT id, assistant_id, summary, source, confidence, created_at
+         FROM assistant_learnings
+         WHERE assistant_id = ?1
+         ORDER BY created_at DESC`
+      )
+      .all(assistantId)
+      .map((row) => this.hydrateAssistantLearning(row));
+  }
+
+  private readAssistantQuestions() {
+    return this.db
+      .query<AssistantQuestionRow, []>(
+        `SELECT id, assistant_id, prompt, status, answer_text, linked_todo_ids_json, asked_at, answered_at
+         FROM assistant_questions
+         WHERE assistant_id IN (SELECT id FROM assistants WHERE deleted_at IS NULL)
+         ORDER BY asked_at DESC`
+      )
+      .all()
+      .map((row) => this.hydrateAssistantQuestion(row));
+  }
+
+  private readAssistantLogEntries() {
+    return this.db
+      .query<AssistantLogEntryRow, []>(
+        `SELECT id, assistant_id, level, summary, detail, details_json, created_at
+         FROM assistant_log_entries
+         WHERE assistant_id IN (SELECT id FROM assistants WHERE deleted_at IS NULL)
+         ORDER BY created_at DESC`
+      )
+      .all()
+      .map((row) => this.hydrateAssistantLogEntry(row));
+  }
+
+  private readAssistantAssetRefs() {
+    return this.db
+      .query<AssistantAssetRefRow, []>(
+        `SELECT id, assistant_id, kind, label, value, created_at
+         FROM assistant_asset_refs
+         WHERE assistant_id IN (SELECT id FROM assistants WHERE deleted_at IS NULL)
+         ORDER BY created_at ASC`
+      )
+      .all()
+      .map((row) => this.hydrateAssistantAssetRef(row));
+  }
+
+  private getAssistantTodo(todoId: string) {
+    const row = this.db
+      .query<AssistantTodoRow, [string]>(
+        `SELECT
+          id, assistant_id, title, description, state, sort_order, blocker_reason, source,
+          created_at, updated_at, completed_at, cancelled_at
+         FROM assistant_todos
+         WHERE id = ?1`
+      )
+      .get(todoId);
+    return row ? this.hydrateAssistantTodo(row) : undefined;
+  }
+
+  private getAssistantLearning(learningId: string) {
+    const row = this.db
+      .query<AssistantLearningRow, [string]>(
+        `SELECT id, assistant_id, summary, source, confidence, created_at
+         FROM assistant_learnings
+         WHERE id = ?1`
+      )
+      .get(learningId);
+    return row ? this.hydrateAssistantLearning(row) : undefined;
+  }
+
+  private getAssistantQuestion(questionId: string) {
+    const row = this.db
+      .query<AssistantQuestionRow, [string]>(
+        `SELECT id, assistant_id, prompt, status, answer_text, linked_todo_ids_json, asked_at, answered_at
+         FROM assistant_questions
+         WHERE id = ?1`
+      )
+      .get(questionId);
+    return row ? this.hydrateAssistantQuestion(row) : undefined;
+  }
+
+  private getAssistantLogEntry(entryId: string) {
+    const row = this.db
+      .query<AssistantLogEntryRow, [string]>(
+        `SELECT id, assistant_id, level, summary, detail, details_json, created_at
+         FROM assistant_log_entries
+         WHERE id = ?1`
+      )
+      .get(entryId);
+    return row ? this.hydrateAssistantLogEntry(row) : undefined;
+  }
+
+  private hydrateAssistant(row: AssistantRow) {
+    const unreadQuestionCount =
+      this.db
+        .query<{ count: number }, [string]>(`SELECT COUNT(*) AS count FROM assistant_questions WHERE assistant_id = ?1 AND status = 'pending'`)
+        .get(row.id)?.count ?? 0;
+    return assistantSchema.parse({
+      id: row.id,
+      name: row.name,
+      scope: row.scope,
+      projectId: row.project_id ?? undefined,
+      description: row.description ?? undefined,
+      personalityPrompt: row.personality_prompt,
+      jobPrompt: row.job_prompt,
+      agentId: row.agent_id,
+      modeId: row.mode_id ?? undefined,
+      executionModelId: row.execution_model_id ?? undefined,
+      runState: row.run_state,
+      bootstrapState: row.bootstrap_state,
+      clonedFromAssistantId: row.cloned_from_assistant_id ?? undefined,
+      failureStreakCount: row.failure_streak_count,
+      circuitBreakerState: row.circuit_breaker_state,
+      circuitBreakerReason: row.circuit_breaker_reason ?? undefined,
+      deletedAt: row.deleted_at ?? undefined,
+      latestActivityAt: row.latest_activity_at ?? undefined,
+      unreadQuestionCount,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    });
+  }
+
+  private hydrateAssistantThread(row: AssistantThreadRow) {
+    return assistantThreadSchema.parse({
+      id: row.id,
+      assistantId: row.assistant_id,
+      sessionId: row.session_id as SessionId,
+      messageCount:
+        this.db
+          .query<{ count: number }, [string]>(`SELECT COUNT(*) AS count FROM assistant_messages WHERE assistant_thread_id = ?1`)
+          .get(row.id)?.count ?? 0,
+      memorySummary: row.memory_summary_content
+        ? {
+            id: `${row.id}:memory`,
+            scope: "thread",
+            label: "Assistant memory",
+            content: row.memory_summary_content,
+            updatedAt: row.memory_summary_updated_at ?? row.updated_at,
+            source: "generated"
+          }
+        : undefined,
+      messages: this.readAssistantMessages(row.id),
+      updatedAt: row.updated_at
+    });
+  }
+
+  private hydrateAssistantTodo(row: AssistantTodoRow) {
+    return assistantTodoSchema.parse({
+      id: row.id,
+      assistantId: row.assistant_id,
+      title: row.title,
+      description: row.description ?? undefined,
+      state: row.state,
+      sortOrder: row.sort_order,
+      blockerReason: row.blocker_reason ?? undefined,
+      source: row.source ?? undefined,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      completedAt: row.completed_at ?? undefined,
+      cancelledAt: row.cancelled_at ?? undefined
+    });
+  }
+
+  private hydrateAssistantLearning(row: AssistantLearningRow) {
+    return assistantLearningSchema.parse({
+      id: row.id,
+      assistantId: row.assistant_id,
+      summary: row.summary,
+      source: row.source,
+      confidence: row.confidence,
+      createdAt: row.created_at
+    });
+  }
+
+  private hydrateAssistantQuestion(row: AssistantQuestionRow) {
+    return assistantQuestionSchema.parse({
+      id: row.id,
+      assistantId: row.assistant_id,
+      prompt: row.prompt,
+      status: row.status,
+      answerText: row.answer_text ?? undefined,
+      linkedTodoIds: parseAssistantTodoIds(row.linked_todo_ids_json),
+      askedAt: row.asked_at,
+      answeredAt: row.answered_at ?? undefined
+    });
+  }
+
+  private hydrateAssistantLogEntry(row: AssistantLogEntryRow) {
+    return assistantLogEntrySchema.parse({
+      id: row.id,
+      assistantId: row.assistant_id,
+      level: row.level,
+      summary: row.summary,
+      detail: row.detail ?? undefined,
+      detailsJson: row.details_json ? JSON.parse(row.details_json) : undefined,
+      createdAt: row.created_at
+    });
+  }
+
+  private hydrateAssistantAssetRef(row: AssistantAssetRefRow) {
+    return assistantAssetRefSchema.parse({
+      id: row.id,
+      assistantId: row.assistant_id,
+      kind: row.kind,
+      label: row.label,
+      value: row.value,
+      createdAt: row.created_at
+    });
+  }
+
   private tryRecoverFromProjectLoadFailure(projectId: ProjectId, error: unknown) {
     if (!this.allowDevThreadRecovery) {
       return false;
@@ -1520,6 +3509,15 @@ export class WorkspaceRepository {
     const project = this.db.query<{ id: string }, [string]>(`SELECT id FROM projects WHERE id = ?1`).get(projectId);
     if (!project) {
       throw new Error(`Unknown project: ${projectId}`);
+    }
+  }
+
+  private assertAssistantExists(assistantId: string) {
+    const assistant = this.db
+      .query<{ id: string }, [string]>(`SELECT id FROM assistants WHERE id = ?1 AND deleted_at IS NULL`)
+      .get(assistantId);
+    if (!assistant) {
+      throw new Error(`Unknown assistant: ${assistantId}`);
     }
   }
 
@@ -1560,7 +3558,7 @@ export class WorkspaceRepository {
     const run = this.db
       .query<AgentRunRow, [string, string]>(
         `SELECT
-          id, project_id, thread_id, status, latest_user_prompt, planning_model_id, execution_model_id,
+          id, project_id, thread_id, status, execution_target, latest_user_prompt, planning_model_id, execution_model_id,
           difficulty_score, summary, final_execution_brief, failure_message, plan_json, correctness_review_json,
           browser_sessions_json,
           created_at, updated_at, completed_at
@@ -1578,7 +3576,7 @@ export class WorkspaceRepository {
     const run = this.db
       .query<AgentRunRow, [string, string]>(
         `SELECT
-          id, project_id, thread_id, status, latest_user_prompt, planning_model_id, execution_model_id,
+          id, project_id, thread_id, status, execution_target, latest_user_prompt, planning_model_id, execution_model_id,
           difficulty_score, summary, final_execution_brief, failure_message, plan_json, correctness_review_json,
           browser_sessions_json,
           created_at, updated_at, completed_at
@@ -1617,7 +3615,7 @@ export class WorkspaceRepository {
       .query<AgentRunSubtaskRow, [string]>(
         `SELECT
           id, run_id, planner_task_id, title, instruction, status, attempt_count, output, error_message,
-          commit_sha, worktree_path, started_at, completed_at, updated_at
+          commit_sha, worktree_path, mount_path, started_at, completed_at, updated_at
          FROM agent_run_subtasks
          WHERE run_id = ?1
          ORDER BY planner_task_id ASC`
@@ -1632,17 +3630,53 @@ export class WorkspaceRepository {
         output: task.output ?? undefined,
         errorMessage: task.error_message ?? undefined,
         commitSha: task.commit_sha ?? undefined,
+        mountPath: (task as AgentRunSubtaskRow & { mount_path?: string | null }).mount_path ?? undefined,
         worktreePath: task.worktree_path ?? undefined,
         startedAt: task.started_at ?? undefined,
         completedAt: task.completed_at ?? undefined,
         updatedAt: task.updated_at
       }));
 
+    const experiment = this.db
+      .query<AgentRunExperimentRow, [string]>(
+        `SELECT
+          id,
+          run_id,
+          status,
+          virtual_branch_name,
+          repo_mount_path,
+          project_mount_path,
+          base_commit_sha,
+          base_branch_name,
+          base_dirty_fingerprint,
+          head_commit_sha,
+          files_changed,
+          insertions,
+          deletions,
+          promoted_at,
+          discarded_at,
+          created_at,
+          updated_at
+         FROM agent_run_experiments
+         WHERE run_id = ?1`
+      )
+      .get(run.id);
+    const memoryRetrievals = this.db
+      .query<MemoryRetrievalRow, [string]>(
+        `SELECT id, run_id, owner, subagent_id, query_text, entry_ids_json, created_at
+         FROM memory_retrievals
+         WHERE run_id = ?1
+         ORDER BY created_at ASC`
+      )
+      .all(run.id)
+      .map((row) => this.hydrateMemoryRetrieval(row));
+
     const hasExecutionState = subtasks.length > 0 || Boolean(run.final_execution_brief);
     return agentRunStateSchema.parse({
       id: run.id,
       threadId: run.thread_id as ThreadId,
       status: run.status,
+      executionTarget: run.execution_target ?? "current-project",
       latestUserPrompt: run.latest_user_prompt,
       planningModelId: run.planning_model_id ?? undefined,
       executionModelId: run.execution_model_id ?? undefined,
@@ -1654,6 +3688,8 @@ export class WorkspaceRepository {
       correctnessReview: parseCorrectnessReview(run.correctness_review_json),
       questions,
       subtasks,
+      experiment: experiment ? this.hydrateExperimentRun(experiment) : undefined,
+      memoryRetrievals: memoryRetrievals.length > 0 ? memoryRetrievals : undefined,
       browserSessions: parseBrowserSessions(run.browser_sessions_json),
       resumable: isRunResumable(run.status, hasExecutionState),
       retryable: isRunRetryable(run.status, hasExecutionState),
@@ -1713,16 +3749,31 @@ export class WorkspaceRepository {
   private insertThread(
     projectId: ProjectId,
     threadId: ThreadId,
-    input: { title: string; titleSource: "generated" | "custom"; updatedAt: string; forkedFromThreadId?: ThreadId }
+    input: {
+      kind?: BackgroundJobThreadKind;
+      title: string;
+      titleSource: "generated" | "custom";
+      updatedAt: string;
+      forkedFromThreadId?: ThreadId;
+    }
   ) {
     this.db
       .query(
         `INSERT INTO project_threads (
-          id, project_id, status, title, title_source, updated_at, forked_from_thread_id,
+          id, project_id, status, kind, title, title_source, updated_at, forked_from_thread_id,
           memory_summary_content, memory_summary_updated_at, created_at, archived_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, ?6, NULL)`
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, NULL, ?7, NULL)`
       )
-      .run(threadId, projectId, ACTIVE_THREAD_STATUS, input.title, input.titleSource, input.updatedAt, input.forkedFromThreadId ?? null);
+      .run(
+        threadId,
+        projectId,
+        ACTIVE_THREAD_STATUS,
+        input.kind ?? "user",
+        input.title,
+        input.titleSource,
+        input.updatedAt,
+        input.forkedFromThreadId ?? null
+      );
   }
 
   private setActiveThread(projectId: ProjectId, threadId: ThreadId, now: string) {
@@ -1743,6 +3794,12 @@ export class WorkspaceRepository {
          WHERE id = ?1`
       )
       .run(projectId, now);
+  }
+
+  private touchAssistant(assistantId: string, now: string = new Date().toISOString()) {
+    this.db
+      .query(`UPDATE assistants SET updated_at = ?2, latest_activity_at = ?2 WHERE id = ?1`)
+      .run(assistantId, now);
   }
 
   private deleteThreadForRecovery(projectId: ProjectId, threadId: ThreadId, cause: unknown) {
@@ -1816,7 +3873,7 @@ export class WorkspaceRepository {
       const threads = this.db
         .query<ThreadRow, [string]>(
           `SELECT
-            id, project_id, status, title, title_source, updated_at, forked_from_thread_id,
+            id, project_id, status, kind, title, title_source, updated_at, forked_from_thread_id,
             memory_summary_content, memory_summary_updated_at, created_at, archived_at
            FROM project_threads
            WHERE project_id = ?1
@@ -1878,6 +3935,70 @@ export class WorkspaceRepository {
     }
   }
 
+  private rebuildAgentRunQuestionsTableIfNeeded() {
+    const createSql = this.readTableCreateSql("agent_run_questions");
+    if (createSql.includes("'deferred'")) {
+      return;
+    }
+
+    this.db.exec(`
+      ALTER TABLE agent_run_questions RENAME TO agent_run_questions_legacy;
+      CREATE TABLE agent_run_questions (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        ordinal INTEGER NOT NULL,
+        prompt TEXT NOT NULL,
+        placeholder TEXT NULL,
+        choices_json TEXT NULL,
+        status TEXT NOT NULL CHECK(status IN ('pending', 'deferred', 'answered')),
+        answer_text TEXT NULL,
+        asked_at TEXT NOT NULL,
+        answered_at TEXT NULL,
+        FOREIGN KEY(run_id) REFERENCES agent_runs(id) ON DELETE CASCADE
+      );
+      INSERT INTO agent_run_questions (
+        id, run_id, ordinal, prompt, placeholder, choices_json, status, answer_text, asked_at, answered_at
+      )
+      SELECT
+        id, run_id, ordinal, prompt, placeholder, choices_json, status, answer_text, asked_at, answered_at
+      FROM agent_run_questions_legacy;
+      DROP TABLE agent_run_questions_legacy;
+      CREATE INDEX IF NOT EXISTS agent_run_questions_run_ordinal_idx
+      ON agent_run_questions(run_id, ordinal ASC);
+    `);
+  }
+
+  private rebuildAssistantQuestionsTableIfNeeded() {
+    const createSql = this.readTableCreateSql("assistant_questions");
+    if (createSql.includes("'deferred'")) {
+      return;
+    }
+
+    this.db.exec(`
+      ALTER TABLE assistant_questions RENAME TO assistant_questions_legacy;
+      CREATE TABLE assistant_questions (
+        id TEXT PRIMARY KEY,
+        assistant_id TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('pending', 'deferred', 'answered', 'dismissed')),
+        answer_text TEXT NULL,
+        linked_todo_ids_json TEXT NULL,
+        asked_at TEXT NOT NULL,
+        answered_at TEXT NULL,
+        FOREIGN KEY(assistant_id) REFERENCES assistants(id) ON DELETE CASCADE
+      );
+      INSERT INTO assistant_questions (
+        id, assistant_id, prompt, status, answer_text, linked_todo_ids_json, asked_at, answered_at
+      )
+      SELECT
+        id, assistant_id, prompt, status, answer_text, linked_todo_ids_json, asked_at, answered_at
+      FROM assistant_questions_legacy;
+      DROP TABLE assistant_questions_legacy;
+      CREATE INDEX IF NOT EXISTS assistant_questions_assistant_status_idx
+      ON assistant_questions(assistant_id, status, asked_at DESC);
+    `);
+  }
+
   private updateSubtask(
     projectId: ProjectId,
     runId: string,
@@ -1891,6 +4012,7 @@ export class WorkspaceRepository {
       errorMessage?: string | null;
       commitSha?: string | null;
       worktreePath?: string | null;
+      mountPath?: string | null;
     }
   ) {
     const now = new Date().toISOString();
@@ -1898,7 +4020,7 @@ export class WorkspaceRepository {
       .query(
         `UPDATE agent_run_subtasks
          SET status = ?4, attempt_count = ?5, started_at = COALESCE(?6, started_at), completed_at = ?7,
-             output = ?8, error_message = ?9, commit_sha = ?10, worktree_path = ?11, updated_at = ?12
+             output = ?8, error_message = ?9, commit_sha = ?10, worktree_path = ?11, mount_path = ?12, updated_at = ?13
          WHERE run_id = ?1
            AND planner_task_id = ?2
            AND EXISTS (SELECT 1 FROM agent_runs WHERE agent_runs.id = ?1 AND agent_runs.project_id = ?3)`
@@ -1915,6 +4037,7 @@ export class WorkspaceRepository {
         input.errorMessage ?? null,
         input.commitSha ?? null,
         input.worktreePath ?? null,
+        input.mountPath ?? null,
         now
       );
 
@@ -1926,6 +4049,219 @@ export class WorkspaceRepository {
     return this.readProjectSnapshot(projectId);
   }
 
+  private ensureAutomationThread(projectId: ProjectId, threadId: ThreadId, title: string, now: string) {
+    const existing = this.db
+      .query<{ id: string }, [string, string]>(`SELECT id FROM project_threads WHERE project_id = ?1 AND id = ?2`)
+      .get(projectId, threadId);
+    if (existing) {
+      return threadId;
+    }
+
+    this.insertThread(projectId, threadId, {
+      kind: "automation",
+      title: normalizeThreadTitle(title),
+      titleSource: "custom",
+      updatedAt: now
+    });
+    return threadId;
+  }
+
+  private readBackgroundJobs() {
+    return this.db
+      .query<BackgroundJobRow, []>(
+        `SELECT
+          id, project_id, assistant_id, automation_thread_id, template_id, created_from_run_id, kind, name, description,
+          definition_json, schedule_json, schedule_input, timezone, status, risk_level, next_run_at,
+          last_run_at, last_enqueued_at, created_at, updated_at
+         FROM background_jobs
+         ORDER BY updated_at DESC, created_at DESC`
+      )
+      .all()
+      .map((row) => this.hydrateBackgroundJob(row));
+  }
+
+  private readBackgroundJobRuns() {
+    return this.db
+      .query<BackgroundJobRunRow, []>(
+        `SELECT
+          id, job_id, project_id, assistant_id, automation_thread_id, trigger_source, status, risk_level, approval_status,
+          skipped_occurrence_count, linked_agent_run_id, summary, failure_message, queued_at, started_at,
+          completed_at, created_at, updated_at
+         FROM background_job_runs
+         ORDER BY updated_at DESC, created_at DESC
+         LIMIT 256`
+      )
+      .all()
+      .map((row) => this.hydrateBackgroundJobRun(row));
+  }
+
+  private readBackgroundJobTemplates() {
+    return this.db
+      .query<{ id: string; label: string; description: string; kind: BackgroundJobTemplate["kind"]; definition_json: string }, []>(
+        `SELECT id, label, description, kind, definition_json
+         FROM background_job_templates
+         ORDER BY id ASC`
+      )
+      .all()
+      .map((row) =>
+        backgroundJobTemplateSchema.parse({
+          id: row.id,
+          label: row.label,
+          description: row.description,
+          kind: row.kind,
+          definition: JSON.parse(row.definition_json)
+        })
+      );
+  }
+
+  private hydrateBackgroundJob(row: BackgroundJobRow) {
+    return backgroundJobSchema.parse({
+      id: row.id,
+      projectId: row.project_id,
+      assistantId: row.assistant_id ?? undefined,
+      automationThreadId: row.automation_thread_id,
+      templateId: row.template_id ?? undefined,
+      createdFromRunId: row.created_from_run_id ?? undefined,
+      kind: row.kind,
+      name: row.name,
+      description: row.description ?? undefined,
+      definition: JSON.parse(row.definition_json),
+      schedule: JSON.parse(row.schedule_json),
+      scheduleInput: row.schedule_input,
+      timezone: row.timezone ?? undefined,
+      status: row.status,
+      riskLevel: row.risk_level,
+      nextRunAt: row.next_run_at ?? undefined,
+      lastRunAt: row.last_run_at ?? undefined,
+      lastEnqueuedAt: row.last_enqueued_at ?? undefined,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    });
+  }
+
+  private hydrateBackgroundJobRun(row: BackgroundJobRunRow) {
+    const events = this.db
+      .query<BackgroundJobRunEventRow, [string]>(
+        `SELECT id, run_id, ordinal, stage, message, detail_json, created_at
+         FROM background_job_run_events
+         WHERE run_id = ?1
+         ORDER BY ordinal ASC`
+      )
+      .all(row.id)
+      .map((event) => ({
+        id: event.id,
+        stage: event.stage,
+        message: event.message,
+        detail: event.detail_json ?? undefined,
+        createdAt: event.created_at
+      }));
+
+    return backgroundJobRunSchema.parse({
+      id: row.id,
+      jobId: row.job_id,
+      projectId: row.project_id,
+      assistantId: row.assistant_id ?? undefined,
+      automationThreadId: row.automation_thread_id,
+      triggerSource: row.trigger_source,
+      status: row.status,
+      riskLevel: row.risk_level,
+      approvalStatus: row.approval_status,
+      skippedOccurrenceCount: row.skipped_occurrence_count,
+      linkedAgentRunId: row.linked_agent_run_id ?? undefined,
+      summary: row.summary ?? undefined,
+      failureMessage: row.failure_message ?? undefined,
+      queuedAt: row.queued_at,
+      startedAt: row.started_at ?? undefined,
+      completedAt: row.completed_at ?? undefined,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      events
+    });
+  }
+
+  private hydrateExperimentRun(row: AgentRunExperimentRow) {
+    return experimentRunSchema.parse({
+      id: row.id,
+      runId: row.run_id,
+      status: row.status,
+      virtualBranchName: row.virtual_branch_name,
+      repoMountPath: row.repo_mount_path,
+      projectMountPath: row.project_mount_path,
+      baseCommitSha: row.base_commit_sha ?? undefined,
+      baseBranchName: row.base_branch_name ?? undefined,
+      baseDirtyFingerprint: row.base_dirty_fingerprint,
+      headCommitSha: row.head_commit_sha ?? undefined,
+      filesChanged: row.files_changed,
+      insertions: row.insertions,
+      deletions: row.deletions,
+      promotedAt: row.promoted_at ?? undefined,
+      discardedAt: row.discarded_at ?? undefined,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    });
+  }
+
+  private hydrateMemoryEntry(row: MemoryEntryRow) {
+    return memoryEntrySchema.parse({
+      id: row.id,
+      projectId: row.project_id ?? undefined,
+      threadId: row.thread_id ?? undefined,
+      runId: row.run_id ?? undefined,
+      kind: row.kind,
+      status: row.status,
+      title: row.title,
+      summary: row.summary,
+      evidence: row.evidence ?? undefined,
+      tags: parseStringArray(row.tags_json),
+      pathGlobs: parseStringArray(row.path_globs_json),
+      confidence: row.confidence,
+      freshness: deriveMemoryFreshness(row),
+      pinned: row.pinned > 0,
+      hitCount: row.hit_count,
+      lastHitAt: row.last_hit_at ?? undefined,
+      sourceCommitSha: row.source_commit_sha ?? undefined,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    });
+  }
+
+  private hydrateMemoryRetrieval(row: MemoryRetrievalRow) {
+    return memoryRetrievalSchema.parse({
+      id: row.id,
+      runId: row.run_id,
+      owner: row.owner,
+      subagentId: row.subagent_id ?? undefined,
+      queryText: row.query_text,
+      entryIds: parseStringArray(row.entry_ids_json),
+      createdAt: row.created_at
+    });
+  }
+
+  private seedBackgroundJobTemplates() {
+    const now = new Date().toISOString();
+    for (const template of defaultBackgroundJobTemplates) {
+      this.db
+        .query(
+          `INSERT INTO background_job_templates (id, label, description, kind, definition_json, created_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+           ON CONFLICT(id) DO UPDATE SET
+             label = excluded.label,
+             description = excluded.description,
+             kind = excluded.kind,
+             definition_json = excluded.definition_json,
+             updated_at = excluded.updated_at`
+        )
+        .run(
+          template.id,
+          template.label,
+          template.description,
+          template.kind,
+          JSON.stringify(template.definition),
+          now
+        );
+    }
+  }
+
   private addColumnIfMissing(tableName: string, columnName: string, definition: string) {
     const columns = this.db
       .query<{ name: string }, [string]>(`SELECT name FROM pragma_table_info(?1)`)
@@ -1935,6 +4271,20 @@ export class WorkspaceRepository {
     if (!columns.includes(columnName)) {
       this.db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
     }
+  }
+
+  private readTableCreateSql(tableName: string) {
+    return (
+      this.db
+        .query<{ sql: string | null }, [string]>(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?1`)
+        .get(tableName)?.sql ?? ""
+    );
+  }
+
+  private backfillExecutionTargets() {
+    this.db
+      .query(`UPDATE agent_runs SET execution_target = 'current-project' WHERE execution_target IS NULL`)
+      .run();
   }
 }
 
@@ -2024,6 +4374,19 @@ function parseChatAttachments(input: string | null): ChatAttachment[] | undefine
   }
 }
 
+function parseAssistantTodoIds(input: string | null): string[] | undefined {
+  if (!input) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(input);
+    return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function parseExecutionPlan(input: string | null): ExecutionPlan | undefined {
   if (!input) {
     return undefined;
@@ -2058,6 +4421,31 @@ function parseBrowserSessions(input: string | null): BrowserSession[] | undefine
   } catch {
     return undefined;
   }
+}
+
+function parseStringArray(input: string | null) {
+  if (!input) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(input);
+    return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function deriveMemoryFreshness(row: Pick<MemoryEntryRow, "updated_at" | "last_hit_at">): MemoryEntry["freshness"] {
+  const reference = row.last_hit_at ?? row.updated_at;
+  const ageMs = Date.now() - new Date(reference).getTime();
+  if (!Number.isFinite(ageMs) || ageMs < 1000 * 60 * 60 * 24 * 14) {
+    return memoryFreshnessSchema.parse("fresh");
+  }
+  if (ageMs < 1000 * 60 * 60 * 24 * 60) {
+    return memoryFreshnessSchema.parse("aging");
+  }
+  return memoryFreshnessSchema.parse("stale");
 }
 
 function createFallbackPlanningChoices(placeholder: string): PlanningChoice[] {
