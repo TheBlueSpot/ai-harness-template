@@ -4,7 +4,23 @@ import { type BackgroundJobEditorDraft, harnessStore, persistLocalPreferences } 
 import { pushToast } from "../toast-store";
 import { ActionButton } from "./action-button";
 import { ScrollArea } from "./primitives/scroll-area";
-import { Pause, Play, Plus, RefreshCcw, Trash2 } from "lucide-solid";
+import { Tooltip } from "./primitives/tooltip";
+import {
+  Bell,
+  BellOff,
+  Bot,
+  CheckCircle2,
+  CircleHelp,
+  CircleX,
+  LoaderCircle,
+  Pause,
+  Play,
+  Plus,
+  RefreshCcw,
+  ShieldCheck,
+  Terminal,
+  Trash2
+} from "lucide-solid";
 
 type RunFilter = "approval" | "queued" | "running" | "failed" | "done";
 
@@ -159,40 +175,53 @@ export function BackgroundJobsPanel() {
 
   return (
     <section data-test-background-jobs-panel="" class="panel-shell flex h-full min-h-0 flex-col gap-4 rounded-2xl border-t-0 p-4">
-      <div class="rounded-[1.35rem] border border-(--border) bg-white/65 p-4 shadow-sm">
+      <div class="px-1 py-1">
         <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Background jobs</div>
-            <div class="mt-1 text-[0.7875rem] leading-6 text-(--foreground)">
-              Durable scheduler. Jobs catch up on startup, run in hidden automation threads, summarize here.
-            </div>
+          <div class="flex items-center gap-2 text-[0.585rem] font-semibold tracking-[0.2em] text-(--muted)">
+            <span>Background jobs</span>
+            <Tooltip content="Durable scheduler. Jobs catch up on startup, run in hidden automation threads, summarize here.">
+              <span class="inline-flex">
+                <CircleHelp class="h-3.5 w-3.5 text-(--muted)" aria-label="Background jobs help" />
+              </span>
+            </Tooltip>
           </div>
-          <div class="flex flex-wrap gap-2">
-            <ActionButton tooltip="Create scheduled AI routine" icon={<Plus class="h-4 w-4" />} onClick={() => handleCreateJob("ai-routine")}>
-              New AI task
-            </ActionButton>
-            <ActionButton tooltip="Create scheduled shell task" icon={<Plus class="h-4 w-4" />} variant="secondary" onClick={() => handleCreateJob("shell")}>
-              New shell task
-            </ActionButton>
+          <div class="flex items-center gap-2">
+            <ActionButton
+              tooltip="Create scheduled AI routine"
+              icon={<Bot class="h-4 w-4" />}
+              size="icon"
+              variant="ghost"
+              ariaLabel="Create scheduled AI routine"
+              onClick={() => handleCreateJob("ai-routine")}
+            />
+            <ActionButton
+              tooltip="Create scheduled shell task"
+              icon={<Terminal class="h-4 w-4" />}
+              size="icon"
+              variant="ghost"
+              ariaLabel="Create scheduled shell task"
+              onClick={() => handleCreateJob("shell")}
+            />
             <ActionButton
               tooltip={state.backgroundJobNotificationsEnabled ? "Disable desktop notifications" : "Enable desktop notifications"}
-              variant="secondary"
+              icon={state.backgroundJobNotificationsEnabled ? <Bell class="h-4 w-4" /> : <BellOff class="h-4 w-4" />}
+              size="icon"
+              variant="ghost"
+              ariaLabel={state.backgroundJobNotificationsEnabled ? "Disable desktop notifications" : "Enable desktop notifications"}
               onClick={handleToggleNotifications}
-            >
-              {state.backgroundJobNotificationsEnabled ? "Notifications on" : "Notifications off"}
-            </ActionButton>
+            />
           </div>
         </div>
       </div>
 
       <div class="grid min-h-0 flex-1 gap-4 xl:grid-cols-[minmax(22rem,28rem)_minmax(0,1fr)]">
         <div class="grid min-h-0 gap-4 xl:grid-rows-[minmax(16rem,1fr)_minmax(18rem,1.2fr)]">
-          <section class="rounded-[1.35rem] border border-(--border) bg-white/55 p-4">
+          <section class="flex min-h-0 flex-col rounded-[1.35rem] border border-(--border) bg-white/55 p-4">
             <div class="mb-3 flex items-center justify-between gap-3">
               <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Jobs</div>
               <span class="text-[0.625rem] text-(--muted)">{jobs().length} total</span>
             </div>
-            <ScrollArea class="h-[28rem] pr-2 xl:h-full">
+            <ScrollArea class="min-h-0 flex-1 pr-2">
               <Show
                 when={jobs().length > 0}
                 fallback={<div class="rounded-[1.2rem] border border-dashed border-(--border) bg-white/45 p-4 text-[0.675rem] leading-5 text-(--muted)">No scheduled tasks yet. Promote finished AI work or create one from scratch.</div>}
@@ -242,28 +271,31 @@ export function BackgroundJobsPanel() {
             </ScrollArea>
           </section>
 
-          <section class="rounded-[1.35rem] border border-(--border) bg-white/55 p-4">
+          <section class="flex min-h-0 flex-col rounded-[1.35rem] border border-(--border) bg-white/55 p-4">
             <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
-              <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Inbox</div>
+              <div class="text-[0.585rem] font-semibold tracking-[0.04em] text-(--muted)">Inbox</div>
               <div class="flex flex-wrap gap-2">
                 <For each={["approval", "queued", "running", "failed", "done"] satisfies RunFilter[]}>
                   {(filter) => (
-                    <button
-                      class={`rounded-full border px-3 py-1.5 text-[0.625rem] font-semibold uppercase tracking-[0.12em] transition ${
-                        runFilter() === filter
-                          ? "border-(--accent) bg-(--accent) text-white"
-                          : "border-(--border) bg-white/70 text-(--foreground)"
-                      }`}
-                      type="button"
-                      onClick={() => setRunFilter(filter)}
-                    >
-                      {filter}
-                    </button>
+                    <Tooltip content={runFilterLabel(filter)}>
+                      <button
+                        class={`inline-flex h-8 w-8 items-center justify-center rounded-full border transition ${
+                          runFilter() === filter
+                            ? "border-(--accent) bg-(--accent) text-white"
+                            : "border-(--border) bg-white/70 text-(--foreground)"
+                        }`}
+                        type="button"
+                        aria-label={runFilterLabel(filter)}
+                        onClick={() => setRunFilter(filter)}
+                      >
+                        {runFilterIcon(filter)}
+                      </button>
+                    </Tooltip>
                   )}
                 </For>
               </div>
             </div>
-            <ScrollArea class="h-[30rem] pr-2 xl:h-full">
+            <ScrollArea class="min-h-0 flex-1 pr-2">
               <Show when={filteredRuns().length > 0} fallback={<div class="rounded-[1.2rem] border border-dashed border-(--border) bg-white/45 p-4 text-[0.675rem] leading-5 text-(--muted)">No runs match current filter.</div>}>
                 <div class="space-y-3">
                   <For each={filteredRuns()}>
@@ -296,8 +328,8 @@ export function BackgroundJobsPanel() {
           </section>
         </div>
 
-        <section class="min-h-0 rounded-[1.35rem] border border-(--border) bg-white/55 p-4">
-          <Show when={selectedRun()} fallback={<div class="flex h-full min-h-[20rem] items-center justify-center rounded-[1.2rem] border border-dashed border-(--border) bg-white/45 p-6 text-center text-[0.675rem] text-(--muted)">Select background run to inspect milestones and actions.</div>}>
+        <section class="flex min-h-0 flex-col rounded-[1.35rem] border border-(--border) bg-white/55 p-4">
+          <Show when={selectedRun()} fallback={<div class="flex h-full min-h-80 items-center justify-center rounded-[1.2rem] border border-dashed border-(--border) bg-white/45 p-6 text-center text-[0.675rem] text-(--muted)">Select background run to inspect milestones and actions.</div>}>
             {(run) => (
               <div class="flex h-full min-h-0 flex-col gap-4">
                 <div class="rounded-[1.2rem] border border-(--border) bg-white/70 p-4">
@@ -366,6 +398,36 @@ function matchesRunFilter(run: BackgroundJobRun, filter: RunFilter) {
       return run.status === "failed" || run.status === "cancelled";
     case "done":
       return run.status === "succeeded" || run.status === "skipped";
+  }
+}
+
+function runFilterLabel(filter: RunFilter) {
+  switch (filter) {
+    case "approval":
+      return "Approval";
+    case "queued":
+      return "Queued";
+    case "running":
+      return "Running";
+    case "failed":
+      return "Failed";
+    case "done":
+      return "Done";
+  }
+}
+
+function runFilterIcon(filter: RunFilter) {
+  switch (filter) {
+    case "approval":
+      return <ShieldCheck class="h-3.5 w-3.5" />;
+    case "queued":
+      return <Plus class="h-3.5 w-3.5" />;
+    case "running":
+      return <LoaderCircle class="h-3.5 w-3.5" />;
+    case "failed":
+      return <CircleX class="h-3.5 w-3.5" />;
+    case "done":
+      return <CheckCircle2 class="h-3.5 w-3.5" />;
   }
 }
 

@@ -1,6 +1,7 @@
 ---
 name: update-harness
 description: >
+  ONLY USE WHEN EDITING FILES IN /harness
   Harness-specific engineering defaults for Bun-first runtime/build/test flow,
   typed websocket contracts, zod validation, local-first persistence, Solid UI
   behavior, and required coverage for core changes. Use when changing harness
@@ -32,7 +33,8 @@ Apply when work touches harness behavior, defaults, protocol shape, runtime wiri
 - Validate unknown payloads with zod at boundaries.
 - Keep development local-first.
 - Do not reintroduce old OpenAI-only restriction. Current harness can support multiple providers.
-- Developer builds must keep toggleable debugging and tracing. Preserve or improve existing debug switches instead of removing them.
+- Debug-only code should key off `process.env.NODE_ENV !== "production"`; do not add separate debug env toggles like `HARNESS_DEBUG`.
+- After finishing a task locate the nearest readme.md and update it as needed. If one does not exist create it. Skill work under `.agents/skills/**` does not need readme updates.
 
 ## TypeScript Preferences
 
@@ -62,6 +64,7 @@ Apply when work touches harness behavior, defaults, protocol shape, runtime wiri
 - Do not wait for a third copy. First-use is enough when reuse is likely.
 - Shared visual behavior belongs in `harness/ui/src/components/primitives/**`.
 - Shared higher-level UI behavior belongs in a dedicated wrapper component near the feature or in `components/primitives/**` if broadly reusable.
+- Shared compact overlays such as inbox menus, quick replies, and lightweight interaction panels should use a shared popover primitive instead of bespoke absolute-position markup.
 - Shared primitives and main reusable containers must expose root `data-test-${component-name}` hooks in kebab-case.
 - All modal and dialog surfaces must use the shared `Dialog` primitive.
 - Dialogs must keep `title` required, close on `Escape`, and default their content body to `max-height: 80vh` plus `overflow: auto`.
@@ -73,11 +76,15 @@ Apply when work touches harness behavior, defaults, protocol shape, runtime wiri
 - Shared toggle primitives must own consistent label, description, disabled, cursor, and click-target behavior.
 - When behavior is likely to be reused but is not visual, extract a shared helper, hook, or adapter at introduction time rather than duplicating logic.
 - Repeated prop pass-through is a smell. Shared commands and shared state should move into Solid store or context instead of being drilled through intermediate components.
+- Solid reactive stores, memos, effects, and computations must be created under component-owned roots or providers. Do not create long-lived Solid computations at module scope.
 - Keep Tailwind classes in canonical form. Prefer official utilities and canonical CSS variable shorthand over arbitrary-value spellings when Tailwind can express same style directly.
 - Treat Tailwind canonical-class diagnostics as part of normal quality bar. Editor hints should stay clean, and lint should enforce same preference in CI.
 - Every button must have tooltip copy.
 - Disabled buttons must explain why in tooltip copy.
+- All user-facing hover tooltips must use the shared `Tooltip` primitive (or an `ActionButton`/`Button` derivative that wraps it). Do not use native HTML `title` attributes or rely on `aria-label` as a visible tooltip. `aria-label` is for accessibility only.
+- When a Tooltip trigger must participate in a flex/truncation chain, pass `triggerClass` (e.g. `flex min-w-0 flex-1`) instead of falling back to native `title`. Extend the primitive before reintroducing native tooltips.
 - Icon-only list actions must use icons plus accessible labels.
+- Prefer `gap-*` for layout spacing. Margin utilities are only for small correctness offsets that cannot be expressed cleanly with container gap or padding.
 - Surface caught UI and command errors through toast notifications.
 
 ## Testing Preferences
@@ -96,3 +103,10 @@ Apply when work touches harness behavior, defaults, protocol shape, runtime wiri
 - Keep README updates high-level.
 - Prefer linking to context and skill docs over embedding code-heavy explanations.
 
+## User Stories And Coverage
+
+- Treat `docs/user-stories.md` as the canonical product-behavior inventory for `/harness`.
+- Any change that adds, removes, or meaningfully alters a capability listed in `README.md` or `docs/todo.md` must also add, update, or remove the matching `US-*` entry in `docs/user-stories.md` in the same change.
+- Any change that lands behavior for a shipped `US-*` story must update `docs/coverage-matrix.md` with the new covering test file and a non-`GAP-HIGH` depth.
+- New `US-*` stories start as `GAP-HIGH` in `docs/coverage-matrix.md` until at least one colocated or integration test covers them.
+- Reviewers should reject harness PRs that change `README.md` behavior bullets without updating the stories and coverage files.

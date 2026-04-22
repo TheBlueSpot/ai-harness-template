@@ -1,7 +1,7 @@
 import { createEffect, createSignal, onCleanup, Show, type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 
-export function Tooltip(props: { content?: string; children: JSX.Element }) {
+export function Tooltip(props: { content?: string; triggerClass?: string; children: JSX.Element }) {
   let triggerRef: HTMLSpanElement | undefined;
   let tooltipRef: HTMLSpanElement | undefined;
   const [open, setOpen] = createSignal(false);
@@ -63,7 +63,7 @@ export function Tooltip(props: { content?: string; children: JSX.Element }) {
     <span
       ref={triggerRef}
       data-test-tooltip=""
-      class="inline-flex"
+      class={props.triggerClass ?? "inline-flex"}
       onMouseEnter={handleShow}
       onMouseLeave={handleHide}
       onFocusIn={handleShow}

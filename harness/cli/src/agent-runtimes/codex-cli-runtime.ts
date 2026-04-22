@@ -1,31 +1,45 @@
 import type { AgentRuntimeCapability, ProviderBrand } from "../../../shared/protocol";
-import type { PiAgentPromptRequest } from "../pi-agent-adapter";
+import type { PiAgentAdapter } from "../pi-agent-adapter";
 import type { AgentRuntime } from "./agent-runtime";
-import { CliAgentAdapter } from "./cli-agent-adapter";
-import {
-  buildCliCapability,
-  extractCodexFinalText,
-  probeCliVersion,
-  probeCodexAuth,
-  probeInteractivePipeCompatibility,
-  shouldSkipExpensiveCliProbes
-} from "./cli-health";
+import { buildCliCapability, probeCliVersion, probeCodexAuth, probeInteractivePipeCompatibility, shouldSkipExpensiveCliProbes } from "./cli-health";
 import { CliProcessManager } from "./cli-process-manager";
+import { getBundledCodexInstallation, type CodexInstallation } from "./codex-installation";
+import { CodexSdkAdapter } from "./codex-sdk-adapter";
 
 const DEFAULT_MODEL_ID = "openai/gpt-5.4";
+const CODEX_SUPPORTED_MODEL_IDS = [DEFAULT_MODEL_ID, "openai/gpt-5.4-mini"] as const;
+
+type CodexCliRuntimeOptions = {
+  processManager?: CliProcessManager;
+  getInstallation?: () => CodexInstallation;
+  createAdapter?: (executablePath: string) => PiAgentAdapter;
+};
 
 export class CodexCliRuntime implements AgentRuntime {
   readonly id = "codex-cli" as const;
   readonly label = "Codex CLI";
 
-  private readonly processManager = new CliProcessManager();
-  private readonly adapter = new CliAgentAdapter({
-    label: this.label,
-    buildCommand: ({ request, prompt }) => buildCodexProgrammaticCommand(request, prompt)
-  });
+  private readonly processManager: CliProcessManager;
+  private readonly getInstallation: () => CodexInstallation;
+  private readonly createAdapter: (executablePath: string) => PiAgentAdapter;
+  private adapter: PiAgentAdapter | undefined;
   private capability: AgentRuntimeCapability | undefined;
 
+  constructor(options: CodexCliRuntimeOptions = {}) {
+    this.processManager = options.processManager ?? new CliProcessManager();
+    this.getInstallation = options.getInstallation ?? getBundledCodexInstallation;
+    this.createAdapter = options.createAdapter ?? ((executablePath) => new CodexSdkAdapter({ executablePath }));
+  }
+
   getAdapter() {
+    if (!this.adapter) {
+      const installation = this.getInstallation();
+      if (!installation.installed || !installation.executablePath) {
+        throw new Error(installation.healthMessage);
+      }
+      this.adapter = this.createAdapter(installation.executablePath);
+    }
+
     return this.adapter;
   }
 
@@ -34,7 +48,28 @@ export class CodexCliRuntime implements AgentRuntime {
   }
 
   async refreshCapability() {
-    const version = await probeCliVersion(this.processManager, "codex");
+    const installation = this.getInstallation();
+    if (!installation.installed || !installation.executablePath) {
+      this.capability = buildCliCapability({
+        agentId: this.id,
+        label: this.label,
+        installed: false,
+        authenticated: false,
+        supportsInteractive: false,
+        interactivePipeCompatible: false,
+        supportsPlanning: true,
+        supportsReview: true,
+        supportsReasoningStrengthControl: true,
+        supportsFastModeControl: true,
+        healthMessage: installation.healthMessage,
+        installCommand: installation.installCommand,
+        authCommand: installation.authCommand,
+        docsUrl: installation.docsUrl
+      });
+      return this.capability;
+    }
+
+    const version = await probeCliVersion(this.processManager, installation.executablePath);
     if (!version) {
       this.capability = buildCliCapability({
         agentId: this.id,
@@ -45,18 +80,21 @@ export class CodexCliRuntime implements AgentRuntime {
         interactivePipeCompatible: false,
         supportsPlanning: true,
         supportsReview: true,
-        healthMessage: "Install `codex` CLI to enable this runtime.",
-        installCommand: "npm install -g @openai/codex",
-        docsUrl: "https://platform.openai.com/docs/codex/cli"
+        supportsReasoningStrengthControl: true,
+        supportsFastModeControl: true,
+        healthMessage: installation.healthMessage,
+        installCommand: installation.installCommand,
+        authCommand: installation.authCommand,
+        docsUrl: installation.docsUrl
       });
       return this.capability;
     }
 
     const skipExpensiveProbes = shouldSkipExpensiveCliProbes();
     const [authenticated, interactivePipeCompatible] = await Promise.all([
-      skipExpensiveProbes ? Promise.resolve(true) : probeCodexAuth(this.processManager),
+      skipExpensiveProbes ? Promise.resolve(true) : probeCodexAuth(this.processManager, installation.executablePath),
       probeInteractivePipeCompatibility(this.processManager, {
-        executable: "codex",
+        executable: installation.executablePath,
         helpArgs: ["--help"]
       })
     ]);
@@ -71,10 +109,15 @@ export class CodexCliRuntime implements AgentRuntime {
       interactivePipeCompatible,
       supportsPlanning: true,
       supportsReview: true,
-      healthMessage: authenticated ? undefined : "Run `codex login` before using this runtime.",
-      installCommand: "npm install -g @openai/codex",
-      authCommand: "codex login",
-      docsUrl: "https://platform.openai.com/docs/codex/cli"
+      supportsReasoningStrengthControl: true,
+      supportsFastModeControl: true,
+      discoveredModels: getCodexSupportedModelIds(),
+      activeModel: DEFAULT_MODEL_ID,
+      modelDiscoveryConfidence: "partial",
+      healthMessage: authenticated ? undefined : "Run `bunx codex login` before using this runtime.",
+      installCommand: installation.installCommand,
+      authCommand: installation.authCommand,
+      docsUrl: installation.docsUrl
     });
 
     return this.capability;
@@ -93,9 +136,14 @@ export class CodexCliRuntime implements AgentRuntime {
   }
 
   buildInteractiveLaunch(input: { cwd: string; cols: number; rows: number; prompt?: string }) {
+    const installation = this.getInstallation();
+    if (!installation.installed || !installation.executablePath) {
+      throw new Error(installation.healthMessage);
+    }
+
     return {
       cmd: [
-        "codex",
+        installation.executablePath,
         "--no-alt-screen",
         "-C",
         input.cwd,
@@ -110,69 +158,20 @@ export class CodexCliRuntime implements AgentRuntime {
   }
 }
 
-function buildCodexProgrammaticCommand(request: PiAgentPromptRequest, prompt: string) {
-  if (request.kind === "aggregator" && /\b(review|code review)\b/i.test(prompt)) {
-    return {
-      cmd: ["codex", "review", "--uncommitted", prompt],
-      cwd: request.cwd
-    };
-  }
-
-  const cmd = [
-    "codex",
-    "exec",
-    "--json",
-    "--skip-git-repo-check",
-    "-C",
-    request.cwd,
-    "-s",
-    request.readOnly ? "read-only" : "workspace-write"
-  ];
-
-  const modelName = toCliModelName(request.modelId);
-  if (modelName) {
-    cmd.push("--model", modelName);
-  }
-
-  cmd.push(prompt);
-
-  let buffered = "";
-
-  return {
-    cmd,
-    cwd: request.cwd,
-    parser: {
-      onStdoutChunk(chunkText: string, emitDelta: (delta: string) => void) {
-        buffered += chunkText;
-        const lines = buffered.split(/\r?\n/);
-        buffered = lines.pop() ?? "";
-        for (const line of lines) {
-          try {
-            const parsed = JSON.parse(line) as { type?: string; item?: { type?: string; text?: string } };
-            if (parsed.type === "item.completed" && parsed.item?.type === "agent_message" && parsed.item.text) {
-              emitDelta(parsed.item.text);
-            }
-          } catch {
-            continue;
-          }
-        }
-      },
-      getText(stdout: string, stderr: string) {
-        const text = extractCodexFinalText(stdout);
-        return text || stderr.trim();
-      }
-    }
-  };
+export function getCodexSupportedModelIds() {
+  return [...CODEX_SUPPORTED_MODEL_IDS];
 }
 
-function toCliModelName(modelId: string | undefined) {
-  if (!modelId) {
-    return undefined;
-  }
+export function isCodexSupportedModelId(modelId: string | undefined) {
+  return Boolean(modelId && CODEX_SUPPORTED_MODEL_IDS.includes(modelId as (typeof CODEX_SUPPORTED_MODEL_IDS)[number]));
+}
 
-  return modelId.includes("/") ? modelId.split("/", 2)[1] : modelId;
+export function resolveCodexModelId(modelId: string | undefined) {
+  return isCodexSupportedModelId(modelId) ? modelId : DEFAULT_MODEL_ID;
 }
 
 export const testExports = {
-  buildCodexProgrammaticCommand
+  getCodexSupportedModelIds,
+  isCodexSupportedModelId,
+  resolveCodexModelId
 };

@@ -366,8 +366,8 @@ export function BackgroundJobEditorDialog() {
                 value={aiSubagentWorktreeStrategy()}
                 onInput={(event) => setAiSubagentWorktreeStrategy(event.currentTarget.value as "same-worktree" | "separate-worktrees")}
               >
-                <option value="same-worktree">Same worktree</option>
-                <option value="separate-worktrees">Separate worktrees</option>
+                <option value="same-worktree">Same checkout</option>
+                <option value="separate-worktrees">Isolated mounts (BranchFS)</option>
               </select>
             </label>
           </div>

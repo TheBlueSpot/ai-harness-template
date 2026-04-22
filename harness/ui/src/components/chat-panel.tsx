@@ -1,5 +1,6 @@
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
-import { createRequestId, type ChatAttachment, type SetupAction } from "../../../shared/protocol";
+import { createHotkeys } from "@tanstack/solid-hotkeys";
+import { createRequestId, type ChatAttachment, type ChatMessage, type SetupAction } from "../../../shared/protocol";
 import {
   detectSupportedChatAttachment,
   isSupportedChatAttachment,
@@ -7,11 +8,13 @@ import {
 } from "../../../shared/chat-attachments";
 import {
   canSelectProviderBrand,
+  COMPOSER_REASONING_STRENGTHS,
   getEffectiveProviderBrandForAgent,
   getActiveProject,
   getActiveMode,
   getCapabilityTags,
   getBlockingSetupCheck,
+  getComposerControlState,
   getExecutionModelOptionsForAgent,
   getFallbackExecutionModelIdForAgent,
   getResolvedModes,
@@ -28,16 +31,18 @@ import { MarkdownContent } from "./markdown-content";
 import { ModeEditorPanel } from "./mode-editor-panel";
 import { SetupChecklistCard } from "./setup-checklist-card";
 import { Dialog } from "./primitives/dialog";
+import { CopyTextButton } from "./primitives/copy-text-button";
 import { Input } from "./primitives/input";
+import { Popover } from "./primitives/popover";
 import { ScrollArea } from "./primitives/scroll-area";
 import { Textarea } from "./primitives/textarea";
 import { Tooltip } from "./primitives/tooltip";
+import { buttonVariants } from "./primitives/button";
 import {
   Activity,
   Brain,
   ClipboardList,
   Clipboard,
-  Copy,
   Edit3,
   FolderOpen,
   Folder,
@@ -48,14 +53,19 @@ import {
   Play,
   RefreshCcw,
   Plus,
+  ArrowDown,
+  Check,
   SendHorizontal,
+  Settings2,
   X,
   Split
 } from "lucide-solid";
+import { cn } from "../lib/utils";
 
 export function ChatPanel() {
   let messageViewport: HTMLDivElement | undefined;
   let attachmentInput: HTMLInputElement | undefined;
+  let composerTextarea: HTMLTextAreaElement | undefined;
   let countdownTimer: number | undefined;
   const state = harnessStore.state;
   const sendCommand = harnessStore.actions.sendCommand;
@@ -75,6 +85,8 @@ export function ChatPanel() {
   const [threadMemoryDraft, setThreadMemoryDraft] = createSignal("");
   const [draftAttachments, setDraftAttachments] = createSignal<ChatAttachment[]>([]);
   const [uploadingAttachments, setUploadingAttachments] = createSignal(false);
+  const [composerSettingsOpen, setComposerSettingsOpen] = createSignal(false);
+  const [reasoningMenuOpen, setReasoningMenuOpen] = createSignal(false);
   const pendingQuestion = () => activeProject()?.activeRun?.questions.find((question) => question.status === "pending");
   const resumableRun = () => (activeProject()?.activeRun?.resumable ? activeProject()?.activeRun : undefined);
   const retryableRun = () => (activeProject()?.lastRun?.retryable ? activeProject()?.lastRun : undefined);
@@ -88,6 +100,12 @@ export function ChatPanel() {
   const selectedProviderBrand = () => getEffectiveProviderBrandForAgent(selectedAgentId(), state.providerBrand);
   const availableExecutionModels = () => getExecutionModelOptionsForAgent(state, selectedAgentId(), state.providerBrand);
   const selectedAgentRuntime = () => state.agentRuntimes.find((runtime) => runtime.agentId === selectedAgentId());
+  const composerControlState = () => getComposerControlState(state, selectedAgentId(), getEffectiveExecutionModelId());
+  const selectedReasoningStrength = () => composerControlState().selectedReasoningStrength;
+  const selectedFastMode = () => composerControlState().selectedFastMode;
+  const composerReasoningLabel = () => formatReasoningStrengthLabel(selectedReasoningStrength());
+  const composerSettingsLabel = () => (selectedFastMode() ? `${composerReasoningLabel()} · Fast` : composerReasoningLabel());
+  const selectedAgentLabel = () => state.availableAgents.find((agent) => agent.id === selectedAgentId())?.label ?? "selected agent";
   const selectedAgentHealthMessage = () => {
     const runtime = selectedAgentRuntime();
     if (!runtime || runtime.agentId === "pi") {
@@ -130,6 +148,33 @@ export function ChatPanel() {
   const executionPauseReason = () => "Global execution pause is active";
   const setupBlockedReason = () =>
     requiresFreshTopLevelSend() && blockingSetupCheck() ? blockingSetupCheck()!.summary : undefined;
+  const isComposerFocused = () => document.activeElement === composerTextarea;
+
+  createHotkeys(
+    [
+      {
+        hotkey: "Enter",
+        callback: () => {
+          if (!isComposerFocused() || executionPaused()) {
+            return;
+          }
+
+          composerTextarea?.form?.requestSubmit();
+        },
+        options: {
+          preventDefault: true,
+          meta: {
+            name: "Send message",
+            description: "Submit the focused chat composer with Enter"
+          }
+        }
+      }
+    ],
+    () => ({
+      enabled: isComposerFocused(),
+      ignoreInputs: false
+    })
+  );
 
   const scrollToBottom = (force: boolean = false) => {
     if (!messageViewport || (!force && !stickToBottom())) {
@@ -183,6 +228,13 @@ export function ChatPanel() {
     setThreadMemoryDraft(activeProject()?.threadMemorySummary?.content ?? "");
     setDraftAttachments([]);
     setUploadingAttachments(false);
+  });
+
+  createEffect(() => {
+    activeProject()?.draft;
+    queueMicrotask(() => {
+      resizeComposer();
+    });
   });
 
   createEffect(() => {
@@ -338,7 +390,8 @@ export function ChatPanel() {
         threadId: project.activeThreadId,
         runId: project.activeRun.id,
         questionId: question.id,
-        content: answerText
+        content: answerText,
+        ...getComposerControlPayload()
       }
     });
 
@@ -473,7 +526,8 @@ export function ChatPanel() {
           threadId: project.activeThreadId,
           runId: project.activeRun.id,
           questionId: question.id,
-          content
+          content,
+          ...getComposerControlPayload()
         }
       });
 
@@ -494,7 +548,8 @@ export function ChatPanel() {
           projectId: project.id,
           threadId: project.activeThreadId,
           runId: project.activeRun.id,
-          content
+          content,
+          ...getComposerControlPayload()
         }
       });
 
@@ -543,6 +598,7 @@ export function ChatPanel() {
         attachments: draftAttachments(),
         modeId: activeMode()?.id,
         executionModelId,
+        ...getComposerControlPayload(),
         debug: state.debugEnabled
       }
     });
@@ -553,6 +609,20 @@ export function ChatPanel() {
 
   function handleSelectAgent(agentId: "pi" | "copilot-cli" | "codex-cli") {
     harnessStore.setSelectedAgentId(agentId);
+  }
+
+  function resizeComposer() {
+    if (!composerTextarea) {
+      return;
+    }
+
+    const computedStyle = window.getComputedStyle(composerTextarea);
+    const lineHeight = Number.parseFloat(computedStyle.lineHeight) || 18;
+    const minHeight = lineHeight * 2;
+    const maxHeight = lineHeight * 8;
+    composerTextarea.style.height = "auto";
+    const nextHeight = Math.max(minHeight, Math.min(composerTextarea.scrollHeight, maxHeight));
+    composerTextarea.style.height = `${nextHeight}px`;
   }
 
   function handleStartLiveSession() {
@@ -600,7 +670,8 @@ export function ChatPanel() {
         projectId: project.id,
         threadId: project.activeThreadId,
         runId,
-        target
+        target,
+        ...getComposerControlPayload()
       }
     });
   }
@@ -710,7 +781,8 @@ export function ChatPanel() {
         projectId: project.id,
         threadId: project.activeThreadId,
         runId: run.id,
-        guidanceText: project.draft.trim() || undefined
+        guidanceText: project.draft.trim() || undefined,
+        ...getComposerControlPayload()
       }
     });
 
@@ -777,7 +849,8 @@ export function ChatPanel() {
       payload: {
         projectId: project.id,
         threadId: project.activeThreadId,
-        runId: run.id
+        runId: run.id,
+        ...getComposerControlPayload()
       }
     });
   }
@@ -803,18 +876,6 @@ export function ChatPanel() {
 
     setCountdownPaused(false);
     startCountdown(run.id);
-  }
-
-  function handleCopyThreadId() {
-    const thread = activeThread();
-    if (!thread) {
-      return;
-    }
-
-    void navigator.clipboard
-      .writeText(thread.id)
-      .then(() => pushToast("Thread id copied", thread.id))
-      .catch(() => pushToast("Copy failed", "Clipboard permission denied.", "error"));
   }
 
   function handleStartRenameThread() {
@@ -850,6 +911,24 @@ export function ChatPanel() {
 
   function isReadyPlanMessage(runId: string) {
     return readyRun()?.id === runId;
+  }
+
+  function getCopyableMessageText(message: ChatMessage) {
+    if (message.kind !== "plan-summary" || message.metadata?.type !== "plan-summary") {
+      return message.content;
+    }
+
+    const { plan } = message.metadata;
+    return [
+      "Plan summary",
+      plan.summary,
+      `Route: ${plan.route}`,
+      `Difficulty: ${plan.difficultyScore}%`,
+      `Prereqs: ${plan.prerequisites.length}`,
+      `Contracts: ${plan.contracts.length}`,
+      `Isolation: ${plan.subagentWorktreeStrategy}`,
+      `Correctness: ${plan.correctnessPolicy}`
+    ].join("\n");
   }
 
   function getEffectiveExecutionModelId() {
@@ -921,6 +1000,92 @@ export function ChatPanel() {
 
   function handleExecutionModelSelect(modelId: string) {
     harnessStore.setSelectedExecutionModelId(modelId);
+  }
+
+  function handleReasoningStrengthSelect(reasoningStrength: (typeof COMPOSER_REASONING_STRENGTHS)[number]) {
+    harnessStore.setSelectedReasoningStrength(reasoningStrength);
+  }
+
+  function handleFastModeSelect(enabled: boolean) {
+    harnessStore.setSelectedFastMode(enabled);
+  }
+
+  function getComposerControlPayload() {
+    return {
+      reasoningStrength: selectedReasoningStrength(),
+      fastMode: selectedFastMode()
+    };
+  }
+
+  function renderComposerControlMenu() {
+    const disabledHint =
+      COMPOSER_REASONING_STRENGTHS.some((strength) => !composerControlState().availableStrengths.includes(strength)) ||
+      !composerControlState().supportsFastMode
+        ? "Unavailable for current runtime/model."
+        : undefined;
+
+    return (
+      <div class="flex min-w-56 flex-col gap-3">
+        <div class="flex flex-col gap-1">
+          <span class="px-1 text-[0.625rem] font-semibold uppercase tracking-[0.14em] text-(--muted)">Effort</span>
+          <For each={COMPOSER_REASONING_STRENGTHS}>
+            {(strength) => {
+              const enabled = composerControlState().availableStrengths.includes(strength);
+              const selected = selectedReasoningStrength() === strength;
+              return (
+                <button
+                  type="button"
+                  disabled={!enabled}
+                  class="flex items-center justify-between rounded-lg px-2 py-1.5 text-left text-sm text-(--foreground) transition hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-50"
+                  onClick={() => {
+                    if (!enabled) {
+                      return;
+                    }
+                    handleReasoningStrengthSelect(strength);
+                  }}
+                >
+                  <span>{formatReasoningOptionLabel(strength)}</span>
+                  <Show when={selected}>
+                    <Check class="h-3.5 w-3.5" />
+                  </Show>
+                </button>
+              );
+            }}
+          </For>
+        </div>
+        <div class="h-px bg-black/10" />
+        <div class="flex flex-col gap-1">
+          <span class="px-1 text-[0.625rem] font-semibold uppercase tracking-[0.14em] text-(--muted)">Fast Mode</span>
+          <For each={[false, true] as const}>
+            {(enabled) => {
+              const supported = !enabled || composerControlState().supportsFastMode;
+              const selected = selectedFastMode() === enabled;
+              return (
+                <button
+                  type="button"
+                  disabled={!supported}
+                  class="flex items-center justify-between rounded-lg px-2 py-1.5 text-left text-sm text-(--foreground) transition hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-50"
+                  onClick={() => {
+                    if (!supported) {
+                      return;
+                    }
+                    handleFastModeSelect(enabled);
+                  }}
+                >
+                  <span>{enabled ? "On" : "Off"}</span>
+                  <Show when={selected}>
+                    <Check class="h-3.5 w-3.5" />
+                  </Show>
+                </button>
+              );
+            }}
+          </For>
+        </div>
+        <Show when={disabledHint}>
+          <div class="px-1 text-[0.625rem] text-(--muted)">{disabledHint}</div>
+        </Show>
+      </div>
+    );
   }
 
   function getComposerPlaceholder() {
@@ -1013,7 +1178,7 @@ export function ChatPanel() {
   }
 
   return (
-    <section data-test-chat-panel="" class="panel-shell flex h-full min-h-0 flex-col gap-4 rounded-2xl border-t-0 p-4">
+    <section data-test-chat-panel="" class="panel-shell flex h-full min-h-0 flex-col gap-1 rounded-2xl border-t-0 p-4">
       <Show when={shouldShowSetupChecklist(state)}>
         <SetupChecklistCard
           checks={state.setup.checks}
@@ -1028,17 +1193,17 @@ export function ChatPanel() {
         when={activeProject()}
         fallback={
           <div class="flex flex-1 items-center justify-center">
-            <div class="w-full max-w-2xl rounded-[1.75rem] border border-dashed border-(--border) bg-white/45 p-6 shadow-sm md:p-8">
+            <div class="flex w-full max-w-2xl flex-col gap-4 rounded-[1.75rem] border border-dashed border-(--border) bg-white/45 p-6 shadow-sm md:p-8">
               <div class="inline-flex items-center gap-2 rounded-full bg-white/65 px-3 py-1 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--muted)">
                 First run
               </div>
-              <h1 class="mt-4 font-display text-[1.75rem] tracking-[-0.06em] text-(--foreground) md:text-[2.1rem]">
+              <h1 class="font-display text-[1.75rem] tracking-[-0.06em] text-(--foreground) md:text-[2.1rem]">
                 Start with repo, import, or pasted spec
               </h1>
-              <p class="mt-3 max-w-2xl text-[0.75rem] leading-6 text-(--muted)">
+              <p class="max-w-2xl text-[0.75rem] leading-6 text-(--muted)">
                 Task-first flow: open codebase, optionally import local defaults, then ask for plan or implementation. No API-key wall.
               </p>
-              <div class="mt-5 space-y-3 rounded-[1.35rem] border border-(--border) bg-white/60 p-4">
+              <div class="flex flex-col gap-3 rounded-[1.35rem] border border-(--border) bg-white/60 p-4">
                 <div class="flex flex-wrap gap-2">
                   <ActionButton
                     tooltip="Open project switcher"
@@ -1079,23 +1244,26 @@ export function ChatPanel() {
       >
         {(project) => (
           <>
-            <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-              <div class="space-y-2">
-                <div class="inline-flex items-center gap-2 rounded-full bg-white/60 px-3 py-1 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--muted)">
+          <div class="flex min-w-0 flex-col lg:gap-4 lg:flex-row lg:items-start lg:justify-between">
+              <div class="flex min-w-0 flex-1 flex-col gap-2">
+                <div class="inline-flex min-w-0 max-w-full items-center gap-2 rounded-full bg-white/60 px-3 py-1 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--muted)">
                   Active project
-                  <span class="text-(--foreground)">{project().name}</span>
+                  <span class="min-w-0 truncate text-(--foreground)">{project().name}</span>
                 </div>
-                <div>
-                  <div class="flex flex-wrap items-center gap-2">
+                <div class="min-w-0">
+                  <div class="inline-flex min-w-0 max-w-full items-center gap-1.5">
                     <Show
                       when={editingThreadTitle()}
                       fallback={
-                        <h1 class="font-display text-[1.6875rem] tracking-[-0.06em] text-(--foreground) md:text-[2.025rem]">
-                          {activeThread()?.title ?? "Thread"}
-                        </h1>
+                        <Tooltip content={activeThread()?.title ?? "Thread"} triggerClass="block min-w-0 max-w-full">
+                          <h3 class="max-w-full truncate font-display text-[1.6875rem] tracking-[-0.06em] text-(--foreground) md:text-[2.025rem]">
+                            {activeThread()?.title ?? "Thread"}
+                          </h3>
+                        </Tooltip>
                       }
                     >
                       <Input
+                        class="max-w-2xl"
                         value={threadTitleDraft()}
                         onInput={(event: InputEvent & { currentTarget: HTMLInputElement; target: Element }) =>
                           setThreadTitleDraft(event.currentTarget.value)
@@ -1114,8 +1282,6 @@ export function ChatPanel() {
                     </Show>
                     <ActionButton
                       tooltip="Rename this thread"
-                      disabledReason="Project is streaming"
-                      disabled={project().session.isStreaming}
                       icon={<Edit3 class="h-3.5 w-3.5" />}
                       size="icon"
                       variant="ghost"
@@ -1123,34 +1289,31 @@ export function ChatPanel() {
                       onClick={handleStartRenameThread}
                     />
                   </div>
-                  <div class="mt-2 flex flex-wrap items-center gap-2 text-[0.625rem] text-(--muted)">
+                  <div class="flex min-w-0 flex-wrap items-center gap-2 text-[0.625rem] text-(--muted)">
                     <span>thread-id</span>
-                    <span class="font-mono text-[0.6rem]">{activeThread()?.id}</span>
-                    <ActionButton
+                    <span class="min-w-0 max-w-full break-all font-mono text-[0.6rem]">{activeThread()?.id}</span>
+                    <CopyTextButton
+                      value={activeThread()?.id ?? ""}
                       tooltip="Copy thread id"
-                      icon={<Copy class="h-3.5 w-3.5" />}
+                      copiedTitle="Thread id copied"
+                      copiedDescription={activeThread()?.id}
                       size="icon"
                       variant="ghost"
                       ariaLabel="Copy thread id"
-                      onClick={handleCopyThreadId}
                     />
                   </div>
                 </div>
               </div>
 
-              <div class="flex flex-wrap gap-2">
+              <div class="flex shrink-0 flex-wrap gap-2">
                 <ActionButton
                   tooltip="Create a new thread in this project"
-                  disabledReason="Project is streaming"
-                  disabled={project().session.isStreaming}
                   icon={<Plus class="h-4 w-4" />}
                   variant="secondary"
                   onClick={handleReset}
                 />
                 <ActionButton
                   tooltip="Fork current thread into a new thread"
-                  disabledReason="Project is streaming"
-                  disabled={project().session.isStreaming}
                   icon={<Split class="h-4 w-4" />}
                   variant="secondary"
                   onClick={handleForkThread}
@@ -1165,71 +1328,62 @@ export function ChatPanel() {
                 >
                   Stop
                 </ActionButton>
-                <Show when={retryableRun()}>
-                  <ActionButton
-                    tooltip="Retry last pi run"
-                    disabledReason="Project is streaming"
-                    disabled={project().session.isStreaming}
-                    icon={<RefreshCcw class="h-4 w-4" />}
-                    variant="secondary"
-                    onClick={handleRetry}
-                  >
-                    Retry last run
-                  </ActionButton>
+                    <Show when={retryableRun()}>
+                      <ActionButton
+                        tooltip="Retry last run"
+                        disabledReason="Project is streaming"
+                        disabled={project().session.isStreaming}
+                        icon={<RefreshCcw class="h-4 w-4" />}
+                        variant="secondary"
+                        onClick={handleRetry}
+                  />
                 </Show>
               </div>
             </div>
 
+            <div class="min-h-0 flex-1 overflow-hidden">
             <Show when={currentTab()} keyed>
               {(selectedTab) => (
-                <>
-                  <div data-test-chat-pane-nav="" class="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-(--border) bg-white/45 px-3 py-2">
-                    <div class="flex flex-wrap items-center gap-1.5">
+                <div class="flex h-full min-h-0 flex-col gap-2">
+                  <div data-test-chat-pane-nav="" class="surface-tab-strip px-0">
+                    <div class="flex flex-wrap items-center gap-1">
                       <For each={visibleTabs()}>
                         {(tab) => {
                           const pressed = selectedTab === tab.id;
 
                           return (
-                            <button
-                              type="button"
-                              class={`rounded-full border text-[0.625rem] ${pressed
-                                ? "inline-flex h-8 items-center gap-2 rounded-full border border-(--accent) bg-(--accent) px-3 text-(--accent-foreground) transition hover:bg-(--accent-strong)"
-                                : "inline-flex h-8 items-center gap-2 rounded-full border border-(--border) bg-white/70 px-3 text-(--foreground) transition hover:bg-white/90"
-                                }`}
-                              aria-label={`Open ${tab.label.toLowerCase()} pane`}
-                              attr:aria-pressed={pressed ? "true" : "false"}
-                              data-test-chat-pane-tab={tab.id}
-                              title={tab.tooltip}
-                              onClick={() => setActiveTab(tab.id)}
-                            >
-                              {tab.icon}
-                              <span>{tab.label}</span>
-                            </button>
+                            <Tooltip content={tab.tooltip}>
+                              <button
+                                type="button"
+                                class={cn(buttonVariants({ variant: "ghost" }), "surface-tab")}
+                                aria-label={`Open ${tab.label.toLowerCase()} pane`}
+                                attr:aria-pressed={pressed ? "true" : "false"}
+                                data-test-chat-pane-tab={tab.id}
+                                onClick={() => setActiveTab(tab.id)}
+                              >
+                                {tab.icon}
+                                <span>{tab.label}</span>
+                              </button>
+                            </Tooltip>
                           );
                         }}
                       </For>
-                    </div>
-                    <div class="text-[0.585rem] font-semibold uppercase tracking-[0.16em] text-(--muted)">
-                      {selectedTab === "chat" ? "Transcript" : `${selectedTab} pane`} | {project().activeRun?.status ?? project().lastRun?.status ?? "idle"}
                     </div>
                   </div>
 
                   <Switch>
                     <Match when={selectedTab === "chat"}>
-                <ScrollArea
-                  ref={messageViewport}
-                  class="flex-1 min-h-0 space-y-3 pr-2"
-                  onScroll={updateScrollLock}
-                >
-                  <Show
-                    when={project().session.messages.length > 0 || project().streamingAssistantText}
-                    fallback={
-                      <div class="flex min-h-56 items-center justify-center rounded-3xl border border-dashed border-(--border) bg-white/40 p-8 text-center text-[0.675rem] text-(--muted)">
-                        Choose project, then send task. Each project keeps its own persisted thread history.
-                      </div>
-                    }
-                  >
-                    <div class="space-y-3">
+                      <div class="relative flex min-h-0 flex-1 flex-col">
+                        <ScrollArea ref={messageViewport} class="flex-1 min-h-0 pr-2" onScroll={updateScrollLock}>
+                          <Show
+                            when={project().session.messages.length > 0 || project().streamingAssistantText}
+                            fallback={
+                              <div class="flex min-h-56 items-center justify-center rounded-3xl border border-dashed border-(--border) bg-white/40 p-8 text-center text-[0.675rem] text-(--muted)">
+                                Choose project, then send task. Each project keeps its own persisted thread history.
+                              </div>
+                            }
+                          >
+                            <div class="flex flex-col gap-3">
                       <For each={project().session.messages}>
                         {(message) => (
                           <Show
@@ -1243,8 +1397,9 @@ export function ChatPanel() {
                                     : "rounded-3xl bg-white/60"
                                   }`}
                               >
+                                <div class="flex flex-col gap-3">
                                 <div
-                                  class={`mb-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] ${message.role === "system"
+                                  class={`text-[0.585rem] font-semibold uppercase tracking-[0.2em] ${message.role === "system"
                                     ? "text-(--muted)"
                                     : "text-(--accent-strong)"
                                     }`}
@@ -1253,7 +1408,7 @@ export function ChatPanel() {
                                 </div>
                                 <MarkdownContent content={() => message.content} size="compact" />
                                 <Show when={message.attachments?.length}>
-                                  <div class="mt-3 flex flex-wrap gap-2">
+                                  <div class="flex flex-wrap gap-2">
                                     <For each={message.attachments}>
                                       {(attachment) => (
                                         <a
@@ -1264,28 +1419,42 @@ export function ChatPanel() {
                                         >
                                           {attachment.kind} | {attachment.name}
                                         </a>
-                                      )}
-                                    </For>
-                                  </div>
-                                </Show>
+                                    )}
+                                  </For>
+                                </div>
+                              </Show>
+                                <div class="flex justify-end">
+                                  <CopyTextButton
+                                    value={getCopyableMessageText(message)}
+                                    tooltip="Copy message"
+                                    copiedTitle="Message copied"
+                                    copiedDescription="Message copied to clipboard."
+                                    size="sm"
+                                    variant="ghost"
+                                    ariaLabel={`Copy ${message.role} message`}
+                                  >
+                                    Copy
+                                  </CopyTextButton>
+                                </div>
+                                </div>
                               </article>
                             }
                           >
-                            <article class="rounded-3xl border border-(--border) bg-[linear-gradient(135deg,rgba(15,118,110,0.12),rgba(255,255,255,0.92))] p-4 shadow-sm">
-                              <div class="mb-2 flex items-center gap-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--accent-strong)">
+                            <article class="flex flex-col gap-3 rounded-3xl border border-(--border) bg-[linear-gradient(135deg,rgba(15,118,110,0.12),rgba(255,255,255,0.92))] p-4 shadow-sm">
+                              <div class="flex items-center gap-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--accent-strong)">
                                 <Clipboard class="h-3.5 w-3.5" />
                                 Plan summary
                               </div>
                               <MarkdownContent content={() => message.metadata?.plan.summary ?? ""} />
-                              <div class="mt-3 grid gap-2 text-[0.675rem] text-(--muted) md:grid-cols-2">
+                              <div class="grid gap-2 text-[0.675rem] text-(--muted) md:grid-cols-2">
                                 <div>Route: {message.metadata?.plan.route}</div>
                                 <div>Difficulty: {message.metadata?.plan.difficultyScore}%</div>
                                 <div>Prereqs: {message.metadata?.plan.prerequisites.length}</div>
                                 <div>Contracts: {message.metadata?.plan.contracts.length}</div>
-                                <div>Worktree: {message.metadata?.plan.subagentWorktreeStrategy}</div>
+                                <div>Isolation: {message.metadata?.plan.subagentWorktreeStrategy}</div>
                                 <div>Correctness: {message.metadata?.plan.correctnessPolicy}</div>
                               </div>
-                              <div class="mt-3 flex flex-wrap gap-2">
+                              <div class="flex flex-wrap gap-2">
                                 <ActionButton
                                   tooltip="Open full execution plan"
                                   icon={<Clipboard class="h-3.5 w-3.5" />}
@@ -1340,6 +1509,17 @@ export function ChatPanel() {
                                     {countdownPaused() ? "Resume auto-run" : "Pause auto-run"}
                                   </ActionButton>
                                 </Show>
+                                <CopyTextButton
+                                  value={getCopyableMessageText(message)}
+                                  tooltip="Copy plan summary"
+                                  copiedTitle="Plan summary copied"
+                                  copiedDescription="Plan summary copied to clipboard."
+                                  size="sm"
+                                  variant="secondary"
+                                  ariaLabel="Copy plan summary"
+                                >
+                                  Copy
+                                </CopyTextButton>
                               </div>
                             </article>
                           </Show>
@@ -1347,23 +1527,51 @@ export function ChatPanel() {
                       </For>
 
                       <Show when={project().streamingAssistantText}>
-                        <article class="rounded-3xl border border-(--border) bg-teal-950/5 p-3 shadow-sm">
-                          <div class="mb-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--accent-strong)">
+                        <article class="flex flex-col gap-2 rounded-3xl border border-(--border) bg-teal-950/5 p-3 shadow-sm">
+                          <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--accent-strong)">
                             assistant (streaming)
                           </div>
                           <MarkdownContent content={() => project().streamingAssistantText} size="compact" live />
+                          <div class="flex justify-end">
+                            <CopyTextButton
+                              value={project().streamingAssistantText}
+                              tooltip="Copy streaming assistant message"
+                              copiedTitle="Message copied"
+                              copiedDescription="Message copied to clipboard."
+                              size="sm"
+                              variant="ghost"
+                              ariaLabel="Copy streaming assistant message"
+                            >
+                              Copy
+                            </CopyTextButton>
+                          </div>
                         </article>
                       </Show>
-                    </div>
-                  </Show>
-                </ScrollArea>
+                            </div>
+                          </Show>
+                        </ScrollArea>
+                        <Show when={!stickToBottom()}>
+                          <div class="pointer-events-none absolute inset-x-0 bottom-3 flex justify-center">
+                            <div class="pointer-events-auto">
+                              <ActionButton
+                                tooltip="Scroll to latest message"
+                                icon={<ArrowDown class="h-4 w-4" />}
+                                variant="secondary"
+                                onClick={() => scrollToBottom(true)}
+                              >
+                                Scroll to latest
+                              </ActionButton>
+                            </div>
+                          </div>
+                        </Show>
+                      </div>
                     </Match>
                     <Match when={selectedTab === "plan"}>
-                <ScrollArea class="flex-1 min-h-0 space-y-4 pr-2">
-                  <div class="space-y-4">
+                <ScrollArea class="flex-1 min-h-0 pr-2">
+                  <div class="flex flex-col gap-4">
                     <div class="rounded-[1.35rem] border border-(--border) bg-white/55 p-4">
                       <div class="grid gap-3 md:grid-cols-2">
-                        <label class="space-y-2">
+                        <label class="flex flex-col gap-2">
                           <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Active mode</span>
                           <select
                             class="flex h-10 w-full rounded-xl border border-(--border) bg-white/70 px-3 py-2 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
@@ -1383,9 +1591,9 @@ export function ChatPanel() {
 
                     <div class="rounded-[1.35rem] border border-(--border) bg-white/55 p-4">
                       <div class="flex items-center justify-between gap-3">
-                        <div>
+                        <div class="flex flex-col gap-1">
                           <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Project context</div>
-                          <div class="mt-1 text-[0.675rem] leading-5 text-(--muted)">
+                          <div class="text-[0.675rem] leading-5 text-(--muted)">
                             Rules and working memory flow into planner and execution prompts.
                           </div>
                         </div>
@@ -1393,12 +1601,12 @@ export function ChatPanel() {
                           Save context
                         </ActionButton>
                       </div>
-                      <div class="mt-4 grid gap-3 md:grid-cols-2">
-                        <label class="space-y-2">
+                      <div class="grid gap-3 pt-4 md:grid-cols-2">
+                        <label class="flex flex-col gap-2">
                           <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Project rules</span>
                           <Textarea rows="8" value={projectRulesDraft()} onInput={(event) => setProjectRulesDraft(event.currentTarget.value)} />
                         </label>
-                        <label class="space-y-2">
+                        <label class="flex flex-col gap-2">
                           <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Thread memory</span>
                           <Textarea rows="8" value={threadMemoryDraft()} onInput={(event) => setThreadMemoryDraft(event.currentTarget.value)} />
                         </label>
@@ -1435,14 +1643,14 @@ export function ChatPanel() {
 
                     <Show when={currentExecutionPlan()}>
                       {(plan) => (
-                        <div class="rounded-[1.35rem] border border-(--border) bg-white/55 p-4 text-[0.675rem] leading-6 text-(--foreground)">
+                        <div class="flex flex-col gap-3 rounded-[1.35rem] border border-(--border) bg-white/55 p-4 text-[0.675rem] leading-6 text-(--foreground)">
                           <div class="flex items-center justify-between gap-3">
                             <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Current plan snapshot</div>
                             <ActionButton tooltip="Open full execution plan" size="sm" variant="secondary" onClick={() => harnessStore.openExecutionPlanDialog(plan())}>
                               Open plan
                             </ActionButton>
                           </div>
-                          <MarkdownContent content={() => plan().summary} class="mt-3" size="compact" />
+                          <MarkdownContent content={() => plan().summary} size="compact" />
                         </div>
                       )}
                     </Show>
@@ -1450,8 +1658,8 @@ export function ChatPanel() {
                 </ScrollArea>
                     </Match>
                     <Match when={selectedTab === "run"}>
-                <ScrollArea class="flex-1 min-h-0 space-y-4 pr-2">
-                  <div class="space-y-4">
+                <ScrollArea class="flex-1 min-h-0 pr-2">
+                  <div class="flex flex-col gap-4">
                     <CliSessionPanel />
                     <div class="rounded-[1.35rem] border border-(--border) bg-white/55 p-4 text-[0.675rem] leading-6 text-(--foreground)">
                       <div class="flex items-center justify-between gap-3">
@@ -1473,15 +1681,24 @@ export function ChatPanel() {
                           </Show>
                         </div>
                       </div>
-                      <div class="mt-2">Status: {project().activeRun?.status ?? project().lastRun?.status ?? "idle"}</div>
-                      <div>Retryable: {project().lastRun?.retryable ? "yes" : "no"}</div>
-                      <div>Resumable: {project().activeRun?.resumable ? "yes" : "no"}</div>
-                      <div>Prompt: {project().activeRun?.latestUserPrompt ?? project().lastRun?.latestUserPrompt ?? "n/a"}</div>
+                      <div class="flex min-w-0 flex-col gap-1 pt-2">
+                        <div>Status: {project().activeRun?.status ?? project().lastRun?.status ?? "idle"}</div>
+                        <div>Retryable: {project().lastRun?.retryable ? "yes" : "no"}</div>
+                        <div>Resumable: {project().activeRun?.resumable ? "yes" : "no"}</div>
+                        <div
+                          class="truncate"
+                          title={project().activeRun?.latestUserPrompt ?? project().lastRun?.latestUserPrompt ?? undefined}
+                        >
+                          Prompt: {project().activeRun?.latestUserPrompt ?? project().lastRun?.latestUserPrompt ?? "n/a"}
+                        </div>
+                      </div>
                       <Show when={experimentRun()}>
-                        <div class="mt-2">Virtual branch: {experimentRun()!.virtualBranchName}</div>
-                        <div>Mount: {experimentRun()!.projectMountPath}</div>
-                        <div>
-                          Diff: {experimentRun()!.filesChanged} files, +{experimentRun()!.insertions} / -{experimentRun()!.deletions}
+                        <div class="flex min-w-0 flex-col gap-1 pt-2">
+                          <div>Virtual branch: {experimentRun()!.virtualBranchName}</div>
+                          <div class="min-w-0 break-all">Mount: {experimentRun()!.projectMountPath}</div>
+                          <div>
+                            Diff: {experimentRun()!.filesChanged} files, +{experimentRun()!.insertions} / -{experimentRun()!.deletions}
+                          </div>
                         </div>
                       </Show>
                     </div>
@@ -1491,10 +1708,14 @@ export function ChatPanel() {
                           <div class="font-semibold">{task.title}</div>
                           <div class="text-(--muted)">Status: {task.status} | Attempts: {task.attemptCount}</div>
                           <Show when={task.output}>
-                            <MarkdownContent content={() => task.output ?? ""} class="mt-2" size="compact" />
+                            <div class="pt-2">
+                              <MarkdownContent content={() => task.output ?? ""} size="compact" />
+                            </div>
                           </Show>
                           <Show when={task.errorMessage}>
-                            <MarkdownContent content={() => task.errorMessage ?? ""} class="mt-2" size="compact" tone="danger" />
+                            <div class="pt-2">
+                              <MarkdownContent content={() => task.errorMessage ?? ""} size="compact" tone="danger" />
+                            </div>
                           </Show>
                         </div>
                       )}
@@ -1503,7 +1724,7 @@ export function ChatPanel() {
                 </ScrollArea>
                     </Match>
                     <Match when={selectedTab === "events"}>
-                <ScrollArea class="flex-1 min-h-0 space-y-4 pr-2">
+                <ScrollArea class="flex-1 min-h-0 pr-2">
                   <Show
                     when={project().traces.length > 0}
                     fallback={
@@ -1512,17 +1733,19 @@ export function ChatPanel() {
                       </div>
                     }
                   >
-                    <div class="space-y-3">
+                    <div class="flex flex-col gap-3">
                       <For each={project().traces}>
                         {(trace) => (
                           <article class="rounded-[1.35rem] border border-(--border) bg-white/55 p-4">
-                            <div class="mb-2 flex items-center justify-between gap-3 text-[0.585rem] font-semibold uppercase tracking-[0.16em] text-(--accent-strong)">
+                            <div class="flex items-center justify-between gap-3 text-[0.585rem] font-semibold uppercase tracking-[0.16em] text-(--accent-strong)">
                               <span>{trace.stage}</span>
                               <span>{trace.modelId ?? "n/a"}</span>
                             </div>
                             <MarkdownContent content={() => trace.message} size="compact" />
                             <Show when={trace.detail}>
-                              <MarkdownContent content={() => trace.detail ?? ""} class="mt-2" size="compact" tone="muted" />
+                              <div class="pt-2">
+                                <MarkdownContent content={() => trace.detail ?? ""} size="compact" tone="muted" />
+                              </div>
                             </Show>
                           </article>
                         )}
@@ -1532,7 +1755,7 @@ export function ChatPanel() {
                 </ScrollArea>
                     </Match>
                     <Match when={selectedTab === "memory"}>
-                <ScrollArea class="flex-1 min-h-0 space-y-4 pr-2">
+                <ScrollArea class="flex-1 min-h-0 pr-2">
                   <Show
                     when={project().memoryEntries.length > 0}
                     fallback={
@@ -1541,7 +1764,7 @@ export function ChatPanel() {
                       </div>
                     }
                   >
-                    <div class="space-y-3">
+                    <div class="flex flex-col gap-3">
                       <For each={project().memoryEntries}>
                         {(entry) => (
                           <article class="rounded-[1.35rem] border border-(--border) bg-white/55 p-4">
@@ -1578,12 +1801,16 @@ export function ChatPanel() {
                                 </ActionButton>
                               </div>
                             </div>
-                            <div class="mt-2 text-(--muted)">
+                            <div class="pt-2 text-(--muted)">
                               {entry.confidence} | {entry.freshness} | hits {entry.hitCount}
                             </div>
-                            <MarkdownContent content={() => entry.summary} class="mt-2" size="compact" />
+                            <div class="pt-2">
+                              <MarkdownContent content={() => entry.summary} size="compact" />
+                            </div>
                             <Show when={entry.evidence}>
-                              <MarkdownContent content={() => entry.evidence ?? ""} class="mt-2" size="compact" tone="muted" />
+                              <div class="pt-2">
+                                <MarkdownContent content={() => entry.evidence ?? ""} size="compact" tone="muted" />
+                              </div>
                             </Show>
                           </article>
                         )}
@@ -1593,12 +1820,13 @@ export function ChatPanel() {
                 </ScrollArea>
                     </Match>
                   </Switch>
-                </>
+                </div>
               )}
             </Show>
+            </div>
 
             <Show when={readyRun() && currentExecutionPlan()?.gating.mode === "countdown" && countdownRunId() === readyRun()!.id}>
-              <div class="rounded-[1.25rem] border border-(--border) bg-white/65 p-3">
+              <div class="flex flex-col gap-3 rounded-[1.25rem] border border-(--border) bg-white/65 p-3">
                 <div class="flex flex-wrap items-center justify-between gap-3 text-[0.675rem] text-(--muted)">
                   <span>
                     Auto-run {countdownPaused() ? "paused" : "in progress"} for {currentExecutionPlan()?.gating.delaySeconds}s gate.
@@ -1621,7 +1849,7 @@ export function ChatPanel() {
                     {countdownPaused() ? "Resume auto-run" : "Pause auto-run"}
                   </ActionButton>
                 </div>
-                <div class="mt-3 h-2 overflow-hidden rounded-full bg-(--border)">
+                <div class="h-2 overflow-hidden rounded-full bg-(--border)">
                   <div
                     class="h-full rounded-full bg-(--accent) transition-[width]"
                     style={{
@@ -1641,45 +1869,49 @@ export function ChatPanel() {
               </div>
             </Show>
 
-            <form data-test-chat-composer="" class="space-y-3" onSubmit={handleSubmit}>
+            <form data-test-chat-composer="" class="shrink-0 space-y-3" onSubmit={handleSubmit}>
               <Show when={pendingQuestion()}>
                 {(question) => (
-                  <div class="rounded-3xl border border-amber-300/70 bg-amber-50/80 p-4 shadow-sm">
-                    <div class="mb-2 flex items-center gap-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-amber-800">
+                  <div class="flex flex-col gap-3 rounded-3xl border border-amber-300/70 bg-amber-50/80 p-4 shadow-sm">
+                    <div class="flex items-center gap-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-amber-800">
                       <MessageSquareMore class="h-3.5 w-3.5" />
                       Planner question
                     </div>
                     <div class="text-[0.7875rem] leading-6 text-amber-950">{question().prompt}</div>
                     <Show when={question().placeholder}>
-                      <div class="mt-2 text-[0.675rem] text-amber-900/70">Example reply: {question().placeholder}</div>
+                      <div class="text-[0.675rem] text-amber-900/70">Example reply: {question().placeholder}</div>
                     </Show>
-                    <div class="mt-3 grid gap-2 md:grid-cols-3">
+                    <div class="grid gap-2 md:grid-cols-3">
                       <For each={question().choices}>
                         {(choice) => (
-                          <button
-                            class={`cursor-pointer rounded-[1.1rem] border px-3 py-2 text-left text-[0.675rem] transition disabled:cursor-not-allowed ${choice.recommended
-                              ? "border-amber-500 bg-white text-amber-950"
-                              : "border-amber-200/80 bg-white/70 text-amber-900"
-                              }`}
-                            type="button"
-                            disabled={executionPaused()}
-                            onClick={() => handleQuestionChoice(choice.answerText)}
-                          >
-                            <div class="flex items-center justify-between gap-2 font-semibold">
-                              <span>{choice.label}</span>
-                              <Show when={choice.recommended}>
-                                <span class="rounded-full bg-amber-200 px-2 py-0.5 text-[0.55rem] uppercase tracking-[0.14em]">
-                                  Recommended
-                                </span>
-                              </Show>
-                            </div>
-                            <div class="mt-1 text-[0.625rem] leading-5">{choice.description}</div>
-                          </button>
+                          <Tooltip content={executionPaused() ? executionPauseReason() : choice.description}>
+                            <span class="inline-flex">
+                              <button
+                                class={`cursor-pointer rounded-[1.1rem] border px-3 py-2 text-left text-[0.675rem] transition disabled:cursor-not-allowed ${choice.recommended
+                                  ? "border-amber-500 bg-white text-amber-950"
+                                  : "border-amber-200/80 bg-white/70 text-amber-900"
+                                  }`}
+                                type="button"
+                                disabled={executionPaused()}
+                                onClick={() => handleQuestionChoice(choice.answerText)}
+                              >
+                                <div class="flex items-center justify-between gap-2 font-semibold">
+                                  <span>{choice.label}</span>
+                                  <Show when={choice.recommended}>
+                                    <span class="rounded-full bg-amber-200 px-2 py-0.5 text-[0.55rem] uppercase tracking-[0.14em]">
+                                      Recommended
+                                    </span>
+                                  </Show>
+                                </div>
+                                <div class="text-[0.625rem] leading-5">{choice.description}</div>
+                              </button>
+                            </span>
+                          </Tooltip>
                         )}
                       </For>
                     </div>
                     <Show when={executionPaused()}>
-                      <div class="mt-3 text-[0.625rem] text-amber-900/75">
+                      <div class="text-[0.625rem] text-amber-900/75">
                         Global pause active. Send answer after resume.
                       </div>
                     </Show>
@@ -1689,14 +1921,14 @@ export function ChatPanel() {
 
               <Show when={resumableRun()}>
                 {(run) => (
-                  <div class="rounded-3xl border border-rose-300/70 bg-rose-50/80 p-4 shadow-sm">
-                    <div class="mb-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-rose-800">
+                  <div class="flex flex-col gap-2 rounded-3xl border border-rose-300/70 bg-rose-50/80 p-4 shadow-sm">
+                    <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-rose-800">
                       Resumable run
                     </div>
                     <div class="text-[0.7875rem] leading-6 text-rose-950">
                       Status: {run().status}. Failed subtasks: {failedSubtaskCount()}.
                     </div>
-                    <div class="mt-2 text-[0.675rem] leading-5 text-rose-900/75">
+                    <div class="text-[0.675rem] leading-5 text-rose-900/75">
                       Use resume to rerun failed or pending subtasks only. Draft text below will be sent as extra guidance.
                     </div>
                   </div>
@@ -1711,16 +1943,242 @@ export function ChatPanel() {
                 )}
               </Show>
 
-              <Textarea
-                data-tour-id="chat-composer"
-                rows="4"
-                value={project().draft}
-                placeholder={getComposerPlaceholder()}
-                disabled={executionPaused()}
-                onInput={(event: InputEvent & { currentTarget: HTMLTextAreaElement; target: Element }) =>
-                  harnessStore.setProjectDraft(project().id, event.currentTarget.value)
-                }
-              />
+              <div class="relative" data-tour-id="chat-composer">
+                <Textarea
+                  ref={composerTextarea}
+                  rows="2"
+                  value={project().draft}
+                  placeholder={getComposerPlaceholder()}
+                  disabled={executionPaused()}
+                  class="w-full resize-none rounded-xl pb-12 pr-14"
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter" || event.shiftKey) {
+                      return;
+                    }
+
+                    event.preventDefault();
+                    composerTextarea?.form?.requestSubmit();
+                  }}
+                  onInput={(event: InputEvent & { currentTarget: HTMLTextAreaElement; target: Element }) => {
+                    harnessStore.setProjectDraft(project().id, event.currentTarget.value);
+                    resizeComposer();
+                  }}
+                />
+                <div class="pointer-events-none absolute bottom-2 right-2 flex items-center gap-1.5">
+                  <ActionButton
+                    tooltip="Attach screenshots, PDFs, or office docs"
+                    disabledReason={executionPaused() ? executionPauseReason() : attachmentButtonReason()}
+                    disabled={executionPaused() || attachmentButtonDisabled()}
+                    icon={<Paperclip class="h-4 w-4" />}
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    class="pointer-events-auto h-8 w-8 rounded-lg"
+                    onClick={() => attachmentInput?.click()}
+                  />
+                  <ActionButton
+                    tooltip={
+                      pendingQuestion()
+                        ? "Send planner answer"
+                        : project().activeRun?.status === "ready"
+                          ? "Refine plan before execution"
+                          : `Send task to ${selectedAgentLabel()}`
+                    }
+                    disabledReason={
+                      uploadingAttachments()
+                        ? "Attachment upload in progress"
+                        : executionPaused()
+                          ? executionPauseReason()
+                          : hasImageDraftAttachments() && !hasVisionCapability()
+                            ? "Current model lacks vision support for image attachments"
+                            : setupBlockedReason()
+                              ? setupBlockedReason()
+                              : project().session.isStreaming
+                                ? "Project is streaming"
+                                : resumableRun()
+                                  ? "Use resume failed agents to continue this run"
+                                  : "Enter task text"
+                    }
+                    disabled={
+                      !project().draft.trim() ||
+                      executionPaused() ||
+                      Boolean(resumableRun()) ||
+                      project().session.isStreaming ||
+                      uploadingAttachments() ||
+                      Boolean(setupBlockedReason()) ||
+                      (hasImageDraftAttachments() && !hasVisionCapability())
+                    }
+                    icon={<SendHorizontal class="h-4 w-4" />}
+                    type="submit"
+                    variant="ghost"
+                    size="icon"
+                    class="pointer-events-auto h-8 w-8 rounded-lg"
+                    dataTourId="chat-send"
+                  />
+                </div>
+                <div class="absolute bottom-2 left-2">
+                  <div class="hidden flex-wrap items-center gap-2 lg:flex">
+                    <span class="text-[0.625rem] text-(--muted)">Mode</span>
+                    <select
+                      data-test-mode-select=""
+                      class="h-7 rounded-lg border border-(--border) bg-white/65 px-2 text-[0.625rem] text-(--foreground) outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
+                      value={activeMode()?.id ?? "implement"}
+                      onInput={(event) => handleModeSelect(event.currentTarget.value)}
+                    >
+                      <For each={resolvedModes()}>
+                        {(mode) => <option value={mode.id}>{mode.label}</option>}
+                      </For>
+                    </select>
+                    <span class="text-[0.625rem] text-(--muted)">Agent</span>
+                    <select
+                      data-test-agent-select=""
+                      data-tour-id="agent-select"
+                      class="h-7 rounded-lg border border-(--border) bg-white/65 px-2 text-[0.625rem] text-(--foreground) outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
+                      value={selectedAgentId()}
+                      onInput={(event) => handleSelectAgent(event.currentTarget.value as "pi" | "copilot-cli" | "codex-cli")}
+                    >
+                      <For each={state.availableAgents}>
+                        {(agent) => <option value={agent.id}>{agent.label}</option>}
+                      </For>
+                    </select>
+                    <Show when={selectedProviderBrand()}>
+                      {(providerBrand) => (
+                        <>
+                          <span class="text-[0.625rem] text-(--muted)">Provider</span>
+                          <select
+                            data-test-provider-select=""
+                            class="h-7 rounded-lg border border-(--border) bg-white/65 px-2 text-[0.625rem] text-(--foreground) outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring) disabled:cursor-not-allowed disabled:opacity-60"
+                            value={providerBrand()}
+                            disabled={selectedAgentId() === "codex-cli"}
+                            onInput={(event) => handleProviderBrandSelect(event.currentTarget.value as "gpt" | "gemini")}
+                          >
+                            <option value="gpt">GPT</option>
+                            <Show when={selectedAgentId() === "pi"}>
+                              <option value="gemini">Gemini</option>
+                            </Show>
+                          </select>
+                        </>
+                      )}
+                    </Show>
+                    <span class="text-[0.625rem] text-(--muted)">Model</span>
+                    <Tooltip content={availableExecutionModels().length === 0 ? "No available models discovered for the selected runtime yet." : undefined}>
+                      <span class="inline-flex">
+                        <select
+                          data-test-model-select=""
+                          class="h-7 rounded-lg border border-(--border) bg-white/65 px-2 text-[0.625rem] text-(--foreground) outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring) disabled:cursor-not-allowed disabled:opacity-60"
+                          value={getEffectiveExecutionModelId()}
+                          disabled={availableExecutionModels().length === 0}
+                          onInput={(event) => handleExecutionModelSelect(event.currentTarget.value)}
+                        >
+                          <For each={availableExecutionModels()}>
+                            {(model) => <option value={model.modelId}>{model.label}</option>}
+                          </For>
+                        </select>
+                      </span>
+                    </Tooltip>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <Popover
+                      open={reasoningMenuOpen()}
+                      onClose={() => setReasoningMenuOpen(false)}
+                      align="start"
+                      contentClass="w-[min(20rem,calc(100vw-1.5rem))] lg:w-64"
+                      content={renderComposerControlMenu()}
+                    >
+                      <button
+                        type="button"
+                        data-test-effort-trigger=""
+                        class="inline-flex h-7 items-center rounded-lg border border-(--border) bg-white/70 px-2 text-[0.625rem] text-(--foreground) outline-none transition hover:bg-white/85 focus-visible:ring-2 focus-visible:ring-(--ring)"
+                        onClick={() => setReasoningMenuOpen((current) => !current)}
+                      >
+                        {composerSettingsLabel()}
+                      </button>
+                    </Popover>
+                    <div class="lg:hidden">
+                      <Popover
+                        open={composerSettingsOpen()}
+                        onClose={() => setComposerSettingsOpen(false)}
+                        align="start"
+                        contentClass="w-[min(24rem,calc(100vw-1.5rem))]"
+                        content={
+                          <div class="flex flex-col gap-2">
+                            <label class="flex flex-col gap-1 text-[0.625rem] text-(--muted)">
+                              <span>Mode</span>
+                              <select
+                                data-test-mode-select=""
+                                class="h-8 rounded-lg border border-(--border) bg-white/70 px-2 text-[0.625rem] text-(--foreground) outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
+                                value={activeMode()?.id ?? "implement"}
+                                onInput={(event) => handleModeSelect(event.currentTarget.value)}
+                              >
+                                <For each={resolvedModes()}>
+                                  {(mode) => <option value={mode.id}>{mode.label}</option>}
+                                </For>
+                              </select>
+                            </label>
+                            <label class="flex flex-col gap-1 text-[0.625rem] text-(--muted)">
+                              <span>Agent</span>
+                              <select
+                                data-test-agent-select=""
+                                data-tour-id="agent-select"
+                                class="h-8 rounded-lg border border-(--border) bg-white/70 px-2 text-[0.625rem] text-(--foreground) outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
+                                value={selectedAgentId()}
+                                onInput={(event) => handleSelectAgent(event.currentTarget.value as "pi" | "copilot-cli" | "codex-cli")}
+                              >
+                                <For each={state.availableAgents}>
+                                  {(agent) => <option value={agent.id}>{agent.label}</option>}
+                                </For>
+                              </select>
+                            </label>
+                            <Show when={selectedProviderBrand()}>
+                              {(providerBrand) => (
+                                <label class="flex flex-col gap-1 text-[0.625rem] text-(--muted)">
+                                  <span>Provider</span>
+                                  <select
+                                    data-test-provider-select=""
+                                    class="h-8 rounded-lg border border-(--border) bg-white/70 px-2 text-[0.625rem] text-(--foreground) outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring) disabled:cursor-not-allowed disabled:opacity-60"
+                                    value={providerBrand()}
+                                    disabled={selectedAgentId() === "codex-cli"}
+                                    onInput={(event) => handleProviderBrandSelect(event.currentTarget.value as "gpt" | "gemini")}
+                                  >
+                                    <option value="gpt">GPT</option>
+                                    <Show when={selectedAgentId() === "pi"}>
+                                      <option value="gemini">Gemini</option>
+                                    </Show>
+                                  </select>
+                                </label>
+                              )}
+                            </Show>
+                            <label class="flex flex-col gap-1 text-[0.625rem] text-(--muted)">
+                              <span>Model</span>
+                              <select
+                                data-test-model-select=""
+                                class="h-8 rounded-lg border border-(--border) bg-white/70 px-2 text-[0.625rem] text-(--foreground) outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring) disabled:cursor-not-allowed disabled:opacity-60"
+                                value={getEffectiveExecutionModelId()}
+                                disabled={availableExecutionModels().length === 0}
+                                onInput={(event) => handleExecutionModelSelect(event.currentTarget.value)}
+                              >
+                                <For each={availableExecutionModels()}>
+                                  {(model) => <option value={model.modelId}>{model.label}</option>}
+                                </For>
+                              </select>
+                            </label>
+                          </div>
+                        }
+                      >
+                        <ActionButton
+                          tooltip="Open composer settings"
+                          icon={<Settings2 class="h-4 w-4" />}
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          class="h-7 w-7 rounded-lg"
+                          onClick={() => setComposerSettingsOpen((current) => !current)}
+                        />
+                      </Popover>
+                    </div>
+                  </div>
+                </div>
+              </div>
               <input
                 ref={attachmentInput}
                 class="hidden"
@@ -1758,67 +2216,7 @@ export function ChatPanel() {
               </Show>
 
               <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                <div class="space-y-2 text-[0.675rem] text-(--muted)">
-                  <div class="flex flex-wrap items-center gap-2">
-                    <span>Mode</span>
-                    <select
-                      data-test-mode-select=""
-                      class="h-9 rounded-xl border border-(--border) bg-white/70 px-3 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
-                      value={activeMode()?.id ?? "implement"}
-                      onInput={(event) => handleModeSelect(event.currentTarget.value)}
-                    >
-                      <For each={resolvedModes()}>
-                        {(mode) => <option value={mode.id}>{mode.label}</option>}
-                      </For>
-                    </select>
-                    <span>Agent</span>
-                    <select
-                      data-test-agent-select=""
-                      data-tour-id="agent-select"
-                      class="h-9 rounded-xl border border-(--border) bg-white/70 px-3 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
-                      value={selectedAgentId()}
-                      onInput={(event) => handleSelectAgent(event.currentTarget.value as "pi" | "copilot-cli" | "codex-cli")}
-                    >
-                      <For each={state.availableAgents}>
-                        {(agent) => <option value={agent.id}>{agent.label}</option>}
-                      </For>
-                    </select>
-                    <Show when={selectedProviderBrand()}>
-                      {(providerBrand) => (
-                        <>
-                          <span>Provider</span>
-                          <select
-                            data-test-provider-select=""
-                            class="h-9 rounded-xl border border-(--border) bg-white/70 px-3 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring) disabled:cursor-not-allowed disabled:opacity-60"
-                            value={providerBrand()}
-                            disabled={selectedAgentId() === "codex-cli"}
-                            onInput={(event) => handleProviderBrandSelect(event.currentTarget.value as "gpt" | "gemini")}
-                          >
-                            <option value="gpt">GPT</option>
-                            <Show when={selectedAgentId() === "pi"}>
-                              <option value="gemini">Gemini</option>
-                            </Show>
-                          </select>
-                        </>
-                      )}
-                    </Show>
-                    <span>Model</span>
-                    <Tooltip content={availableExecutionModels().length === 0 ? "No available models discovered for the selected runtime yet." : undefined}>
-                      <span class="inline-flex">
-                        <select
-                          data-test-model-select=""
-                          class="h-9 rounded-xl border border-(--border) bg-white/70 px-3 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring) disabled:cursor-not-allowed disabled:opacity-60"
-                          value={getEffectiveExecutionModelId()}
-                          disabled={availableExecutionModels().length === 0}
-                          onInput={(event) => handleExecutionModelSelect(event.currentTarget.value)}
-                        >
-                          <For each={availableExecutionModels()}>
-                            {(model) => <option value={model.modelId}>{model.label}</option>}
-                          </For>
-                        </select>
-                      </span>
-                    </Tooltip>
-                  </div>
+                <div class="flex flex-col gap-2 text-[0.675rem] text-(--muted)">
                   <div class="flex flex-wrap gap-2">
                     <For each={capabilityTags()}>
                       {(tag) => (
@@ -1854,17 +2252,6 @@ export function ChatPanel() {
                   </Show>
                 </div>
                 <div class="flex flex-wrap gap-2">
-                  <ActionButton
-                    tooltip="Attach screenshots, PDFs, or office docs"
-                    disabledReason={executionPaused() ? executionPauseReason() : attachmentButtonReason()}
-                    disabled={executionPaused() || attachmentButtonDisabled()}
-                    icon={<Paperclip class="h-4 w-4" />}
-                    type="button"
-                    variant="secondary"
-                    onClick={() => attachmentInput?.click()}
-                  >
-                    Attach files
-                  </ActionButton>
                   <Show when={resumableRun()}>
                     <ActionButton
                       tooltip="Resume failed or pending subagents"
@@ -1883,7 +2270,11 @@ export function ChatPanel() {
                       Resume failed agents
                     </ActionButton>
                   </Show>
-                  <Show when={selectedAgentRuntime()?.agentId !== "pi"}>
+                  {/*
+                    Open live session is intentionally hidden for MVP.
+                    This is unneeded at the moment, but can be reintroduced post-MVP.
+                  */}
+                  {/* <Show when={selectedAgentRuntime()?.agentId !== "pi"}>
                     <ActionButton
                       tooltip="Open live pipe-based CLI session"
                       disabledReason={
@@ -1909,54 +2300,12 @@ export function ChatPanel() {
                     >
                       Open live session
                     </ActionButton>
-                  </Show>
-                  <ActionButton
-                    tooltip={
-                      pendingQuestion()
-                        ? "Send planner answer"
-                        : project().activeRun?.status === "ready"
-                          ? "Refine plan before execution"
-                          : "Send task to pi"
-                    }
-                    disabledReason={
-                      uploadingAttachments()
-                        ? "Attachment upload in progress"
-                        : executionPaused()
-                          ? executionPauseReason()
-                          : hasImageDraftAttachments() && !hasVisionCapability()
-                            ? "Current model lacks vision support for image attachments"
-                            : setupBlockedReason()
-                              ? setupBlockedReason()
-                              : project().session.isStreaming
-                                ? "Project is streaming"
-                                : resumableRun()
-                                  ? "Use resume failed agents to continue this run"
-                                  : "Enter task text"
-                    }
-                    disabled={
-                      !project().draft.trim() ||
-                      executionPaused() ||
-                      Boolean(resumableRun()) ||
-                      project().session.isStreaming ||
-                      uploadingAttachments() ||
-                      Boolean(setupBlockedReason()) ||
-                      (hasImageDraftAttachments() && !hasVisionCapability())
-                    }
-                    icon={<SendHorizontal class="h-4 w-4" />}
-                    type="submit"
-                    dataTourId="chat-send"
-                  >
-                    {pendingQuestion()
-                      ? "Answer question"
-                      : project().activeRun?.status === "ready"
-                        ? "Refine plan"
-                        : "Send task"}
-                  </ActionButton>
+                  </Show> */}
                 </div>
               </div>
             </form>
             <Dialog open={experimentDialogOpen()} onClose={() => setExperimentDialogOpen(false)} title="Experiment review">
-              <div class="space-y-3 text-[0.7rem] leading-6 text-(--foreground)">
+              <div class="flex flex-col gap-3 text-[0.7rem] leading-6 text-(--foreground)">
                 <Show when={experimentRun()}>
                   <div>
                     <div class="font-semibold">{experimentRun()!.virtualBranchName}</div>
@@ -1978,6 +2327,25 @@ export function ChatPanel() {
       </Show>
     </section>
   );
+}
+
+function formatReasoningStrengthLabel(strength: (typeof COMPOSER_REASONING_STRENGTHS)[number]) {
+  switch (strength) {
+    case "extra-high":
+      return "Extra High";
+    case "medium":
+      return "Medium";
+    case "low":
+      return "Low";
+    case "high":
+    default:
+      return "High";
+  }
+}
+
+function formatReasoningOptionLabel(strength: (typeof COMPOSER_REASONING_STRENGTHS)[number]) {
+  const label = formatReasoningStrengthLabel(strength);
+  return strength === "high" ? `${label} (default)` : label;
 }
 
 function formatTokenCount(value: number | undefined) {

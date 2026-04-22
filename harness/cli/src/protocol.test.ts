@@ -133,6 +133,37 @@ describe("client command validation", () => {
     ).toBe("planning.answer");
   });
 
+  test("accepts composer control payloads on chat and run commands", () => {
+    expect(
+      parseClientCommand({
+        type: "chat.send",
+        requestId: "req-controls-chat",
+        payload: {
+          projectId: "project-1",
+          threadId: "thread-1",
+          agentId: "pi",
+          content: "Ship it",
+          reasoningStrength: "extra-high",
+          fastMode: true
+        }
+      }).type
+    ).toBe("chat.send");
+
+    expect(
+      parseClientCommand({
+        type: "run.execute",
+        requestId: "req-controls-run",
+        payload: {
+          projectId: "project-1",
+          threadId: "thread-1",
+          runId: "run-1",
+          reasoningStrength: "medium",
+          fastMode: false
+        }
+      }).type
+    ).toBe("run.execute");
+  });
+
   test("accepts chat.send payloads with attachments", () => {
     expect(
       parseClientCommand({
@@ -406,6 +437,12 @@ describe("planner result validation", () => {
             logs: [],
             assetRefs: []
           },
+          notifications: {
+            items: [],
+            unreadCount: 0,
+            interactiveUnreadCount: 0,
+            passiveUnreadCount: 0
+          },
           executionControl: defaultExecutionControl
         }
       }).type
@@ -462,6 +499,12 @@ describe("planner result validation", () => {
             questions: [],
             logs: [],
             assetRefs: []
+          },
+          notifications: {
+            items: [],
+            unreadCount: 0,
+            interactiveUnreadCount: 0,
+            passiveUnreadCount: 0
           },
           executionControl: defaultExecutionControl
         }

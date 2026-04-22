@@ -2,7 +2,7 @@ import { createUiAssetManager } from "./ui-build";
 import { defaultAgentCatalog } from "../../shared/agent-catalog";
 import { defaultProviderCapabilities } from "../../shared/capabilities";
 import { resolveModeById, resolveModeCatalog } from "../../shared/modes";
-import { detectAutoMode } from "../../shared/mode-intent";
+import { detectAutoMode, isDirectWorkspaceImplementTask } from "../../shared/mode-intent";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { createRouteHandler } from "uploadthing/server";
@@ -24,14 +24,22 @@ import {
   type ChatMessage,
   type CliAttachToken,
   type CliSession,
+  type ComposerReasoningStrength,
   type CorrectnessGap,
   type CorrectnessReview,
   type ExecutionPlan,
   type MemorySummary,
   type ModeDefinition,
+  type NotificationSeverity,
   parseClientCommand,
   type AgentRunState,
+  type AssistantQuestion,
+  type AssistantQuestionNotification,
+  type BackgroundRunStatusNotification,
+  type BrowserApprovalNotification,
   type ClientCommand,
+  type PlanningQuestion,
+  type PlanningQuestionNotification,
   type PlannerReadyTurn,
   type PreferencesState,
   type ProjectContextUsage,
@@ -66,6 +74,7 @@ import { PiRuntime } from "./agent-runtimes/pi-runtime";
 import { AgentRuntimeRegistry } from "./agent-runtimes/runtime-registry";
 import {
   aggregateSubagentResults,
+  buildExecutionPlan,
   executeReadyRun,
   executionPlanToTasks,
   resolveExecutionPlanGateMode,
@@ -85,6 +94,7 @@ import {
   requestBrowserApproval as requestBrowserApprovalState,
   resolveBrowserApproval
 } from "./browser-session-state";
+import { type StartupPhaseId, type StartupTelemetrySink } from "./startup-telemetry";
 
 type HarnessConnection = {
   clientId: string;
@@ -100,6 +110,8 @@ type HarnessServerOptions = {
   serverOnly?: boolean;
   openBrowser?: boolean;
   launchMode?: SetupLaunchMode;
+  startupTelemetry?: StartupTelemetrySink;
+  uiAssetManagerFactory?: typeof createUiAssetManager;
 };
 
 type ProjectLike = Pick<WorkspaceProjectState, "id" | "rootPath" | "activeThreadId" | "session" | "activeRun" | "lastRun">;
@@ -113,41 +125,68 @@ type BackgroundRunControl = {
   abortController: AbortController;
 };
 
+const LOG_COMMAND_ERRORS = process.env.NODE_ENV !== "production";
+
 export async function startHarnessServer({
   port,
   adapter = new PiSdkAgentAdapter(),
-  repository = new WorkspaceRepository(Bun.env.HARNESS_DB_PATH),
+  repository: providedRepository,
   pickFolder = pickProjectFolder,
   serverOnly = false,
   openBrowser = false,
-  launchMode = detectSetupLaunchMode()
+  launchMode = detectSetupLaunchMode(),
+  startupTelemetry,
+  uiAssetManagerFactory = createUiAssetManager
 }: HarnessServerOptions) {
-  const runtime = new WorkspaceRuntimeStore(repository.loadWorkspace());
-  const runtimeRegistry = new AgentRuntimeRegistry([
-    new PiRuntime(adapter),
-    new CopilotCliRuntime(),
-    new CodexCliRuntime()
-  ]);
   const pendingBrowserApprovals = new Map<string, PendingBrowserApproval>();
   const backgroundRunControllers = new Map<string, BackgroundRunControl>();
   const connections = new Set<Bun.ServerWebSocket<HarnessConnection>>();
-  const uiAssets = serverOnly ? undefined : createUiAssetManager();
   const uploadthingHandler = createRouteHandler({
     router: harnessUploadRouter
   });
-  const storedOpenAiApiKey = repository.getStoredOpenAiApiKey();
-  const storedGoogleApiKey = repository.getStoredGoogleApiKey();
+  const { runtimeRegistry, uiAssets } = await runStartupPhase(
+    startupTelemetry,
+    "bootstrap",
+    "initializing startup services",
+    "startup services ready",
+    async () => ({
+      runtimeRegistry: new AgentRuntimeRegistry([new PiRuntime(adapter), new CopilotCliRuntime(), new CodexCliRuntime()]),
+      uiAssets: serverOnly ? undefined : uiAssetManagerFactory()
+    })
+  );
+  const { repository, runtime } = await runStartupPhase(
+    startupTelemetry,
+    "workspace",
+    "loading workspace state",
+    "workspace state ready",
+    async () => {
+      const repository = providedRepository ?? new WorkspaceRepository(Bun.env.HARNESS_DB_PATH);
+      const runtime = new WorkspaceRuntimeStore(repository.loadWorkspace());
+      const storedOpenAiApiKey = repository.getStoredOpenAiApiKey();
+      const storedGoogleApiKey = repository.getStoredGoogleApiKey();
 
-  if (storedOpenAiApiKey) {
-    adapter.setApiKey("openai", storedOpenAiApiKey);
-  }
+      if (storedOpenAiApiKey) {
+        adapter.setApiKey("openai", storedOpenAiApiKey);
+      }
 
-  if (storedGoogleApiKey) {
-    adapter.setApiKey("google", storedGoogleApiKey);
-  }
-  applyAdapterAutoCompactionThreshold(adapter, repository.getAutoCompactContextThresholdPercentDefault());
+      if (storedGoogleApiKey) {
+        adapter.setApiKey("google", storedGoogleApiKey);
+      }
+      applyAdapterAutoCompactionThreshold(adapter, repository.getAutoCompactContextThresholdPercentDefault());
 
-  await runtimeRegistry.refreshAll();
+      return {
+        repository,
+        runtime
+      };
+    }
+  );
+  await runStartupPhase(
+    startupTelemetry,
+    "runtimes",
+    "refreshing runtime capabilities",
+    "runtime capabilities ready",
+    async () => runtimeRegistry.refreshAll()
+  );
   const getCurrentPreferencesState = () => getPreferencesState(repository, adapter, runtimeRegistry);
   const buildCurrentSetupState = () =>
     buildSetupState({
@@ -155,80 +194,110 @@ export async function startHarnessServer({
       preferences: getCurrentPreferencesState(),
       launchMode
     });
-  let currentSetupState = await buildCurrentSetupState();
+  let currentSetupState: SetupState;
+  const { assistantManager, cliSessionManager, scheduler } = await runStartupPhase(
+    startupTelemetry,
+    "setup",
+    "building setup state and startup managers",
+    "startup managers ready",
+    async () => {
+      currentSetupState = await buildCurrentSetupState();
+      const assistantManager = new AssistantManager(repository, runtimeRegistry, {
+        onAssistantsUpdated() {
+          syncAssistantQuestionNotifications(repository);
+          emitAssistantsUpdatedToAll(connections, repository.loadAssistantsState());
+          emitNotificationsUpdatedToAll(connections, `assistant:auto:${crypto.randomUUID()}`, repository.loadNotificationInboxState());
+          emitExecutionControlUpdatedToAll(connections, `assistant:auto:${crypto.randomUUID()}`, repository.getExecutionControlState());
+        },
+        onAssistantChatDelta(input) {
+          emitAssistantChatDeltaToAll(connections, input);
+        },
+        onAssistantChatComplete(input) {
+          emitAssistantChatCompleteToAll(connections, input);
+        },
+        onAssistantLogAppended(entry) {
+          emitAssistantLogAppendedToAll(connections, entry);
+        },
+        onAssistantCreatedCard(assistant) {
+          emitAssistantCreatedCardToAll(connections, assistant);
+        }
+      });
+      syncAssistantQuestionNotifications(repository);
+      syncBrowserApprovalNotifications(repository);
+      for (const run of repository.loadBackgroundJobsState().runs) {
+        saveBackgroundRunStatusNotification(repository, run);
+      }
 
-  const assistantManager = new AssistantManager(repository, runtimeRegistry, {
-    onAssistantsUpdated() {
-      emitAssistantsUpdatedToAll(connections, repository.loadAssistantsState());
-      emitExecutionControlUpdatedToAll(connections, `assistant:auto:${crypto.randomUUID()}`, repository.getExecutionControlState());
-    },
-    onAssistantChatDelta(input) {
-      emitAssistantChatDeltaToAll(connections, input);
-    },
-    onAssistantChatComplete(input) {
-      emitAssistantChatCompleteToAll(connections, input);
-    },
-    onAssistantLogAppended(entry) {
-      emitAssistantLogAppendedToAll(connections, entry);
-    },
-    onAssistantCreatedCard(assistant) {
-      emitAssistantCreatedCardToAll(connections, assistant);
-    }
-  });
+      const cliSessionManager = new CliSessionManager({
+        runtimeStore: runtime,
+        onSessionStarted({ requestId, projectId, threadId, session }) {
+          emitCliSessionStartedToAll(connections, {
+            requestId,
+            projectId,
+            threadId,
+            session
+          });
+        },
+        onSessionUpdated({ requestId, projectId, threadId, session }) {
+          emitCliSessionUpdatedToAll(connections, {
+            requestId,
+            projectId,
+            threadId,
+            session
+          });
+        },
+        onSessionExited({ requestId, projectId, threadId, session }) {
+          emitCliSessionExitedToAll(connections, {
+            requestId,
+            projectId,
+            threadId,
+            session
+          });
+        },
+        onAttachReady({ requestId, projectId, threadId, sessionId, attachToken }) {
+          emitCliSessionAttachReadyToAll(connections, {
+            requestId,
+            projectId,
+            threadId,
+            sessionId,
+            attachToken
+          });
+        }
+      });
 
-  const cliSessionManager = new CliSessionManager({
-    runtimeStore: runtime,
-    onSessionStarted({ requestId, projectId, threadId, session }) {
-      emitCliSessionStartedToAll(connections, {
-        requestId,
-        projectId,
-        threadId,
-        session
+      const scheduler = new BackgroundJobScheduler({
+        repository,
+        onRunQueued(run, job) {
+          emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
+          void emitBackgroundJobRunUpdatedToAll(connections, run);
+          if (run.status === "queued") {
+            return launchBackgroundJobRun(connections, repository, adapter, runtime, backgroundRunControllers, assistantManager, run.id);
+          }
+        }
       });
-    },
-    onSessionUpdated({ requestId, projectId, threadId, session }) {
-      emitCliSessionUpdatedToAll(connections, {
-        requestId,
-        projectId,
-        threadId,
-        session
-      });
-    },
-    onSessionExited({ requestId, projectId, threadId, session }) {
-      emitCliSessionExitedToAll(connections, {
-        requestId,
-        projectId,
-        threadId,
-        session
-      });
-    },
-    onAttachReady({ requestId, projectId, threadId, sessionId, attachToken }) {
-      emitCliSessionAttachReadyToAll(connections, {
-        requestId,
-        projectId,
-        threadId,
-        sessionId,
-        attachToken
-      });
+
+      return {
+        assistantManager,
+        cliSessionManager,
+        scheduler
+      };
     }
-  });
+  );
 
   if (uiAssets) {
-    await uiAssets.ensureBuilt();
-    uiAssets.startWatching();
+    await runStartupPhase(
+      startupTelemetry,
+      "ui-assets",
+      "building and watching ui assets",
+      "ui assets ready",
+      async () => {
+        await uiAssets.ensureBuilt();
+        uiAssets.startWatching();
+      }
+    );
   }
 
-  const scheduler = new BackgroundJobScheduler({
-    repository,
-    onRunQueued(run, job) {
-      emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
-      void emitBackgroundJobRunUpdatedToAll(connections, run);
-      if (run.status === "queued") {
-        return launchBackgroundJobRun(connections, repository, adapter, runtime, backgroundRunControllers, assistantManager, run.id);
-      }
-    }
-  });
-
+  startupTelemetry?.phaseStart("serve", "starting Bun server listeners");
   const server = Bun.serve<HarnessConnection>({
     port,
     fetch(request, serverInstance) {
@@ -308,7 +377,8 @@ export async function startHarnessServer({
             preferences: getCurrentPreferencesState(),
             setup: currentSetupState,
             backgroundJobs: repository.loadBackgroundJobsState(),
-            assistants: repository.loadAssistantsState()
+            assistants: repository.loadAssistantsState(),
+            notifications: repository.loadNotificationInboxState()
           }
         });
       },
@@ -366,7 +436,7 @@ export async function startHarnessServer({
           backgroundRunControllers,
           scheduler
         ).catch((error) => {
-          if (Bun.env.NODE_ENV !== "production") {
+          if (LOG_COMMAND_ERRORS) {
             console.error(error);
           }
           sendCommandRejected(
@@ -390,10 +460,31 @@ export async function startHarnessServer({
   scheduler.start();
   const serverUrl = `http://localhost:${server.port}`;
   console.log(`Harness server listening on ${serverUrl}`);
+  startupTelemetry?.phaseComplete("server listeners ready", {
+    port: server.port,
+    serverUrl
+  });
+  startupTelemetry?.complete(`Harness server listening on ${serverUrl}`, {
+    port: server.port,
+    serverUrl
+  });
   if (openBrowser && !serverOnly) {
     void openHarnessBrowser(serverUrl);
   }
   return server;
+}
+
+async function runStartupPhase<T>(
+  startupTelemetry: StartupTelemetrySink | undefined,
+  phaseId: StartupPhaseId,
+  startMessage: string,
+  completeMessage: string,
+  task: () => Promise<T>
+) {
+  startupTelemetry?.phaseStart(phaseId, startMessage);
+  const result = await task();
+  startupTelemetry?.phaseComplete(completeMessage);
+  return result;
 }
 
 async function handleCommand(
@@ -420,6 +511,16 @@ async function handleCommand(
         requestId: command.requestId,
         payload: command.payload
       });
+      return;
+    }
+    case "notification.mark-read": {
+      repository.markNotificationRead(command.payload.notificationId);
+      emitNotificationsUpdatedToAll(connections, command.requestId, repository.loadNotificationInboxState());
+      return;
+    }
+    case "notifications.mark-all-read": {
+      repository.markAllPassiveNotificationsRead();
+      emitNotificationsUpdatedToAll(connections, command.requestId, repository.loadNotificationInboxState());
       return;
     }
     case "execution.pause-all": {
@@ -747,16 +848,14 @@ async function handleCommand(
       await enforceExecutionPreflight(ws, command.requestId, runtime, repository, project);
       const providerBrand = repository.getProviderBrand();
       const debugEnabled = command.payload.debug ?? repository.getDebugEnabledDefault();
-      const persistedExecutionModelId = isExecutionModelIdAvailableForRuntime(
-        agentRuntime.id,
-        agentRuntime.getCapability(),
-        project.session.executionModelId,
-        providerBrand
-      )
-        ? project.session.executionModelId
-        : undefined;
-      const effectiveExecutionModelId =
-        command.payload.executionModelId ?? persistedExecutionModelId ?? agentRuntime.getDefaultExecutionModelId(providerBrand);
+      const resolvedExecutionModel = resolveExecutionModelIdForRuntime({
+        runtime: agentRuntime,
+        capability: agentCapability,
+        providerBrand,
+        requestedModelId: command.payload.executionModelId,
+        persistedModelId: project.session.executionModelId
+      });
+      const effectiveExecutionModelId = resolvedExecutionModel.modelId;
 
       repository.activateProject(projectId);
       runtime.setActiveProject(projectId);
@@ -766,6 +865,7 @@ async function handleCommand(
       const resolvedModes = resolveModeCatalog(runtime.getWorkspace().workspaceModes, project.projectModes);
       const detectedMode = detectAutoMode(command.payload.content, resolvedModes);
       const effectiveModeId = detectedMode?.modeId ?? command.payload.modeId ?? project.selectedModeId;
+      const effectiveMode = resolveModeById(effectiveModeId, runtime.getWorkspace().workspaceModes, project.projectModes);
 
       if (effectiveModeId && effectiveModeId !== project.selectedModeId) {
         const modeProject = repository.setProjectSelectedMode(projectId, effectiveModeId);
@@ -793,17 +893,48 @@ async function handleCommand(
       runtime.setProjectError(projectId, undefined);
       runtime.setProjectStreaming(projectId, true);
       runtime.clearStreaming(projectId);
+      const quickTaskBypassEligible =
+        (command.payload.attachments?.length ?? 0) === 0 &&
+        effectiveMode?.toolPolicy === "full-access" &&
+        isDirectWorkspaceImplementTask(command.payload.content);
+      if (resolvedExecutionModel.requestedModelRejected) {
+        appendSystemStatus(
+          ws,
+          command.requestId,
+          runtime,
+          repository,
+          projectId,
+          `${agentRuntime.label} does not support ${resolvedExecutionModel.requestedModelRejected} here. Using ${effectiveExecutionModelId}.`
+        );
+      }
 
       const abortController = new AbortController();
       runtime.setAbortController(projectId, abortController);
 
       try {
+        if (quickTaskBypassEligible) {
+          await continueQuickTaskLifecycle(ws, command.requestId, runtime, repository, projectId, {
+            agentId: agentRuntime.id,
+            providerBrand,
+            runId: runProject.activeRun?.id,
+            executionModelId: effectiveExecutionModelId,
+            latestUserPrompt: command.payload.content,
+            mode: effectiveMode,
+            threadId: command.payload.threadId,
+            reasoningStrength: command.payload.reasoningStrength,
+            fastMode: command.payload.fastMode
+          });
+          return;
+        }
+
         await continueRunLifecycle(ws, command.requestId, runtime, repository, agentRuntime.getAdapter(), pendingBrowserApprovals, connections, {
           projectId,
           agentId: agentRuntime.id,
           providerBrand,
           debugEnabled,
           executionModelId: effectiveExecutionModelId,
+          reasoningStrength: command.payload.reasoningStrength,
+          fastMode: command.payload.fastMode,
           abortSignal: abortController.signal
         });
       } catch (error) {
@@ -811,7 +942,7 @@ async function handleCommand(
           return;
         }
 
-        const message = error instanceof Error ? error.message : "Unknown pi agent error";
+        const message = error instanceof Error ? error.message : "Unknown agent error";
         await handleRunFailure(ws, command.requestId, runtime, repository, pendingBrowserApprovals, projectId, message);
       } finally {
         runtime.setProjectStreaming(projectId, false);
@@ -825,7 +956,6 @@ async function handleCommand(
       const projectId = command.payload.projectId;
       const project = runtime.getProject(projectId);
       const agentRuntime = resolveProjectAgentRuntime(runtimeRegistry, project);
-      assertActiveThread(project, command.payload.threadId);
       const activeRun = requireActiveRun(project, command.payload.runId);
       if (activeRun.status !== "ready") {
         throw new Error("Only ready runs can be refined");
@@ -834,11 +964,12 @@ async function handleCommand(
       assertRuntimeAvailable(agentRuntime);
       await enforceExecutionPreflight(ws, command.requestId, runtime, repository, project);
       const providerBrand = repository.getProviderBrand();
-      const executionModelId =
-        activeRun.executionModelId &&
-        isExecutionModelIdAvailableForRuntime(agentRuntime.id, agentRuntime.getCapability(), activeRun.executionModelId, providerBrand)
-          ? activeRun.executionModelId
-          : agentRuntime.getDefaultExecutionModelId(providerBrand);
+      const executionModelId = resolveExecutionModelIdForRuntime({
+        runtime: agentRuntime,
+        capability: agentRuntime.getCapability(),
+        providerBrand,
+        requestedModelId: activeRun.executionModelId
+      }).modelId;
       const debugEnabled = repository.getDebugEnabledDefault();
 
       const refinedMessageProject = repository.appendMessage(projectId, "user", command.payload.content, command.payload.threadId);
@@ -871,6 +1002,8 @@ async function handleCommand(
           providerBrand,
           debugEnabled,
           executionModelId,
+          reasoningStrength: command.payload.reasoningStrength,
+          fastMode: command.payload.fastMode,
           abortSignal: abortController.signal
         });
       } catch (error) {
@@ -878,7 +1011,7 @@ async function handleCommand(
           return;
         }
 
-        const message = error instanceof Error ? error.message : "Unknown pi agent error";
+        const message = error instanceof Error ? error.message : "Unknown agent error";
         await handleRunFailure(ws, command.requestId, runtime, repository, pendingBrowserApprovals, projectId, message);
       } finally {
         runtime.setProjectStreaming(projectId, false);
@@ -895,10 +1028,12 @@ async function handleCommand(
       assertActiveThread(project, command.payload.threadId);
       const activeRun = requireActiveRun(project, command.payload.runId);
       const pendingQuestion = activeRun.questions.find(
-        (question) => question.id === command.payload.questionId && question.status === "pending"
+        (question) =>
+          question.id === command.payload.questionId &&
+          (question.status === "pending" || question.status === "deferred")
       );
       if (!pendingQuestion) {
-        throw new Error("Planning question is not pending");
+        throw new Error("Planning question is not answerable");
       }
 
       const providerBrand = repository.getProviderBrand();
@@ -914,6 +1049,19 @@ async function handleCommand(
       );
       runtime.upsertPersistedProject(answeredProject);
       emitRunUpdated(ws, command.requestId, answeredProject);
+      repository.archiveNotification(createPlanningQuestionNotificationId(activeRun.id, command.payload.questionId));
+      emitNotificationsUpdatedToAll(connections, command.requestId, repository.loadNotificationInboxState());
+
+      const linkedBackgroundRun = repository.getBackgroundJobRunByLinkedAgentRunId(activeRun.id);
+      if (linkedBackgroundRun?.status === "awaiting-user-input") {
+        const resumedBackgroundRun = repository.setBackgroundJobRunStatus(linkedBackgroundRun.id, "running", {
+          summary: "Resuming after user input"
+        });
+        saveBackgroundRunStatusNotification(repository, resumedBackgroundRun);
+        await emitBackgroundJobRunUpdatedToAll(connections, resumedBackgroundRun);
+        emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
+        emitNotificationsUpdatedToAll(connections, command.requestId, repository.loadNotificationInboxState());
+      }
 
       runtime.setProjectError(projectId, undefined);
       runtime.setProjectStreaming(projectId, true);
@@ -928,16 +1076,14 @@ async function handleCommand(
           agentId: agentRuntime.id,
           providerBrand,
           debugEnabled: repository.getDebugEnabledDefault(),
-          executionModelId:
-            project.session.executionModelId &&
-            isExecutionModelIdAvailableForRuntime(
-              agentRuntime.id,
-              agentRuntime.getCapability(),
-              project.session.executionModelId,
-              providerBrand
-            )
-              ? project.session.executionModelId
-              : agentRuntime.getDefaultExecutionModelId(providerBrand),
+          executionModelId: resolveExecutionModelIdForRuntime({
+            runtime: agentRuntime,
+            capability: agentRuntime.getCapability(),
+            providerBrand,
+            requestedModelId: project.session.executionModelId
+          }).modelId,
+          reasoningStrength: command.payload.reasoningStrength,
+          fastMode: command.payload.fastMode,
           abortSignal: abortController.signal
         });
       } catch (error) {
@@ -945,7 +1091,7 @@ async function handleCommand(
           return;
         }
 
-        const message = error instanceof Error ? error.message : "Unknown pi agent error";
+        const message = error instanceof Error ? error.message : "Unknown agent error";
         await handleRunFailure(ws, command.requestId, runtime, repository, pendingBrowserApprovals, projectId, message);
       } finally {
         runtime.setProjectStreaming(projectId, false);
@@ -984,6 +1130,8 @@ async function handleCommand(
           readyPlan: buildReadyPlanFromRun(activeRun),
           executionPlan: activeRun.plan,
           executionTarget: command.payload.target ?? activeRun.executionTarget ?? "current-project",
+          reasoningStrength: command.payload.reasoningStrength,
+          fastMode: command.payload.fastMode,
           abortSignal: abortController.signal
         });
       } catch (error) {
@@ -991,7 +1139,7 @@ async function handleCommand(
           return;
         }
 
-        const message = error instanceof Error ? error.message : "Unknown pi agent error";
+        const message = error instanceof Error ? error.message : "Unknown agent error";
         await handleRunFailure(ws, command.requestId, runtime, repository, pendingBrowserApprovals, projectId, message);
       } finally {
         runtime.setProjectStreaming(projectId, false);
@@ -1173,7 +1321,9 @@ async function handleCommand(
           runId: activeRun.id,
           abortSignal: abortController.signal,
           guidanceText: command.payload.guidanceText,
-          subagentIds: command.payload.subagentIds
+          subagentIds: command.payload.subagentIds,
+          reasoningStrength: command.payload.reasoningStrength,
+          fastMode: command.payload.fastMode
           }
         );
       } catch (error) {
@@ -1181,7 +1331,7 @@ async function handleCommand(
           return;
         }
 
-        const message = error instanceof Error ? error.message : "Unknown pi agent error";
+        const message = error instanceof Error ? error.message : "Unknown agent error";
         await handleRunFailure(ws, command.requestId, runtime, repository, pendingBrowserApprovals, projectId, message);
       } finally {
         runtime.setProjectStreaming(projectId, false);
@@ -1201,11 +1351,12 @@ async function handleCommand(
 
       const retryRun = requireRetryableRun(project, command.payload.runId);
       const providerBrand = repository.getProviderBrand();
-      const executionModelId =
-        retryRun.executionModelId &&
-        isExecutionModelIdAvailableForRuntime(agentRuntime.id, agentRuntime.getCapability(), retryRun.executionModelId, providerBrand)
-          ? retryRun.executionModelId
-          : agentRuntime.getDefaultExecutionModelId(providerBrand);
+      const executionModelId = resolveExecutionModelIdForRuntime({
+        runtime: agentRuntime,
+        capability: agentRuntime.getCapability(),
+        providerBrand,
+        requestedModelId: retryRun.executionModelId
+      }).modelId;
       const debugEnabled = repository.getDebugEnabledDefault();
 
       runtime.setProjectError(projectId, undefined);
@@ -1233,6 +1384,8 @@ async function handleCommand(
             providerBrand,
             debugEnabled,
             executionModelId,
+            reasoningStrength: command.payload.reasoningStrength,
+            fastMode: command.payload.fastMode,
             abortSignal: abortController.signal
           });
         } else {
@@ -1313,6 +1466,8 @@ async function handleCommand(
               sourceRun: retryRun,
               targetTask,
               readyPlan,
+              reasoningStrength: command.payload.reasoningStrength,
+              fastMode: command.payload.fastMode,
               abortSignal: abortController.signal
             }
           );
@@ -1322,7 +1477,7 @@ async function handleCommand(
           return;
         }
 
-        const message = error instanceof Error ? error.message : "Unknown pi agent error";
+        const message = error instanceof Error ? error.message : "Unknown agent error";
         await handleRunFailure(ws, command.requestId, runtime, repository, pendingBrowserApprovals, projectId, message);
       } finally {
         runtime.setProjectStreaming(projectId, false);
@@ -1426,9 +1581,11 @@ async function handleCommand(
       const updatedRun = repository.setBackgroundJobRunStatus(command.payload.runId, "cancelled", {
         failureMessage: "Stopped by user"
       });
+      saveBackgroundRunStatusNotification(repository, updatedRun);
       backgroundRunControllers.delete(command.payload.runId);
       await emitBackgroundJobRunUpdatedToAll(connections, updatedRun);
       emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
+      emitNotificationsUpdatedToAll(connections, command.requestId, repository.loadNotificationInboxState());
       return;
     }
     case "background-job.retry-run": {
@@ -1467,6 +1624,7 @@ async function handleCommand(
       const updatedRun = repository.setBackgroundJobRunStatus(command.payload.runId, "queued", {
         approvalStatus: "approved"
       });
+      repository.archiveNotification(createBackgroundRunStatusNotificationId(updatedRun.id));
       await emitBackgroundJobRunUpdatedToAll(connections, updatedRun);
       await launchBackgroundJobRun(
         connections,
@@ -1478,6 +1636,7 @@ async function handleCommand(
         updatedRun.id
       );
       emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
+      emitNotificationsUpdatedToAll(connections, command.requestId, repository.loadNotificationInboxState());
       return;
     }
     case "background-job.reject-run": {
@@ -1485,8 +1644,10 @@ async function handleCommand(
         approvalStatus: "rejected",
         failureMessage: "Rejected before execution"
       });
+      saveBackgroundRunStatusNotification(repository, updatedRun);
       await emitBackgroundJobRunUpdatedToAll(connections, updatedRun);
       emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
+      emitNotificationsUpdatedToAll(connections, command.requestId, repository.loadNotificationInboxState());
       return;
     }
     case "background-job.schedule.preview": {
@@ -1582,7 +1743,9 @@ async function handleCommand(
     case "assistant.question.answer": {
       assertGlobalExecutionNotPaused(repository);
       await assistantManager.answerQuestion(command.payload.assistantId, command.payload.questionId, command.payload.content);
+      repository.archiveNotification(createAssistantQuestionNotificationId(command.payload.assistantId, command.payload.questionId));
       emitAssistantsUpdatedToAll(connections, repository.loadAssistantsState());
+      emitNotificationsUpdatedToAll(connections, command.requestId, repository.loadNotificationInboxState());
       return;
     }
     case "assistant.todo.update": {
@@ -1602,7 +1765,6 @@ async function handleCommand(
         assertGlobalExecutionNotPaused(repository);
       }
       const project = runtime.getProject(command.payload.projectId);
-      assertActiveThread(project, command.payload.threadId);
       const run = [project.activeRun, project.lastRun].find((entry) => entry?.id === command.payload.runId);
       if (!run) {
         throw new Error(`Run ${command.payload.runId} is not available`);
@@ -1639,6 +1801,15 @@ async function handleCommand(
       const pendingApproval = pendingBrowserApprovals.get(approvalKey);
       pendingBrowserApprovals.delete(approvalKey);
       pendingApproval?.resolve(command.payload.approved);
+      repository.archiveNotification(
+        createBrowserApprovalNotificationId(
+          command.payload.projectId,
+          command.payload.runId,
+          command.payload.sessionId,
+          command.payload.toolCallId
+        )
+      );
+      emitNotificationsUpdatedToAll(connections, command.requestId, repository.loadNotificationInboxState());
       return;
     }
     case "project.mode.select": {
@@ -1790,6 +1961,8 @@ async function continueRunLifecycle(
     providerBrand: "gpt" | "gemini";
     debugEnabled: boolean;
     executionModelId: string;
+    reasoningStrength?: ComposerReasoningStrength;
+    fastMode?: boolean;
     abortSignal: AbortSignal;
   }
 ) {
@@ -1834,6 +2007,8 @@ async function continueRunLifecycle(
     ruleSources,
     memorySummaries: [...memorySummaries, ...memoryBank.memorySummaries],
     priorQuestions: activeRun.questions,
+    reasoningStrength: options.reasoningStrength,
+    fastMode: options.fastMode,
     abortSignal: options.abortSignal,
     callbacks: createExecutionCallbacks(
       ws,
@@ -1870,6 +2045,15 @@ async function continueRunLifecycle(
       runtime.upsertPersistedProject(promptProject);
       emitMessageAppended(ws, requestId, runtime, options.projectId);
     } else {
+      const deferredQuestion =
+        questionProject.activeRun?.questions.find((question) => question.status === "deferred") ??
+        questionProject.lastRun?.questions.find((question) => question.status === "deferred");
+      if (deferredQuestion) {
+        repository.saveNotification(
+          createPlanningQuestionNotification(options.projectId, activeRun.threadId, activeRun.id, deferredQuestion)
+        );
+        emitNotificationsUpdatedToAll(connections, requestId, repository.loadNotificationInboxState());
+      }
       emitExecutionControlUpdatedToAll(connections, requestId, repository.getExecutionControlState());
     }
     return;
@@ -1927,6 +2111,94 @@ async function continueRunLifecycle(
   });
 }
 
+async function continueQuickTaskLifecycle(
+  ws: Bun.ServerWebSocket<HarnessConnection>,
+  requestId: string,
+  runtime: WorkspaceRuntimeStore,
+  repository: WorkspaceRepository,
+  projectId: ProjectId,
+  options: {
+    agentId: "pi" | "copilot-cli" | "codex-cli";
+    providerBrand: "gpt" | "gemini";
+    runId?: string;
+    executionModelId: string;
+    latestUserPrompt: string;
+    mode?: ModeDefinition;
+    threadId: string;
+    reasoningStrength?: ComposerReasoningStrength;
+    fastMode?: boolean;
+  }
+) {
+  const project = runtime.getProject(projectId);
+  const activeRun = requireActiveRun(project, options.runId);
+  const planExecutionMode = options.mode?.planExecutionModeDefault ?? repository.getPlanExecutionModeDefault();
+  const subagentWorktreeStrategy =
+    options.mode?.subagentWorktreeStrategyDefault ?? repository.getSubagentWorktreeStrategyDefault();
+  const correctnessIterationMode =
+    options.mode?.correctnessIterationModeDefault ?? repository.getCorrectnessIterationModeDefault();
+  const ruleSources = [runtime.getWorkspace().workspaceRuleSource, project.projectRuleSource].filter(
+    (value): value is WorkspaceRuleSource => Boolean(value)
+  );
+  const memorySummaries = [runtime.getWorkspace().workspaceMemorySummary, project.threadMemorySummary].filter(
+    (value): value is MemorySummary => Boolean(value)
+  );
+  const memoryBank =
+    repository.getMemoryBankEnabledDefault()
+      ? retrieveMemorySummaries(repository, {
+          projectId,
+          threadId: options.threadId,
+          runId: activeRun.id,
+          owner: "planner",
+          queryText: options.latestUserPrompt
+        })
+      : { memorySummaries: [] as MemorySummary[] };
+  const plannerReadyTurn: PlannerReadyTurn = {
+    type: "ready",
+    difficultyScore: 10,
+    summary: "Low-complexity direct workspace task",
+    executionModelId: options.executionModelId,
+    usesSubagents: false,
+    subtasks: [],
+    finalExecutionBrief: options.latestUserPrompt,
+    prerequisites: [],
+    contracts: []
+  };
+  const executionPlan = buildExecutionPlan({
+    runId: activeRun.id,
+    planningModelId: getDefaultPlanningModelId(options.providerBrand),
+    plannerResult: plannerReadyTurn,
+    subagentWorktreeStrategy,
+    planExecutionMode,
+    planExecutionDelaySeconds: repository.getPlanExecutionDelaySecondsDefault(),
+    correctnessIterationMode,
+    mode: options.mode,
+    ruleSources,
+    memorySummaries: [...memorySummaries, ...memoryBank.memorySummaries],
+    iteration: 1,
+    origin: "quick-task"
+  });
+
+  const readyProject = repository.setAgentRunReady(
+    projectId,
+    activeRun.id,
+    plannerReadyTurn,
+    executionPlan,
+    plannerReadyTurn.subtasks,
+    executionPlan.planningModelId
+  );
+  runtime.upsertPersistedProject(readyProject);
+  emitRunUpdated(ws, requestId, readyProject);
+  runtime.setProjectStreaming(projectId, false);
+  runtime.clearStreaming(projectId);
+  emitProjectTrace(ws, requestId, runtime, projectId, activeRun.threadId, {
+    sessionId: project.session.sessionId,
+    stage: "plan-presented",
+    message: "Skipped planner for low-complexity direct task",
+    detail: options.latestUserPrompt,
+    modelId: options.executionModelId
+  });
+}
+
 async function resumeRunLifecycle(
   ws: Bun.ServerWebSocket<HarnessConnection>,
   requestId: string,
@@ -1944,6 +2216,8 @@ async function resumeRunLifecycle(
     abortSignal: AbortSignal;
     guidanceText?: string;
     subagentIds?: string[];
+    reasoningStrength?: ComposerReasoningStrength;
+    fastMode?: boolean;
   }
 ) {
   const project = runtime.getProject(options.projectId);
@@ -1997,6 +2271,8 @@ async function resumeRunLifecycle(
     existingSubagentResults: existingResults,
     tasksToRun,
     resumeNote: options.guidanceText,
+    reasoningStrength: options.reasoningStrength,
+    fastMode: options.fastMode,
     abortSignal: options.abortSignal
   });
 }
@@ -2021,6 +2297,8 @@ async function executeRunLifecycle(
     existingSubagentResults?: Parameters<typeof executeReadyRun>[1]["existingSubagentResults"];
     tasksToRun?: Parameters<typeof executeReadyRun>[1]["tasksToRun"];
     resumeNote?: string;
+    reasoningStrength?: ComposerReasoningStrength;
+    fastMode?: boolean;
     abortSignal?: AbortSignal;
   }
 ) {
@@ -2087,6 +2365,7 @@ async function executeRunLifecycle(
     runId: options.runId,
     sessionId: effectiveProject.session.sessionId,
     messages: effectiveProject.session.messages,
+    agentId: options.agentId,
     providerBrand: options.providerBrand,
     readyPlan: options.readyPlan,
     debugEnabled: options.debugEnabled,
@@ -2094,6 +2373,8 @@ async function executeRunLifecycle(
     existingSubagentResults: options.existingSubagentResults,
     tasksToRun: options.tasksToRun,
     resumeNote: options.resumeNote,
+    reasoningStrength: options.reasoningStrength,
+    fastMode: options.fastMode,
     executionPlan: executionPlanWithMemory,
     callbacks: createExecutionCallbacks(
       ws,
@@ -2233,6 +2514,8 @@ async function executeInlineSubagentRetryLifecycle(
     sourceRun: AgentRunState;
     targetTask: PlannerReadyTurn["subtasks"][number];
     readyPlan: PlannerReadyTurn;
+    reasoningStrength?: ComposerReasoningStrength;
+    fastMode?: boolean;
     abortSignal: AbortSignal;
   }
 ) {
@@ -2290,6 +2573,8 @@ async function executeInlineSubagentRetryLifecycle(
     task: options.targetTask,
     brief: options.readyPlan.finalExecutionBrief,
     priorAttemptCount: options.sourceRun.subtasks.find((task) => task.id === options.targetTask.id)?.attemptCount ?? 0,
+    reasoningStrength: options.reasoningStrength,
+    fastMode: options.fastMode,
     abortSignal: options.abortSignal,
     callbacks,
     sessionId
@@ -2310,6 +2595,8 @@ async function executeInlineSubagentRetryLifecycle(
       runId: options.runId,
       sessionId,
       messages: project.session.messages,
+      reasoningStrength: options.reasoningStrength,
+      fastMode: options.fastMode,
       abortSignal: options.abortSignal,
       callbacks
     },
@@ -2574,8 +2861,28 @@ function createExecutionCallbacks(
       const nextProject = repository.setAgentRunBrowserSessions(projectId, runId, effectiveSessions);
       runtime.upsertPersistedProject(nextProject);
       emitRunUpdated(ws, requestId, nextProject);
+      const refreshedRun =
+        nextProject.activeRun?.id === runId ? nextProject.activeRun : nextProject.lastRun?.id === runId ? nextProject.lastRun : undefined;
+      const refreshedSession = refreshedRun?.browserSessions?.find((entry) => entry.id === session.id);
+      const approval = refreshedSession?.activities.find((entry) => entry.toolCallId === input.toolCallId)?.approval;
+      if (approval) {
+        repository.saveNotification(
+          createBrowserApprovalNotification(
+            projectId,
+            refreshedRun?.threadId ?? project.activeThreadId,
+            runId,
+            refreshedSession!.id,
+            input.toolCallId,
+            approval.label,
+            approval.inputSummary
+          )
+        );
+      }
       if (repository.getGlobalExecutionPaused() && connections) {
         emitExecutionControlUpdatedToAll(connections, requestId, repository.getExecutionControlState());
+      }
+      if (connections) {
+        emitNotificationsUpdatedToAll(connections, requestId, repository.loadNotificationInboxState());
       }
 
       const approvalKey = createBrowserApprovalKey(projectId, runId, session.id, input.toolCallId);
@@ -2665,6 +2972,7 @@ async function releaseDeferredExecutionState(
 
   const promotedAssistantQuestions = repository.promoteDeferredAssistantQuestions();
   if (promotedAssistantQuestions.length > 0) {
+    syncAssistantQuestionNotifications(repository);
     for (const question of promotedAssistantQuestions) {
       for (const connection of connections) {
         sendEvent(connection, {
@@ -2682,6 +2990,7 @@ async function releaseDeferredExecutionState(
   for (const entry of repository.promoteDeferredBrowserApprovals()) {
     const project = repository.getProject(entry.projectId);
     runtime.upsertPersistedProject(project);
+    syncBrowserApprovalNotifications(repository, project);
     for (const connection of connections) {
       emitRunUpdated(connection, requestId, project);
     }
@@ -2706,6 +3015,7 @@ async function releaseDeferredExecutionState(
   }
 
   await scheduler.tick(false);
+  emitNotificationsUpdatedToAll(connections, requestId, repository.loadNotificationInboxState());
 }
 
 async function runInlineSubagentRetry(
@@ -2717,6 +3027,8 @@ async function runInlineSubagentRetry(
     task: PlannerReadyTurn["subtasks"][number];
     brief: string;
     priorAttemptCount: number;
+    reasoningStrength?: ComposerReasoningStrength;
+    fastMode?: boolean;
     abortSignal: AbortSignal;
     callbacks: ReturnType<typeof createExecutionCallbacks>;
     sessionId: string;
@@ -2747,6 +3059,8 @@ async function runInlineSubagentRetry(
           cwd: options.cwd,
           modelId: subagentModelId,
           prompt: basePrompt,
+          reasoningStrength: options.reasoningStrength,
+          fastMode: options.fastMode,
           onExecutionEvent(event: PiAgentExecutionEvent) {
             void options.callbacks.onExecutionEvent?.({
               owner: "subagent",
@@ -2767,6 +3081,8 @@ async function runInlineSubagentRetry(
           cwd: options.cwd,
           modelId: subagentModelId,
           prompt: ["continue", "", basePrompt].join("\n"),
+          reasoningStrength: options.reasoningStrength,
+          fastMode: options.fastMode,
           onExecutionEvent(event: PiAgentExecutionEvent) {
             void options.callbacks.onExecutionEvent?.({
               owner: "subagent",
@@ -2924,7 +3240,7 @@ async function handleRunFailure(
     payload: {
       projectId,
       threadId: project.activeThreadId,
-      message: "Pi agent execution failed",
+      message: "Agent execution failed",
       detail: message
     }
   });
@@ -3390,7 +3706,7 @@ async function presentCorrectivePlan(
 }
 
 function shouldAppendPlanSummaryMessage(executionPlan: ExecutionPlan) {
-  return !(executionPlan.mode?.id === "ask" && executionPlan.gating.mode === "immediate");
+  return executionPlan.origin !== "quick-task" && !(executionPlan.mode?.id === "ask" && executionPlan.gating.mode === "immediate");
 }
 
 function buildReadyPlanFromExecutionPlan(executionPlan: ExecutionPlan): PlannerReadyTurn {
@@ -4062,6 +4378,219 @@ async function emitBackgroundJobRunUpdatedToAll(
   }
 }
 
+function emitNotificationsUpdatedToAll(
+  connections: Set<Bun.ServerWebSocket<HarnessConnection>>,
+  requestId: string,
+  notifications: ReturnType<WorkspaceRepository["loadNotificationInboxState"]>
+) {
+  for (const connection of connections) {
+    sendEvent(connection, {
+      type: "notifications.updated",
+      requestId,
+      payload: {
+        notifications
+      }
+    });
+  }
+}
+
+function syncAssistantQuestionNotifications(repository: WorkspaceRepository) {
+  const assistants = repository.loadAssistantsState();
+  const activeIds = new Set<string>();
+  for (const question of assistants.questions) {
+    if (question.status !== "pending" && question.status !== "deferred") {
+      continue;
+    }
+
+    const notification = createAssistantQuestionNotification(question);
+    activeIds.add(notification.id);
+    repository.saveNotification(notification);
+  }
+
+  for (const item of repository.loadNotificationInboxState().items) {
+    if (item.kind !== "assistant-question") {
+      continue;
+    }
+
+    if (!activeIds.has(item.id)) {
+      repository.archiveNotification(item.id);
+    }
+  }
+}
+
+function syncBrowserApprovalNotifications(repository: WorkspaceRepository, project?: WorkspaceProjectState) {
+  const projects = project ? [project] : repository.loadWorkspace().projects;
+  const activeIds = new Set<string>();
+  for (const currentProject of projects) {
+    for (const run of [currentProject.activeRun, currentProject.lastRun]) {
+      if (!run) {
+        continue;
+      }
+
+      for (const session of run.browserSessions ?? []) {
+        for (const activity of session.activities) {
+          const approval = activity.approval;
+          if (!approval || (approval.status !== "pending" && approval.status !== "deferred")) {
+            continue;
+          }
+
+          const notification = createBrowserApprovalNotification(
+            currentProject.id,
+            run.threadId,
+            run.id,
+            session.id,
+            activity.toolCallId,
+            approval.label,
+            approval.inputSummary
+          );
+          activeIds.add(notification.id);
+          repository.saveNotification(notification);
+        }
+      }
+    }
+  }
+
+  if (!project) {
+    for (const item of repository.loadNotificationInboxState().items) {
+      if (item.kind !== "browser-approval") {
+        continue;
+      }
+
+      if (!activeIds.has(item.id)) {
+        repository.archiveNotification(item.id);
+      }
+    }
+  }
+}
+
+function saveBackgroundRunStatusNotification(repository: WorkspaceRepository, run: BackgroundJobRun) {
+  const job = repository.getBackgroundJob(run.jobId);
+  if (!job) {
+    return;
+  }
+
+  const notification = createBackgroundRunStatusNotification(job, run);
+  if (!notification) {
+    return;
+  }
+
+  repository.saveNotification(notification);
+}
+
+function createPlanningQuestionNotification(
+  projectId: string,
+  threadId: string,
+  runId: string,
+  question: PlanningQuestion
+): PlanningQuestionNotification {
+  return {
+    id: createPlanningQuestionNotificationId(runId, question.id),
+    kind: "planning-question",
+    interactive: true,
+    createdAt: new Date().toISOString(),
+    projectId,
+    threadId,
+    runId,
+    questionId: question.id,
+    prompt: question.prompt,
+    placeholder: question.placeholder,
+    choices: question.choices
+  };
+}
+
+function createPlanningQuestionNotificationId(runId: string, questionId: string) {
+  return `planning-question:${runId}:${questionId}`.slice(0, 128);
+}
+
+function createAssistantQuestionNotification(question: AssistantQuestion): AssistantQuestionNotification {
+  return {
+    id: createAssistantQuestionNotificationId(question.assistantId, question.id),
+    kind: "assistant-question",
+    interactive: true,
+    createdAt: question.askedAt,
+    assistantId: question.assistantId,
+    questionId: question.id,
+    prompt: question.prompt,
+    answerText: question.answerText
+  };
+}
+
+function createAssistantQuestionNotificationId(assistantId: string, questionId: string) {
+  return `assistant-question:${assistantId}:${questionId}`.slice(0, 128);
+}
+
+function createBrowserApprovalNotification(
+  projectId: string,
+  threadId: string,
+  runId: string,
+  sessionId: string,
+  toolCallId: string,
+  label: string,
+  inputSummary?: string
+): BrowserApprovalNotification {
+  return {
+    id: createBrowserApprovalNotificationId(projectId, runId, sessionId, toolCallId),
+    kind: "browser-approval",
+    interactive: true,
+    createdAt: new Date().toISOString(),
+    projectId,
+    threadId,
+    runId,
+    sessionId,
+    toolCallId,
+    label,
+    inputSummary
+  };
+}
+
+function createBrowserApprovalNotificationId(projectId: string, runId: string, sessionId: string, toolCallId: string) {
+  return `browser-approval:${projectId}:${runId}:${sessionId}:${toolCallId}`.slice(0, 128);
+}
+
+function createBackgroundRunStatusNotification(job: BackgroundJob, run: BackgroundJobRun): BackgroundRunStatusNotification | undefined {
+  const statusMeta = backgroundRunNotificationMeta(run.status);
+  if (!statusMeta) {
+    return undefined;
+  }
+
+  return {
+    id: createBackgroundRunStatusNotificationId(run.id),
+    kind: "background-run-status",
+    interactive: false,
+    createdAt: run.updatedAt,
+    backgroundRunId: run.id,
+    jobId: run.jobId,
+    projectId: run.projectId,
+    threadId: run.automationThreadId,
+    title: statusMeta.title,
+    summary: run.summary ?? run.failureMessage ?? `${job.name} ${statusMeta.fallbackVerb}`,
+    severity: statusMeta.severity
+  };
+}
+
+function createBackgroundRunStatusNotificationId(runId: string) {
+  return `background-run-status:${runId}`.slice(0, 128);
+}
+
+function backgroundRunNotificationMeta(
+  status: BackgroundJobRun["status"]
+): { title: string; severity: NotificationSeverity; fallbackVerb: string } | undefined {
+  switch (status) {
+    case "running":
+      return { title: "Background task started", severity: "info", fallbackVerb: "started" };
+    case "awaiting-user-input":
+      return { title: "Background task needs input", severity: "warning", fallbackVerb: "needs input" };
+    case "succeeded":
+      return { title: "Background task done", severity: "info", fallbackVerb: "finished" };
+    case "failed":
+      return { title: "Background task failed", severity: "error", fallbackVerb: "failed" };
+    case "cancelled":
+      return { title: "Background task cancelled", severity: "warning", fallbackVerb: "cancelled" };
+    default:
+      return undefined;
+  }
+}
+
 async function launchBackgroundJobRun(
   connections: Set<Bun.ServerWebSocket<HarnessConnection>>,
   repository: WorkspaceRepository,
@@ -4086,11 +4615,13 @@ async function launchBackgroundJobRun(
 
   const job = repository.getBackgroundJob(run.jobId);
   if (!job) {
-    repository.setBackgroundJobRunStatus(backgroundRunId, "failed", {
+    const failedRun = repository.setBackgroundJobRunStatus(backgroundRunId, "failed", {
       failureMessage: "Background job definition no longer exists."
     });
+    saveBackgroundRunStatusNotification(repository, failedRun);
     emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
-    await emitBackgroundJobRunUpdatedToAll(connections, repository.getBackgroundJobRun(backgroundRunId)!);
+    await emitBackgroundJobRunUpdatedToAll(connections, failedRun);
+    emitNotificationsUpdatedToAll(connections, `bg:auto:${crypto.randomUUID()}`, repository.loadNotificationInboxState());
     return;
   }
 
@@ -4100,8 +4631,10 @@ async function launchBackgroundJobRun(
       const cancelledRun = repository.setBackgroundJobRunStatus(backgroundRunId, "cancelled", {
         failureMessage: "Assistant is paused or deleted"
       });
+      saveBackgroundRunStatusNotification(repository, cancelledRun);
       emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
       await emitBackgroundJobRunUpdatedToAll(connections, cancelledRun);
+      emitNotificationsUpdatedToAll(connections, `bg:auto:${crypto.randomUUID()}`, repository.loadNotificationInboxState());
       return;
     }
   }
@@ -4109,6 +4642,9 @@ async function launchBackgroundJobRun(
   const abortController = new AbortController();
   backgroundRunControllers.set(backgroundRunId, { abortController });
   try {
+    const startedRun = repository.setBackgroundJobRunStatus(backgroundRunId, "running");
+    saveBackgroundRunStatusNotification(repository, startedRun);
+    emitNotificationsUpdatedToAll(connections, `bg:auto:${crypto.randomUUID()}`, repository.loadNotificationInboxState());
     const nextRun = await executeBackgroundJobRun({
       repository,
       adapter,
@@ -4126,14 +4662,17 @@ async function launchBackgroundJobRun(
         failureMessage: nextRun.failureMessage
       });
     }
+    saveBackgroundRunStatusNotification(repository, nextRun);
     emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
     await emitBackgroundJobRunUpdatedToAll(connections, nextRun);
+    emitNotificationsUpdatedToAll(connections, `bg:auto:${crypto.randomUUID()}`, repository.loadNotificationInboxState());
   } catch (error) {
     const failureMessage = error instanceof Error ? error.message : "Unknown background job failure";
     const failedRun = repository.setBackgroundJobRunStatus(backgroundRunId, "failed", {
       failureMessage
     });
     repository.appendBackgroundJobRunEvent(backgroundRunId, "failed", "Background run failed", failureMessage);
+    saveBackgroundRunStatusNotification(repository, failedRun);
     if (job.assistantId) {
       await assistantManager.handleBackgroundJobRunOutcome({
         assistantId: job.assistantId,
@@ -4143,6 +4682,7 @@ async function launchBackgroundJobRun(
     }
     emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
     await emitBackgroundJobRunUpdatedToAll(connections, failedRun);
+    emitNotificationsUpdatedToAll(connections, `bg:auto:${crypto.randomUUID()}`, repository.loadNotificationInboxState());
   } finally {
     backgroundRunControllers.delete(backgroundRunId);
   }
@@ -4163,10 +4703,47 @@ function isExecutionModelIdAvailableForRuntime(
     return false;
   }
 
-  if (agentId === "copilot-cli") {
+  if (agentId === "copilot-cli" || agentId === "codex-cli") {
     return capability?.activeModel === modelId || capability?.discoveredModels.includes(modelId) || false;
   }
 
   const effectiveProviderBrand = agentId === "pi" ? providerBrand : "gpt";
   return effectiveProviderBrand === "gemini" ? modelId.startsWith("google/") : modelId.startsWith("openai/");
+}
+
+function resolveExecutionModelIdForRuntime(input: {
+  runtime: AgentRuntime;
+  capability?:
+    | {
+        discoveredModels: string[];
+        activeModel?: string;
+      }
+    | undefined;
+  providerBrand: "gpt" | "gemini";
+  requestedModelId?: string;
+  persistedModelId?: string;
+}) {
+  const capability = input.capability ?? input.runtime.getCapability();
+  const requestedModelId = isExecutionModelIdAvailableForRuntime(
+    input.runtime.id,
+    capability,
+    input.requestedModelId,
+    input.providerBrand
+  )
+    ? input.requestedModelId
+    : undefined;
+  const persistedModelId = isExecutionModelIdAvailableForRuntime(
+    input.runtime.id,
+    capability,
+    input.persistedModelId,
+    input.providerBrand
+  )
+    ? input.persistedModelId
+    : undefined;
+
+  return {
+    modelId: requestedModelId ?? persistedModelId ?? input.runtime.getDefaultExecutionModelId(input.providerBrand),
+    requestedModelRejected:
+      input.requestedModelId && requestedModelId !== input.requestedModelId ? input.requestedModelId : undefined
+  };
 }

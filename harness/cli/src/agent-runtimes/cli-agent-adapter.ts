@@ -28,6 +28,7 @@ type CliAgentAdapterOptions = {
 
 const DEFAULT_IDLE_TIMEOUT_MS = 60_000;
 const DEFAULT_TOTAL_TIMEOUT_MS = 15 * 60_000;
+const DEBUG_TELEMETRY_ENABLED = process.env.NODE_ENV !== "production";
 
 export class CliAgentAdapter implements PiAgentAdapter {
   private readonly processManager = new CliProcessManager();
@@ -95,33 +96,53 @@ class CliExecutionController implements PiAgentExecutionController {
       request: this.request,
       prompt
     });
+    if (DEBUG_TELEMETRY_ENABLED) {
+      // #region agent log
+      fetch('http://127.0.0.1:7467/ingest/8f3f8e64-2064-4541-a606-af61e33e104f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'26847a'},body:JSON.stringify({sessionId:'26847a',runId:'initial-002',hypothesisId:'H2',location:'cli-agent-adapter.ts:98',message:'cli exec start',data:{label:this.options.label,kind:this.request.kind,cwd:command.cwd,cmd:command.cmd,promptHead:prompt.slice(0,200)},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+    }
 
     let sawOutput = false;
-    const result = await this.processManager.runNonInteractive({
-      cmd: command.cmd,
-      cwd: command.cwd,
-      env: command.env,
-      cols: 120,
-      rows: 40,
-      idleTimeoutMs: DEFAULT_IDLE_TIMEOUT_MS,
-      totalTimeoutMs: DEFAULT_TOTAL_TIMEOUT_MS,
-      abortSignal: mergeAbortSignals(this.request.abortSignal, executionAbortController.signal),
-      onStdout: (chunk) => {
-        sawOutput = true;
-        this.request.onExecutionEvent?.({ type: "activity" });
-        command.parser?.onStdoutChunk?.(decodeChunk(chunk), (delta) => this.request.onTextDelta?.(delta));
-      },
-      onStderr: () => {
-        sawOutput = true;
-        this.request.onExecutionEvent?.({ type: "activity" });
+    let result;
+    try {
+      result = await this.processManager.runNonInteractive({
+        cmd: command.cmd,
+        cwd: command.cwd,
+        env: command.env,
+        cols: 120,
+        rows: 40,
+        idleTimeoutMs: DEFAULT_IDLE_TIMEOUT_MS,
+        totalTimeoutMs: DEFAULT_TOTAL_TIMEOUT_MS,
+        abortSignal: mergeAbortSignals(this.request.abortSignal, executionAbortController.signal),
+        onStdout: (chunk) => {
+          sawOutput = true;
+          this.request.onExecutionEvent?.({ type: "activity" });
+          command.parser?.onStdoutChunk?.(decodeChunk(chunk), (delta) => this.request.onTextDelta?.(delta));
+        },
+        onStderr: () => {
+          sawOutput = true;
+          this.request.onExecutionEvent?.({ type: "activity" });
+        }
+      });
+    } catch (error) {
+      if (DEBUG_TELEMETRY_ENABLED) {
+        // #region agent log
+        fetch('http://127.0.0.1:7467/ingest/8f3f8e64-2064-4541-a606-af61e33e104f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'26847a'},body:JSON.stringify({sessionId:'26847a',runId:'initial-002',hypothesisId:'H3',location:'cli-agent-adapter.ts:121',message:'cli exec threw before result',data:{label:this.options.label,error:error instanceof Error?error.message:String(error),cmd:command.cmd,cwd:command.cwd},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
       }
-    });
+      throw error;
+    }
 
     if (result.hangDetected || result.timedOut) {
       throw new Error("Hanging/Interactive Prompt Detected");
     }
 
     const text = command.parser?.getText(result.stdout, result.stderr) ?? result.stdout.trim();
+    if (DEBUG_TELEMETRY_ENABLED) {
+      // #region agent log
+      fetch('http://127.0.0.1:7467/ingest/8f3f8e64-2064-4541-a606-af61e33e104f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'26847a'},body:JSON.stringify({sessionId:'26847a',runId:'initial-001',hypothesisId:'H1',location:'cli-agent-adapter.ts:124',message:'cli exec done',data:{label:this.options.label,exitCode:result.exitCode,hangDetected:result.hangDetected,timedOut:result.timedOut,stderrTail:result.stderr.slice(-1000),stdoutTail:result.stdout.slice(-1500),textHead:text.slice(0,500)},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+    }
     if (result.exitCode !== 0) {
       throw new Error(text || result.stderr.trim() || `${this.options.label} exited with code ${result.exitCode}`);
     }

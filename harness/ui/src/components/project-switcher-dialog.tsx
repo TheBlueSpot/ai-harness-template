@@ -12,6 +12,7 @@ import { ActionButton } from "./action-button";
 import { Dialog } from "./primitives/dialog";
 import { Input } from "./primitives/input";
 import { Button } from "./primitives/button";
+import { Tooltip } from "./primitives/tooltip";
 
 type WorkspaceMatch = {
   projectId: string;
@@ -150,7 +151,10 @@ export function ProjectSwitcherDialog() {
       return;
     }
 
-    queueMicrotask(() => inputRef?.focus());
+    // Run on the task queue (not microtask) so we focus the input after the
+    // shared Dialog primitive finishes focusing its own surface ref.
+    const timer = window.setTimeout(() => inputRef?.focus(), 0);
+    onCleanup(() => window.clearTimeout(timer));
   });
 
   createEffect(() => {
@@ -289,6 +293,15 @@ export function ProjectSwitcherDialog() {
     >
       <div class="space-y-3">
         <div class="relative">
+          <Input
+            ref={inputRef}
+            value={query()}
+            placeholder="Search recent projects or type a path"
+            class="relative bg-white"
+            data-project-switcher-input="true"
+            onInput={(event) => harnessStore.setProjectSearchQuery(event.currentTarget.value)}
+            onKeyDown={handleInputKeyDown}
+          />
           <Show when={completionSuffix()}>
             {(suffix) => (
               <div class="pointer-events-none absolute inset-0 flex items-center rounded-xl border border-transparent px-3 py-2 text-xs">
@@ -297,15 +310,6 @@ export function ProjectSwitcherDialog() {
               </div>
             )}
           </Show>
-          <Input
-            ref={inputRef}
-            value={query()}
-            placeholder="Search recent projects or type a path"
-            class="relative bg-transparent"
-            data-project-switcher-input="true"
-            onInput={(event) => harnessStore.setProjectSearchQuery(event.currentTarget.value)}
-            onKeyDown={handleInputKeyDown}
-          />
           <Search class="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-(--muted)" />
         </div>
 
@@ -422,12 +426,14 @@ function ResultRow(props: {
       onClick={props.onOpen}
     >
       <div class="min-w-0 flex-1">
-        <div class="flex flex-wrap items-center gap-2">
-          <span class="truncate font-semibold">{props.result.name}</span>
-          <span class="rounded-full border border-current/20 px-2 py-0.5 text-[0.55rem] uppercase tracking-[0.14em]">
+        <div class="flex min-w-0 items-center gap-2">
+          <Tooltip content={props.result.name}>
+            <span class="min-w-0 flex-1 truncate font-semibold">{props.result.name}</span>
+          </Tooltip>
+          <span class="shrink-0 rounded-full border border-current/20 px-2 py-0.5 text-[0.55rem] uppercase tracking-[0.14em]">
             {props.badgeLabel}
           </span>
-          <span class="text-[0.55rem] uppercase tracking-[0.14em] opacity-80">{props.result.actionLabel}</span>
+          <span class="shrink-0 text-[0.55rem] uppercase tracking-[0.14em] opacity-80">{props.result.actionLabel}</span>
         </div>
         <div class="mt-1 truncate text-[0.675rem] opacity-80">{truncateMiddle(props.result.rootPath, 52)}</div>
       </div>

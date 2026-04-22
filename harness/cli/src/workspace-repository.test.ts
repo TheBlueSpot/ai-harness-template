@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import {
@@ -350,7 +351,7 @@ describe("workspace repository", () => {
     const runId = withRun.activeRun?.id;
     expect(runId).toBeDefined();
 
-    repository.appendPlanningQuestion(project.id, runId!, {
+    const withQuestion = repository.appendPlanningQuestion(project.id, runId!, {
       id: "question-1",
       prompt: "Which route should handle this?",
       placeholder: "api/users/[id]",
@@ -379,7 +380,7 @@ describe("workspace repository", () => {
       ],
       required: true
     });
-    repository.answerPlanningQuestion(project.id, runId!, "question-1", "api/users/[id]");
+    repository.answerPlanningQuestion(project.id, runId!, withQuestion.activeRun?.questions[0]?.id ?? "question-1", "api/users/[id]");
     repository.setAgentRunReady(project.id, runId!, {
       type: "ready",
       difficultyScore: 72,
@@ -412,6 +413,83 @@ describe("workspace repository", () => {
     expect(restoredProject.activeRun?.subtasks.find((task) => task.id === "task-1")?.status).toBe("completed");
     expect(restoredProject.activeRun?.subtasks.find((task) => task.id === "task-2")?.status).toBe("failed");
     expect(restoredProject.activeRun?.resumable).toBe(true);
+  });
+
+  test("scopes repeated planner question ids per run", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+
+    repository.appendMessage(project.id, "user", "needs clarification");
+    const firstRun = repository.createAgentRun(project.id, "needs clarification", "openai/gpt-5.4");
+    const firstRunId = firstRun.activeRun?.id;
+    expect(firstRunId).toBeDefined();
+    const firstQuestion = repository.appendPlanningQuestion(project.id, firstRunId!, {
+      id: "question-1",
+      prompt: "Which route should handle this?",
+      placeholder: "api/users/[id]",
+      choices: [
+        {
+          id: "choice-1",
+          label: "API route",
+          description: "Use provided API route.",
+          answerText: "api/users/[id]",
+          recommended: true
+        },
+        {
+          id: "choice-2",
+          label: "Web route",
+          description: "Use a page route instead.",
+          answerText: "users/[id]",
+          recommended: false
+        },
+        {
+          id: "choice-3",
+          label: "Custom",
+          description: "Type a custom route.",
+          answerText: "custom route",
+          recommended: false
+        }
+      ],
+      required: true
+    });
+
+    repository.appendMessage(project.id, "user", "needs clarification again");
+    const secondRun = repository.createAgentRun(project.id, "needs clarification again", "openai/gpt-5.4");
+    const secondRunId = secondRun.activeRun?.id;
+    expect(secondRunId).toBeDefined();
+    const secondQuestion = repository.appendPlanningQuestion(project.id, secondRunId!, {
+      id: "question-1",
+      prompt: "Which route should handle this?",
+      placeholder: "api/users/[id]",
+      choices: [
+        {
+          id: "choice-1",
+          label: "API route",
+          description: "Use provided API route.",
+          answerText: "api/users/[id]",
+          recommended: true
+        },
+        {
+          id: "choice-2",
+          label: "Web route",
+          description: "Use a page route instead.",
+          answerText: "users/[id]",
+          recommended: false
+        },
+        {
+          id: "choice-3",
+          label: "Custom",
+          description: "Type a custom route.",
+          answerText: "custom route",
+          recommended: false
+        }
+      ],
+      required: true
+    });
+
+    expect(firstQuestion.activeRun?.questions[0]?.id).toBe(`${firstRunId}:question-1`);
+    expect(secondQuestion.activeRun?.questions[0]?.id).toBe(`${secondRunId}:question-1`);
+    expect(firstQuestion.activeRun?.questions[0]?.id).not.toBe(secondQuestion.activeRun?.questions[0]?.id);
   });
 
   test("persists browser sessions on active runs across reload", () => {
@@ -465,6 +543,59 @@ describe("workspace repository", () => {
     expect(restoredProject.activeRun?.browserSessions).toHaveLength(1);
     expect(restoredProject.activeRun?.browserSessions?.[0]?.pendingApproval?.toolCallId).toBe("tool-call-1");
     expect(restoredProject.activeRun?.browserSessions?.[0]?.activities[0]?.status).toBe("pending-approval");
+  });
+
+  test("repairs background job foreign keys that still target background_job_runs_legacy", () => {
+    const repository = createRepository();
+    const dbPath = (repository as any).dbPath as string;
+    const db = new Database(dbPath, { strict: true });
+
+    db.exec(`
+      ALTER TABLE background_job_runs RENAME TO background_job_runs_legacy;
+      CREATE TABLE background_job_runs (
+        id TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        assistant_id TEXT NULL,
+        automation_thread_id TEXT NOT NULL,
+        trigger_source TEXT NOT NULL CHECK(trigger_source IN ('schedule', 'startup-catchup', 'manual', 'approval-release', 'retry')),
+        status TEXT NOT NULL CHECK(status IN ('queued', 'awaiting-approval', 'awaiting-user-input', 'running', 'succeeded', 'failed', 'cancelled', 'skipped')),
+        risk_level TEXT NOT NULL CHECK(risk_level IN ('safe', 'slightly-unsafe', 'unsafe')),
+        approval_status TEXT NOT NULL CHECK(approval_status IN ('not-needed', 'pending', 'approved', 'rejected')),
+        skipped_occurrence_count INTEGER NOT NULL DEFAULT 0,
+        linked_agent_run_id TEXT NULL,
+        summary TEXT NULL,
+        failure_message TEXT NULL,
+        queued_at TEXT NOT NULL,
+        started_at TEXT NULL,
+        completed_at TEXT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(job_id) REFERENCES background_jobs(id) ON DELETE CASCADE,
+        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+        FOREIGN KEY(assistant_id) REFERENCES assistants(id) ON DELETE CASCADE,
+        FOREIGN KEY(automation_thread_id) REFERENCES project_threads(id) ON DELETE CASCADE
+      );
+      DROP TABLE background_job_runs_legacy;
+    `);
+    db.close(false);
+
+    const repairedRepository = new WorkspaceRepository(dbPath, process.cwd());
+    const repairedDb = new Database(dbPath, { readonly: true, strict: true });
+    const schemas = repairedDb
+      .query<{ name: string; sql: string }, []>(
+        `SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name IN ('background_job_run_events', 'notifications')`
+      )
+      .all();
+    repairedDb.close(false);
+
+    expect(repairedRepository.loadBackgroundJobsState()).toEqual({
+      jobs: [],
+      runs: [],
+      templates: expect.any(Array)
+    });
+    expect(schemas.every((row) => !row.sql.includes("background_job_runs_legacy"))).toBe(true);
+    expect(schemas.every((row) => row.sql.includes("REFERENCES background_job_runs"))).toBe(true);
   });
 
   test("persists experiment metadata and shared memory retrievals across reload", () => {

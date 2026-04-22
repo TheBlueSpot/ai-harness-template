@@ -8,6 +8,7 @@ type ActionButtonProps = {
   icon?: JSX.Element;
   children?: JSX.Element;
   class?: string;
+  wrapperClass?: string;
   ariaLabel?: string;
   type?: "button" | "submit";
   variant?: NonNullable<Parameters<typeof buttonVariants>[0]>["variant"];
@@ -21,8 +22,8 @@ export function ActionButton(props: ActionButtonProps) {
   const tooltipText = () => (props.disabled && props.disabledReason ? props.disabledReason : props.tooltip);
 
   return (
-    <Tooltip content={tooltipText()}>
-      <span class="inline-flex">
+    <Tooltip content={tooltipText()} triggerClass={props.wrapperClass}>
+      <span class={props.wrapperClass ?? "inline-flex"}>
         <Button
           class={props.class}
           type={props.type}

@@ -1,6 +1,6 @@
-import type { AgentTrace, PlannerSubtask, ProjectContextUsage, ProviderBrand } from "../../shared/protocol";
+import type { AgentTrace, ComposerReasoningStrength, PlannerSubtask, ProjectContextUsage, ProviderBrand } from "../../shared/protocol";
 import type { ManagedExecutionState } from "./execution-runtime";
-import { GitWorktreeManager } from "./git-worktree-manager";
+import { BranchfsManager, type BranchfsExperimentLease } from "./branchfs-manager";
 import { debugLog } from "./logging";
 import { runManagedAgentExecution } from "./managed-agent-execution";
 import { getDefaultSubagentModelId } from "./pi-planner";
@@ -42,6 +42,12 @@ export type SubagentProgressCallbacks = {
   }) => Promise<{ approved: boolean }>;
 };
 
+export type BranchfsSubagentSnapshot = {
+  taskId: string;
+  manager: BranchfsManager;
+  lease: BranchfsExperimentLease;
+};
+
 const MAX_CONCURRENCY = 4;
 
 export async function executeSubagents(
@@ -54,25 +60,15 @@ export async function executeSubagents(
     tasks: PlannerSubtask[];
     debugEnabled: boolean;
     executionModelId: string;
+    reasoningStrength?: ComposerReasoningStrength;
+    fastMode?: boolean;
     abortSignal?: AbortSignal;
     callbacks?: SubagentProgressCallbacks;
   }
-): Promise<SubagentResult[]> {
+): Promise<{ results: SubagentResult[]; retainedSnapshots: BranchfsSubagentSnapshot[] }> {
   const queue = [...options.tasks];
   const results: SubagentResult[] = [];
-  const manager = new GitWorktreeManager(
-    {
-      rootPath: options.cwd,
-      runId: options.runId,
-      debugEnabled: options.debugEnabled,
-      executionModelId: options.executionModelId
-    },
-    {
-      onTrace(trace) {
-        options.callbacks?.onTrace?.(trace);
-      }
-    }
-  );
+  const retainedSnapshots: BranchfsSubagentSnapshot[] = [];
 
   const workers = Array.from({ length: Math.min(MAX_CONCURRENCY, queue.length) }, async () => {
     while (queue.length > 0) {
@@ -81,36 +77,47 @@ export async function executeSubagents(
         return;
       }
 
-      const result = await executeSubagentWithRetry(adapter, manager, options.providerBrand, task, options.brief, {
+      const { result, retainedSnapshot } = await executeSubagentWithRetry(adapter, options.providerBrand, task, options.brief, {
         runId: options.runId,
+        rootPath: options.cwd,
         abortSignal: options.abortSignal,
         callbacks: options.callbacks,
         executionModelId: options.executionModelId,
-        debugEnabled: options.debugEnabled
+        debugEnabled: options.debugEnabled,
+        reasoningStrength: options.reasoningStrength,
+        fastMode: options.fastMode
       });
       results.push(result);
+      if (retainedSnapshot) {
+        retainedSnapshots.push(retainedSnapshot);
+      }
     }
   });
 
   await Promise.all(workers);
   const order = new Map(options.tasks.map((task, index) => [task.id, index]));
-  return results.sort((left, right) => (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0));
+  return {
+    results: results.sort((left, right) => (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0)),
+    retainedSnapshots
+  };
 }
 
 async function executeSubagentWithRetry(
   adapter: PiAgentAdapter,
-  manager: GitWorktreeManager,
   providerBrand: ProviderBrand,
   task: PlannerSubtask,
   brief: string,
   options: {
     runId: string;
+    rootPath: string;
     abortSignal: AbortSignal | undefined;
     callbacks: SubagentProgressCallbacks | undefined;
     executionModelId: string;
     debugEnabled: boolean;
+    reasoningStrength?: ComposerReasoningStrength;
+    fastMode?: boolean;
   }
-): Promise<SubagentResult> {
+): Promise<{ result: SubagentResult; retainedSnapshot?: BranchfsSubagentSnapshot }> {
   let attempt = 0;
   const dequeuedAt = Date.now();
 
@@ -122,7 +129,18 @@ async function executeSubagentWithRetry(
     }
 
     const worktreePrepareStartedAt = Date.now();
-    const lease = await manager.prepareSubagentLease(task.id);
+    const manager = new BranchfsManager(
+      {
+        rootPath: options.rootPath,
+        runId: `${options.runId}-${task.id}-attempt-${attempt}`
+      },
+      {
+        onTrace(trace) {
+          options.callbacks?.onTrace?.(trace);
+        }
+      }
+    );
+    const lease = await manager.prepareExperimentLease();
     const worktreeReadyAt = Date.now();
     let settledExecutionState: ManagedExecutionState | undefined;
     try {
@@ -142,9 +160,11 @@ async function executeSubagentWithRetry(
         subagentId: task.id,
         originalRequest: {
           kind: "subagent",
-          cwd: lease.worktreePath,
+          cwd: lease.projectMountPath,
           modelId: subagentModelId,
           prompt: basePrompt,
+          reasoningStrength: options.reasoningStrength,
+          fastMode: options.fastMode,
           onExecutionEvent(event: PiAgentExecutionEvent) {
             void options.callbacks?.onExecutionEvent?.({
               owner: "subagent",
@@ -162,9 +182,11 @@ async function executeSubagentWithRetry(
         },
         continuationRequest: {
           kind: "subagent",
-          cwd: lease.worktreePath,
+          cwd: lease.projectMountPath,
           modelId: subagentModelId,
           prompt: ["continue", "", basePrompt].join("\n"),
+          reasoningStrength: options.reasoningStrength,
+          fastMode: options.fastMode,
           onExecutionEvent(event: PiAgentExecutionEvent) {
             void options.callbacks?.onExecutionEvent?.({
               owner: "subagent",
@@ -209,9 +231,6 @@ async function executeSubagentWithRetry(
           updatedAt: new Date().toISOString()
         });
       }
-
-      const commit = await manager.finalizeSubagentLease(lease);
-      await manager.cleanupSubagentLease(lease);
       emitSpawnTiming(options.callbacks, task, {
         dequeuedAt,
         worktreePrepareStartedAt,
@@ -223,34 +242,41 @@ async function executeSubagentWithRetry(
       });
       options.callbacks?.onComplete?.(task, response.text, Date.now() - startedAt);
       return {
-        id: task.id,
-        title: task.title,
-        instruction: task.instruction,
-        status: "completed",
-        output: response.text.trim(),
-        attemptCount: attempt,
-        durationMs: Date.now() - startedAt,
-        commitSha: commit.commitSha,
-        branchName: commit.branchName,
-        mountPath: commit.worktreePath,
-        worktreePath: commit.worktreePath,
-        contextUsage: response.contextUsage
-          ? {
-              sourceKind: "subagent",
-              sourceLabel: task.id,
-              modelId: getDefaultSubagentModelId(providerBrand),
-              tokens: response.contextUsage.tokens,
-              contextWindow: response.contextUsage.contextWindow,
-              usagePercent: response.contextUsage.usagePercent,
-              totalProcessedTokens: response.contextUsage.sessionStats.tokens.total,
-              updatedAt: new Date().toISOString()
-            }
-          : undefined
+        result: {
+          id: task.id,
+          title: task.title,
+          instruction: task.instruction,
+          status: "completed",
+          output: response.text.trim(),
+          attemptCount: attempt,
+          durationMs: Date.now() - startedAt,
+          mountPath: lease.projectMountPath,
+          worktreePath: lease.projectMountPath,
+          contextUsage: response.contextUsage
+            ? {
+                sourceKind: "subagent",
+                sourceLabel: task.id,
+                modelId: getDefaultSubagentModelId(providerBrand),
+                tokens: response.contextUsage.tokens,
+                contextWindow: response.contextUsage.contextWindow,
+                usagePercent: response.contextUsage.usagePercent,
+                totalProcessedTokens: response.contextUsage.sessionStats.tokens.total,
+                updatedAt: new Date().toISOString()
+              }
+            : undefined
+        },
+        retainedSnapshot: {
+          taskId: task.id,
+          manager,
+          lease
+        }
       };
     } catch (error) {
       const typedError = error instanceof Error ? error : new Error("Unknown subagent failure");
       if (isAbortError(typedError, options.abortSignal)) {
-        await manager.cleanupSubagentLease(lease, { preserveWorktree: options.debugEnabled });
+        if (!options.debugEnabled) {
+          await manager.discardExperiment(lease).catch(() => undefined);
+        }
         throw typedError;
       }
 
@@ -265,23 +291,23 @@ async function executeSubagentWithRetry(
           failedAt: Date.now()
         });
         options.callbacks?.onError?.(task, typedError);
-        await manager.cleanupSubagentLease(lease, { preserveWorktree: options.debugEnabled });
         return {
-          id: task.id,
-          title: task.title,
-          instruction: task.instruction,
-          status: "failed",
-          errorMessage: typedError.message,
-          attemptCount: attempt,
-          durationMs: Date.now() - startedAt,
-          branchName: lease.branchName,
-          mountPath: options.debugEnabled ? lease.worktreePath : undefined,
-          worktreePath: options.debugEnabled ? lease.worktreePath : undefined
+          result: {
+            id: task.id,
+            title: task.title,
+            instruction: task.instruction,
+            status: "failed",
+            errorMessage: typedError.message,
+            attemptCount: attempt,
+            durationMs: Date.now() - startedAt,
+            mountPath: options.debugEnabled ? lease.projectMountPath : undefined,
+            worktreePath: options.debugEnabled ? lease.projectMountPath : undefined
+          }
         };
       }
 
       options.callbacks?.onRetry?.(task, attempt, typedError);
-      await manager.cleanupSubagentLease(lease);
+      await manager.discardExperiment(lease).catch(() => undefined);
     }
   }
 }

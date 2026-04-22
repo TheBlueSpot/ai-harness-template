@@ -19,11 +19,13 @@ import {
   type BackgroundJobApprovalPolicy,
   type BackgroundJobsState,
   type BackgroundJobSchedulePreview,
+  type ComposerReasoningStrength,
   type ExperimentInspection,
   type MemorySummary,
   type MemoryEntry,
   type ModelCapability,
   type ModeDefinition,
+  type NotificationInboxState,
   type ProjectContextUsage,
   type ProviderBrand,
   type ExecutionModelId,
@@ -62,6 +64,8 @@ export const MEMORY_BANK_ENABLED_DEFAULT_STORAGE_KEY = "memory_bank_enabled_defa
 export const THREAD_DRAFT_STORAGE_KEY_PREFIX = "pi-harness:thread-draft:v1";
 export const TUTORIAL_PROGRESS_STORAGE_KEY = "pi-harness:tutorial-progress:v1";
 export const BROWSER_UI_SESSION_STORAGE_KEY = "pi-harness:browser-ui-session:v1";
+export const DEFAULT_COMPOSER_REASONING_STRENGTH: ComposerReasoningStrength = "high";
+export const COMPOSER_REASONING_STRENGTHS: ComposerReasoningStrength[] = ["low", "medium", "high", "extra-high"];
 
 export type HarnessActiveSurface = "chat" | "background-jobs" | "assistants";
 export type AssistantScopeFilter = "global" | "project";
@@ -70,6 +74,8 @@ export type BrowserUiSessionState = {
   selectedModeId?: string;
   selectedAgentId?: AgentId;
   selectedExecutionModelId?: ExecutionModelId;
+  selectedReasoningStrength?: ComposerReasoningStrength;
+  selectedFastMode?: boolean;
   tracePanelOpen?: boolean;
   lastActiveProjectId?: string;
   lastActiveThreadByProjectId?: Record<string, string>;
@@ -158,6 +164,7 @@ export type HarnessViewState = {
   activeSurface: HarnessActiveSurface;
   assistants: ViewAssistantsState;
   backgroundJobs: BackgroundJobsState;
+  notifications: NotificationInboxState;
   executionControl: ExecutionControlState;
   backgroundJobSchedulePreview?: {
     requestId: string;
@@ -181,6 +188,10 @@ export type HarnessViewState = {
   hasGlobalSelectedAgentId: boolean;
   selectedExecutionModelId?: ExecutionModelId;
   hasGlobalSelectedExecutionModelId: boolean;
+  selectedReasoningStrength: ComposerReasoningStrength;
+  hasGlobalSelectedReasoningStrength: boolean;
+  selectedFastMode: boolean;
+  hasGlobalSelectedFastMode: boolean;
   tracePanelOpen: boolean;
   tracePanelDefaultOpen: boolean;
   hasPersistedTracePanelOpen: boolean;
@@ -301,6 +312,15 @@ export function createInitialExecutionControlState(): ExecutionControlState {
   };
 }
 
+export function createEmptyNotificationInboxState(): NotificationInboxState {
+  return {
+    items: [],
+    unreadCount: 0,
+    interactiveUnreadCount: 0,
+    passiveUnreadCount: 0
+  };
+}
+
 export function createInitialSetupState(): SetupState {
   return {
     launchMode: "source",
@@ -322,6 +342,7 @@ export function createInitialViewState(): HarnessViewState {
     activeSurface: "chat",
     assistants: createEmptyAssistantsState(),
     backgroundJobs: createEmptyBackgroundJobsState(),
+    notifications: createEmptyNotificationInboxState(),
     executionControl: createInitialExecutionControlState(),
     backgroundJobSchedulePreview: undefined,
     backgroundJobEditorOpen: false,
@@ -342,6 +363,10 @@ export function createInitialViewState(): HarnessViewState {
     hasGlobalSelectedAgentId: false,
     selectedExecutionModelId: undefined,
     hasGlobalSelectedExecutionModelId: false,
+    selectedReasoningStrength: DEFAULT_COMPOSER_REASONING_STRENGTH,
+    hasGlobalSelectedReasoningStrength: false,
+    selectedFastMode: false,
+    hasGlobalSelectedFastMode: false,
     tracePanelOpen: true,
     tracePanelDefaultOpen: true,
     hasPersistedTracePanelOpen: false,
@@ -429,9 +454,15 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
         workspace: hydrateWorkspace(event.payload.workspace),
         assistants: hydrateAssistants(state.assistants, event.payload.assistants),
         backgroundJobs: event.payload.backgroundJobs,
+        notifications: event.payload.notifications,
         executionControl: event.payload.executionControl,
         projectPreflights: {},
         ...applyReadyPreferencesState(state, event.payload.preferences)
+      };
+    case "notifications.updated":
+      return {
+        ...state,
+        notifications: event.payload.notifications
       };
     case "agent.list":
       return {
@@ -855,6 +886,10 @@ export function createHarnessStore() {
           hasGlobalSelectedAgentId: browserUiSession.selectedAgentId !== undefined,
           selectedExecutionModelId: browserUiSession.selectedExecutionModelId,
           hasGlobalSelectedExecutionModelId: browserUiSession.selectedExecutionModelId !== undefined,
+          selectedReasoningStrength: browserUiSession.selectedReasoningStrength ?? state.selectedReasoningStrength,
+          hasGlobalSelectedReasoningStrength: browserUiSession.selectedReasoningStrength !== undefined,
+          selectedFastMode: browserUiSession.selectedFastMode ?? state.selectedFastMode,
+          hasGlobalSelectedFastMode: browserUiSession.selectedFastMode !== undefined,
           tracePanelOpen: browserUiSession.tracePanelOpen ?? state.tracePanelOpen,
           hasPersistedTracePanelOpen: browserUiSession.tracePanelOpen !== undefined,
           lastActiveProjectId: browserUiSession.lastActiveProjectId,
@@ -1028,6 +1063,26 @@ export function createHarnessStore() {
         ...state,
         selectedExecutionModelId: normalizedExecutionModelId ? (normalizedExecutionModelId as ExecutionModelId) : undefined,
         hasGlobalSelectedExecutionModelId: Boolean(normalizedExecutionModelId)
+      });
+      setState(reconcile(nextState));
+      persistBrowserUiStateIfChanged(previousSnapshot, nextState);
+    },
+    setSelectedReasoningStrength(selectedReasoningStrength: ComposerReasoningStrength) {
+      const previousSnapshot = getBrowserUiSessionSnapshot(state);
+      const nextState = finalizeHarnessViewState({
+        ...state,
+        selectedReasoningStrength,
+        hasGlobalSelectedReasoningStrength: true
+      });
+      setState(reconcile(nextState));
+      persistBrowserUiStateIfChanged(previousSnapshot, nextState);
+    },
+    setSelectedFastMode(selectedFastMode: boolean) {
+      const previousSnapshot = getBrowserUiSessionSnapshot(state);
+      const nextState = finalizeHarnessViewState({
+        ...state,
+        selectedFastMode,
+        hasGlobalSelectedFastMode: true
       });
       setState(reconcile(nextState));
       persistBrowserUiStateIfChanged(previousSnapshot, nextState);
@@ -1349,7 +1404,36 @@ export function createHarnessStore() {
   };
 }
 
-export const harnessStore = createHarnessStore();
+export type HarnessStoreApi = ReturnType<typeof createHarnessStore>;
+
+let activeHarnessStore: HarnessStoreApi | undefined;
+
+export function setActiveHarnessStore(store: HarnessStoreApi | undefined) {
+  activeHarnessStore = store;
+}
+
+export function requireHarnessStore() {
+  if (!activeHarnessStore) {
+    throw new Error("Harness store not initialized");
+  }
+
+  return activeHarnessStore;
+}
+
+export const harnessStore = new Proxy({} as HarnessStoreApi, {
+  get(_target, prop, receiver) {
+    return Reflect.get(requireHarnessStore(), prop, receiver);
+  },
+  set(_target, prop, value, receiver) {
+    return Reflect.set(requireHarnessStore(), prop, value, receiver);
+  },
+  ownKeys() {
+    return Reflect.ownKeys(requireHarnessStore());
+  },
+  getOwnPropertyDescriptor(_target, prop) {
+    return Object.getOwnPropertyDescriptor(requireHarnessStore(), prop);
+  }
+});
 
 function hydrateAssistants(existing: ViewAssistantsState, incoming: AssistantsState): ViewAssistantsState {
   const nextVisibleId =
@@ -1776,6 +1860,10 @@ export function readBrowserUiSession(): BrowserUiSessionState {
           : undefined,
       selectedExecutionModelId:
         typeof parsed.selectedExecutionModelId === "string" ? (parsed.selectedExecutionModelId as ExecutionModelId) : undefined,
+      selectedReasoningStrength: isComposerReasoningStrength(parsed.selectedReasoningStrength)
+        ? parsed.selectedReasoningStrength
+        : undefined,
+      selectedFastMode: typeof parsed.selectedFastMode === "boolean" ? parsed.selectedFastMode : undefined,
       tracePanelOpen: typeof parsed.tracePanelOpen === "boolean" ? parsed.tracePanelOpen : undefined,
       lastActiveProjectId: typeof parsed.lastActiveProjectId === "string" ? parsed.lastActiveProjectId : undefined,
       lastActiveThreadByProjectId
@@ -1796,6 +1884,8 @@ export function persistBrowserUiSession(input: BrowserUiSessionState) {
     selectedExecutionModelId: input.selectedExecutionModelId?.trim()
       ? (input.selectedExecutionModelId.trim() as ExecutionModelId)
       : undefined,
+    selectedReasoningStrength: input.selectedReasoningStrength,
+    selectedFastMode: input.selectedFastMode,
     tracePanelOpen: input.tracePanelOpen,
     lastActiveProjectId: input.lastActiveProjectId?.trim() || undefined,
     lastActiveThreadByProjectId: input.lastActiveThreadByProjectId
@@ -1811,6 +1901,8 @@ export function persistBrowserUiSession(input: BrowserUiSessionState) {
     !normalizedInput.selectedModeId &&
     !normalizedInput.selectedAgentId &&
     !normalizedInput.selectedExecutionModelId &&
+    !normalizedInput.selectedReasoningStrength &&
+    normalizedInput.selectedFastMode === undefined &&
     normalizedInput.tracePanelOpen === undefined &&
     !normalizedInput.lastActiveProjectId &&
     (!normalizedInput.lastActiveThreadByProjectId || Object.keys(normalizedInput.lastActiveThreadByProjectId).length === 0)
@@ -1874,6 +1966,8 @@ function getBrowserUiSessionSnapshot(state: HarnessViewState): BrowserUiSessionS
     selectedModeId: state.hasGlobalSelectedModeId ? state.selectedModeId : undefined,
     selectedAgentId: state.hasGlobalSelectedAgentId ? state.selectedAgentId : undefined,
     selectedExecutionModelId: state.hasGlobalSelectedExecutionModelId ? state.selectedExecutionModelId : undefined,
+    selectedReasoningStrength: state.hasGlobalSelectedReasoningStrength ? state.selectedReasoningStrength : undefined,
+    selectedFastMode: state.hasGlobalSelectedFastMode ? state.selectedFastMode : undefined,
     tracePanelOpen: state.hasPersistedTracePanelOpen ? state.tracePanelOpen : undefined,
     lastActiveProjectId: state.lastActiveProjectId,
     lastActiveThreadByProjectId: state.lastActiveThreadByProjectId
@@ -1895,6 +1989,7 @@ function finalizeHarnessViewState(state: HarnessViewState): HarnessViewState {
       ? state.selectedAgentId
       : activeProject?.session.selectedAgentId ?? "pi";
   const selectedExecutionModelId = resolveSelectedExecutionModelId(state, activeProject, selectedAgentId);
+  const composerControls = resolveComposerControlState(state, selectedAgentId, selectedExecutionModelId);
   const validProjectIds = new Set(state.workspace.projects.map((project) => project.id));
   const lastActiveThreadByProjectId = Object.fromEntries(
     Object.entries(state.lastActiveThreadByProjectId).filter(([projectId, threadId]) => {
@@ -1915,6 +2010,8 @@ function finalizeHarnessViewState(state: HarnessViewState): HarnessViewState {
     selectedModeId,
     selectedAgentId,
     selectedExecutionModelId,
+    selectedReasoningStrength: composerControls.selectedReasoningStrength,
+    selectedFastMode: composerControls.selectedFastMode,
     lastActiveProjectId: nextLastActiveProjectId,
     lastActiveThreadByProjectId,
     tracePanelOpen: state.hasPersistedTracePanelOpen ? state.tracePanelOpen : state.tracePanelDefaultOpen
@@ -1934,6 +2031,45 @@ function resolveSelectedExecutionModelId(
   return candidates.find((modelId) =>
     isExecutionModelIdAvailableForAgent(state, selectedAgentId, modelId, state.providerBrand)
   ) as ExecutionModelId | undefined;
+}
+
+function isComposerReasoningStrength(value: unknown): value is ComposerReasoningStrength {
+  return typeof value === "string" && COMPOSER_REASONING_STRENGTHS.includes(value as ComposerReasoningStrength);
+}
+
+function coerceReasoningStrength(
+  availableStrengths: ComposerReasoningStrength[],
+  requestedStrength: ComposerReasoningStrength | undefined
+) {
+  const normalizedRequested = requestedStrength ?? DEFAULT_COMPOSER_REASONING_STRENGTH;
+  const requestedIndex = COMPOSER_REASONING_STRENGTHS.indexOf(normalizedRequested);
+  for (let index = requestedIndex; index >= 0; index -= 1) {
+    const candidate = COMPOSER_REASONING_STRENGTHS[index];
+    if (availableStrengths.includes(candidate)) {
+      return candidate;
+    }
+  }
+
+  return availableStrengths[availableStrengths.length - 1] ?? DEFAULT_COMPOSER_REASONING_STRENGTH;
+}
+
+function resolveComposerControlState(
+  state: HarnessViewState,
+  agentId: AgentId,
+  modelId: ExecutionModelId | undefined
+) {
+  const availableStrengths = getAvailableReasoningStrengthsForSelection(state, agentId, modelId);
+  const requestedStrength = state.hasGlobalSelectedReasoningStrength ? state.selectedReasoningStrength : undefined;
+  const selectedReasoningStrength = coerceReasoningStrength(availableStrengths, requestedStrength);
+  const supportsFastMode = getSupportsFastModeForSelection(state, agentId, modelId);
+  const selectedFastMode = supportsFastMode && state.hasGlobalSelectedFastMode ? state.selectedFastMode : false;
+
+  return {
+    availableStrengths,
+    supportsFastMode,
+    selectedReasoningStrength,
+    selectedFastMode
+  };
 }
 
 function parseBooleanStorageValue(value: string | null) {
@@ -2117,10 +2253,19 @@ export function getExecutionModelOptionsForAgent(
   agentId: AgentId,
   providerBrand: ProviderBrand
 ): Array<{ modelId: string; label: string }> {
-  if (agentId === "copilot-cli") {
+  if (agentId === "copilot-cli" || agentId === "codex-cli") {
     const runtime = state.agentRuntimes.find((entry) => entry.agentId === agentId);
     const modelIds = [...new Set([...(runtime?.discoveredModels ?? []), ...(runtime?.activeModel ? [runtime.activeModel] : [])])];
-    return modelIds.map((modelId) => ({ modelId, label: modelId }));
+    if (modelIds.length > 0) {
+      return modelIds.map((modelId) => ({
+        modelId,
+        label: getModelCapability(state, modelId)?.label ?? modelId
+      }));
+    }
+
+    if (agentId === "codex-cli") {
+      return [];
+    }
   }
 
   const effectiveProviderBrand = getEffectiveProviderBrandForAgent(agentId, providerBrand) ?? "gpt";
@@ -2141,9 +2286,16 @@ export function isExecutionModelIdAvailableForAgent(
     return false;
   }
 
-  if (agentId === "copilot-cli") {
+  if (agentId === "copilot-cli" || agentId === "codex-cli") {
     const runtime = state.agentRuntimes.find((entry) => entry.agentId === agentId);
-    return runtime?.activeModel === modelId || runtime?.discoveredModels.includes(modelId) || false;
+    const discovered = runtime?.activeModel === modelId || runtime?.discoveredModels.includes(modelId) || false;
+    if (discovered) {
+      return true;
+    }
+
+    if (agentId === "codex-cli") {
+      return false;
+    }
   }
 
   const effectiveProviderBrand = getEffectiveProviderBrandForAgent(agentId, providerBrand) ?? "gpt";
@@ -2155,7 +2307,7 @@ export function getFallbackExecutionModelIdForAgent(
   agentId: AgentId,
   providerBrand: ProviderBrand
 ): ExecutionModelId {
-  if (agentId === "copilot-cli") {
+  if (agentId === "copilot-cli" || agentId === "codex-cli") {
     const runtime = state.agentRuntimes.find((entry) => entry.agentId === agentId);
     return (runtime?.activeModel ??
       runtime?.discoveredModels[0] ??
@@ -2193,6 +2345,41 @@ export function getModelCapability(state: HarnessViewState, modelId: string | un
   }
 
   return state.capabilities.flatMap((provider) => provider.models).find((model) => model.modelId === modelId);
+}
+
+export function getAvailableReasoningStrengthsForSelection(
+  state: HarnessViewState,
+  agentId: AgentId,
+  modelId: string | undefined
+): ComposerReasoningStrength[] {
+  const runtime = state.agentRuntimes.find((entry) => entry.agentId === agentId);
+  if (runtime?.supportsReasoningStrengthControl === false) {
+    return [DEFAULT_COMPOSER_REASONING_STRENGTH];
+  }
+
+  const modelStrengths = getModelCapability(state, modelId)?.supportedReasoningStrengths ?? COMPOSER_REASONING_STRENGTHS;
+  return COMPOSER_REASONING_STRENGTHS.filter((strength) => modelStrengths.includes(strength));
+}
+
+export function getSupportsFastModeForSelection(
+  state: HarnessViewState,
+  agentId: AgentId,
+  modelId: string | undefined
+) {
+  const runtime = state.agentRuntimes.find((entry) => entry.agentId === agentId);
+  if (runtime?.supportsFastModeControl === false) {
+    return false;
+  }
+
+  return Boolean(getModelCapability(state, modelId)?.supportsFastMode);
+}
+
+export function getComposerControlState(
+  state: HarnessViewState,
+  agentId: AgentId,
+  modelId: string | undefined
+) {
+  return resolveComposerControlState(state, agentId, modelId as ExecutionModelId | undefined);
 }
 
 export function getCapabilityTags(state: HarnessViewState, modelId: string | undefined) {

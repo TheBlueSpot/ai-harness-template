@@ -15,12 +15,16 @@ import {
   BROWSER_UI_SESSION_STORAGE_KEY,
   createEmptyAssistantsState,
   createEmptyBackgroundJobsState,
+  createEmptyNotificationInboxState,
   createHarnessStore,
   createInitialExecutionControlState,
   createInitialSetupState,
   createInitialViewState,
   getBrowserUiSessionRestoreCommands,
   getActiveMode,
+  getComposerControlState,
+  getExecutionModelOptionsForAgent,
+  getFallbackExecutionModelIdForAgent,
   getResolvedModes,
   persistBrowserUiSession,
   readBrowserUiSession,
@@ -53,6 +57,7 @@ const defaultPreferences: PreferencesState = {
 
 const defaultExecutionControl = createInitialExecutionControlState();
 const defaultSetup = createInitialSetupState();
+const defaultNotifications = createEmptyNotificationInboxState();
 
 function createConnectedState(project?: WorkspaceProjectState) {
   return reduceServerEvent(createInitialViewState(), {
@@ -67,6 +72,7 @@ function createConnectedState(project?: WorkspaceProjectState) {
       setup: defaultSetup,
       backgroundJobs: createEmptyBackgroundJobsState(),
       assistants: createEmptyAssistantsState(),
+      notifications: defaultNotifications,
       executionControl: defaultExecutionControl
     }
   });
@@ -106,6 +112,7 @@ describe("harness store reducer", () => {
         setup: defaultSetup,
         backgroundJobs: createEmptyBackgroundJobsState(),
         assistants: createEmptyAssistantsState(),
+        notifications: defaultNotifications,
         executionControl: defaultExecutionControl
       }
     });
@@ -153,6 +160,7 @@ describe("harness store reducer", () => {
         setup: defaultSetup,
         backgroundJobs: createEmptyBackgroundJobsState(),
         assistants: createEmptyAssistantsState(),
+        notifications: defaultNotifications,
         executionControl: defaultExecutionControl
       }
     });
@@ -177,6 +185,123 @@ describe("harness store reducer", () => {
       lastActiveThreadByProjectId: {
         [project.id]: project.activeThreadId
       }
+    });
+  });
+
+  test("codex runtime model options use runtime-compatible list", () => {
+    const state = reduceServerEvent(createInitialViewState(), {
+      type: "connection.ready",
+      payload: {
+        agents: [
+          { id: "pi", label: "Pi" },
+          { id: "codex-cli", label: "Codex CLI" }
+        ],
+        workspace: {
+          projects: [],
+          activeProjectId: undefined
+        },
+        preferences: {
+          ...defaultPreferences,
+          agentRuntimes: [
+            {
+              agentId: "codex-cli",
+              label: "Codex CLI",
+              runtimeKind: "cli",
+              installed: true,
+              authenticated: true,
+              interactivePipeCompatible: true,
+              supportsInteractive: true,
+              supportsProgrammatic: true,
+              supportsPlanning: true,
+              supportsReview: true,
+              discoveredModels: ["openai/gpt-5.4", "openai/gpt-5.4-mini"],
+              activeModel: "openai/gpt-5.4",
+              modelDiscoveryConfidence: "partial"
+            }
+          ]
+        },
+        setup: defaultSetup,
+        backgroundJobs: createEmptyBackgroundJobsState(),
+        assistants: createEmptyAssistantsState(),
+        notifications: defaultNotifications,
+        executionControl: defaultExecutionControl
+      }
+    });
+
+    expect(getExecutionModelOptionsForAgent(state, "codex-cli", "gpt")).toEqual([
+      { modelId: "openai/gpt-5.4", label: "GPT-5.4" },
+      { modelId: "openai/gpt-5.4-mini", label: "GPT-5.4 Mini" }
+    ]);
+    expect(getFallbackExecutionModelIdForAgent(state, "codex-cli", "gpt")).toBe("openai/gpt-5.4");
+  });
+
+  test("persists composer reasoning and fast mode selections in browser ui session", () => {
+    clearBrowserUiSessionStorage();
+    const store = createHarnessStore();
+
+    store.setSelectedReasoningStrength("medium");
+    store.setSelectedFastMode(true);
+
+    expect(readBrowserUiSession()).toMatchObject({
+      selectedReasoningStrength: "medium",
+      selectedFastMode: true
+    });
+  });
+
+  test("coerces unsupported composer controls for current model and runtime", () => {
+    clearBrowserUiSessionStorage();
+    const store = createHarnessStore();
+    const project = createProject();
+
+    store.applyServerEvent({
+      type: "connection.ready",
+      payload: {
+        agents: [{ id: "pi", label: "Pi" }],
+        workspace: {
+          projects: [project],
+          activeProjectId: project.id
+        },
+        preferences: {
+          ...defaultPreferences,
+          agentRuntimes: [
+            {
+              agentId: "pi",
+              label: "Pi",
+              runtimeKind: "sdk",
+              installed: true,
+              authenticated: true,
+              interactivePipeCompatible: false,
+              supportsInteractive: false,
+              supportsProgrammatic: true,
+              supportsPlanning: true,
+              supportsReview: true,
+              supportsReasoningStrengthControl: true,
+              supportsFastModeControl: true,
+              discoveredModels: [],
+              modelDiscoveryConfidence: "unknown"
+            }
+          ]
+        },
+        setup: defaultSetup,
+        backgroundJobs: createEmptyBackgroundJobsState(),
+        assistants: createEmptyAssistantsState(),
+        notifications: defaultNotifications,
+        executionControl: defaultExecutionControl
+      }
+    });
+    store.setSelectedAgentId("pi");
+    store.setProviderBrand("gemini");
+    store.setSelectedExecutionModelId("google/gemini-2.5-flash");
+    store.setSelectedReasoningStrength("extra-high");
+    store.setSelectedFastMode(true);
+
+    expect(store.state.selectedReasoningStrength).toBe("high");
+    expect(store.state.selectedFastMode).toBe(false);
+    expect(getComposerControlState(store.state, "pi", "google/gemini-2.5-flash")).toEqual({
+      availableStrengths: ["low", "medium", "high"],
+      supportsFastMode: false,
+      selectedReasoningStrength: "high",
+      selectedFastMode: false
     });
   });
 
@@ -216,6 +341,7 @@ describe("harness store reducer", () => {
         setup: defaultSetup,
         backgroundJobs: createEmptyBackgroundJobsState(),
         assistants: createEmptyAssistantsState(),
+        notifications: defaultNotifications,
         executionControl: defaultExecutionControl
       }
     });
@@ -286,6 +412,7 @@ describe("harness store reducer", () => {
         setup: defaultSetup,
         backgroundJobs: createEmptyBackgroundJobsState(),
         assistants: createEmptyAssistantsState(),
+        notifications: defaultNotifications,
         executionControl: defaultExecutionControl
       }
     });
@@ -1227,6 +1354,7 @@ describe("harness store reducer", () => {
         setup: defaultSetup,
         backgroundJobs: createEmptyBackgroundJobsState(),
         assistants: createEmptyAssistantsState(),
+        notifications: defaultNotifications,
         executionControl: {
           ...defaultExecutionControl,
           isPaused: true,
@@ -1286,6 +1414,7 @@ describe("harness store reducer", () => {
         setup: defaultSetup,
         backgroundJobs: createEmptyBackgroundJobsState(),
         assistants: createEmptyAssistantsState(),
+        notifications: defaultNotifications,
         executionControl: defaultExecutionControl
       }
     });

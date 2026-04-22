@@ -29,6 +29,7 @@ export const agentIdSchema = z.enum(["pi", "copilot-cli", "codex-cli"]);
 export const providerBrandSchema = z.enum(["gpt", "gemini"]);
 export const runtimeKindSchema = z.enum(["sdk", "cli"]);
 export const modelDiscoveryConfidenceSchema = z.enum(["exact", "partial", "unknown"]);
+export const composerReasoningStrengthSchema = z.enum(["low", "medium", "high", "extra-high"]);
 export const setupLaunchModeSchema = z.enum(["source", "portable-launcher"]);
 export const setupCheckStatusSchema = z.enum(["ready", "action-required", "warning", "unsupported"]);
 export const setupActionKindSchema = z.enum([
@@ -54,6 +55,7 @@ export const backgroundJobStatusSchema = z.enum(["enabled", "paused", "disabled"
 export const backgroundJobRunStatusSchema = z.enum([
   "queued",
   "awaiting-approval",
+  "awaiting-user-input",
   "running",
   "succeeded",
   "failed",
@@ -251,7 +253,7 @@ export const correctnessGapSchema = z.object({
 
 export const executionPlanSchema = z.object({
   runId: runIdSchema,
-  origin: z.enum(["initial", "correctness-followup"]),
+  origin: z.enum(["initial", "quick-task", "correctness-followup"]),
   iteration: z.number().int().min(1),
   summary: z.string().min(1),
   finalExecutionBrief: z.string().min(1),
@@ -333,6 +335,8 @@ export const agentRuntimeCapabilitySchema = z.object({
   supportsProgrammatic: z.boolean(),
   supportsPlanning: z.boolean(),
   supportsReview: z.boolean(),
+  supportsReasoningStrengthControl: z.boolean().optional(),
+  supportsFastModeControl: z.boolean().optional(),
   version: z.string().min(1).max(256).optional(),
   healthMessage: z.string().min(1).max(1024).optional(),
   installCommand: z.string().min(1).max(1024).optional(),
@@ -349,7 +353,9 @@ export const modelCapabilitySchema = z.object({
   label: z.string().min(1).max(128),
   tags: z.array(capabilityTagSchema).max(8),
   contextWindow: z.number().int().min(1),
-  summary: z.string().min(1).max(256)
+  summary: z.string().min(1).max(256),
+  supportedReasoningStrengths: z.array(composerReasoningStrengthSchema).max(4).optional(),
+  supportsFastMode: z.boolean().optional()
 });
 
 export const providerCapabilitySchema = z.object({
@@ -509,6 +515,76 @@ export const backgroundJobsStateSchema = z.object({
   jobs: z.array(backgroundJobSchema).max(512),
   runs: z.array(backgroundJobRunSchema).max(2048),
   templates: z.array(backgroundJobTemplateSchema).max(64)
+});
+
+export const notificationInboxItemIdSchema = z.string().min(1).max(128);
+export const notificationSeveritySchema = z.enum(["info", "warning", "error"]);
+
+const notificationInboxItemBaseSchema = z.object({
+  id: notificationInboxItemIdSchema,
+  interactive: z.boolean(),
+  createdAt: z.string().datetime().or(z.string().min(1)),
+  readAt: z.string().datetime().or(z.string().min(1)).optional(),
+  archivedAt: z.string().datetime().or(z.string().min(1)).optional()
+});
+
+export const planningQuestionNotificationSchema = notificationInboxItemBaseSchema.extend({
+  kind: z.literal("planning-question"),
+  interactive: z.literal(true),
+  projectId: projectIdSchema,
+  threadId: threadIdSchema,
+  runId: runIdSchema,
+  questionId: questionIdSchema,
+  prompt: z.string().min(1),
+  placeholder: z.string().min(1).optional(),
+  choices: z.array(z.lazy(() => planningChoiceSchema)).length(3)
+});
+
+export const assistantQuestionNotificationSchema = notificationInboxItemBaseSchema.extend({
+  kind: z.literal("assistant-question"),
+  interactive: z.literal(true),
+  assistantId: assistantIdSchema,
+  questionId: assistantQuestionIdSchema,
+  prompt: z.string().min(1).max(8000),
+  answerText: z.string().min(1).max(32000).optional()
+});
+
+export const browserApprovalNotificationSchema = notificationInboxItemBaseSchema.extend({
+  kind: z.literal("browser-approval"),
+  interactive: z.literal(true),
+  projectId: projectIdSchema,
+  threadId: threadIdSchema,
+  runId: runIdSchema,
+  sessionId: sessionIdSchema,
+  toolCallId: z.string().min(1).max(256),
+  label: z.string().min(1).max(256),
+  inputSummary: z.string().min(1).max(4000).optional()
+});
+
+export const backgroundRunStatusNotificationSchema = notificationInboxItemBaseSchema.extend({
+  kind: z.literal("background-run-status"),
+  interactive: z.literal(false),
+  backgroundRunId: backgroundJobRunIdSchema,
+  jobId: backgroundJobIdSchema,
+  projectId: projectIdSchema,
+  threadId: threadIdSchema,
+  title: z.string().min(1).max(256),
+  summary: z.string().min(1).max(4000),
+  severity: notificationSeveritySchema
+});
+
+export const notificationInboxItemSchema = z.discriminatedUnion("kind", [
+  planningQuestionNotificationSchema,
+  assistantQuestionNotificationSchema,
+  browserApprovalNotificationSchema,
+  backgroundRunStatusNotificationSchema
+]);
+
+export const notificationInboxStateSchema = z.object({
+  items: z.array(notificationInboxItemSchema).max(4096),
+  unreadCount: z.number().int().min(0).max(100000),
+  interactiveUnreadCount: z.number().int().min(0).max(100000),
+  passiveUnreadCount: z.number().int().min(0).max(100000)
 });
 
 export const assistantSchema = z.object({
@@ -1114,6 +1190,17 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     requestId: requestIdSchema
   }),
   z.object({
+    type: z.literal("notification.mark-read"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      notificationId: notificationInboxItemIdSchema
+    })
+  }),
+  z.object({
+    type: z.literal("notifications.mark-all-read"),
+    requestId: requestIdSchema
+  }),
+  z.object({
     type: z.literal("setup.refresh"),
     requestId: requestIdSchema
   }),
@@ -1136,6 +1223,8 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       attachments: z.array(chatAttachmentSchema).max(8).optional(),
       modeId: modeIdSchema.optional(),
       executionModelId: executionModelIdSchema.optional(),
+      reasoningStrength: composerReasoningStrengthSchema.optional(),
+      fastMode: z.boolean().optional(),
       debug: z.boolean().optional()
     })
   }),
@@ -1147,7 +1236,9 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       threadId: threadIdSchema,
       runId: runIdSchema,
       questionId: questionIdSchema,
-      content: z.string().trim().min(1).max(32000)
+      content: z.string().trim().min(1).max(32000),
+      reasoningStrength: composerReasoningStrengthSchema.optional(),
+      fastMode: z.boolean().optional()
     })
   }),
   z.object({
@@ -1157,7 +1248,9 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       projectId: projectIdSchema,
       threadId: threadIdSchema,
       runId: runIdSchema,
-      content: z.string().trim().min(1).max(32000)
+      content: z.string().trim().min(1).max(32000),
+      reasoningStrength: composerReasoningStrengthSchema.optional(),
+      fastMode: z.boolean().optional()
     })
   }),
   z.object({
@@ -1168,7 +1261,9 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       threadId: threadIdSchema,
       runId: runIdSchema,
       guidanceText: z.string().trim().min(1).max(32000).optional(),
-      subagentIds: z.array(z.string().min(1).max(128)).max(8).optional()
+      subagentIds: z.array(z.string().min(1).max(128)).max(8).optional(),
+      reasoningStrength: composerReasoningStrengthSchema.optional(),
+      fastMode: z.boolean().optional()
     })
   }),
   z.object({
@@ -1178,7 +1273,9 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       projectId: projectIdSchema,
       threadId: threadIdSchema,
       runId: runIdSchema,
-      subagentId: z.string().min(1).max(128).optional()
+      subagentId: z.string().min(1).max(128).optional(),
+      reasoningStrength: composerReasoningStrengthSchema.optional(),
+      fastMode: z.boolean().optional()
     })
   }),
   z.object({
@@ -1188,7 +1285,9 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       projectId: projectIdSchema,
       threadId: threadIdSchema,
       runId: runIdSchema,
-      target: runExecutionTargetSchema.optional()
+      target: runExecutionTargetSchema.optional(),
+      reasoningStrength: composerReasoningStrengthSchema.optional(),
+      fastMode: z.boolean().optional()
     })
   }),
   z.object({
@@ -1598,7 +1697,15 @@ export const serverEventSchema = z.discriminatedUnion("type", [
       preferences: preferencesStateSchema,
       setup: setupStateSchema,
       backgroundJobs: backgroundJobsStateSchema,
-      assistants: assistantsStateSchema
+      assistants: assistantsStateSchema,
+      notifications: notificationInboxStateSchema
+    })
+  }),
+  z.object({
+    type: z.literal("notifications.updated"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      notifications: notificationInboxStateSchema
     })
   }),
   z.object({
@@ -2030,6 +2137,7 @@ export type AgentId = z.infer<typeof agentIdSchema>;
 export type ProviderBrand = z.infer<typeof providerBrandSchema>;
 export type RuntimeKind = z.infer<typeof runtimeKindSchema>;
 export type ModelDiscoveryConfidence = z.infer<typeof modelDiscoveryConfidenceSchema>;
+export type ComposerReasoningStrength = z.infer<typeof composerReasoningStrengthSchema>;
 export type SetupLaunchMode = z.infer<typeof setupLaunchModeSchema>;
 export type SetupCheckStatus = z.infer<typeof setupCheckStatusSchema>;
 export type SetupActionKind = z.infer<typeof setupActionKindSchema>;
@@ -2047,6 +2155,7 @@ export type BackgroundJobRunStatus = z.infer<typeof backgroundJobRunStatusSchema
 export type BackgroundJobRiskLevel = z.infer<typeof backgroundJobRiskLevelSchema>;
 export type BackgroundJobApprovalPolicy = z.infer<typeof backgroundJobApprovalPolicySchema>;
 export type BackgroundJobThreadKind = z.infer<typeof backgroundJobThreadKindSchema>;
+export type NotificationSeverity = z.infer<typeof notificationSeveritySchema>;
 export type ModeScope = z.infer<typeof modeScopeSchema>;
 export type ModeToolPolicy = z.infer<typeof modeToolPolicySchema>;
 export type CapabilityTag = z.infer<typeof capabilityTagSchema>;
@@ -2082,6 +2191,12 @@ export type BackgroundJobRun = z.infer<typeof backgroundJobRunSchema>;
 export type BackgroundJobTemplate = z.infer<typeof backgroundJobTemplateSchema>;
 export type BackgroundJobSchedulePreview = z.infer<typeof backgroundJobSchedulePreviewSchema>;
 export type BackgroundJobsState = z.infer<typeof backgroundJobsStateSchema>;
+export type PlanningQuestionNotification = z.infer<typeof planningQuestionNotificationSchema>;
+export type AssistantQuestionNotification = z.infer<typeof assistantQuestionNotificationSchema>;
+export type BrowserApprovalNotification = z.infer<typeof browserApprovalNotificationSchema>;
+export type BackgroundRunStatusNotification = z.infer<typeof backgroundRunStatusNotificationSchema>;
+export type NotificationInboxItem = z.infer<typeof notificationInboxItemSchema>;
+export type NotificationInboxState = z.infer<typeof notificationInboxStateSchema>;
 export type ExperimentRunStatus = z.infer<typeof experimentRunStatusSchema>;
 export type ExperimentRun = z.infer<typeof experimentRunSchema>;
 export type ExperimentInspection = z.infer<typeof experimentInspectionSchema>;

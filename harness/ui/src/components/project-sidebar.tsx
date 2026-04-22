@@ -1,12 +1,13 @@
 import { For, Show, createSignal } from "solid-js";
+import { formatForDisplay } from "@tanstack/solid-hotkeys";
 import { createRequestId } from "../../../shared/protocol";
 import { getActiveProject, harnessStore } from "../harness-store";
 import { truncateMiddle } from "../lib/utils";
 import { ActionButton } from "./action-button";
 import { Input } from "./primitives/input";
 import { ScrollArea } from "./primitives/scroll-area";
-import { Separator } from "./primitives/separator";
-import { Edit3, Folder, FolderOpen, GitFork, Plus, Trash2 } from "lucide-solid";
+import { Tooltip } from "./primitives/tooltip";
+import { CircleHelp, Edit3, Folder, GitFork, Plus, Trash2 } from "lucide-solid";
 
 type ProjectSidebarProps = {
   compact?: boolean;
@@ -19,10 +20,6 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
   const activeProject = () => getActiveProject(state);
   const [editingThreadId, setEditingThreadId] = createSignal<string>();
   const [threadTitleDraft, setThreadTitleDraft] = createSignal("");
-
-  function handleBrowseProject() {
-    sendCommand({ type: "project.browse", requestId: createRequestId() });
-  }
 
   function handleActivateProject(projectId: string) {
     if (projectId === state.workspace.activeProjectId) {
@@ -93,35 +90,25 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
   return (
     <div data-test-project-sidebar="" class="panel-shell flex h-full min-h-0 flex-col gap-4 rounded-2xl border-t-0 p-[0.8rem]">
       <div class="space-y-2">
-        <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--muted)">Projects</div>
-        <h2 class="text-[1.125rem] font-semibold tracking-[-0.04em] text-(--foreground)">Workspace roots</h2>
-        <p class="text-[0.675rem] leading-5 text-(--muted)">
-          Each project root keeps its own selectable threads, local chat history, and project-scoped execution context.
-        </p>
-      </div>
-
-      <div class="rounded-3xl border border-(--border) bg-white/50 p-3">
-        <div class="flex gap-2">
-          <ActionButton
-            tooltip="Open project switcher"
-            icon={<Folder class="h-4 w-4" />}
-            class="flex-1"
-            onClick={() => harnessStore.openProjectSwitcher()}
-          >
-            Open project
-          </ActionButton>
-          <ActionButton
-            tooltip="Browse for project folder"
-            icon={<FolderOpen class="h-4 w-4" />}
-            variant="secondary"
-            size="icon"
-            ariaLabel="Browse for project folder"
-            onClick={handleBrowseProject}
-          />
+        <div class="flex items-center gap-2 text-[0.585rem] font-semibold tracking-[0.2em] text-(--muted)">
+          <span>Projects</span>
+          <Tooltip content="Each project root keeps its own selectable threads, local chat history, and project-scoped execution context.">
+            <span class="inline-flex">
+              <CircleHelp class="h-3.5 w-3.5 text-(--muted)" aria-label="Projects help" />
+            </span>
+          </Tooltip>
+          <div class="ml-auto flex items-center">
+            <ActionButton
+              tooltip={`Open project switcher (${formatForDisplay("Mod+Space")} or ${formatForDisplay("Mod+K")})`}
+              icon={<Plus class="h-3.5 w-3.5" />}
+              variant="ghost"
+              size="icon"
+              ariaLabel="Open project switcher"
+              onClick={() => harnessStore.openProjectSwitcher()}
+            />
+          </div>
         </div>
       </div>
-
-      <Separator />
 
       <ScrollArea class="flex-1 min-h-0 pr-1">
         <Show
@@ -137,33 +124,37 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
               {(project) => {
                 const visibleThreads = () => project.threads.filter((thread) => thread.kind === "user");
                 const isActiveProject = () => project.id === state.workspace.activeProjectId;
-                const disableProjectActions = () => project.session.isStreaming;
-                const removeDisabledReason = () => (disableProjectActions() ? "Project is streaming" : undefined);
+                const removeDisabledReason = () =>
+                  project.session.isStreaming
+                    ? "Project is streaming"
+                    : project.activeCliSession
+                      ? "Live CLI session attached"
+                      : undefined;
 
                 return (
                   <section
-                    class={`rounded-[1.4rem] border p-3 transition ${
-                      isActiveProject()
-                        ? "border-(--accent) bg-[linear-gradient(135deg,rgba(15,118,110,0.18),rgba(255,255,255,0.9))] shadow-md"
-                        : "border-(--border) bg-white/55"
-                    }`}
+                    class={`rounded-[1.4rem] border p-3 transition ${isActiveProject()
+                      ? "border-(--accent) bg-[linear-gradient(135deg,rgba(15,118,110,0.18),rgba(255,255,255,0.9))] shadow-md"
+                      : "border-(--border) bg-white/55"
+                      }`}
                   >
-                    <div class="flex items-start gap-2">
+                    <div class="flex min-w-0 items-start gap-1.5">
                       <ActionButton
                         tooltip={isActiveProject() ? `${project.name} is active` : `Switch to ${project.name}`}
                         disabledReason="Project already active"
                         disabled={isActiveProject()}
-                        icon={<Folder class="h-4 w-4" />}
+                        icon={<Folder class="h-3.5 w-3.5 shrink-0" />}
                         variant={isActiveProject() ? "secondary" : "ghost"}
-                        class="min-h-[2.75rem] flex-1 justify-start rounded-2xl px-3 py-2"
+                        class="flex min-h-8 w-full min-w-0 justify-start rounded-xl px-2 py-1.5 gap-0"
+                        wrapperClass="flex min-w-0 flex-1"
                         onClick={() => handleActivateProject(project.id)}
                       >
-                        <div class="min-w-0 text-left">
+                        <div class="min-w-0 flex-1 text-left">
                           <div class="truncate text-[0.675rem] font-semibold text-(--foreground)">{project.name}</div>
                           <div class="truncate text-[0.585rem] text-(--muted)">
                             {truncateMiddle(project.rootPath, props.compact ? 24 : 30)}
                           </div>
-                          <div class="mt-1.5 flex flex-wrap gap-2 text-[0.6rem] uppercase tracking-[0.16em] text-(--muted)">
+                          <div class="flex flex-wrap text-[0.585rem] text-(--muted) gap-0.5">
                             <span>{visibleThreads().length} threads</span>
                             {project.session.isStreaming ? <span>streaming</span> : null}
                             {isActiveProject() ? <span>active</span> : null}
@@ -172,32 +163,29 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
                       </ActionButton>
 
                       <ActionButton
+                        tooltip="Create a new thread in this project"
+                        icon={<Plus class="h-3 w-3" />}
+                        variant="ghost"
+                        size="icon"
+                        class="h-6 w-6 rounded-lg"
+                        ariaLabel={`Create a new thread in ${project.name}`}
+                        onClick={() => handleCreateThread(project.id)}
+                      />
+
+                      <ActionButton
                         tooltip={`Remove ${project.name}`}
                         disabledReason={removeDisabledReason()}
                         disabled={Boolean(removeDisabledReason())}
-                        icon={<Trash2 class="h-4 w-4" />}
+                        icon={<Trash2 class="h-3 w-3" />}
                         variant="ghost"
                         size="icon"
+                        class="h-6 w-6 rounded-lg"
                         ariaLabel={`Remove ${project.name}`}
                         onClick={() => handleRemoveProject(project.id)}
                       />
                     </div>
 
-                    <div class="mt-3 flex gap-2">
-                      <ActionButton
-                        tooltip="Create a new thread in this project"
-                        disabledReason="Project is streaming"
-                        disabled={disableProjectActions()}
-                        icon={<Plus class="h-4 w-4" />}
-                        variant="secondary"
-                        class="flex-1"
-                        onClick={() => handleCreateThread(project.id)}
-                      >
-                        New thread
-                      </ActionButton>
-                    </div>
-
-                    <div class="mt-3 space-y-2">
+                    <div class="mt-2 space-y-1.5">
                       <For each={visibleThreads()}>
                         {(thread) => {
                           const isActiveThread = () => project.activeThreadId === thread.id;
@@ -205,15 +193,21 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
                           const badgeStyle = badgeClass(thread.badgeState);
                           return (
                             <div class={`rounded-2xl border px-3 py-2 ${isActiveThread() ? "border-teal-500/50 bg-white/80" : "border-(--border) bg-white/60"}`}>
-                              <div class="flex items-start justify-between gap-2">
+                              <div class="flex min-w-0 items-start justify-between gap-1.5">
                                 <button
-                                  class="min-w-0 flex-1 cursor-pointer text-left disabled:cursor-not-allowed"
-                                  disabled={isActiveThread() || disableProjectActions()}
+                                  class="flex min-w-0 flex-1 cursor-pointer flex-col text-left disabled:cursor-not-allowed"
+                                  disabled={isActiveThread()}
                                   onClick={() => handleActivateThread(project.id, thread.id)}
                                 >
                                   <Show
                                     when={isEditing()}
-                                    fallback={<div class="truncate text-[0.675rem] font-semibold text-(--foreground)">{thread.title}</div>}
+                                    fallback={
+                                      <Tooltip content={thread.title} triggerClass="block min-w-0 w-full">
+                                        <div class="truncate text-[0.675rem] font-semibold text-(--foreground)">
+                                          {thread.title}
+                                        </div>
+                                      </Tooltip>
+                                    }
                                   >
                                     <Input
                                       value={threadTitleDraft()}
@@ -232,35 +226,41 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
                                       }}
                                     />
                                   </Show>
-                                  <div class="mt-1 flex flex-wrap items-center gap-2 text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">
-                                    <Show when={thread.badgeState !== "idle"}>
-                                      <span class={`rounded-full px-2 py-0.5 ${badgeStyle}`}>{badgeLabel(thread.badgeState)}</span>
-                                    </Show>
-                                    <span>{thread.messageCount} msgs</span>
+                                  <div class="mt-1 flex w-full min-w-0 items-center justify-between gap-2 text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">
                                     <Show when={thread.lastMessagePreview}>
-                                      <span class="normal-case tracking-normal text-[0.625rem]">{thread.lastMessagePreview}</span>
+                                      <Tooltip content={thread.lastMessagePreview} triggerClass="flex min-w-0 flex-1">
+                                        <span class="min-w-0 flex-1 truncate normal-case text-[0.625rem] tracking-normal">
+                                          {thread.lastMessagePreview}
+                                        </span>
+                                      </Tooltip>
                                     </Show>
+                                    <div class="flex shrink-0 items-center gap-2">
+                                      <Show when={thread.badgeState !== "idle"}>
+                                        <span class={`rounded-full px-2 py-0.5 text-[0.46rem] normal-case tracking-normal ${badgeStyle}`}>
+                                          {badgeLabel(thread.badgeState)}
+                                        </span>
+                                      </Show>
+                                      <span>{thread.messageCount} msgs</span>
+                                    </div>
                                   </div>
                                 </button>
 
-                                <div class="flex gap-1">
+                                <div class="flex shrink-0 gap-0.5">
                                   <ActionButton
                                     tooltip="Fork this thread"
-                                    disabledReason="Project is streaming"
-                                    disabled={disableProjectActions()}
-                                    icon={<GitFork class="h-3.5 w-3.5" />}
+                                    icon={<GitFork class="h-3 w-3" />}
                                     variant="ghost"
                                     size="icon"
+                                    class="h-6 w-6 rounded-lg"
                                     ariaLabel={`Fork ${thread.title}`}
                                     onClick={() => handleForkThread(project.id, thread.id)}
                                   />
                                   <ActionButton
                                     tooltip="Rename this thread"
-                                    disabledReason="Project is streaming"
-                                    disabled={disableProjectActions()}
-                                    icon={<Edit3 class="h-3.5 w-3.5" />}
+                                    icon={<Edit3 class="h-3 w-3" />}
                                     variant="ghost"
                                     size="icon"
+                                    class="h-6 w-6 rounded-lg"
                                     ariaLabel={`Rename ${thread.title}`}
                                     onClick={() => startRename(thread.id, thread.title)}
                                   />
@@ -283,9 +283,11 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
         {(project) => (
           <div class="rounded-[1.35rem] border border-(--border) bg-white/45 px-4 py-3 text-[0.585rem] uppercase tracking-[0.16em] text-(--muted)">
             Active root
-            <div class="mt-2 break-all font-mono text-[0.675rem] normal-case tracking-normal text-(--foreground)">
-              {project().rootPath}
-            </div>
+            <Tooltip content={project().rootPath} triggerClass="mt-2 block min-w-0 w-full">
+              <div class="truncate font-mono text-[0.675rem] normal-case tracking-normal text-(--foreground)">
+                {project().rootPath}
+              </div>
+            </Tooltip>
           </div>
         )}
       </Show>

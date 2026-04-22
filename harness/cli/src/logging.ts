@@ -1,7 +1,8 @@
 type LogFields = Record<string, string | number | boolean | undefined>;
+const DEBUG_ENABLED = process.env.NODE_ENV !== "production";
 
 export function isDebugEnabled() {
-  return Bun.env.HARNESS_DEBUG === "1";
+  return DEBUG_ENABLED;
 }
 
 export function debugLog(event: string, fields: LogFields = {}) {

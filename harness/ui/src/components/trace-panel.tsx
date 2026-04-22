@@ -5,7 +5,8 @@ import { getLatestTaskStatusText, getRunRefreshState, isRunWorking } from "../li
 import { ActionButton } from "./action-button";
 import { MarkdownContent } from "./markdown-content";
 import { ScrollArea } from "./primitives/scroll-area";
-import { CheckCircle2, Circle, CircleAlert, ClipboardList, LoaderCircle, RefreshCcw, ShieldCheck, ShieldX } from "lucide-solid";
+import { Tooltip } from "./primitives/tooltip";
+import { CheckCircle2, Circle, CircleAlert, CircleHelp, ClipboardList, LoaderCircle, RefreshCcw, ShieldCheck, ShieldX } from "lucide-solid";
 
 export function TracePanel() {
   const state = harnessStore.state;
@@ -127,15 +128,14 @@ export function TracePanel() {
   return (
     <aside data-test-trace-panel="" class="panel-shell flex h-full min-h-0 flex-col gap-4 rounded-2xl border-t-0 p-[0.8rem]">
       <div>
-        <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--muted)">
-          Developer trace
+        <div class="flex items-center gap-2 text-[0.585rem] font-semibold tracking-[0.2em] text-(--muted)">
+          <span>Developer trace</span>
+          <Tooltip content="Project-scoped plan and trace events stay here, separate from user-visible chat history.">
+            <span class="inline-flex">
+              <CircleHelp class="h-3.5 w-3.5 text-(--muted)" aria-label="Projects trace help" />
+            </span>
+          </Tooltip>
         </div>
-        <h2 class="mt-2 text-[1.125rem] font-semibold tracking-[-0.04em] text-(--foreground)">
-          Planner + routing
-        </h2>
-        <p class="mt-2 text-[0.675rem] leading-5 text-(--muted)">
-          Project-scoped plan and trace events stay here, separate from user-visible chat history.
-        </p>
       </div>
 
       <Show
@@ -173,7 +173,7 @@ export function TracePanel() {
                 </div>
                 <div class="grid grid-cols-2 gap-2 text-[0.675rem] text-(--muted)">
                   <div>Difficulty: {project().latestPlan?.difficultyScore}%</div>
-                  <div>Route: {project().latestPlan?.usesSubagents ? "pi-subagents" : "main pi"}</div>
+                  <div>Route: {project().latestPlan?.executionPlan?.route ?? (project().latestPlan?.usesSubagents ? "subagents" : "main")}</div>
                   <div>Planner: {project().latestPlan?.planningModelId}</div>
                   <div>Executor: {project().latestPlan?.executionModelId}</div>
                   <div>Subtasks: {project().latestPlan?.subtaskCount}</div>
@@ -205,7 +205,7 @@ export function TracePanel() {
                     </ActionButton>
                     <Show when={canRetryRun()}>
                       <ActionButton
-                        tooltip="Retry last pi run"
+                        tooltip="Retry last run"
                         disabledReason={executionPaused() ? executionPauseReason : "Project is streaming"}
                         disabled={executionPaused() || project().session.isStreaming}
                         icon={<RefreshCcw class="h-3.5 w-3.5" />}
@@ -218,13 +218,13 @@ export function TracePanel() {
                     </Show>
                   </div>
                 </div>
-                <div class="space-y-2 text-[0.675rem] text-(--muted)">
+                <div class="min-w-0 space-y-2 text-[0.675rem] text-(--muted)">
                   <div>Status: {runToShow()?.status}</div>
                   <div>Retryable: {runToShow()?.retryable ? "yes" : "no"}</div>
                   <div>Resumable: {runToShow()?.resumable ? "yes" : "no"}</div>
-                  <div>Prompt: {runToShow()?.latestUserPrompt}</div>
+                  <div class="truncate" title={runToShow()?.latestUserPrompt}>Prompt: {runToShow()?.latestUserPrompt}</div>
                   <Show when={runToShow()?.failureMessage}>
-                    <div>Failure: {runToShow()?.failureMessage}</div>
+                    <div class="wrap-anywhere">Failure: {runToShow()?.failureMessage}</div>
                   </Show>
                 </div>
 
@@ -237,12 +237,12 @@ export function TracePanel() {
                       <For each={runToShow()?.subtasks}>
                         {(task) => (
                           <div class="rounded-2xl border border-(--border) bg-white/70 p-3 text-[0.675rem]">
-                            <div class="flex items-center justify-between gap-3 text-(--foreground)">
-                              <span class="flex items-center gap-2 font-semibold">
+                            <div class="flex min-w-0 items-center justify-between gap-3 text-(--foreground)">
+                              <span class="flex min-w-0 flex-1 items-center gap-2 font-semibold">
                                 <TaskStatusIcon status={task.status} />
-                                {task.title}
+                                <span class="min-w-0 flex-1 truncate" title={task.title}>{task.title}</span>
                               </span>
-                              <span class="uppercase tracking-[0.14em] text-(--accent-strong)">{task.status}</span>
+                              <span class="shrink-0 uppercase tracking-[0.14em] text-(--accent-strong)">{task.status}</span>
                             </div>
                             <div class="mt-1 text-(--muted)">Attempts: {task.attemptCount}</div>
                             <div class="mt-1 text-(--muted)">Latest status: {getLatestTaskStatusText(project(), task)}</div>

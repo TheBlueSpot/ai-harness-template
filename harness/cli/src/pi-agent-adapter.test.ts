@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   buildPiAutoCompactionSettings,
   clampAutoCompactContextThresholdPercent,
+  mapReasoningStrengthToThinkingLevel,
   PiSdkAgentAdapter
 } from "./pi-agent-adapter";
 
@@ -27,5 +28,12 @@ describe("pi sdk adapter", () => {
       reserveTokens: 120000,
       keepRecentTokens: 20000
     });
+  });
+
+  test("maps composer reasoning strengths to pi thinking levels", () => {
+    expect(mapReasoningStrengthToThinkingLevel("low")).toBe("low");
+    expect(mapReasoningStrengthToThinkingLevel("medium")).toBe("medium");
+    expect(mapReasoningStrengthToThinkingLevel("high")).toBe("high");
+    expect(mapReasoningStrengthToThinkingLevel("extra-high")).toBe("xhigh");
   });
 });

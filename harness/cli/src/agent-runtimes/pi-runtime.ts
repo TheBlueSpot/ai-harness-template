@@ -30,6 +30,8 @@ export class PiRuntime implements AgentRuntime {
       interactivePipeCompatible: false,
       supportsPlanning: true,
       supportsReview: true,
+      supportsReasoningStrengthControl: true,
+      supportsFastModeControl: true,
       healthMessage:
         this.adapter.hasApiKey("openai") || this.adapter.hasApiKey("google")
           ? undefined

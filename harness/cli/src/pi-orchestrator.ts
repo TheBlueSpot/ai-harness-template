@@ -5,6 +5,7 @@ import {
   type AgentTrace,
   type ChatMessage,
   type ChatSessionState,
+  type ComposerReasoningStrength,
   type CorrectnessIterationMode,
   type ExecutionPlan,
   type MemorySummary,
@@ -22,10 +23,16 @@ import {
   type WorkspaceRuleSource
 } from "../../shared/protocol";
 import type { ManagedExecutionState, ManagedRefreshAction } from "./execution-runtime";
-import { GitWorktreeManager } from "./git-worktree-manager";
 import { debugLog } from "./logging";
 import { runManagedAgentExecution } from "./managed-agent-execution";
 import type { PiAgentAdapter, PiAgentExecutionEvent } from "./pi-agent-adapter";
+import {
+  discardBranchfsIntegrationLease,
+  discardBranchfsSnapshots,
+  flushBranchfsIntegrationLease,
+  prepareBranchfsIntegrationLease,
+  verifyBranchfsIntegrationLease
+} from "./branchfs-subagent-integration";
 import {
   getDefaultPlanningModelId,
   getDefaultSubagentModelId,
@@ -106,16 +113,19 @@ export async function runPlannerTurn(
     iteration?: number;
     origin?: ExecutionPlan["origin"];
     priorQuestions?: PlanningQuestion[];
+    reasoningStrength?: ComposerReasoningStrength;
+    fastMode?: boolean;
     abortSignal?: AbortSignal;
     callbacks?: PiOrchestratorCallbacks;
   }
 ): Promise<PlannerTurnOutcome> {
   const planningStartedAt = Date.now();
   const planningModelId = getDefaultPlanningModelId(options.providerBrand);
+  const agentLabel = getAgentRuntimeLabel(options.agentId);
   emitTrace(options.callbacks, {
     sessionId: options.sessionId,
     stage: "planning",
-    message: "Planning task with pi",
+    message: `Planning task with ${agentLabel}`,
     modelId: planningModelId
   });
 
@@ -129,7 +139,9 @@ export async function runPlannerTurn(
     ruleSources: options.ruleSources,
     memorySummaries: options.memorySummaries,
     priorQuestions: options.priorQuestions,
-    abortSignal: options.abortSignal
+    abortSignal: options.abortSignal,
+    reasoningStrength: options.reasoningStrength,
+    fastMode: options.fastMode
   });
   if (plannerTurn.contextUsage) {
     options.callbacks?.onContextUsage?.(plannerTurn.contextUsage);
@@ -189,7 +201,9 @@ export async function runPlannerTurn(
   emitTrace(options.callbacks, {
     sessionId: options.sessionId,
     stage: "routing",
-    message: readyPlannerResult.usesSubagents ? "Routing task to pi-subagents" : "Routing task to main pi executor",
+    message: readyPlannerResult.usesSubagents
+      ? `Routing task to ${agentLabel} subagents`
+      : `Routing task to main ${agentLabel} executor`,
     detail: executionPlan.summary,
     modelId: executionPlan.executionModelId,
     durationMs: Date.now() - planningStartedAt
@@ -211,6 +225,7 @@ export async function executeReadyRun(
     runId: string;
     sessionId: string;
     messages: ChatMessage[];
+    agentId?: AgentId;
     providerBrand: ProviderBrand;
     readyPlan: PlannerReadyTurn;
     debugEnabled: boolean;
@@ -220,6 +235,8 @@ export async function executeReadyRun(
     tasksToRun?: PlannerSubtask[];
     resumeNote?: string;
     executionPlan?: ExecutionPlan;
+    reasoningStrength?: ComposerReasoningStrength;
+    fastMode?: boolean;
   }
 ): Promise<ExecutionOutcome> {
   if (!options.readyPlan.usesSubagents) {
@@ -231,7 +248,10 @@ export async function executeReadyRun(
           runId: options.runId,
           sessionId: options.sessionId,
           messages: options.messages,
+          agentId: options.agentId,
           executionPlan: options.executionPlan,
+          reasoningStrength: options.reasoningStrength,
+          fastMode: options.fastMode,
           abortSignal: options.abortSignal,
           callbacks: options.callbacks
         },
@@ -262,6 +282,8 @@ export async function executeReadyRun(
         sessionId: options.sessionId,
         messages: options.messages,
         executionPlan: options.executionPlan,
+        reasoningStrength: options.reasoningStrength,
+        fastMode: options.fastMode,
         abortSignal: options.abortSignal,
         callbacks: options.callbacks
       },
@@ -280,7 +302,7 @@ export async function executeReadyRun(
   }
 
   const subagentModelId = getDefaultSubagentModelId(options.providerBrand);
-  const freshResults = await executeSubagents(adapter, {
+  const { results: freshResults, retainedSnapshots } = await executeSubagents(adapter, {
     cwd: options.cwd,
     runId: options.runId,
     providerBrand: options.providerBrand,
@@ -288,6 +310,8 @@ export async function executeReadyRun(
     tasks: options.tasksToRun ?? options.readyPlan.subtasks,
     debugEnabled: options.debugEnabled,
     executionModelId: options.readyPlan.executionModelId,
+    reasoningStrength: options.reasoningStrength,
+    fastMode: options.fastMode,
     abortSignal: options.abortSignal,
     callbacks: {
       onTrace(trace) {
@@ -353,60 +377,44 @@ export async function executeReadyRun(
     options.existingSubagentResults ?? [],
     freshResults
   );
-  const manager = new GitWorktreeManager({
-    rootPath: options.cwd,
-    runId: options.runId,
-    debugEnabled: options.debugEnabled,
-    executionModelId: options.readyPlan.executionModelId
-  }, {
-    onTrace(trace) {
-      emitTrace(options.callbacks, {
-        sessionId: options.sessionId,
-        ...trace,
-        modelId: options.readyPlan.executionModelId
-      });
-    }
-  });
 
   let partialReason: string | undefined;
   let integrationNote: string | undefined;
-  let integrationWorktreePath: string | undefined;
-  let finalCleanup = mergedResults.every((result) => result.status === "completed");
-  const preserveWorktreePaths = mergedResults
-    .map((result) => result.worktreePath)
-    .filter((worktreePath): worktreePath is string => Boolean(worktreePath && options.debugEnabled));
+  let integration = undefined;
 
   try {
-    const integration = await manager.mergeSubagentBranches(adapter, {
+    integration = await prepareBranchfsIntegrationLease(adapter, {
+      rootPath: options.cwd,
+      runId: options.runId,
+      executionModelId: options.readyPlan.executionModelId,
+      reasoningStrength: options.reasoningStrength,
+      fastMode: options.fastMode,
+      onTrace(trace) {
+        emitTrace(options.callbacks, {
+          sessionId: options.sessionId,
+          ...trace,
+          modelId: options.readyPlan.executionModelId
+        });
+      }
+    }, {
       tasks: options.readyPlan.subtasks,
-      subagentResults: mergedResults
-        .filter((result): result is SubagentResult & { commitSha: string } => result.status === "completed" && Boolean(result.commitSha))
-        .map((result) => ({
-          taskId: result.id,
-          commitSha: result.commitSha
-        })),
+      snapshots: retainedSnapshots,
       abortSignal: options.abortSignal
     });
 
     if (integration) {
-      integrationWorktreePath = integration.integrationWorktreePath;
-      await manager.verifyIntegrationWorktree(integration.integrationWorktreePath);
-      await manager.syncIntegrationResultToRoot(integration.integrationWorktreePath);
+      await verifyBranchfsIntegrationLease(integration);
+      await flushBranchfsIntegrationLease(integration);
     }
   } catch (error) {
     const typedError = error instanceof Error ? error : new Error("Integration worktree flow failed");
     partialReason = typedError.message;
     integrationNote = `Integration note: ${typedError.message}`;
-    finalCleanup = false;
-    if (integrationWorktreePath && options.debugEnabled) {
-      preserveWorktreePaths.push(integrationWorktreePath);
-    }
   } finally {
-    await manager.cleanupRunWorktrees({
-      taskIds: options.readyPlan.subtasks.map((task) => task.id),
-      preserveWorktreePaths,
-      finalCleanup
-    });
+    if (!partialReason || !options.debugEnabled) {
+      await discardBranchfsIntegrationLease(integration).catch(() => undefined);
+      await discardBranchfsSnapshots(retainedSnapshots).catch(() => undefined);
+    }
   }
 
   const assistantMessage = await aggregateSubagentResults(
@@ -479,7 +487,7 @@ async function executeSameWorktreeSubagents(
       const basePrompt = [
         "You are a focused coding subagent.",
         "Complete only the assigned instruction.",
-        "Work in same git worktree. Edit only owned paths.",
+        "Work in the same checkout. Edit only owned paths.",
         ownedPaths.length > 0 ? `Owned paths: ${ownedPaths.join(", ")}` : "Owned paths: planner did not specify paths.",
         verificationCommands.length > 0 ? `Verification commands: ${verificationCommands.join(" && ")}` : "",
         "",
@@ -602,7 +610,10 @@ async function executeMainAgent(
     runId: string;
     sessionId: string;
     messages: ChatMessage[];
+    agentId?: AgentId;
     executionPlan?: ExecutionPlan;
+    reasoningStrength?: ComposerReasoningStrength;
+    fastMode?: boolean;
     abortSignal?: AbortSignal;
     callbacks?: PiOrchestratorCallbacks;
   },
@@ -617,10 +628,11 @@ async function executeMainAgent(
     options.executionPlan,
     "continue"
   );
+  const agentLabel = getAgentRuntimeLabel(options.agentId);
   emitTrace(options.callbacks, {
     sessionId: options.sessionId,
     stage: "execution-start",
-    message: "Starting main pi execution",
+    message: `Starting main ${agentLabel} execution`,
     modelId: executionModelId
   });
 
@@ -630,6 +642,9 @@ async function executeMainAgent(
     modelId: executionModelId,
     prompt: executionInput.prompt,
     images: executionInput.images,
+    readOnly: shouldUseReadOnlyExecutionTools(options.executionPlan),
+    reasoningStrength: options.reasoningStrength,
+    fastMode: options.fastMode,
     onTextDelta(delta: string) {
       options.callbacks?.onDelta?.(delta);
     },
@@ -682,7 +697,7 @@ async function executeMainAgent(
   emitTrace(options.callbacks, {
     sessionId: options.sessionId,
     stage: "execution-complete",
-    message: "Main pi execution completed",
+    message: `Main ${agentLabel} execution completed`,
     modelId: executionModelId,
     durationMs: Date.now() - startedAt
   });
@@ -740,6 +755,8 @@ export async function aggregateSubagentResults(
     sessionId: string;
     messages: ChatMessage[];
     executionPlan?: ExecutionPlan;
+    reasoningStrength?: ComposerReasoningStrength;
+    fastMode?: boolean;
     abortSignal?: AbortSignal;
     callbacks?: PiOrchestratorCallbacks;
   },
@@ -782,6 +799,9 @@ export async function aggregateSubagentResults(
       modelId: executionModelId,
       prompt: aggregationPrompt,
       images: executionInput.images,
+      readOnly: shouldUseReadOnlyExecutionTools(options.executionPlan),
+      reasoningStrength: options.reasoningStrength,
+      fastMode: options.fastMode,
       onTextDelta(delta: string) {
         options.callbacks?.onDelta?.(delta);
       },
@@ -808,6 +828,9 @@ export async function aggregateSubagentResults(
         aggregationPrompt
       ].join("\n"),
       images: executionInput.images,
+      readOnly: shouldUseReadOnlyExecutionTools(options.executionPlan),
+      reasoningStrength: options.reasoningStrength,
+      fastMode: options.fastMode,
       onTextDelta(delta: string) {
         options.callbacks?.onDelta?.(delta);
       },
@@ -887,6 +910,11 @@ export function buildExecutionPrompt(messages: ChatMessage[], finalExecutionBrie
     "",
     `Execution brief: ${finalExecutionBrief}`
   ].filter(Boolean).join("\n");
+}
+
+export function shouldUseReadOnlyExecutionTools(executionPlan?: Pick<ExecutionPlan, "mode">) {
+  const toolPolicy = executionPlan?.mode?.toolPolicy;
+  return toolPolicy === "read-heavy" || toolPolicy === "review-only";
 }
 
 function buildContinuationPrompt(prefix: string, messages: ChatMessage[], finalExecutionBrief: string, executionPlan?: ExecutionPlan) {
@@ -980,6 +1008,17 @@ function emitTrace(callbacks: PiOrchestratorCallbacks | undefined, trace: AgentT
     subagentId: trace.subagentId
   });
   callbacks?.onTrace?.(trace);
+}
+
+function getAgentRuntimeLabel(agentId: AgentId | undefined) {
+  switch (agentId) {
+    case "codex-cli":
+      return "Codex CLI";
+    case "copilot-cli":
+      return "GitHub Copilot CLI";
+    default:
+      return "Pi";
+  }
 }
 
 function createExecutionStore(

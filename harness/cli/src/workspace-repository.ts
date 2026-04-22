@@ -15,6 +15,7 @@ import {
   backgroundJobSchema,
   backgroundJobsStateSchema,
   backgroundJobTemplateSchema,
+  backgroundRunStatusNotificationSchema,
   browserSessionSchema,
   correctnessReviewSchema,
   chatMessageSchema,
@@ -37,6 +38,8 @@ import {
   memoryEntrySchema,
   memoryFreshnessSchema,
   memoryRetrievalSchema,
+  notificationInboxItemSchema,
+  notificationInboxStateSchema,
   type Assistant,
   type AssistantAssetRef,
   type AssistantLearning,
@@ -69,6 +72,9 @@ import {
   type ExecutionControlState,
   type ExecutionPlan,
   type ExperimentRun,
+  type NotificationInboxItem,
+  type NotificationInboxState,
+  type NotificationSeverity,
   type MemorySummary,
   type MemoryEntry,
   type MemoryEntryKind,
@@ -332,6 +338,25 @@ type BackgroundJobRunEventRow = {
   created_at: string;
 };
 
+type NotificationRow = {
+  id: string;
+  kind: NotificationInboxItem["kind"];
+  interactive: number;
+  project_id: string | null;
+  thread_id: string | null;
+  run_id: string | null;
+  assistant_id: string | null;
+  question_id: string | null;
+  session_id: string | null;
+  tool_call_id: string | null;
+  background_run_id: string | null;
+  job_id: string | null;
+  payload_json: string;
+  created_at: string;
+  read_at: string | null;
+  archived_at: string | null;
+};
+
 type AssistantRow = {
   id: string;
   name: string;
@@ -455,6 +480,10 @@ export class WorkspaceRepository {
       this.db.close(false);
       throw error;
     }
+  }
+
+  getDatabasePath() {
+    return this.dbPath;
   }
 
   loadWorkspace(): WorkspaceState {
@@ -762,6 +791,7 @@ export class WorkspaceRepository {
     status: Extract<PlanningQuestion["status"], "pending" | "deferred"> = "pending"
   ) {
     const now = new Date().toISOString();
+    const questionId = scopePlanningQuestionId(runId, question.id);
     const ordinal =
       (this.db
         .query<{ count: number }, [string]>(`SELECT COUNT(*) AS count FROM agent_run_questions WHERE run_id = ?1`)
@@ -785,7 +815,7 @@ export class WorkspaceRepository {
           ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, NULL)`
         )
         .run(
-          question.id,
+          questionId,
           runId,
           ordinal,
           question.prompt,
@@ -1903,6 +1933,97 @@ export class WorkspaceRepository {
     });
   }
 
+  loadNotificationInboxState(): NotificationInboxState {
+    const items = this.readNotificationInboxItems();
+    const unreadItems = items.filter((item) => !item.readAt && !item.archivedAt);
+    return notificationInboxStateSchema.parse({
+      items,
+      unreadCount: unreadItems.length,
+      interactiveUnreadCount: unreadItems.filter((item) => item.interactive).length,
+      passiveUnreadCount: unreadItems.filter((item) => !item.interactive).length
+    });
+  }
+
+  saveNotification(item: NotificationInboxItem) {
+    const now = new Date().toISOString();
+    this.db
+      .query(
+        `INSERT INTO notifications (
+          id, kind, interactive, project_id, thread_id, run_id, assistant_id, question_id, session_id, tool_call_id,
+          background_run_id, job_id, payload_json, created_at, read_at, archived_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+        ON CONFLICT(id) DO UPDATE SET
+          kind = excluded.kind,
+          interactive = excluded.interactive,
+          project_id = excluded.project_id,
+          thread_id = excluded.thread_id,
+          run_id = excluded.run_id,
+          assistant_id = excluded.assistant_id,
+          question_id = excluded.question_id,
+          session_id = excluded.session_id,
+          tool_call_id = excluded.tool_call_id,
+          background_run_id = excluded.background_run_id,
+          job_id = excluded.job_id,
+          payload_json = excluded.payload_json,
+          created_at = excluded.created_at,
+          read_at = excluded.read_at,
+          archived_at = excluded.archived_at`
+      )
+      .run(
+        item.id,
+        item.kind,
+        item.interactive ? 1 : 0,
+        "projectId" in item ? item.projectId : null,
+        "threadId" in item ? item.threadId : null,
+        "runId" in item ? item.runId : null,
+        "assistantId" in item ? item.assistantId : null,
+        "questionId" in item ? item.questionId : null,
+        "sessionId" in item ? item.sessionId : null,
+        "toolCallId" in item ? item.toolCallId : null,
+        "backgroundRunId" in item ? item.backgroundRunId : null,
+        "jobId" in item ? item.jobId : null,
+        JSON.stringify(item),
+        item.createdAt,
+        item.readAt ?? null,
+        item.archivedAt ?? null
+      );
+    return this.loadNotificationInboxState();
+  }
+
+  markNotificationRead(notificationId: string, archive: boolean = false) {
+    const now = new Date().toISOString();
+    this.db
+      .query(
+        `UPDATE notifications
+         SET read_at = COALESCE(read_at, ?2),
+             archived_at = CASE WHEN ?3 = 1 THEN COALESCE(archived_at, ?2) ELSE archived_at END
+         WHERE id = ?1`
+      )
+      .run(notificationId, now, archive ? 1 : 0);
+    return this.loadNotificationInboxState();
+  }
+
+  archiveNotification(notificationId: string) {
+    const now = new Date().toISOString();
+    this.db
+      .query(`UPDATE notifications SET read_at = COALESCE(read_at, ?2), archived_at = COALESCE(archived_at, ?2) WHERE id = ?1`)
+      .run(notificationId, now);
+    return this.loadNotificationInboxState();
+  }
+
+  markAllPassiveNotificationsRead() {
+    const now = new Date().toISOString();
+    this.db
+      .query(
+        `UPDATE notifications
+         SET read_at = COALESCE(read_at, ?1),
+             archived_at = COALESCE(archived_at, ?1)
+         WHERE interactive = 0 AND read_at IS NULL AND archived_at IS NULL`
+      )
+      .run(now);
+    return this.loadNotificationInboxState();
+  }
+
   saveBackgroundJob(job: BackgroundJob) {
     this.assertProjectExists(job.projectId);
     if (job.assistantId) {
@@ -2001,6 +2122,22 @@ export class WorkspaceRepository {
          WHERE id = ?1`
       )
       .get(runId);
+    return row ? this.hydrateBackgroundJobRun(row) : undefined;
+  }
+
+  getBackgroundJobRunByLinkedAgentRunId(agentRunId: string) {
+    const row = this.db
+      .query<BackgroundJobRunRow, [string]>(
+        `SELECT
+          id, job_id, project_id, assistant_id, automation_thread_id, trigger_source, status, risk_level, approval_status,
+          skipped_occurrence_count, linked_agent_run_id, summary, failure_message, queued_at, started_at,
+          completed_at, created_at, updated_at
+         FROM background_job_runs
+         WHERE linked_agent_run_id = ?1
+         ORDER BY updated_at DESC
+         LIMIT 1`
+      )
+      .get(agentRunId);
     return row ? this.hydrateBackgroundJobRun(row) : undefined;
   }
 
@@ -2755,7 +2892,7 @@ export class WorkspaceRepository {
         assistant_id TEXT NULL,
         automation_thread_id TEXT NOT NULL,
         trigger_source TEXT NOT NULL CHECK(trigger_source IN ('schedule', 'startup-catchup', 'manual', 'approval-release', 'retry')),
-        status TEXT NOT NULL CHECK(status IN ('queued', 'awaiting-approval', 'running', 'succeeded', 'failed', 'cancelled', 'skipped')),
+        status TEXT NOT NULL CHECK(status IN ('queued', 'awaiting-approval', 'awaiting-user-input', 'running', 'succeeded', 'failed', 'cancelled', 'skipped')),
         risk_level TEXT NOT NULL CHECK(risk_level IN ('safe', 'slightly-unsafe', 'unsafe')),
         approval_status TEXT NOT NULL CHECK(approval_status IN ('not-needed', 'pending', 'approved', 'rejected')),
         skipped_occurrence_count INTEGER NOT NULL DEFAULT 0,
@@ -2789,6 +2926,34 @@ export class WorkspaceRepository {
 
       CREATE INDEX IF NOT EXISTS background_job_run_events_run_ordinal_idx
       ON background_job_run_events(run_id, ordinal ASC);
+
+      CREATE TABLE IF NOT EXISTS notifications (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL CHECK(kind IN ('planning-question', 'assistant-question', 'browser-approval', 'background-run-status')),
+        interactive INTEGER NOT NULL CHECK(interactive IN (0, 1)),
+        project_id TEXT NULL,
+        thread_id TEXT NULL,
+        run_id TEXT NULL,
+        assistant_id TEXT NULL,
+        question_id TEXT NULL,
+        session_id TEXT NULL,
+        tool_call_id TEXT NULL,
+        background_run_id TEXT NULL,
+        job_id TEXT NULL,
+        payload_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        read_at TEXT NULL,
+        archived_at TEXT NULL,
+        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+        FOREIGN KEY(thread_id) REFERENCES project_threads(id) ON DELETE CASCADE,
+        FOREIGN KEY(run_id) REFERENCES agent_runs(id) ON DELETE CASCADE,
+        FOREIGN KEY(assistant_id) REFERENCES assistants(id) ON DELETE CASCADE,
+        FOREIGN KEY(background_run_id) REFERENCES background_job_runs(id) ON DELETE CASCADE,
+        FOREIGN KEY(job_id) REFERENCES background_jobs(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS notifications_created_idx
+      ON notifications(created_at DESC);
 
       CREATE TABLE IF NOT EXISTS background_job_templates (
         id TEXT PRIMARY KEY,
@@ -2959,6 +3124,8 @@ export class WorkspaceRepository {
 
     this.rebuildAgentRunQuestionsTableIfNeeded();
     this.rebuildAssistantQuestionsTableIfNeeded();
+    this.rebuildBackgroundJobRunsTableIfNeeded();
+    this.repairBackgroundJobRunForeignKeysIfNeeded();
     this.backfillActiveThreadIds();
     this.backfillThreadMetadata();
     this.backfillQuestionChoices();
@@ -3999,6 +4166,129 @@ export class WorkspaceRepository {
     `);
   }
 
+  private rebuildBackgroundJobRunsTableIfNeeded() {
+    const createSql = this.readTableCreateSql("background_job_runs");
+    if (createSql.includes("'awaiting-user-input'")) {
+      return;
+    }
+
+    this.db.exec(`
+      ALTER TABLE background_job_runs RENAME TO background_job_runs_legacy;
+      CREATE TABLE background_job_runs (
+        id TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        assistant_id TEXT NULL,
+        automation_thread_id TEXT NOT NULL,
+        trigger_source TEXT NOT NULL CHECK(trigger_source IN ('schedule', 'startup-catchup', 'manual', 'approval-release', 'retry')),
+        status TEXT NOT NULL CHECK(status IN ('queued', 'awaiting-approval', 'awaiting-user-input', 'running', 'succeeded', 'failed', 'cancelled', 'skipped')),
+        risk_level TEXT NOT NULL CHECK(risk_level IN ('safe', 'slightly-unsafe', 'unsafe')),
+        approval_status TEXT NOT NULL CHECK(approval_status IN ('not-needed', 'pending', 'approved', 'rejected')),
+        skipped_occurrence_count INTEGER NOT NULL DEFAULT 0,
+        linked_agent_run_id TEXT NULL,
+        summary TEXT NULL,
+        failure_message TEXT NULL,
+        queued_at TEXT NOT NULL,
+        started_at TEXT NULL,
+        completed_at TEXT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(job_id) REFERENCES background_jobs(id) ON DELETE CASCADE,
+        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+        FOREIGN KEY(assistant_id) REFERENCES assistants(id) ON DELETE CASCADE,
+        FOREIGN KEY(automation_thread_id) REFERENCES project_threads(id) ON DELETE CASCADE
+      );
+      INSERT INTO background_job_runs (
+        id, job_id, project_id, assistant_id, automation_thread_id, trigger_source, status, risk_level, approval_status,
+        skipped_occurrence_count, linked_agent_run_id, summary, failure_message, queued_at, started_at, completed_at, created_at, updated_at
+      )
+      SELECT
+        id, job_id, project_id, assistant_id, automation_thread_id, trigger_source, status, risk_level, approval_status,
+        skipped_occurrence_count, linked_agent_run_id, summary, failure_message, queued_at, started_at, completed_at, created_at, updated_at
+      FROM background_job_runs_legacy;
+      DROP TABLE background_job_runs_legacy;
+      CREATE INDEX IF NOT EXISTS background_job_runs_job_updated_idx
+      ON background_job_runs(job_id, updated_at DESC);
+    `);
+  }
+
+  private repairBackgroundJobRunForeignKeysIfNeeded() {
+    const runEventsSql = this.readTableCreateSql("background_job_run_events");
+    const notificationsSql = this.readTableCreateSql("notifications");
+    if (!runEventsSql.includes("background_job_runs_legacy") && !notificationsSql.includes("background_job_runs_legacy")) {
+      return;
+    }
+
+    this.rebuildBackgroundJobRunEventsTable();
+    this.rebuildNotificationsTable();
+  }
+
+  private rebuildBackgroundJobRunEventsTable() {
+    this.db.exec(`
+      ALTER TABLE background_job_run_events RENAME TO background_job_run_events_legacy;
+      CREATE TABLE background_job_run_events (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        ordinal INTEGER NOT NULL,
+        stage TEXT NOT NULL,
+        message TEXT NOT NULL,
+        detail_json TEXT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(run_id) REFERENCES background_job_runs(id) ON DELETE CASCADE
+      );
+      INSERT INTO background_job_run_events (
+        id, run_id, ordinal, stage, message, detail_json, created_at
+      )
+      SELECT
+        id, run_id, ordinal, stage, message, detail_json, created_at
+      FROM background_job_run_events_legacy;
+      DROP TABLE background_job_run_events_legacy;
+      CREATE INDEX IF NOT EXISTS background_job_run_events_run_ordinal_idx
+      ON background_job_run_events(run_id, ordinal ASC);
+    `);
+  }
+
+  private rebuildNotificationsTable() {
+    this.db.exec(`
+      ALTER TABLE notifications RENAME TO notifications_legacy;
+      CREATE TABLE notifications (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL CHECK(kind IN ('planning-question', 'assistant-question', 'browser-approval', 'background-run-status')),
+        interactive INTEGER NOT NULL CHECK(interactive IN (0, 1)),
+        project_id TEXT NULL,
+        thread_id TEXT NULL,
+        run_id TEXT NULL,
+        assistant_id TEXT NULL,
+        question_id TEXT NULL,
+        session_id TEXT NULL,
+        tool_call_id TEXT NULL,
+        background_run_id TEXT NULL,
+        job_id TEXT NULL,
+        payload_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        read_at TEXT NULL,
+        archived_at TEXT NULL,
+        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+        FOREIGN KEY(thread_id) REFERENCES project_threads(id) ON DELETE CASCADE,
+        FOREIGN KEY(run_id) REFERENCES agent_runs(id) ON DELETE CASCADE,
+        FOREIGN KEY(assistant_id) REFERENCES assistants(id) ON DELETE CASCADE,
+        FOREIGN KEY(background_run_id) REFERENCES background_job_runs(id) ON DELETE CASCADE,
+        FOREIGN KEY(job_id) REFERENCES background_jobs(id) ON DELETE CASCADE
+      );
+      INSERT INTO notifications (
+        id, kind, interactive, project_id, thread_id, run_id, assistant_id, question_id,
+        session_id, tool_call_id, background_run_id, job_id, payload_json, created_at, read_at, archived_at
+      )
+      SELECT
+        id, kind, interactive, project_id, thread_id, run_id, assistant_id, question_id,
+        session_id, tool_call_id, background_run_id, job_id, payload_json, created_at, read_at, archived_at
+      FROM notifications_legacy;
+      DROP TABLE notifications_legacy;
+      CREATE INDEX IF NOT EXISTS notifications_created_idx
+      ON notifications(created_at DESC);
+    `);
+  }
+
   private updateSubtask(
     projectId: ProjectId,
     runId: string,
@@ -4114,6 +4404,20 @@ export class WorkspaceRepository {
       );
   }
 
+  private readNotificationInboxItems() {
+    return this.db
+      .query<NotificationRow, []>(
+        `SELECT
+          id, kind, interactive, project_id, thread_id, run_id, assistant_id, question_id, session_id, tool_call_id,
+          background_run_id, job_id, payload_json, created_at, read_at, archived_at
+         FROM notifications
+         WHERE archived_at IS NULL
+         ORDER BY created_at DESC`
+      )
+      .all()
+      .map((row) => this.hydrateNotification(row));
+  }
+
   private hydrateBackgroundJob(row: BackgroundJobRow) {
     return backgroundJobSchema.parse({
       id: row.id,
@@ -4176,6 +4480,18 @@ export class WorkspaceRepository {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       events
+    });
+  }
+
+  private hydrateNotification(row: NotificationRow) {
+    const payload = JSON.parse(row.payload_json) as NotificationInboxItem;
+    return notificationInboxItemSchema.parse({
+      ...payload,
+      id: row.id,
+      interactive: Boolean(row.interactive),
+      createdAt: row.created_at,
+      readAt: row.read_at ?? undefined,
+      archivedAt: row.archived_at ?? undefined
     });
   }
 
@@ -4503,6 +4819,10 @@ function toGeneratedThreadTitle(content: string | undefined, fallback: string) {
     .find(Boolean);
 
   return firstLine ? normalizeThreadTitle(firstLine.slice(0, 256)) : fallback;
+}
+
+function scopePlanningQuestionId(runId: string, questionId: string) {
+  return `${runId}:${questionId}`.slice(0, 128);
 }
 
 function isRunResumable(status: AgentRunStatus, hasExecutionState: boolean) {

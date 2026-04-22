@@ -2,10 +2,13 @@ import { For, Show, createEffect, createMemo, createSignal, type JSX } from "sol
 import {
   Bot,
   CirclePause,
+  CircleHelp,
   CirclePlay,
   ClipboardList,
   CopyPlus,
   FlaskConical,
+  Folder,
+  Globe,
   ListChecks,
   Logs,
   MessageSquare,
@@ -32,8 +35,12 @@ import {
 import { pushToast } from "../toast-store";
 import { ActionButton } from "./action-button";
 import { MarkdownContent } from "./markdown-content";
+import { buttonVariants } from "./primitives/button";
+import { CopyTextButton } from "./primitives/copy-text-button";
 import { ScrollArea } from "./primitives/scroll-area";
 import { Textarea } from "./primitives/textarea";
+import { Tooltip } from "./primitives/tooltip";
+import { cn } from "../lib/utils";
 
 type AssistantTab = "chat" | "todos" | "questions" | "jobs" | "log" | "config" | "learnings";
 
@@ -278,47 +285,63 @@ export function AssistantsPanel() {
 
   return (
     <section data-test-assistants-panel="" class="panel-shell flex h-full min-h-0 flex-col gap-4 rounded-2xl border-t-0 p-4">
-      <div class="rounded-[1.35rem] border border-(--border) bg-white/65 p-4 shadow-sm">
+      <div class="px-1 py-1">
         <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Assistants</div>
-            <div class="mt-1 text-[0.7875rem] leading-6 text-(--foreground)">
-              Named operators with chat, todo list, questions inbox, learnings, jobs, and deep logs.
-            </div>
+          <div class="flex items-center gap-2 text-[0.585rem] font-semibold tracking-[0.2em] text-(--muted)">
+            <span>Assistants</span>
+            <Tooltip content="Named operators with chat, todo list, questions inbox, learnings, jobs, and deep logs.">
+              <span class="inline-flex">
+                <CircleHelp class="h-3.5 w-3.5 text-(--muted)" aria-label="Assistants help" />
+              </span>
+            </Tooltip>
           </div>
-          <div class="flex flex-wrap gap-2">
-            <ActionButton
-              tooltip="Show global assistants"
-              variant={state.assistants.scopeFilter === "global" ? "default" : "secondary"}
-              onClick={() => harnessStore.setAssistantScopeFilter("global")}
-            >
-              Global
-            </ActionButton>
-            <ActionButton
-              tooltip="Show assistants for current project"
-              variant={state.assistants.scopeFilter === "project" ? "default" : "secondary"}
-              onClick={() => harnessStore.setAssistantScopeFilter("project")}
-            >
-              Current project
-            </ActionButton>
+          <div class="flex items-center gap-2">
             <ActionButton
               tooltip={state.assistants.scopeFilter === "project" ? "Create project assistant" : "Create global assistant"}
               icon={<Plus class="h-4 w-4" />}
+              size="icon"
+              variant="ghost"
+              ariaLabel={state.assistants.scopeFilter === "project" ? "Create project assistant" : "Create global assistant"}
               onClick={() => openCreateAssistant(state.assistants.scopeFilter === "project" ? "project" : "global")}
-            >
-              New assistant
-            </ActionButton>
+            />
           </div>
         </div>
       </div>
 
       <div class="grid min-h-0 flex-1 gap-4 xl:grid-cols-[minmax(18rem,22rem)_minmax(0,1fr)]">
-        <section class="rounded-[1.35rem] border border-(--border) bg-white/55 p-4">
+        <div class="flex min-h-0 flex-col gap-1">
+          <nav class="surface-tab-strip" data-test-assistant-scope-nav="">
+            <Tooltip content="Show global assistants">
+              <button
+                type="button"
+                class={cn(buttonVariants({ variant: "ghost" }), "surface-tab")}
+                aria-label="Show global assistants"
+                attr:aria-pressed={state.assistants.scopeFilter === "global" ? "true" : "false"}
+                onClick={() => harnessStore.setAssistantScopeFilter("global")}
+              >
+                <Globe class="h-4 w-4" />
+                Global
+              </button>
+            </Tooltip>
+            <Tooltip content="Show assistants for current project">
+              <button
+                type="button"
+                class={cn(buttonVariants({ variant: "ghost" }), "surface-tab")}
+                aria-label="Show assistants for current project"
+                attr:aria-pressed={state.assistants.scopeFilter === "project" ? "true" : "false"}
+                onClick={() => harnessStore.setAssistantScopeFilter("project")}
+              >
+                <Folder class="h-4 w-4" />
+                Current project
+              </button>
+            </Tooltip>
+          </nav>
+          <section class="flex min-h-0 flex-1 flex-col rounded-[1.35rem] border border-(--border) bg-white/55 p-3">
           <div class="mb-3 flex items-center justify-between gap-3">
             <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Roster</div>
             <span class="text-[0.625rem] text-(--muted)">{visibleAssistants().length} total</span>
           </div>
-          <ScrollArea class="h-[32rem] pr-2 xl:h-full">
+          <ScrollArea class="min-h-0 flex-1 pr-2">
             <Show
               when={visibleAssistants().length > 0}
               fallback={
@@ -362,13 +385,14 @@ export function AssistantsPanel() {
               </div>
             </Show>
           </ScrollArea>
-        </section>
+          </section>
+        </div>
 
-        <section class="min-h-0 overflow-auto rounded-[1.35rem] border border-(--border) bg-white/55 p-4">
+        <section class="flex min-h-0 flex-col rounded-[1.35rem] border border-(--border) bg-white/55 p-4">
           <Show
             when={selectedAssistant()}
             fallback={
-              <div class="flex h-full min-h-[20rem] items-center justify-center rounded-[1.2rem] border border-dashed border-(--border) bg-white/45 p-6 text-center text-[0.675rem] text-(--muted)">
+              <div class="flex h-full min-h-80 items-center justify-center rounded-[1.2rem] border border-dashed border-(--border) bg-white/45 p-6 text-center text-[0.675rem] text-(--muted)">
                 Select assistant to inspect config, chat, todos, and logs.
               </div>
             }
@@ -467,6 +491,19 @@ export function AssistantsPanel() {
                               <article class={`rounded-2xl border p-3 ${message.role === "user" ? "border-(--border) bg-white/75" : "border-teal-200 bg-teal-50/65"}`}>
                                 <div class="mb-2 text-[0.575rem] font-semibold uppercase tracking-[0.16em] text-(--muted)">{message.role}</div>
                                 <MarkdownContent content={message.content} />
+                                <div class="mt-3 flex justify-end">
+                                  <CopyTextButton
+                                    value={message.content}
+                                    tooltip="Copy message"
+                                    copiedTitle="Message copied"
+                                    copiedDescription="Message copied to clipboard."
+                                    size="sm"
+                                    variant="ghost"
+                                    ariaLabel={`Copy ${message.role} message`}
+                                  >
+                                    Copy
+                                  </CopyTextButton>
+                                </div>
                               </article>
                             )}
                           </For>
@@ -474,6 +511,19 @@ export function AssistantsPanel() {
                             <article class="rounded-2xl border border-teal-200 bg-teal-50/65 p-3">
                               <div class="mb-2 text-[0.575rem] font-semibold uppercase tracking-[0.16em] text-(--muted)">assistant</div>
                               <MarkdownContent content={streamingText()} />
+                              <div class="mt-3 flex justify-end">
+                                <CopyTextButton
+                                  value={streamingText()}
+                                  tooltip="Copy streaming assistant message"
+                                  copiedTitle="Message copied"
+                                  copiedDescription="Message copied to clipboard."
+                                  size="sm"
+                                  variant="ghost"
+                                  ariaLabel="Copy streaming assistant message"
+                                >
+                                  Copy
+                                </CopyTextButton>
+                              </div>
                             </article>
                           </Show>
                         </div>
@@ -587,7 +637,7 @@ export function AssistantsPanel() {
                     </div>
                     <div class="rounded-[1.2rem] border border-(--border) bg-white/70 p-4">
                       <div class="mb-3 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Recent runs</div>
-                      <ScrollArea class="h-[30rem] pr-2 lg:h-full">
+                      <ScrollArea class="h-120 pr-2 lg:h-full">
                         <div class="space-y-3">
                           <For each={selectedRuns()}>
                             {(run) => (

@@ -7,25 +7,83 @@ export type ToastEntry = {
   tone?: "error" | "info";
 };
 
-function createToastStore() {
+export type ToastScheduler = {
+  schedule(callback: () => void, delayMs: number): () => void;
+};
+
+export const DEFAULT_TOAST_AUTO_DISMISS_MS = 5000;
+
+const defaultScheduler: ToastScheduler = {
+  schedule(callback, delayMs) {
+    const handle = setTimeout(callback, delayMs);
+    return () => clearTimeout(handle);
+  }
+};
+
+export type CreateToastStoreOptions = {
+  scheduler?: ToastScheduler;
+  autoDismissMs?: number;
+};
+
+export function createToastStoreForProvider(options: CreateToastStoreOptions = {}) {
+  const scheduler = options.scheduler ?? defaultScheduler;
+  const autoDismissMs = options.autoDismissMs ?? DEFAULT_TOAST_AUTO_DISMISS_MS;
   const [toasts, setToasts] = createStore<ToastEntry[]>([]);
+  // Track per-toast cancel handles so provider teardown and manual dismiss can
+  // both cancel the pending auto-dismiss timer. Before this was in place,
+  // timers fired after provider unmount and mutated a torn-down store.
+  const cancelByToastId = new Map<string, () => void>();
+  let disposed = false;
 
   function push(toast: Omit<ToastEntry, "id">) {
+    if (disposed) {
+      return;
+    }
+
     const id = crypto.randomUUID();
     setToasts((items) => [...items, { id, ...toast }]);
-    setTimeout(() => dismiss(id), 5000);
+    const cancel = scheduler.schedule(() => dismiss(id), autoDismissMs);
+    cancelByToastId.set(id, cancel);
   }
 
   function dismiss(id: string) {
+    const cancel = cancelByToastId.get(id);
+    cancel?.();
+    cancelByToastId.delete(id);
+    if (disposed) {
+      return;
+    }
+
     setToasts((items) => items.filter((toast) => toast.id !== id));
   }
 
   function clear() {
+    for (const cancel of cancelByToastId.values()) {
+      cancel();
+    }
+    cancelByToastId.clear();
+    if (disposed) {
+      return;
+    }
+
     setToasts([]);
   }
 
   function replace(nextToasts: ToastEntry[]) {
+    if (disposed) {
+      return;
+    }
+
     setToasts(nextToasts);
+  }
+
+  function dispose() {
+    disposed = true;
+    for (const cancel of cancelByToastId.values()) {
+      cancel();
+    }
+    cancelByToastId.clear();
+    setToasts([]);
   }
 
   return {
@@ -33,11 +91,44 @@ function createToastStore() {
     push,
     dismiss,
     clear,
-    replace
+    replace,
+    dispose,
+    get pendingTimerCount() {
+      return cancelByToastId.size;
+    }
   };
 }
 
-export const toastStore = createToastStore();
+export type ToastStoreApi = ReturnType<typeof createToastStoreForProvider>;
+
+let activeToastStore: ToastStoreApi | undefined;
+
+export function setActiveToastStore(store: ToastStoreApi | undefined) {
+  activeToastStore = store;
+}
+
+export function requireToastStore() {
+  if (!activeToastStore) {
+    throw new Error("Toast store not initialized");
+  }
+
+  return activeToastStore;
+}
+
+export const toastStore = new Proxy({} as ToastStoreApi, {
+  get(_target, prop, receiver) {
+    return Reflect.get(requireToastStore(), prop, receiver);
+  },
+  set(_target, prop, value, receiver) {
+    return Reflect.set(requireToastStore(), prop, value, receiver);
+  },
+  ownKeys() {
+    return Reflect.ownKeys(requireToastStore());
+  },
+  getOwnPropertyDescriptor(_target, prop) {
+    return Object.getOwnPropertyDescriptor(requireToastStore(), prop);
+  }
+});
 
 type ReportUiErrorOptions = {
   projectId?: string;
@@ -62,6 +153,7 @@ export function seedToastStoreForTests(toasts: ToastEntry[]) {
 
 export function reportUiError(error: unknown, source: string, options: ReportUiErrorOptions = {}) {
   const normalizedError = normalizeUiError(error);
+  const rethrowMode = options.rethrow ?? "dev-only";
   const descriptionParts = [
     options.projectId ? `Project: ${options.projectId}` : undefined,
     normalizedError.message
@@ -69,7 +161,7 @@ export function reportUiError(error: unknown, source: string, options: ReportUiE
 
   pushToast(source, descriptionParts.join(" | "), "error");
 
-  if (options.rethrow === "dev-only" && isDevelopmentUiRuntime()) {
+  if (rethrowMode === "dev-only" && isDevelopmentUiRuntime()) {
     queueMicrotask(() => {
       throw normalizedError;
     });

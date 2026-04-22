@@ -31,7 +31,7 @@ export function ExecutionPlanDialog(props: ExecutionPlanDialogProps) {
               <div>Difficulty: {executionPlan().difficultyScore}%</div>
               <div>Planner: {executionPlan().planningModelId}</div>
               <div>Executor: {executionPlan().executionModelId}</div>
-              <div>Worktree: {executionPlan().subagentWorktreeStrategy}</div>
+              <div>Isolation: {executionPlan().subagentWorktreeStrategy}</div>
               <div>
                 Buckets: {executionPlan().actualSubagentCount}/{executionPlan().targetSubagentCount}
               </div>

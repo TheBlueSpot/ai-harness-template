@@ -14,7 +14,19 @@ export const defaultProviderCapabilities: ProviderCapability[] = [
         label: "GPT-5.4",
         tags: ["tools", "long-context", "expensive"],
         contextWindow: 200000,
-        summary: "Best default for planning and implementation quality."
+        summary: "Best default for planning and implementation quality.",
+        supportedReasoningStrengths: ["low", "medium", "high", "extra-high"],
+        supportsFastMode: true
+      },
+      {
+        modelId: "openai/gpt-5.4-mini",
+        providerBrand: "gpt",
+        label: "GPT-5.4 Mini",
+        tags: ["tools", "fast"],
+        contextWindow: 200000,
+        summary: "Faster Codex-compatible GPT worker for bounded execution tasks.",
+        supportedReasoningStrengths: ["low", "medium", "high", "extra-high"],
+        supportsFastMode: true
       },
       {
         modelId: "openai/gpt-5.4-nano",
@@ -22,7 +34,9 @@ export const defaultProviderCapabilities: ProviderCapability[] = [
         label: "GPT-5.4 Nano",
         tags: ["tools", "fast"],
         contextWindow: 200000,
-        summary: "Cheap and fast worker model for focused subagent tasks."
+        summary: "Cheap and fast worker model for focused subagent tasks.",
+        supportedReasoningStrengths: ["low", "medium", "high", "extra-high"],
+        supportsFastMode: true
       }
     ]
   },
@@ -39,7 +53,9 @@ export const defaultProviderCapabilities: ProviderCapability[] = [
         label: "Gemini 3 Flash Preview",
         tags: ["tools", "vision", "long-context", "fast"],
         contextWindow: 1000000,
-        summary: "Fast planner with large context and vision support."
+        summary: "Fast planner with large context and vision support.",
+        supportedReasoningStrengths: ["low", "medium", "high"],
+        supportsFastMode: false
       },
       {
         modelId: "google/gemini-2.5-flash",
@@ -47,7 +63,9 @@ export const defaultProviderCapabilities: ProviderCapability[] = [
         label: "Gemini 2.5 Flash",
         tags: ["tools", "vision", "long-context", "fast"],
         contextWindow: 1000000,
-        summary: "Balanced execution model with multimodal support."
+        summary: "Balanced execution model with multimodal support.",
+        supportedReasoningStrengths: ["low", "medium", "high"],
+        supportsFastMode: false
       },
       {
         modelId: "google/gemini-2.5-flash-lite",
@@ -55,7 +73,9 @@ export const defaultProviderCapabilities: ProviderCapability[] = [
         label: "Gemini 2.5 Flash Lite",
         tags: ["tools", "fast"],
         contextWindow: 1000000,
-        summary: "Low-cost subagent model for parallel task fan-out."
+        summary: "Low-cost subagent model for parallel task fan-out.",
+        supportedReasoningStrengths: ["low", "medium", "high"],
+        supportsFastMode: false
       }
     ]
   }

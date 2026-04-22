@@ -2,6 +2,7 @@ import { ZodError } from "zod";
 import {
   plannerTurnResultSchema,
   type ChatMessage,
+  type ComposerReasoningStrength,
   type MemorySummary,
   type ModeDefinition,
   type ProjectContextUsage,
@@ -33,6 +34,8 @@ export async function planTask(
     ruleSources?: WorkspaceRuleSource[];
     memorySummaries?: MemorySummary[];
     priorQuestions?: PlanningQuestion[];
+    reasoningStrength?: ComposerReasoningStrength;
+    fastMode?: boolean;
     abortSignal?: AbortSignal;
   }
 ): Promise<{ plannerResult: PlannerTurnResult; contextUsage?: ProjectContextUsage }> {
@@ -95,6 +98,8 @@ export async function planTask(
     modelId: defaultPlanningModelId,
     prompt,
     images: attachmentContext.images,
+    reasoningStrength: options.reasoningStrength,
+    fastMode: options.fastMode,
     abortSignal: options.abortSignal,
     readOnly: true
   });
@@ -142,14 +147,102 @@ function formatPlanningQuestions(questions: PlanningQuestion[]) {
 
 function parseJsonPayload(input: string) {
   const trimmed = input.trim();
+  const unfenced = unwrapMarkdownFences(trimmed);
 
-  if (trimmed.startsWith("```")) {
-    const lines = trimmed.split(/\r?\n/).filter((line) => !line.startsWith("```"));
-    return JSON.parse(lines.join("\n"));
+  try {
+    return JSON.parse(unfenced);
+  } catch (error) {
+    const extracted = extractFirstJsonPayload(unfenced);
+    if (!extracted) {
+      throw error;
+    }
+
+    return JSON.parse(extracted);
+  }
+}
+
+function unwrapMarkdownFences(input: string) {
+  if (!input.startsWith("```")) {
+    return input;
   }
 
-  return JSON.parse(trimmed);
+  const lines = input.split(/\r?\n/);
+  if (lines.length >= 2 && lines.at(-1)?.startsWith("```")) {
+    return lines.slice(1, -1).join("\n").trim();
+  }
+
+  return lines.filter((line) => !line.startsWith("```")).join("\n").trim();
 }
+
+function extractFirstJsonPayload(input: string) {
+  let startIndex = -1;
+  for (let index = 0; index < input.length; index += 1) {
+    const character = input[index];
+    if (character === "{" || character === "[") {
+      startIndex = index;
+      break;
+    }
+  }
+  if (startIndex < 0) {
+    return undefined;
+  }
+
+  let inString = false;
+  let escaped = false;
+  const stack: string[] = [];
+
+  for (let index = startIndex; index < input.length; index += 1) {
+    const character = input[index]!;
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+
+      if (character === "\\") {
+        escaped = true;
+        continue;
+      }
+
+      if (character === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (character === "\"") {
+      inString = true;
+      continue;
+    }
+
+    if (character === "{" || character === "[") {
+      stack.push(character);
+      continue;
+    }
+
+    if (character === "}" || character === "]") {
+      const opener = stack.pop();
+      if (!opener) {
+        return undefined;
+      }
+
+      if ((opener === "{" && character !== "}") || (opener === "[" && character !== "]")) {
+        return undefined;
+      }
+
+      if (stack.length === 0) {
+        return input.slice(startIndex, index + 1);
+      }
+    }
+  }
+
+  return undefined;
+}
+
+export const testExports = {
+  parseJsonPayload
+};
 
 function normalizePlannerPayload(input: unknown) {
   if (

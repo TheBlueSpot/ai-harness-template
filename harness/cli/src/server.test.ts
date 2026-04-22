@@ -16,6 +16,7 @@ import {
   createSampleXlsxBuffer
 } from "./document-extractors/test-fixtures";
 import { startHarnessServer } from "./server";
+import { createStartupTelemetrySession, type StartupPhaseId, type StartupTelemetrySink } from "./startup-telemetry";
 import { WorkspaceRepository } from "./workspace-repository";
 
 const EXPECT_ATTACHMENTS_ENABLED = Boolean(Bun.env.UPLOADTHING_TOKEN?.trim());
@@ -305,6 +306,102 @@ class FakePiAgentAdapter implements PiAgentAdapter {
   }
 }
 
+class FakeClock {
+  private nextTimerId = 1;
+  private readonly timers = new Map<number, { runAt: number; callback: () => void }>();
+  nowMs = 0;
+
+  now = () => this.nowMs;
+
+  setTimeout = ((callback: TimerHandler, delay?: number) => {
+    const timerId = this.nextTimerId++;
+    this.timers.set(timerId, {
+      runAt: this.nowMs + Number(delay ?? 0),
+      callback: () => {
+        if (typeof callback === "function") {
+          callback();
+          return;
+        }
+
+        throw new Error("String timer callbacks are not supported in tests");
+      }
+    });
+    return timerId as unknown as ReturnType<typeof setTimeout>;
+  }) as unknown as typeof globalThis.setTimeout;
+
+  clearTimeout = ((timerId: ReturnType<typeof setTimeout>) => {
+    this.timers.delete(Number(timerId));
+  }) as unknown as typeof globalThis.clearTimeout;
+
+  advanceBy(durationMs: number) {
+    const targetMs = this.nowMs + durationMs;
+    while (true) {
+      const nextTimer = [...this.timers.entries()].sort((left, right) => left[1].runAt - right[1].runAt)[0];
+      if (!nextTimer || nextTimer[1].runAt > targetMs) {
+        break;
+      }
+
+      this.nowMs = nextTimer[1].runAt;
+      this.timers.delete(nextTimer[0]);
+      nextTimer[1].callback();
+    }
+
+    this.nowMs = targetMs;
+  }
+}
+
+type FakeStartupEvent = {
+  attempt: number;
+  kind: "session-start" | "phase-start" | "phase-pulse" | "phase-complete" | "retry" | "complete" | "failed";
+  phaseId?: StartupPhaseId;
+  message: string;
+  details?: Record<string, unknown>;
+};
+
+function createFakeStartupTelemetry(): StartupTelemetrySink & { events: FakeStartupEvent[] } {
+  const events: FakeStartupEvent[] = [];
+  let attempt = 1;
+  let currentPhaseId: StartupPhaseId | undefined;
+
+  return {
+    events,
+    logPath: path.join(process.cwd(), ".tmp-test-data", `startup-${crypto.randomUUID()}.jsonl`),
+    sessionStart(message = "session start", details) {
+      events.push({ attempt, kind: "session-start", message, details });
+    },
+    pulse(message, details) {
+      events.push({ attempt, kind: "phase-pulse", phaseId: currentPhaseId, message, details });
+    },
+    phaseStart(phaseId, message, details) {
+      currentPhaseId = phaseId;
+      events.push({ attempt, kind: "phase-start", phaseId, message, details });
+    },
+    phaseComplete(message, details) {
+      events.push({ attempt, kind: "phase-complete", phaseId: currentPhaseId, message, details });
+      currentPhaseId = undefined;
+    },
+    retry(message, details) {
+      events.push({ attempt, kind: "retry", phaseId: currentPhaseId, message, details });
+      currentPhaseId = undefined;
+      attempt += 1;
+    },
+    complete(message, details) {
+      events.push({ attempt, kind: "complete", phaseId: currentPhaseId, message, details });
+      currentPhaseId = undefined;
+    },
+    failed(message, details) {
+      events.push({ attempt, kind: "failed", phaseId: currentPhaseId, message, details });
+    },
+    getAttempt() {
+      return attempt;
+    },
+    getCurrentPhaseId() {
+      return currentPhaseId;
+    },
+    dispose() {}
+  };
+}
+
 describe("harness server", () => {
   let server: Awaited<ReturnType<typeof startHarnessServer>>;
   let adapter: FakePiAgentAdapter;
@@ -386,6 +483,130 @@ describe("harness server", () => {
     expect(ready.payload.executionControl.isPaused).toBe(false);
     expect(ready.payload.executionControl.deferredPlanningQuestionCount).toBe(0);
     socket.close();
+  });
+
+  test("serverOnly startup phase order is bootstrap, workspace, runtimes, setup, serve, complete", async () => {
+    server.stop(true);
+    const telemetry = createFakeStartupTelemetry();
+
+    server = await startHarnessServer({
+      port,
+      adapter,
+      repository,
+      pickFolder: async () => extraProjectRoot,
+      serverOnly: true,
+      startupTelemetry: telemetry
+    });
+
+    expect(
+      telemetry.events.filter((event) => event.kind === "phase-start").map((event) => event.phaseId)
+    ).toEqual(["bootstrap", "workspace", "runtimes", "setup", "serve"]);
+    expect(
+      telemetry.events.filter((event) => event.kind === "phase-complete").map((event) => event.phaseId)
+    ).toEqual(["bootstrap", "workspace", "runtimes", "setup", "serve"]);
+    expect(telemetry.events.some((event) => event.phaseId === "ui-assets")).toBe(false);
+    expect(telemetry.events.at(-1)?.kind).toBe("complete");
+  });
+
+  test("non-server-only startup includes ui-assets once with injected ui asset manager", async () => {
+    server.stop(true);
+    const telemetry = createFakeStartupTelemetry();
+    const uiAssetCalls: string[] = [];
+
+    server = await startHarnessServer({
+      port,
+      adapter,
+      repository,
+      pickFolder: async () => extraProjectRoot,
+      serverOnly: false,
+      startupTelemetry: telemetry,
+      uiAssetManagerFactory() {
+        return {
+          async ensureBuilt() {
+            uiAssetCalls.push("ensureBuilt");
+          },
+          startWatching() {
+            uiAssetCalls.push("startWatching");
+          },
+          resolveAsset() {
+            return undefined;
+          },
+          dispose() {
+            uiAssetCalls.push("dispose");
+          }
+        };
+      }
+    });
+
+    expect(
+      telemetry.events.filter((event) => event.kind === "phase-start" && event.phaseId === "ui-assets")
+    ).toHaveLength(1);
+    expect(uiAssetCalls).toEqual(["ensureBuilt", "startWatching"]);
+  });
+
+  test("startup completion fires when server url is available, before any websocket client connects", async () => {
+    server.stop(true);
+    const telemetry = createFakeStartupTelemetry();
+
+    server = await startHarnessServer({
+      port,
+      adapter,
+      repository,
+      pickFolder: async () => extraProjectRoot,
+      serverOnly: true,
+      startupTelemetry: telemetry
+    });
+
+    const completionEvent = telemetry.events.at(-1);
+    expect(completionEvent?.kind).toBe("complete");
+    expect(completionEvent?.message).toContain(`http://localhost:${server.port}`);
+  });
+
+  test("slow ui-assets phase emits targeted hint without aborting startup", async () => {
+    server.stop(true);
+    const clock = new FakeClock();
+    const startupLines: string[] = [];
+    const resolveQueue: Array<() => void> = [];
+    const telemetry = createStartupTelemetrySession({
+      now: clock.now,
+      tmpDir: path.join(process.cwd(), ".tmp-test-data", `startup-server-${crypto.randomUUID()}`),
+      writeLine(line) {
+        startupLines.push(line);
+      },
+      setTimeout: clock.setTimeout,
+      clearTimeout: clock.clearTimeout
+    });
+
+    const startPromise = startHarnessServer({
+      port,
+      adapter,
+      repository,
+      pickFolder: async () => extraProjectRoot,
+      serverOnly: false,
+      startupTelemetry: telemetry,
+      uiAssetManagerFactory() {
+        return {
+          ensureBuilt() {
+            return new Promise<void>((resolve) => {
+              resolveQueue.push(resolve);
+            });
+          },
+          startWatching() {},
+          resolveAsset() {
+            return undefined;
+          },
+          dispose() {}
+        };
+      }
+    });
+
+    await waitForCondition(() => telemetry.getCurrentPhaseId() === "ui-assets");
+    clock.advanceBy(5_001);
+    expect(startupLines.some((line) => line.includes("ui-assets slow"))).toBe(true);
+    expect(startupLines.some((line) => line.includes("Bun/Solid/Tailwind build stall"))).toBe(true);
+
+    resolveQueue.pop()?.();
+    server = await startPromise;
   });
 
   test("emits setup.updated on explicit setup refresh and project activation changes", async () => {
@@ -510,7 +731,10 @@ describe("harness server", () => {
     );
     await pausedPromise;
 
-    await Bun.sleep(250);
+    await waitForCondition(() => {
+      const deferredRun = repository.getProject(opened.payload.project.id).activeRun;
+      return deferredRun?.status === "awaiting-user-input" && deferredRun.questions[0]?.status === "deferred";
+    });
 
     const deferredRun = repository.getProject(opened.payload.project.id).activeRun;
     expect(deferredRun?.status).toBe("awaiting-user-input");
@@ -991,6 +1215,65 @@ describe("harness server", () => {
     socket.close();
   });
 
+  test("chat.send bypasses planner for direct workspace tasks even when review mode was selected", async () => {
+    const socket = createSocket(port);
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot, "req-quick-task-open");
+    const projectId = opened.payload.project.id;
+    const threadId = opened.payload.project.activeThreadId;
+    const readyPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "ready");
+
+    socket.send(
+      JSON.stringify(
+        createChatSendCommand({
+          requestId: "req-quick-task-send",
+          projectId,
+          threadId,
+          content: "Make folder /pacman",
+          modeId: "review"
+        })
+      )
+    );
+
+    const ready = await readyPromise;
+    expect(ready.payload.run.plan?.origin).toBe("quick-task");
+    expect(ready.payload.run.plan?.mode?.id).toBe("implement");
+    expect(ready.payload.run.plan?.gating.mode).toBe("immediate");
+    expect(adapter.calls).toHaveLength(0);
+    socket.close();
+  });
+
+  test("review mode executes runs with read-only requests", async () => {
+    const socket = createSocket(port);
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot, "req-review-open");
+    const projectId = opened.payload.project.id;
+    const threadId = opened.payload.project.activeThreadId;
+
+    const ready = await sendChatUntilReady(socket, {
+      requestId: "req-review-send",
+      projectId,
+      threadId,
+      content: "Review this repo for bugs and missing tests",
+      modeId: "review"
+    }, 10000);
+
+    await executeReadyRun(
+      socket,
+      {
+        requestId: "req-review-execute",
+        projectId,
+        threadId,
+        runId: ready.payload.run.id
+      },
+      10000
+    );
+
+    const executorCall = adapter.calls.find((call) => call.kind === "executor");
+    expect(executorCall?.readOnly).toBe(true);
+    socket.close();
+  }, 15000);
+
   test("chat.send forwards attachment context into planner prompts", async () => {
     const socket = createSocket(port);
     await waitForEvent(socket, "connection.ready");
@@ -1259,6 +1542,77 @@ describe("harness server", () => {
     });
     expect(complete.payload.assistantMessage.content).toBe("main execution result");
     expect(adapter.calls.map((call) => call.kind)).toEqual(["planner", "planner", "executor"]);
+    socket.close();
+  });
+
+  test("same thread can receive repeated planner questions across separate runs", async () => {
+    const socket = createSocket(port);
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot);
+    const projectId = opened.payload.project.id;
+    const threadId = opened.payload.project.activeThreadId;
+
+    socket.send(
+      JSON.stringify({
+        type: "chat.send",
+        requestId: "req-question-repeat-1",
+        payload: {
+          projectId,
+          threadId,
+          agentId: "pi",
+          content: "needs clarification"
+        }
+      })
+    );
+    const firstRun = await waitForEvent(
+      socket,
+      "run.updated",
+      (event) => event.payload.run.status === "awaiting-user-input",
+      10000
+    );
+
+    await answerPlanningQuestionAndExecute(socket, {
+      requestId: "req-question-repeat-answer-1",
+      projectId,
+      threadId,
+      runId: firstRun.payload.run.id,
+      questionId: firstRun.payload.run.questions[0].id,
+      content: "api/users/[id]"
+    });
+
+    const rejectedEvents: any[] = [];
+    const rejectListener = (event: MessageEvent) => {
+      const payload = JSON.parse(event.data as string);
+      if (payload.type === "command.rejected") {
+        rejectedEvents.push(payload);
+      }
+    };
+    socket.addEventListener("message", rejectListener);
+
+    socket.send(
+      JSON.stringify({
+        type: "chat.send",
+        requestId: "req-question-repeat-2",
+        payload: {
+          projectId,
+          threadId,
+          agentId: "pi",
+          content: "needs clarification"
+        }
+      })
+    );
+    const secondRun = await waitForEvent(
+      socket,
+      "run.updated",
+      (event) =>
+        event.payload.run.status === "awaiting-user-input" &&
+        event.payload.run.id !== firstRun.payload.run.id,
+      10000
+    );
+
+    expect(secondRun.payload.run.questions[0].id).not.toBe(firstRun.payload.run.questions[0].id);
+    expect(rejectedEvents).toHaveLength(0);
+    socket.removeEventListener("message", rejectListener);
     socket.close();
   });
 
@@ -1967,6 +2321,7 @@ function createChatSendCommand(input: {
   projectId: string;
   threadId: string;
   content: string;
+  agentId?: "pi" | "copilot-cli" | "codex-cli";
   modeId?: string;
   attachments?: Array<{
     id: string;
@@ -1986,7 +2341,7 @@ function createChatSendCommand(input: {
     payload: {
       projectId: input.projectId,
       threadId: input.threadId,
-      agentId: "pi",
+      agentId: input.agentId ?? "pi",
       content: input.content,
       modeId: input.modeId,
       attachments: input.attachments
@@ -1996,7 +2351,14 @@ function createChatSendCommand(input: {
 
 async function sendChatUntilReady(
   socket: WebSocket,
-  input: { requestId: string; projectId: string; threadId: string; content: string },
+  input: {
+    requestId: string;
+    projectId: string;
+    threadId: string;
+    content: string;
+    agentId?: "pi" | "copilot-cli" | "codex-cli";
+    modeId?: string;
+  },
   timeoutMs: number = 5000
 ) {
   const readyPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "ready", timeoutMs);

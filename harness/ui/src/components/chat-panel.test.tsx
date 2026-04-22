@@ -145,6 +145,7 @@ createUiTest("ChatPanel", () => {
     expect(screen.getByRole("button", { name: "Open run pane" })).not.toBeNull();
     expect(screen.getByRole("button", { name: "Open memory pane" })).not.toBeNull();
     expect(screen.getByRole("button", { name: "Open events pane" })).not.toBeNull();
+    expect(screen.queryByText(/transcript\s*\|/i)).toBeNull();
   });
 
   it("blocks plain submit for resumable runs and shows toast", () => {
@@ -200,7 +201,78 @@ createUiTest("ChatPanel", () => {
 
     captureDispatchedCommands(commands as never[]);
     render(() => <ChatPanel />);
-    fireEvent.click(screen.getByRole("button", { name: "Send task to pi" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send task to Pi" }));
+
+    expect(commands.length).toBe(1);
+    expect((commands[0] as { type: string }).type).toBe("chat.send");
+  });
+
+it("updates composer effort label and sends reasoning plus fast mode", () => {
+    const commands: unknown[] = [];
+    const project = createViewProjectFixture({
+      id: "project-effort-send",
+      draft: "ship it"
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        hasUsableApiKey: true,
+        hasUsableOpenAiApiKey: true,
+        selectedReasoningStrength: "medium",
+        hasGlobalSelectedReasoningStrength: true,
+        selectedFastMode: true,
+        hasGlobalSelectedFastMode: true,
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    captureDispatchedCommands(commands as never[]);
+    render(() => <ChatPanel />);
+
+    const effortTrigger = document.querySelector("[data-test-effort-trigger]") as HTMLButtonElement | null;
+    if (!effortTrigger) {
+      throw new Error("Expected effort trigger");
+    }
+    expect(effortTrigger.textContent).toContain("Medium");
+    expect(effortTrigger.textContent).toContain("Fast");
+
+    fireEvent.click(screen.getByRole("button", { name: "Send task to Pi" }));
+
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      type: "chat.send",
+      payload: {
+        reasoningStrength: "medium",
+        fastMode: true
+      }
+    });
+  });
+
+  it("submits composer with Enter when textarea is focused", () => {
+    const commands: unknown[] = [];
+    const project = createViewProjectFixture({
+      id: "project-enter-send",
+      draft: "send from keyboard"
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        hasUsableApiKey: true,
+        hasUsableOpenAiApiKey: true,
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    captureDispatchedCommands(commands as never[]);
+    render(() => <ChatPanel />);
+    const textbox = screen.getByRole("textbox");
+    textbox.focus();
+
+    fireEvent.keyDown(textbox, { key: "Enter" });
 
     expect(commands.length).toBe(1);
     expect((commands[0] as { type: string }).type).toBe("chat.send");
@@ -286,7 +358,7 @@ createUiTest("ChatPanel", () => {
     render(() => <ChatPanel />);
 
     fireEvent.click(screen.getByRole("button", { name: "Resume failed or pending subagents" }));
-    fireEvent.click(screen.getByRole("button", { name: "Retry last pi run" }));
+    fireEvent.click(screen.getByRole("button", { name: "Retry last run" }));
 
     expect(commands.map((command) => (command as { type: string }).type)).toEqual(["run.resume", "run.retry"]);
   });
@@ -415,6 +487,61 @@ createUiTest("ChatPanel", () => {
     render(() => <ChatPanel />);
     expect(screen.getByText("bold").tagName).toBe("STRONG");
     expect(screen.getByRole("link", { name: "docs" }).getAttribute("target")).toBe("_blank");
+  });
+
+  it("renders copy buttons for transcript messages and copies plan summaries", async () => {
+    let copiedText = "";
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (value: string) => {
+          copiedText = value;
+        }
+      }
+    });
+
+    const plan = createExecutionPlanFixture({
+      runId: "run-copy",
+      gating: {
+        mode: "approve",
+        delaySeconds: 0
+      }
+    });
+    const planMessage = createPlanSummaryMessage("run-copy", plan);
+    const project = createViewProjectFixture({
+      id: "project-copy",
+      session: {
+        ...createViewProjectFixture().session,
+        messages: [
+          createChatMessage("user", "User prompt"),
+          createChatMessage("assistant", "Assistant reply"),
+          planMessage
+        ]
+      },
+      streamingAssistantText: "Streaming reply"
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ChatPanel />);
+
+    expect(screen.getByRole("button", { name: "Copy user message" })).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Copy assistant message" })).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Copy plan summary" })).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Copy streaming assistant message" })).not.toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy plan summary" }));
+    await Promise.resolve();
+
+    expect(copiedText).toContain("Plan summary");
+    expect(copiedText).toContain(`Route: ${plan.route}`);
+    expect(toastStore.toasts[0]?.title).toBe("Plan summary copied");
   });
 
   it("stops treating the thread as streaming after chat.message-appended resets isStreaming", () => {

@@ -1,4 +1,5 @@
 import type { PiAgentExecutionController } from "./pi-agent-adapter";
+import type { ComposerReasoningStrength } from "../../shared/protocol";
 
 export type ManagedExecutionKind = "planner" | "main" | "subagent" | "aggregator";
 
@@ -19,6 +20,8 @@ export type ExecutionRequestSnapshot = {
   modelId: string;
   prompt: string;
   readOnly?: boolean;
+  reasoningStrength?: ComposerReasoningStrength;
+  fastMode?: boolean;
 };
 
 export type SubagentSpawnTimingSnapshot = {
@@ -51,4 +54,3 @@ export type ManagedExecutionState = {
 export function getExecutionKey(input: Pick<ManagedExecutionState, "runId" | "subagentId" | "kind">) {
   return [input.runId, input.kind, input.subagentId ?? "run"].join(":");
 }
-

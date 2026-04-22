@@ -30,7 +30,7 @@ export async function buildUiBundle({ minify = false }: UiBuildOptions = {}) {
         generate: "dom",
         hydratable: false,
         sourceMaps: !minify,
-        debug: Bun.env.HARNESS_UI_DEBUG === "1"
+        debug: !minify
       }),
       tailwindPlugin
     ]

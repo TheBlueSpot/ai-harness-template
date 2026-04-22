@@ -10,6 +10,7 @@ import { ChatPanel } from "./components/chat-panel";
 import { ConnectionBanner } from "./components/connection-banner";
 import { ExecutionPlanDialog } from "./components/execution-plan-dialog";
 import { HelpTutorialDialog } from "./components/help-tutorial-dialog";
+import { NotificationInbox } from "./components/notification-inbox";
 import { PreferencesModal } from "./components/preferences-modal";
 import { ProjectSidebar } from "./components/project-sidebar";
 import { ProjectSwitcherDialog } from "./components/project-switcher-dialog";
@@ -20,6 +21,7 @@ import { TutorialOverlay } from "./components/tutorial-overlay";
 import { ActionButton } from "./components/action-button";
 import { buttonVariants } from "./components/primitives/button";
 import { SheetContent, SheetRoot, SheetTrigger } from "./components/primitives/sheet";
+import { Tooltip } from "./components/primitives/tooltip";
 import { connectHarnessWebSocket } from "./harness-websocket";
 import { getActiveProject, getCapabilityTags, harnessStore } from "./harness-store";
 import { cn } from "./lib/utils";
@@ -70,10 +72,10 @@ export function App() {
     harnessStore.actions.setCommandDispatcher((command) => connection?.sendCommand(command));
 
     const onWindowError = (event: ErrorEvent) => {
-      reportUiError(event.error ?? event.message, "Unexpected UI error");
+      reportUiError(event.error ?? event.message, "Unexpected UI error", { rethrow: "never" });
     };
     const onUnhandledRejection = (event: PromiseRejectionEvent) => {
-      reportUiError(event.reason, "Unhandled promise rejection");
+      reportUiError(event.reason, "Unhandled promise rejection", { rethrow: "never" });
     };
 
     window.addEventListener("error", onWindowError);
@@ -150,27 +152,12 @@ export function App() {
                 <Workflow class="h-3.5 w-3.5" />
                 AI harness workspace
               </div>
-              <Show when={activeProject()}>
-                {(project) => (
-                  <div class="space-y-1">
-                    <div class="text-[0.675rem] text-(--foreground)">
-                      {project().name} <span class="text-(--muted)">| {activeThreadTitle()}</span>
-                    </div>
-                    <div class="flex flex-wrap gap-2">
-                      {activeCapabilityTags().map((tag) => (
-                        <span class="rounded-full border border-(--border) bg-white/70 px-2 py-0.5 text-[0.55rem] font-semibold uppercase tracking-[0.12em] text-(--muted)">
-                          {tag}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </Show>
             </div>
           </div>
 
           <div class="flex flex-wrap items-center gap-3">
             <ConnectionBanner />
+            <NotificationInbox />
             <ActionButton
               tooltip={executionControlTooltip()}
               icon={state.executionControl.isPaused ? <Play class="h-4 w-4" /> : <Pause class="h-4 w-4" />}
@@ -231,21 +218,22 @@ export function App() {
                   <nav data-test-center-surface-nav="" class="surface-tab-strip">
                     <For each={surfaceTabs}>
                       {(tab) => (
-                        <button
-                          type="button"
-                          class={cn(buttonVariants({ variant: "ghost" }), "surface-tab")}
-                          aria-label={tab.label}
-                          attr:aria-pressed={surface === tab.id ? "true" : "false"}
-                          title={tab.tooltip}
-                          onClick={() => harnessStore.setActiveSurface(tab.id)}
-                        >
-                          {tab.icon}
-                          {tab.label}
-                        </button>
+                        <Tooltip content={tab.tooltip}>
+                          <button
+                            type="button"
+                            class={cn(buttonVariants({ variant: "ghost" }), "surface-tab")}
+                            aria-label={tab.label}
+                            attr:aria-pressed={surface === tab.id ? "true" : "false"}
+                            onClick={() => harnessStore.setActiveSurface(tab.id)}
+                          >
+                            {tab.icon}
+                            {tab.label}
+                          </button>
+                        </Tooltip>
                       )}
                     </For>
                   </nav>
-                  <div class="min-h-0 flex-1">
+                  <div class="min-h-0 flex-1 overflow-hidden">
                     <Show
                       when={surface === "background-jobs"}
                       fallback={

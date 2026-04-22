@@ -21,7 +21,15 @@ mock.module("./harness-websocket", () => ({
 import { App } from "./app";
 
 function getCreateHotkeysCall() {
-  const call = createHotkeysMock.mock.calls[0];
+  const calls = createHotkeysMock.mock.calls as unknown as Array<
+    [Array<{ hotkey: string; callback: () => void }>, () => { enabled: boolean; ignoreInputs: boolean }]
+  >;
+  const call = calls.find(([definitions]) => {
+    return (
+      definitions.some((definition) => definition.hotkey === "Mod+K") &&
+      definitions.some((definition) => definition.hotkey === "Mod+Space")
+    );
+  });
   if (!call) {
     throw new Error("Expected createHotkeys to be called");
   }
@@ -42,7 +50,7 @@ createUiTest("App shortcuts", () => {
   it("registers project switcher shortcuts through TanStack Hotkeys", () => {
     render(() => <App />);
 
-    expect(createHotkeysMock).toHaveBeenCalledTimes(1);
+    expect(createHotkeysMock.mock.calls.length).toBeGreaterThanOrEqual(1);
 
     const [definitions, getOptions] = getCreateHotkeysCall();
 

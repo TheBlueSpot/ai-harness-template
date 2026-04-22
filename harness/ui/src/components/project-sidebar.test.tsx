@@ -11,7 +11,7 @@ createUiTest("ProjectSidebar", () => {
     clearBrowserStateForTests();
   });
 
-  it("shows streaming badge and disables project actions while streaming", () => {
+  it("shows streaming badge and only blocks destructive remove while streaming", () => {
     const project = createViewProjectFixture({
       id: "project-streaming",
       session: {
@@ -52,9 +52,9 @@ createUiTest("ProjectSidebar", () => {
     render(() => <ProjectSidebar />);
 
     expect(screen.getByText("streaming")).not.toBeNull();
-    expect((screen.getByRole("button", { name: "Create a new thread in this project" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: `Create a new thread in ${project.name}` }) as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByRole("button", { name: `Remove ${project.name}` }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByText("Thread 2").closest("button") as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByText("Thread 2").closest("button") as HTMLButtonElement).disabled).toBe(false);
     expect(screen.getByText("Planning")).not.toBeNull();
   });
 

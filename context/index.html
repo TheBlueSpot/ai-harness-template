@@ -3,87 +3,34 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Galaga Game</title>
+    <title>Pac-Man</title>
     <style>
-        body { margin: 0; overflow: hidden; background-color: black; color: white; font-family: sans-serif; }
-        #game-container {
-            position: relative;
-            width: 100vw;
+        body {
+            margin: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
             height: 100vh;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            flex-direction: column;
+            background-color: #000;
+            color: #fff;
+            font-family: 'Arial', sans-serif; /* Simple font */
         }
-        #start-menu {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-            background-color: rgba(0, 0, 0, 0.8);
-            z-index: 1000;
+        canvas {
+            border: 2px solid #fff;
+            background-color: #000;
         }
-        #start-button {
-            padding: 20px 40px;
-            font-size: 2em;
-            cursor: pointer;
-            background-color: #007bff;
-            color: white;
-            border: none;
-            border-radius: 5px;
-            transition: background-color 0.3s ease;
-        }
-        #start-button:hover {
-            background-color: #0056b3;
-        }
-        #game-canvas {
-            display: block; /* Managed by Three.js */
+        #game-container {
+            text-align: center;
         }
     </style>
-    <script type="importmap">
-        {
-          "imports": {
-            "three": "./lib/3js/build/three.module.js"
-          }
-        }
-    </script>
 </head>
 <body>
     <div id="game-container">
-        <canvas id="game-canvas"></canvas>
-        <div id="start-menu">
-            <h1>GALAGA</h1>
-            <button id="start-button">START GAME</button>
-        </div>
+        <h1>Pac-Man</h1>
+        <canvas id="gameCanvas"></canvas>
+        <p>Loading Game...</p>
     </div>
-
-    <!-- Main game logic, assuming main.ts compiles to main.js -->
-    <script type="module" src="./src/main.js"></script>
-
-    <!-- Shader imports with full unpkg URLs as recommended -->
-    <script type="module">
-        // These imports should ideally be handled within main.js if it uses them,
-        // but for immediate browser compatibility per screenshot analysis,
-        // we include them here if directly referenced in HTML or by a script that expects global imports.
-        // If main.js or other modules directly import these, their import paths need to be updated.
-        import { RGBShiftShader } from "https://unpkg.com/three@0.163.0/examples/jsm/shaders/RGBShiftShader.js";
-        import { PixelShader } from "https://unpkg.com/three@0.163.0/examples/jsm/shaders/PixelShader.js";
-
-        // Example of how to use the start button
-        document.getElementById('start-button').addEventListener('click', () => {
-            document.getElementById('start-menu').style.display = 'none';
-            // Trigger game start function in main.js, assuming it's exposed globally or via a pattern
-            if (window.startGame) {
-                window.startGame();
-            } else {
-                console.warn("startGame function not found. Ensure main.js exposes a global startGame function.");
-            }
-        });
-    </script>
+    <!-- ES Module entry point -->
+    <script type="module" src="./pacman/main.js"></script>
 </body>
 </html>

@@ -41,7 +41,7 @@ export function getProjectStatusCards(
       label: "route",
       body: project.latestPlan.usesSubagents
         ? `split task. ${project.latestPlan.subtaskCount} agents work.`
-        : "main pi work.",
+        : "main work.",
       tone: "info"
     });
   }

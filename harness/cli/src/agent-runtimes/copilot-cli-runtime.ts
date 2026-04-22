@@ -45,6 +45,8 @@ export class CopilotCliRuntime implements AgentRuntime {
         interactivePipeCompatible: false,
         supportsPlanning: true,
         supportsReview: true,
+        supportsReasoningStrengthControl: false,
+        supportsFastModeControl: false,
         healthMessage: "Install standalone `copilot` CLI to enable this runtime.",
         installCommand: "winget install GitHub.cli && gh extension install github/gh-copilot",
         docsUrl: "https://docs.github.com/en/copilot/github-copilot-in-the-cli"
@@ -72,6 +74,8 @@ export class CopilotCliRuntime implements AgentRuntime {
       interactivePipeCompatible,
       supportsPlanning: true,
       supportsReview: true,
+      supportsReasoningStrengthControl: false,
+      supportsFastModeControl: false,
       healthMessage: authenticated ? undefined : "Authenticate Copilot CLI before using this runtime.",
       installCommand: "winget install GitHub.cli && gh extension install github/gh-copilot",
       authCommand: "gh auth login",

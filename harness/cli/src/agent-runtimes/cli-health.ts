@@ -66,12 +66,12 @@ export async function probeCopilotAuth(processManager: CliProcessManager) {
   return !containsAuthFailure(result.stdout, result.stderr);
 }
 
-export async function probeCodexAuth(processManager: CliProcessManager) {
+export async function probeCodexAuth(processManager: CliProcessManager, executable: string = "codex") {
   const result = await runProbe(processManager, {
     cmd: [
-      "codex",
+      executable,
       "exec",
-      "--json",
+      "--experimental-json",
       "--skip-git-repo-check",
       "-C",
       process.cwd(),
@@ -128,6 +128,8 @@ export function buildCliCapability(input: {
   interactivePipeCompatible: boolean;
   supportsPlanning: boolean;
   supportsReview: boolean;
+  supportsReasoningStrengthControl?: boolean;
+  supportsFastModeControl?: boolean;
   discoveredModels?: string[];
   activeModel?: string;
   modelDiscoveryConfidence?: ModelDiscoveryConfidence;
@@ -146,6 +148,8 @@ export function buildCliCapability(input: {
     supportsProgrammatic: true,
     supportsPlanning: input.supportsPlanning,
     supportsReview: input.supportsReview,
+    supportsReasoningStrengthControl: input.supportsReasoningStrengthControl,
+    supportsFastModeControl: input.supportsFastModeControl,
     version: input.version,
     healthMessage: input.healthMessage,
     installCommand: input.installCommand,

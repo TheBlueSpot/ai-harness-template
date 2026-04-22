@@ -3,11 +3,9 @@ import { createComponent } from "solid-js/web";
 import { SolidMarkdown } from "../../../../node_modules/solid-markdown/dist/index.js";
 import type { SolidMarkdownComponents } from "solid-markdown";
 import type { Element, Properties } from "hast";
-import { Copy } from "lucide-solid";
 import { markdownRehypePlugins, markdownRemarkPlugins, classifyLinkHref, extractTextContent, findFirstChildElement, getCodeLanguage, getElementClassNames, normalizeAllowedHref } from "../lib/markdown";
 import { cn } from "../lib/utils";
-import { pushToast } from "../toast-store";
-import { ActionButton } from "./action-button";
+import { CopyTextButton } from "./primitives/copy-text-button";
 
 export type MarkdownContentProps = {
   content: string | (() => string);
@@ -43,19 +41,6 @@ export function MarkdownContent(props: MarkdownContentProps) {
   createEffect(() => {
     setContent(readContent());
   });
-
-  async function handleCopyCode(text: string) {
-    if (!text.trim()) {
-      return;
-    }
-
-    try {
-      await navigator.clipboard.writeText(text);
-      pushToast("Code copied", "Code block copied to clipboard.");
-    } catch {
-      pushToast("Copy failed", "Clipboard permission denied.", "error");
-    }
-  }
 
   const components: SolidMarkdownComponents = {
     a(anchorProps: AnchorProps) {
@@ -96,24 +81,23 @@ export function MarkdownContent(props: MarkdownContentProps) {
       const codeElement = findFirstChildElement(preProps.node, "code");
       const codeText = extractTextContent(codeElement ?? preProps.node);
       const language = getCodeLanguage(codeElement)?.toUpperCase() ?? "TEXT";
-      const canCopy = Boolean(codeText.trim());
 
       return (
         <div class="markdown-code-block">
           <div class="markdown-code-header">
             <span class="markdown-code-language">{language}</span>
-            <ActionButton
+            <CopyTextButton
+              value={codeText}
               tooltip="Copy code block"
+              copiedTitle="Code copied"
+              copiedDescription="Code block copied to clipboard."
               disabledReason="No code to copy"
-              disabled={!canCopy}
-              icon={<Copy class="h-3.5 w-3.5" />}
               size="sm"
               variant="secondary"
               ariaLabel="Copy code block"
-              onClick={() => void handleCopyCode(codeText)}
             >
               Copy
-            </ActionButton>
+            </CopyTextButton>
           </div>
           <pre class="markdown-code-pre">{preProps.children}</pre>
         </div>

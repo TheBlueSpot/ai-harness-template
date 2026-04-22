@@ -1,6 +1,7 @@
 import { createEffect, createMemo, createSignal, onCleanup, Show } from "solid-js";
 import { Portal } from "solid-js/web";
 import { getTutorialDefinition } from "./tutorial-definitions";
+import { Tooltip } from "./primitives/tooltip";
 
 type TutorialOverlayProps = {
   tutorialId?: string;
@@ -154,14 +155,18 @@ export function TutorialOverlay(props: TutorialOverlayProps) {
             </div>
           </Show>
           <div class="mt-4 flex flex-wrap gap-2">
-            <button
-              class="tutorial-overlay-button tutorial-overlay-button-secondary"
-              type="button"
-              onClick={props.onBack}
-              disabled={props.stepIndex === 0}
-            >
-              Back
-            </button>
+            <Tooltip content={props.stepIndex === 0 ? "Already at the first tutorial step" : "Go to previous tutorial step"}>
+              <span class="inline-flex">
+                <button
+                  class="tutorial-overlay-button tutorial-overlay-button-secondary"
+                  type="button"
+                  onClick={props.onBack}
+                  disabled={props.stepIndex === 0}
+                >
+                  Back
+                </button>
+              </span>
+            </Tooltip>
             <button class="tutorial-overlay-button" type="button" onClick={props.onNext}>
               {props.stepIndex >= (tutorial()?.steps.length ?? 1) - 1 ? "Finish" : "Next"}
             </button>

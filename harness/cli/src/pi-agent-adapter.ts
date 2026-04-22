@@ -10,7 +10,8 @@ import {
   type SessionStats,
   type AgentSessionEvent
 } from "@mariozechner/pi-coding-agent";
-import type { ImageContent } from "@mariozechner/pi-ai";
+import { streamSimple, type ImageContent, type SimpleStreamOptions } from "@mariozechner/pi-ai";
+import type { ComposerReasoningStrength } from "../../shared/protocol";
 import { isBrowserToolName } from "./browser-session-state";
 import { debugLog } from "./logging";
 
@@ -24,6 +25,8 @@ export type PiAgentPromptRequest = {
   images?: ImageContent[];
   abortSignal?: AbortSignal;
   readOnly?: boolean;
+  reasoningStrength?: ComposerReasoningStrength;
+  fastMode?: boolean;
   onTextDelta?: (delta: string) => void;
   onExecutionEvent?: (event: PiAgentExecutionEvent) => void;
   requestBrowserApproval?: (input: { toolCallId: string; toolName: string; args: unknown }) => Promise<{ approved: boolean }>;
@@ -66,6 +69,8 @@ const MAX_AUTO_COMPACT_CONTEXT_THRESHOLD_PERCENT = 95;
 const MIN_AUTO_COMPACTION_RESERVE_TOKENS = 8192;
 const MIN_AUTO_COMPACTION_KEEP_RECENT_TOKENS = 4000;
 const DEFAULT_AUTO_COMPACTION_KEEP_RECENT_TOKENS = 20000;
+const FAST_OPENAI_PROVIDER = "openai";
+const FAST_OPENAI_SERVICE_TIER = "priority";
 
 export function clampAutoCompactContextThresholdPercent(value: number) {
   return Math.max(
@@ -90,6 +95,20 @@ export function buildPiAutoCompactionSettings(contextWindow: number, thresholdPe
     reserveTokens,
     keepRecentTokens
   };
+}
+
+export function mapReasoningStrengthToThinkingLevel(reasoningStrength: ComposerReasoningStrength | undefined) {
+  switch (reasoningStrength) {
+    case "low":
+      return "low" as const;
+    case "medium":
+      return "medium" as const;
+    case "extra-high":
+      return "xhigh" as const;
+    case "high":
+    default:
+      return "high" as const;
+  }
 }
 
 export class PiSdkAgentAdapter implements PiAgentAdapter {
@@ -130,7 +149,8 @@ export class PiSdkAgentAdapter implements PiAgentAdapter {
   }
 
   async startExecution(request: PiAgentPromptRequest): Promise<PiAgentExecutionController> {
-    const model = this.resolveOpenAiModel(request.modelId);
+    const modelRegistry = this.createExecutionModelRegistry(request);
+    const model = this.resolveModel(modelRegistry, request.modelId);
     const toolset = request.readOnly ? createReadOnlyTools(request.cwd) : createCodingTools(request.cwd);
     const settingsManager = SettingsManager.inMemory({
       compaction: buildPiAutoCompactionSettings(model.contextWindow, this.autoCompactContextThresholdPercent),
@@ -142,8 +162,9 @@ export class PiSdkAgentAdapter implements PiAgentAdapter {
     const { session } = await createAgentSession({
       cwd: request.cwd,
       authStorage: this.authStorage,
-      modelRegistry: this.modelRegistry,
+      modelRegistry,
       model,
+      thinkingLevel: mapReasoningStrengthToThinkingLevel(request.reasoningStrength),
       tools: toolset,
       resourceLoader,
       sessionManager: SessionManager.inMemory(request.cwd),
@@ -153,19 +174,58 @@ export class PiSdkAgentAdapter implements PiAgentAdapter {
     return new PiSdkExecutionController(session, request, model.contextWindow, (event) => this.handleEvent(event, request));
   }
 
-  private resolveOpenAiModel(modelId: string) {
+  private resolveModel(modelRegistry: ModelRegistry, modelId: string) {
     const [provider, providerModelId] = modelId.split("/", 2);
 
     if (provider !== "openai" && provider !== "google") {
       throw new Error(`Unsupported provider: ${provider}`);
     }
 
-    const model = this.modelRegistry.find(provider, providerModelId);
+    const model = modelRegistry.find(provider, providerModelId);
     if (!model) {
       throw new Error(`Unknown provider model: ${modelId}`);
     }
 
     return model;
+  }
+
+  private createExecutionModelRegistry(request: PiAgentPromptRequest) {
+    if (!request.fastMode || !request.modelId.startsWith(`${FAST_OPENAI_PROVIDER}/`)) {
+      return this.modelRegistry;
+    }
+
+    const modelRegistry = ModelRegistry.inMemory(this.authStorage);
+    const openAiModels = modelRegistry.getAll().filter((model) => model.provider === FAST_OPENAI_PROVIDER);
+    const baseModel = openAiModels[0];
+    if (!baseModel || !baseModel.baseUrl) {
+      return modelRegistry;
+    }
+
+    modelRegistry.registerProvider(FAST_OPENAI_PROVIDER, {
+      api: baseModel.api,
+      baseUrl: baseModel.baseUrl,
+      apiKey: "OPENAI_API_KEY",
+      streamSimple(model, context, options) {
+        return streamSimple(model, context, {
+          ...options,
+          serviceTier: FAST_OPENAI_SERVICE_TIER
+        } as SimpleStreamOptions & { serviceTier: string });
+      },
+      models: openAiModels.map((model) => ({
+        id: model.id,
+        name: model.name,
+        api: model.api,
+        reasoning: model.reasoning,
+        input: [...model.input],
+        cost: { ...model.cost },
+        contextWindow: model.contextWindow,
+        maxTokens: model.maxTokens,
+        headers: model.headers,
+        compat: model.compat
+      }))
+    });
+
+    return modelRegistry;
   }
 
   private handleEvent(event: AgentSessionEvent, request: PiAgentPromptRequest) {

@@ -5,6 +5,8 @@ import {
   type AgentTrace,
   type BackgroundJob,
   type BackgroundJobRun,
+  type PlanningQuestion,
+  type PlanningQuestionNotification,
   type PlannerReadyTurn,
   type ProjectContextUsage,
   type ProviderBrand,
@@ -25,6 +27,23 @@ type BackgroundJobExecutorOptions = {
   debugEnabled: boolean;
   abortSignal?: AbortSignal;
 };
+
+// Defense-in-depth bounds for shell job timeouts. The WS boundary schema in
+// `harness/shared/protocol.ts` already enforces 1..86400; these guards protect
+// against stale DB rows or migration drift that could otherwise schedule a
+// zero/negative/NaN timeout and instantly kill a proc (or never time out).
+export const MIN_SHELL_TIMEOUT_SECONDS = 1;
+export const MAX_SHELL_TIMEOUT_SECONDS = 24 * 60 * 60;
+export const DEFAULT_SHELL_TIMEOUT_SECONDS = 60;
+
+export function resolveShellTimeoutMs(input: unknown) {
+  const numeric = typeof input === "number" ? input : Number(input);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return DEFAULT_SHELL_TIMEOUT_SECONDS * 1000;
+  }
+  const clamped = Math.min(MAX_SHELL_TIMEOUT_SECONDS, Math.max(MIN_SHELL_TIMEOUT_SECONDS, Math.floor(numeric)));
+  return clamped * 1000;
+}
 
 export async function executeBackgroundJobRun(options: BackgroundJobExecutorOptions) {
   return options.job.kind === "shell" ? executeShellJob(options) : executeAiRoutineJob(options);
@@ -94,15 +113,22 @@ async function executeAiRoutineJob({
   });
 
   if (plannerTurn.plannerResult.type === "question") {
+    const questionProject = repository.appendPlanningQuestion(job.projectId, activeRun.id, plannerTurn.plannerResult.question, "deferred");
+    const questionRun = questionProject.activeRun?.id === activeRun.id ? questionProject.activeRun : questionProject.lastRun;
+    const deferredQuestion = questionRun?.questions.find((question) => question.status === "deferred");
+    if (!deferredQuestion) {
+      throw new Error("Deferred planning question was not persisted for background run");
+    }
+
+    repository.saveNotification(createPlanningQuestionNotification(job, run, activeRun.id, deferredQuestion));
     repository.appendBackgroundJobRunEvent(
       run.id,
-      "failed",
-      "Planner required clarification",
+      "awaiting-user-input",
+      "Waiting for user input",
       plannerTurn.plannerResult.question.prompt
     );
-    repository.setAgentRunStatus(job.projectId, activeRun.id, "failed", "Scheduled jobs cannot answer planner questions");
-    repository.setBackgroundJobRunStatus(run.id, "failed", {
-      failureMessage: "Planner required clarification that scheduled jobs cannot provide."
+    repository.setBackgroundJobRunStatus(run.id, "awaiting-user-input", {
+      summary: plannerTurn.plannerResult.question.prompt
     });
     repository.updateBackgroundJobSchedule(job.id, { lastRunAt: new Date().toISOString() });
     return repository.getBackgroundJobRun(run.id)!;
@@ -177,7 +203,7 @@ async function executeShellJob({ repository, job, run, abortSignal }: Background
 
   const timeoutId = setTimeout(() => {
     proc.kill();
-  }, definition.timeoutSeconds * 1000);
+  }, resolveShellTimeoutMs(definition.timeoutSeconds));
 
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
@@ -274,6 +300,31 @@ function summarizeBackgroundAssistantMessage(message: ReturnType<typeof createCh
 function summarizeShellOutput(stdout: string, stderr: string) {
   const primary = stdout.trim() || stderr.trim() || "No output";
   return primary.replace(/\s+/g, " ").trim().slice(0, 240);
+}
+
+function createPlanningQuestionNotification(
+  job: BackgroundJob,
+  run: BackgroundJobRun,
+  linkedAgentRunId: string,
+  question: PlanningQuestion
+): PlanningQuestionNotification {
+  return {
+    id: createNotificationId("planning-question", run.id, question.id),
+    kind: "planning-question",
+    interactive: true,
+    createdAt: new Date().toISOString(),
+    projectId: job.projectId,
+    threadId: job.automationThreadId,
+    runId: linkedAgentRunId,
+    questionId: question.id,
+    prompt: question.prompt,
+    placeholder: question.placeholder,
+    choices: question.choices
+  };
+}
+
+function createNotificationId(kind: string, primaryId: string, secondaryId: string) {
+  return `${kind}:${primaryId}:${secondaryId}`.slice(0, 128);
 }
 
 function resolveEnvironmentRefs(envRefs: string[] | undefined) {

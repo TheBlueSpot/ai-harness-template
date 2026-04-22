@@ -6,6 +6,7 @@ import { launchHarnessServerWithRecovery } from "./launch-harness";
 import { PiSdkAgentAdapter } from "./pi-agent-adapter";
 import { PiRuntime } from "./agent-runtimes/pi-runtime";
 import { buildSetupState, detectSetupLaunchMode, formatSetupDoctorReport } from "./setup-health";
+import { createStartupTelemetrySession } from "./startup-telemetry";
 import { WorkspaceRepository } from "./workspace-repository";
 
 const rawPort = Bun.env.HARNESS_PORT?.trim();
@@ -16,6 +17,7 @@ const doctorOnly = process.argv.includes("--doctor");
 const forceOpen = process.argv.includes("--open");
 const disableOpen = process.argv.includes("--no-open");
 const launchMode = detectSetupLaunchMode();
+const STARTUP_TELEMETRY_ENABLED = process.env.NODE_ENV !== "production";
 
 if (launchMode === "portable-launcher") {
   process.chdir(path.dirname(process.execPath));
@@ -26,13 +28,32 @@ if (doctorOnly) {
   process.exit(0);
 }
 
-await launchHarnessServerWithRecovery({
-  port,
-  serverOnly,
-  openBrowser: forceOpen || (!serverOnly && !disableOpen),
+const startupTelemetry = STARTUP_TELEMETRY_ENABLED ? createStartupTelemetrySession({ serverOnly }) : undefined;
+startupTelemetry?.sessionStart("startup session created", {
   launchMode,
-  allowPortFallback: !rawPort
+  port,
+  serverOnly
 });
+
+try {
+  await launchHarnessServerWithRecovery({
+    port,
+    serverOnly,
+    openBrowser: forceOpen || (!serverOnly && !disableOpen),
+    launchMode,
+    allowPortFallback: !rawPort,
+    startupTelemetry
+  });
+} catch (error) {
+  startupTelemetry?.failed(`Harness startup failed: ${describeError(error)}`, {
+    launchMode,
+    port,
+    serverOnly
+  });
+  throw error;
+} finally {
+  startupTelemetry?.dispose();
+}
 
 async function runDoctor() {
   const repository = new WorkspaceRepository(Bun.env.HARNESS_DB_PATH);
@@ -87,4 +108,8 @@ async function runDoctor() {
   if (setup.readyRequiredCount !== setup.totalRequiredCount) {
     process.exit(1);
   }
+}
+
+function describeError(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
 }

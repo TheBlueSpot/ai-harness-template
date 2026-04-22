@@ -210,7 +210,9 @@ function snapshotRequest(request: PiAgentPromptRequest) {
     cwd: request.cwd,
     modelId: request.modelId,
     prompt: request.prompt,
-    readOnly: request.readOnly
+    readOnly: request.readOnly,
+    reasoningStrength: request.reasoningStrength,
+    fastMode: request.fastMode
   };
 }
 
