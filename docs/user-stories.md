@@ -155,13 +155,13 @@ US-RUNS-013: As a user, I get deferred planner questions, assistant questions, a
 
 US-PROVIDERS-001: As a user, I see capability-aware model metadata so the UI explains tool, vision, browser, context, speed, and cost expectations before execution starts. (README L17)
 
-US-PROVIDERS-002: As a user, I get runtime-aware model selection so Codex CLI sticks to Codex-compatible GPT choices and stale unsupported picks fall back before execution. (README L18)
+US-PROVIDERS-002: As a user, I get runtime-aware model selection so Codex CLI sticks to Codex-compatible GPT choices for planning and execution, and stale unsupported picks fall back before a run starts. (README L18)
 
 US-PROVIDERS-003: As a user, I get brand-aware defaults for GPT or Gemini execution so first-run behavior matches the provider I selected. (README L27)
 
 US-PROVIDERS-004: As a user, I get Gemini planning defaulting to `google/gemini-3-flash-preview` so planning stays fast on that provider. (README L28)
 
-US-PROVIDERS-005: As a user, I get Gemini subagents defaulting to `google/gemini-2.5-flash-lite` when planner difficulty is above 40 so subagent cost stays in check. (README L29)
+US-PROVIDERS-005: As a user, I get spawned subagents dropping to the cheapest runtime-compatible sibling in the same model family so parallel work stays aligned with the chosen model while keeping cost in check. (README L29)
 
 US-PROVIDERS-006: As a user, I persist OpenAI and Google API keys plus provider brand preference locally for this machine so that setup survives restart. (README L69)
 
@@ -171,7 +171,7 @@ US-PROVIDERS-007: As a user, I see provider brand switching gated by matching sa
 
 US-RUNTIMES-001: As a user, I pick from multiple agent runtimes: pi, GitHub Copilot CLI, and Codex CLI so that I can use the agent that fits the task. (README L10)
 
-US-RUNTIMES-002: As a user, I get Codex CLI noninteractive runs through the bundled official Codex SDK and CLI, keep review mode prompt-driven inside the harness instead of special native review routing, and retain the explicit Windows policy-bypass env toggle when fully unblocked local shell writes are required. (README L19)
+US-RUNTIMES-002: As a user, I get Codex CLI noninteractive runs through the bundled official Codex SDK and CLI, keep review mode prompt-driven inside the harness instead of special native review routing, and on Windows writable runs auto-use full access because bundled Codex currently downgrades `workspace-write` to read-only there while read-only tasks stay sandboxed. (README L19)
 
 US-RUNTIMES-003: As a user, I use optional live CLI sessions for Copilot CLI and Codex CLI over Bun-managed piped transport with attach tokens, reconnect, and follow-up capture so that terminal-style agents stay inspectable. (README L39)
 
@@ -213,15 +213,15 @@ US-ATTACHMENTS-004: As a developer, I use runtime-safe PDF handling on the serve
 
 US-MODES-001: As a user, I use built-in workflow modes for asking, planning, implementing, debugging, and review, plus local custom modes at workspace or project scope. (README L26)
 
-US-MODES-002: As a user, I see obvious low-complexity workspace actions such as direct file or folder requests auto-switch into implement mode and skip planner turn-taking. (README L38)
+US-MODES-002: As a user, I see obvious low-complexity workspace actions such as direct file or folder requests, plus correction-style follow-ups that refine where the edit should land, auto-switch into implement mode and skip planner turn-taking, and simple leading-slash task paths like `/breakout` normalize to workspace-relative targets when the request is clearly local. (README L38)
 
 US-MODES-003: As a user, I get built-in modes with different confirmation defaults: plan stays approval-first, ask suppresses transcript plan cards for direct Q&A, and implement auto-runs unless the frozen plan fans out to multiple subagents. (README L40)
 
-US-MODES-004: As a user, I see composer input auto-switch built-in modes when message intent is clear enough, so direct questions, review requests, debugging prompts, and planning asks do not depend only on the last manual mode selection. (README L41)
+US-MODES-004: As a user, I see composer input auto-switch built-in modes when message intent is clear enough, using recent thread context to repair correction follow-ups, so direct questions, review requests, debugging prompts, planning asks, and local workspace edits do not depend only on stale sticky mode state, while an explicit manual mode selection stays pinned for that send. (README L41)
 
 US-MODES-005: As a developer, I see mode selection, rule sources, and memory summaries travel through typed contracts and persist with workspace state. (README L154)
 
-US-MODES-006: As a developer, I see built-in modes as policy presets, not separate pipelines: ask and plan bias toward read-heavy planning, implement biases toward delivery, debug biases toward root-cause, and review biases toward findings-first. (README L155)
+US-MODES-006: As a developer, I see built-in modes as policy presets, not separate pipelines: ask and plan bias toward read-heavy planning, execution access is configured separately from that intent, implement biases toward delivery, debug biases toward root-cause, and review biases toward findings-first. (README L155)
 
 US-MODES-007: As a developer, I see the UI send typed project and chat commands only so that modes stay behind a narrow contract. (README L153)
 
@@ -371,7 +371,7 @@ US-DEV-006: As a developer, I run `bun run build:ui` which builds the browser bu
 
 US-DEV-007: As a developer, I run `bun run doctor` which prints the shared activation and runtime health report and exits non-zero when required first-task checks fail. (README L120)
 
-US-DEV-008: As a developer, I run `bun run package:launcher` which builds a portable Bun launcher folder for the current OS target. (README L121)
+US-DEV-008: As a developer, I run `bun run package:launcher` which builds a portable Bun launcher folder for the current OS target, and launcher startup failures write a timestamped crash log beside the executable before exit. (README L121)
 
 US-DEV-009: As a developer, I see development UI builds emit external source maps for browser debugging. (README L122)
 

@@ -25,6 +25,22 @@ export const PLANNER_BYPASS_MAX_WORDS = 22;
 const builtinAutoModeIds = ["ask", "plan", "implement", "debug", "review"] as const;
 type BuiltinAutoModeId = (typeof builtinAutoModeIds)[number];
 
+export type ModeIntentMessage = {
+  role: "system" | "user" | "assistant";
+  content: string;
+};
+
+export type ModeIntentContext = {
+  recentMessages?: ModeIntentMessage[];
+  stickyModeId?: string;
+};
+
+type WorkspaceAction = {
+  artifact: "folder" | "file" | "workspace-artifact";
+  target?: string;
+  inherited: boolean;
+};
+
 // ---------------------------------------------------------------------------
 // Starter / gating patterns (non-global, used with .test()).
 // ---------------------------------------------------------------------------
@@ -44,6 +60,10 @@ const implementStart =
   /^(?:implement|build|create|add|update|change|modify|write|ship|make|refactor|integrate|wire|support|finish|insert|apply|replace|rename|move|delete|remove|inject|port|migrate|extract|bump|upgrade|downgrade|scaffold|stub|extend)\b/;
 const directActionStart =
   /^(?:(?:can|could|would|will|please|should)\s+you\s+)?(?:make|create|add|update|change|modify|write|rename|move|delete|remove|implement|replace|inject|patch|fix)\b/;
+const directActionCorrectionPrefix =
+  /^(?:(?:no|nope|actually|instead|rather|i mean|sorry|wait|hold on)\b[\s,.:;-]*)+/;
+const directActionLocationPrefix =
+  /^(?:(?:inside|in|within)\s+(?:the\s+)?(?:cwd|current working directory)\b[\s,.:;-]*|here\b[\s,.:;-]*|locally\b[\s,.:;-]*)+/;
 
 const multiPartSplit = /(?:\s+and\s+|,\s|;\s|\bthen\b|\bnext\b|\bafter\b|\bfinally\b)/i;
 const complexityBlocker =
@@ -101,11 +121,12 @@ const codeFence = /```|`[^`\n]+`/g;
 
 export function detectAutoMode(
   content: string,
-  availableModes: Array<Pick<ModeDefinition, "id">> = []
+  availableModes: Array<Pick<ModeDefinition, "id">> = [],
+  context: ModeIntentContext = {}
 ) {
   const availableModeIds = new Set(availableModes.map((mode) => mode.id));
 
-  if (availableModeIds.has("implement") && isDirectWorkspaceImplementTask(content)) {
+  if (availableModeIds.has("implement") && isDirectWorkspaceImplementTask(content, context)) {
     return {
       modeId: "implement" as BuiltinAutoModeId,
       confidence: PLANNER_BYPASS_CONFIDENCE
@@ -128,7 +149,7 @@ export function detectAutoMode(
 }
 
 export function scoreBuiltinModeIntent(content: string) {
-  const normalized = normalizeIntentText(content);
+  const normalized = normalizeScoringIntentText(content);
   if (!normalized) return emptyScores();
 
   const wordCount = normalized.split(" ").filter(Boolean).length;
@@ -268,25 +289,8 @@ export function scoreBuiltinModeIntent(content: string) {
   ] as Array<{ modeId: BuiltinAutoModeId; confidence: number }>;
 }
 
-export function isDirectWorkspaceImplementTask(content: string) {
-  const normalized = normalizeIntentText(content);
-  if (!normalized) return false;
-  if (normalized.includes("?")) return false;
-
-  const wordCount = normalized.split(" ").filter(Boolean).length;
-  if (wordCount > PLANNER_BYPASS_MAX_WORDS) return false;
-
-  if (!directActionStart.test(normalized)) return false;
-
-  const hasArtifact = hasGlobalMatch(normalized, workspaceArtifact);
-  const hasPath = hasGlobalMatch(normalized, workspacePath);
-  const hasFile = hasGlobalMatch(normalized, fileLikeToken);
-  if (!hasArtifact && !hasPath && !hasFile) return false;
-
-  if (complexityBlocker.test(normalized)) return false;
-  if (multiPartSplit.test(normalized)) return false;
-
-  return true;
+export function isDirectWorkspaceImplementTask(content: string, context: ModeIntentContext = {}) {
+  return Boolean(extractWorkspaceAction(content, context));
 }
 
 // ---------------------------------------------------------------------------
@@ -295,6 +299,77 @@ export function isDirectWorkspaceImplementTask(content: string) {
 
 function normalizeIntentText(content: string) {
   return content.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function normalizeScoringIntentText(content: string) {
+  const normalized = normalizeIntentText(content);
+  const corrected = normalized.replace(directActionCorrectionPrefix, "").trim();
+  if (!corrected) {
+    return normalized;
+  }
+
+  return infoQuestionStart.test(corrected) ||
+    explainStart.test(corrected) ||
+    directActionStart.test(corrected) ||
+    implementStart.test(corrected) ||
+    planStart.test(corrected) ||
+    debugStart.test(corrected) ||
+    reviewStart.test(corrected)
+    ? corrected
+    : normalized;
+}
+
+function normalizeDirectWorkspaceImplementText(content: string) {
+  let normalized = normalizeIntentText(content);
+  let previous = "";
+  while (normalized && normalized !== previous) {
+    previous = normalized;
+    normalized = normalized.replace(directActionCorrectionPrefix, "").trim();
+    normalized = normalized.replace(directActionLocationPrefix, "").trim();
+  }
+
+  return normalized;
+}
+
+export function extractWorkspaceAction(content: string, context: ModeIntentContext = {}) {
+  const normalized = normalizeIntentText(content);
+  const normalizedDirect = normalizeDirectWorkspaceImplementText(content);
+  const inheritedAction = inferRecentWorkspaceAction(context.recentMessages);
+
+  if (inheritedAction && shouldInheritWorkspaceAction(normalized, normalizedDirect, inheritedAction)) {
+    return rebaseWorkspaceActionToCurrentScope(inheritedAction, normalized);
+  }
+
+  if (!normalizedDirect || normalizedDirect.includes("?")) {
+    return undefined;
+  }
+
+  const wordCount = normalizedDirect.split(" ").filter(Boolean).length;
+  if (wordCount > PLANNER_BYPASS_MAX_WORDS) {
+    return undefined;
+  }
+
+  if (!directActionStart.test(normalizedDirect)) {
+    return undefined;
+  }
+
+  if (complexityBlocker.test(normalizedDirect) || multiPartSplit.test(normalizedDirect)) {
+    return undefined;
+  }
+
+  const target = extractExplicitWorkspaceTarget(normalizedDirect) ?? inferNamedWorkspaceTarget(normalizedDirect);
+  const artifact = extractWorkspaceArtifact(normalizedDirect);
+  const hasArtifact = Boolean(artifact) || hasGlobalMatch(normalizedDirect, workspaceArtifact);
+  const hasPath = Boolean(target) || hasGlobalMatch(normalizedDirect, workspacePath) || hasGlobalMatch(normalizedDirect, fileLikeToken);
+  if (!hasArtifact && !hasPath) {
+    return undefined;
+  }
+
+  return {
+    artifact: artifact ?? "workspace-artifact",
+    target,
+    inherited: false
+  } satisfies WorkspaceAction;
 }
 
 function countMatches(input: string, pattern: RegExp) {
@@ -325,4 +400,112 @@ function emptyScores() {
     modeId: BuiltinAutoModeId;
     confidence: number;
   }>;
+}
+
+function extractWorkspaceArtifact(input: string) {
+  if (/\b(?:folder|directory)\b/.test(input)) {
+    return "folder" as const;
+  }
+
+  if (/\b(?:file|readme|read-me|docs?|config(?:uration)?|package\.json|tsconfig(?:\.json)?|\.env|env)\b/.test(input)) {
+    return "file" as const;
+  }
+
+  return undefined;
+}
+
+function extractExplicitWorkspaceTarget(input: string) {
+  const pathMatch = input.match(workspacePath);
+  if (pathMatch?.[0]) {
+    return cleanWorkspaceTarget(pathMatch[0]);
+  }
+
+  const fileMatch = input.match(fileLikeToken);
+  if (fileMatch?.[0]) {
+    return cleanWorkspaceTarget(fileMatch[0]);
+  }
+
+  return undefined;
+}
+
+function inferNamedWorkspaceTarget(input: string) {
+  const namedTargetMatch = input.match(
+    /(?:folder|directory|file)\s+(?:named\s+|called\s+)?([a-z0-9_.-]+(?:[\\/][a-z0-9_.-]+)*)$/
+  );
+  if (namedTargetMatch?.[1]) {
+    return cleanWorkspaceTarget(namedTargetMatch[1]);
+  }
+
+  return undefined;
+}
+
+function cleanWorkspaceTarget(value: string) {
+  return value.trim().replace(/^[(`"']+|[)`"',.;:]+$/g, "");
+}
+
+function inferRecentWorkspaceAction(recentMessages: ModeIntentMessage[] | undefined) {
+  if (!recentMessages?.length) {
+    return undefined;
+  }
+
+  let fallbackAction: WorkspaceAction | undefined;
+  for (let index = recentMessages.length - 1; index >= 0; index -= 1) {
+    const message = recentMessages[index];
+    if (!message || message.role === "system") {
+      continue;
+    }
+
+    const normalized = normalizeIntentText(message.content);
+    const artifact = extractWorkspaceArtifact(normalized);
+    const target = extractExplicitWorkspaceTarget(normalized) ?? inferNamedWorkspaceTarget(normalized);
+    if (!artifact && !target) {
+      continue;
+    }
+
+    const action = {
+      artifact: artifact ?? "workspace-artifact",
+      target,
+      inherited: true
+    } satisfies WorkspaceAction;
+    if (artifact) {
+      return action;
+    }
+
+    fallbackAction ??= action;
+  }
+
+  return fallbackAction;
+}
+
+function shouldInheritWorkspaceAction(
+  normalized: string,
+  normalizedDirect: string,
+  inheritedAction: WorkspaceAction | undefined
+) {
+  if (!inheritedAction) {
+    return false;
+  }
+
+  if (!directActionCorrectionPrefix.test(normalized)) {
+    return false;
+  }
+
+  if (normalizedDirect && directActionStart.test(normalizedDirect)) {
+    return false;
+  }
+
+  return directActionLocationPrefix.test(normalized) || /\b(?:here|there|cwd|current working directory|same place)\b/.test(normalized);
+}
+
+function rebaseWorkspaceActionToCurrentScope(inheritedAction: WorkspaceAction, normalized: string) {
+  const rebasedTarget =
+    /\b(?:cwd|current working directory|here)\b/.test(normalized) && inheritedAction.target
+      ? inheritedAction.target.split(/[\\/]/).filter(Boolean).at(-1)
+      : inheritedAction.target;
+
+  return {
+    artifact: inheritedAction.artifact,
+    target: rebasedTarget,
+    inherited: true
+  } satisfies WorkspaceAction;
 }

@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
+import { resolveModeExecutionAccess } from "../../shared/modes";
 import {
   assistantsStateSchema,
   agentRunStateSchema,
@@ -160,6 +161,7 @@ type WorkspaceModeRow = {
   planner_prompt: string;
   execution_prompt: string;
   tool_policy: "full-access" | "read-heavy" | "review-only";
+  execution_access: "workspace-write" | "read-only" | null;
   plan_execution_mode_default: PlanExecutionMode | null;
   subagent_worktree_strategy_default: SubagentWorktreeStrategy | null;
   correctness_iteration_mode_default: CorrectnessIterationMode | null;
@@ -2553,15 +2555,16 @@ export class WorkspaceRepository {
       this.db
         .query(
           `INSERT INTO workspace_modes (
-            id, label, description, planner_prompt, execution_prompt, tool_policy,
+            id, label, description, planner_prompt, execution_prompt, tool_policy, execution_access,
             plan_execution_mode_default, subagent_worktree_strategy_default, correctness_iteration_mode_default, updated_at
-          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
           ON CONFLICT(id) DO UPDATE SET
             label = excluded.label,
             description = excluded.description,
             planner_prompt = excluded.planner_prompt,
             execution_prompt = excluded.execution_prompt,
             tool_policy = excluded.tool_policy,
+            execution_access = excluded.execution_access,
             plan_execution_mode_default = excluded.plan_execution_mode_default,
             subagent_worktree_strategy_default = excluded.subagent_worktree_strategy_default,
             correctness_iteration_mode_default = excluded.correctness_iteration_mode_default,
@@ -2574,6 +2577,7 @@ export class WorkspaceRepository {
           mode.plannerPrompt,
           mode.executionPrompt,
           mode.toolPolicy,
+          mode.executionAccess,
           mode.planExecutionModeDefault ?? null,
           mode.subagentWorktreeStrategyDefault ?? null,
           mode.correctnessIterationModeDefault ?? null,
@@ -2590,15 +2594,16 @@ export class WorkspaceRepository {
     this.db
       .query(
         `INSERT INTO project_modes (
-          project_id, id, label, description, planner_prompt, execution_prompt, tool_policy,
+          project_id, id, label, description, planner_prompt, execution_prompt, tool_policy, execution_access,
           plan_execution_mode_default, subagent_worktree_strategy_default, correctness_iteration_mode_default, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
         ON CONFLICT(project_id, id) DO UPDATE SET
           label = excluded.label,
           description = excluded.description,
           planner_prompt = excluded.planner_prompt,
           execution_prompt = excluded.execution_prompt,
           tool_policy = excluded.tool_policy,
+          execution_access = excluded.execution_access,
           plan_execution_mode_default = excluded.plan_execution_mode_default,
           subagent_worktree_strategy_default = excluded.subagent_worktree_strategy_default,
           correctness_iteration_mode_default = excluded.correctness_iteration_mode_default,
@@ -2612,6 +2617,7 @@ export class WorkspaceRepository {
         mode.plannerPrompt,
         mode.executionPrompt,
         mode.toolPolicy,
+        mode.executionAccess,
         mode.planExecutionModeDefault ?? null,
         mode.subagentWorktreeStrategyDefault ?? null,
         mode.correctnessIterationModeDefault ?? null,
@@ -2834,6 +2840,7 @@ export class WorkspaceRepository {
         planner_prompt TEXT NOT NULL,
         execution_prompt TEXT NOT NULL,
         tool_policy TEXT NOT NULL CHECK(tool_policy IN ('full-access', 'read-heavy', 'review-only')),
+        execution_access TEXT NOT NULL CHECK(execution_access IN ('workspace-write', 'read-only')),
         plan_execution_mode_default TEXT NULL,
         subagent_worktree_strategy_default TEXT NULL,
         correctness_iteration_mode_default TEXT NULL,
@@ -2848,6 +2855,7 @@ export class WorkspaceRepository {
         planner_prompt TEXT NOT NULL,
         execution_prompt TEXT NOT NULL,
         tool_policy TEXT NOT NULL CHECK(tool_policy IN ('full-access', 'read-heavy', 'review-only')),
+        execution_access TEXT NOT NULL CHECK(execution_access IN ('workspace-write', 'read-only')),
         plan_execution_mode_default TEXT NULL,
         subagent_worktree_strategy_default TEXT NULL,
         correctness_iteration_mode_default TEXT NULL,
@@ -3106,6 +3114,16 @@ export class WorkspaceRepository {
     this.addColumnIfMissing("thread_messages", "kind", "TEXT NOT NULL DEFAULT 'plain'");
     this.addColumnIfMissing("thread_messages", "attachments_json", "TEXT NULL");
     this.addColumnIfMissing("thread_messages", "metadata_json", "TEXT NULL");
+    this.addColumnIfMissing(
+      "workspace_modes",
+      "execution_access",
+      "TEXT NULL CHECK(execution_access IN ('workspace-write', 'read-only'))"
+    );
+    this.addColumnIfMissing(
+      "project_modes",
+      "execution_access",
+      "TEXT NULL CHECK(execution_access IN ('workspace-write', 'read-only'))"
+    );
     this.addColumnIfMissing("agent_run_questions", "choices_json", "TEXT NULL");
     this.addColumnIfMissing("agent_run_subtasks", "commit_sha", "TEXT NULL");
     this.addColumnIfMissing("agent_run_subtasks", "worktree_path", "TEXT NULL");
@@ -3294,7 +3312,7 @@ export class WorkspaceRepository {
     return this.db
       .query<WorkspaceModeRow, []>(
         `SELECT
-          id, label, description, planner_prompt, execution_prompt, tool_policy,
+          id, label, description, planner_prompt, execution_prompt, tool_policy, execution_access,
           plan_execution_mode_default, subagent_worktree_strategy_default, correctness_iteration_mode_default, updated_at
          FROM workspace_modes
          ORDER BY updated_at DESC, id ASC`
@@ -3307,7 +3325,7 @@ export class WorkspaceRepository {
     return this.db
       .query<ProjectModeRow, [string]>(
         `SELECT
-          project_id, id, label, description, planner_prompt, execution_prompt, tool_policy,
+          project_id, id, label, description, planner_prompt, execution_prompt, tool_policy, execution_access,
           plan_execution_mode_default, subagent_worktree_strategy_default, correctness_iteration_mode_default, updated_at
          FROM project_modes
          WHERE project_id = ?1
@@ -4613,6 +4631,10 @@ function toModeDefinition(row: WorkspaceModeRow | ProjectModeRow, scope: "worksp
     plannerPrompt: row.planner_prompt,
     executionPrompt: row.execution_prompt,
     toolPolicy: row.tool_policy,
+    executionAccess: resolveModeExecutionAccess({
+      toolPolicy: row.tool_policy,
+      executionAccess: row.execution_access ?? undefined
+    }),
     planExecutionModeDefault: row.plan_execution_mode_default ?? undefined,
     subagentWorktreeStrategyDefault: row.subagent_worktree_strategy_default ?? undefined,
     correctnessIterationModeDefault: row.correctness_iteration_mode_default ?? undefined,

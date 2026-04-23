@@ -50,4 +50,32 @@ describe("pi planner payload parsing", () => {
       type: "ready"
     });
   });
+  test("normalizes repo-local leading-slash paths in ready planner payloads", () => {
+    const result = testExports.normalizePlannerWorkspacePaths(
+      {
+        type: "ready",
+        difficultyScore: 20,
+        summary: "Create /breakout assets",
+        executionModelId: "openai/gpt-5.4",
+        usesSubagents: false,
+        subtasks: [
+          {
+            id: "task-1",
+            title: "Create /breakout/index.html",
+            instruction: "Write /breakout/index.html"
+          }
+        ],
+        finalExecutionBrief: "Create /breakout/index.html"
+      },
+      "C:\\repo\\context"
+    );
+
+    expect(result.type).toBe("ready");
+    if (result.type !== "ready") {
+      throw new Error("Expected ready planner result");
+    }
+    expect(result.summary).toBe("Create breakout assets");
+    expect(result.finalExecutionBrief).toBe("Create breakout/index.html");
+    expect(result.subtasks[0]?.instruction).toBe("Write breakout/index.html");
+  });
 });

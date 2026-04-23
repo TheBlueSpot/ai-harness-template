@@ -146,6 +146,7 @@ describe("workspace repository", () => {
       plannerPrompt: "Plan for direct delivery.",
       executionPrompt: "Implement with minimal ceremony.",
       toolPolicy: "full-access",
+      executionAccess: "workspace-write",
       updatedAt: new Date().toISOString()
     });
 
@@ -155,6 +156,7 @@ describe("workspace repository", () => {
     expect(workspace.workspaceRuleSource?.content).toBe("Prefer plan-first work.");
     expect(workspace.workspaceMemorySummary?.content).toBe("User likes concise updates.");
     expect((workspace.workspaceModes ?? []).map((mode) => mode.id)).toContain("ship-fast");
+    expect(workspace.workspaceModes?.find((mode) => mode.id === "ship-fast")?.executionAccess).toBe("workspace-write");
   });
 
   test("persists project context, selected mode, and project modes across reload", () => {
@@ -169,6 +171,7 @@ describe("workspace repository", () => {
       plannerPrompt: "Keep scope narrow.",
       executionPrompt: "Touch smallest safe slice.",
       toolPolicy: "read-heavy",
+      executionAccess: "workspace-write",
       planExecutionModeDefault: "approve",
       updatedAt: new Date().toISOString()
     }, project.id);
@@ -185,6 +188,7 @@ describe("workspace repository", () => {
     expect(restoredProject.projectRuleSource?.content).toBe("Stay inside selected package.");
     expect(restoredProject.threadMemorySummary?.content).toBe("Current bug around planner refinement.");
     expect((restoredProject.projectModes ?? []).map((mode) => mode.id)).toContain("focus-fix");
+    expect(restoredProject.projectModes?.find((mode) => mode.id === "focus-fix")?.executionAccess).toBe("workspace-write");
 
     reloadedRepository.deleteMode("project", "focus-fix", project.id);
     const afterDelete = reloadedRepository.getProject(project.id);

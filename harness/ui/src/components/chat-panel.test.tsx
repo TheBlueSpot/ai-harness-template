@@ -207,6 +207,38 @@ createUiTest("ChatPanel", () => {
     expect((commands[0] as { type: string }).type).toBe("chat.send");
   });
 
+  it("locks mode on chat.send when user explicitly selected one", () => {
+    const commands: unknown[] = [];
+    const project = createViewProjectFixture({
+      id: "project-send-locked",
+      draft: "simple task"
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        hasUsableApiKey: true,
+        hasUsableOpenAiApiKey: true,
+        selectedModeId: "plan",
+        hasGlobalSelectedModeId: true,
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    captureDispatchedCommands(commands as never[]);
+    render(() => <ChatPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "Send task to Pi" }));
+
+    expect(commands[0]).toMatchObject({
+      type: "chat.send",
+      payload: {
+        modeId: "plan",
+        modeLocked: true
+      }
+    });
+  });
+
 it("updates composer effort label and sends reasoning plus fast mode", () => {
     const commands: unknown[] = [];
     const project = createViewProjectFixture({
@@ -248,6 +280,54 @@ it("updates composer effort label and sends reasoning plus fast mode", () => {
         fastMode: true
       }
     });
+  });
+
+  it("keeps effort in the shared control row and hides single-choice dropdowns", () => {
+    const project = createViewProjectFixture({
+      id: "project-compact-controls"
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        selectedAgentId: "codex-cli",
+        hasGlobalSelectedAgentId: true,
+        agentRuntimes: [
+          {
+            agentId: "codex-cli",
+            label: "Codex CLI",
+            runtimeKind: "cli",
+            installed: true,
+            authenticated: true,
+            interactivePipeCompatible: true,
+            supportsInteractive: true,
+            supportsProgrammatic: true,
+            supportsPlanning: true,
+            supportsReview: true,
+            supportsReasoningStrengthControl: true,
+            supportsFastModeControl: true,
+            discoveredModels: ["openai/gpt-5.4"],
+            activeModel: "openai/gpt-5.4",
+            modelDiscoveryConfidence: "partial"
+          }
+        ],
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ChatPanel />);
+
+    const controlRow = document.querySelector("[data-test-composer-control-row]");
+    const effortTrigger = document.querySelector("[data-test-effort-trigger]");
+
+    expect(controlRow).not.toBeNull();
+    expect(effortTrigger).not.toBeNull();
+    expect(controlRow?.contains(effortTrigger)).toBe(true);
+    expect(document.querySelector("[data-test-provider-select]")).toBeNull();
+    expect(document.querySelector("[data-test-model-select]")).toBeNull();
+    expect(screen.queryByText("Mode")).toBeNull();
+    expect(screen.queryByText("Agent")).toBeNull();
   });
 
   it("submits composer with Enter when textarea is focused", () => {

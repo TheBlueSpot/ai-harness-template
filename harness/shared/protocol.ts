@@ -67,6 +67,7 @@ export const backgroundJobApprovalPolicySchema = z.enum(["allow-all", "allow-saf
 export const backgroundJobThreadKindSchema = z.enum(["user", "automation"]);
 export const modeScopeSchema = z.enum(["builtin", "workspace", "project"]);
 export const modeToolPolicySchema = z.enum(["full-access", "read-heavy", "review-only"]);
+export const modeExecutionAccessSchema = z.enum(["workspace-write", "read-only"]);
 export const capabilityTagSchema = z.enum(["tools", "vision", "browser", "long-context", "fast", "expensive"]);
 export const assistantScopeSchema = z.enum(["global", "project"]);
 export const assistantRunStateSchema = z.enum(["active", "paused"]);
@@ -375,6 +376,7 @@ export const modeDefinitionSchema = z.object({
   plannerPrompt: z.string().min(1).max(4000),
   executionPrompt: z.string().min(1).max(4000),
   toolPolicy: modeToolPolicySchema,
+  executionAccess: modeExecutionAccessSchema,
   planExecutionModeDefault: planExecutionModeSchema.optional(),
   subagentWorktreeStrategyDefault: subagentWorktreeStrategySchema.optional(),
   correctnessIterationModeDefault: correctnessIterationModeSchema.optional(),
@@ -1222,6 +1224,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       content: z.string().min(1).max(32000),
       attachments: z.array(chatAttachmentSchema).max(8).optional(),
       modeId: modeIdSchema.optional(),
+      modeLocked: z.boolean().optional(),
       executionModelId: executionModelIdSchema.optional(),
       reasoningStrength: composerReasoningStrengthSchema.optional(),
       fastMode: z.boolean().optional(),
@@ -2158,6 +2161,7 @@ export type BackgroundJobThreadKind = z.infer<typeof backgroundJobThreadKindSche
 export type NotificationSeverity = z.infer<typeof notificationSeveritySchema>;
 export type ModeScope = z.infer<typeof modeScopeSchema>;
 export type ModeToolPolicy = z.infer<typeof modeToolPolicySchema>;
+export type ModeExecutionAccess = z.infer<typeof modeExecutionAccessSchema>;
 export type CapabilityTag = z.infer<typeof capabilityTagSchema>;
 export type ChatAttachmentKind = z.infer<typeof chatAttachmentKindSchema>;
 export type ChatDocumentType = z.infer<typeof chatDocumentTypeSchema>;

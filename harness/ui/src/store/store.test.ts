@@ -1528,6 +1528,7 @@ describe("harness store reducer", () => {
               plannerPrompt: "Bias toward direct implementation.",
               executionPrompt: "Implement smallest safe change.",
               toolPolicy: "full-access",
+              executionAccess: "workspace-write",
               updatedAt: new Date().toISOString()
             }
           ],
@@ -1567,6 +1568,7 @@ describe("harness store reducer", () => {
               plannerPrompt: "Keep scope narrow.",
               executionPrompt: "Touch smallest safe slice.",
               toolPolicy: "read-heavy",
+              executionAccess: "workspace-write",
               updatedAt: new Date().toISOString()
             }
           ],

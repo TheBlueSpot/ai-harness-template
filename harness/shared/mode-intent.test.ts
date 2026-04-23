@@ -6,6 +6,7 @@ import {
   PLANNER_BYPASS_CONFIDENCE,
   PLANNER_BYPASS_MAX_WORDS,
   detectAutoMode,
+  extractWorkspaceAction,
   isDirectWorkspaceImplementTask,
   scoreBuiltinModeIntent
 } from "./mode-intent";
@@ -206,6 +207,36 @@ test("bypass: 'Create readme.md'", () => {
 
 test("bypass: polite prefix with path", () => {
   const detected = detectAutoMode("Could you add config file at ./pkg/config.json", builtinModes);
+  expect(detected?.modeId).toBe("implement");
+  expect(detected?.confidence).toBe(PLANNER_BYPASS_CONFIDENCE);
+});
+
+test("bypass: correction-style follow-up still routes to implement", () => {
+  const input = "no inside the cwd make a new folder tetris";
+  const detected = detectAutoMode(input, builtinModes);
+  expect(isDirectWorkspaceImplementTask(input)).toBe(true);
+  expect(detected?.modeId).toBe("implement");
+  expect(detected?.confidence).toBe(PLANNER_BYPASS_CONFIDENCE);
+});
+
+test("bypass: location-only correction inherits prior workspace action from recent messages", () => {
+  const input = "no inside the cwd";
+  const context = {
+    recentMessages: [
+      { role: "user" as const, content: "create folder /tetris" },
+      {
+        role: "assistant" as const,
+        content: "Tried create `C:\\Users\\MindOverMelee\\ai-harness-template\\context\\tetris` but write was blocked."
+      }
+    ]
+  };
+  const detected = detectAutoMode(input, builtinModes, context);
+  expect(extractWorkspaceAction(input, context)).toMatchObject({
+    artifact: "folder",
+    target: "tetris",
+    inherited: true
+  });
+  expect(isDirectWorkspaceImplementTask(input, context)).toBe(true);
   expect(detected?.modeId).toBe("implement");
   expect(detected?.confidence).toBe(PLANNER_BYPASS_CONFIDENCE);
 });

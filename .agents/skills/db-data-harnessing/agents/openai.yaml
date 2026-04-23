@@ -1,0 +1,4 @@
+interface:
+  display_name: "DB Data Harnessing"
+  short_description: "Inspect harness SQLite thread data"
+  default_prompt: "Use $db-data-harnessing to investigate /lookup-thread <thread-id> in the harness SQLite database."

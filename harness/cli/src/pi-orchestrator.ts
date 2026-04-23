@@ -26,6 +26,7 @@ import type { ManagedExecutionState, ManagedRefreshAction } from "./execution-ru
 import { debugLog } from "./logging";
 import { runManagedAgentExecution } from "./managed-agent-execution";
 import type { PiAgentAdapter, PiAgentExecutionEvent } from "./pi-agent-adapter";
+import { modeUsesReadOnlyExecution } from "../../shared/modes";
 import {
   discardBranchfsIntegrationLease,
   discardBranchfsSnapshots,
@@ -35,11 +36,12 @@ import {
 } from "./branchfs-subagent-integration";
 import {
   getDefaultPlanningModelId,
-  getDefaultSubagentModelId,
   planTask
 } from "./pi-planner";
+import { buildWorkspacePathGuidance, normalizeWorkspaceRelativePaths } from "./workspace-path-intent";
 import { executeSubagents, type SubagentResult } from "./pi-subagents";
 import { buildPromptAttachmentContext } from "./chat-attachment-prompt";
+import { resolveSubagentModelId, resolveSubagentReasoningStrength } from "./subagent-defaults";
 
 export type PiOrchestratorCallbacks = {
   onPlan?: (plan: AgentPlan) => void;
@@ -102,6 +104,7 @@ export async function runPlannerTurn(
     runId: string;
     agentId?: AgentId;
     providerBrand: ProviderBrand;
+    planningModelId?: ProviderModelId;
     executionModelId?: ProviderModelId;
     subagentWorktreeStrategy: SubagentWorktreeStrategy;
     planExecutionMode: PlanExecutionMode;
@@ -120,7 +123,7 @@ export async function runPlannerTurn(
   }
 ): Promise<PlannerTurnOutcome> {
   const planningStartedAt = Date.now();
-  const planningModelId = getDefaultPlanningModelId(options.providerBrand);
+  const planningModelId = options.planningModelId ?? getDefaultPlanningModelId(options.providerBrand);
   const agentLabel = getAgentRuntimeLabel(options.agentId);
   emitTrace(options.callbacks, {
     sessionId: options.sessionId,
@@ -134,6 +137,7 @@ export async function runPlannerTurn(
     messages: options.messages,
     latestUserPrompt: options.latestUserPrompt,
     providerBrand: options.providerBrand,
+    planningModelId,
     executionModelId: options.executionModelId,
     mode: options.mode,
     ruleSources: options.ruleSources,
@@ -301,16 +305,21 @@ export async function executeReadyRun(
     };
   }
 
-  const subagentModelId = getDefaultSubagentModelId(options.providerBrand);
+  const subagentModelId = resolveSubagentModelId({
+    agentId: options.agentId,
+    providerBrand: options.providerBrand,
+    executionModelId: options.readyPlan.executionModelId
+  });
   const { results: freshResults, retainedSnapshots } = await executeSubagents(adapter, {
     cwd: options.cwd,
     runId: options.runId,
+    agentId: options.agentId,
     providerBrand: options.providerBrand,
     brief: options.readyPlan.finalExecutionBrief,
     tasks: options.tasksToRun ?? options.readyPlan.subtasks,
     debugEnabled: options.debugEnabled,
     executionModelId: options.readyPlan.executionModelId,
-    reasoningStrength: options.reasoningStrength,
+    reasoningStrength: resolveSubagentReasoningStrength(options.reasoningStrength),
     fastMode: options.fastMode,
     abortSignal: options.abortSignal,
     callbacks: {
@@ -451,6 +460,7 @@ async function executeSameWorktreeSubagents(
     runId: string;
     sessionId: string;
     messages: ChatMessage[];
+    agentId?: AgentId;
     providerBrand: ProviderBrand;
     readyPlan: PlannerReadyTurn;
     debugEnabled: boolean;
@@ -460,11 +470,17 @@ async function executeSameWorktreeSubagents(
     tasksToRun?: PlannerSubtask[];
     resumeNote?: string;
     executionPlan?: ExecutionPlan;
+    reasoningStrength?: ComposerReasoningStrength;
   }
 ) {
   const tasks = options.tasksToRun ?? options.readyPlan.subtasks;
   const contracts = options.executionPlan?.contracts ?? options.readyPlan.contracts ?? [];
-  const subagentModelId = getDefaultSubagentModelId(options.providerBrand);
+  const subagentModelId = resolveSubagentModelId({
+    agentId: options.agentId,
+    providerBrand: options.providerBrand,
+    executionModelId: options.readyPlan.executionModelId
+  });
+  const subagentReasoningStrength = resolveSubagentReasoningStrength(options.reasoningStrength);
   const results: SubagentResult[] = [];
 
   for (const task of tasks) {
@@ -621,8 +637,9 @@ async function executeMainAgent(
   finalExecutionBrief: string
 ) {
   const startedAt = Date.now();
-  const executionInput = await buildExecutionInput(options.messages, finalExecutionBrief, options.executionPlan);
+  const executionInput = await buildExecutionInput(options.cwd, options.messages, finalExecutionBrief, options.executionPlan);
   const continuationInput = await buildExecutionInput(
+    options.cwd,
     options.messages,
     finalExecutionBrief,
     options.executionPlan,
@@ -768,7 +785,7 @@ export async function aggregateSubagentResults(
   integrationNote?: string
 ) {
   const startedAt = Date.now();
-  const executionInput = await buildExecutionInput(options.messages, finalExecutionBrief, options.executionPlan);
+  const executionInput = await buildExecutionInput(options.cwd, options.messages, finalExecutionBrief, options.executionPlan);
   emitTrace(options.callbacks, {
     sessionId: options.sessionId,
     stage: "aggregation-start",
@@ -882,7 +899,23 @@ export async function aggregateSubagentResults(
   return createChatMessage("assistant", result.text.trim());
 }
 
-export function buildExecutionPrompt(messages: ChatMessage[], finalExecutionBrief: string, executionPlan?: ExecutionPlan) {
+export function buildExecutionPrompt(
+  messages: ChatMessage[],
+  finalExecutionBrief: string,
+  executionPlan?: ExecutionPlan,
+  cwd?: string
+) {
+  const workspacePathGuidance = cwd
+    ? buildWorkspacePathGuidance(
+        [...messages.filter((message) => message.role === "user").slice(-3).map((message) => message.content), finalExecutionBrief].join(
+          "\n"
+        ),
+        cwd
+      )
+    : undefined;
+  const normalizedFinalExecutionBrief = cwd
+    ? normalizeWorkspaceRelativePaths(finalExecutionBrief, cwd)
+    : finalExecutionBrief;
   return [
     "You are the execution stage for a local coding harness.",
     "Use the available coding tools when needed and respond with the final assistant answer only.",
@@ -904,24 +937,32 @@ export function buildExecutionPrompt(messages: ChatMessage[], finalExecutionBrie
           ...executionPlan.memorySummaries.map((memory) => `[${memory.scope}] ${memory.label}: ${memory.content}`)
         ].join("\n")
       : "",
+    workspacePathGuidance ?? "",
+    workspacePathGuidance ? "" : undefined,
     "",
     "Conversation transcript:",
     formatMessages(messages),
     "",
-    `Execution brief: ${finalExecutionBrief}`
+    `Execution brief: ${normalizedFinalExecutionBrief}`
   ].filter(Boolean).join("\n");
 }
 
 export function shouldUseReadOnlyExecutionTools(executionPlan?: Pick<ExecutionPlan, "mode">) {
-  const toolPolicy = executionPlan?.mode?.toolPolicy;
-  return toolPolicy === "read-heavy" || toolPolicy === "review-only";
+  return modeUsesReadOnlyExecution(executionPlan?.mode);
 }
 
-function buildContinuationPrompt(prefix: string, messages: ChatMessage[], finalExecutionBrief: string, executionPlan?: ExecutionPlan) {
-  return [prefix, "", buildExecutionPrompt(messages, finalExecutionBrief, executionPlan)].join("\n");
+function buildContinuationPrompt(
+  prefix: string,
+  cwd: string,
+  messages: ChatMessage[],
+  finalExecutionBrief: string,
+  executionPlan?: ExecutionPlan
+) {
+  return [prefix, "", buildExecutionPrompt(messages, finalExecutionBrief, executionPlan, cwd)].join("\n");
 }
 
 async function buildExecutionInput(
+  cwd: string,
   messages: ChatMessage[],
   finalExecutionBrief: string,
   executionPlan?: ExecutionPlan,
@@ -932,31 +973,14 @@ async function buildExecutionInput(
     prefix,
     prefix ? "" : undefined,
     [
-      "You are the execution stage for a local coding harness.",
-      "Use the available coding tools when needed and respond with the final assistant answer only.",
-      "",
-      executionPlan?.mode
-        ? [
-            "Active mode:",
-            `- ${executionPlan.mode.label}: ${executionPlan.mode.description}`,
-            `- Execution guidance: ${executionPlan.mode.executionPrompt}`,
-            `- Tool policy: ${executionPlan.mode.toolPolicy}`
+      buildExecutionPrompt(messages, finalExecutionBrief, executionPlan, cwd),
+      attachmentContext.transcript === formatMessages(messages)
+        ? undefined
+        : [
+            "",
+            "Attachment transcript:",
+            attachmentContext.transcript
           ].join("\n")
-        : "",
-      executionPlan?.ruleSources && executionPlan.ruleSources.length > 0
-        ? ["Rule sources:", ...executionPlan.ruleSources.map((rule) => `[${rule.scope}] ${rule.label}: ${rule.content}`)].join("\n")
-        : "",
-      executionPlan?.memorySummaries && executionPlan.memorySummaries.length > 0
-        ? [
-            "Memory summaries:",
-            ...executionPlan.memorySummaries.map((memory) => `[${memory.scope}] ${memory.label}: ${memory.content}`)
-          ].join("\n")
-        : "",
-      "",
-      "Conversation transcript:",
-      attachmentContext.transcript,
-      "",
-      `Execution brief: ${finalExecutionBrief}`
     ]
       .filter(Boolean)
       .join("\n")

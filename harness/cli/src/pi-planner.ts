@@ -14,6 +14,8 @@ import {
 } from "../../shared/protocol";
 import type { PiAgentAdapter } from "./pi-agent-adapter";
 import { buildPromptAttachmentContext } from "./chat-attachment-prompt";
+import { resolveSubagentModelId } from "./subagent-defaults";
+import { buildWorkspacePathGuidance, normalizeWorkspaceRelativePaths } from "./workspace-path-intent";
 
 export const GPT_DEFAULT_PLANNING_MODEL_ID = "openai/gpt-5.4";
 export const GPT_DEFAULT_EXECUTION_MODEL_ID = "openai/gpt-5.4";
@@ -29,6 +31,7 @@ export async function planTask(
     messages: ChatMessage[];
     latestUserPrompt: string;
     providerBrand: ProviderBrand;
+    planningModelId?: ProviderModelId;
     executionModelId?: ProviderModelId;
     mode?: ModeDefinition;
     ruleSources?: WorkspaceRuleSource[];
@@ -40,8 +43,10 @@ export async function planTask(
   }
 ): Promise<{ plannerResult: PlannerTurnResult; contextUsage?: ProjectContextUsage }> {
   const requestedExecutionModelId = options.executionModelId ?? getDefaultExecutionModelId(options.providerBrand);
-  const defaultPlanningModelId = getDefaultPlanningModelId(options.providerBrand);
+  const planningModelId = options.planningModelId ?? getDefaultPlanningModelId(options.providerBrand);
   const attachmentContext = await buildPromptAttachmentContext(options.messages);
+  const workspacePathGuidance = buildWorkspacePathGuidance(options.latestUserPrompt, options.cwd);
+  const normalizedLatestUserPrompt = normalizeWorkspaceRelativePaths(options.latestUserPrompt, options.cwd);
   const prompt = [
     "You are the planning stage for a local coding harness.",
     "Return JSON only. Do not wrap it in markdown fences.",
@@ -89,13 +94,15 @@ export async function planTask(
     "Prior planning Q/A:",
     formatPlanningQuestions(options.priorQuestions ?? []),
     "",
-    `Latest user task: ${options.latestUserPrompt}`
+    workspacePathGuidance ?? "",
+    workspacePathGuidance ? "" : undefined,
+    `Latest user task: ${normalizedLatestUserPrompt}`
   ].join("\n");
 
   const result = await adapter.runPrompt({
     kind: "planner",
     cwd: options.cwd,
-    modelId: defaultPlanningModelId,
+    modelId: planningModelId,
     prompt,
     images: attachmentContext.images,
     reasoningStrength: options.reasoningStrength,
@@ -105,14 +112,17 @@ export async function planTask(
   });
 
   try {
-    const parsed = normalizePlannerPayload(parseJsonPayload(result.text));
+    const parsed = normalizePlannerWorkspacePaths(
+      plannerTurnResultSchema.parse(normalizePlannerPayload(parseJsonPayload(result.text))),
+      options.cwd
+    );
     return {
-      plannerResult: plannerTurnResultSchema.parse(parsed),
+      plannerResult: parsed,
       contextUsage: result.contextUsage
         ? {
             sourceKind: "planner",
             sourceLabel: "planner",
-            modelId: defaultPlanningModelId,
+            modelId: planningModelId,
             tokens: result.contextUsage.tokens,
             contextWindow: result.contextUsage.contextWindow,
             usagePercent: result.contextUsage.usagePercent,
@@ -241,7 +251,8 @@ function extractFirstJsonPayload(input: string) {
 }
 
 export const testExports = {
-  parseJsonPayload
+  parseJsonPayload,
+  normalizePlannerWorkspacePaths
 };
 
 function normalizePlannerPayload(input: unknown) {
@@ -261,6 +272,23 @@ function normalizePlannerPayload(input: unknown) {
   return input;
 }
 
+function normalizePlannerWorkspacePaths(plannerResult: PlannerTurnResult, cwd: string): PlannerTurnResult {
+  if (plannerResult.type !== "ready") {
+    return plannerResult;
+  }
+
+  return {
+    ...plannerResult,
+    summary: normalizeWorkspaceRelativePaths(plannerResult.summary, cwd),
+    finalExecutionBrief: normalizeWorkspaceRelativePaths(plannerResult.finalExecutionBrief, cwd),
+    subtasks: plannerResult.subtasks.map((subtask) => ({
+      ...subtask,
+      title: normalizeWorkspaceRelativePaths(subtask.title, cwd),
+      instruction: normalizeWorkspaceRelativePaths(subtask.instruction, cwd)
+    }))
+  };
+}
+
 export function getDefaultPlanningModelId(providerBrand: ProviderBrand): ProviderModelId {
   return providerBrand === "gemini" ? GEMINI_DEFAULT_PLANNING_MODEL_ID : GPT_DEFAULT_PLANNING_MODEL_ID;
 }
@@ -269,6 +297,13 @@ export function getDefaultExecutionModelId(providerBrand: ProviderBrand): Provid
   return providerBrand === "gemini" ? GEMINI_DEFAULT_EXECUTION_MODEL_ID : GPT_DEFAULT_EXECUTION_MODEL_ID;
 }
 
-export function getDefaultSubagentModelId(providerBrand: ProviderBrand): ProviderModelId {
-  return providerBrand === "gemini" ? GEMINI_DEFAULT_SUBAGENT_MODEL_ID : GPT_DEFAULT_SUBAGENT_MODEL_ID;
+export function getDefaultSubagentModelId(
+  providerBrand: ProviderBrand,
+  executionModelId?: ProviderModelId | string
+): ProviderModelId {
+  return resolveSubagentModelId({
+    agentId: "pi",
+    providerBrand,
+    executionModelId
+  }) as ProviderModelId;
 }

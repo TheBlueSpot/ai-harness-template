@@ -143,6 +143,7 @@ describe("client command validation", () => {
           threadId: "thread-1",
           agentId: "pi",
           content: "Ship it",
+          modeLocked: true,
           reasoningStrength: "extra-high",
           fastMode: true
         }

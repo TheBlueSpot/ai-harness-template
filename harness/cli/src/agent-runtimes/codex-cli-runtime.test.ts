@@ -74,6 +74,7 @@ describe("codex cli runtime", () => {
 
   test("uses bundled executable path for interactive launch", () => {
     const runtime = new CodexCliRuntime({
+      platform: "win32",
       getInstallation: () => ({
         installed: true,
         executablePath: "C:\\codex\\codex.exe",
@@ -97,7 +98,7 @@ describe("codex cli runtime", () => {
       "-C",
       "C:\\repo",
       "-s",
-      "workspace-write",
+      "danger-full-access",
       "-a"
     ]);
     expect(launch.cmd).toContain("Inspect repo");
@@ -109,5 +110,10 @@ describe("codex cli runtime", () => {
     expect(testExports.isCodexSupportedModelId("openai/gpt-5.4-mini")).toBe(true);
     expect(testExports.isCodexSupportedModelId("openai/gpt-5.4-nano")).toBe(false);
     expect(testExports.resolveCodexModelId("openai/gpt-5.4-nano")).toBe("openai/gpt-5.4");
+  });
+
+  test("defaults subagents to gpt mini for gpt-5.4 family", () => {
+    const runtime = new CodexCliRuntime();
+    expect(runtime.getDefaultSubagentModelId("gpt", "openai/gpt-5.4")).toBe("openai/gpt-5.4-mini");
   });
 });

@@ -39,29 +39,8 @@ describe("codex sdk live", () => {
     }
   }, 120000);
 
-  liveTest("can complete a writable workspace edit in a temp repo", async () => {
-    const tempRoot = path.join(process.cwd(), ".tmp-test-data", `codex-live-${crypto.randomUUID()}`);
-    mkdirSync(tempRoot, { recursive: true });
-    writeFileSync(path.join(tempRoot, "README.md"), "start\n");
-    const init = Bun.spawn({
-      cmd: ["git", "init"],
-      cwd: tempRoot,
-      stdout: "ignore",
-      stderr: "ignore"
-    });
-    await init.exited;
-
-    const runtime = new CodexCliRuntime();
-    const result = await runtime.getAdapter().runPrompt({
-      kind: "executor",
-      cwd: tempRoot,
-      modelId: "openai/gpt-5.4",
-      prompt: "Append the word done to README.md, then reply with done.",
-      readOnly: false
-    });
-
-    expect(result.text.toLowerCase()).toContain("done");
-    expect(Bun.file(path.join(tempRoot, "README.md")).text()).resolves.toContain("done");
+  liveTest("can create a static html file in a new directory for writable runs", async () => {
+    await expect(runWritableHtmlSmoke(3)).resolves.toBeUndefined();
   }, 120000);
 
   liveTest("interactive launch uses bundled executable path", async () => {
@@ -76,3 +55,43 @@ describe("codex sdk live", () => {
     expect(launch.cmd).toContain("--no-alt-screen");
   });
 });
+
+async function runWritableHtmlSmoke(maxAttempts: number) {
+  const failures: string[] = [];
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const tempRoot = path.join(process.cwd(), ".tmp-test-data", `codex-live-${crypto.randomUUID()}`);
+    mkdirSync(tempRoot, { recursive: true });
+    writeFileSync(path.join(tempRoot, "README.md"), "start\n");
+    const init = Bun.spawn({
+      cmd: ["git", "init"],
+      cwd: tempRoot,
+      stdout: "ignore",
+      stderr: "ignore"
+    });
+    await init.exited;
+
+    try {
+      const runtime = new CodexCliRuntime();
+      const result = await runtime.getAdapter().runPrompt({
+        kind: "executor",
+        cwd: tempRoot,
+        modelId: "openai/gpt-5.4",
+        prompt:
+          "Create a new directory named site and add a static HTML file at site/index.html with a title Test Page and body text Hello. Then reply with only OK.",
+        readOnly: false
+      });
+      const htmlPath = path.join(tempRoot, "site", "index.html");
+      const html = await Bun.file(htmlPath).text();
+
+      expect(result.text).toContain("OK");
+      expect(html).toContain("Test Page");
+      expect(html).toContain("Hello");
+      return;
+    } catch (error) {
+      failures.push(`attempt ${attempt}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  throw new Error(`Writable Codex HTML smoke failed after ${maxAttempts} attempts: ${failures.join(" | ")}`);
+}

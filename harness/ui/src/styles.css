@@ -36,11 +36,11 @@ body {
   color: var(--foreground);
 }
 
-button,
+/* button,
 input,
 textarea {
   font: inherit;
-}
+} */
 
 .font-display {
   font-family: "Aptos Display", "Segoe UI", sans-serif;

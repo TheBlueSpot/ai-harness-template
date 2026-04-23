@@ -1,7 +1,15 @@
 import { createEffect, createSignal, onCleanup, Show, type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 
-export function Tooltip(props: { content?: string; triggerClass?: string; children: JSX.Element }) {
+type TooltipProps = {
+  content?: string;
+  triggerClass?: string;
+  children: JSX.Element;
+  side?: "top" | "right" | "bottom" | "left";
+  disabled?: boolean;
+};
+
+export function Tooltip(props: TooltipProps) {
   let triggerRef: HTMLSpanElement | undefined;
   let tooltipRef: HTMLSpanElement | undefined;
   const [open, setOpen] = createSignal(false);
@@ -15,12 +23,54 @@ export function Tooltip(props: { content?: string; triggerClass?: string; childr
     const triggerRect = triggerRef.getBoundingClientRect();
     const tooltipRect = tooltipRef.getBoundingClientRect();
     const viewportPadding = 12;
-    const nextTop = Math.max(viewportPadding, triggerRect.top - tooltipRect.height - 10);
+    const sideOffset = 10;
     const centeredLeft = triggerRect.left + triggerRect.width / 2 - tooltipRect.width / 2;
-    const nextLeft = Math.min(
-      window.innerWidth - tooltipRect.width - viewportPadding,
-      Math.max(viewportPadding, centeredLeft)
-    );
+    const centeredTop = triggerRect.top + triggerRect.height / 2 - tooltipRect.height / 2;
+    const fitsRight = triggerRect.right + sideOffset + tooltipRect.width <= window.innerWidth - viewportPadding;
+    const fitsLeft = triggerRect.left - sideOffset - tooltipRect.width >= viewportPadding;
+    const fitsBottom = triggerRect.bottom + sideOffset + tooltipRect.height <= window.innerHeight - viewportPadding;
+    const preferredSide = props.side ?? "top";
+    const resolvedSide =
+      preferredSide === "right"
+        ? fitsRight || !fitsLeft
+          ? "right"
+          : "left"
+        : preferredSide === "left"
+          ? fitsLeft || !fitsRight
+            ? "left"
+            : "right"
+          : preferredSide === "bottom"
+            ? fitsBottom
+              ? "bottom"
+              : "top"
+            : "top";
+    const nextTop =
+      resolvedSide === "right" || resolvedSide === "left"
+        ? Math.min(
+            window.innerHeight - tooltipRect.height - viewportPadding,
+            Math.max(viewportPadding, centeredTop)
+          )
+        : resolvedSide === "bottom"
+          ? Math.min(
+              window.innerHeight - tooltipRect.height - viewportPadding,
+              Math.max(viewportPadding, triggerRect.bottom + sideOffset)
+            )
+          : Math.max(viewportPadding, triggerRect.top - tooltipRect.height - sideOffset);
+    const nextLeft =
+      resolvedSide === "right"
+        ? Math.min(
+            window.innerWidth - tooltipRect.width - viewportPadding,
+            Math.max(viewportPadding, triggerRect.right + sideOffset)
+          )
+        : resolvedSide === "left"
+          ? Math.min(
+              window.innerWidth - tooltipRect.width - viewportPadding,
+              Math.max(viewportPadding, triggerRect.left - tooltipRect.width - sideOffset)
+            )
+          : Math.min(
+              window.innerWidth - tooltipRect.width - viewportPadding,
+              Math.max(viewportPadding, centeredLeft)
+            );
 
     setPosition({
       top: nextTop,
@@ -36,8 +86,14 @@ export function Tooltip(props: { content?: string; triggerClass?: string; childr
     queueMicrotask(updatePosition);
   });
 
+  createEffect(() => {
+    if (props.disabled && open()) {
+      setOpen(false);
+    }
+  });
+
   const handleShow = () => {
-    if (props.content) {
+    if (props.content && !props.disabled) {
       setOpen(true);
     }
   };
@@ -75,7 +131,7 @@ export function Tooltip(props: { content?: string; triggerClass?: string; childr
           <span
             ref={tooltipRef}
             data-test-tooltip-content=""
-            class="pointer-events-none fixed z-[90] max-w-xs whitespace-pre-line rounded-lg border border-(--border) bg-(--foreground) px-3 py-1.5 text-center text-xs text-(--surface-foreground) shadow-xl"
+            class="pointer-events-none fixed z-[160] max-w-xs whitespace-pre-line rounded-lg border border-(--border) bg-(--foreground) px-3 py-1.5 text-center text-xs text-(--surface-foreground) shadow-xl"
             style={{
               top: `${position().top}px`,
               left: `${position().left}px`

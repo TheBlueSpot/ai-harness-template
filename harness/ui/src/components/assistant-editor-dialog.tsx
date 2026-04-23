@@ -1,4 +1,5 @@
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
+import { Bot, Folder, FolderOpen, Globe, Split } from "lucide-solid";
 import { resolveModeCatalog } from "../../../shared/modes";
 import {
   createAssistantAssetRefId,
@@ -11,6 +12,8 @@ import { type AssistantEditorDraft, harnessStore } from "../harness-store";
 import { pushToast } from "../toast-store";
 import { Button } from "./primitives/button";
 import { Dialog } from "./primitives/dialog";
+import { DropdownControl } from "./primitives/dropdown";
+import { getAgentDropdownIcon, getModeDropdownIcon } from "./primitives/dropdown-option-icons";
 import { Input } from "./primitives/input";
 import { Textarea } from "./primitives/textarea";
 
@@ -37,6 +40,35 @@ export function AssistantEditorDialog() {
       state.workspace.projects.find((project) => project.id === projectId())?.projectModes ?? []
     )
   );
+  const agentOptions = createMemo(() =>
+    state.availableAgents.map((agent) => ({
+      value: agent.id,
+      label: agent.label,
+      description: agent.description,
+      icon: getAgentDropdownIcon(agent.id)
+    }))
+  );
+  const scopeOptions = () => [
+    { value: "project", label: "Current project", description: "Assistant stays scoped to one project.", icon: <Folder class="h-3 w-3" /> },
+    { value: "global", label: "Global", description: "Assistant stays available across workspace.", icon: <Globe class="h-3 w-3" /> }
+  ];
+  const projectOptions = createMemo(() =>
+    state.workspace.projects.map((project) => ({
+      value: project.id,
+      label: project.name,
+      description: project.rootPath,
+      icon: <FolderOpen class="h-3 w-3" />
+    }))
+  );
+  const modeOptions = createMemo(() => [
+    { value: "", label: "Default", description: "Use workspace or project default mode.", icon: <Split class="h-3 w-3" /> },
+    ...availableModes().map((mode) => ({
+      value: mode.id,
+      label: mode.label,
+      description: mode.description,
+      icon: getModeDropdownIcon(mode.id)
+    }))
+  ]);
 
   createEffect(() => {
     const draft = activeDraft();
@@ -155,50 +187,60 @@ export function AssistantEditorDialog() {
 
         <label class="space-y-2">
           <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Agent runtime</span>
-          <select
-            class="flex h-9 w-full rounded-xl border border-(--border) bg-white/70 px-3 py-2 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
+          <DropdownControl
+            kind="select"
+            ariaLabel="Select assistant runtime"
+            icon={<Bot class="h-3.5 w-3.5" />}
+            size="md"
+            class="w-full"
             value={agentId()}
-            onInput={(event) => setAgentId(event.currentTarget.value as Assistant["agentId"])}
-          >
-            <For each={state.availableAgents}>{(agent) => <option value={agent.id}>{agent.label}</option>}</For>
-          </select>
+            options={agentOptions()}
+            onChange={(value) => setAgentId(value as Assistant["agentId"])}
+          />
         </label>
 
         <label class="space-y-2">
           <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Scope</span>
-          <select
-            class="flex h-9 w-full rounded-xl border border-(--border) bg-white/70 px-3 py-2 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
+          <DropdownControl
+            kind="select"
+            ariaLabel="Select assistant scope"
+            icon={<Globe class="h-3.5 w-3.5" />}
+            size="md"
+            class="w-full"
             value={scope()}
-            onInput={(event) => setScope(event.currentTarget.value as Assistant["scope"])}
-          >
-            <option value="project">Current project</option>
-            <option value="global">Global</option>
-          </select>
+            options={scopeOptions()}
+            onChange={(value) => setScope(value as Assistant["scope"])}
+          />
         </label>
 
         <Show when={scope() === "project"}>
           <label class="space-y-2">
             <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Project</span>
-            <select
-              class="flex h-9 w-full rounded-xl border border-(--border) bg-white/70 px-3 py-2 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
+            <DropdownControl
+              kind="select"
+              ariaLabel="Select project"
+              icon={<FolderOpen class="h-3.5 w-3.5" />}
+              size="md"
+              class="w-full"
               value={projectId() ?? ""}
-              onInput={(event) => setProjectId(event.currentTarget.value || undefined)}
-            >
-              <For each={state.workspace.projects}>{(project) => <option value={project.id}>{project.name}</option>}</For>
-            </select>
+              options={projectOptions()}
+              onChange={(value) => setProjectId(value || undefined)}
+            />
           </label>
         </Show>
 
         <label class="space-y-2">
           <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Mode</span>
-          <select
-            class="flex h-9 w-full rounded-xl border border-(--border) bg-white/70 px-3 py-2 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
+          <DropdownControl
+            kind="select"
+            ariaLabel="Select assistant mode"
+            icon={<Split class="h-3.5 w-3.5" />}
+            size="md"
+            class="w-full"
             value={modeId()}
-            onInput={(event) => setModeId(event.currentTarget.value)}
-          >
-            <option value="">Default</option>
-            <For each={availableModes()}>{(mode) => <option value={mode.id}>{mode.label}</option>}</For>
-          </select>
+            options={modeOptions()}
+            onChange={setModeId}
+          />
         </label>
 
         <label class="space-y-2">

@@ -11,6 +11,7 @@ import {
   shouldSkipExpensiveCliProbes
 } from "./cli-health";
 import { CliProcessManager } from "./cli-process-manager";
+import { resolveSubagentModelId } from "../subagent-defaults";
 
 const DEFAULT_MODEL_ID = "openai/gpt-5.4";
 
@@ -96,8 +97,12 @@ export class CopilotCliRuntime implements AgentRuntime {
     return DEFAULT_MODEL_ID;
   }
 
-  getDefaultSubagentModelId(_providerBrand: ProviderBrand) {
-    return DEFAULT_MODEL_ID;
+  getDefaultSubagentModelId(providerBrand: ProviderBrand, executionModelId?: string) {
+    return resolveSubagentModelId({
+      agentId: this.id,
+      providerBrand,
+      executionModelId
+    });
   }
 
   buildInteractiveLaunch(input: { cwd: string; cols: number; rows: number; prompt?: string }) {

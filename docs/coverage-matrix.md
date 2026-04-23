@@ -89,10 +89,10 @@ New `US-*` stories start as `GAP-HIGH` here until at least one colocated or inte
 | Story ID | Covered by | Depth | Gap |
 |----------|-----------|-------|-----|
 | US-PROVIDERS-001 | harness/ui/src/store/store.test.ts | unit | GAP-MED |
-| US-PROVIDERS-002 | harness/cli/src/agent-runtimes/codex-cli-runtime.test.ts | unit | OK |
+| US-PROVIDERS-002 | harness/cli/src/agent-runtimes/codex-cli-runtime.test.ts, harness/cli/src/agent-runtimes/codex-sdk-adapter.test.ts, harness/cli/src/pi-orchestrator.test.ts | unit | OK |
 | US-PROVIDERS-003 | harness/cli/src/server.test.ts | integration | OK |
 | US-PROVIDERS-004 | harness/cli/src/server.test.ts | integration | OK |
-| US-PROVIDERS-005 | harness/cli/src/server.test.ts | integration | OK |
+| US-PROVIDERS-005 | harness/cli/src/subagent-defaults.test.ts, harness/cli/src/agent-runtimes/codex-cli-runtime.test.ts, harness/cli/src/server.test.ts | unit+integration | OK |
 | US-PROVIDERS-006 | harness/cli/src/workspace-repository.test.ts, harness/ui/src/components/preferences-modal.test.tsx | unit+integration | OK |
 | US-PROVIDERS-007 | harness/ui/src/components/preferences-modal.test.tsx | unit | GAP-MED |
 
@@ -101,7 +101,7 @@ New `US-*` stories start as `GAP-HIGH` here until at least one colocated or inte
 | Story ID | Covered by | Depth | Gap |
 |----------|-----------|-------|-----|
 | US-RUNTIMES-001 | harness/cli/src/agent-runtimes/codex-installation.test.ts, harness/cli/src/agent-runtimes/codex-cli-runtime.test.ts, harness/cli/src/agent-runtimes/codex-sdk-adapter.test.ts, harness/cli/src/agent-runtimes/cli-health.test.ts, harness/cli/src/pi-agent-adapter.test.ts | unit | OK |
-| US-RUNTIMES-002 | harness/cli/src/agent-runtimes/codex-installation.test.ts, harness/cli/src/agent-runtimes/codex-cli-runtime.test.ts, harness/cli/src/agent-runtimes/codex-sdk-adapter.test.ts, harness/cli/src/pi-orchestrator.test.ts, harness/cli/src/server.test.ts | unit/integration | OK |
+| US-RUNTIMES-002 | harness/cli/src/agent-runtimes/codex-installation.test.ts, harness/cli/src/agent-runtimes/codex-sandbox-policy.test.ts, harness/cli/src/agent-runtimes/codex-cli-runtime.test.ts, harness/cli/src/agent-runtimes/codex-sdk-adapter.test.ts, harness/cli/src/agent-runtimes/codex-sdk-live.test.ts, harness/cli/src/pi-orchestrator.test.ts, harness/cli/src/server.test.ts | unit/integration | OK |
 | US-RUNTIMES-003 | harness/cli/src/protocol.test.ts | schema-only | GAP-HIGH |
 | US-RUNTIMES-004 | harness/cli/src/agent-runtimes/codex-sdk-adapter.test.ts, harness/cli/src/pi-agent-adapter.test.ts | unit | GAP-MED |
 | US-RUNTIMES-005 | harness/cli/src/protocol.test.ts | schema-only | GAP-HIGH |
@@ -134,11 +134,11 @@ New `US-*` stories start as `GAP-HIGH` here until at least one colocated or inte
 | Story ID | Covered by | Depth | Gap |
 |----------|-----------|-------|-----|
 | US-MODES-001 | harness/cli/src/server.test.ts, harness/shared/mode-intent.test.ts | unit+integration | GAP-MED |
-| US-MODES-002 | harness/shared/mode-intent.test.ts, harness/cli/src/server.test.ts | unit+integration | OK |
+| US-MODES-002 | harness/shared/mode-intent.test.ts, harness/cli/src/workspace-path-intent.test.ts, harness/cli/src/pi-planner.test.ts, harness/cli/src/pi-orchestrator.test.ts, harness/cli/src/server.test.ts | unit+integration | OK |
 | US-MODES-003 | harness/cli/src/server.test.ts, harness/ui/src/components/chat-panel.test.tsx | unit+integration | OK |
 | US-MODES-004 | harness/shared/mode-intent.test.ts, harness/cli/src/server.test.ts | unit+integration | OK |
 | US-MODES-005 | harness/cli/src/protocol.test.ts | schema-only | GAP-MED |
-| US-MODES-006 | harness/cli/src/server.test.ts | integration | OK |
+| US-MODES-006 | harness/cli/src/pi-orchestrator.test.ts, harness/cli/src/server.test.ts, harness/cli/src/workspace-repository.test.ts | unit+integration | OK |
 | US-MODES-007 | harness/cli/src/protocol.test.ts | schema-only | OK |
 
 ## ASSISTANTS
@@ -249,7 +249,7 @@ New `US-*` stories start as `GAP-HIGH` here until at least one colocated or inte
 | US-DEV-005 | harness/cli/src/launch-harness.test.ts | integration | OK |
 | US-DEV-006 | harness/cli/src/ui-build.test.ts | integration | OK |
 | US-DEV-007 | — | none | GAP-HIGH |
-| US-DEV-008 | — | none | GAP-HIGH |
+| US-DEV-008 | harness/cli/src/cli-entry.test.ts, harness/cli/src/fatal-startup-log.test.ts | unit | OK |
 | US-DEV-009 | harness/cli/src/ui-build.test.ts | integration | OK |
 | US-DEV-010 | — | none | GAP-LOW |
 | US-DEV-011 | — | none | GAP-LOW |
@@ -296,7 +296,7 @@ New `US-*` stories start as `GAP-HIGH` here until at least one colocated or inte
 - **US-UI-002** — popover and toaster primitives
 - **US-UI-005** — tooltip portal behavior
 - **US-ACTIVATION-001** — portable launcher packaging integration
-- **US-DEV-002 / -007 / -008** — `bootstrap`, `doctor`, `package:launcher` CLIs
+- **US-DEV-002 / -007** — `bootstrap`, `doctor` CLIs
 - **US-DEV-021** — dev re-surfacing of swallowed errors after toast
 
 ### GAP-MED (happy path only)

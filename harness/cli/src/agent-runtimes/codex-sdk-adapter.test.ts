@@ -107,6 +107,22 @@ describe("codex sdk adapter", () => {
     expect(thread.runCalls[0]?.input).toBe("Inspect repo");
   });
 
+  test("uses danger-full-access for writable Windows runs", () => {
+    expect(testExports.buildThreadOptions(createRequest(), { platform: "win32" })).toMatchObject({
+      sandboxMode: "danger-full-access"
+    });
+    expect(
+      testExports.buildThreadOptions(
+        createRequest({
+          readOnly: true
+        }),
+        { platform: "win32" }
+      )
+    ).toMatchObject({
+      sandboxMode: "read-only"
+    });
+  });
+
   test("maps reasoning effort and fast mode into direct sdk options", async () => {
     const thread = new FakeThread([
       {
@@ -319,6 +335,26 @@ describe("codex sdk adapter", () => {
     await controller.abort();
     await expect(pending).rejects.toThrow("aborted by test");
     controller.dispose();
+  });
+
+  test("does not abort completed turn during automatic disposal", async () => {
+    const thread = new FakeThread([
+      {
+        events: [{ type: "item.completed", item: { id: "msg-1", type: "agent_message", text: "done" } }]
+      }
+    ]);
+    const client = new FakeCodexClient(thread);
+    const adapter = new CodexSdkAdapter({
+      executablePath: "C:\\codex\\codex.exe",
+      createClient() {
+        return client;
+      }
+    });
+
+    await expect(adapter.runPrompt(createRequest())).resolves.toMatchObject({
+      text: "done"
+    });
+    expect(thread.runCalls[0]?.signal?.aborted).toBe(false);
   });
 
   test("fails on turn failure events", async () => {

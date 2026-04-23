@@ -1,4 +1,4 @@
-import { resolveModeById } from "../../shared/modes";
+import { modeUsesReadOnlyExecution, resolveModeById } from "../../shared/modes";
 import {
   createAssistantLearningId,
   createAssistantLogEntryId,
@@ -625,7 +625,7 @@ export class AssistantManager {
       runtime.getDefaultExecutionModelId(providerBrand) ??
       getDefaultExecutionModelId(providerBrand);
     const mode = resolveAssistantMode(assistant.modeId, this.repository.loadWorkspace().workspaceModes ?? [], project);
-    const readOnly = mode?.toolPolicy === "read-heavy" || mode?.toolPolicy === "review-only" || !assistant.projectId;
+    const readOnly = modeUsesReadOnlyExecution(mode) || !assistant.projectId;
     if (DEBUG_TELEMETRY_ENABLED) {
       // #region agent log
       fetch('http://127.0.0.1:7467/ingest/8f3f8e64-2064-4541-a606-af61e33e104f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'26847a'},body:JSON.stringify({sessionId:'26847a',runId:'initial-003',hypothesisId:'H6',location:'assistant-manager.ts:629',message:'assistant runtime resolved',data:{assistantId:assistant.id,assistantModeId:assistant.modeId ?? null,projectId:assistant.projectId ?? null,toolPolicy:mode?.toolPolicy ?? null,readOnly,cwd,modelId},timestamp:Date.now()})}).catch(()=>{});

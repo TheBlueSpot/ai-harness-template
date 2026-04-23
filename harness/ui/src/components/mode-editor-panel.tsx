@@ -1,6 +1,8 @@
 import { For, createEffect, createSignal } from "solid-js";
+import { ClipboardList, FolderOpen, Play, RefreshCcw } from "lucide-solid";
 import type { ModeDefinition } from "../../../shared/protocol";
 import { ActionButton } from "./action-button";
+import { DropdownControl } from "./primitives/dropdown";
 import { Input } from "./primitives/input";
 import { Textarea } from "./primitives/textarea";
 
@@ -20,6 +22,7 @@ type ModeDraft = Pick<
   | "plannerPrompt"
   | "executionPrompt"
   | "toolPolicy"
+  | "executionAccess"
   | "planExecutionModeDefault"
   | "subagentWorktreeStrategyDefault"
   | "correctnessIterationModeDefault"
@@ -32,6 +35,7 @@ const EMPTY_MODE_DRAFT: ModeDraft = {
   plannerPrompt: "",
   executionPrompt: "",
   toolPolicy: "full-access",
+  executionAccess: "workspace-write",
   planExecutionModeDefault: "countdown",
   subagentWorktreeStrategyDefault: "same-worktree",
   correctnessIterationModeDefault: "ask-before-iterate"
@@ -58,6 +62,7 @@ export function ModeEditorPanel(props: ModeEditorPanelProps) {
       plannerPrompt: selected.plannerPrompt,
       executionPrompt: selected.executionPrompt,
       toolPolicy: selected.toolPolicy,
+      executionAccess: selected.executionAccess,
       planExecutionModeDefault: selected.planExecutionModeDefault ?? "countdown",
       subagentWorktreeStrategyDefault: selected.subagentWorktreeStrategyDefault ?? "same-worktree",
       correctnessIterationModeDefault: selected.correctnessIterationModeDefault ?? "ask-before-iterate"
@@ -72,6 +77,25 @@ export function ModeEditorPanel(props: ModeEditorPanelProps) {
   };
 
   const customModes = () => props.modes.filter((mode): mode is ModeDefinition & { scope: "workspace" | "project" } => mode.scope === props.scope);
+  const toolPolicyOptions = () => [
+    { value: "full-access", label: "Full access", description: "Allow full implementation and broader tool use." },
+    { value: "read-heavy", label: "Read heavy", description: "Bias toward reading, analysis, and lighter changes." },
+    { value: "review-only", label: "Review only", description: "Focus on findings and review instead of edits." }
+  ];
+  const executionAccessOptions = () => [
+    { value: "workspace-write", label: "Workspace write", description: "Mode may edit files in current workspace." },
+    { value: "read-only", label: "Read only", description: "Mode may inspect but should avoid editing files." }
+  ];
+  const planGateOptions = () => [
+    { value: "countdown", label: "Countdown", description: "Pause briefly before execution begins." },
+    { value: "approve", label: "Approve first", description: "Require explicit approval before execution begins." },
+    { value: "immediate", label: "Immediate", description: "Start execution immediately after planning." }
+  ];
+  const correctnessOptions = () => [
+    { value: "ask-before-iterate", label: "Ask before iterate", description: "Pause before any automatic follow-up pass." },
+    { value: "auto-once", label: "Auto once", description: "Run one automatic correctness follow-up pass." },
+    { value: "auto-until-clean", label: "Auto until clean", description: "Keep iterating until correctness issues clear." }
+  ];
 
   const handleNewMode = () => {
     const slugBase = props.scope === "workspace" ? "workspace-mode" : "project-mode";
@@ -187,44 +211,60 @@ export function ModeEditorPanel(props: ModeEditorPanelProps) {
         </label>
       </div>
 
-      <div class="mt-3 grid gap-3 md:grid-cols-3">
+      <div class="mt-3 grid gap-3 md:grid-cols-4">
         <label class="space-y-2">
           <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Tool policy</span>
-          <select
-            class="flex h-9 w-full rounded-xl border border-(--border) bg-white/70 px-3 py-2 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
+          <DropdownControl
+            kind="select"
+            ariaLabel="Select tool policy"
+            icon={<ClipboardList class="h-3.5 w-3.5" />}
+            size="md"
+            class="w-full"
             value={draft().toolPolicy}
-            onInput={(event) => updateDraft("toolPolicy", event.currentTarget.value as ModeDraft["toolPolicy"])}
-          >
-            <option value="full-access">Full access</option>
-            <option value="read-heavy">Read heavy</option>
-            <option value="review-only">Review only</option>
-          </select>
+            options={toolPolicyOptions()}
+            onChange={(value) => updateDraft("toolPolicy", value as ModeDraft["toolPolicy"])}
+          />
+        </label>
+        <label class="space-y-2">
+          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Execution access</span>
+          <DropdownControl
+            kind="select"
+            ariaLabel="Select execution access"
+            icon={<FolderOpen class="h-3.5 w-3.5" />}
+            size="md"
+            class="w-full"
+            value={draft().executionAccess}
+            options={executionAccessOptions()}
+            onChange={(value) => updateDraft("executionAccess", value as ModeDraft["executionAccess"])}
+          />
         </label>
         <label class="space-y-2">
           <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Plan gate</span>
-          <select
-            class="flex h-9 w-full rounded-xl border border-(--border) bg-white/70 px-3 py-2 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
-            value={draft().planExecutionModeDefault}
-            onInput={(event) => updateDraft("planExecutionModeDefault", event.currentTarget.value as ModeDraft["planExecutionModeDefault"])}
-          >
-            <option value="countdown">Countdown</option>
-            <option value="approve">Approve first</option>
-            <option value="immediate">Immediate</option>
-          </select>
+          <DropdownControl
+            kind="select"
+            ariaLabel="Select mode plan gate"
+            icon={<Play class="h-3.5 w-3.5" />}
+            size="md"
+            class="w-full"
+            value={draft().planExecutionModeDefault ?? "countdown"}
+            options={planGateOptions()}
+            onChange={(value) => updateDraft("planExecutionModeDefault", value as ModeDraft["planExecutionModeDefault"])}
+          />
         </label>
         <label class="space-y-2">
           <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Correctness</span>
-          <select
-            class="flex h-9 w-full rounded-xl border border-(--border) bg-white/70 px-3 py-2 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
-            value={draft().correctnessIterationModeDefault}
-            onInput={(event) =>
-              updateDraft("correctnessIterationModeDefault", event.currentTarget.value as ModeDraft["correctnessIterationModeDefault"])
+          <DropdownControl
+            kind="select"
+            ariaLabel="Select correctness iteration"
+            icon={<RefreshCcw class="h-3.5 w-3.5" />}
+            size="md"
+            class="w-full"
+            value={draft().correctnessIterationModeDefault ?? "ask-before-iterate"}
+            options={correctnessOptions()}
+            onChange={(value) =>
+              updateDraft("correctnessIterationModeDefault", value as ModeDraft["correctnessIterationModeDefault"])
             }
-          >
-            <option value="ask-before-iterate">Ask before iterate</option>
-            <option value="auto-once">Auto once</option>
-            <option value="auto-until-clean">Auto until clean</option>
-          </select>
+          />
         </label>
       </div>
     </section>

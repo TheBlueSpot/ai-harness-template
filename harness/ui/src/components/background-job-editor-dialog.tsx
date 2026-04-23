@@ -1,4 +1,5 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
+import { Bot, ClipboardList, FolderOpen, Play, Split } from "lucide-solid";
 import { resolveModeCatalog } from "../../../shared/modes";
 import {
   createBackgroundJobId,
@@ -11,6 +12,8 @@ import { type BackgroundJobEditorDraft, harnessStore } from "../harness-store";
 import { pushToast } from "../toast-store";
 import { Button } from "./primitives/button";
 import { Dialog } from "./primitives/dialog";
+import { DropdownControl } from "./primitives/dropdown";
+import { getModeDropdownIcon } from "./primitives/dropdown-option-icons";
 import { Input } from "./primitives/input";
 import { Textarea } from "./primitives/textarea";
 
@@ -51,6 +54,49 @@ export function BackgroundJobEditorDialog() {
       state.workspace.projects.find((project) => project.id === projectId())?.projectModes ?? []
     )
   );
+  const projectOptions = createMemo(() =>
+    state.workspace.projects.map((project) => ({
+      value: project.id,
+      label: project.name,
+      description: project.rootPath,
+      icon: <FolderOpen class="h-3 w-3" />
+    }))
+  );
+  const templateOptions = createMemo(() => [
+    { value: "", label: "Custom", description: "Start from blank scheduled task definition.", icon: <ClipboardList class="h-3 w-3" /> },
+    ...state.backgroundJobs.templates.map((template) => ({
+      value: template.id,
+      label: template.label,
+      description: template.description,
+      icon: <ClipboardList class="h-3 w-3" />
+    }))
+  ]);
+  const kindOptions = () => [
+    { value: "ai-routine", label: "AI routine", description: "Prompt-driven autonomous background task.", icon: <Bot class="h-3 w-3" /> },
+    { value: "shell", label: "Shell", description: "Typed executable plus args/env background task.", icon: <ClipboardList class="h-3 w-3" /> }
+  ];
+  const modeOptions = createMemo(() => [
+    { value: "", label: "Project default", description: "Use project-selected mode when job runs.", icon: <Split class="h-3 w-3" /> },
+    ...availableModes().map((mode) => ({
+      value: mode.id,
+      label: mode.label,
+      description: mode.description,
+      icon: getModeDropdownIcon(mode.id)
+    }))
+  ]);
+  const planGateOptions = () => [
+    { value: "countdown", label: "Countdown", description: "Pause briefly before execution starts." },
+    { value: "approve", label: "Approve", description: "Require explicit approval before execution starts." },
+    { value: "immediate", label: "Immediate", description: "Start execution immediately after planning." }
+  ];
+  const worktreeOptions = () => [
+    { value: "same-worktree", label: "Same checkout", description: "Run subagents in current working tree." },
+    {
+      value: "separate-worktrees",
+      label: "Isolated mounts (BranchFS)",
+      description: "Run subagents inside isolated BranchFS mounts."
+    }
+  ];
 
   createEffect(() => {
     const draft = activeDraft();
@@ -242,37 +288,44 @@ export function BackgroundJobEditorDialog() {
       <div class="grid gap-3 md:grid-cols-2">
         <label class="space-y-2">
           <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Project</span>
-          <select
-            class="flex h-9 w-full rounded-xl border border-(--border) bg-white/70 px-3 py-2 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
+          <DropdownControl
+            kind="select"
+            ariaLabel="Select background job project"
+            icon={<FolderOpen class="h-3.5 w-3.5" />}
+            size="md"
+            class="w-full"
             value={projectId() ?? ""}
-            onInput={(event) => setProjectId(event.currentTarget.value || undefined)}
-          >
-            <For each={state.workspace.projects}>{(project) => <option value={project.id}>{project.name}</option>}</For>
-          </select>
+            options={projectOptions()}
+            onChange={(value) => setProjectId(value || undefined)}
+          />
         </label>
 
         <label class="space-y-2">
           <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Template</span>
-          <select
-            class="flex h-9 w-full rounded-xl border border-(--border) bg-white/70 px-3 py-2 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
+          <DropdownControl
+            kind="select"
+            ariaLabel="Select background job template"
+            icon={<ClipboardList class="h-3.5 w-3.5" />}
+            size="md"
+            class="w-full"
             value={templateId()}
-            onInput={(event) => applyTemplate(event.currentTarget.value)}
-          >
-            <option value="">Custom</option>
-            <For each={state.backgroundJobs.templates}>{(template) => <option value={template.id}>{template.label}</option>}</For>
-          </select>
+            options={templateOptions()}
+            onChange={applyTemplate}
+          />
         </label>
 
         <label class="space-y-2">
           <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Kind</span>
-          <select
-            class="flex h-9 w-full rounded-xl border border-(--border) bg-white/70 px-3 py-2 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
+          <DropdownControl
+            kind="select"
+            ariaLabel="Select background job kind"
+            icon={<Bot class="h-3.5 w-3.5" />}
+            size="md"
+            class="w-full"
             value={kind()}
-            onInput={(event) => setKind(event.currentTarget.value as BackgroundJob["kind"])}
-          >
-            <option value="ai-routine">AI routine</option>
-            <option value="shell">Shell</option>
-          </select>
+            options={kindOptions()}
+            onChange={(value) => setKind(value as BackgroundJob["kind"])}
+          />
         </label>
 
         <label class="space-y-2">
@@ -331,14 +384,16 @@ export function BackgroundJobEditorDialog() {
           <div class="grid gap-3 md:grid-cols-2">
             <label class="space-y-2">
               <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Mode</span>
-              <select
-                class="flex h-9 w-full rounded-xl border border-(--border) bg-white/70 px-3 py-2 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
+              <DropdownControl
+                kind="select"
+                ariaLabel="Select background job mode"
+                icon={<Split class="h-3.5 w-3.5" />}
+                size="md"
+                class="w-full"
                 value={aiModeId()}
-                onInput={(event) => setAiModeId(event.currentTarget.value)}
-              >
-                <option value="">Project default</option>
-                <For each={availableModes()}>{(mode) => <option value={mode.id}>{mode.label}</option>}</For>
-              </select>
+                options={modeOptions()}
+                onChange={setAiModeId}
+              />
             </label>
 
             <label class="space-y-2">
@@ -348,27 +403,30 @@ export function BackgroundJobEditorDialog() {
 
             <label class="space-y-2">
               <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Plan gate</span>
-              <select
-                class="flex h-9 w-full rounded-xl border border-(--border) bg-white/70 px-3 py-2 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
+              <DropdownControl
+                kind="select"
+                ariaLabel="Select background job plan gate"
+                icon={<Play class="h-3.5 w-3.5" />}
+                size="md"
+                class="w-full"
                 value={aiPlanExecutionMode()}
-                onInput={(event) => setAiPlanExecutionMode(event.currentTarget.value as "countdown" | "approve" | "immediate")}
-              >
-                <option value="countdown">Countdown</option>
-                <option value="approve">Approve</option>
-                <option value="immediate">Immediate</option>
-              </select>
+                options={planGateOptions()}
+                onChange={(value) => setAiPlanExecutionMode(value as "countdown" | "approve" | "immediate")}
+              />
             </label>
 
             <label class="space-y-2">
               <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Worktree</span>
-              <select
-                class="flex h-9 w-full rounded-xl border border-(--border) bg-white/70 px-3 py-2 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
+              <DropdownControl
+                kind="select"
+                ariaLabel="Select background job worktree strategy"
+                icon={<FolderOpen class="h-3.5 w-3.5" />}
+                size="md"
+                class="w-full"
                 value={aiSubagentWorktreeStrategy()}
-                onInput={(event) => setAiSubagentWorktreeStrategy(event.currentTarget.value as "same-worktree" | "separate-worktrees")}
-              >
-                <option value="same-worktree">Same checkout</option>
-                <option value="separate-worktrees">Isolated mounts (BranchFS)</option>
-              </select>
+                options={worktreeOptions()}
+                onChange={(value) => setAiSubagentWorktreeStrategy(value as "same-worktree" | "separate-worktrees")}
+              />
             </label>
           </div>
         </div>

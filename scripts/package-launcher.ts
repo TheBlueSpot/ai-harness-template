@@ -57,6 +57,7 @@ async function packageLauncherTarget(target: LauncherTarget) {
   }
 
   await cp(path.join(repoRoot, "dist/ui"), path.join(targetDir, "dist/ui"), { recursive: true });
+  await cp(path.join(repoRoot, "package.json"), path.join(targetDir, "package.json"));
   console.log(`[package:launcher] ${target} -> ${path.relative(repoRoot, binaryPath)}`);
 }
 

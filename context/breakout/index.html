@@ -1,0 +1,1160 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Breakout: Gravity Well</title>
+  <style>
+    :root {
+      --bg-0: #04111c;
+      --bg-1: #0a2235;
+      --bg-2: #143e52;
+      --panel: rgba(8, 18, 30, 0.82);
+      --line: rgba(151, 220, 255, 0.2);
+      --ink: #f4fbff;
+      --muted: #9ec7da;
+      --shadow: rgba(0, 0, 0, 0.42);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at top, rgba(120, 224, 255, 0.1), transparent 24%),
+        radial-gradient(circle at 15% 20%, rgba(255, 211, 106, 0.13), transparent 20%),
+        linear-gradient(180deg, var(--bg-2), var(--bg-0) 62%);
+      color: var(--ink);
+      font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+    }
+
+    body {
+      display: grid;
+      place-items: center;
+    }
+
+    .shell {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+    }
+
+    .shell::before,
+    .shell::after {
+      content: "";
+      position: absolute;
+      inset: auto;
+      border-radius: 999px;
+      filter: blur(70px);
+      opacity: 0.55;
+      pointer-events: none;
+    }
+
+    .shell::before {
+      top: -12vh;
+      left: -9vw;
+      width: 28vw;
+      height: 28vw;
+      background: rgba(120, 224, 255, 0.16);
+    }
+
+    .shell::after {
+      right: -10vw;
+      bottom: -10vh;
+      width: 30vw;
+      height: 30vw;
+      background: rgba(255, 211, 106, 0.16);
+    }
+
+    .stage {
+      position: relative;
+      display: grid;
+      place-items: center;
+      padding: 16px;
+    }
+
+    canvas {
+      display: block;
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      background:
+        radial-gradient(circle at top, rgba(90, 186, 255, 0.08), transparent 30%),
+        linear-gradient(180deg, rgba(6, 17, 28, 0.94), rgba(9, 26, 39, 0.96));
+      box-shadow:
+        0 18px 60px var(--shadow),
+        inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    }
+
+    .caption {
+      position: absolute;
+      top: 26px;
+      left: 26px;
+      padding: 12px 14px;
+      max-width: min(360px, calc(100vw - 64px));
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--panel);
+      backdrop-filter: blur(14px);
+      box-shadow: 0 14px 40px var(--shadow);
+      pointer-events: none;
+    }
+
+    .caption h1 {
+      margin: 0 0 6px;
+      font-size: 15px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+
+    .caption p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    #asset-bin {
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="stage">
+      <canvas id="game" width="1280" height="720" aria-label="Breakout Gravity Well game canvas"></canvas>
+      <aside class="caption">
+        <h1>Breakout: Gravity Well</h1>
+        <p>Move mouse to bend ball path. Hold mouse button for denser pull. Press space or click to launch and restart.</p>
+      </aside>
+      <div id="asset-bin" aria-hidden="true"></div>
+    </section>
+  </main>
+  <script>
+    (() => {
+      "use strict";
+
+      const CONFIG = Object.freeze({
+        width: 1280,
+        height: 720,
+        maxFrame: 0.05,
+        step: 1 / 120,
+        gravityRadius: 220,
+        gravityPower: 122000,
+        gravityBoost: 1.9,
+        gravitySwirl: 54,
+        ballRadius: 11,
+        spawnX: 640,
+        spawnY: 610,
+        topPadding: 90,
+        lives: 4
+      });
+
+      const STATES = Object.freeze({
+        MENU: "MENU",
+        PLAYING: "PLAYING",
+        WIN: "WIN",
+        LOSE: "LOSE"
+      });
+
+      const svgToDataUrl = (markup) => `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(markup)}`;
+
+      const assets = {
+        images: {
+          orb: {
+            url: svgToDataUrl(`
+              <svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96">
+                <defs>
+                  <radialGradient id="g" cx="42%" cy="36%" r="62%">
+                    <stop offset="0%" stop-color="#ffffff"/>
+                    <stop offset="42%" stop-color="#9ff6ff"/>
+                    <stop offset="100%" stop-color="#1583ad"/>
+                  </radialGradient>
+                </defs>
+                <circle cx="48" cy="48" r="33" fill="url(#g)"/>
+                <circle cx="48" cy="48" r="39" fill="none" stroke="#b9fbff" stroke-opacity="0.55" stroke-width="4"/>
+              </svg>
+            `),
+            source: "Embedded transparent SVG orb"
+          },
+          drone: {
+            url: svgToDataUrl(`
+              <svg xmlns="http://www.w3.org/2000/svg" width="160" height="96" viewBox="0 0 160 96">
+                <defs>
+                  <linearGradient id="g" x1="0" x2="1">
+                    <stop offset="0%" stop-color="#ffabc0"/>
+                    <stop offset="100%" stop-color="#8f324d"/>
+                  </linearGradient>
+                </defs>
+                <rect x="18" y="20" width="124" height="46" rx="18" fill="url(#g)"/>
+                <rect x="36" y="34" width="88" height="10" rx="5" fill="#2a1219"/>
+                <circle cx="34" cy="43" r="10" fill="#ffdb75"/>
+                <circle cx="126" cy="43" r="10" fill="#ffdb75"/>
+                <rect x="26" y="68" width="18" height="10" rx="4" fill="#ffd36a"/>
+                <rect x="116" y="68" width="18" height="10" rx="4" fill="#ffd36a"/>
+              </svg>
+            `),
+            source: "Embedded transparent SVG drone"
+          },
+          brick: {
+            url: svgToDataUrl(`
+              <svg xmlns="http://www.w3.org/2000/svg" width="144" height="48" viewBox="0 0 144 48">
+                <defs>
+                  <linearGradient id="g" x1="0" x2="1">
+                    <stop offset="0%" stop-color="#a6f8ff"/>
+                    <stop offset="100%" stop-color="#288fa9"/>
+                  </linearGradient>
+                </defs>
+                <rect width="144" height="48" rx="10" fill="url(#g)"/>
+                <path d="M0 24h144M48 0v24M96 24v24" stroke="#ffffff" stroke-opacity="0.35" stroke-width="4"/>
+              </svg>
+            `),
+            source: "Embedded transparent SVG brick"
+          }
+        },
+        audio: {
+          ping: {
+            url: "https://opengameart.org/sites/default/files/laserSmall_000.ogg",
+            source: "OpenGameArt public domain blip"
+          },
+          crack: {
+            url: "https://opengameart.org/sites/default/files/impactGlass_heavy_001.ogg",
+            source: "OpenGameArt public domain impact"
+          },
+          alert: {
+            url: "https://opengameart.org/sites/default/files/sci-fi_alarm.ogg",
+            source: "OpenGameArt public domain alarm"
+          },
+          fanfare: {
+            url: "https://opengameart.org/sites/default/files/jingle_win_00.ogg",
+            source: "OpenGameArt public domain win chime"
+          }
+        }
+      };
+
+      const canvas = document.getElementById("game");
+      const ctx = canvas.getContext("2d");
+      const assetBin = document.getElementById("asset-bin");
+
+      const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+      const lerp = (from, to, t) => from + (to - from) * t;
+      const rand = (min, max) => min + Math.random() * (max - min);
+
+      function roundRectPath(context, x, y, width, height, radius) {
+        const r = Math.min(radius, width * 0.5, height * 0.5);
+        context.beginPath();
+        context.moveTo(x + r, y);
+        context.arcTo(x + width, y, x + width, y + height, r);
+        context.arcTo(x + width, y + height, x, y + height, r);
+        context.arcTo(x, y + height, x, y, r);
+        context.arcTo(x, y, x + width, y, r);
+        context.closePath();
+      }
+
+      function circleRectHit(circle, rect) {
+        const closestX = clamp(circle.x, rect.x, rect.x + rect.w);
+        const closestY = clamp(circle.y, rect.y, rect.y + rect.h);
+        const dx = circle.x - closestX;
+        const dy = circle.y - closestY;
+        const distSq = dx * dx + dy * dy;
+        return distSq < circle.r * circle.r ? { dx, dy } : null;
+      }
+
+      class AssetBank {
+        constructor(manifest, mountNode) {
+          this.manifest = manifest;
+          this.mountNode = mountNode;
+          this.images = new Map();
+          this.audio = new Map();
+        }
+
+        async preload() {
+          const imageJobs = Object.entries(this.manifest.images).map(([key, spec]) => this.loadImage(key, spec));
+          const audioJobs = Object.entries(this.manifest.audio).map(([key, spec]) => this.loadAudio(key, spec));
+          await Promise.all([...imageJobs, ...audioJobs]);
+        }
+
+        loadImage(key, spec) {
+          return new Promise((resolve) => {
+            const img = document.createElement("img");
+            img.alt = "";
+            img.decoding = "async";
+            img.crossOrigin = "anonymous";
+            img.src = spec.url;
+            img.addEventListener("load", () => {
+              this.images.set(key, { ok: true, element: img, source: spec.source });
+              resolve();
+            });
+            img.addEventListener("error", () => {
+              this.images.set(key, { ok: false, element: img, source: spec.source });
+              resolve();
+            });
+            this.mountNode.append(img);
+          });
+        }
+
+        loadAudio(key, spec) {
+          return new Promise((resolve) => {
+            const audio = new Audio();
+            audio.preload = "auto";
+            audio.src = spec.url;
+            const finish = (ok) => {
+              if (!this.audio.has(key)) {
+                this.audio.set(key, { ok, element: audio, source: spec.source });
+                resolve();
+              }
+            };
+            audio.addEventListener("canplaythrough", () => finish(true), { once: true });
+            audio.addEventListener("error", () => finish(false), { once: true });
+            setTimeout(() => finish(false), 2200);
+          });
+        }
+
+        getImage(key) {
+          return this.images.get(key);
+        }
+
+        getAudio(key) {
+          return this.audio.get(key);
+        }
+      }
+
+      class Soundboard {
+        constructor(assetBank) {
+          this.assetBank = assetBank;
+          this.context = null;
+          this.unlocked = false;
+        }
+
+        unlock() {
+          this.unlocked = true;
+          if (!this.context) {
+            const AudioCtx = window.AudioContext || window.webkitAudioContext;
+            if (AudioCtx) {
+              this.context = new AudioCtx();
+            }
+          }
+          if (this.context && this.context.state === "suspended") {
+            this.context.resume().catch(() => {});
+          }
+        }
+
+        play(key) {
+          if (!this.unlocked) {
+            return;
+          }
+          const record = this.assetBank.getAudio(key);
+          if (record?.ok) {
+            const clip = new Audio(record.element.src);
+            clip.volume = key === "alert" ? 0.33 : 0.28;
+            clip.play().catch(() => this.playSynth(key));
+            return;
+          }
+          this.playSynth(key);
+        }
+
+        playSynth(key) {
+          if (!this.context) {
+            return;
+          }
+          const now = this.context.currentTime;
+          const osc = this.context.createOscillator();
+          const gain = this.context.createGain();
+          const table = {
+            ping: { type: "triangle", a: 520, b: 820, dur: 0.12 },
+            crack: { type: "square", a: 210, b: 90, dur: 0.16 },
+            alert: { type: "sawtooth", a: 160, b: 240, dur: 0.22 },
+            fanfare: { type: "triangle", a: 430, b: 660, dur: 0.34 }
+          };
+          const tone = table[key] || table.ping;
+          osc.type = tone.type;
+          osc.frequency.setValueAtTime(tone.a, now);
+          osc.frequency.exponentialRampToValueAtTime(tone.b, now + tone.dur);
+          gain.gain.setValueAtTime(0.001, now);
+          gain.gain.exponentialRampToValueAtTime(0.08, now + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.0001, now + tone.dur);
+          osc.connect(gain);
+          gain.connect(this.context.destination);
+          osc.start(now);
+          osc.stop(now + tone.dur + 0.02);
+        }
+      }
+
+      class ParticleField {
+        constructor() {
+          this.items = [];
+        }
+
+        burst(x, y, count, palette, speed = 220) {
+          for (let i = 0; i < count; i += 1) {
+            const angle = Math.random() * Math.PI * 2;
+            const drift = rand(0.35, 1);
+            this.items.push({
+              x,
+              y,
+              vx: Math.cos(angle) * speed * drift,
+              vy: Math.sin(angle) * speed * drift,
+              life: rand(0.24, 0.7),
+              maxLife: rand(0.24, 0.7),
+              size: rand(1.8, 5.2),
+              color: palette[(Math.random() * palette.length) | 0]
+            });
+          }
+        }
+
+        update(dt) {
+          for (let i = this.items.length - 1; i >= 0; i -= 1) {
+            const item = this.items[i];
+            item.life -= dt;
+            if (item.life <= 0) {
+              this.items.splice(i, 1);
+              continue;
+            }
+            item.vx *= 0.992;
+            item.vy = item.vy * 0.992 + 34 * dt;
+            item.x += item.vx * dt;
+            item.y += item.vy * dt;
+          }
+        }
+
+        draw(context) {
+          for (const item of this.items) {
+            const alpha = item.life / item.maxLife;
+            context.globalAlpha = alpha;
+            context.fillStyle = item.color;
+            context.beginPath();
+            context.arc(item.x, item.y, item.size, 0, Math.PI * 2);
+            context.fill();
+          }
+          context.globalAlpha = 1;
+        }
+      }
+
+      function createLevel() {
+        const bricks = [];
+        const cols = 10;
+        const rows = 6;
+        const brickW = 102;
+        const brickH = 30;
+        const startX = (CONFIG.width - cols * brickW - (cols - 1) * 12) * 0.5;
+        const palette = [
+          ["#8ff3ff", "#279cb8"],
+          ["#ffd76d", "#db8d2e"],
+          ["#ffa0ba", "#d14c76"],
+          ["#83f0b8", "#1f9b66"]
+        ];
+
+        for (let row = 0; row < rows; row += 1) {
+          for (let col = 0; col < cols; col += 1) {
+            if ((row === 2 && (col === 2 || col === 7)) || (row === 4 && col === 4)) {
+              continue;
+            }
+            const colors = palette[(row + col) % palette.length];
+            bricks.push({
+              x: startX + col * (brickW + 12),
+              y: CONFIG.topPadding + row * (brickH + 12),
+              w: brickW,
+              h: brickH,
+              hp: row % 2 === 0 ? 1 : 2,
+              maxHp: row % 2 === 0 ? 1 : 2,
+              colors
+            });
+          }
+        }
+
+        const obstacles = [
+          { x: 290, y: 272, w: 140, h: 20, vx: 44, minX: 180, maxX: 440 },
+          { x: 860, y: 332, w: 160, h: 20, vx: -54, minX: 760, maxX: 1030 },
+          { x: 548, y: 418, w: 184, h: 22, vx: 68, minX: 440, maxX: 730 }
+        ];
+
+        const drones = [
+          {
+            x: 200,
+            y: 174,
+            w: 78,
+            h: 42,
+            trackMin: 120,
+            trackMax: 510,
+            cooldown: 1.15,
+            fireEvery: 2.4,
+            phase: 0.3
+          },
+          {
+            x: 1000,
+            y: 214,
+            w: 78,
+            h: 42,
+            trackMin: 770,
+            trackMax: 1150,
+            cooldown: 0.3,
+            fireEvery: 1.95,
+            phase: 0.8
+          }
+        ];
+
+        return { bricks, obstacles, drones, shots: [] };
+      }
+
+      class GravityBreakout {
+        constructor(context, assetBank, soundboard) {
+          this.ctx = context;
+          this.assetBank = assetBank;
+          this.soundboard = soundboard;
+          this.particles = new ParticleField();
+          this.pointer = {
+            active: false,
+            down: false,
+            x: CONFIG.width * 0.5,
+            y: CONFIG.height * 0.76,
+            justPressed: false
+          };
+          this.stars = Array.from({ length: 110 }, () => ({
+            x: Math.random() * CONFIG.width,
+            y: Math.random() * CONFIG.height,
+            size: rand(0.6, 2.2),
+            drift: rand(0.3, 1.2),
+            alpha: rand(0.18, 0.8)
+          }));
+          this.flash = 0;
+          this.elapsed = 0;
+          this.state = STATES.MENU;
+          this.score = 0;
+          this.wave = 1;
+          this.message = "Guide ball with gravity.";
+          this.resetStage();
+          this.attachInput();
+        }
+
+        attachInput() {
+          const updatePointer = (event) => {
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = CONFIG.width / rect.width;
+            const scaleY = CONFIG.height / rect.height;
+            this.pointer.x = clamp((event.clientX - rect.left) * scaleX, 0, CONFIG.width);
+            this.pointer.y = clamp((event.clientY - rect.top) * scaleY, 0, CONFIG.height);
+            this.pointer.active = true;
+          };
+
+          window.addEventListener("pointermove", updatePointer);
+          window.addEventListener("pointerdown", (event) => {
+            updatePointer(event);
+            this.pointer.down = true;
+            this.pointer.justPressed = true;
+            this.soundboard.unlock();
+            this.handlePrimaryAction();
+          });
+          window.addEventListener("pointerup", () => {
+            this.pointer.down = false;
+          });
+          window.addEventListener("blur", () => {
+            this.pointer.down = false;
+          });
+          window.addEventListener("keydown", (event) => {
+            if (event.code === "Space" || event.code === "Enter") {
+              event.preventDefault();
+              this.soundboard.unlock();
+              this.handlePrimaryAction();
+            }
+          });
+        }
+
+        resetStage() {
+          this.level = createLevel();
+          this.lives = CONFIG.lives;
+          this.combo = 0;
+          this.resetBall(true);
+        }
+
+        resetBall(withMessage) {
+          this.ball = {
+            x: CONFIG.spawnX,
+            y: CONFIG.spawnY,
+            r: CONFIG.ballRadius,
+            vx: 0,
+            vy: 0,
+            waiting: true,
+            trail: []
+          };
+          this.lastGravity = 0;
+          if (withMessage) {
+            this.message = "Curve around moving gates. Click to launch.";
+          }
+        }
+
+        handlePrimaryAction() {
+          if (this.state === STATES.MENU) {
+            this.startRun();
+            return;
+          }
+          if (this.state === STATES.WIN || this.state === STATES.LOSE) {
+            this.state = STATES.MENU;
+            this.score = 0;
+            this.wave = 1;
+            this.flash = 0;
+            this.resetStage();
+            return;
+          }
+          if (this.state === STATES.PLAYING && this.ball.waiting) {
+            this.launchBall();
+          }
+        }
+
+        startRun() {
+          this.state = STATES.PLAYING;
+          this.score = 0;
+          this.wave = 1;
+          this.flash = 0;
+          this.resetStage();
+          this.launchBall();
+        }
+
+        launchBall() {
+          const angle = rand(-0.35, 0.35);
+          this.ball.waiting = false;
+          this.ball.vx = Math.sin(angle) * 260;
+          this.ball.vy = -510;
+          this.message = "Hold mouse for heavier pull.";
+          this.soundboard.play("ping");
+        }
+
+        loseLife(reason) {
+          this.lives -= 1;
+          this.flash = 1;
+          this.combo = 0;
+          this.message = reason;
+          this.soundboard.play("alert");
+          this.particles.burst(this.ball.x, this.ball.y, 22, ["#ff9db0", "#ffd16b", "#ffffff"], 250);
+          if (this.lives <= 0) {
+            this.state = STATES.LOSE;
+            return;
+          }
+          this.resetBall(false);
+        }
+
+        winRun() {
+          this.state = STATES.WIN;
+          this.message = "Every brick cracked. Gravity line held.";
+          this.soundboard.play("fanfare");
+          this.particles.burst(CONFIG.width * 0.5, 180, 90, ["#7cf3c9", "#8ff3ff", "#ffd36a"], 320);
+        }
+
+        update(dt) {
+          this.elapsed += dt;
+          this.flash = Math.max(0, this.flash - dt * 1.8);
+          this.particles.update(dt);
+          for (const star of this.stars) {
+            star.y += star.drift * dt * 18;
+            if (star.y > CONFIG.height + 4) {
+              star.y = -4;
+              star.x = Math.random() * CONFIG.width;
+            }
+          }
+
+          if (this.state !== STATES.PLAYING) {
+            this.pointer.justPressed = false;
+            return;
+          }
+
+          for (const obstacle of this.level.obstacles) {
+            obstacle.x += obstacle.vx * dt;
+            if (obstacle.x < obstacle.minX) {
+              obstacle.x = obstacle.minX;
+              obstacle.vx *= -1;
+            }
+            if (obstacle.x + obstacle.w > obstacle.maxX) {
+              obstacle.x = obstacle.maxX - obstacle.w;
+              obstacle.vx *= -1;
+            }
+          }
+
+          for (const drone of this.level.drones) {
+            const targetX = clamp(
+              this.ball.x + Math.sin(this.elapsed * (1.5 + drone.phase)) * 150,
+              drone.trackMin,
+              drone.trackMax - drone.w
+            );
+            drone.x = lerp(drone.x, targetX, dt * 1.2);
+            drone.cooldown -= dt;
+            if (!this.ball.waiting && drone.cooldown <= 0) {
+              drone.cooldown = drone.fireEvery + rand(-0.2, 0.25);
+              this.level.shots.push({
+                x: drone.x + drone.w * 0.5,
+                y: drone.y + drone.h,
+                r: 8,
+                vx: clamp((this.ball.x - (drone.x + drone.w * 0.5)) * 0.28, -140, 140),
+                vy: rand(260, 340),
+                life: 5
+              });
+              this.soundboard.play("alert");
+            }
+          }
+
+          for (let i = this.level.shots.length - 1; i >= 0; i -= 1) {
+            const shot = this.level.shots[i];
+            shot.x += shot.vx * dt;
+            shot.y += shot.vy * dt;
+            shot.life -= dt;
+            if (shot.life <= 0 || shot.y > CONFIG.height + 40) {
+              this.level.shots.splice(i, 1);
+              continue;
+            }
+            const dx = shot.x - this.ball.x;
+            const dy = shot.y - this.ball.y;
+            const hitDistance = shot.r + this.ball.r;
+            if (!this.ball.waiting && dx * dx + dy * dy < hitDistance * hitDistance) {
+              this.level.shots.splice(i, 1);
+              this.ball.vx += shot.vx * 0.35;
+              this.ball.vy += 160;
+              this.loseLife("Drone pulse clipped core.");
+            }
+          }
+
+          if (this.ball.waiting) {
+            this.ball.x = lerp(this.ball.x, CONFIG.spawnX + Math.sin(this.elapsed * 2.4) * 28, dt * 4);
+            this.ball.y = lerp(this.ball.y, CONFIG.spawnY + Math.cos(this.elapsed * 3.2) * 12, dt * 4);
+            this.pointer.justPressed = false;
+            return;
+          }
+
+          const dx = this.pointer.x - this.ball.x;
+          const dy = this.pointer.y - this.ball.y;
+          const distSq = dx * dx + dy * dy;
+          const radiusSq = CONFIG.gravityRadius * CONFIG.gravityRadius;
+          this.lastGravity = 0;
+          if (distSq < radiusSq && distSq > 24) {
+            const dist = Math.sqrt(distSq);
+            const pullStrength = CONFIG.gravityPower / distSq;
+            const boost = this.pointer.down ? CONFIG.gravityBoost : 1;
+            const nx = dx / dist;
+            const ny = dy / dist;
+            const swirl = this.pointer.down ? CONFIG.gravitySwirl : CONFIG.gravitySwirl * 0.32;
+            this.ball.vx += (nx * pullStrength * boost - ny * swirl) * dt;
+            this.ball.vy += (ny * pullStrength * boost + nx * swirl) * dt;
+            this.lastGravity = 1 - dist / CONFIG.gravityRadius;
+          }
+
+          this.ball.vx *= 1 - 0.085 * dt * 60;
+          this.ball.vy *= 1 - 0.032 * dt * 60;
+
+          const speed = Math.hypot(this.ball.vx, this.ball.vy);
+          if (speed > 860) {
+            const factor = 860 / speed;
+            this.ball.vx *= factor;
+            this.ball.vy *= factor;
+          }
+
+          this.ball.x += this.ball.vx * dt;
+          this.ball.y += this.ball.vy * dt;
+          this.ball.trail.push({ x: this.ball.x, y: this.ball.y, a: 0.92 });
+          if (this.ball.trail.length > 18) {
+            this.ball.trail.shift();
+          }
+          for (const node of this.ball.trail) {
+            node.a *= 0.93;
+          }
+
+          this.resolveWalls();
+          this.resolveRectSet(this.level.obstacles, false);
+          this.resolveRectSet(this.level.bricks, true);
+          this.resolveDrones();
+
+          if (this.ball.y - this.ball.r > CONFIG.height + 20) {
+            this.loseLife("Core slipped beyond field.");
+          }
+
+          if (this.level.bricks.length === 0) {
+            this.winRun();
+          }
+
+          this.pointer.justPressed = false;
+        }
+
+        resolveWalls() {
+          if (this.ball.x - this.ball.r < 20) {
+            this.ball.x = 20 + this.ball.r;
+            this.ball.vx = Math.abs(this.ball.vx);
+            this.soundboard.play("ping");
+          }
+          if (this.ball.x + this.ball.r > CONFIG.width - 20) {
+            this.ball.x = CONFIG.width - 20 - this.ball.r;
+            this.ball.vx = -Math.abs(this.ball.vx);
+            this.soundboard.play("ping");
+          }
+          if (this.ball.y - this.ball.r < 20) {
+            this.ball.y = 20 + this.ball.r;
+            this.ball.vy = Math.abs(this.ball.vy);
+            this.soundboard.play("ping");
+          }
+        }
+
+        resolveRectSet(rects, breakable) {
+          for (let i = rects.length - 1; i >= 0; i -= 1) {
+            const rect = rects[i];
+            const hit = circleRectHit(this.ball, rect);
+            if (!hit) {
+              continue;
+            }
+            const overlapX = this.ball.r - Math.abs(hit.dx);
+            const overlapY = this.ball.r - Math.abs(hit.dy);
+            if (overlapX < overlapY) {
+              this.ball.x += hit.dx < 0 ? -overlapX : overlapX;
+              this.ball.vx *= -1;
+            } else {
+              this.ball.y += hit.dy < 0 ? -overlapY : overlapY;
+              this.ball.vy *= -1;
+            }
+
+            if (!breakable) {
+              this.soundboard.play("ping");
+              this.particles.burst(this.ball.x, this.ball.y, 7, ["#8ff3ff", "#ffffff"], 90);
+              continue;
+            }
+
+            rect.hp -= 1;
+            this.combo += 1;
+            this.score += 120 + this.combo * 12;
+            this.message = rect.hp <= 0 ? "Brick shattered." : "Armor cracked.";
+            this.soundboard.play(rect.hp <= 0 ? "crack" : "ping");
+            this.particles.burst(
+              this.ball.x,
+              this.ball.y,
+              rect.hp <= 0 ? 16 : 8,
+              [rect.colors[0], rect.colors[1], "#ffffff"],
+              rect.hp <= 0 ? 180 : 120
+            );
+            if (rect.hp <= 0) {
+              rects.splice(i, 1);
+            }
+          }
+        }
+
+        resolveDrones() {
+          for (const drone of this.level.drones) {
+            const hit = circleRectHit(this.ball, drone);
+            if (!hit) {
+              continue;
+            }
+            this.ball.vy = Math.abs(this.ball.vy) + 80;
+            this.ball.vx += hit.dx < 0 ? -110 : 110;
+            this.particles.burst(this.ball.x, this.ball.y, 12, ["#ff8ca4", "#ffd16b", "#ffffff"], 190);
+            this.loseLife("Patrol drone rammed core.");
+            return;
+          }
+        }
+
+        drawBackdrop() {
+          const gradient = this.ctx.createLinearGradient(0, 0, 0, CONFIG.height);
+          gradient.addColorStop(0, "#071827");
+          gradient.addColorStop(1, "#051019");
+          this.ctx.fillStyle = gradient;
+          this.ctx.fillRect(0, 0, CONFIG.width, CONFIG.height);
+
+          for (const star of this.stars) {
+            this.ctx.globalAlpha = star.alpha;
+            this.ctx.fillStyle = "#dff7ff";
+            this.ctx.beginPath();
+            this.ctx.arc(star.x, star.y, star.size, 0, Math.PI * 2);
+            this.ctx.fill();
+          }
+          this.ctx.globalAlpha = 1;
+
+          this.ctx.strokeStyle = "rgba(130, 210, 255, 0.06)";
+          this.ctx.lineWidth = 1;
+          for (let y = 90; y < CONFIG.height; y += 70) {
+            this.ctx.beginPath();
+            this.ctx.moveTo(40, y);
+            this.ctx.lineTo(CONFIG.width - 40, y);
+            this.ctx.stroke();
+          }
+        }
+
+        drawHud() {
+          this.ctx.fillStyle = "rgba(10, 20, 32, 0.84)";
+          roundRectPath(this.ctx, 24, 20, 340, 66, 18);
+          this.ctx.fill();
+          this.ctx.strokeStyle = "rgba(151, 220, 255, 0.24)";
+          this.ctx.stroke();
+
+          this.ctx.fillStyle = "#f4fbff";
+          this.ctx.font = "700 18px Trebuchet MS, sans-serif";
+          this.ctx.fillText(`Score ${this.score.toString().padStart(5, "0")}`, 42, 48);
+          this.ctx.fillText(`Lives ${Math.max(0, this.lives)}`, 182, 48);
+          this.ctx.fillText(`Wave ${this.wave}`, 284, 48);
+
+          this.ctx.fillStyle = "#9ec7da";
+          this.ctx.font = "14px Trebuchet MS, sans-serif";
+          this.ctx.fillText(this.message, 42, 69);
+        }
+
+        drawGravityWell() {
+          const pulse = 0.84 + Math.sin(this.elapsed * 6.2) * 0.08;
+          const radius = CONFIG.gravityRadius * (0.46 + this.lastGravity * 0.22);
+
+          this.ctx.save();
+          this.ctx.strokeStyle = `rgba(120, 224, 255, ${0.16 + this.lastGravity * 0.26})`;
+          this.ctx.lineWidth = 2;
+          this.ctx.beginPath();
+          this.ctx.arc(this.pointer.x, this.pointer.y, radius, 0, Math.PI * 2);
+          this.ctx.stroke();
+
+          this.ctx.strokeStyle = `rgba(255, 211, 106, ${this.pointer.down ? 0.42 : 0.18})`;
+          this.ctx.lineWidth = this.pointer.down ? 5 : 2;
+          this.ctx.beginPath();
+          this.ctx.arc(this.pointer.x, this.pointer.y, 26 * pulse, 0, Math.PI * 2);
+          this.ctx.stroke();
+
+          this.ctx.fillStyle = this.pointer.down ? "rgba(255, 211, 106, 0.25)" : "rgba(120, 224, 255, 0.16)";
+          this.ctx.beginPath();
+          this.ctx.arc(this.pointer.x, this.pointer.y, 15 * pulse, 0, Math.PI * 2);
+          this.ctx.fill();
+          this.ctx.restore();
+        }
+
+        drawBall() {
+          for (const node of this.ball.trail) {
+            this.ctx.globalAlpha = node.a * 0.5;
+            this.ctx.fillStyle = "#78e0ff";
+            this.ctx.beginPath();
+            this.ctx.arc(node.x, node.y, this.ball.r * 0.65, 0, Math.PI * 2);
+            this.ctx.fill();
+          }
+          this.ctx.globalAlpha = 1;
+
+          const orb = this.assetBank.getImage("orb");
+          if (orb?.ok) {
+            this.ctx.drawImage(orb.element, this.ball.x - 20, this.ball.y - 20, 40, 40);
+          } else {
+            const radial = this.ctx.createRadialGradient(
+              this.ball.x - 3,
+              this.ball.y - 4,
+              2,
+              this.ball.x,
+              this.ball.y,
+              this.ball.r * 2.1
+            );
+            radial.addColorStop(0, "#ffffff");
+            radial.addColorStop(0.45, "#84f4ff");
+            radial.addColorStop(1, "#2198c4");
+            this.ctx.fillStyle = radial;
+            this.ctx.beginPath();
+            this.ctx.arc(this.ball.x, this.ball.y, this.ball.r, 0, Math.PI * 2);
+            this.ctx.fill();
+          }
+        }
+
+        drawBricks() {
+          for (const brick of this.level.bricks) {
+            const img = this.assetBank.getImage("brick");
+            if (img?.ok) {
+              this.ctx.save();
+              this.ctx.globalAlpha = 0.42 + brick.hp / brick.maxHp * 0.35;
+              this.ctx.drawImage(img.element, brick.x, brick.y, brick.w, brick.h);
+              this.ctx.restore();
+            }
+            const fill = this.ctx.createLinearGradient(brick.x, brick.y, brick.x + brick.w, brick.y + brick.h);
+            fill.addColorStop(0, brick.colors[0]);
+            fill.addColorStop(1, brick.colors[1]);
+            this.ctx.fillStyle = fill;
+            roundRectPath(this.ctx, brick.x, brick.y, brick.w, brick.h, 9);
+            this.ctx.fill();
+            this.ctx.strokeStyle = "rgba(255, 255, 255, 0.18)";
+            this.ctx.stroke();
+
+            if (brick.hp > 1) {
+              this.ctx.fillStyle = "rgba(8, 18, 30, 0.55)";
+              roundRectPath(this.ctx, brick.x + 10, brick.y + 7, 18, 16, 5);
+              this.ctx.fill();
+              this.ctx.fillStyle = "#ffffff";
+              this.ctx.font = "700 11px Trebuchet MS, sans-serif";
+              this.ctx.fillText(String(brick.hp), brick.x + 16, brick.y + 19);
+            }
+          }
+        }
+
+        drawObstacles() {
+          for (const obstacle of this.level.obstacles) {
+            const fill = this.ctx.createLinearGradient(obstacle.x, obstacle.y, obstacle.x + obstacle.w, obstacle.y);
+            fill.addColorStop(0, "#0e3046");
+            fill.addColorStop(1, "#2f6f8a");
+            this.ctx.fillStyle = fill;
+            roundRectPath(this.ctx, obstacle.x, obstacle.y, obstacle.w, obstacle.h, 10);
+            this.ctx.fill();
+            this.ctx.strokeStyle = "rgba(151, 220, 255, 0.3)";
+            this.ctx.stroke();
+          }
+        }
+
+        drawDrones() {
+          const img = this.assetBank.getImage("drone");
+          for (const drone of this.level.drones) {
+            this.ctx.save();
+            this.ctx.shadowBlur = 16;
+            this.ctx.shadowColor = "rgba(255, 109, 135, 0.26)";
+            if (img?.ok) {
+              this.ctx.drawImage(img.element, drone.x, drone.y, drone.w, drone.h);
+            } else {
+              const fill = this.ctx.createLinearGradient(drone.x, drone.y, drone.x + drone.w, drone.y + drone.h);
+              fill.addColorStop(0, "#ff9db0");
+              fill.addColorStop(1, "#8f324d");
+              this.ctx.fillStyle = fill;
+              roundRectPath(this.ctx, drone.x, drone.y, drone.w, drone.h, 14);
+              this.ctx.fill();
+              this.ctx.fillStyle = "#251016";
+              this.ctx.fillRect(drone.x + 14, drone.y + 12, drone.w - 28, 8);
+            }
+            this.ctx.restore();
+
+            const ratio = drone.cooldown / drone.fireEvery;
+            this.ctx.fillStyle = "rgba(255,255,255,0.12)";
+            roundRectPath(this.ctx, drone.x + 12, drone.y - 14, drone.w - 24, 5, 3);
+            this.ctx.fill();
+            this.ctx.fillStyle = "#ffd36a";
+            roundRectPath(this.ctx, drone.x + 12, drone.y - 14, (drone.w - 24) * (1 - clamp(ratio, 0, 1)), 5, 3);
+            this.ctx.fill();
+          }
+        }
+
+        drawShots() {
+          for (const shot of this.level.shots) {
+            this.ctx.fillStyle = "#ff90ad";
+            this.ctx.beginPath();
+            this.ctx.arc(shot.x, shot.y, shot.r, 0, Math.PI * 2);
+            this.ctx.fill();
+            this.ctx.strokeStyle = "rgba(255, 209, 107, 0.6)";
+            this.ctx.lineWidth = 2;
+            this.ctx.beginPath();
+            this.ctx.moveTo(shot.x, shot.y - 16);
+            this.ctx.lineTo(shot.x, shot.y + 16);
+            this.ctx.stroke();
+          }
+        }
+
+        drawOverlay() {
+          const isMenu = this.state === STATES.MENU;
+          const isWin = this.state === STATES.WIN;
+          const isLose = this.state === STATES.LOSE;
+          if (!isMenu && !isWin && !isLose) {
+            return;
+          }
+
+          this.ctx.fillStyle = "rgba(4, 10, 18, 0.58)";
+          this.ctx.fillRect(0, 0, CONFIG.width, CONFIG.height);
+
+          const panelX = 270;
+          const panelY = 150;
+          const panelW = 740;
+          const panelH = 390;
+
+          this.ctx.fillStyle = "rgba(8, 18, 30, 0.9)";
+          roundRectPath(this.ctx, panelX, panelY, panelW, panelH, 28);
+          this.ctx.fill();
+          this.ctx.strokeStyle = "rgba(151, 220, 255, 0.2)";
+          this.ctx.lineWidth = 2;
+          this.ctx.stroke();
+
+          const title = isMenu ? "Breakout: Gravity Well" : isWin ? "Field Stabilized" : "Core Lost";
+          const subtitle = isMenu
+            ? "Use mouse like a gravity sling. There is no paddle. Curvature is control."
+            : isWin
+              ? "Every brick broke without touching a paddle."
+              : "Drones, moving gates, and gravity drift won this round.";
+
+          this.ctx.fillStyle = "#f4fbff";
+          this.ctx.font = "700 44px Trebuchet MS, sans-serif";
+          this.ctx.fillText(title, panelX + 48, panelY + 86);
+          this.ctx.fillStyle = "#9ec7da";
+          this.ctx.font = "22px Trebuchet MS, sans-serif";
+          this.ctx.fillText(subtitle, panelX + 48, panelY + 130);
+
+          const bullets = isMenu
+            ? [
+                "Move mouse to pull ball trajectory inside cyan radius.",
+                "Hold mouse button for stronger gravity and side-spin.",
+                "Avoid patrol drones and their falling pulse shots.",
+                "Break every brick before all four lives are gone."
+              ]
+            : [
+                `Score ${this.score.toString().padStart(5, "0")}   Lives left ${Math.max(0, this.lives)}`,
+                "Click, press space, or press enter to restart.",
+                "Fallback art and sound stay playable if remote CC0 assets fail."
+              ];
+
+          this.ctx.font = "18px Trebuchet MS, sans-serif";
+          bullets.forEach((line, index) => {
+            this.ctx.fillStyle = index === 0 && !isMenu ? "#ffd36a" : "#d9f4ff";
+            this.ctx.fillText(`- ${line}`, panelX + 54, panelY + 194 + index * 42);
+          });
+
+          this.ctx.fillStyle = "#78e0ff";
+          this.ctx.font = "700 20px Trebuchet MS, sans-serif";
+          this.ctx.fillText(isMenu ? "Click or press space to begin" : "Click or press space to play again", panelX + 48, panelY + panelH - 48);
+        }
+
+        drawFlash() {
+          if (this.flash <= 0) {
+            return;
+          }
+          this.ctx.fillStyle = `rgba(255, 90, 120, ${this.flash * 0.14})`;
+          this.ctx.fillRect(0, 0, CONFIG.width, CONFIG.height);
+        }
+
+        render() {
+          this.drawBackdrop();
+          this.drawBricks();
+          this.drawObstacles();
+          this.drawDrones();
+          this.drawShots();
+          this.drawGravityWell();
+          this.drawBall();
+          this.particles.draw(this.ctx);
+          this.drawHud();
+          this.drawOverlay();
+          this.drawFlash();
+        }
+      }
+
+      const bank = new AssetBank(assets, assetBin);
+      const soundboard = new Soundboard(bank);
+      const game = new GravityBreakout(ctx, bank, soundboard);
+
+      function resizeCanvas() {
+        const scale = Math.min(window.innerWidth / CONFIG.width, window.innerHeight / CONFIG.height);
+        canvas.style.width = `${Math.floor(CONFIG.width * scale)}px`;
+        canvas.style.height = `${Math.floor(CONFIG.height * scale)}px`;
+      }
+
+      resizeCanvas();
+      window.addEventListener("resize", resizeCanvas);
+
+      let lastTime = performance.now();
+      let accumulator = 0;
+
+      function frame(now) {
+        const delta = Math.min(CONFIG.maxFrame, (now - lastTime) / 1000);
+        lastTime = now;
+        accumulator += delta;
+
+        while (accumulator >= CONFIG.step) {
+          game.update(CONFIG.step);
+          accumulator -= CONFIG.step;
+        }
+
+        game.render();
+        requestAnimationFrame(frame);
+      }
+
+      bank.preload().finally(() => {
+        requestAnimationFrame(frame);
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -99,6 +99,7 @@ async function executeAiRoutineJob({
     latestUserPrompt: prompt,
     runId: activeRun.id,
     providerBrand,
+    planningModelId: activeRun.planningModelId,
     executionModelId,
     subagentWorktreeStrategy: definition.subagentWorktreeStrategy ?? repository.getSubagentWorktreeStrategyDefault(),
     planExecutionMode: definition.planExecutionMode ?? repository.getPlanExecutionModeDefault(),

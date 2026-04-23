@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Codex, type CodexOptions } from "@openai/codex-sdk";
 import { buildCliProcessEnv } from "./cli-process-manager";
+import { resolveCodexSandboxMode } from "./codex-sandbox-policy";
 import type {
   PiAgentAdapter,
   PiAgentExecutionController,
@@ -11,7 +12,6 @@ import type {
   PiAgentPromptResult
 } from "../pi-agent-adapter";
 
-const WINDOWS_POLICY_BYPASS_ENV_KEY = "HARNESS_CODEX_WINDOWS_BYPASS_POLICY";
 const DEFAULT_REASONING_STRENGTH = "high";
 
 type CodexSdkTextInput = {
@@ -153,7 +153,9 @@ class CodexSdkExecutionController implements PiAgentExecutionController {
 
   dispose() {
     this.disposed = true;
-    this.currentAbortController?.abort();
+    if (this.running) {
+      this.currentAbortController?.abort();
+    }
   }
 
   private async execute(request: PiAgentPromptRequest) {
@@ -192,19 +194,24 @@ class CodexSdkExecutionController implements PiAgentExecutionController {
       };
     } finally {
       this.running = false;
+      this.currentAbortController = undefined;
       await imageInput.cleanup();
     }
   }
 }
 
-function buildThreadOptions(request: PiAgentPromptRequest): CodexSdkThreadOptions {
+function buildThreadOptions(
+  request: PiAgentPromptRequest,
+  options: {
+    platform?: NodeJS.Platform;
+  } = {}
+): CodexSdkThreadOptions {
   return {
     model: toCliModelName(request.modelId),
-    sandboxMode: shouldBypassWindowsPolicy(request)
-      ? "danger-full-access"
-      : request.readOnly
-        ? "read-only"
-        : "workspace-write",
+    sandboxMode: resolveCodexSandboxMode({
+      readOnly: request.readOnly,
+      platform: options.platform
+    }),
     workingDirectory: request.cwd,
     skipGitRepoCheck: true,
     approvalPolicy: "never",
@@ -555,10 +562,6 @@ function toCliModelName(modelId: string | undefined) {
   }
 
   return modelId.includes("/") ? modelId.split("/", 2)[1] : modelId;
-}
-
-function shouldBypassWindowsPolicy(request: PiAgentPromptRequest) {
-  return process.platform === "win32" && !request.readOnly && Bun.env[WINDOWS_POLICY_BYPASS_ENV_KEY] === "1";
 }
 
 export const testExports = {

@@ -1,4 +1,4 @@
-import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js";
 import { createHotkeys } from "@tanstack/solid-hotkeys";
 import { createRequestId, type ChatAttachment, type ChatMessage, type SetupAction } from "../../../shared/protocol";
 import {
@@ -17,6 +17,7 @@ import {
   getComposerControlState,
   getExecutionModelOptionsForAgent,
   getFallbackExecutionModelIdForAgent,
+  getModelCapability,
   getResolvedModes,
   harnessStore,
   hasUsableApiKeyForProvider,
@@ -32,6 +33,8 @@ import { ModeEditorPanel } from "./mode-editor-panel";
 import { SetupChecklistCard } from "./setup-checklist-card";
 import { Dialog } from "./primitives/dialog";
 import { CopyTextButton } from "./primitives/copy-text-button";
+import { DropdownControl } from "./primitives/dropdown";
+import { getAgentDropdownIcon, getModeDropdownIcon } from "./primitives/dropdown-option-icons";
 import { Input } from "./primitives/input";
 import { Popover } from "./primitives/popover";
 import { ScrollArea } from "./primitives/scroll-area";
@@ -41,13 +44,17 @@ import { buttonVariants } from "./primitives/button";
 import {
   Activity,
   Brain,
+  Bot,
   ClipboardList,
   Clipboard,
+  Cpu,
   Edit3,
   FolderOpen,
   Folder,
+  Gauge,
   LoaderCircle,
   MessageSquareMore,
+  Orbit,
   Paperclip,
   Pause,
   Play,
@@ -61,6 +68,25 @@ import {
   Split
 } from "lucide-solid";
 import { cn } from "../lib/utils";
+
+function getReasoningStrengthDescription(strength: (typeof COMPOSER_REASONING_STRENGTHS)[number]) {
+  switch (strength) {
+    case "low":
+      return "Fastest pass with minimal internal deliberation.";
+    case "medium":
+      return "Balanced depth for routine implementation and review.";
+    case "high":
+      return "Default stronger reasoning for most coding work.";
+    case "extra-high":
+      return "Heaviest reasoning budget for hard debugging and planning.";
+  }
+}
+
+function getFastModeDescription(enabled: boolean) {
+  return enabled
+    ? "Prefer lower-latency responses when current runtime and model support it."
+    : "Use standard response path with default latency and reasoning behavior.";
+}
 
 export function ChatPanel() {
   let messageViewport: HTMLDivElement | undefined;
@@ -86,7 +112,8 @@ export function ChatPanel() {
   const [draftAttachments, setDraftAttachments] = createSignal<ChatAttachment[]>([]);
   const [uploadingAttachments, setUploadingAttachments] = createSignal(false);
   const [composerSettingsOpen, setComposerSettingsOpen] = createSignal(false);
-  const [reasoningMenuOpen, setReasoningMenuOpen] = createSignal(false);
+  const [desktopReasoningMenuOpen, setDesktopReasoningMenuOpen] = createSignal(false);
+  const [mobileReasoningMenuOpen, setMobileReasoningMenuOpen] = createSignal(false);
   const pendingQuestion = () => activeProject()?.activeRun?.questions.find((question) => question.status === "pending");
   const resumableRun = () => (activeProject()?.activeRun?.resumable ? activeProject()?.activeRun : undefined);
   const retryableRun = () => (activeProject()?.lastRun?.retryable ? activeProject()?.lastRun : undefined);
@@ -106,6 +133,45 @@ export function ChatPanel() {
   const composerReasoningLabel = () => formatReasoningStrengthLabel(selectedReasoningStrength());
   const composerSettingsLabel = () => (selectedFastMode() ? `${composerReasoningLabel()} · Fast` : composerReasoningLabel());
   const selectedAgentLabel = () => state.availableAgents.find((agent) => agent.id === selectedAgentId())?.label ?? "selected agent";
+  const modeDropdownOptions = () =>
+    resolvedModes().map((mode) => ({
+      value: mode.id,
+      label: mode.label,
+      description: mode.description,
+      icon: getModeDropdownIcon(mode.id)
+    }));
+  const agentDropdownOptions = () =>
+    state.availableAgents.map((agent) => ({
+      value: agent.id,
+      label: agent.label,
+      description: agent.description,
+      icon: getAgentDropdownIcon(agent.id)
+    }));
+  const providerDropdownOptions = () => {
+    if (selectedAgentId() === "pi") {
+      return [
+        { value: "gpt", label: "GPT", description: "OpenAI-hosted model family." },
+        { value: "gemini", label: "Gemini", description: "Google-hosted model family." }
+      ];
+    }
+
+    const providerBrand = selectedProviderBrand();
+    return providerBrand
+      ? [
+          {
+            value: providerBrand,
+            label: providerBrand === "gpt" ? "GPT" : "Gemini",
+            description: providerBrand === "gpt" ? "OpenAI-hosted model family." : "Google-hosted model family."
+          }
+        ]
+      : [];
+  };
+  const modelDropdownOptions = () =>
+    availableExecutionModels().map((model) => ({
+      value: model.modelId,
+      label: model.label,
+      description: getModelCapability(state, model.modelId)?.summary ?? model.modelId
+    }));
   const selectedAgentHealthMessage = () => {
     const runtime = selectedAgentRuntime();
     if (!runtime || runtime.agentId === "pi") {
@@ -149,6 +215,79 @@ export function ChatPanel() {
   const setupBlockedReason = () =>
     requiresFreshTopLevelSend() && blockingSetupCheck() ? blockingSetupCheck()!.summary : undefined;
   const isComposerFocused = () => document.activeElement === composerTextarea;
+  const renderModeControl = (size: "sm" | "md" = "sm", className?: string) => (
+    <DropdownControl
+      kind="select"
+      ariaLabel="Select mode"
+      icon={<Split class="h-3.5 w-3.5" />}
+      size={size}
+      class={className}
+      value={activeMode()?.id ?? "implement"}
+      options={modeDropdownOptions()}
+      hideWhenSingleOption
+      onChange={handleModeSelect}
+      dataAttributes={{ "data-test-mode-select": "" }}
+    />
+  );
+  const renderAgentControl = (size: "sm" | "md" = "sm", className?: string) => (
+    <DropdownControl
+      kind="select"
+      ariaLabel="Select agent"
+      icon={<Bot class="h-3.5 w-3.5" />}
+      size={size}
+      class={className}
+      value={selectedAgentId()}
+      options={agentDropdownOptions()}
+      hideWhenSingleOption
+      onChange={(value) => handleSelectAgent(value as "pi" | "copilot-cli" | "codex-cli")}
+      dataAttributes={{ "data-test-agent-select": "", "data-tour-id": "agent-select" }}
+    />
+  );
+  const renderProviderControl = (size: "sm" | "md" = "sm", className?: string) => (
+    <DropdownControl
+      kind="select"
+      ariaLabel="Select provider"
+      icon={<Orbit class="h-3.5 w-3.5" />}
+      size={size}
+      class={className}
+      value={selectedProviderBrand() ?? "gpt"}
+      options={providerDropdownOptions()}
+      disabled={selectedAgentId() === "codex-cli"}
+      hideWhenSingleOption
+      onChange={(value) => handleProviderBrandSelect(value as "gpt" | "gemini")}
+      dataAttributes={{ "data-test-provider-select": "" }}
+    />
+  );
+  const renderModelControl = (size: "sm" | "md" = "sm", className?: string) => (
+    <DropdownControl
+      kind="select"
+      ariaLabel="Select model"
+      icon={<Cpu class="h-3.5 w-3.5" />}
+      size={size}
+      class={className}
+      value={getEffectiveExecutionModelId()}
+      options={modelDropdownOptions()}
+      hideWhenSingleOption
+      onChange={handleExecutionModelSelect}
+      dataAttributes={{ "data-test-model-select": "" }}
+    />
+  );
+  const renderEffortControl = (
+    onToggle: JSX.EventHandlerUnion<HTMLButtonElement, MouseEvent>,
+    className?: string
+  ) => (
+    <Tooltip content={`${getReasoningStrengthDescription(selectedReasoningStrength())}${selectedFastMode() ? "\nFast mode on for lower latency." : "\nFast mode off for default response pacing."}`}>
+      <DropdownControl
+        kind="trigger"
+        ariaLabel="Open effort options"
+        icon={<Gauge class="h-3.5 w-3.5" />}
+        class={className}
+        label={composerSettingsLabel()}
+        onClick={onToggle}
+        dataAttributes={{ "data-test-effort-trigger": "" }}
+      />
+    </Tooltip>
+  );
 
   createHotkeys(
     [
@@ -597,6 +736,7 @@ export function ChatPanel() {
         content,
         attachments: draftAttachments(),
         modeId: activeMode()?.id,
+        modeLocked: state.hasGlobalSelectedModeId,
         executionModelId,
         ...getComposerControlPayload(),
         debug: state.debugEnabled
@@ -1025,64 +1165,68 @@ export function ChatPanel() {
         : undefined;
 
     return (
-      <div class="flex min-w-56 flex-col gap-3">
-        <div class="flex flex-col gap-1">
-          <span class="px-1 text-[0.625rem] font-semibold uppercase tracking-[0.14em] text-(--muted)">Effort</span>
+      <div class="flex flex-col gap-2">
+        <div class="flex flex-col gap-0.5">
+          <span class="px-1 text-[0.375rem] font-semibold uppercase tracking-[0.16em] text-(--muted)">Effort</span>
           <For each={COMPOSER_REASONING_STRENGTHS}>
             {(strength) => {
               const enabled = composerControlState().availableStrengths.includes(strength);
               const selected = selectedReasoningStrength() === strength;
               return (
-                <button
-                  type="button"
-                  disabled={!enabled}
-                  class="flex items-center justify-between rounded-lg px-2 py-1.5 text-left text-sm text-(--foreground) transition hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-50"
-                  onClick={() => {
-                    if (!enabled) {
-                      return;
-                    }
-                    handleReasoningStrengthSelect(strength);
-                  }}
-                >
-                  <span>{formatReasoningOptionLabel(strength)}</span>
-                  <Show when={selected}>
-                    <Check class="h-3.5 w-3.5" />
-                  </Show>
-                </button>
+                <Tooltip content={getReasoningStrengthDescription(strength)} triggerClass="block" side="right">
+                  <button
+                    type="button"
+                    disabled={!enabled}
+                    class="flex w-full items-center justify-between rounded-lg px-1.5 py-1 text-left text-[0.525rem] text-(--foreground) transition hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={() => {
+                      if (!enabled) {
+                        return;
+                      }
+                      handleReasoningStrengthSelect(strength);
+                    }}
+                  >
+                    <span>{formatReasoningOptionLabel(strength)}</span>
+                    <Show when={selected}>
+                      <Check class="h-3 w-3" />
+                    </Show>
+                  </button>
+                </Tooltip>
               );
             }}
           </For>
         </div>
         <div class="h-px bg-black/10" />
-        <div class="flex flex-col gap-1">
-          <span class="px-1 text-[0.625rem] font-semibold uppercase tracking-[0.14em] text-(--muted)">Fast Mode</span>
+        <div class="flex flex-col gap-0.5">
+          <span class="px-1 text-[0.375rem] font-semibold uppercase tracking-[0.16em] text-(--muted)">Fast mode</span>
           <For each={[false, true] as const}>
             {(enabled) => {
               const supported = !enabled || composerControlState().supportsFastMode;
               const selected = selectedFastMode() === enabled;
               return (
-                <button
-                  type="button"
-                  disabled={!supported}
-                  class="flex items-center justify-between rounded-lg px-2 py-1.5 text-left text-sm text-(--foreground) transition hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-50"
-                  onClick={() => {
-                    if (!supported) {
-                      return;
-                    }
-                    handleFastModeSelect(enabled);
-                  }}
-                >
-                  <span>{enabled ? "On" : "Off"}</span>
-                  <Show when={selected}>
-                    <Check class="h-3.5 w-3.5" />
-                  </Show>
-                </button>
+                <Tooltip content={getFastModeDescription(enabled)} triggerClass="block" side="right">
+                  <button
+                    type="button"
+                    disabled={!supported}
+                    class="flex w-full items-center justify-between rounded-lg px-1.5 py-1 text-left text-[0.525rem] text-(--foreground) transition hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={() => {
+                      if (!supported) {
+                        return;
+                      }
+                      handleFastModeSelect(enabled);
+                    }}
+                  >
+                    <span>{enabled ? "On" : "Off"}</span>
+                    <Show when={selected}>
+                      <Check class="h-3 w-3" />
+                    </Show>
+                  </button>
+                </Tooltip>
               );
             }}
           </For>
         </div>
         <Show when={disabledHint}>
-          <div class="px-1 text-[0.625rem] text-(--muted)">{disabledHint}</div>
+          <div class="px-1 text-[0.45rem] text-(--muted)">{disabledHint}</div>
         </Show>
       </div>
     );
@@ -1573,15 +1717,16 @@ export function ChatPanel() {
                       <div class="grid gap-3 md:grid-cols-2">
                         <label class="flex flex-col gap-2">
                           <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Active mode</span>
-                          <select
-                            class="flex h-10 w-full rounded-xl border border-(--border) bg-white/70 px-3 py-2 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
+                          <DropdownControl
+                            kind="select"
+                            ariaLabel="Select active mode"
+                            icon={<Split class="h-3.5 w-3.5" />}
+                            size="md"
+                            class="w-full"
                             value={activeMode()?.id ?? "implement"}
-                            onInput={(event) => handleModeSelect(event.currentTarget.value)}
-                          >
-                            <For each={resolvedModes()}>
-                              {(mode) => <option value={mode.id}>{mode.label}</option>}
-                            </For>
-                          </select>
+                            options={modeDropdownOptions()}
+                            onChange={handleModeSelect}
+                          />
                         </label>
                         <div class="rounded-2xl border border-(--border) bg-white/70 p-3 text-[0.675rem] leading-5 text-(--muted)">
                           {activeMode()?.description ?? "Default implementation mode."}
@@ -2017,151 +2162,46 @@ export function ChatPanel() {
                   />
                 </div>
                 <div class="absolute bottom-2 left-2">
-                  <div class="hidden flex-wrap items-center gap-2 lg:flex">
-                    <span class="text-[0.625rem] text-(--muted)">Mode</span>
-                    <select
-                      data-test-mode-select=""
-                      class="h-7 rounded-lg border border-(--border) bg-white/65 px-2 text-[0.625rem] text-(--foreground) outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
-                      value={activeMode()?.id ?? "implement"}
-                      onInput={(event) => handleModeSelect(event.currentTarget.value)}
+                  <div data-test-composer-control-row="" class="hidden flex-wrap items-center gap-1 lg:flex">
+                    {renderModeControl()}
+                    {renderAgentControl()}
+                    {renderProviderControl()}
+                    {renderModelControl()}
+                    <Popover
+                      open={desktopReasoningMenuOpen()}
+                      onClose={() => setDesktopReasoningMenuOpen(false)}
+                      align="start"
+                      side="top"
+                      contentClass="p-1.5"
+                      content={renderComposerControlMenu()}
                     >
-                      <For each={resolvedModes()}>
-                        {(mode) => <option value={mode.id}>{mode.label}</option>}
-                      </For>
-                    </select>
-                    <span class="text-[0.625rem] text-(--muted)">Agent</span>
-                    <select
-                      data-test-agent-select=""
-                      data-tour-id="agent-select"
-                      class="h-7 rounded-lg border border-(--border) bg-white/65 px-2 text-[0.625rem] text-(--foreground) outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
-                      value={selectedAgentId()}
-                      onInput={(event) => handleSelectAgent(event.currentTarget.value as "pi" | "copilot-cli" | "codex-cli")}
-                    >
-                      <For each={state.availableAgents}>
-                        {(agent) => <option value={agent.id}>{agent.label}</option>}
-                      </For>
-                    </select>
-                    <Show when={selectedProviderBrand()}>
-                      {(providerBrand) => (
-                        <>
-                          <span class="text-[0.625rem] text-(--muted)">Provider</span>
-                          <select
-                            data-test-provider-select=""
-                            class="h-7 rounded-lg border border-(--border) bg-white/65 px-2 text-[0.625rem] text-(--foreground) outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring) disabled:cursor-not-allowed disabled:opacity-60"
-                            value={providerBrand()}
-                            disabled={selectedAgentId() === "codex-cli"}
-                            onInput={(event) => handleProviderBrandSelect(event.currentTarget.value as "gpt" | "gemini")}
-                          >
-                            <option value="gpt">GPT</option>
-                            <Show when={selectedAgentId() === "pi"}>
-                              <option value="gemini">Gemini</option>
-                            </Show>
-                          </select>
-                        </>
-                      )}
-                    </Show>
-                    <span class="text-[0.625rem] text-(--muted)">Model</span>
-                    <Tooltip content={availableExecutionModels().length === 0 ? "No available models discovered for the selected runtime yet." : undefined}>
-                      <span class="inline-flex">
-                        <select
-                          data-test-model-select=""
-                          class="h-7 rounded-lg border border-(--border) bg-white/65 px-2 text-[0.625rem] text-(--foreground) outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring) disabled:cursor-not-allowed disabled:opacity-60"
-                          value={getEffectiveExecutionModelId()}
-                          disabled={availableExecutionModels().length === 0}
-                          onInput={(event) => handleExecutionModelSelect(event.currentTarget.value)}
-                        >
-                          <For each={availableExecutionModels()}>
-                            {(model) => <option value={model.modelId}>{model.label}</option>}
-                          </For>
-                        </select>
-                      </span>
-                    </Tooltip>
+                      {renderEffortControl(() => setDesktopReasoningMenuOpen((current) => !current))}
+                    </Popover>
                   </div>
                   <div class="flex items-center gap-2">
                     <Popover
-                      open={reasoningMenuOpen()}
-                      onClose={() => setReasoningMenuOpen(false)}
+                      open={mobileReasoningMenuOpen()}
+                      onClose={() => setMobileReasoningMenuOpen(false)}
                       align="start"
-                      contentClass="w-[min(20rem,calc(100vw-1.5rem))] lg:w-64"
+                      side="top"
+                      contentClass="p-1.5"
                       content={renderComposerControlMenu()}
                     >
-                      <button
-                        type="button"
-                        data-test-effort-trigger=""
-                        class="inline-flex h-7 items-center rounded-lg border border-(--border) bg-white/70 px-2 text-[0.625rem] text-(--foreground) outline-none transition hover:bg-white/85 focus-visible:ring-2 focus-visible:ring-(--ring)"
-                        onClick={() => setReasoningMenuOpen((current) => !current)}
-                      >
-                        {composerSettingsLabel()}
-                      </button>
+                      {renderEffortControl(() => setMobileReasoningMenuOpen((current) => !current), "lg:hidden")}
                     </Popover>
                     <div class="lg:hidden">
                       <Popover
                         open={composerSettingsOpen()}
                         onClose={() => setComposerSettingsOpen(false)}
                         align="start"
-                        contentClass="w-[min(24rem,calc(100vw-1.5rem))]"
+                        side="top"
+                        contentClass="w-[min(18rem,calc(100vw-1.5rem))] p-2"
                         content={
                           <div class="flex flex-col gap-2">
-                            <label class="flex flex-col gap-1 text-[0.625rem] text-(--muted)">
-                              <span>Mode</span>
-                              <select
-                                data-test-mode-select=""
-                                class="h-8 rounded-lg border border-(--border) bg-white/70 px-2 text-[0.625rem] text-(--foreground) outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
-                                value={activeMode()?.id ?? "implement"}
-                                onInput={(event) => handleModeSelect(event.currentTarget.value)}
-                              >
-                                <For each={resolvedModes()}>
-                                  {(mode) => <option value={mode.id}>{mode.label}</option>}
-                                </For>
-                              </select>
-                            </label>
-                            <label class="flex flex-col gap-1 text-[0.625rem] text-(--muted)">
-                              <span>Agent</span>
-                              <select
-                                data-test-agent-select=""
-                                data-tour-id="agent-select"
-                                class="h-8 rounded-lg border border-(--border) bg-white/70 px-2 text-[0.625rem] text-(--foreground) outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
-                                value={selectedAgentId()}
-                                onInput={(event) => handleSelectAgent(event.currentTarget.value as "pi" | "copilot-cli" | "codex-cli")}
-                              >
-                                <For each={state.availableAgents}>
-                                  {(agent) => <option value={agent.id}>{agent.label}</option>}
-                                </For>
-                              </select>
-                            </label>
-                            <Show when={selectedProviderBrand()}>
-                              {(providerBrand) => (
-                                <label class="flex flex-col gap-1 text-[0.625rem] text-(--muted)">
-                                  <span>Provider</span>
-                                  <select
-                                    data-test-provider-select=""
-                                    class="h-8 rounded-lg border border-(--border) bg-white/70 px-2 text-[0.625rem] text-(--foreground) outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring) disabled:cursor-not-allowed disabled:opacity-60"
-                                    value={providerBrand()}
-                                    disabled={selectedAgentId() === "codex-cli"}
-                                    onInput={(event) => handleProviderBrandSelect(event.currentTarget.value as "gpt" | "gemini")}
-                                  >
-                                    <option value="gpt">GPT</option>
-                                    <Show when={selectedAgentId() === "pi"}>
-                                      <option value="gemini">Gemini</option>
-                                    </Show>
-                                  </select>
-                                </label>
-                              )}
-                            </Show>
-                            <label class="flex flex-col gap-1 text-[0.625rem] text-(--muted)">
-                              <span>Model</span>
-                              <select
-                                data-test-model-select=""
-                                class="h-8 rounded-lg border border-(--border) bg-white/70 px-2 text-[0.625rem] text-(--foreground) outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring) disabled:cursor-not-allowed disabled:opacity-60"
-                                value={getEffectiveExecutionModelId()}
-                                disabled={availableExecutionModels().length === 0}
-                                onInput={(event) => handleExecutionModelSelect(event.currentTarget.value)}
-                              >
-                                <For each={availableExecutionModels()}>
-                                  {(model) => <option value={model.modelId}>{model.label}</option>}
-                                </For>
-                              </select>
-                            </label>
+                            {renderModeControl("md", "w-full")}
+                            {renderAgentControl("md", "w-full")}
+                            {renderProviderControl("md", "w-full")}
+                            {renderModelControl("md", "w-full")}
                           </div>
                         }
                       >

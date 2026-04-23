@@ -7,10 +7,11 @@ export const builtinModes: ModeDefinition[] = [
     id: "ask",
     scope: "builtin",
     label: "Ask",
-    description: "Bias toward explanation, analysis, and lightweight read-only help.",
+    description: "Bias toward explanation, analysis, and lightweight low-impact help.",
     plannerPrompt: "Prefer explanation, code reading, and minimal edits unless the user clearly asks for implementation.",
     executionPrompt: "Favor analysis, concise answers, and low-impact changes. Explain tradeoffs clearly.",
     toolPolicy: "read-heavy",
+    executionAccess: "workspace-write",
     planExecutionModeDefault: "immediate",
     correctnessIterationModeDefault: "ask-before-iterate",
     updatedAt: "builtin"
@@ -23,6 +24,7 @@ export const builtinModes: ModeDefinition[] = [
     plannerPrompt: "Spend more effort on scope, risks, contracts, and verification. Ask questions when uncertainty matters.",
     executionPrompt: "Keep execution tightly aligned to approved plan and call out assumptions before broad changes.",
     toolPolicy: "read-heavy",
+    executionAccess: "read-only",
     planExecutionModeDefault: "approve",
     correctnessIterationModeDefault: "ask-before-iterate",
     updatedAt: "builtin"
@@ -35,6 +37,7 @@ export const builtinModes: ModeDefinition[] = [
     plannerPrompt: "Bias toward implementation, verification, and concrete contracts. Use subagents when path ownership is clean.",
     executionPrompt: "Implement requested changes efficiently, verify important behavior, and summarize real outcomes only.",
     toolPolicy: "full-access",
+    executionAccess: "workspace-write",
     planExecutionModeDefault: "immediate",
     subagentWorktreeStrategyDefault: "same-worktree",
     correctnessIterationModeDefault: "ask-before-iterate",
@@ -48,6 +51,7 @@ export const builtinModes: ModeDefinition[] = [
     plannerPrompt: "Prioritize reproduction steps, root-cause hypotheses, and smallest safe fix first.",
     executionPrompt: "Prove or disprove root cause, then apply narrow fix and verify failing path explicitly.",
     toolPolicy: "full-access",
+    executionAccess: "workspace-write",
     planExecutionModeDefault: "immediate",
     correctnessIterationModeDefault: "auto-once",
     updatedAt: "builtin"
@@ -60,11 +64,32 @@ export const builtinModes: ModeDefinition[] = [
     plannerPrompt: "Default to review mindset: identify bugs, regressions, missing tests, and weak assumptions before edits.",
     executionPrompt: "Return findings first, ordered by severity. Do not make broad edits unless the user explicitly asks.",
     toolPolicy: "review-only",
+    executionAccess: "read-only",
     planExecutionModeDefault: "immediate",
     correctnessIterationModeDefault: "ask-before-iterate",
     updatedAt: "builtin"
   }
 ];
+
+export function resolveModeExecutionAccess(
+  mode: Pick<ModeDefinition, "toolPolicy"> & { executionAccess?: ModeDefinition["executionAccess"] } | undefined
+) {
+  if (!mode) {
+    return "workspace-write" as const;
+  }
+
+  if (mode.executionAccess) {
+    return mode.executionAccess;
+  }
+
+  return mode.toolPolicy === "read-heavy" || mode.toolPolicy === "review-only" ? "read-only" : "workspace-write";
+}
+
+export function modeUsesReadOnlyExecution(
+  mode: Pick<ModeDefinition, "toolPolicy"> & { executionAccess?: ModeDefinition["executionAccess"] } | undefined
+) {
+  return resolveModeExecutionAccess(mode) === "read-only";
+}
 
 export function resolveModeCatalog(workspaceModes: ModeDefinition[] = [], projectModes: ModeDefinition[] = []) {
   const merged = new Map<ModeId, ModeDefinition>();

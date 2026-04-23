@@ -1,9 +1,11 @@
 import { createRequestId } from "../../../shared/protocol";
+import { ClipboardList, FolderOpen, Orbit, Play, RefreshCcw } from "lucide-solid";
 import { canSelectProviderBrand, harnessStore, persistLocalPreferences } from "../harness-store";
 import { pushToast } from "../toast-store";
 import { ModeEditorPanel } from "./mode-editor-panel";
 import { Button } from "./primitives/button";
 import { Dialog } from "./primitives/dialog";
+import { DropdownControl } from "./primitives/dropdown";
 import { Input } from "./primitives/input";
 import { Textarea } from "./primitives/textarea";
 
@@ -15,6 +17,34 @@ export function PreferencesModal() {
   const workspaceModes = () => state.workspace.workspaceModes ?? [];
   const workspaceRuleDraft = () => state.workspace.workspaceRuleSource?.content ?? "";
   const workspaceMemoryDraft = () => state.workspace.workspaceMemorySummary?.content ?? "";
+  const activeBrandOptions = () => [
+    { value: "gpt", label: "GPT", description: "Use OpenAI-hosted model family.", disabled: !canSelectProviderBrand(state, "gpt") },
+    { value: "gemini", label: "Gemini", description: "Use Google-hosted model family.", disabled: !canSelectProviderBrand(state, "gemini") }
+  ];
+  const subagentWorktreeOptions = () => [
+    { value: "same-worktree", label: "Same checkout", description: "Subagents edit inside current working tree." },
+    {
+      value: "separate-worktrees",
+      label: "Isolated mounts (BranchFS)",
+      description: "Subagents work in isolated BranchFS mounts before merge."
+    }
+  ];
+  const planExecutionModeOptions = () => [
+    { value: "countdown", label: "Countdown", description: "Pause briefly before execution starts." },
+    { value: "approve", label: "Approve first", description: "Require explicit approval before execution starts." },
+    { value: "immediate", label: "Immediate", description: "Start execution as soon as plan is ready." }
+  ];
+  const correctnessIterationOptions = () => [
+    { value: "ask-before-iterate", label: "Ask before iterate", description: "Pause before any correctness follow-up pass." },
+    { value: "auto-once", label: "Auto once", description: "Run one automatic correctness follow-up pass." },
+    { value: "auto-until-clean", label: "Auto until clean", description: "Keep iterating until no correctness gaps remain." }
+  ];
+  const backgroundApprovalOptions = () => [
+    { value: "allow-all", label: "Allow all", description: "Background jobs can run without approval." },
+    { value: "allow-safe", label: "Allow safe", description: "Safe jobs auto-run; risky jobs wait for approval." },
+    { value: "ask-risky", label: "Ask risky", description: "Ask before risky actions while allowing low-risk ones." },
+    { value: "always-ask", label: "Always ask", description: "Every background job waits for explicit approval." }
+  ];
 
   function handleSave() {
     const openAiApiKey = state.openAiApiKeyDraft.trim() || undefined;
@@ -258,18 +288,16 @@ export function PreferencesModal() {
           <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">
             Active brand
           </span>
-          <select
-            class="flex h-9 w-full rounded-xl border border-(--border) bg-white/70 px-3 py-2 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
+          <DropdownControl
+            kind="select"
+            ariaLabel="Select active brand"
+            icon={<Orbit class="h-3.5 w-3.5" />}
+            size="md"
+            class="w-full"
             value={state.providerBrand}
-            onInput={(event) => harnessStore.setProviderBrand(event.currentTarget.value as "gpt" | "gemini")}
-          >
-            <option value="gpt" disabled={!canSelectProviderBrand(state, "gpt")}>
-              GPT
-            </option>
-            <option value="gemini" disabled={!canSelectProviderBrand(state, "gemini")}>
-              Gemini
-            </option>
-          </select>
+            options={activeBrandOptions()}
+            onChange={(value) => harnessStore.setProviderBrand(value as "gpt" | "gemini")}
+          />
           <p class="text-[0.675rem] leading-5 text-(--muted)">Brand switch stays disabled until matching key exists or you type one here.</p>
         </label>
 
@@ -339,33 +367,32 @@ export function PreferencesModal() {
           <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">
             Subagent worktree
           </span>
-          <select
-            class="flex h-9 w-full rounded-xl border border-(--border) bg-white/70 px-3 py-2 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
+          <DropdownControl
+            kind="select"
+            ariaLabel="Select subagent worktree strategy"
+            icon={<FolderOpen class="h-3.5 w-3.5" />}
+            size="md"
+            class="w-full"
             value={state.subagentWorktreeStrategyDefault}
-            onInput={(event) =>
-              harnessStore.setSubagentWorktreeStrategyDefault(event.currentTarget.value as "same-worktree" | "separate-worktrees")
-            }
-          >
-            <option value="same-worktree">Same checkout</option>
-            <option value="separate-worktrees">Isolated mounts (BranchFS)</option>
-          </select>
+            options={subagentWorktreeOptions()}
+            onChange={(value) => harnessStore.setSubagentWorktreeStrategyDefault(value as "same-worktree" | "separate-worktrees")}
+          />
         </label>
 
         <label class="space-y-2 rounded-[1.25rem] border border-(--border) bg-white/55 px-4 py-3">
           <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">
             Plan gate mode
           </span>
-          <select
-            class="flex h-9 w-full rounded-xl border border-(--border) bg-white/70 px-3 py-2 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
+          <DropdownControl
+            kind="select"
+            ariaLabel="Select plan gate mode"
+            icon={<Play class="h-3.5 w-3.5" />}
+            size="md"
+            class="w-full"
             value={state.planExecutionModeDefault}
-            onInput={(event) =>
-              harnessStore.setPlanExecutionModeDefault(event.currentTarget.value as "countdown" | "approve" | "immediate")
-            }
-          >
-            <option value="countdown">Countdown</option>
-            <option value="approve">Approve first</option>
-            <option value="immediate">Immediate</option>
-          </select>
+            options={planExecutionModeOptions()}
+            onChange={(value) => harnessStore.setPlanExecutionModeDefault(value as "countdown" | "approve" | "immediate")}
+          />
         </label>
 
         <label class="flex items-start gap-3 rounded-[1.25rem] border border-(--border) bg-white/55 px-4 py-3">
@@ -441,39 +468,40 @@ export function PreferencesModal() {
           <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">
             Correctness iteration
           </span>
-          <select
-            class="flex h-9 w-full rounded-xl border border-(--border) bg-white/70 px-3 py-2 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
+          <DropdownControl
+            kind="select"
+            ariaLabel="Select correctness iteration"
+            icon={<RefreshCcw class="h-3.5 w-3.5" />}
+            size="md"
+            class="w-full"
             value={state.correctnessIterationModeDefault}
-            onInput={(event) =>
+            options={correctnessIterationOptions()}
+            onChange={(value) =>
               harnessStore.setCorrectnessIterationModeDefault(
-                event.currentTarget.value as "ask-before-iterate" | "auto-once" | "auto-until-clean"
+                value as "ask-before-iterate" | "auto-once" | "auto-until-clean"
               )
             }
-          >
-            <option value="ask-before-iterate">Ask before iterate</option>
-            <option value="auto-once">Auto once</option>
-            <option value="auto-until-clean">Auto until clean</option>
-          </select>
+          />
         </label>
 
         <label class="space-y-2 rounded-[1.25rem] border border-(--border) bg-white/55 px-4 py-3">
           <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">
             Background approvals
           </span>
-          <select
-            class="flex h-9 w-full rounded-xl border border-(--border) bg-white/70 px-3 py-2 text-[0.675rem] text-(--foreground) shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-(--ring)"
+          <DropdownControl
+            kind="select"
+            ariaLabel="Select background approval policy"
+            icon={<ClipboardList class="h-3.5 w-3.5" />}
+            size="md"
+            class="w-full"
             value={state.backgroundJobApprovalPolicyDefault}
-            onInput={(event) =>
+            options={backgroundApprovalOptions()}
+            onChange={(value) =>
               harnessStore.setBackgroundJobApprovalPolicyDefault(
-                event.currentTarget.value as "allow-all" | "allow-safe" | "ask-risky" | "always-ask"
+                value as "allow-all" | "allow-safe" | "ask-risky" | "always-ask"
               )
             }
-          >
-            <option value="allow-all">Allow all</option>
-            <option value="allow-safe">Allow safe</option>
-            <option value="ask-risky">Ask risky</option>
-            <option value="always-ask">Always ask</option>
-          </select>
+          />
         </label>
       </div>
 

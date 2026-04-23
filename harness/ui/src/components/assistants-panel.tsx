@@ -37,12 +37,22 @@ import { ActionButton } from "./action-button";
 import { MarkdownContent } from "./markdown-content";
 import { buttonVariants } from "./primitives/button";
 import { CopyTextButton } from "./primitives/copy-text-button";
+import { DropdownControl } from "./primitives/dropdown";
 import { ScrollArea } from "./primitives/scroll-area";
 import { Textarea } from "./primitives/textarea";
 import { Tooltip } from "./primitives/tooltip";
 import { cn } from "../lib/utils";
 
 type AssistantTab = "chat" | "todos" | "questions" | "jobs" | "log" | "config" | "learnings";
+
+const assistantTodoStateOptions = [
+  { value: "pending", label: "pending", description: "Queued but not started yet." },
+  { value: "in-progress", label: "in-progress", description: "Actively being worked right now." },
+  { value: "blocked", label: "blocked", description: "Paused by dependency, approval, or external blocker." },
+  { value: "completed", label: "completed", description: "Finished successfully." },
+  { value: "failed", label: "failed", description: "Attempt finished with failure." },
+  { value: "cancelled", label: "cancelled", description: "Work was intentionally stopped." }
+] satisfies Array<{ value: AssistantTodo["state"]; label: string; description: string }>;
 
 export function AssistantsPanel() {
   const state = harnessStore.state;
@@ -571,15 +581,16 @@ export function AssistantsPanel() {
                                   <Show when={todo.description}><div class="mt-1 text-[0.675rem] leading-5 text-(--muted)">{todo.description}</div></Show>
                                   <Show when={todo.blockerReason}><div class="mt-1 text-[0.625rem] text-amber-900">Blocker: {todo.blockerReason}</div></Show>
                                 </div>
-                                <select
-                                  class="h-9 rounded-xl border border-(--border) bg-white/70 px-3 text-[0.675rem] text-(--foreground)"
+                                <DropdownControl
+                                  kind="select"
+                                  ariaLabel={`Select ${todo.title} state`}
+                                  icon={<ClipboardList class="h-3.5 w-3.5" />}
+                                  size="md"
+                                  class="w-40"
                                   value={todo.state}
-                                  onInput={(event) => updateTodo(todo, { state: event.currentTarget.value as AssistantTodo["state"] })}
-                                >
-                                  <For each={["pending", "in-progress", "blocked", "completed", "failed", "cancelled"] satisfies AssistantTodo["state"][]}>
-                                    {(option) => <option value={option}>{option}</option>}
-                                  </For>
-                                </select>
+                                  options={assistantTodoStateOptions}
+                                  onChange={(value) => updateTodo(todo, { state: value as AssistantTodo["state"] })}
+                                />
                               </div>
                               <div class="mt-2 text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">{todo.source ?? "assistant"} | sort {todo.sortOrder}</div>
                             </article>

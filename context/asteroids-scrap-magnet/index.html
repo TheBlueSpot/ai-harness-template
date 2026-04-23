@@ -1,0 +1,1222 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Asteroids: Scrap Magnet</title>
+  <style>
+    :root {
+      --bg-0: #031019;
+      --bg-1: #092336;
+      --bg-2: #123b47;
+      --panel: rgba(8, 19, 28, 0.82);
+      --line: rgba(132, 233, 255, 0.2);
+      --ink: #effcff;
+      --muted: #9bc7cf;
+      --accent: #7ef7d6;
+      --warn: #ff9d6f;
+      --danger: #ff6a78;
+      --shadow: rgba(0, 0, 0, 0.45);
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 20% 15%, rgba(126, 247, 214, 0.12), transparent 22%),
+        radial-gradient(circle at 80% 0%, rgba(255, 157, 111, 0.12), transparent 28%),
+        linear-gradient(180deg, var(--bg-2), var(--bg-0) 64%);
+      color: var(--ink);
+      font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+    }
+
+    body {
+      display: grid;
+      place-items: center;
+    }
+
+    .shell {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+    }
+
+    .shell::before,
+    .shell::after {
+      content: "";
+      position: absolute;
+      width: 34vw;
+      height: 34vw;
+      border-radius: 999px;
+      filter: blur(75px);
+      opacity: 0.45;
+      pointer-events: none;
+    }
+
+    .shell::before {
+      top: -12vh;
+      left: -10vw;
+      background: rgba(126, 247, 214, 0.15);
+    }
+
+    .shell::after {
+      right: -10vw;
+      bottom: -12vh;
+      background: rgba(255, 157, 111, 0.12);
+    }
+
+    .stage {
+      position: relative;
+      width: min(100vw, 1380px);
+      height: min(100vh, 820px);
+      display: grid;
+      place-items: center;
+      padding: 16px;
+    }
+
+    canvas {
+      width: min(100vw - 24px, 1280px);
+      height: min(100vh - 24px, 720px);
+      display: block;
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      background:
+        radial-gradient(circle at top, rgba(126, 247, 214, 0.05), transparent 30%),
+        linear-gradient(180deg, rgba(4, 14, 24, 0.96), rgba(6, 17, 27, 0.98));
+      box-shadow:
+        0 24px 70px var(--shadow),
+        inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    }
+
+    .note {
+      position: absolute;
+      left: 28px;
+      bottom: 28px;
+      max-width: min(420px, calc(100vw - 56px));
+      padding: 14px 16px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: var(--panel);
+      backdrop-filter: blur(14px);
+      box-shadow: 0 14px 40px var(--shadow);
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+      pointer-events: none;
+    }
+
+    .note strong {
+      color: var(--ink);
+      display: block;
+      margin-bottom: 4px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="stage">
+      <canvas id="game" width="1280" height="720" aria-label="Asteroids Scrap Magnet game canvas"></canvas>
+      <aside class="note">
+        <strong>Asteroids: Scrap Magnet</strong>
+        `WASD` / arrows move, mouse aims, `LMB` or `Space` fires, `RMB` or `Shift` pulls scrap. Stand beside an `assets` folder for Kenney art and SFX.
+      </aside>
+    </section>
+  </main>
+  <script>
+    (() => {
+      "use strict";
+
+      const CONFIG = Object.freeze({
+        width: 1280,
+        height: 720,
+        fixedStep: 1 / 120,
+        maxFrame: 0.05,
+        winScrap: 36,
+        startHull: 100,
+        beamRadius: 170,
+        beamForce: 980,
+        collectRadius: 28,
+        friction: 0.992,
+        bulletSpeed: 820,
+        bulletLife: 1.1,
+        spawnBase: 2.6,
+        maxAsteroids: 13,
+        invulnTime: 1.6
+      });
+
+      const STATE = Object.freeze({
+        MENU: "MENU",
+        PLAYING: "PLAYING",
+        WIN: "WIN",
+        LOSE: "LOSE"
+      });
+
+      const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+      const lerp = (a, b, t) => a + (b - a) * t;
+      const rand = (min, max) => Math.random() * (max - min) + min;
+      const randInt = (min, max) => Math.floor(rand(min, max + 1));
+      const distSq = (ax, ay, bx, by) => {
+        const dx = bx - ax;
+        const dy = by - ay;
+        return dx * dx + dy * dy;
+      };
+      const svgToDataUrl = (markup) => `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(markup.trim())}`;
+
+      const MANIFEST = Object.freeze({
+        images: {
+          ship: {
+            path: "./assets/ships/playerShip1_blue.png",
+            sourcePack: "Kenney Space Shooter Redux",
+            fallback: svgToDataUrl(`
+              <svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96">
+                <path d="M48 8 66 72 48 60 30 72Z" fill="#d7fbff"/>
+                <path d="M48 18 58 56 48 50 38 56Z" fill="#6ef6d7"/>
+                <circle cx="48" cy="39" r="7" fill="#15313d"/>
+                <path d="M41 72h14v10H41z" fill="#ff9d6f"/>
+              </svg>
+            `)
+          },
+          bullet: {
+            path: "./assets/Effects/star_08.png",
+            sourcePack: "Kenney Particle Pack",
+            fallback: svgToDataUrl(`
+              <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+                <circle cx="16" cy="16" r="6" fill="#fff7d1"/>
+                <circle cx="16" cy="16" r="11" fill="none" stroke="#7ef7d6" stroke-opacity="0.55" stroke-width="4"/>
+              </svg>
+            `)
+          },
+          scrap: {
+            path: "./assets/Effects/star_06.png",
+            sourcePack: "Kenney Particle Pack",
+            fallback: svgToDataUrl(`
+              <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+                <path d="M24 6 31 17 42 24 31 31 24 42 17 31 6 24 17 17Z" fill="#7ef7d6"/>
+                <circle cx="24" cy="24" r="5" fill="#eafffb"/>
+              </svg>
+            `)
+          },
+          hullIcon: {
+            path: "./assets/UI/shield_gold.png",
+            sourcePack: "Kenney UI Pack",
+            fallback: svgToDataUrl(`
+              <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+                <path d="M24 5 38 10v12c0 10-7 16-14 21C17 38 10 32 10 22V10Z" fill="#ffca73"/>
+              </svg>
+            `)
+          },
+          fireIcon: {
+            path: "./assets/UI/iconCircle_blue.png",
+            sourcePack: "Kenney UI Pack",
+            fallback: svgToDataUrl(`
+              <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+                <circle cx="24" cy="24" r="18" fill="#7ebaff"/>
+                <path d="M22 12h4v24h-4zM12 22h24v4H12z" fill="#effcff"/>
+              </svg>
+            `)
+          }
+        },
+        audio: {
+          shoot: {
+            path: "./assets/Audio/laserSmall_000.ogg",
+            sourcePack: "Kenney UI Audio"
+          },
+          explode: {
+            path: "./assets/Audio/explosionCrunch_000.ogg",
+            sourcePack: "Kenney UI Audio"
+          },
+          collect: {
+            path: "./assets/Audio/powerUp5.ogg",
+            sourcePack: "Kenney UI Audio"
+          },
+          hit: {
+            path: "./assets/Audio/impactMetal_002.ogg",
+            sourcePack: "Kenney UI Audio"
+          },
+          beam: {
+            path: "./assets/Audio/forceField_000.ogg",
+            sourcePack: "Kenney UI Audio"
+          }
+        }
+      });
+
+      class AssetLoader {
+        constructor(manifest) {
+          this.manifest = manifest;
+          this.images = new Map();
+          this.audio = new Map();
+          this.status = [];
+        }
+
+        async load() {
+          const imageJobs = Object.entries(this.manifest.images).map(([key, entry]) => this.loadImage(key, entry));
+          const audioJobs = Object.entries(this.manifest.audio).map(([key, entry]) => this.loadAudio(key, entry));
+          await Promise.all([...imageJobs, ...audioJobs]);
+          return this;
+        }
+
+        loadImage(key, entry) {
+          return new Promise((resolve) => {
+            const img = new Image();
+            img.onload = () => {
+              this.images.set(key, img);
+              this.status.push(`${key}: asset`);
+              resolve();
+            };
+            img.onerror = () => {
+              const fallback = new Image();
+              fallback.onload = () => {
+                this.images.set(key, fallback);
+                this.status.push(`${key}: fallback`);
+                resolve();
+              };
+              fallback.src = entry.fallback;
+            };
+            img.src = entry.path;
+          });
+        }
+
+        loadAudio(key, entry) {
+          return new Promise((resolve) => {
+            const audio = new Audio();
+            let done = false;
+            const finish = (usable) => {
+              if (done) return;
+              done = true;
+              this.audio.set(key, usable ? audio : null);
+              this.status.push(`${key}: ${usable ? "asset" : "synth"}`);
+              resolve();
+            };
+            audio.preload = "auto";
+            audio.addEventListener("canplaythrough", () => finish(true), { once: true });
+            audio.addEventListener("error", () => finish(false), { once: true });
+            audio.src = entry.path;
+            audio.load();
+            window.setTimeout(() => finish(false), 900);
+          });
+        }
+      }
+
+      class Input {
+        constructor(canvas) {
+          this.canvas = canvas;
+          this.keys = new Set();
+          this.mouse = { x: CONFIG.width * 0.5, y: CONFIG.height * 0.5, left: false, right: false };
+          this.justPressed = new Set();
+          this.justMouse = new Set();
+          this.bind();
+        }
+
+        bind() {
+          window.addEventListener("keydown", (event) => {
+            const code = event.code;
+            if (!this.keys.has(code)) this.justPressed.add(code);
+            this.keys.add(code);
+            if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space", "ShiftLeft", "ShiftRight"].includes(code)) {
+              event.preventDefault();
+            }
+          });
+          window.addEventListener("keyup", (event) => {
+            this.keys.delete(event.code);
+          });
+          this.canvas.addEventListener("mousemove", (event) => {
+            const rect = this.canvas.getBoundingClientRect();
+            this.mouse.x = ((event.clientX - rect.left) / rect.width) * CONFIG.width;
+            this.mouse.y = ((event.clientY - rect.top) / rect.height) * CONFIG.height;
+          });
+          this.canvas.addEventListener("mousedown", (event) => {
+            if (event.button === 0) {
+              this.mouse.left = true;
+              this.justMouse.add("left");
+            }
+            if (event.button === 2) {
+              this.mouse.right = true;
+              this.justMouse.add("right");
+            }
+          });
+          window.addEventListener("mouseup", (event) => {
+            if (event.button === 0) this.mouse.left = false;
+            if (event.button === 2) this.mouse.right = false;
+          });
+          this.canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+        }
+
+        down(code) { return this.keys.has(code); }
+        pressed(code) { return this.justPressed.has(code); }
+        mousePressed(button) { return this.justMouse.has(button); }
+        nextFrame() {
+          this.justPressed.clear();
+          this.justMouse.clear();
+        }
+      }
+
+      class AudioSystem {
+        constructor(loader) {
+          this.loader = loader;
+          this.ctx = null;
+          this.unlocked = false;
+          this.lastBeamAt = 0;
+        }
+
+        unlock() {
+          if (!this.ctx) {
+            const AudioCtx = window.AudioContext || window.webkitAudioContext;
+            if (AudioCtx) this.ctx = new AudioCtx();
+          }
+          if (this.ctx && this.ctx.state === "suspended") {
+            this.ctx.resume();
+          }
+          this.unlocked = true;
+        }
+
+        play(name, opts = {}) {
+          const clip = this.loader.audio.get(name);
+          if (clip) {
+            try {
+              const node = clip.cloneNode();
+              node.volume = opts.volume ?? 0.42;
+              node.play().catch(() => {});
+              return;
+            } catch {}
+          }
+          this.synth(name, opts);
+        }
+
+        synth(name, opts = {}) {
+          if (!this.ctx || !this.unlocked) return;
+          const now = this.ctx.currentTime;
+          const gain = this.ctx.createGain();
+          gain.connect(this.ctx.destination);
+          gain.gain.value = 0.0001;
+
+          const osc = this.ctx.createOscillator();
+          osc.type = opts.type || "triangle";
+          osc.connect(gain);
+
+          if (name === "shoot") {
+            osc.frequency.setValueAtTime(720, now);
+            osc.frequency.exponentialRampToValueAtTime(320, now + 0.08);
+            gain.gain.exponentialRampToValueAtTime(0.05, now + 0.01);
+            gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.09);
+            osc.start(now);
+            osc.stop(now + 0.1);
+            return;
+          }
+          if (name === "explode") {
+            osc.type = "sawtooth";
+            osc.frequency.setValueAtTime(170, now);
+            osc.frequency.exponentialRampToValueAtTime(40, now + 0.3);
+            gain.gain.exponentialRampToValueAtTime(0.08, now + 0.01);
+            gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.34);
+            osc.start(now);
+            osc.stop(now + 0.36);
+            return;
+          }
+          if (name === "collect") {
+            osc.frequency.setValueAtTime(380, now);
+            osc.frequency.exponentialRampToValueAtTime(840, now + 0.15);
+            gain.gain.exponentialRampToValueAtTime(0.05, now + 0.01);
+            gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.18);
+            osc.start(now);
+            osc.stop(now + 0.2);
+            return;
+          }
+          if (name === "hit") {
+            osc.type = "square";
+            osc.frequency.setValueAtTime(240, now);
+            osc.frequency.exponentialRampToValueAtTime(90, now + 0.12);
+            gain.gain.exponentialRampToValueAtTime(0.06, now + 0.01);
+            gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.14);
+            osc.start(now);
+            osc.stop(now + 0.15);
+            return;
+          }
+          if (name === "beam") {
+            if (performance.now() - this.lastBeamAt < 120) return;
+            this.lastBeamAt = performance.now();
+            osc.type = "sine";
+            osc.frequency.setValueAtTime(180, now);
+            osc.frequency.linearRampToValueAtTime(220, now + 0.09);
+            gain.gain.exponentialRampToValueAtTime(0.025, now + 0.01);
+            gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.12);
+            osc.start(now);
+            osc.stop(now + 0.13);
+          }
+        }
+      }
+
+      class ParticleSystem {
+        constructor() {
+          this.items = [];
+        }
+
+        burst(x, y, count, make) {
+          for (let i = 0; i < count; i += 1) {
+            this.items.push(make(i));
+          }
+        }
+
+        update(dt) {
+          for (let i = this.items.length - 1; i >= 0; i -= 1) {
+            const p = this.items[i];
+            p.life -= dt;
+            if (p.life <= 0) {
+              this.items.splice(i, 1);
+              continue;
+            }
+            p.x += p.vx * dt;
+            p.y += p.vy * dt;
+            p.vx *= p.drag ?? 0.98;
+            p.vy *= p.drag ?? 0.98;
+            p.size *= p.shrink ?? 0.994;
+          }
+        }
+
+        draw(ctx) {
+          for (const p of this.items) {
+            ctx.globalAlpha = clamp(p.life / p.maxLife, 0, 1);
+            ctx.fillStyle = p.color;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, Math.max(0.8, p.size), 0, Math.PI * 2);
+            ctx.fill();
+          }
+          ctx.globalAlpha = 1;
+        }
+      }
+
+      class ScreenFX {
+        constructor() {
+          this.shake = 0;
+          this.flash = 0;
+        }
+        kick(shake, flash = 0.18) {
+          this.shake = Math.max(this.shake, shake);
+          this.flash = Math.max(this.flash, flash);
+        }
+        update(dt) {
+          this.shake = Math.max(0, this.shake - dt * 18);
+          this.flash = Math.max(0, this.flash - dt * 2.4);
+        }
+        offset() {
+          return {
+            x: rand(-1, 1) * this.shake * 8,
+            y: rand(-1, 1) * this.shake * 8
+          };
+        }
+      }
+
+      class Ship {
+        constructor() {
+          this.reset();
+        }
+
+        reset() {
+          this.x = CONFIG.width * 0.5;
+          this.y = CONFIG.height * 0.5;
+          this.vx = 0;
+          this.vy = 0;
+          this.angle = -Math.PI / 2;
+          this.radius = 22;
+          this.fireCooldown = 0;
+          this.baseFireRate = 0.34;
+          this.hull = CONFIG.startHull;
+          this.maxHull = CONFIG.startHull;
+          this.hullTier = 0;
+          this.fireTier = 0;
+          this.scrap = 0;
+          this.invuln = CONFIG.invulnTime;
+        }
+
+        get fireRate() {
+          return Math.max(0.08, this.baseFireRate - this.fireTier * 0.022);
+        }
+
+        get beamStrength() {
+          return 1 + this.scrap * 0.02;
+        }
+
+        upgradeFromScrap() {
+          const hullTier = Math.floor(this.scrap / 3);
+          const fireTier = Math.floor(this.scrap / 2);
+          if (hullTier > this.hullTier) {
+            const diff = hullTier - this.hullTier;
+            this.maxHull += diff * 8;
+            this.hull = Math.min(this.maxHull, this.hull + diff * 5);
+            this.hullTier = hullTier;
+          }
+          this.fireTier = fireTier;
+        }
+
+        update(dt, input) {
+          const moveX = (input.down("KeyD") || input.down("ArrowRight") ? 1 : 0) - (input.down("KeyA") || input.down("ArrowLeft") ? 1 : 0);
+          const moveY = (input.down("KeyS") || input.down("ArrowDown") ? 1 : 0) - (input.down("KeyW") || input.down("ArrowUp") ? 1 : 0);
+          const len = Math.hypot(moveX, moveY) || 1;
+          const thrust = 420;
+          this.vx += (moveX / len) * thrust * dt;
+          this.vy += (moveY / len) * thrust * dt;
+          this.vx *= CONFIG.friction;
+          this.vy *= CONFIG.friction;
+          this.x = clamp(this.x + this.vx * dt, this.radius, CONFIG.width - this.radius);
+          this.y = clamp(this.y + this.vy * dt, this.radius, CONFIG.height - this.radius);
+          this.angle = Math.atan2(input.mouse.y - this.y, input.mouse.x - this.x);
+          this.fireCooldown = Math.max(0, this.fireCooldown - dt);
+          this.invuln = Math.max(0, this.invuln - dt);
+        }
+
+        damage(amount) {
+          if (this.invuln > 0) return false;
+          this.hull = Math.max(0, this.hull - amount);
+          this.invuln = 0.7;
+          return true;
+        }
+      }
+
+      class Bullet {
+        constructor(x, y, angle) {
+          this.x = x;
+          this.y = y;
+          this.vx = Math.cos(angle) * CONFIG.bulletSpeed;
+          this.vy = Math.sin(angle) * CONFIG.bulletSpeed;
+          this.life = CONFIG.bulletLife;
+          this.radius = 6;
+          this.damage = 1;
+        }
+        update(dt) {
+          this.x += this.vx * dt;
+          this.y += this.vy * dt;
+          this.life -= dt;
+        }
+      }
+
+      class Scrap {
+        constructor(x, y, size) {
+          this.x = x;
+          this.y = y;
+          this.vx = rand(-120, 120);
+          this.vy = rand(-120, 120);
+          this.radius = size;
+          this.value = size >= 9 ? 2 : 1;
+          this.spin = rand(-4, 4);
+          this.angle = rand(0, Math.PI * 2);
+        }
+        update(dt) {
+          this.x += this.vx * dt;
+          this.y += this.vy * dt;
+          this.vx *= 0.986;
+          this.vy *= 0.986;
+          this.angle += this.spin * dt;
+        }
+      }
+
+      class Asteroid {
+        constructor(x, y, radius, tier = 0) {
+          this.x = x;
+          this.y = y;
+          this.radius = radius;
+          this.tier = tier;
+          const speed = rand(40, 120) + tier * 12;
+          const angle = rand(0, Math.PI * 2);
+          this.vx = Math.cos(angle) * speed;
+          this.vy = Math.sin(angle) * speed;
+          this.spin = rand(-1.2, 1.2);
+          this.angle = rand(0, Math.PI * 2);
+          this.hp = radius >= 44 ? 3 : radius >= 28 ? 2 : 1;
+          this.shape = Array.from({ length: 10 }, (_, index) => {
+            const t = (index / 10) * Math.PI * 2;
+            return { a: t, r: radius * rand(0.72, 1.18) };
+          });
+        }
+        update(dt) {
+          this.x += this.vx * dt;
+          this.y += this.vy * dt;
+          this.angle += this.spin * dt;
+          if (this.x < -this.radius) this.x = CONFIG.width + this.radius;
+          if (this.x > CONFIG.width + this.radius) this.x = -this.radius;
+          if (this.y < -this.radius) this.y = CONFIG.height + this.radius;
+          if (this.y > CONFIG.height + this.radius) this.y = -this.radius;
+        }
+      }
+
+      class HUD {
+        draw(ctx, game) {
+          const ship = game.ship;
+          ctx.save();
+          ctx.fillStyle = "rgba(8,19,28,0.74)";
+          ctx.strokeStyle = "rgba(132,233,255,0.18)";
+          ctx.lineWidth = 1;
+          this.roundRect(ctx, 22, 20, 324, 120, 20);
+          ctx.fill();
+          ctx.stroke();
+
+          ctx.fillStyle = "#effcff";
+          ctx.font = "700 22px Trebuchet MS";
+          ctx.fillText("SCRAP MAGNET", 40, 50);
+
+          ctx.font = "600 14px Trebuchet MS";
+          ctx.fillStyle = "#9bc7cf";
+          ctx.fillText(`Hull ${Math.ceil(ship.hull)} / ${ship.maxHull}`, 84, 82);
+          ctx.fillText(`Fire Rate ${(1 / ship.fireRate).toFixed(1)} shots/s`, 84, 105);
+          ctx.fillText(`Scrap ${ship.scrap} / ${CONFIG.winScrap}`, 84, 128);
+
+          const hullFill = clamp(ship.hull / ship.maxHull, 0, 1);
+          ctx.fillStyle = "rgba(255,255,255,0.08)";
+          ctx.fillRect(84, 88, 220, 9);
+          ctx.fillStyle = hullFill > 0.35 ? "#7ef7d6" : "#ff6a78";
+          ctx.fillRect(84, 88, 220 * hullFill, 9);
+
+          this.drawIcon(ctx, game.assets.images.get("hullIcon"), 45, 70, 28);
+          this.drawIcon(ctx, game.assets.images.get("fireIcon"), 45, 93, 28);
+
+          const barX = CONFIG.width - 248;
+          this.roundRect(ctx, barX, 20, 226, 92, 20);
+          ctx.fillStyle = "rgba(8,19,28,0.74)";
+          ctx.fill();
+          ctx.strokeStyle = "rgba(132,233,255,0.18)";
+          ctx.stroke();
+          ctx.fillStyle = "#effcff";
+          ctx.font = "700 17px Trebuchet MS";
+          ctx.fillText("TRACTOR BEAM", barX + 18, 48);
+          ctx.font = "600 14px Trebuchet MS";
+          ctx.fillStyle = "#9bc7cf";
+          ctx.fillText("Hold RMB or Shift", barX + 18, 72);
+          ctx.fillText(`Pull x${ship.beamStrength.toFixed(1)}`, barX + 18, 95);
+
+          const progress = clamp(ship.scrap / CONFIG.winScrap, 0, 1);
+          ctx.fillStyle = "rgba(255,255,255,0.08)";
+          ctx.fillRect(barX + 18, 76, 184, 8);
+          ctx.fillStyle = "#ffca73";
+          ctx.fillRect(barX + 18, 76, 184 * progress, 8);
+          ctx.restore();
+        }
+
+        drawOverlay(ctx, game, title, subtitle) {
+          ctx.save();
+          ctx.fillStyle = "rgba(2, 9, 14, 0.62)";
+          ctx.fillRect(0, 0, CONFIG.width, CONFIG.height);
+          ctx.fillStyle = "#effcff";
+          ctx.textAlign = "center";
+          ctx.font = "700 56px Trebuchet MS";
+          ctx.fillText(title, CONFIG.width * 0.5, 230);
+          ctx.font = "600 22px Trebuchet MS";
+          ctx.fillStyle = "#9bc7cf";
+          ctx.fillText(subtitle, CONFIG.width * 0.5, 278);
+          ctx.font = "600 18px Trebuchet MS";
+          ctx.fillStyle = "#ffca73";
+          ctx.fillText("Press Enter or click to start", CONFIG.width * 0.5, 340);
+          ctx.font = "500 16px Trebuchet MS";
+          ctx.fillStyle = "#9bc7cf";
+          ctx.fillText("Ship parts and sounds come from local Kenney assets when present, fallback art/synth if not.", CONFIG.width * 0.5, 385);
+          if (game.assetText) {
+            ctx.font = "500 14px Trebuchet MS";
+            ctx.fillStyle = "rgba(239,252,255,0.7)";
+            ctx.fillText(game.assetText, CONFIG.width * 0.5, 422);
+          }
+          ctx.restore();
+        }
+
+        drawIcon(ctx, image, x, y, size) {
+          if (!image) return;
+          ctx.drawImage(image, x, y, size, size);
+        }
+
+        roundRect(ctx, x, y, w, h, r) {
+          ctx.beginPath();
+          ctx.moveTo(x + r, y);
+          ctx.arcTo(x + w, y, x + w, y + h, r);
+          ctx.arcTo(x + w, y + h, x, y + h, r);
+          ctx.arcTo(x, y + h, x, y, r);
+          ctx.arcTo(x, y, x + w, y, r);
+          ctx.closePath();
+        }
+      }
+
+      class Game {
+        constructor(canvas) {
+          this.canvas = canvas;
+          this.ctx = canvas.getContext("2d");
+          this.assets = null;
+          this.loader = new AssetLoader(MANIFEST);
+          this.input = new Input(canvas);
+          this.audio = new AudioSystem(this.loader);
+          this.particles = new ParticleSystem();
+          this.screenFX = new ScreenFX();
+          this.hud = new HUD();
+          this.state = STATE.MENU;
+          this.assetText = "Loading manifest...";
+          this.starfield = Array.from({ length: 110 }, () => ({
+            x: rand(0, CONFIG.width),
+            y: rand(0, CONFIG.height),
+            size: rand(0.7, 2.2),
+            speed: rand(8, 40),
+            alpha: rand(0.2, 0.9)
+          }));
+          this.resetSession();
+        }
+
+        resetSession() {
+          this.ship = new Ship();
+          this.bullets = [];
+          this.asteroids = [];
+          this.scraps = [];
+          this.spawnTimer = 1.4;
+          this.gameTime = 0;
+        }
+
+        async init() {
+          await this.loader.load();
+          this.assets = this.loader;
+          this.assetText = this.loader.status.join(" | ");
+          this.enter(STATE.MENU);
+        }
+
+        enter(next) {
+          this.state = next;
+          if (next === STATE.PLAYING) {
+            this.resetSession();
+            for (let i = 0; i < 4; i += 1) this.spawnAsteroid(true);
+          }
+        }
+
+        spawnAsteroid(edgeOnly = false) {
+          if (this.asteroids.length >= CONFIG.maxAsteroids) return;
+          let x = rand(0, CONFIG.width);
+          let y = rand(0, CONFIG.height);
+          if (edgeOnly) {
+            const edge = randInt(0, 3);
+            if (edge === 0) { x = -40; y = rand(0, CONFIG.height); }
+            if (edge === 1) { x = CONFIG.width + 40; y = rand(0, CONFIG.height); }
+            if (edge === 2) { x = rand(0, CONFIG.width); y = -40; }
+            if (edge === 3) { x = rand(0, CONFIG.width); y = CONFIG.height + 40; }
+          }
+          if (distSq(x, y, this.ship.x, this.ship.y) < 220 * 220) return this.spawnAsteroid(edgeOnly);
+          this.asteroids.push(new Asteroid(x, y, rand(26, 56), randInt(0, 2)));
+        }
+
+        shoot() {
+          if (this.ship.fireCooldown > 0) return;
+          const angle = this.ship.angle;
+          const nose = this.ship.radius + 10;
+          const x = this.ship.x + Math.cos(angle) * nose;
+          const y = this.ship.y + Math.sin(angle) * nose;
+          this.bullets.push(new Bullet(x, y, angle));
+          this.ship.fireCooldown = this.ship.fireRate;
+          this.audio.play("shoot");
+          this.particles.burst(x, y, 7, () => ({
+            x, y,
+            vx: Math.cos(angle) * rand(40, 160) + rand(-30, 30),
+            vy: Math.sin(angle) * rand(40, 160) + rand(-30, 30),
+            life: rand(0.08, 0.18),
+            maxLife: 0.18,
+            size: rand(1.5, 3.6),
+            color: "#fff7d1",
+            drag: 0.94,
+            shrink: 0.96
+          }));
+        }
+
+        destroyAsteroid(index, angleHint = 0) {
+          const asteroid = this.asteroids[index];
+          this.asteroids.splice(index, 1);
+          this.audio.play("explode");
+          this.screenFX.kick(0.7, 0.2);
+          this.particles.burst(asteroid.x, asteroid.y, 22, () => ({
+            x: asteroid.x,
+            y: asteroid.y,
+            vx: rand(-160, 160),
+            vy: rand(-160, 160),
+            life: rand(0.25, 0.7),
+            maxLife: 0.7,
+            size: rand(2, 5.4),
+            color: Math.random() < 0.5 ? "#ff9d6f" : "#bfc8d3",
+            drag: 0.97,
+            shrink: 0.988
+          }));
+          const scrapCount = asteroid.radius >= 44 ? 5 : asteroid.radius >= 30 ? 4 : 3;
+          for (let i = 0; i < scrapCount; i += 1) {
+            const angle = angleHint + rand(-1.2, 1.2);
+            const scrap = new Scrap(
+              asteroid.x + Math.cos(angle) * rand(0, asteroid.radius * 0.25),
+              asteroid.y + Math.sin(angle) * rand(0, asteroid.radius * 0.25),
+              rand(5, 10)
+            );
+            scrap.vx += Math.cos(angle) * rand(40, 160);
+            scrap.vy += Math.sin(angle) * rand(40, 160);
+            this.scraps.push(scrap);
+          }
+          if (asteroid.radius > 32) {
+            for (let i = 0; i < 2; i += 1) {
+              const child = new Asteroid(asteroid.x, asteroid.y, asteroid.radius * rand(0.48, 0.62), asteroid.tier + 1);
+              const splitAngle = angleHint + (i === 0 ? -0.9 : 0.9);
+              child.vx = Math.cos(splitAngle) * rand(90, 170);
+              child.vy = Math.sin(splitAngle) * rand(90, 170);
+              child.hp = Math.max(1, asteroid.hp - 1);
+              this.asteroids.push(child);
+            }
+          }
+        }
+
+        collectScrap(scrap, index) {
+          this.scraps.splice(index, 1);
+          this.ship.scrap += scrap.value;
+          this.ship.upgradeFromScrap();
+          this.audio.play("collect");
+          this.screenFX.kick(0.16, 0.12);
+          this.particles.burst(scrap.x, scrap.y, 11, () => ({
+            x: scrap.x,
+            y: scrap.y,
+            vx: rand(-80, 80),
+            vy: rand(-80, 80),
+            life: rand(0.18, 0.32),
+            maxLife: 0.32,
+            size: rand(1.5, 4),
+            color: "#7ef7d6",
+            drag: 0.93,
+            shrink: 0.95
+          }));
+        }
+
+        update(dt) {
+          this.screenFX.update(dt);
+          this.particles.update(dt);
+          this.updateStars(dt);
+
+          if (this.state !== STATE.PLAYING) {
+            if (this.input.pressed("Enter") || this.input.mousePressed("left") || this.input.pressed("Space")) {
+              this.audio.unlock();
+              this.enter(STATE.PLAYING);
+            }
+            this.input.nextFrame();
+            return;
+          }
+
+          this.audio.unlock();
+          this.gameTime += dt;
+          this.ship.update(dt, this.input);
+
+          const firing = this.input.down("Space") || this.input.mouse.left;
+          if (firing) this.shoot();
+
+          const beamActive = this.input.down("ShiftLeft") || this.input.down("ShiftRight") || this.input.mouse.right;
+          if (beamActive) this.audio.play("beam", { volume: 0.2 });
+
+          this.spawnTimer -= dt;
+          const spawnRate = Math.max(0.75, CONFIG.spawnBase - this.ship.scrap * 0.03);
+          if (this.spawnTimer <= 0) {
+            this.spawnAsteroid(true);
+            this.spawnTimer = spawnRate;
+          }
+
+          for (let i = this.bullets.length - 1; i >= 0; i -= 1) {
+            const bullet = this.bullets[i];
+            bullet.update(dt);
+            if (
+              bullet.life <= 0 ||
+              bullet.x < -20 || bullet.x > CONFIG.width + 20 ||
+              bullet.y < -20 || bullet.y > CONFIG.height + 20
+            ) {
+              this.bullets.splice(i, 1);
+            }
+          }
+
+          for (const asteroid of this.asteroids) asteroid.update(dt);
+          for (const scrap of this.scraps) scrap.update(dt);
+
+          this.handleBulletHits();
+          this.handleShipHits();
+          this.handleTractorBeam(dt, beamActive);
+
+          if (this.ship.hull <= 0) this.enter(STATE.LOSE);
+          if (this.ship.scrap >= CONFIG.winScrap) this.enter(STATE.WIN);
+
+          this.input.nextFrame();
+        }
+
+        handleBulletHits() {
+          for (let b = this.bullets.length - 1; b >= 0; b -= 1) {
+            const bullet = this.bullets[b];
+            let hit = false;
+            for (let a = this.asteroids.length - 1; a >= 0; a -= 1) {
+              const asteroid = this.asteroids[a];
+              const hitRadius = asteroid.radius + bullet.radius;
+              if (distSq(bullet.x, bullet.y, asteroid.x, asteroid.y) <= hitRadius * hitRadius) {
+                asteroid.hp -= bullet.damage;
+                hit = true;
+                this.bullets.splice(b, 1);
+                this.particles.burst(bullet.x, bullet.y, 5, () => ({
+                  x: bullet.x,
+                  y: bullet.y,
+                  vx: rand(-60, 60),
+                  vy: rand(-60, 60),
+                  life: rand(0.06, 0.16),
+                  maxLife: 0.16,
+                  size: rand(1.2, 3.2),
+                  color: "#effcff",
+                  drag: 0.9,
+                  shrink: 0.95
+                }));
+                if (asteroid.hp <= 0) {
+                  const angle = Math.atan2(asteroid.y - this.ship.y, asteroid.x - this.ship.x);
+                  this.destroyAsteroid(a, angle);
+                }
+                break;
+              }
+            }
+            if (hit) continue;
+          }
+        }
+
+        handleShipHits() {
+          for (let i = this.asteroids.length - 1; i >= 0; i -= 1) {
+            const asteroid = this.asteroids[i];
+            const hitRadius = asteroid.radius + this.ship.radius;
+            if (distSq(this.ship.x, this.ship.y, asteroid.x, asteroid.y) <= hitRadius * hitRadius) {
+              if (this.ship.damage(14 + asteroid.radius * 0.18)) {
+                this.audio.play("hit");
+                this.screenFX.kick(1.15, 0.34);
+                const dx = this.ship.x - asteroid.x;
+                const dy = this.ship.y - asteroid.y;
+                const len = Math.hypot(dx, dy) || 1;
+                this.ship.vx += (dx / len) * 180;
+                this.ship.vy += (dy / len) * 180;
+                this.particles.burst(this.ship.x, this.ship.y, 18, () => ({
+                  x: this.ship.x,
+                  y: this.ship.y,
+                  vx: rand(-140, 140),
+                  vy: rand(-140, 140),
+                  life: rand(0.18, 0.42),
+                  maxLife: 0.42,
+                  size: rand(2, 5.4),
+                  color: Math.random() < 0.65 ? "#ff6a78" : "#ffca73",
+                  drag: 0.95,
+                  shrink: 0.97
+                }));
+              }
+              asteroid.vx *= -1;
+              asteroid.vy *= -1;
+            }
+          }
+        }
+
+        handleTractorBeam(dt, active) {
+          if (!active) return;
+          const beamRadius = CONFIG.beamRadius + this.ship.scrap * 1.5;
+          for (let i = this.scraps.length - 1; i >= 0; i -= 1) {
+            const scrap = this.scraps[i];
+            const dx = this.ship.x - scrap.x;
+            const dy = this.ship.y - scrap.y;
+            const dist = Math.hypot(dx, dy) || 1;
+            if (dist <= beamRadius) {
+              const force = (1 - dist / beamRadius) * CONFIG.beamForce * this.ship.beamStrength;
+              scrap.vx += (dx / dist) * force * dt;
+              scrap.vy += (dy / dist) * force * dt;
+              if (Math.random() < 0.8) {
+                this.particles.items.push({
+                  x: scrap.x + rand(-2, 2),
+                  y: scrap.y + rand(-2, 2),
+                  vx: rand(-20, 20),
+                  vy: rand(-20, 20),
+                  life: 0.14,
+                  maxLife: 0.14,
+                  size: rand(1.2, 2.2),
+                  color: "#7ef7d6",
+                  drag: 0.92,
+                  shrink: 0.95
+                });
+              }
+            }
+            if (dist <= CONFIG.collectRadius + scrap.radius) {
+              this.collectScrap(scrap, i);
+            }
+          }
+        }
+
+        updateStars(dt) {
+          for (const star of this.starfield) {
+            star.y += star.speed * dt;
+            if (star.y > CONFIG.height + 4) {
+              star.y = -4;
+              star.x = rand(0, CONFIG.width);
+            }
+          }
+        }
+
+        draw() {
+          const ctx = this.ctx;
+          ctx.clearRect(0, 0, CONFIG.width, CONFIG.height);
+
+          const offset = this.screenFX.offset();
+          ctx.save();
+          ctx.translate(offset.x, offset.y);
+          this.drawBackdrop(ctx);
+          this.drawWorld(ctx);
+          ctx.restore();
+
+          this.hud.draw(ctx, this);
+          if (this.state === STATE.MENU) {
+            this.hud.drawOverlay(ctx, this, "Asteroids: Scrap Magnet", "Blast rocks, pull debris, rebuild your ship mid-fight.");
+          } else if (this.state === STATE.WIN) {
+            this.hud.drawOverlay(ctx, this, "Scrap Hold Full", `You hauled ${this.ship.scrap} scrap and turned junk into armor.`);
+          } else if (this.state === STATE.LOSE) {
+            this.hud.drawOverlay(ctx, this, "Hull Breach", `Recovered scrap: ${this.ship.scrap}. Re-enter field and try a cleaner harvest.`);
+          }
+
+          if (this.screenFX.flash > 0) {
+            ctx.fillStyle = `rgba(255,255,255,${this.screenFX.flash * 0.18})`;
+            ctx.fillRect(0, 0, CONFIG.width, CONFIG.height);
+          }
+        }
+
+        drawBackdrop(ctx) {
+          const gradient = ctx.createRadialGradient(CONFIG.width * 0.5, 40, 40, CONFIG.width * 0.5, 40, 520);
+          gradient.addColorStop(0, "rgba(126,247,214,0.08)");
+          gradient.addColorStop(1, "rgba(0,0,0,0)");
+          ctx.fillStyle = gradient;
+          ctx.fillRect(0, 0, CONFIG.width, CONFIG.height);
+
+          for (const star of this.starfield) {
+            ctx.globalAlpha = star.alpha;
+            ctx.fillStyle = "#dff9ff";
+            ctx.fillRect(star.x, star.y, star.size, star.size);
+          }
+          ctx.globalAlpha = 1;
+        }
+
+        drawWorld(ctx) {
+          for (const scrap of this.scraps) this.drawScrap(ctx, scrap);
+          for (const asteroid of this.asteroids) this.drawAsteroid(ctx, asteroid);
+          for (const bullet of this.bullets) this.drawBullet(ctx, bullet);
+          this.drawShip(ctx, this.ship);
+          this.drawBeam(ctx);
+          this.particles.draw(ctx);
+        }
+
+        drawShip(ctx, ship) {
+          ctx.save();
+          ctx.translate(ship.x, ship.y);
+          ctx.rotate(ship.angle + Math.PI / 2);
+          const flicker = ship.invuln > 0 && Math.sin(performance.now() * 0.03) > 0;
+          ctx.globalAlpha = flicker ? 0.45 : 1;
+          const image = this.assets.images.get("ship");
+          if (image) {
+            ctx.drawImage(image, -30, -30, 60, 60);
+          }
+          ctx.globalAlpha = 1;
+          if (this.input.down("KeyW") || this.input.down("ArrowUp") || this.input.down("KeyA") || this.input.down("ArrowLeft") || this.input.down("KeyS") || this.input.down("ArrowDown") || this.input.down("KeyD") || this.input.down("ArrowRight")) {
+            ctx.fillStyle = "#ff9d6f";
+            ctx.beginPath();
+            ctx.moveTo(-8, 24);
+            ctx.lineTo(0, 42 + rand(0, 10));
+            ctx.lineTo(8, 24);
+            ctx.closePath();
+            ctx.fill();
+          }
+          ctx.restore();
+        }
+
+        drawBullet(ctx, bullet) {
+          const image = this.assets.images.get("bullet");
+          ctx.save();
+          ctx.translate(bullet.x, bullet.y);
+          if (image) {
+            ctx.drawImage(image, -10, -10, 20, 20);
+          } else {
+            ctx.fillStyle = "#fff7d1";
+            ctx.beginPath();
+            ctx.arc(0, 0, bullet.radius, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          ctx.restore();
+        }
+
+        drawScrap(ctx, scrap) {
+          const image = this.assets.images.get("scrap");
+          ctx.save();
+          ctx.translate(scrap.x, scrap.y);
+          ctx.rotate(scrap.angle);
+          if (image) {
+            const size = scrap.radius * 2.6;
+            ctx.drawImage(image, -size * 0.5, -size * 0.5, size, size);
+          }
+          ctx.restore();
+        }
+
+        drawAsteroid(ctx, asteroid) {
+          ctx.save();
+          ctx.translate(asteroid.x, asteroid.y);
+          ctx.rotate(asteroid.angle);
+          ctx.fillStyle = asteroid.hp === 1 ? "#6f7680" : asteroid.hp === 2 ? "#87909b" : "#9ca7b2";
+          ctx.strokeStyle = "rgba(255,255,255,0.12)";
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          asteroid.shape.forEach((point, index) => {
+            const x = Math.cos(point.a) * point.r;
+            const y = Math.sin(point.a) * point.r;
+            if (index === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          });
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+          ctx.restore();
+        }
+
+        drawBeam(ctx) {
+          const active = this.input.down("ShiftLeft") || this.input.down("ShiftRight") || this.input.mouse.right;
+          if (!active || this.state !== STATE.PLAYING) return;
+          const radius = CONFIG.beamRadius + this.ship.scrap * 1.5;
+          const pulse = 0.5 + Math.sin(performance.now() * 0.012) * 0.12;
+          ctx.save();
+          const gradient = ctx.createRadialGradient(this.ship.x, this.ship.y, 20, this.ship.x, this.ship.y, radius);
+          gradient.addColorStop(0, "rgba(126,247,214,0.16)");
+          gradient.addColorStop(0.65, "rgba(126,247,214,0.08)");
+          gradient.addColorStop(1, "rgba(126,247,214,0)");
+          ctx.fillStyle = gradient;
+          ctx.beginPath();
+          ctx.arc(this.ship.x, this.ship.y, radius, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = `rgba(126,247,214,${0.18 + pulse * 0.2})`;
+          ctx.setLineDash([10, 10]);
+          ctx.lineDashOffset = -performance.now() * 0.04;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(this.ship.x, this.ship.y, radius * (0.92 + pulse * 0.04), 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+
+      const canvas = document.getElementById("game");
+      const game = new Game(canvas);
+
+      let previous = performance.now();
+      let accumulator = 0;
+
+      const loop = async () => {
+        const now = performance.now();
+        const frame = Math.min(CONFIG.maxFrame, (now - previous) / 1000);
+        previous = now;
+        accumulator += frame;
+        while (accumulator >= CONFIG.fixedStep) {
+          game.update(CONFIG.fixedStep);
+          accumulator -= CONFIG.fixedStep;
+        }
+        game.draw();
+        requestAnimationFrame(loop);
+      };
+
+      game.init().then(() => {
+        requestAnimationFrame(loop);
+      });
+    })();
+  </script>
+</body>
+</html>

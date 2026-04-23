@@ -3,7 +3,6 @@ import { detectChatDocumentType } from "../../../shared/chat-attachments";
 import type { ChatAttachment } from "../../../shared/protocol";
 import { extractDocxText } from "./extract-docx";
 import { extractOdtText } from "./extract-odt";
-import { extractPdfText } from "./extract-pdf";
 import { extractPptxText } from "./extract-pptx";
 import { extractXlsxText } from "./extract-xlsx";
 import type { DocumentExtractionResult } from "./types";
@@ -29,4 +28,9 @@ export async function extractDocumentText(attachment: ChatAttachment, input: Arr
     case "odt":
       return extractOdtText(input);
   }
+}
+
+async function extractPdfText(input: ArrayBuffer | Uint8Array | Buffer) {
+  const { extractPdfText } = await import("./extract-pdf");
+  return extractPdfText(input);
 }

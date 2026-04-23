@@ -4,7 +4,9 @@ import type { AgentRuntime } from "./agent-runtime";
 import { buildCliCapability, probeCliVersion, probeCodexAuth, probeInteractivePipeCompatibility, shouldSkipExpensiveCliProbes } from "./cli-health";
 import { CliProcessManager } from "./cli-process-manager";
 import { getBundledCodexInstallation, type CodexInstallation } from "./codex-installation";
+import { resolveCodexSandboxMode } from "./codex-sandbox-policy";
 import { CodexSdkAdapter } from "./codex-sdk-adapter";
+import { resolveSubagentModelId } from "../subagent-defaults";
 
 const DEFAULT_MODEL_ID = "openai/gpt-5.4";
 const CODEX_SUPPORTED_MODEL_IDS = [DEFAULT_MODEL_ID, "openai/gpt-5.4-mini"] as const;
@@ -13,6 +15,7 @@ type CodexCliRuntimeOptions = {
   processManager?: CliProcessManager;
   getInstallation?: () => CodexInstallation;
   createAdapter?: (executablePath: string) => PiAgentAdapter;
+  platform?: NodeJS.Platform;
 };
 
 export class CodexCliRuntime implements AgentRuntime {
@@ -22,6 +25,7 @@ export class CodexCliRuntime implements AgentRuntime {
   private readonly processManager: CliProcessManager;
   private readonly getInstallation: () => CodexInstallation;
   private readonly createAdapter: (executablePath: string) => PiAgentAdapter;
+  private readonly platform: NodeJS.Platform;
   private adapter: PiAgentAdapter | undefined;
   private capability: AgentRuntimeCapability | undefined;
 
@@ -29,6 +33,7 @@ export class CodexCliRuntime implements AgentRuntime {
     this.processManager = options.processManager ?? new CliProcessManager();
     this.getInstallation = options.getInstallation ?? getBundledCodexInstallation;
     this.createAdapter = options.createAdapter ?? ((executablePath) => new CodexSdkAdapter({ executablePath }));
+    this.platform = options.platform ?? process.platform;
   }
 
   getAdapter() {
@@ -131,8 +136,12 @@ export class CodexCliRuntime implements AgentRuntime {
     return DEFAULT_MODEL_ID;
   }
 
-  getDefaultSubagentModelId(_providerBrand: ProviderBrand) {
-    return DEFAULT_MODEL_ID;
+  getDefaultSubagentModelId(providerBrand: ProviderBrand, executionModelId?: string) {
+    return resolveSubagentModelId({
+      agentId: this.id,
+      providerBrand,
+      executionModelId
+    });
   }
 
   buildInteractiveLaunch(input: { cwd: string; cols: number; rows: number; prompt?: string }) {
@@ -148,7 +157,9 @@ export class CodexCliRuntime implements AgentRuntime {
         "-C",
         input.cwd,
         "-s",
-        "workspace-write",
+        resolveCodexSandboxMode({
+          platform: this.platform
+        }),
         "-a",
         "on-request",
         ...(input.prompt ? [input.prompt] : [])

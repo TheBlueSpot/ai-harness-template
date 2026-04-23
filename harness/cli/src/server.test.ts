@@ -1,12 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type {
-  PiAgentAdapter,
-  PiAgentExecutionController,
-  PiAgentPromptRequest,
-  PiAgentPromptResult
-} from "./pi-agent-adapter";
+import type { AgentRuntimeCapability } from "../../shared/protocol";
+import type { PiAgentAdapter, PiAgentExecutionController, PiAgentPromptRequest, PiAgentPromptResult } from "./pi-agent-adapter";
 import {
   createDataUrl,
   createSampleDocxBuffer,
@@ -18,6 +14,10 @@ import {
 import { startHarnessServer } from "./server";
 import { createStartupTelemetrySession, type StartupPhaseId, type StartupTelemetrySink } from "./startup-telemetry";
 import { WorkspaceRepository } from "./workspace-repository";
+import type { AgentRuntime } from "./agent-runtimes/agent-runtime";
+import { buildCliCapability } from "./agent-runtimes/cli-health";
+import { PiRuntime } from "./agent-runtimes/pi-runtime";
+import { AgentRuntimeRegistry } from "./agent-runtimes/runtime-registry";
 
 const EXPECT_ATTACHMENTS_ENABLED = Boolean(Bun.env.UPLOADTHING_TOKEN?.trim());
 
@@ -40,6 +40,9 @@ class FakePiAgentAdapter implements PiAgentAdapter {
 
   async runPrompt(request: PiAgentPromptRequest): Promise<PiAgentPromptResult> {
     this.calls.push(request);
+    const defaultExecutionModelId = request.modelId.startsWith("google/")
+      ? "google/gemini-2.5-flash"
+      : "openai/gpt-5.4";
     const withUsage = (text: string): PiAgentPromptResult => ({
       text,
       contextUsage: {
@@ -120,7 +123,7 @@ class FakePiAgentAdapter implements PiAgentAdapter {
             type: "ready",
             difficultyScore: 20,
             summary: "Single-step execution after clarification",
-            executionModelId: "openai/gpt-5.4",
+            executionModelId: defaultExecutionModelId,
             usesSubagents: false,
             subtasks: [],
             finalExecutionBrief: "single-step request"
@@ -134,7 +137,7 @@ class FakePiAgentAdapter implements PiAgentAdapter {
             type: "ready",
             difficultyScore: 72,
             summary: "Split into two tasks with one risky patch",
-            executionModelId: "openai/gpt-5.4",
+            executionModelId: defaultExecutionModelId,
             usesSubagents: true,
             subtasks: [
               {
@@ -158,7 +161,7 @@ class FakePiAgentAdapter implements PiAgentAdapter {
           JSON.stringify({
             difficultyScore: 72,
             summary: "Split into two tasks",
-            executionModelId: "openai/gpt-5.4",
+            executionModelId: defaultExecutionModelId,
             usesSubagents: true,
             subtasks: [
               {
@@ -181,7 +184,7 @@ class FakePiAgentAdapter implements PiAgentAdapter {
         JSON.stringify({
           difficultyScore: 20,
           summary: "Single-step execution",
-          executionModelId: "openai/gpt-5.4",
+          executionModelId: defaultExecutionModelId,
           usesSubagents: false,
           subtasks: [],
           finalExecutionBrief: request.prompt.includes("slow") ? "slow request" : "single-step request"
@@ -303,6 +306,54 @@ class FakePiAgentAdapter implements PiAgentAdapter {
       },
       dispose() {}
     };
+  }
+}
+
+class FakeCodexRuntime implements AgentRuntime {
+  readonly id = "codex-cli" as const;
+  readonly label = "Codex CLI";
+
+  private capability: AgentRuntimeCapability | undefined;
+
+  constructor(private readonly adapter: PiAgentAdapter) {}
+
+  getAdapter() {
+    return this.adapter;
+  }
+
+  getCapability() {
+    return this.capability;
+  }
+
+  async refreshCapability() {
+    this.capability = buildCliCapability({
+      agentId: this.id,
+      label: this.label,
+      installed: true,
+      authenticated: true,
+      supportsInteractive: true,
+      interactivePipeCompatible: true,
+      supportsPlanning: true,
+      supportsReview: true,
+      supportsReasoningStrengthControl: true,
+      supportsFastModeControl: true,
+      discoveredModels: ["openai/gpt-5.4", "openai/gpt-5.4-mini"],
+      activeModel: "openai/gpt-5.4",
+      modelDiscoveryConfidence: "exact"
+    });
+    return this.capability;
+  }
+
+  getDefaultPlanningModelId() {
+    return "openai/gpt-5.4";
+  }
+
+  getDefaultExecutionModelId() {
+    return "openai/gpt-5.4";
+  }
+
+  getDefaultSubagentModelId(_providerBrand?: "gpt" | "gemini", executionModelId?: string) {
+    return executionModelId === "openai/gpt-5.4" ? "openai/gpt-5.4-mini" : "openai/gpt-5.4";
   }
 }
 
@@ -894,6 +945,94 @@ describe("harness server", () => {
     socket.close();
   }, 60000);
 
+  test("uses codex planning default even when provider brand is gemini", async () => {
+    server.stop(true);
+    repository.setProviderBrand("gemini");
+    server = await startHarnessServer({
+      port,
+      adapter,
+      repository,
+      runtimeRegistry: new AgentRuntimeRegistry([new PiRuntime(adapter), new FakeCodexRuntime(adapter)]),
+      pickFolder: async () => extraProjectRoot,
+      serverOnly: true
+    });
+
+    const socket = createSocket(port);
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot);
+    const projectId = opened.payload.project.id;
+    const threadId = opened.payload.project.activeThreadId;
+    const ready = await sendChatUntilReady(
+      socket,
+      {
+        requestId: "req-codex-planner-model",
+        projectId,
+        threadId,
+        agentId: "codex-cli",
+        content: "complex task"
+      },
+      30000
+    );
+
+    expect(adapter.calls[0]?.kind).toBe("planner");
+    expect(adapter.calls[0]?.modelId).toBe("openai/gpt-5.4");
+    expect(ready.payload.run.planningModelId).toBe("openai/gpt-5.4");
+    socket.close();
+  }, 60000);
+
+  test("uses same-family codex subagent defaults with low reasoning", async () => {
+    server.stop(true);
+    repository.setProviderBrand("gemini");
+    repository.setSubagentWorktreeStrategyDefault("separate-worktrees");
+    server = await startHarnessServer({
+      port,
+      adapter,
+      repository,
+      runtimeRegistry: new AgentRuntimeRegistry([new PiRuntime(adapter), new FakeCodexRuntime(adapter)]),
+      pickFolder: async () => extraProjectRoot,
+      serverOnly: true
+    });
+
+    const socket = createSocket(port);
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot);
+    const projectId = opened.payload.project.id;
+    const threadId = opened.payload.project.activeThreadId;
+    const ready = await sendChatUntilReady(
+      socket,
+      {
+        requestId: "req-codex-subagents",
+        projectId,
+        threadId,
+        agentId: "codex-cli",
+        content: "complex task",
+        reasoningStrength: "extra-high"
+      },
+      30000
+    );
+
+    socket.send(
+      JSON.stringify({
+        type: "run.execute",
+        requestId: "req-codex-subagents-execute",
+        payload: {
+          projectId,
+          threadId,
+          runId: ready.payload.run.id,
+          reasoningStrength: "extra-high"
+        }
+      })
+    );
+
+    await waitForCondition(() => adapter.calls.some((call) => call.kind === "subagent"), 30000);
+    await waitForCondition(() => adapter.calls.some((call) => call.kind === "aggregator"), 30000);
+
+    const subagentCalls = adapter.calls.filter((call) => call.kind === "subagent");
+    expect(subagentCalls.length).toBeGreaterThan(0);
+    expect(subagentCalls.every((call) => call.modelId === "openai/gpt-5.4-mini")).toBe(true);
+    socket.close();
+  }, 60000);
+
   test("runs low difficulty tasks on the main executor only", async () => {
     const socket = createSocket(port);
     await waitForEvent(socket, "connection.ready");
@@ -1215,6 +1354,105 @@ describe("harness server", () => {
     socket.close();
   });
 
+  test("chat.send honors explicitly locked mode over auto-detect", async () => {
+    const socket = createSocket(port);
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot, "req-mode-lock-open");
+    const projectId = opened.payload.project.id;
+    const threadId = opened.payload.project.activeThreadId;
+    const readyPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "ready");
+
+    socket.send(
+      JSON.stringify({
+        type: "chat.send",
+        requestId: "req-mode-lock-send",
+        payload: {
+          projectId,
+          threadId,
+          agentId: "pi",
+          content: "Create readme.md",
+          modeId: "plan",
+          modeLocked: true
+        }
+      })
+    );
+
+    const ready = await readyPromise;
+    expect(ready.payload.run.plan?.mode?.id).toBe("plan");
+    expect(ready.payload.run.plan?.origin).toBe("initial");
+    expect(ready.payload.run.plan?.gating.mode).toBe("approve");
+    socket.close();
+  });
+
+  test("chat.send correction follow-up overrides sticky ask mode for direct workspace actions", async () => {
+    const socket = createSocket(port);
+    await waitForEvent(socket, "connection.ready");
+    const opened = await openProject(socket, projectRoot, "req-auto-followup-open");
+    const projectId = opened.payload.project.id;
+    const threadId = opened.payload.project.activeThreadId;
+    const initialReadyPromise = waitForEvent(
+      socket,
+      "run.updated",
+      (event) =>
+        event.payload.threadId === threadId &&
+        event.payload.run.status === "ready" &&
+        event.payload.run.latestUserPrompt === "create folder /tetris try 10 different ways if blocked"
+    );
+
+    socket.send(
+      JSON.stringify(
+        createChatSendCommand({
+          requestId: "req-auto-followup-initial",
+          projectId,
+          threadId,
+          content: "create folder /tetris try 10 different ways if blocked",
+          modeId: "ask"
+        })
+      )
+    );
+
+    const initialReady = await initialReadyPromise;
+    expect(initialReady.payload.run.plan?.mode?.id).toBe("implement");
+    expect(initialReady.payload.run.plan?.origin).toBe("quick-task");
+    await executeReadyRun(
+      socket,
+      {
+        requestId: "req-auto-followup-initial-execute",
+        projectId,
+        threadId,
+        runId: initialReady.payload.run.id
+      },
+      10000
+    );
+
+    const implementReadyPromise = waitForEvent(
+      socket,
+      "run.updated",
+      (event) =>
+        event.payload.threadId === threadId &&
+        event.payload.run.status === "ready" &&
+        event.payload.run.latestUserPrompt === "no inside the cwd"
+    );
+
+    socket.send(
+      JSON.stringify(
+        createChatSendCommand({
+          requestId: "req-auto-followup-implement",
+          projectId,
+          threadId,
+          content: "no inside the cwd",
+          modeId: "ask"
+        })
+      )
+    );
+
+    const implementReady = await implementReadyPromise;
+    expect(implementReady.payload.run.plan?.mode?.id).toBe("implement");
+    expect(implementReady.payload.run.plan?.origin).toBe("quick-task");
+    expect(implementReady.payload.run.plan?.gating.mode).toBe("immediate");
+    socket.close();
+  });
+
   test("chat.send bypasses planner for direct workspace tasks even when review mode was selected", async () => {
     const socket = createSocket(port);
     await waitForEvent(socket, "connection.ready");
@@ -1239,6 +1477,7 @@ describe("harness server", () => {
     expect(ready.payload.run.plan?.origin).toBe("quick-task");
     expect(ready.payload.run.plan?.mode?.id).toBe("implement");
     expect(ready.payload.run.plan?.gating.mode).toBe("immediate");
+    expect(ready.payload.run.plan?.finalExecutionBrief).toBe("Make folder pacman");
     expect(adapter.calls).toHaveLength(0);
     socket.close();
   });
@@ -2322,7 +2561,9 @@ function createChatSendCommand(input: {
   threadId: string;
   content: string;
   agentId?: "pi" | "copilot-cli" | "codex-cli";
+  reasoningStrength?: "low" | "medium" | "high" | "extra-high";
   modeId?: string;
+  modeLocked?: boolean;
   attachments?: Array<{
     id: string;
     kind: "image" | "text" | "document";
@@ -2343,7 +2584,9 @@ function createChatSendCommand(input: {
       threadId: input.threadId,
       agentId: input.agentId ?? "pi",
       content: input.content,
+      reasoningStrength: input.reasoningStrength,
       modeId: input.modeId,
+      modeLocked: input.modeLocked,
       attachments: input.attachments
     }
   };
@@ -2357,6 +2600,7 @@ async function sendChatUntilReady(
     threadId: string;
     content: string;
     agentId?: "pi" | "copilot-cli" | "codex-cli";
+    reasoningStrength?: "low" | "medium" | "high" | "extra-high";
     modeId?: string;
   },
   timeoutMs: number = 5000

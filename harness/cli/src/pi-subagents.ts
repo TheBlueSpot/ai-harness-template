@@ -1,10 +1,10 @@
-import type { AgentTrace, ComposerReasoningStrength, PlannerSubtask, ProjectContextUsage, ProviderBrand } from "../../shared/protocol";
+import type { AgentId, AgentTrace, ComposerReasoningStrength, PlannerSubtask, ProjectContextUsage, ProviderBrand } from "../../shared/protocol";
 import type { ManagedExecutionState } from "./execution-runtime";
 import { BranchfsManager, type BranchfsExperimentLease } from "./branchfs-manager";
 import { debugLog } from "./logging";
 import { runManagedAgentExecution } from "./managed-agent-execution";
-import { getDefaultSubagentModelId } from "./pi-planner";
 import type { PiAgentAdapter, PiAgentExecutionEvent } from "./pi-agent-adapter";
+import { resolveSubagentModelId, resolveSubagentReasoningStrength } from "./subagent-defaults";
 
 export type SubagentResult = {
   id: string;
@@ -55,6 +55,7 @@ export async function executeSubagents(
   options: {
     cwd: string;
     runId: string;
+    agentId?: AgentId;
     providerBrand: ProviderBrand;
     brief: string;
     tasks: PlannerSubtask[];
@@ -79,6 +80,7 @@ export async function executeSubagents(
 
       const { result, retainedSnapshot } = await executeSubagentWithRetry(adapter, options.providerBrand, task, options.brief, {
         runId: options.runId,
+        agentId: options.agentId,
         rootPath: options.cwd,
         abortSignal: options.abortSignal,
         callbacks: options.callbacks,
@@ -109,6 +111,7 @@ async function executeSubagentWithRetry(
   brief: string,
   options: {
     runId: string;
+    agentId?: AgentId;
     rootPath: string;
     abortSignal: AbortSignal | undefined;
     callbacks: SubagentProgressCallbacks | undefined;
@@ -144,7 +147,12 @@ async function executeSubagentWithRetry(
     const worktreeReadyAt = Date.now();
     let settledExecutionState: ManagedExecutionState | undefined;
     try {
-      const subagentModelId = getDefaultSubagentModelId(providerBrand);
+      const subagentModelId = resolveSubagentModelId({
+        agentId: options.agentId,
+        providerBrand,
+        executionModelId: options.executionModelId
+      });
+      const subagentReasoningStrength = resolveSubagentReasoningStrength(options.reasoningStrength);
       const basePrompt = [
         "You are a focused coding subagent.",
         "Complete only the assigned instruction.",
@@ -163,7 +171,7 @@ async function executeSubagentWithRetry(
           cwd: lease.projectMountPath,
           modelId: subagentModelId,
           prompt: basePrompt,
-          reasoningStrength: options.reasoningStrength,
+          reasoningStrength: subagentReasoningStrength,
           fastMode: options.fastMode,
           onExecutionEvent(event: PiAgentExecutionEvent) {
             void options.callbacks?.onExecutionEvent?.({
@@ -185,7 +193,7 @@ async function executeSubagentWithRetry(
           cwd: lease.projectMountPath,
           modelId: subagentModelId,
           prompt: ["continue", "", basePrompt].join("\n"),
-          reasoningStrength: options.reasoningStrength,
+          reasoningStrength: subagentReasoningStrength,
           fastMode: options.fastMode,
           onExecutionEvent(event: PiAgentExecutionEvent) {
             void options.callbacks?.onExecutionEvent?.({
@@ -256,7 +264,7 @@ async function executeSubagentWithRetry(
             ? {
                 sourceKind: "subagent",
                 sourceLabel: task.id,
-                modelId: getDefaultSubagentModelId(providerBrand),
+                modelId: subagentModelId,
                 tokens: response.contextUsage.tokens,
                 contextWindow: response.contextUsage.contextWindow,
                 usagePercent: response.contextUsage.usagePercent,

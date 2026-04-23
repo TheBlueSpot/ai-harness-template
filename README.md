@@ -15,8 +15,8 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - Guided help tutorials with spotlight overlays for opening a project, connecting provider/runtime, sending the first task, and reviewing plans
 - `UploadThing`-backed attachments for screenshots, PDFs, and text or office-doc specs, persisted with chat history and routed into prompts
 - Capability-aware model metadata so UI can explain tool, vision, browser, context, speed, and cost expectations before execution starts
-- Runtime-aware model selection so Codex CLI sticks to Codex-compatible GPT choices and stale unsupported picks fall back before execution
-- Codex CLI noninteractive runs use bundled official Codex SDK and CLI, keep review mode prompt-driven inside the harness instead of special native review routing, and still support optional Windows policy bypass via `HARNESS_CODEX_WINDOWS_BYPASS_POLICY=1` when local shell writes must run fully unblocked
+- Runtime-aware model selection so Codex CLI sticks to Codex-compatible GPT choices for planning and execution, and stale unsupported picks fall back before a run starts
+- Codex CLI noninteractive runs use bundled official Codex SDK and CLI, keep review mode prompt-driven inside the harness instead of special native review routing, and on Windows writable runs auto-use full access because bundled Codex currently downgrades `workspace-write` to read-only there while read-only tasks stay sandboxed
 - Typed browser session tracking with explicit per-step approval gates when browser-capable tools are active
 - Workspace-global pause and resume for execution starts, with deferred planner questions, assistant questions, and browser approvals released on resume
 - Local scheduled tasks and background jobs with durable SQLite history, startup catch-up, approval policy defaults, hidden automation threads, and a dedicated inbox surface
@@ -26,7 +26,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - Built-in workflow modes for asking, planning, implementing, debugging, and review, plus local custom modes at workspace or project scope
 - Brand-aware defaults for GPT or Gemini execution
 - Gemini planning defaults to `google/gemini-3-flash-preview`
-- Gemini subagents default to `google/gemini-2.5-flash-lite` when planner difficulty is above 40
+- Spawned subagents drop to cheapest runtime-compatible sibling in same model family, such as `google/gemini-2.5-flash` -> `google/gemini-2.5-flash-lite` and Codex `openai/gpt-5.4` -> `openai/gpt-5.4-mini`
 - Run-only virtual experiment branches through BranchFS-style isolated mounts so risky execution can stay off physical disk until promote
 - Shared local memory bank for planner, main executor, and subagents, with bounded retrieval cards instead of dumping raw cache into every prompt
 - BranchFS-isolated subagent mounts so parallel coding tasks do not mutate one checkout in place
@@ -35,10 +35,10 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - Interactive planning questions that pause execution until the user answers in chat, with three typed quick options and one recommended path
 - Global execution pause does not cancel in-flight work; it only blocks new launches and queues new follow-up asks until resume
 - Plan-first execution that persists a full execution plan, posts a plan summary into chat, and waits in `ready` before any code work starts
-- Obvious low-complexity workspace actions such as direct file or folder requests can auto-switch into `implement` mode and skip planner turn-taking
+- Obvious low-complexity workspace actions such as direct file or folder requests, plus correction-style follow-ups that refine where the edit should land, can auto-switch into `implement` mode and skip planner turn-taking; simple leading-slash task paths like `/breakout` are normalized to workspace-relative targets when the request is clearly local
 - Optional live CLI sessions for Copilot CLI and Codex CLI over Bun-managed piped transport, with attach tokens, reconnect, and follow-up capture
-- Built-in modes now differ on confirmation defaults: `plan` stays approval-first, `ask` suppresses transcript plan cards for direct Q&A, and `implement` auto-runs unless the frozen plan fans out to multiple subagents
-- Composer input can auto-switch built-in modes when message intent is clear enough, so direct questions, review requests, debugging prompts, and planning asks do not depend only on the last manual mode selection
+- Built-in modes now differ on confirmation defaults and execution access: `plan` stays approval-first and read-only by default, `ask` suppresses transcript plan cards for direct Q&A without forcing read-only, and `implement` auto-runs unless the frozen plan fans out to multiple subagents
+- Composer input can auto-switch built-in modes when message intent is clear enough, using recent thread context to repair correction follow-ups so direct questions, review requests, debugging prompts, planning asks, and local workspace edits do not depend only on stale sticky mode state; an explicit user mode selection stays pinned for that send
 - Formatted markdown rendering across chat, plan, and trace surfaces with safe links, GFM tables and task lists, footnotes, and copyable highlighted code blocks
 - Workspace and project instruction context with lightweight working-memory summaries that feed planning and execution
 - Transcript-level plan summary cards with shared plan modal access from chat and trace panel
@@ -102,8 +102,8 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - Dedicated `Background jobs` surface keeps scheduled work, approval-needed runs, failures, and concise execution milestones out of normal project chat threads
 - Dedicated `Assistants` surface keeps assistant chat, todos, questions, learnings, logs, and assistant-owned jobs inspectable outside normal project chat
 - Header-level help opens guided walkthroughs instead of pushing setup into a separate onboarding funnel
-- Composer keeps mode, agent, provider, and model controls together in bottom row so runtime and model choice stay local to active task
-- Composer also exposes one effort and fast-mode dropdown, persists those selections in browser-local session state, and disables unsupported options instead of hiding them
+- Composer keeps mode, agent, provider, and model controls together in bottom row as compact popover-backed dropdowns with setting descriptions close at hand
+- Composer also exposes one effort and fast-mode dropdown, persists those selections in browser-local session state, and keeps unsupported choices explained instead of silently hiding them
 - Main project-chat composer restores mode, agent, provider, and model from browser-local session state instead of reusing project-persisted backend selections
 - Composer supports attachment chips, UploadThing-backed upload flow, vision-aware image gating by selected model, and document ingestion for PDF, DOCX, XLSX, PPTX, and ODT on new top-level tasks
 - Transcript, plan, run, and trace surfaces render readable markdown with code fences, tables, blockquotes, and safe external-link behavior
@@ -121,6 +121,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - `bun run build:ui` builds the browser bundle through `Bun.build(...)` with Solid and Tailwind plugin support
 - `bun run doctor` prints the shared activation and runtime health report and exits non-zero when required first-task checks fail
 - `bun run package:launcher` builds a portable Bun launcher folder for the current OS target
+- Portable launcher startup failures now write a timestamped crash log under `logs/` next to the executable and print that path before exit
 - Development UI builds emit external source maps for browser debugging
 - `bun run test` runs the Bun test suite
 - `bun run typecheck` validates TypeScript contracts
@@ -156,7 +157,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - Repeated clarification turns now scope planner-question ids per run so later runs in the same thread do not collide with older pending or answered questions
 - The UI sends typed project and chat commands only
 - Mode selection, rule sources, and memory summaries travel through typed contracts and persist with workspace state
-- Built-in modes are policy presets, not separate pipelines: `ask` and `plan` bias toward read-heavy planning, `implement` biases toward active delivery, `debug` biases toward root-cause and narrow fixes, and `review` biases toward findings-first analysis
+- Built-in modes are policy presets, not separate pipelines: `ask` and `plan` bias toward read-heavy planning, execution access is configured separately from that intent, `implement` biases toward active delivery, `debug` biases toward root-cause and narrow fixes, and `review` biases toward findings-first analysis
 - Chat message persistence now includes uploaded attachment metadata, while planner and execution stages resolve remote image, text, and supported document context on demand
 - Server-side document parsing uses runtime-safe PDF handling so Bun development startup does not depend on browser-only globals
 - Plan execution starts through a typed `run.execute` command after plan presentation, not as an implicit side effect of `chat.send`

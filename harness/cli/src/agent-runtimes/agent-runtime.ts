@@ -14,7 +14,7 @@ export interface AgentRuntime {
   refreshCapability(): Promise<AgentRuntimeCapability>;
   getDefaultPlanningModelId(providerBrand: ProviderBrand): string;
   getDefaultExecutionModelId(providerBrand: ProviderBrand): string;
-  getDefaultSubagentModelId(providerBrand: ProviderBrand): string;
+  getDefaultSubagentModelId(providerBrand: ProviderBrand, executionModelId?: string): string;
   buildInteractiveLaunch?(input: {
     cwd: string;
     cols: number;

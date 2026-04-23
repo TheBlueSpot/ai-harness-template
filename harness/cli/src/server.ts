@@ -1,7 +1,7 @@
 import { createUiAssetManager } from "./ui-build";
 import { defaultAgentCatalog } from "../../shared/agent-catalog";
 import { defaultProviderCapabilities } from "../../shared/capabilities";
-import { resolveModeById, resolveModeCatalog } from "../../shared/modes";
+import { modeUsesReadOnlyExecution, resolveModeById, resolveModeCatalog, resolveModeExecutionAccess } from "../../shared/modes";
 import { detectAutoMode, isDirectWorkspaceImplementTask } from "../../shared/mode-intent";
 import { createHash } from "node:crypto";
 import path from "node:path";
@@ -80,7 +80,9 @@ import {
   resolveExecutionPlanGateMode,
   runPlannerTurn
 } from "./pi-orchestrator";
-import { getDefaultExecutionModelId, getDefaultPlanningModelId, getDefaultSubagentModelId } from "./pi-planner";
+import { getDefaultExecutionModelId, getDefaultPlanningModelId } from "./pi-planner";
+import { resolveSubagentModelId, resolveSubagentReasoningStrength } from "./subagent-defaults";
+import { normalizeWorkspaceRelativePaths } from "./workspace-path-intent";
 import type { SubagentResult } from "./pi-subagents";
 import { WorkspaceRepository } from "./workspace-repository";
 import { WorkspaceRuntimeStore } from "./workspace-runtime-store";
@@ -106,6 +108,7 @@ type HarnessServerOptions = {
   port: number;
   adapter?: PiAgentAdapter;
   repository?: WorkspaceRepository;
+  runtimeRegistry?: AgentRuntimeRegistry;
   pickFolder?: typeof pickProjectFolder;
   serverOnly?: boolean;
   openBrowser?: boolean;
@@ -131,6 +134,7 @@ export async function startHarnessServer({
   port,
   adapter = new PiSdkAgentAdapter(),
   repository: providedRepository,
+  runtimeRegistry: providedRuntimeRegistry,
   pickFolder = pickProjectFolder,
   serverOnly = false,
   openBrowser = false,
@@ -150,7 +154,9 @@ export async function startHarnessServer({
     "initializing startup services",
     "startup services ready",
     async () => ({
-      runtimeRegistry: new AgentRuntimeRegistry([new PiRuntime(adapter), new CopilotCliRuntime(), new CodexCliRuntime()]),
+      runtimeRegistry:
+        providedRuntimeRegistry ??
+        new AgentRuntimeRegistry([new PiRuntime(adapter), new CopilotCliRuntime(), new CodexCliRuntime()]),
       uiAssets: serverOnly ? undefined : uiAssetManagerFactory()
     })
   );
@@ -863,8 +869,18 @@ async function handleCommand(
       runtime.setProjectSelectedAgentId(projectId, command.payload.agentId);
 
       const resolvedModes = resolveModeCatalog(runtime.getWorkspace().workspaceModes, project.projectModes);
-      const detectedMode = detectAutoMode(command.payload.content, resolvedModes);
-      const effectiveModeId = detectedMode?.modeId ?? command.payload.modeId ?? project.selectedModeId;
+      const modeIntentContext = {
+        stickyModeId: project.selectedModeId,
+        recentMessages: project.session.messages.slice(-6).map((message) => ({
+          role: message.role,
+          content: message.content
+        }))
+      };
+      const detectedMode = detectAutoMode(command.payload.content, resolvedModes, modeIntentContext);
+      const effectiveModeId =
+        command.payload.modeLocked && command.payload.modeId
+          ? command.payload.modeId
+          : detectedMode?.modeId ?? command.payload.modeId ?? project.selectedModeId;
       const effectiveMode = resolveModeById(effectiveModeId, runtime.getWorkspace().workspaceModes, project.projectModes);
 
       if (effectiveModeId && effectiveModeId !== project.selectedModeId) {
@@ -895,8 +911,8 @@ async function handleCommand(
       runtime.clearStreaming(projectId);
       const quickTaskBypassEligible =
         (command.payload.attachments?.length ?? 0) === 0 &&
-        effectiveMode?.toolPolicy === "full-access" &&
-        isDirectWorkspaceImplementTask(command.payload.content);
+        resolveModeExecutionAccess(effectiveMode) === "workspace-write" &&
+        isDirectWorkspaceImplementTask(command.payload.content, modeIntentContext);
       if (resolvedExecutionModel.requestedModelRejected) {
         appendSystemStatus(
           ws,
@@ -1998,6 +2014,7 @@ async function continueRunLifecycle(
     runId: activeRun.id,
     agentId: options.agentId,
     providerBrand: options.providerBrand,
+    planningModelId: activeRun.planningModelId,
     executionModelId: options.executionModelId,
     subagentWorktreeStrategy,
     planExecutionMode,
@@ -2152,6 +2169,7 @@ async function continueQuickTaskLifecycle(
           queryText: options.latestUserPrompt
         })
       : { memorySummaries: [] as MemorySummary[] };
+  const normalizedLatestUserPrompt = normalizeWorkspaceRelativePaths(options.latestUserPrompt, project.rootPath);
   const plannerReadyTurn: PlannerReadyTurn = {
     type: "ready",
     difficultyScore: 10,
@@ -2159,13 +2177,13 @@ async function continueQuickTaskLifecycle(
     executionModelId: options.executionModelId,
     usesSubagents: false,
     subtasks: [],
-    finalExecutionBrief: options.latestUserPrompt,
+    finalExecutionBrief: normalizedLatestUserPrompt,
     prerequisites: [],
     contracts: []
   };
   const executionPlan = buildExecutionPlan({
     runId: activeRun.id,
-    planningModelId: getDefaultPlanningModelId(options.providerBrand),
+    planningModelId: activeRun.planningModelId ?? getDefaultPlanningModelId(options.providerBrand),
     plannerResult: plannerReadyTurn,
     subagentWorktreeStrategy,
     planExecutionMode,
@@ -2194,7 +2212,7 @@ async function continueQuickTaskLifecycle(
     sessionId: project.session.sessionId,
     stage: "plan-presented",
     message: "Skipped planner for low-complexity direct task",
-    detail: options.latestUserPrompt,
+    detail: normalizedLatestUserPrompt,
     modelId: options.executionModelId
   });
 }
@@ -2536,7 +2554,11 @@ async function executeInlineSubagentRetryLifecycle(
     connections
   );
   const sessionId = project.session.sessionId;
-  const subagentModelId = getDefaultSubagentModelId(options.providerBrand);
+  const subagentModelId = resolveSubagentModelId({
+    agentId: options.agentId,
+    providerBrand: options.providerBrand,
+    executionModelId: options.readyPlan.executionModelId
+  });
   const existingResults = options.sourceRun.subtasks
     .filter((task) => task.id !== options.targetTask.id)
     .filter(
@@ -2569,11 +2591,13 @@ async function executeInlineSubagentRetryLifecycle(
   const retriedResult = await runInlineSubagentRetry(adapter, {
     runId: options.runId,
     cwd: project.rootPath,
+    agentId: options.agentId,
     providerBrand: options.providerBrand,
+    executionModelId: options.readyPlan.executionModelId,
     task: options.targetTask,
     brief: options.readyPlan.finalExecutionBrief,
     priorAttemptCount: options.sourceRun.subtasks.find((task) => task.id === options.targetTask.id)?.attemptCount ?? 0,
-    reasoningStrength: options.reasoningStrength,
+    reasoningStrength: resolveSubagentReasoningStrength(options.reasoningStrength),
     fastMode: options.fastMode,
     abortSignal: options.abortSignal,
     callbacks,
@@ -3023,7 +3047,9 @@ async function runInlineSubagentRetry(
   options: {
     runId: string;
     cwd: string;
+    agentId: "pi" | "copilot-cli" | "codex-cli";
     providerBrand: "gpt" | "gemini";
+    executionModelId: string;
     task: PlannerReadyTurn["subtasks"][number];
     brief: string;
     priorAttemptCount: number;
@@ -3034,7 +3060,12 @@ async function runInlineSubagentRetry(
     sessionId: string;
   }
 ): Promise<SubagentResult> {
-  const subagentModelId = getDefaultSubagentModelId(options.providerBrand);
+  const subagentModelId = resolveSubagentModelId({
+    agentId: options.agentId,
+    providerBrand: options.providerBrand,
+    executionModelId: options.executionModelId
+  });
+  const subagentReasoningStrength = resolveSubagentReasoningStrength(options.reasoningStrength);
   let attempt = 0;
 
   while (true) {
@@ -3059,7 +3090,7 @@ async function runInlineSubagentRetry(
           cwd: options.cwd,
           modelId: subagentModelId,
           prompt: basePrompt,
-          reasoningStrength: options.reasoningStrength,
+          reasoningStrength: subagentReasoningStrength,
           fastMode: options.fastMode,
           onExecutionEvent(event: PiAgentExecutionEvent) {
             void options.callbacks.onExecutionEvent?.({
@@ -3081,7 +3112,7 @@ async function runInlineSubagentRetry(
           cwd: options.cwd,
           modelId: subagentModelId,
           prompt: ["continue", "", basePrompt].join("\n"),
-          reasoningStrength: options.reasoningStrength,
+          reasoningStrength: subagentReasoningStrength,
           fastMode: options.fastMode,
           onExecutionEvent(event: PiAgentExecutionEvent) {
             void options.callbacks.onExecutionEvent?.({
@@ -4263,9 +4294,8 @@ function computeBackgroundJobRiskLevel(
   }
 
   const mode = resolveModeById(job.definition.modeId ?? project.selectedModeId, runtime.getWorkspace().workspaceModes, project.projectModes);
-  const toolPolicy = mode?.toolPolicy ?? "full-access";
   const worktreeStrategy = job.definition.subagentWorktreeStrategy ?? repositoryLikeWorktreeStrategy(project, runtime);
-  if ((toolPolicy === "read-heavy" || toolPolicy === "review-only") && worktreeStrategy !== "same-worktree") {
+  if (modeUsesReadOnlyExecution(mode) && worktreeStrategy !== "same-worktree") {
     return "safe";
   }
 

@@ -49,7 +49,7 @@ export class PiRuntime implements AgentRuntime {
     return getDefaultExecutionModelId(providerBrand);
   }
 
-  getDefaultSubagentModelId(providerBrand: ProviderBrand) {
-    return getDefaultSubagentModelId(providerBrand);
+  getDefaultSubagentModelId(providerBrand: ProviderBrand, executionModelId?: string) {
+    return getDefaultSubagentModelId(providerBrand, executionModelId);
   }
 }
