@@ -3,7 +3,7 @@ import {
   canSelectProviderBrand,
   getBrowserUiSessionRestoreCommands,
   harnessStore,
-  persistLocalPreferences,
+  persistMergedLocalPreferences,
   readBrowserUiSession,
   readLocalPreferences
 } from "./harness-store";
@@ -74,7 +74,7 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
         } else if (!canSelectProviderBrand(harnessStore.state, harnessStore.state.providerBrand)) {
           const fallbackProviderBrand = canSelectProviderBrand(harnessStore.state, "gpt") ? "gpt" : "gemini";
           harnessStore.setProviderBrand(fallbackProviderBrand);
-          persistLocalPreferences({
+          persistMergedLocalPreferences({
             openAiApiKey: harnessStore.state.openAiApiKeyDraft.trim() || undefined,
             googleApiKey: harnessStore.state.googleApiKeyDraft.trim() || undefined,
             providerBrand: fallbackProviderBrand,
@@ -99,7 +99,7 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
       }
 
       if (parsed.type === "preferences.saved" || parsed.type === "preferences.apiKeyCleared") {
-        persistLocalPreferences({
+        persistMergedLocalPreferences({
           openAiApiKey:
             parsed.type === "preferences.apiKeyCleared" ? undefined : harnessStore.state.openAiApiKeyDraft.trim() || undefined,
           googleApiKey:

@@ -1,4 +1,4 @@
-import { cp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readFile, readdir, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import type { AgentTrace, ExperimentInspection, ExperimentRun } from "../../shared/protocol";
@@ -53,6 +53,7 @@ export type BranchfsExperimentLease = {
 
 const BRANCHFS_DIRNAME = ".local/branchfs";
 const PASSTHROUGH_DIRECTORIES = ["node_modules", "dist", ".bun"];
+const GIT_EXECUTABLE = process.platform === "win32" ? "git.exe" : "git";
 
 // Current BranchFS is a local materialized mount shim with isolated diff/flush semantics.
 // It preserves the command surface for a future true CoW virtual filesystem.
@@ -66,7 +67,7 @@ export class BranchfsManager {
   }
 
   async prepareExperimentLease(): Promise<BranchfsExperimentLease> {
-    await this.ensureExecutable("git");
+    await this.ensureExecutable(GIT_EXECUTABLE, "git");
     const repoRoot = await this.resolveRepoRoot(this.context.rootPath);
     const resolvedRootPath = path.resolve(this.context.rootPath);
     const projectRelativePath = path.relative(repoRoot, resolvedRootPath);
@@ -192,7 +193,7 @@ export class BranchfsManager {
       }
 
       await mkdir(path.dirname(destinationPath), { recursive: true });
-      await cp(sourcePath, destinationPath, { recursive: true, force: true });
+      await copyRecursiveRobust(sourcePath, destinationPath);
     }
 
     this.emitTrace({
@@ -231,14 +232,14 @@ export class BranchfsManager {
         continue;
       }
 
-      await cp(sourcePath, targetPath, { recursive: true, force: true });
+      await copyRecursiveRobust(sourcePath, targetPath);
     }
 
     await mkdir(path.join(runRoot, "upper"), { recursive: true });
   }
 
   private async snapshotProjectBaseline(projectMountPath: string, baseProjectPath: string) {
-    await cp(projectMountPath, baseProjectPath, { recursive: true, force: true });
+    await copyRecursiveRobust(projectMountPath, baseProjectPath);
   }
 
   private async captureDirtySeed(repoRoot: string, dirtySeedPath: string, entries: DirtyStatusEntry[]) {
@@ -250,29 +251,29 @@ export class BranchfsManager {
       }
 
       await mkdir(path.dirname(destinationPath), { recursive: true });
-      await cp(sourcePath, destinationPath, { recursive: true, force: true });
+      await copyRecursiveRobust(sourcePath, destinationPath);
     }
   }
 
   private async resolveRepoRoot(cwd: string) {
-    const result = await this.runCommand(["git", "rev-parse", "--show-toplevel"], cwd);
+    const result = await this.runCommand([GIT_EXECUTABLE, "rev-parse", "--show-toplevel"], cwd);
     return result.stdout.trim();
   }
 
   private async resolveHeadCommit(cwd: string) {
-    const result = await this.tryRunCommand(["git", "rev-parse", "--verify", "HEAD"], cwd);
+    const result = await this.tryRunCommand([GIT_EXECUTABLE, "rev-parse", "--verify", "HEAD"], cwd);
     return result.exitCode === 0 ? result.stdout.trim() : undefined;
   }
 
   private async resolveBranchName(cwd: string) {
-    const result = await this.tryRunCommand(["git", "branch", "--show-current"], cwd);
+    const result = await this.tryRunCommand([GIT_EXECUTABLE, "branch", "--show-current"], cwd);
     return result.exitCode === 0 ? result.stdout.trim() || undefined : undefined;
   }
 
   private async readDirtyStatus(repoRoot: string, projectRelativePath: string) {
     const scope = projectRelativePath ? projectRelativePath.replace(/\\/g, "/") : ".";
     const result = await this.runCommand(
-      ["git", "status", "--porcelain", "-z", "--untracked-files=all", "--", scope],
+      [GIT_EXECUTABLE, "status", "--porcelain", "-z", "--untracked-files=all", "--", scope],
       repoRoot
     );
     const parts = result.stdout.split("\0").filter(Boolean);
@@ -311,7 +312,10 @@ export class BranchfsManager {
   }
 
   private async diffDirectories(baseDir: string, nextDir: string) {
-    const result = await this.tryRunCommand(["git", "diff", "--no-index", "--binary", "--", baseDir, nextDir], nextDir);
+    const result = await this.tryRunCommand(
+      [GIT_EXECUTABLE, "diff", "--no-index", "--binary", "--", baseDir, nextDir],
+      this.context.rootPath
+    );
     if (result.exitCode !== 0 && result.exitCode !== 1) {
       throw new Error(result.detail);
     }
@@ -322,10 +326,10 @@ export class BranchfsManager {
     this.callbacks.onTrace?.(trace);
   }
 
-  private async ensureExecutable(binary: string) {
+  private async ensureExecutable(binary: string, label: string = binary) {
     const result = await this.tryRunCommand([binary, "--version"], this.context.rootPath);
     if (result.exitCode !== 0) {
-      throw new Error(`${binary} is required`);
+      throw new Error(`${label} is required`);
     }
   }
 
@@ -412,4 +416,47 @@ function summarizeDiffText(diffText: string) {
 
 async function pathExists(targetPath: string) {
   return (await stat(targetPath).catch(() => undefined)) !== undefined;
+}
+
+async function copyRecursiveRobust(sourcePath: string, targetPath: string) {
+  const sourceStats = await withFsRetry(() => lstat(sourcePath));
+  if (sourceStats.isSymbolicLink()) {
+    const linkTarget = await withFsRetry(() => readlink(sourcePath));
+    await mkdir(path.dirname(targetPath), { recursive: true });
+    await withFsRetry(() => symlink(linkTarget, targetPath, "junction"));
+    return;
+  }
+
+  if (sourceStats.isDirectory()) {
+    await mkdir(targetPath, { recursive: true });
+    const entries = await withFsRetry(() => readdir(sourcePath, { withFileTypes: true }));
+    for (const entry of entries) {
+      await copyRecursiveRobust(path.join(sourcePath, entry.name), path.join(targetPath, entry.name));
+    }
+    return;
+  }
+
+  await mkdir(path.dirname(targetPath), { recursive: true });
+  await withFsRetry(async () => {
+    await mkdir(path.dirname(targetPath), { recursive: true });
+    await copyFile(sourcePath, targetPath);
+  });
+}
+
+async function withFsRetry<T>(operation: () => Promise<T>) {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (!isRetryableFsError(error) || attempt === 3) {
+        throw error;
+      }
+      await Bun.sleep(25 * (attempt + 1));
+    }
+  }
+  throw new Error("unreachable");
+}
+
+function isRetryableFsError(error: unknown) {
+  return error instanceof Error && "code" in error && ["ENOENT", "EBUSY", "EPERM", "EACCES"].includes(String(error.code));
 }

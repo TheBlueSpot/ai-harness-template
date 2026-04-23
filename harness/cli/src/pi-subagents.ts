@@ -5,6 +5,13 @@ import { debugLog } from "./logging";
 import { runManagedAgentExecution } from "./managed-agent-execution";
 import type { PiAgentAdapter, PiAgentExecutionEvent } from "./pi-agent-adapter";
 import { resolveSubagentModelId, resolveSubagentReasoningStrength } from "./subagent-defaults";
+import { createMilestoneDeltaParser, extractMilestoneLines, stripMilestoneLines } from "./run-milestone-windows";
+import {
+  buildSubagentEnvironmentBrief,
+  discoverRepoSkillPaths,
+  resolveRepoRoot,
+  SUBAGENT_MILESTONE_INSTRUCTION
+} from "./subagent-environment";
 
 export type SubagentResult = {
   id: string;
@@ -20,13 +27,16 @@ export type SubagentResult = {
   mountPath?: string;
   worktreePath?: string;
   contextUsage?: ProjectContextUsage;
+  contractDriftPaths?: string[];
 };
 
 export type SubagentProgressCallbacks = {
-  onStart?: (task: PlannerSubtask) => void;
+  onStart?: (task: PlannerSubtask, attempt: number) => void;
   onRetry?: (task: PlannerSubtask, attempt: number, error: Error) => void;
   onComplete?: (task: PlannerSubtask, output: string, durationMs: number) => void;
   onError?: (task: PlannerSubtask, error: Error) => void;
+  onSettled?: (result: SubagentResult) => void | Promise<void>;
+  onMilestone?: (task: PlannerSubtask, line: string) => void;
   onContextUsage?: (task: PlannerSubtask, contextUsage: ProjectContextUsage) => void;
   onTrace?: (trace: Pick<AgentTrace, "stage" | "message" | "detail" | "subagentId">) => void;
   setExecutionState?: (state: ManagedExecutionState) => void;
@@ -48,7 +58,124 @@ export type BranchfsSubagentSnapshot = {
   lease: BranchfsExperimentLease;
 };
 
-const MAX_CONCURRENCY = 4;
+export type SubagentVerificationInput = {
+  task: PlannerSubtask;
+  mountPath: string;
+  worktreePath: string;
+  output: string;
+  attemptCount: number;
+  abortSignal?: AbortSignal;
+};
+
+type ScheduledTaskEntry<Task> = {
+  order: number;
+  task: Task;
+};
+
+export const MAX_SUBAGENT_CONCURRENCY = 4;
+
+export async function scheduleSubagentTasks<Task, Result extends { id: string }, Snapshot>(
+  options: {
+    tasks: Task[];
+    maxConcurrency?: number;
+    getTaskId: (task: Task) => string;
+    canStart?: (task: Task, activeTasks: Task[]) => boolean;
+    executeTask: (task: Task) => Promise<{ result: Result; retainedSnapshot?: Snapshot }>;
+    onSettled?: (task: Task, result: Result) => void | Promise<void>;
+    scheduleRetry?: (task: Task, result: Result) => Task | undefined | Promise<Task | undefined>;
+  }
+) {
+  const queue = options.tasks.map((task, order) => ({ order, task }));
+  const orderById = new Map(queue.map((entry) => [options.getTaskId(entry.task), entry.order]));
+  const active = new Map<string, ScheduledTaskEntry<Task>>();
+  const results = new Map<string, Result>();
+  const retainedSnapshots = new Map<string, Snapshot>();
+  const waiters: Array<() => void> = [];
+  let fatalError: Error | undefined;
+
+  const signal = () => {
+    while (waiters.length > 0) {
+      waiters.shift()?.();
+    }
+  };
+
+  const waitForSignal = () =>
+    new Promise<void>((resolve) => {
+      waiters.push(resolve);
+    });
+
+  const dequeueNext = () => {
+    const activeTasks = [...active.values()].map((entry) => entry.task);
+    for (let index = 0; index < queue.length; index += 1) {
+      const entry = queue[index];
+      if (options.canStart && !options.canStart(entry.task, activeTasks)) {
+        continue;
+      }
+
+      queue.splice(index, 1);
+      active.set(options.getTaskId(entry.task), entry);
+      return entry;
+    }
+
+    return undefined;
+  };
+
+  const workers = Array.from({ length: Math.min(options.maxConcurrency ?? MAX_SUBAGENT_CONCURRENCY, queue.length) }, async () => {
+    while (!fatalError) {
+      const entry = dequeueNext();
+      if (!entry) {
+        if (active.size === 0 && queue.length === 0) {
+          return;
+        }
+
+        await waitForSignal();
+        continue;
+      }
+
+      const taskId = options.getTaskId(entry.task);
+      try {
+        const execution = await options.executeTask(entry.task);
+        results.set(taskId, execution.result);
+        if (execution.retainedSnapshot) {
+          retainedSnapshots.set(taskId, execution.retainedSnapshot);
+        } else {
+          retainedSnapshots.delete(taskId);
+        }
+
+        await options.onSettled?.(entry.task, execution.result);
+        const retryTask = await options.scheduleRetry?.(entry.task, execution.result);
+        if (retryTask) {
+          queue.push({
+            order: orderById.get(taskId) ?? entry.order,
+            task: retryTask
+          });
+        }
+      } catch (error) {
+        fatalError = error instanceof Error ? error : new Error("Subagent scheduler failed");
+      } finally {
+        active.delete(taskId);
+        signal();
+      }
+    }
+  });
+
+  await Promise.all(workers);
+  if (fatalError) {
+    throw fatalError;
+  }
+
+  const sortedResults = [...results.values()].sort(
+    (left, right) => (orderById.get(left.id) ?? 0) - (orderById.get(right.id) ?? 0)
+  );
+  const sortedSnapshots = [...retainedSnapshots.entries()]
+    .sort((left, right) => (orderById.get(left[0]) ?? 0) - (orderById.get(right[0]) ?? 0))
+    .map(([, snapshot]) => snapshot);
+
+  return {
+    results: sortedResults,
+    retainedSnapshots: sortedSnapshots
+  };
+}
 
 export async function executeSubagents(
   adapter: PiAgentAdapter,
@@ -64,21 +191,33 @@ export async function executeSubagents(
     reasoningStrength?: ComposerReasoningStrength;
     fastMode?: boolean;
     abortSignal?: AbortSignal;
+    verifyResult?: (input: SubagentVerificationInput) => Promise<string[] | void>;
+    recoveryPrompt?: (input: { task: PlannerSubtask; result: SubagentResult }) => string;
     callbacks?: SubagentProgressCallbacks;
   }
 ): Promise<{ results: SubagentResult[]; retainedSnapshots: BranchfsSubagentSnapshot[] }> {
-  const queue = [...options.tasks];
-  const results: SubagentResult[] = [];
-  const retainedSnapshots: BranchfsSubagentSnapshot[] = [];
-
-  const workers = Array.from({ length: Math.min(MAX_CONCURRENCY, queue.length) }, async () => {
-    while (queue.length > 0) {
-      const task = queue.shift();
-      if (!task) {
-        return;
-      }
-
-      const { result, retainedSnapshot } = await executeSubagentWithRetry(adapter, options.providerBrand, task, options.brief, {
+  return scheduleSubagentTasks<
+    {
+      task: PlannerSubtask;
+      startingAttempt: number;
+      recoveryAttempt: number;
+      recoveryPrompt?: string;
+    },
+    SubagentResult,
+    BranchfsSubagentSnapshot
+  >({
+    tasks: options.tasks.map((task) => ({
+      task,
+      startingAttempt: 1,
+      recoveryAttempt: 0,
+      recoveryPrompt: undefined as string | undefined
+    })),
+    maxConcurrency: MAX_SUBAGENT_CONCURRENCY,
+    getTaskId(entry) {
+      return entry.task.id;
+    },
+    async executeTask(entry) {
+      return executeSubagentWithRetry(adapter, options.providerBrand, entry, options.brief, {
         runId: options.runId,
         agentId: options.agentId,
         rootPath: options.cwd,
@@ -87,27 +226,50 @@ export async function executeSubagents(
         executionModelId: options.executionModelId,
         debugEnabled: options.debugEnabled,
         reasoningStrength: options.reasoningStrength,
-        fastMode: options.fastMode
+        fastMode: options.fastMode,
+        verifyResult: options.verifyResult
       });
-      results.push(result);
-      if (retainedSnapshot) {
-        retainedSnapshots.push(retainedSnapshot);
+    },
+    async onSettled(_entry, result) {
+      await options.callbacks?.onSettled?.(result);
+    },
+    scheduleRetry(entry, result) {
+      if (result.status !== "failed" || entry.recoveryAttempt > 0 || options.abortSignal?.aborted) {
+        return undefined;
       }
+
+      const recoveryPrompt = options.recoveryPrompt?.({
+        task: entry.task,
+        result
+      });
+      if (!recoveryPrompt?.trim()) {
+        return undefined;
+      }
+
+      options.callbacks?.onRetry?.(
+        entry.task,
+        result.attemptCount + 1,
+        new Error(result.errorMessage ?? "Unknown subagent failure")
+      );
+      return {
+        task: entry.task,
+        startingAttempt: result.attemptCount + 1,
+        recoveryAttempt: entry.recoveryAttempt + 1,
+        recoveryPrompt
+      };
     }
   });
-
-  await Promise.all(workers);
-  const order = new Map(options.tasks.map((task, index) => [task.id, index]));
-  return {
-    results: results.sort((left, right) => (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0)),
-    retainedSnapshots
-  };
 }
 
 async function executeSubagentWithRetry(
   adapter: PiAgentAdapter,
   providerBrand: ProviderBrand,
-  task: PlannerSubtask,
+  queuedTask: {
+    task: PlannerSubtask;
+    startingAttempt: number;
+    recoveryAttempt: number;
+    recoveryPrompt?: string;
+  },
   brief: string,
   options: {
     runId: string;
@@ -119,16 +281,19 @@ async function executeSubagentWithRetry(
     debugEnabled: boolean;
     reasoningStrength?: ComposerReasoningStrength;
     fastMode?: boolean;
+    verifyResult?: (input: SubagentVerificationInput) => Promise<string[] | void>;
   }
 ): Promise<{ result: SubagentResult; retainedSnapshot?: BranchfsSubagentSnapshot }> {
+  const task = queuedTask.task;
   let attempt = 0;
   const dequeuedAt = Date.now();
 
   while (true) {
     attempt += 1;
+    const effectiveAttempt = queuedTask.startingAttempt + attempt - 1;
     const startedAt = Date.now();
     if (attempt === 1) {
-      options.callbacks?.onStart?.(task);
+      options.callbacks?.onStart?.(task, effectiveAttempt);
     }
 
     const worktreePrepareStartedAt = Date.now();
@@ -153,15 +318,20 @@ async function executeSubagentWithRetry(
         executionModelId: options.executionModelId
       });
       const subagentReasoningStrength = resolveSubagentReasoningStrength(options.reasoningStrength);
-      const basePrompt = [
-        "You are a focused coding subagent.",
-        "Complete only the assigned instruction.",
-        "Return concise, implementation-focused output.",
-        "",
-        `Shared brief: ${brief}`,
-        `Subtask title: ${task.title}`,
-        `Subtask instruction: ${task.instruction}`
-      ].join("\n");
+      const repoRoot = resolveRepoRoot(options.rootPath);
+      const availableSkillPaths = discoverRepoSkillPaths(repoRoot);
+      const basePrompt = buildSubagentPrompt({
+        brief,
+        environmentBrief: buildSubagentEnvironmentBrief({
+          projectRoot: lease.projectMountPath,
+          repoRoot: lease.repoMountPath,
+          relativeProjectRoot: lease.projectRelativePath,
+          availableSkillPaths
+        }),
+        task,
+        recoveryPrompt: queuedTask.recoveryPrompt
+      });
+      const milestoneParser = createMilestoneDeltaParser((line) => options.callbacks?.onMilestone?.(task, line));
       const response = await runManagedAgentExecution(adapter, {
         runId: options.runId,
         kind: "subagent",
@@ -173,6 +343,9 @@ async function executeSubagentWithRetry(
           prompt: basePrompt,
           reasoningStrength: subagentReasoningStrength,
           fastMode: options.fastMode,
+          onTextDelta(delta: string) {
+            milestoneParser.push(delta);
+          },
           onExecutionEvent(event: PiAgentExecutionEvent) {
             void options.callbacks?.onExecutionEvent?.({
               owner: "subagent",
@@ -195,6 +368,9 @@ async function executeSubagentWithRetry(
           prompt: ["continue", "", basePrompt].join("\n"),
           reasoningStrength: subagentReasoningStrength,
           fastMode: options.fastMode,
+          onTextDelta(delta: string) {
+            milestoneParser.push(delta);
+          },
           onExecutionEvent(event: PiAgentExecutionEvent) {
             void options.callbacks?.onExecutionEvent?.({
               owner: "subagent",
@@ -227,6 +403,13 @@ async function executeSubagentWithRetry(
           });
         }
       });
+      milestoneParser.flush();
+      if (!milestoneParser.hasEmitted()) {
+        for (const line of extractMilestoneLines(response.text)) {
+          options.callbacks?.onMilestone?.(task, line);
+        }
+      }
+      const output = stripMilestoneLines(response.text);
       if (response.contextUsage) {
         options.callbacks?.onContextUsage?.(task, {
           sourceKind: "subagent",
@@ -237,8 +420,16 @@ async function executeSubagentWithRetry(
           usagePercent: response.contextUsage.usagePercent,
           totalProcessedTokens: response.contextUsage.sessionStats.tokens.total,
           updatedAt: new Date().toISOString()
-        });
+          });
       }
+      const contractDriftPaths = await options.verifyResult?.({
+        task,
+        mountPath: lease.projectMountPath,
+        worktreePath: lease.projectMountPath,
+        output,
+        attemptCount: effectiveAttempt,
+        abortSignal: options.abortSignal
+      });
       emitSpawnTiming(options.callbacks, task, {
         dequeuedAt,
         worktreePrepareStartedAt,
@@ -248,15 +439,15 @@ async function executeSubagentWithRetry(
         firstToolStartAt: settledExecutionState?.spawnTiming?.firstToolStartAt,
         completedAt: Date.now()
       });
-      options.callbacks?.onComplete?.(task, response.text, Date.now() - startedAt);
+      options.callbacks?.onComplete?.(task, output, Date.now() - startedAt);
       return {
         result: {
           id: task.id,
           title: task.title,
           instruction: task.instruction,
           status: "completed",
-          output: response.text.trim(),
-          attemptCount: attempt,
+          output,
+          attemptCount: effectiveAttempt,
           durationMs: Date.now() - startedAt,
           mountPath: lease.projectMountPath,
           worktreePath: lease.projectMountPath,
@@ -271,7 +462,8 @@ async function executeSubagentWithRetry(
                 totalProcessedTokens: response.contextUsage.sessionStats.tokens.total,
                 updatedAt: new Date().toISOString()
               }
-            : undefined
+            : undefined,
+          contractDriftPaths: contractDriftPaths && contractDriftPaths.length > 0 ? contractDriftPaths : undefined
         },
         retainedSnapshot: {
           taskId: task.id,
@@ -306,7 +498,7 @@ async function executeSubagentWithRetry(
             instruction: task.instruction,
             status: "failed",
             errorMessage: typedError.message,
-            attemptCount: attempt,
+            attemptCount: effectiveAttempt,
             durationMs: Date.now() - startedAt,
             mountPath: options.debugEnabled ? lease.projectMountPath : undefined,
             worktreePath: options.debugEnabled ? lease.projectMountPath : undefined
@@ -314,7 +506,7 @@ async function executeSubagentWithRetry(
         };
       }
 
-      options.callbacks?.onRetry?.(task, attempt, typedError);
+      options.callbacks?.onRetry?.(task, effectiveAttempt + 1, typedError);
       await manager.discardExperiment(lease).catch(() => undefined);
     }
   }
@@ -325,6 +517,28 @@ function isTransientError(error: Error) {
   return ["timeout", "temporar", "429", "rate limit", "overload", "network", "socket", "econn", "reset"].some(
     (token) => value.includes(token)
   );
+}
+
+export function buildSubagentPrompt(input: { brief: string; task: PlannerSubtask; recoveryPrompt?: string; environmentBrief?: string }) {
+  return [
+    "You are a focused implementation subagent.",
+    "Start in the provided cwd and apply the assigned file plan exactly.",
+    "Create missing directories and the first listed missing file immediately when the assignment names new paths.",
+    "Use owned paths as the primary work area; edit integration files when the assignment requires wiring.",
+    "Do not run browser, Playwright, dev server, python -m http.server, visible app smoke tests, or commands that can open windows.",
+    "Do not use Start-Process for verification.",
+    "Do not perform broad verification unless this subtask explicitly names a verification command.",
+    "On Windows, use PowerShell-compatible syntax only; do not use Bash heredocs like <<'EOF'.",
+    "Prefer bundled rg for search. If rg is unavailable, use Get-ChildItem plus Select-String.",
+    "Return a concise changed-file summary.",
+    SUBAGENT_MILESTONE_INSTRUCTION,
+    input.recoveryPrompt?.trim() ? input.recoveryPrompt.trim() : "",
+    input.environmentBrief?.trim() ? input.environmentBrief.trim() : "",
+    "",
+    `Shared brief: ${input.brief}`,
+    `Subtask title: ${input.task.title}`,
+    `Subtask instruction: ${input.task.instruction}`
+  ].join("\n");
 }
 
 function isAbortError(error: Error, abortSignal: AbortSignal | undefined) {

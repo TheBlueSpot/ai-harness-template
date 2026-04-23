@@ -1,0 +1,1375 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Joust: Pegasus Dash</title>
+  <style>
+    :root {
+      --sky-top: #123556;
+      --sky-mid: #2a6f91;
+      --sky-glow: #ffd27a;
+      --cloud: rgba(255, 250, 240, 0.7);
+      --panel: rgba(8, 18, 32, 0.78);
+      --panel-line: rgba(210, 239, 255, 0.18);
+      --ink: #f5fbff;
+      --muted: #a8c4d8;
+      --good: #93ffb5;
+      --warn: #ffc164;
+      --bad: #ff7979;
+      --accent: #7fe7ff;
+      --shadow: rgba(0, 0, 0, 0.28);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      overflow: hidden;
+      color: var(--ink);
+      font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at top, rgba(255, 204, 122, 0.26), transparent 20%),
+        linear-gradient(180deg, var(--sky-top), var(--sky-mid) 55%, #091622);
+    }
+
+    body {
+      display: grid;
+      place-items: center;
+    }
+
+    .shell {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+    }
+
+    .shell::before,
+    .shell::after {
+      content: "";
+      position: absolute;
+      width: 38vw;
+      height: 38vw;
+      border-radius: 50%;
+      filter: blur(80px);
+      opacity: 0.24;
+      pointer-events: none;
+    }
+
+    .shell::before {
+      left: -12vw;
+      top: -10vh;
+      background: rgba(255, 219, 142, 0.6);
+    }
+
+    .shell::after {
+      right: -10vw;
+      bottom: -10vh;
+      background: rgba(127, 231, 255, 0.35);
+    }
+
+    .frame {
+      position: relative;
+      width: min(1320px, 96vw);
+      padding: 18px;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      aspect-ratio: 16 / 9;
+      border-radius: 24px;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      box-shadow:
+        0 26px 80px rgba(0, 0, 0, 0.34),
+        inset 0 1px 0 rgba(255, 255, 255, 0.06);
+      background:
+        radial-gradient(circle at 50% 10%, rgba(255, 220, 144, 0.22), transparent 18%),
+        linear-gradient(180deg, rgba(19, 55, 86, 0.85), rgba(7, 19, 31, 0.96));
+    }
+
+    .hud-note {
+      position: absolute;
+      left: 34px;
+      top: 34px;
+      max-width: min(420px, calc(100% - 68px));
+      padding: 14px 16px;
+      border-radius: 18px;
+      background: var(--panel);
+      border: 1px solid var(--panel-line);
+      box-shadow: 0 14px 38px rgba(0, 0, 0, 0.2);
+      backdrop-filter: blur(10px);
+      pointer-events: none;
+    }
+
+    .hud-note h1 {
+      margin: 0 0 8px;
+      font-size: 18px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+
+    .hud-note p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .footer-note {
+      position: absolute;
+      right: 34px;
+      bottom: 34px;
+      padding: 10px 14px;
+      border-radius: 999px;
+      background: rgba(9, 18, 30, 0.68);
+      border: 1px solid var(--panel-line);
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      pointer-events: none;
+    }
+
+    @media (max-width: 860px) {
+      .hud-note {
+        top: 20px;
+        left: 20px;
+        right: 20px;
+        max-width: none;
+      }
+
+      .footer-note {
+        left: 20px;
+        right: 20px;
+        bottom: 20px;
+        border-radius: 16px;
+        text-align: center;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="frame">
+      <canvas id="game" width="1280" height="720" aria-label="Joust Pegasus Dash game canvas"></canvas>
+      <div class="hud-note">
+        <h1>Joust: Pegasus Dash</h1>
+        <p>Fly with stamina, charge a directional dash, and strike riders from above. Manifest paths target local Kenney assets, but the game falls back to clean vector art if files are missing.</p>
+      </div>
+      <div class="footer-note">Move: WASD / Arrows • Flight: Hold Space • Charge Dash: Hold J • Restart: Enter</div>
+    </div>
+  </div>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const GAME_WIDTH = 1280;
+      const GAME_HEIGHT = 720;
+      const GROUND_Y = 650;
+      const TWO_PI = Math.PI * 2;
+      const STATES = Object.freeze({
+        MENU: "MENU",
+        PLAYING: "PLAYING",
+        WIN: "WIN",
+        LOSE: "LOSE",
+      });
+
+      const ASSET_MANIFEST = {
+        images: {
+          playerMount: "assets/images/pegasus_player.png",
+          enemyMount: "assets/images/pegasus_enemy.png",
+          rider: "assets/images/rider.png",
+          enemyRider: "assets/images/rider_enemy.png",
+          cloud: "assets/images/cloud.png",
+          island: "assets/images/floating_island.png",
+          burst: "assets/images/feather_burst.png",
+        },
+        audio: {
+          flap: "assets/audio/flap.ogg",
+          charge: "assets/audio/charge.ogg",
+          dash: "assets/audio/dash.ogg",
+          hit: "assets/audio/hit.ogg",
+          win: "assets/audio/win.ogg",
+          lose: "assets/audio/lose.ogg",
+        },
+      };
+
+      class StateMachine {
+        constructor(initialState) {
+          this.current = initialState;
+          this.handlers = new Map();
+        }
+
+        add(state, handlers) {
+          this.handlers.set(state, handlers);
+          return this;
+        }
+
+        set(state, payload) {
+          const previous = this.current;
+          if (previous === state) {
+            return;
+          }
+          this.handlers.get(previous)?.exit?.(payload, state);
+          this.current = state;
+          this.handlers.get(state)?.enter?.(payload, previous);
+        }
+
+        update(dt) {
+          this.handlers.get(this.current)?.update?.(dt);
+        }
+
+        render(ctx) {
+          this.handlers.get(this.current)?.render?.(ctx);
+        }
+      }
+
+      class InputController {
+        constructor() {
+          this.keys = new Set();
+          this.justPressed = new Set();
+          this.pointer = { x: GAME_WIDTH / 2, y: GAME_HEIGHT / 2 };
+          this.boundDown = (event) => {
+            const key = event.key.toLowerCase();
+            if (!this.keys.has(key)) {
+              this.justPressed.add(key);
+            }
+            this.keys.add(key);
+          };
+          this.boundUp = (event) => {
+            this.keys.delete(event.key.toLowerCase());
+          };
+          this.boundMove = (event) => {
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = GAME_WIDTH / rect.width;
+            const scaleY = GAME_HEIGHT / rect.height;
+            this.pointer.x = (event.clientX - rect.left) * scaleX;
+            this.pointer.y = (event.clientY - rect.top) * scaleY;
+          };
+          window.addEventListener("keydown", this.boundDown);
+          window.addEventListener("keyup", this.boundUp);
+          window.addEventListener("pointermove", this.boundMove);
+        }
+
+        isDown(...candidates) {
+          return candidates.some((candidate) => this.keys.has(candidate));
+        }
+
+        pressed(...candidates) {
+          return candidates.some((candidate) => this.justPressed.has(candidate));
+        }
+
+        endFrame() {
+          this.justPressed.clear();
+        }
+      }
+
+      class AssetLoader {
+        constructor(manifest) {
+          this.manifest = manifest;
+          this.images = {};
+          this.audio = {};
+          this.failures = [];
+        }
+
+        load() {
+          const jobs = [];
+          for (const [key, path] of Object.entries(this.manifest.images)) {
+            jobs.push(this.loadImage(key, path));
+          }
+          for (const [key, path] of Object.entries(this.manifest.audio)) {
+            jobs.push(this.loadAudio(key, path));
+          }
+          return Promise.all(jobs);
+        }
+
+        loadImage(key, path) {
+          return new Promise((resolve) => {
+            const image = new Image();
+            image.onload = () => {
+              this.images[key] = image;
+              resolve();
+            };
+            image.onerror = () => {
+              this.failures.push(path);
+              resolve();
+            };
+            image.src = path;
+          });
+        }
+
+        loadAudio(key, path) {
+          return new Promise((resolve) => {
+            const audio = new Audio();
+            audio.preload = "auto";
+            const done = () => {
+              this.audio[key] = audio;
+              cleanup();
+              resolve();
+            };
+            const fail = () => {
+              this.failures.push(path);
+              cleanup();
+              resolve();
+            };
+            const cleanup = () => {
+              audio.removeEventListener("canplaythrough", done);
+              audio.removeEventListener("error", fail);
+            };
+            audio.addEventListener("canplaythrough", done, { once: true });
+            audio.addEventListener("error", fail, { once: true });
+            audio.src = path;
+            audio.load();
+            window.setTimeout(() => {
+              if (!this.audio[key] && !this.failures.includes(path)) {
+                done();
+              }
+            }, 1200);
+          });
+        }
+      }
+
+      class ParticleSystem {
+        constructor() {
+          this.items = [];
+        }
+
+        emit(config) {
+          const count = config.count ?? 10;
+          for (let i = 0; i < count; i += 1) {
+            const spread = config.spread ?? 1;
+            const speed = randomRange(config.minSpeed ?? 40, config.maxSpeed ?? 120);
+            const angle = (config.angle ?? 0) + randomRange(-spread, spread);
+            this.items.push({
+              x: config.x,
+              y: config.y,
+              vx: Math.cos(angle) * speed,
+              vy: Math.sin(angle) * speed,
+              life: randomRange(config.minLife ?? 0.25, config.maxLife ?? 0.65),
+              maxLife: 1,
+              size: randomRange(config.minSize ?? 3, config.maxSize ?? 8),
+              color: pick(config.colors ?? ["#ffffff"]),
+              gravity: config.gravity ?? 120,
+              drag: config.drag ?? 0.97,
+              shape: config.shape ?? "circle",
+            });
+          }
+        }
+
+        update(dt) {
+          for (const particle of this.items) {
+            particle.vx *= Math.pow(particle.drag, dt * 60);
+            particle.vy += particle.gravity * dt;
+            particle.x += particle.vx * dt;
+            particle.y += particle.vy * dt;
+            particle.life -= dt;
+          }
+          this.items = this.items.filter((particle) => particle.life > 0);
+        }
+
+        render(ctx) {
+          for (const particle of this.items) {
+            const alpha = Math.max(0, particle.life / particle.maxLife);
+            ctx.globalAlpha = alpha;
+            ctx.fillStyle = particle.color;
+            if (particle.shape === "spark") {
+              ctx.fillRect(particle.x, particle.y, particle.size * 1.8, particle.size * 0.5);
+            } else {
+              ctx.beginPath();
+              ctx.arc(particle.x, particle.y, particle.size, 0, TWO_PI);
+              ctx.fill();
+            }
+          }
+          ctx.globalAlpha = 1;
+        }
+      }
+
+      class AudioManager {
+        constructor(audioMap) {
+          this.audioMap = audioMap;
+          this.enabled = false;
+          this.unlocked = false;
+          window.addEventListener("pointerdown", () => this.unlock(), { once: true });
+          window.addEventListener("keydown", () => this.unlock(), { once: true });
+        }
+
+        unlock() {
+          this.enabled = true;
+          this.unlocked = true;
+          for (const audio of Object.values(this.audioMap)) {
+            if (!audio) {
+              continue;
+            }
+            audio.volume = 0;
+            audio.play().then(() => {
+              audio.pause();
+              audio.currentTime = 0;
+              audio.volume = 1;
+            }).catch(() => {});
+          }
+        }
+
+        play(name, options = {}) {
+          const source = this.audioMap[name];
+          if (!source || !this.enabled || !this.unlocked) {
+            return;
+          }
+          try {
+            const instance = source.cloneNode();
+            instance.volume = options.volume ?? 0.45;
+            instance.playbackRate = options.rate ?? 1;
+            instance.play().catch(() => {});
+          } catch {
+            // Ignore audio cloning issues on locked browsers.
+          }
+        }
+      }
+
+      class CloudLayer {
+        constructor() {
+          this.clouds = Array.from({ length: 9 }, (_, index) => ({
+            x: index * 170 + Math.random() * 120,
+            y: 70 + Math.random() * 280,
+            speed: 12 + Math.random() * 24,
+            size: 0.8 + Math.random() * 1.4,
+          }));
+        }
+
+        update(dt) {
+          for (const cloud of this.clouds) {
+            cloud.x -= cloud.speed * dt;
+            if (cloud.x < -200) {
+              cloud.x = GAME_WIDTH + 180;
+              cloud.y = 60 + Math.random() * 290;
+            }
+          }
+        }
+
+        render(ctx, image) {
+          for (const cloud of this.clouds) {
+            if (image) {
+              const width = 180 * cloud.size;
+              const height = 100 * cloud.size;
+              ctx.globalAlpha = 0.85;
+              ctx.drawImage(image, cloud.x, cloud.y, width, height);
+              ctx.globalAlpha = 1;
+            } else {
+              drawCloud(ctx, cloud.x, cloud.y, cloud.size);
+            }
+          }
+        }
+      }
+
+      class Rider {
+        constructor(x, y, options = {}) {
+          this.x = x;
+          this.y = y;
+          this.vx = options.vx ?? 0;
+          this.vy = options.vy ?? 0;
+          this.width = 82;
+          this.height = 54;
+          this.facing = options.facing ?? 1;
+          this.color = options.color ?? "#ffffff";
+          this.mountColor = options.mountColor ?? "#7fe7ff";
+          this.isPlayer = options.isPlayer ?? false;
+          this.type = options.type ?? "rookie";
+          this.alive = true;
+          this.dismounted = false;
+          this.invulnerability = 0;
+          this.staminaMax = options.staminaMax ?? 100;
+          this.stamina = this.staminaMax;
+          this.charge = 0;
+          this.chargeMax = 1.1;
+          this.chargeHold = false;
+          this.dashDirection = { x: this.facing, y: 0 };
+          this.dashTime = 0;
+          this.dashCooldown = 0;
+          this.flapTimer = 0;
+          this.aiTimer = 0;
+          this.targetAltitude = 220 + Math.random() * 220;
+          this.bob = Math.random() * TWO_PI;
+          this.lives = options.lives ?? 3;
+        }
+
+        get speedLimit() {
+          return this.isPlayer ? 360 : 300;
+        }
+
+        get gravity() {
+          return this.dismounted ? 840 : 460;
+        }
+
+        get flapPower() {
+          return this.isPlayer ? 650 : 580;
+        }
+
+        getRect() {
+          return {
+            left: this.x - this.width * 0.5,
+            right: this.x + this.width * 0.5,
+            top: this.y - this.height * 0.55,
+            bottom: this.y + this.height * 0.55,
+          };
+        }
+      }
+
+      class Game {
+        constructor(ctx, assets) {
+          this.ctx = ctx;
+          this.assets = assets;
+          this.input = new InputController();
+          this.particles = new ParticleSystem();
+          this.audio = new AudioManager(assets.audio);
+          this.clouds = new CloudLayer();
+          this.machine = new StateMachine(STATES.MENU);
+          this.score = 0;
+          this.wave = 1;
+          this.bestScore = Number(localStorage.getItem("pegasus-dash-best-score") || 0);
+          this.message = "";
+          this.assetWarning = assets.failures.length ? `Fallback art/audio active. Missing: ${assets.failures.length}` : "Kenney assets loaded.";
+          this.flash = 0;
+          this.lastTime = 0;
+          this.player = null;
+          this.enemies = [];
+          this.looseRiders = [];
+          this.islands = this.createIslands();
+          this.setupStates();
+        }
+
+        setupStates() {
+          this.machine
+            .add(STATES.MENU, {
+              enter: () => {
+                this.resetRun();
+              },
+              update: (dt) => {
+                this.animateBackdrop(dt);
+                if (this.input.pressed("enter", " ")) {
+                  this.startRun();
+                }
+              },
+              render: (ctx) => {
+                this.renderWorld(ctx, true);
+                this.renderMenuOverlay(ctx);
+              },
+            })
+            .add(STATES.PLAYING, {
+              update: (dt) => {
+                this.updatePlaying(dt);
+              },
+              render: (ctx) => {
+                this.renderWorld(ctx, false);
+                this.renderHud(ctx);
+              },
+            })
+            .add(STATES.WIN, {
+              enter: () => {
+                this.audio.play("win", { volume: 0.55 });
+                this.bestScore = Math.max(this.bestScore, this.score);
+                localStorage.setItem("pegasus-dash-best-score", String(this.bestScore));
+              },
+              update: (dt) => {
+                this.animateBackdrop(dt);
+                if (this.input.pressed("enter", " ")) {
+                  this.machine.set(STATES.MENU);
+                }
+              },
+              render: (ctx) => {
+                this.renderWorld(ctx, false);
+                this.renderHud(ctx);
+                this.renderEndOverlay(ctx, "Sky Cleared", "The pegasus flock is safe. Press Enter to soar again.");
+              },
+            })
+            .add(STATES.LOSE, {
+              enter: () => {
+                this.audio.play("lose", { volume: 0.6 });
+                this.bestScore = Math.max(this.bestScore, this.score);
+                localStorage.setItem("pegasus-dash-best-score", String(this.bestScore));
+              },
+              update: (dt) => {
+                this.animateBackdrop(dt);
+                if (this.input.pressed("enter", " ")) {
+                  this.machine.set(STATES.MENU);
+                }
+              },
+              render: (ctx) => {
+                this.renderWorld(ctx, false);
+                this.renderHud(ctx);
+                this.renderEndOverlay(ctx, "Pegasus Down", "You were dismounted. Press Enter to challenge the sky again.");
+              },
+            });
+        }
+
+        resetRun() {
+          this.score = 0;
+          this.wave = 1;
+          this.flash = 0;
+          this.message = "Dismount every rider in three waves.";
+          this.player = this.createPlayer();
+          this.enemies = this.spawnWave(this.wave);
+          this.looseRiders = [];
+          this.particles.items.length = 0;
+        }
+
+        startRun() {
+          this.resetRun();
+          this.machine.set(STATES.PLAYING);
+        }
+
+        createPlayer() {
+          return new Rider(260, 260, {
+            isPlayer: true,
+            color: "#fff4cc",
+            mountColor: "#7fe7ff",
+            facing: 1,
+            lives: 3,
+            staminaMax: 100,
+          });
+        }
+
+        spawnWave(wave) {
+          const count = 3 + wave;
+          const enemies = [];
+          for (let i = 0; i < count; i += 1) {
+            enemies.push(new Rider(
+              760 + i * 95 + Math.random() * 90,
+              190 + Math.random() * 240,
+              {
+                color: wave >= 3 ? "#ffd6d6" : "#ffe9a8",
+                mountColor: wave >= 2 ? "#ff9a70" : "#c48dff",
+                facing: -1,
+                type: wave >= 3 ? "ace" : "lancer",
+                staminaMax: 999,
+              },
+            ));
+          }
+          return enemies;
+        }
+
+        createIslands() {
+          return [
+            { x: 180, y: 560, w: 180, h: 42 },
+            { x: 500, y: 520, w: 220, h: 52 },
+            { x: 860, y: 560, w: 180, h: 46 },
+            { x: 1110, y: 500, w: 150, h: 40 },
+          ];
+        }
+
+        animateBackdrop(dt) {
+          this.clouds.update(dt);
+          this.particles.update(dt);
+          this.flash = Math.max(0, this.flash - dt * 1.7);
+        }
+
+        updatePlaying(dt) {
+          this.animateBackdrop(dt);
+          this.updatePlayer(dt);
+          this.updateEnemies(dt);
+          this.updateLooseRiders(dt);
+          this.resolveCollisions();
+          this.cleanupEntities();
+          this.checkProgress();
+        }
+
+        updatePlayer(dt) {
+          const player = this.player;
+          if (!player || !player.alive) {
+            return;
+          }
+
+          const moveX = (this.input.isDown("arrowright", "d") ? 1 : 0) - (this.input.isDown("arrowleft", "a") ? 1 : 0);
+          const moveY = (this.input.isDown("arrowdown", "s") ? 1 : 0) - (this.input.isDown("arrowup", "w") ? 1 : 0);
+          const flightHeld = this.input.isDown(" ");
+          const dashHeld = this.input.isDown("j");
+          const accelX = 720;
+
+          if (moveX !== 0) {
+            player.vx += moveX * accelX * dt;
+            player.facing = moveX >= 0 ? 1 : -1;
+          } else {
+            player.vx *= Math.pow(0.86, dt * 60);
+          }
+
+          if (flightHeld && player.stamina > 0 && !player.dismounted) {
+            player.vy -= player.flapPower * dt;
+            player.stamina = Math.max(0, player.stamina - 28 * dt);
+            player.flapTimer -= dt;
+            if (player.flapTimer <= 0) {
+              player.flapTimer = 0.14;
+              this.audio.play("flap", { volume: 0.18, rate: 0.95 + Math.random() * 0.1 });
+              this.particles.emit({
+                x: player.x - player.facing * 24,
+                y: player.y + 12,
+                count: 6,
+                minSpeed: 30,
+                maxSpeed: 95,
+                spread: 0.9,
+                angle: player.facing === 1 ? Math.PI * 0.9 : Math.PI * 0.1,
+                colors: ["#ffffff", "#d8f6ff", "#ffeaa8"],
+                gravity: 80,
+              });
+            }
+          } else {
+            player.stamina = Math.min(player.staminaMax, player.stamina + 18 * dt + (player.y > 430 ? 7 * dt : 0));
+          }
+
+          if (dashHeld && player.dashCooldown <= 0 && !player.dismounted) {
+            if (!player.chargeHold) {
+              player.chargeHold = true;
+              this.audio.play("charge", { volume: 0.18, rate: 0.9 });
+            }
+            player.charge = Math.min(player.chargeMax, player.charge + dt);
+            const target = normalize({
+              x: moveX !== 0 || moveY !== 0 ? moveX : player.facing,
+              y: moveY,
+            });
+            player.dashDirection = target;
+            this.particles.emit({
+              x: player.x + player.dashDirection.x * 18,
+              y: player.y + player.dashDirection.y * 10,
+              count: 2,
+              minSpeed: 10,
+              maxSpeed: 40,
+              spread: 0.7,
+              angle: Math.atan2(player.dashDirection.y, player.dashDirection.x),
+              colors: ["#7fe7ff", "#ffffff", "#ffd87f"],
+              gravity: -10,
+              minSize: 2,
+              maxSize: 4,
+            });
+          } else if (player.chargeHold) {
+            this.releaseDash(player);
+          }
+
+          if (player.dashTime > 0) {
+            player.dashTime -= dt;
+            const power = 1020 + 540 * clamp(player.charge / player.chargeMax, 0.35, 1);
+            player.vx = player.dashDirection.x * power;
+            player.vy = player.dashDirection.y * power * 0.75;
+            this.particles.emit({
+              x: player.x - player.dashDirection.x * 24,
+              y: player.y - player.dashDirection.y * 12,
+              count: 4,
+              minSpeed: 40,
+              maxSpeed: 110,
+              spread: 0.55,
+              angle: Math.atan2(-player.dashDirection.y, -player.dashDirection.x),
+              colors: ["#ffffff", "#7fe7ff", "#ffe29b"],
+              gravity: 0,
+              shape: "spark",
+            });
+          } else {
+            player.vy += moveY * 180 * dt;
+          }
+
+          player.dashCooldown = Math.max(0, player.dashCooldown - dt);
+          player.invulnerability = Math.max(0, player.invulnerability - dt);
+          this.applyPhysics(player, dt);
+        }
+
+        releaseDash(player) {
+          const strength = clamp(player.charge / player.chargeMax, 0, 1);
+          if (strength > 0.15) {
+            player.dashTime = 0.18 + strength * 0.2;
+            player.dashCooldown = 0.45;
+            this.audio.play("dash", { volume: 0.4, rate: 1 + strength * 0.2 });
+            this.particles.emit({
+              x: player.x,
+              y: player.y,
+              count: 18,
+              minSpeed: 50,
+              maxSpeed: 180,
+              spread: 1.1,
+              angle: Math.atan2(player.dashDirection.y, player.dashDirection.x),
+              colors: ["#ffffff", "#7fe7ff", "#ffe29b"],
+              gravity: 45,
+            });
+          }
+          player.charge = 0;
+          player.chargeHold = false;
+        }
+
+        updateEnemies(dt) {
+          for (const enemy of this.enemies) {
+            if (!enemy.alive) {
+              continue;
+            }
+            enemy.aiTimer -= dt;
+            if (enemy.aiTimer <= 0) {
+              enemy.aiTimer = 0.45 + Math.random() * 0.75;
+              enemy.targetAltitude = 150 + Math.random() * 320;
+            }
+
+            const playerOffsetX = this.player.x - enemy.x;
+            enemy.facing = playerOffsetX >= 0 ? 1 : -1;
+            const drift = clamp(playerOffsetX / 340, -1, 1);
+            enemy.vx += drift * 280 * dt;
+            enemy.vy += clamp(enemy.targetAltitude - enemy.y, -1, 1) * 320 * dt;
+
+            if (enemy.y > enemy.targetAltitude + 35) {
+              enemy.vy -= enemy.flapPower * dt * 0.78;
+            }
+
+            const aggressive = Math.abs(playerOffsetX) < 220 && this.player.y < enemy.y + 30;
+            if (!enemy.dismounted && aggressive && enemy.dashCooldown <= 0) {
+              enemy.dashTime = 0.16;
+              enemy.dashCooldown = 1.2 + Math.random() * 0.4;
+              const direction = normalize({
+                x: playerOffsetX,
+                y: this.player.y - enemy.y - 20,
+              });
+              enemy.dashDirection = direction;
+            }
+
+            if (enemy.dashTime > 0) {
+              enemy.dashTime -= dt;
+              enemy.vx = enemy.dashDirection.x * 760;
+              enemy.vy = enemy.dashDirection.y * 540;
+            } else {
+              enemy.dashCooldown = Math.max(0, enemy.dashCooldown - dt);
+            }
+
+            enemy.invulnerability = Math.max(0, enemy.invulnerability - dt);
+            this.applyPhysics(enemy, dt);
+          }
+        }
+
+        updateLooseRiders(dt) {
+          for (const rider of this.looseRiders) {
+            rider.vy += rider.gravity * dt;
+            rider.x += rider.vx * dt;
+            rider.y += rider.vy * dt;
+            rider.vx *= Math.pow(0.98, dt * 60);
+            rider.bob += dt * 8;
+          }
+        }
+
+        applyPhysics(entity, dt) {
+          entity.vy += entity.gravity * dt;
+          entity.vx = clamp(entity.vx, -entity.speedLimit * 1.9, entity.speedLimit * 1.9);
+          entity.vy = clamp(entity.vy, -700, 780);
+          entity.x += entity.vx * dt;
+          entity.y += entity.vy * dt;
+          entity.bob += dt * 6;
+
+          if (!entity.dismounted) {
+            entity.x = wrap(entity.x, -80, GAME_WIDTH + 80);
+            entity.y = clamp(entity.y, 90, GROUND_Y - 50);
+          } else if (entity.y > GROUND_Y + 55) {
+            entity.alive = false;
+          }
+        }
+
+        resolveCollisions() {
+          for (const enemy of this.enemies) {
+            if (!enemy.alive || enemy.dismounted) {
+              continue;
+            }
+            if (!overlaps(this.player.getRect(), enemy.getRect())) {
+              continue;
+            }
+            if (this.player.dashTime > 0 && this.player.y < enemy.y - 8) {
+              this.dismountEnemy(enemy, this.player.dashDirection);
+              this.player.vy = -240;
+              this.player.vx *= 0.75;
+              this.score += 150;
+              continue;
+            }
+            if (enemy.dashTime > 0 && enemy.y < this.player.y - 12 && this.player.invulnerability <= 0) {
+              this.playerHit();
+              continue;
+            }
+            if (this.player.y + 12 < enemy.y && this.player.vy > enemy.vy + 60) {
+              this.dismountEnemy(enemy, { x: 0, y: 1 });
+              this.player.vy = -260;
+              this.score += 100;
+            } else if (enemy.y + 8 < this.player.y && this.player.invulnerability <= 0) {
+              this.playerHit();
+            }
+          }
+        }
+
+        dismountEnemy(enemy, direction) {
+          enemy.dismounted = true;
+          enemy.invulnerability = 0.4;
+          enemy.vx = direction.x * 260 + randomRange(-90, 90);
+          enemy.vy = -260 + direction.y * 140;
+          this.flash = 0.24;
+          this.audio.play("hit", { volume: 0.45, rate: 1.02 });
+          this.message = "Clean strike. Keep the height advantage.";
+          this.particles.emit({
+            x: enemy.x,
+            y: enemy.y,
+            count: 24,
+            minSpeed: 40,
+            maxSpeed: 190,
+            spread: 1.8,
+            angle: Math.atan2(direction.y, direction.x),
+            colors: ["#ffffff", "#ffe9a8", "#ff9a70"],
+            gravity: 180,
+          });
+          this.looseRiders.push({
+            x: enemy.x,
+            y: enemy.y - 20,
+            vx: enemy.vx * 0.7,
+            vy: -180,
+            width: 30,
+            height: 38,
+            color: enemy.color,
+            bob: 0,
+            gravity: 680,
+          });
+        }
+
+        playerHit() {
+          this.player.invulnerability = 1.2;
+          this.player.lives -= 1;
+          this.player.charge = 0;
+          this.player.chargeHold = false;
+          this.player.dashTime = 0;
+          this.player.vx = -this.player.facing * 200;
+          this.player.vy = -260;
+          this.flash = 0.4;
+          this.audio.play("hit", { volume: 0.55, rate: 0.85 });
+          this.message = "You were clipped. Recover and attack from above.";
+          this.particles.emit({
+            x: this.player.x,
+            y: this.player.y,
+            count: 28,
+            minSpeed: 50,
+            maxSpeed: 220,
+            spread: 1.8,
+            angle: 0,
+            colors: ["#ffffff", "#ff9f8f", "#ffd77f"],
+            gravity: 220,
+          });
+          if (this.player.lives <= 0) {
+            this.player.dismounted = true;
+            this.machine.set(STATES.LOSE);
+          }
+        }
+
+        cleanupEntities() {
+          this.enemies = this.enemies.filter((enemy) => enemy.alive);
+          this.looseRiders = this.looseRiders.filter((rider) => rider.y < GAME_HEIGHT + 80);
+        }
+
+        checkProgress() {
+          if (this.machine.current !== STATES.PLAYING) {
+            return;
+          }
+          if (this.enemies.length === 0) {
+            if (this.wave >= 3) {
+              this.machine.set(STATES.WIN);
+              return;
+            }
+            this.wave += 1;
+            this.score += 300;
+            this.message = `Wave ${this.wave} incoming. More riders, faster dives.`;
+            this.enemies = this.spawnWave(this.wave);
+            this.player.lives = Math.min(3, this.player.lives + 1);
+            this.player.stamina = this.player.staminaMax;
+            this.player.invulnerability = 1;
+            this.particles.emit({
+              x: this.player.x,
+              y: this.player.y,
+              count: 30,
+              minSpeed: 40,
+              maxSpeed: 200,
+              spread: TWO_PI,
+              angle: 0,
+              colors: ["#ffffff", "#7fe7ff", "#93ffb5"],
+              gravity: 140,
+            });
+          }
+        }
+
+        renderWorld(ctx, dim) {
+          ctx.clearRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+          this.renderSky(ctx);
+          this.clouds.render(ctx, this.assets.images.cloud);
+          this.renderSun(ctx);
+          this.renderIslands(ctx);
+          this.renderGroundGlow(ctx);
+          for (const enemy of this.enemies) {
+            this.renderRider(ctx, enemy, this.assets.images.enemyMount, this.assets.images.enemyRider);
+          }
+          for (const rider of this.looseRiders) {
+            this.renderLooseRider(ctx, rider);
+          }
+          if (this.player) {
+            this.renderRider(ctx, this.player, this.assets.images.playerMount, this.assets.images.rider);
+          }
+          this.particles.render(ctx);
+          if (this.flash > 0) {
+            ctx.fillStyle = `rgba(255, 245, 220, ${this.flash * 0.35})`;
+            ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+          }
+          if (dim) {
+            ctx.fillStyle = "rgba(0, 0, 0, 0.24)";
+            ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+          }
+        }
+
+        renderSky(ctx) {
+          const gradient = ctx.createLinearGradient(0, 0, 0, GAME_HEIGHT);
+          gradient.addColorStop(0, "#1d4f73");
+          gradient.addColorStop(0.5, "#4f99c1");
+          gradient.addColorStop(1, "#0b1824");
+          ctx.fillStyle = gradient;
+          ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+        }
+
+        renderSun(ctx) {
+          const x = GAME_WIDTH * 0.72;
+          const y = 120;
+          const glow = ctx.createRadialGradient(x, y, 20, x, y, 170);
+          glow.addColorStop(0, "rgba(255, 244, 199, 0.75)");
+          glow.addColorStop(0.35, "rgba(255, 212, 122, 0.34)");
+          glow.addColorStop(1, "rgba(255, 212, 122, 0)");
+          ctx.fillStyle = glow;
+          ctx.beginPath();
+          ctx.arc(x, y, 170, 0, TWO_PI);
+          ctx.fill();
+        }
+
+        renderIslands(ctx) {
+          for (const island of this.islands) {
+            if (this.assets.images.island) {
+              ctx.drawImage(this.assets.images.island, island.x - island.w / 2, island.y - island.h / 2, island.w, island.h);
+            } else {
+              drawIsland(ctx, island);
+            }
+          }
+        }
+
+        renderGroundGlow(ctx) {
+          const ground = ctx.createLinearGradient(0, GROUND_Y - 60, 0, GAME_HEIGHT);
+          ground.addColorStop(0, "rgba(255, 214, 122, 0)");
+          ground.addColorStop(1, "rgba(7, 12, 20, 0.7)");
+          ctx.fillStyle = ground;
+          ctx.fillRect(0, GROUND_Y - 60, GAME_WIDTH, GAME_HEIGHT - GROUND_Y + 60);
+        }
+
+        renderRider(ctx, rider, mountImage, riderImage) {
+          if (!rider.alive) {
+            return;
+          }
+          if (rider.invulnerability > 0 && Math.floor(rider.invulnerability * 14) % 2 === 0) {
+            ctx.globalAlpha = 0.45;
+          }
+          if (mountImage) {
+            drawSpriteWithFacing(ctx, mountImage, rider.x, rider.y, 122, 94, rider.facing);
+          } else {
+            drawFallbackPegasus(ctx, rider);
+          }
+          if (!rider.dismounted) {
+            if (riderImage) {
+              drawSpriteWithFacing(ctx, riderImage, rider.x + rider.facing * 10, rider.y - 16, 46, 50, rider.facing);
+            } else {
+              drawFallbackPilot(ctx, rider.x + rider.facing * 6, rider.y - 16, rider.facing, rider.color);
+            }
+          }
+
+          if (rider.isPlayer) {
+            const chargeStrength = rider.charge / rider.chargeMax;
+            if (chargeStrength > 0) {
+              const a = Math.atan2(rider.dashDirection.y, rider.dashDirection.x);
+              ctx.strokeStyle = `rgba(127, 231, 255, ${0.4 + chargeStrength * 0.45})`;
+              ctx.lineWidth = 6;
+              ctx.beginPath();
+              ctx.moveTo(rider.x, rider.y);
+              ctx.lineTo(rider.x + Math.cos(a) * (54 + chargeStrength * 62), rider.y + Math.sin(a) * (54 + chargeStrength * 62));
+              ctx.stroke();
+            }
+          }
+          ctx.globalAlpha = 1;
+        }
+
+        renderLooseRider(ctx, rider) {
+          ctx.save();
+          ctx.translate(rider.x, rider.y);
+          ctx.rotate(Math.sin(rider.bob) * 0.4);
+          ctx.fillStyle = rider.color;
+          ctx.fillRect(-10, -16, 20, 22);
+          ctx.fillStyle = "#3c2b22";
+          ctx.fillRect(-8, 6, 6, 18);
+          ctx.fillRect(2, 6, 6, 18);
+          ctx.beginPath();
+          ctx.arc(0, -22, 8, 0, TWO_PI);
+          ctx.fillStyle = "#ffe1c0";
+          ctx.fill();
+          ctx.restore();
+        }
+
+        renderHud(ctx) {
+          drawPanel(ctx, 20, 20, 350, 138);
+          ctx.fillStyle = "#f5fbff";
+          ctx.font = "700 22px Trebuchet MS";
+          ctx.fillText("Pegasus Dash", 36, 52);
+          ctx.font = "14px Trebuchet MS";
+          ctx.fillStyle = "#a8c4d8";
+          ctx.fillText(`Wave ${this.wave} / 3`, 36, 78);
+          ctx.fillText(`Score ${this.score}`, 132, 78);
+          ctx.fillText(`Best ${this.bestScore}`, 238, 78);
+          ctx.fillText(this.assetWarning, 36, 142);
+
+          drawMeter(ctx, 36, 92, 182, 16, this.player.stamina / this.player.staminaMax, "#7fe7ff", "Stamina");
+          drawMeter(ctx, 36, 118, 182, 12, this.player.charge / this.player.chargeMax, "#ffd27a", "Dash");
+          drawMeter(ctx, 230, 92, 118, 16, this.player.lives / 3, "#ff8f8f", "Lives");
+
+          drawPanel(ctx, GAME_WIDTH - 350, 20, 330, 112);
+          ctx.fillStyle = "#f5fbff";
+          ctx.font = "700 18px Trebuchet MS";
+          ctx.fillText("Tactics", GAME_WIDTH - 330, 52);
+          ctx.font = "14px Trebuchet MS";
+          ctx.fillStyle = "#a8c4d8";
+          ctx.fillText("Stay above targets for safe stomps.", GAME_WIDTH - 330, 78);
+          ctx.fillText("Hold J, aim with movement, release to dash.", GAME_WIDTH - 330, 100);
+          ctx.fillText(this.message, GAME_WIDTH - 330, 122);
+        }
+
+        renderMenuOverlay(ctx) {
+          drawOverlayCard(ctx, GAME_WIDTH / 2 - 280, 180, 560, 340);
+          ctx.fillStyle = "#f5fbff";
+          ctx.font = "700 42px Trebuchet MS";
+          ctx.fillText("Joust: Pegasus Dash", 398, 248);
+          ctx.font = "18px Trebuchet MS";
+          ctx.fillStyle = "#cde4f2";
+          ctx.fillText("Modern sky joust with stamina flight and charged directional dash.", 356, 286);
+          ctx.fillText("Clear three waves by dismounting every airborne rider.", 405, 312);
+          ctx.fillStyle = "#ffffff";
+          ctx.fillText("Controls", 584, 358);
+          ctx.fillStyle = "#a8c4d8";
+          ctx.fillText("WASD / Arrows: steer", 486, 386);
+          ctx.fillText("Hold Space: flap upward, drains stamina", 486, 412);
+          ctx.fillText("Hold J: charge dash, release to strike", 486, 438);
+          ctx.fillText("Enter or Space: start", 486, 464);
+          ctx.fillStyle = "#ffd27a";
+          ctx.fillText(`Best score ${this.bestScore}`, 548, 500);
+        }
+
+        renderEndOverlay(ctx, title, subtitle) {
+          drawOverlayCard(ctx, GAME_WIDTH / 2 - 270, 240, 540, 220);
+          ctx.fillStyle = "#f5fbff";
+          ctx.font = "700 40px Trebuchet MS";
+          ctx.fillText(title, GAME_WIDTH / 2 - 105, 310);
+          ctx.font = "18px Trebuchet MS";
+          ctx.fillStyle = "#cde4f2";
+          ctx.fillText(subtitle, GAME_WIDTH / 2 - 208, 352);
+          ctx.fillStyle = "#ffd27a";
+          ctx.fillText(`Score ${this.score} • Best ${this.bestScore}`, GAME_WIDTH / 2 - 95, 388);
+        }
+
+        tick = (time) => {
+          const dt = Math.min(0.033, (time - this.lastTime) / 1000 || 0.016);
+          this.lastTime = time;
+          this.machine.update(dt);
+          this.machine.render(this.ctx);
+          this.input.endFrame();
+          requestAnimationFrame(this.tick);
+        };
+      }
+
+      function drawPanel(ctx, x, y, w, h) {
+        ctx.fillStyle = "rgba(8, 18, 32, 0.72)";
+        ctx.strokeStyle = "rgba(210, 239, 255, 0.15)";
+        ctx.lineWidth = 1.5;
+        roundRect(ctx, x, y, w, h, 20);
+        ctx.fill();
+        ctx.stroke();
+      }
+
+      function drawOverlayCard(ctx, x, y, w, h) {
+        ctx.fillStyle = "rgba(8, 18, 32, 0.8)";
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.18)";
+        ctx.lineWidth = 2;
+        roundRect(ctx, x, y, w, h, 28);
+        ctx.fill();
+        ctx.stroke();
+      }
+
+      function drawMeter(ctx, x, y, w, h, amount, color, label) {
+        const value = clamp(amount, 0, 1);
+        ctx.fillStyle = "rgba(255,255,255,0.08)";
+        roundRect(ctx, x, y, w, h, h / 2);
+        ctx.fill();
+        ctx.fillStyle = color;
+        roundRect(ctx, x, y, Math.max(h, w * value), h, h / 2);
+        ctx.fill();
+        ctx.fillStyle = "#cde4f2";
+        ctx.font = "12px Trebuchet MS";
+        ctx.fillText(label, x, y - 4);
+      }
+
+      function drawCloud(ctx, x, y, scale) {
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.scale(scale, scale);
+        ctx.fillStyle = "rgba(255,255,255,0.68)";
+        ctx.beginPath();
+        ctx.arc(0, 25, 30, 0, TWO_PI);
+        ctx.arc(35, 10, 38, 0, TWO_PI);
+        ctx.arc(78, 25, 28, 0, TWO_PI);
+        ctx.arc(43, 33, 36, 0, TWO_PI);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      function drawIsland(ctx, island) {
+        ctx.save();
+        ctx.translate(island.x, island.y);
+        ctx.fillStyle = "#7c5a39";
+        ctx.beginPath();
+        ctx.moveTo(-island.w * 0.5, 0);
+        ctx.quadraticCurveTo(0, island.h * 0.65, island.w * 0.5, 0);
+        ctx.lineTo(island.w * 0.34, -island.h * 0.3);
+        ctx.lineTo(-island.w * 0.34, -island.h * 0.3);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = "#83c66b";
+        ctx.fillRect(-island.w * 0.38, -island.h * 0.4, island.w * 0.76, island.h * 0.24);
+        ctx.restore();
+      }
+
+      function drawFallbackPegasus(ctx, rider) {
+        ctx.save();
+        ctx.translate(rider.x, rider.y);
+        ctx.scale(rider.facing, 1);
+        ctx.rotate(Math.sin(rider.bob) * 0.03);
+        const flap = Math.sin(rider.bob * 1.3) * 0.22;
+        ctx.fillStyle = rider.mountColor;
+        ctx.beginPath();
+        ctx.ellipse(0, 8, 42, 28, 0, 0, TWO_PI);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.ellipse(38, -10, 20, 16, -0.3, 0, TWO_PI);
+        ctx.fill();
+        ctx.fillStyle = lighten(rider.mountColor, 18);
+        ctx.beginPath();
+        ctx.moveTo(-10, -4);
+        ctx.quadraticCurveTo(-50, -54 - flap * 60, -6, -10);
+        ctx.quadraticCurveTo(-28, -26, -10, -4);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(8, -4);
+        ctx.quadraticCurveTo(-22, -52 + flap * 54, 20, -8);
+        ctx.quadraticCurveTo(0, -22, 8, -4);
+        ctx.fill();
+        ctx.fillStyle = "#ffffff";
+        ctx.beginPath();
+        ctx.arc(46, -15, 4, 0, TWO_PI);
+        ctx.fill();
+        ctx.strokeStyle = "#2a425a";
+        ctx.lineWidth = 5;
+        ctx.beginPath();
+        ctx.moveTo(-18, 28);
+        ctx.lineTo(-26, 48);
+        ctx.moveTo(8, 30);
+        ctx.lineTo(2, 50);
+        ctx.moveTo(26, 22);
+        ctx.lineTo(30, 46);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      function drawFallbackPilot(ctx, x, y, facing, color) {
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.scale(facing, 1);
+        ctx.fillStyle = color;
+        ctx.fillRect(-10, -14, 20, 24);
+        ctx.fillStyle = "#50322b";
+        ctx.fillRect(-8, 10, 6, 18);
+        ctx.fillRect(2, 10, 6, 18);
+        ctx.fillStyle = "#ffe3c2";
+        ctx.beginPath();
+        ctx.arc(0, -22, 9, 0, TWO_PI);
+        ctx.fill();
+        ctx.fillStyle = "#7c4026";
+        ctx.fillRect(-10, -31, 20, 5);
+        ctx.restore();
+      }
+
+      function drawSpriteWithFacing(ctx, image, x, y, width, height, facing) {
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.scale(facing, 1);
+        ctx.drawImage(image, -width / 2, -height / 2, width, height);
+        ctx.restore();
+      }
+
+      function roundRect(ctx, x, y, w, h, r) {
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.arcTo(x + w, y, x + w, y + h, r);
+        ctx.arcTo(x + w, y + h, x, y + h, r);
+        ctx.arcTo(x, y + h, x, y, r);
+        ctx.arcTo(x, y, x + w, y, r);
+        ctx.closePath();
+      }
+
+      function overlaps(a, b) {
+        return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+      }
+
+      function normalize(vector) {
+        const length = Math.hypot(vector.x, vector.y) || 1;
+        return { x: vector.x / length, y: vector.y / length };
+      }
+
+      function clamp(value, min, max) {
+        return Math.max(min, Math.min(max, value));
+      }
+
+      function wrap(value, min, max) {
+        const range = max - min;
+        let result = value;
+        while (result < min) {
+          result += range;
+        }
+        while (result > max) {
+          result -= range;
+        }
+        return result;
+      }
+
+      function randomRange(min, max) {
+        return min + Math.random() * (max - min);
+      }
+
+      function pick(items) {
+        return items[Math.floor(Math.random() * items.length)];
+      }
+
+      function lighten(hex, amount) {
+        const normalized = hex.replace("#", "");
+        const value = Number.parseInt(normalized, 16);
+        const r = clamp(((value >> 16) & 255) + amount, 0, 255);
+        const g = clamp(((value >> 8) & 255) + amount, 0, 255);
+        const b = clamp((value & 255) + amount, 0, 255);
+        return `rgb(${r}, ${g}, ${b})`;
+      }
+
+      const canvas = document.getElementById("game");
+      const ctx = canvas.getContext("2d");
+
+      const loader = new AssetLoader(ASSET_MANIFEST);
+      loader.load().then(() => {
+        const game = new Game(ctx, loader);
+        requestAnimationFrame(game.tick);
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -1,5 +1,6 @@
 import path from "node:path";
 import type {
+  AgentId,
   AgentRuntimeCapability,
   PreferencesState,
   SetupAction,
@@ -8,6 +9,8 @@ import type {
   SetupState,
   WorkspaceState
 } from "../../shared/protocol";
+import { buildToolchainPath, resolveBundledRipgrepPath } from "./agent-runtimes/toolchain";
+import { probeGitAvailable, probeInsideWorktree } from "./git-project";
 
 type SetupHealthInput = {
   workspace: WorkspaceState;
@@ -19,9 +22,11 @@ export async function buildSetupState(input: SetupHealthInput): Promise<SetupSta
   const updatedAt = new Date().toISOString();
   const checks: SetupCheck[] = [];
   const activeProject = input.workspace.projects.find((project) => project.id === input.workspace.activeProjectId);
-  const selectedAgentId = activeProject?.session.selectedAgentId ?? "pi";
-  const selectedRuntime = input.preferences.agentRuntimes.find((runtime) => runtime.agentId === selectedAgentId);
-  const hasGit = await probeGit();
+  const hasGit = await probeGitAvailable();
+  const ripgrep = await probeRipgrep();
+  const piHasProvider = hasAnyPiProvider(input.preferences);
+  const usableCliRuntimes = input.preferences.agentRuntimes.filter(isUsableCliRuntime);
+  const hasUsableAgent = piHasProvider || usableCliRuntimes.length > 0;
 
   checks.push(
     activeProject
@@ -49,41 +54,58 @@ export async function buildSetupState(input: SetupHealthInput): Promise<SetupSta
         }
   );
 
-  checks.push(buildRuntimeCheck(selectedAgentId, selectedRuntime, updatedAt));
+  checks.push(
+    hasUsableAgent
+      ? {
+          id: "agent-available",
+          title: "Agent available",
+          summary: piHasProvider
+            ? "Pi can run with a saved provider key."
+            : `${usableCliRuntimes[0]?.label ?? "CLI runtime"} can run without a Pi provider key.`,
+          status: "ready",
+          requiredForFirstTask: true,
+          updatedAt
+        }
+      : {
+          id: "agent-available",
+          title: "Connect one agent",
+          summary: "Add one Pi provider key or install and authenticate Codex CLI or Copilot CLI.",
+          status: "action-required",
+          requiredForFirstTask: true,
+          updatedAt,
+          primaryAction: {
+            kind: "open-preferences",
+            label: "Open preferences"
+          },
+          secondaryAction: {
+            kind: "refresh-runtime-health",
+            label: "Refresh runtimes"
+          }
+        }
+  );
 
-  if (selectedAgentId === "pi") {
-    const needsProvider = activeProject
-      ? !hasProviderForBrand(input.preferences, input.preferences.providerBrand)
-      : !input.preferences.hasUsableApiKey;
-    checks.push(
-      needsProvider
-        ? {
-            id: "provider-auth",
-            title: "Connect model provider",
-            summary: `Add a ${input.preferences.providerBrand === "gemini" ? "Gemini" : "GPT"} API key for Pi.`,
-            detail: "Pi uses the matching provider key from workspace preferences.",
-            status: "action-required",
-            requiredForFirstTask: true,
-            updatedAt,
-            primaryAction: {
-              kind: "open-preferences",
-              label: "Open preferences"
-            },
-            secondaryAction: {
-              kind: "start-tutorial",
-              label: "Show tutorial",
-              value: "connect-provider-runtime"
-            }
-          }
-        : {
-            id: "provider-auth",
-            title: "Model provider connected",
-            summary: `Pi can use the current ${input.preferences.providerBrand === "gemini" ? "Gemini" : "GPT"} provider.`,
-            status: "ready",
-            requiredForFirstTask: true,
-            updatedAt
-          }
-    );
+  checks.push(buildPiProviderCheck(piHasProvider, updatedAt));
+  checks.push(buildRuntimeCheck("codex-cli", input.preferences.agentRuntimes.find((runtime) => runtime.agentId === "codex-cli"), updatedAt));
+  checks.push(buildRuntimeCheck("copilot-cli", input.preferences.agentRuntimes.find((runtime) => runtime.agentId === "copilot-cli"), updatedAt));
+
+  if (activeProject && input.preferences.blockChatOnDirtyGitDefault && hasGit && !(await probeInsideWorktree(activeProject.rootPath))) {
+    checks.push({
+      id: "project-git-status",
+      title: "Project is not a git repo",
+      summary: "Dirty-git protection needs a git repository before first execution.",
+      detail: "Initialize git with a baseline commit, or disable dirty-git protection and continue without that safety check.",
+      status: "action-required",
+      requiredForFirstTask: true,
+      updatedAt,
+      primaryAction: {
+        kind: "init-git-baseline",
+        label: "Init Git"
+      },
+      secondaryAction: {
+        kind: "disable-dirty-git-check",
+        label: "Disable check"
+      }
+    });
   }
 
   checks.push(
@@ -108,6 +130,33 @@ export async function buildSetupState(input: SetupHealthInput): Promise<SetupSta
             kind: "open-url",
             label: "Git downloads",
             value: "https://git-scm.com/downloads"
+          }
+        }
+  );
+
+  checks.push(
+    ripgrep.ready
+      ? {
+          id: "bundled-ripgrep",
+          title: "Bundled ripgrep ready",
+          summary: "Subagent shell search can use bundled rg.",
+          detail: ripgrep.path,
+          status: "ready",
+          requiredForFirstTask: false,
+          updatedAt
+        }
+      : {
+          id: "bundled-ripgrep",
+          title: "Bundled ripgrep missing",
+          summary: "Install dependencies so subagents can use rg without relying on user PATH.",
+          detail: ripgrep.path ?? "Run bun install.",
+          status: "warning",
+          requiredForFirstTask: false,
+          updatedAt,
+          primaryAction: {
+            kind: "copy-command",
+            label: "Copy install command",
+            value: "bun install"
           }
         }
   );
@@ -174,14 +223,45 @@ export function formatSetupDoctorReport(setup: SetupState) {
   return lines.join("\n");
 }
 
-function buildRuntimeCheck(updatedAgentId: string, runtime: AgentRuntimeCapability | undefined, updatedAt: string): SetupCheck {
+function buildPiProviderCheck(hasProvider: boolean, updatedAt: string): SetupCheck {
+  return hasProvider
+    ? {
+        id: "provider-auth",
+        title: "Pi provider connected",
+        summary: "Pi can use at least one saved provider key.",
+        status: "ready",
+        requiredForFirstTask: false,
+        updatedAt
+      }
+    : {
+        id: "provider-auth",
+        title: "Pi provider missing",
+        summary: "Add an OpenAI or Google API key to enable Pi.",
+        detail: "Codex CLI or Copilot CLI can still be enough for first-run readiness.",
+        status: "action-required",
+        requiredForFirstTask: false,
+        updatedAt,
+        primaryAction: {
+          kind: "open-preferences",
+          label: "Open preferences"
+        },
+        secondaryAction: {
+          kind: "start-tutorial",
+          label: "Show tutorial",
+          value: "connect-provider-runtime"
+        }
+      };
+}
+
+function buildRuntimeCheck(agentId: AgentId, runtime: AgentRuntimeCapability | undefined, updatedAt: string): SetupCheck {
+  const fallbackLabel = agentId === "codex-cli" ? "Codex CLI" : agentId === "copilot-cli" ? "GitHub Copilot CLI" : "Pi";
   if (!runtime) {
     return {
-      id: "agent-runtime",
-      title: "Runtime health unknown",
-      summary: "Refresh runtime health before first execution.",
+      id: `agent-runtime-${agentId}`,
+      title: `${fallbackLabel} health unknown`,
+      summary: "Refresh runtime health before using this runtime.",
       status: "warning",
-      requiredForFirstTask: true,
+      requiredForFirstTask: false,
       updatedAt,
       primaryAction: {
         kind: "refresh-runtime-health",
@@ -190,24 +270,24 @@ function buildRuntimeCheck(updatedAgentId: string, runtime: AgentRuntimeCapabili
     };
   }
 
-  if (updatedAgentId === "pi") {
+  if (agentId === "pi") {
     return {
-      id: "agent-runtime",
+      id: `agent-runtime-${agentId}`,
       title: "Pi runtime ready",
       summary: "Pi runtime is built into the harness.",
       status: "ready",
-      requiredForFirstTask: true,
+      requiredForFirstTask: false,
       updatedAt
     };
   }
 
   if (!runtime.installed) {
     return {
-      id: "agent-runtime",
+      id: `agent-runtime-${agentId}`,
       title: `${runtime.label} not installed`,
       summary: runtime.healthMessage ?? `Install ${runtime.label} before first execution.`,
       status: "action-required",
-      requiredForFirstTask: true,
+      requiredForFirstTask: false,
       updatedAt,
       primaryAction: runtime.installCommand
         ? {
@@ -231,11 +311,11 @@ function buildRuntimeCheck(updatedAgentId: string, runtime: AgentRuntimeCapabili
 
   if (!runtime.authenticated) {
     return {
-      id: "agent-runtime",
+      id: `agent-runtime-${agentId}`,
       title: `${runtime.label} needs authentication`,
       summary: runtime.healthMessage ?? `Authenticate ${runtime.label} before first execution.`,
       status: "action-required",
-      requiredForFirstTask: true,
+      requiredForFirstTask: false,
       updatedAt,
       primaryAction: runtime.authCommand
         ? {
@@ -258,29 +338,49 @@ function buildRuntimeCheck(updatedAgentId: string, runtime: AgentRuntimeCapabili
   }
 
   return {
-    id: "agent-runtime",
+    id: `agent-runtime-${agentId}`,
     title: `${runtime.label} ready`,
     summary: `${runtime.label} is installed and authenticated.`,
     detail: runtime.version ? `Version: ${runtime.version}` : undefined,
     status: "ready",
-    requiredForFirstTask: true,
+    requiredForFirstTask: false,
     updatedAt
   };
 }
 
-function hasProviderForBrand(preferences: PreferencesState, providerBrand: PreferencesState["providerBrand"]) {
-  return providerBrand === "gemini" ? preferences.hasUsableGoogleApiKey : preferences.hasUsableOpenAiApiKey;
+function hasAnyPiProvider(preferences: PreferencesState) {
+  return Boolean(
+    preferences.hasUsableApiKey ||
+      preferences.hasStoredApiKey ||
+      preferences.hasUsableOpenAiApiKey ||
+      preferences.hasStoredOpenAiApiKey ||
+      preferences.hasUsableGoogleApiKey ||
+      preferences.hasStoredGoogleApiKey
+  );
 }
 
-async function probeGit() {
+function isUsableCliRuntime(runtime: AgentRuntimeCapability) {
+  return runtime.runtimeKind === "cli" && runtime.installed && runtime.authenticated && runtime.supportsProgrammatic;
+}
+
+async function probeRipgrep() {
+  const bundledPath = resolveBundledRipgrepPath();
+  if (!bundledPath) {
+    return { ready: false, path: undefined };
+  }
+
   try {
     const process = Bun.spawn({
-      cmd: ["git", "--version"],
+      cmd: ["rg", "--version"],
+      env: {
+        ...Bun.env,
+        PATH: buildToolchainPath({ basePath: Bun.env.PATH })
+      },
       stdout: "ignore",
       stderr: "ignore"
     });
-    return (await process.exited) === 0;
+    return { ready: (await process.exited) === 0, path: bundledPath };
   } catch {
-    return false;
+    return { ready: false, path: bundledPath };
   }
 }

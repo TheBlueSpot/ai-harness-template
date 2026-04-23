@@ -1,0 +1,35 @@
+:root {
+  color-scheme: light;
+  --paper: #f6f0de;
+  --ink: #1c1a1e;
+  --mud: #51413a;
+  --gold: #d59b3b;
+  --wash: rgba(27, 22, 24, 0.78);
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; min-height: 100%; }
+body {
+  font-family: "Trebuchet MS", "Verdana", sans-serif;
+  background:
+    linear-gradient(135deg, rgba(58, 141, 138, 0.18), transparent 34%),
+    radial-gradient(circle at top, rgba(255,255,255,0.72), transparent 30%),
+    linear-gradient(180deg, #f3e9ce 0%, #bcd4cd 58%, #e18857 100%);
+  color: var(--ink);
+}
+.shell { min-height: 100vh; display: grid; place-items: center; padding: 20px; }
+.frame { position: relative; width: min(1280px, 96vw); aspect-ratio: 16 / 9; }
+canvas {
+  width: 100%; height: 100%; display: block; border-radius: 8px;
+  border: 2px solid rgba(54, 32, 21, 0.2);
+  box-shadow: 0 24px 70px rgba(40, 24, 10, 0.24);
+  background: url("../public/assets/ink-bg.svg") center/cover no-repeat, var(--paper);
+}
+.overlay { position: absolute; inset: 0; pointer-events: none; }
+.card {
+  position: absolute; inset: 28px auto auto 28px; max-width: 360px;
+  padding: 16px 18px; border-radius: 8px; background: var(--wash); color: #fff6ea;
+  border: 2px solid rgba(255, 246, 234, 0.24);
+}
+.card h1 { margin: 0 0 8px; font-size: 34px; line-height: 1; }
+.card p { margin: 0; font-size: 14px; line-height: 1.5; }

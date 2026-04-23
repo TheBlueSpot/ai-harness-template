@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>qwop-inverse</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <main class="shell">
+    <canvas id="game" class="game-canvas" width="1600" height="900" aria-label="qwop-inverse canvas"></canvas>
+    <section id="menu-root" class="overlay overlay--menu" aria-live="polite"></section>
+    <section id="hud-root" class="overlay overlay--hud" aria-live="polite"></section>
+    <section id="lose-root" class="overlay overlay--lose" aria-live="assertive"></section>
+  </main>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

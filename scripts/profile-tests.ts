@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { buildBunTestPlan, stripFlag } from "./test-runner";
 
 const repoRoot = path.resolve(import.meta.dir, "..");
 const profileDir = path.join(repoRoot, ".local", "profiles", "tests");
@@ -8,9 +9,8 @@ process.chdir(repoRoot);
 mkdirSync(profileDir, { recursive: true });
 
 const forwardedArgs = process.argv.slice(2);
-if (forwardedArgs[0] === "--") {
-  forwardedArgs.shift();
-}
+const plan = buildBunTestPlan(forwardedArgs, process.env);
+const profiledArgs = stripFlag(stripFlag(stripFlag(plan.bunArgs.slice(1), "--reporter"), "--reporter-outfile"), "--dots");
 
 const profileBasename = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
 const junitXmlPath = path.join(profileDir, `${profileBasename}.xml`);
@@ -23,9 +23,9 @@ const profiledTestProcess = Bun.spawn({
   cmd: [
     process.execPath,
     "test",
+    ...profiledArgs,
     "--reporter=junit",
-    `--reporter-outfile=${path.relative(repoRoot, junitXmlPath).replaceAll("\\", "/")}`,
-    ...forwardedArgs
+    `--reporter-outfile=${path.relative(repoRoot, junitXmlPath).replaceAll("\\", "/")}`
   ],
   cwd: repoRoot,
   env: process.env,
@@ -37,13 +37,19 @@ const profiledTestProcess = Bun.spawn({
 const exitCode = await profiledTestProcess.exited;
 
 if (existsSync(junitXmlPath)) {
-  const report = parseJUnitReport(readFileSync(junitXmlPath, "utf8"));
+  const report = {
+    ...parseJUnitReport(readFileSync(junitXmlPath, "utf8")),
+    workerCount: plan.workerCount,
+    parallelDelayMs: plan.parallelDelayMs
+  } satisfies ParsedReport;
   writeFileSync(
     outputJsonPath,
     JSON.stringify(
       {
         generatedAt: new Date().toISOString(),
         junitXmlPath: path.relative(repoRoot, junitXmlPath).replaceAll("\\", "/"),
+        workerCount: report.workerCount,
+        parallelDelayMs: report.parallelDelayMs,
         tests: report.tests,
         files: report.files
       },
@@ -80,6 +86,8 @@ type FileProfileRecord = {
 };
 
 type ParsedReport = {
+  workerCount?: number;
+  parallelDelayMs?: number;
   tests: TestProfileRecord[];
   files: FileProfileRecord[];
 };
@@ -130,6 +138,9 @@ function parseXmlAttributes(attributesText: string) {
 function buildMarkdownSummary(report: ParsedReport) {
   const lines = [
     "# Test Profile",
+    "",
+    `Parallel workers: ${report.workerCount ?? "unknown"}`,
+    `Parallel delay: ${report.parallelDelayMs ?? "unknown"}ms`,
     "",
     "## Slowest Tests",
     ...report.tests.slice(0, 20).map((record, index) => `${index + 1}. ${record.durationMs}ms ${record.file}:${record.line ?? "?"} :: ${record.name} [${record.status}]`),

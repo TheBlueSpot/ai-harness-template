@@ -47,8 +47,8 @@ New `US-*` stories start as `GAP-HIGH` here until at least one colocated or inte
 | US-THREADS-004 | — | none | GAP-HIGH |
 | US-THREADS-005 | harness/cli/src/workspace-repository.test.ts | integration | GAP-MED |
 | US-THREADS-006 | — | none | GAP-HIGH |
-| US-THREADS-007 | harness/ui/src/components/project-sidebar.test.tsx | unit | OK |
-| US-THREADS-008 | harness/ui/src/store/store.test.ts | unit | OK |
+| US-THREADS-007 | harness/cli/src/server.test.ts, harness/ui/src/components/project-sidebar.test.tsx, harness/ui/src/store/store.test.ts | unit+integration | OK |
+| US-THREADS-008 | harness/cli/src/protocol.test.ts, harness/cli/src/run-milestone-windows.test.ts, harness/cli/src/server.subagents.test.ts, harness/ui/src/store/store.test.ts, harness/ui/src/components/chat-panel.test.tsx | unit+integration | OK |
 | US-THREADS-009 | harness/ui/src/components/project-sidebar.test.tsx | unit | OK |
 
 ## PLANNING
@@ -57,7 +57,7 @@ New `US-*` stories start as `GAP-HIGH` here until at least one colocated or inte
 |----------|-----------|-------|-----|
 | US-PLANNING-001 | harness/cli/src/server.test.ts | integration | GAP-MED |
 | US-PLANNING-002 | harness/cli/src/server.test.ts, harness/ui/src/components/chat-panel.test.tsx | unit+integration | GAP-MED |
-| US-PLANNING-003 | harness/cli/src/server.test.ts, harness/ui/src/components/chat-panel.test.tsx | unit+integration | OK |
+| US-PLANNING-003 | harness/cli/src/server.test.ts, harness/cli/src/workspace-repository.test.ts, harness/ui/src/components/chat-panel.test.tsx | unit+integration | OK |
 | US-PLANNING-004 | harness/ui/src/components/chat-panel.test.tsx, harness/ui/src/components/trace-panel.test.tsx | unit | OK |
 | US-PLANNING-005 | harness/cli/src/server.test.ts, harness/ui/src/store/store.test.ts | unit+integration | GAP-MED |
 | US-PLANNING-006 | harness/ui/src/components/chat-panel.integration.test.tsx | unit | OK |
@@ -71,8 +71,8 @@ New `US-*` stories start as `GAP-HIGH` here until at least one colocated or inte
 | Story ID | Covered by | Depth | Gap |
 |----------|-----------|-------|-----|
 | US-RUNS-001 | harness/cli/src/server.test.ts, harness/ui/src/store/store.test.ts | unit+integration | OK |
-| US-RUNS-002 | harness/cli/src/server.test.ts, harness/ui/src/components/chat-panel.test.tsx | unit+integration | OK |
-| US-RUNS-003 | harness/cli/src/server.test.ts, harness/ui/src/components/chat-panel.test.tsx | unit+integration | OK |
+| US-RUNS-002 | harness/cli/src/server.test.ts, harness/cli/src/workspace-repository.test.ts, harness/ui/src/components/chat-panel.test.tsx | unit+integration | OK |
+| US-RUNS-003 | harness/cli/src/server.test.ts, harness/cli/src/workspace-repository.test.ts, harness/ui/src/components/chat-panel.test.tsx | unit+integration | OK |
 | US-RUNS-004 | harness/cli/src/server.test.ts, harness/ui/src/components/trace-panel.test.tsx | unit+integration | OK |
 | US-RUNS-005 | harness/cli/src/server.test.ts, harness/ui/src/components/preferences-modal.test.tsx | unit+integration | OK |
 | US-RUNS-006 | harness/ui/src/components/followup-reset.integration.test.tsx, harness/ui/src/store/store.test.ts | unit | OK |
@@ -83,6 +83,7 @@ New `US-*` stories start as `GAP-HIGH` here until at least one colocated or inte
 | US-RUNS-011 | harness/cli/src/server.test.ts | integration | GAP-MED |
 | US-RUNS-012 | harness/cli/src/server.test.ts, harness/ui/src/store/store.test.ts | unit+integration | OK |
 | US-RUNS-013 | harness/cli/src/server.test.ts | integration | OK |
+| US-RUNS-014 | harness/cli/src/git-preflight.test.ts, harness/cli/src/server.execution-main.test.ts, harness/ui/src/store/store.test.ts | unit+integration | OK |
 
 ## PROVIDERS
 
@@ -114,11 +115,13 @@ New `US-*` stories start as `GAP-HIGH` here until at least one colocated or inte
 | US-WORKTREE-001 | harness/cli/src/branchfs-manager.test.ts | integration | OK |
 | US-WORKTREE-002 | harness/cli/src/branchfs-subagent-integration.test.ts | integration | OK |
 | US-WORKTREE-003 | harness/cli/src/branchfs-subagent-integration.test.ts | integration | OK |
-| US-WORKTREE-004 | harness/cli/src/server.test.ts | integration | GAP-MED |
-| US-WORKTREE-005 | harness/cli/src/server.test.ts | integration | GAP-MED |
-| US-WORKTREE-006 | harness/cli/src/branchfs-subagent-integration.test.ts | integration | OK |
-| US-WORKTREE-007 | harness/cli/src/branchfs-subagent-integration.test.ts | integration | OK |
+| US-WORKTREE-004 | harness/cli/src/pi-subagents.test.ts, harness/cli/src/server.subagents.test.ts, harness/cli/src/pi-planner.test.ts | unit+integration | OK |
+| US-WORKTREE-005 | harness/cli/src/pi-subagents.test.ts, harness/cli/src/server.subagents.test.ts, harness/cli/src/pi-planner.test.ts | unit+integration | OK |
+| US-WORKTREE-006 | harness/cli/src/branchfs-subagent-integration.test.ts, harness/cli/src/pi-orchestrator.test.ts | unit+integration | OK |
+| US-WORKTREE-007 | harness/cli/src/branchfs-subagent-integration.test.ts, harness/cli/src/pi-subagents.test.ts, harness/cli/src/pi-orchestrator.test.ts | unit+integration | OK |
 | US-WORKTREE-008 | harness/cli/src/branchfs-subagent-integration.test.ts | integration | OK |
+| US-WORKTREE-009 | harness/cli/src/pi-subagents.test.ts | unit | OK |
+| US-WORKTREE-010 | harness/cli/src/pi-subagents.test.ts, harness/cli/src/pi-orchestrator.test.ts | unit | GAP-MED |
 
 ## ATTACHMENTS
 
@@ -185,6 +188,7 @@ New `US-*` stories start as `GAP-HIGH` here until at least one colocated or inte
 | US-ACTIVATION-004 | harness/ui/src/components/help-tutorial-dialog.test.tsx, harness/ui/src/components/tutorial-overlay.test.tsx | unit | OK |
 | US-ACTIVATION-005 | harness/ui/src/components/project-switcher-dialog.test.tsx | unit | OK |
 | US-ACTIVATION-006 | harness/cli/src/server.test.ts | integration | GAP-MED |
+| US-ACTIVATION-007 | harness/cli/src/server.preferences-and-modes.test.ts, harness/ui/src/components/chat-panel.test.tsx | unit+integration | OK |
 
 ## UI
 
@@ -204,11 +208,12 @@ New `US-*` stories start as `GAP-HIGH` here until at least one colocated or inte
 | US-UI-012 | harness/ui/src/components/project-sidebar.test.tsx | unit | OK |
 | US-UI-013 | harness/ui/src/toast-store.test.ts, harness/ui/src/components/markdown-content.test.tsx | unit | OK |
 | US-UI-014 | harness/ui/src/app.test.tsx | unit | OK |
-| US-UI-015 | harness/ui/src/components/trace-panel.test.tsx | unit | OK |
-| US-UI-016 | harness/ui/src/store/store.test.ts | unit | OK |
+| US-UI-015 | harness/cli/src/run-milestone-windows.test.ts, harness/cli/src/server.subagents.test.ts, harness/ui/src/components/chat-panel.test.tsx, harness/ui/src/components/trace-panel.test.tsx | unit+integration | OK |
+| US-UI-016 | harness/cli/src/protocol.test.ts, harness/ui/src/store/store.test.ts, harness/ui/src/components/chat-panel.test.tsx | unit | OK |
 | US-UI-017 | harness/ui/src/components/chat-panel.test.tsx, harness/ui/src/components/trace-panel.test.tsx | unit | GAP-MED |
 | US-UI-018 | harness/ui/src/components/notification-inbox.test.tsx | unit | GAP-MED |
 | US-UI-019 | harness/ui/src/store/store.test.ts | unit | OK |
+| US-UI-020 | harness/cli/src/tool-activity-state.test.ts, harness/ui/src/components/chat-panel.test.tsx, harness/ui/src/components/trace-panel.test.tsx | unit | GAP-MED |
 
 ## PERSISTENCE
 
@@ -220,7 +225,7 @@ New `US-*` stories start as `GAP-HIGH` here until at least one colocated or inte
 | US-PERSISTENCE-004 | harness/cli/src/server.test.ts | integration | OK |
 | US-PERSISTENCE-005 | harness/cli/src/server.test.ts | integration | OK |
 | US-PERSISTENCE-006 | harness/cli/src/workspace-repository.test.ts | integration | GAP-MED |
-| US-PERSISTENCE-007 | harness/ui/src/store/store.test.ts | unit | OK |
+| US-PERSISTENCE-007 | harness/cli/src/workspace-repository.test.ts, harness/cli/src/server.test.ts, harness/ui/src/store/store.test.ts, harness/ui/src/components/chat-panel.test.tsx | unit+integration | OK |
 | US-PERSISTENCE-008 | harness/cli/src/browser-session-state.test.ts, harness/ui/src/store/store.test.ts | unit | OK |
 | US-PERSISTENCE-009 | harness/cli/src/browser-session-state.test.ts, harness/ui/src/store/store.test.ts | unit | OK |
 | US-PERSISTENCE-010 | harness/cli/src/workspace-repository.test.ts | integration | OK |
@@ -244,14 +249,14 @@ New `US-*` stories start as `GAP-HIGH` here until at least one colocated or inte
 |----------|-----------|-------|-----|
 | US-DEV-001 | harness/cli/src/launch-harness.test.ts | integration | OK |
 | US-DEV-002 | — | none | GAP-HIGH |
-| US-DEV-003 | harness/cli/src/launch-harness.test.ts | integration | GAP-MED |
-| US-DEV-004 | harness/cli/src/launch-harness.test.ts | integration | GAP-MED |
+| US-DEV-003 | harness/cli/src/launch-harness.test.ts, harness/cli/src/server.startup.test.ts, harness/cli/src/ui-build.test.ts, harness/ui/src/mount-app.test.tsx | unit+integration | OK |
+| US-DEV-004 | harness/cli/src/launch-harness.test.ts, harness/cli/src/server.startup.test.ts | integration | GAP-LOW |
 | US-DEV-005 | harness/cli/src/launch-harness.test.ts | integration | OK |
 | US-DEV-006 | harness/cli/src/ui-build.test.ts | integration | OK |
 | US-DEV-007 | — | none | GAP-HIGH |
 | US-DEV-008 | harness/cli/src/cli-entry.test.ts, harness/cli/src/fatal-startup-log.test.ts | unit | OK |
 | US-DEV-009 | harness/cli/src/ui-build.test.ts | integration | OK |
-| US-DEV-010 | — | none | GAP-LOW |
+| US-DEV-010 | scripts/test-runner.test.ts | unit | OK |
 | US-DEV-011 | — | none | GAP-LOW |
 | US-DEV-012 | harness/cli/src/launch-harness.test.ts, harness/cli/src/dev-db-recovery.test.ts | integration | OK |
 | US-DEV-013 | harness/cli/src/dev-db-recovery.test.ts, harness/cli/src/launch-harness.test.ts | integration | OK |
@@ -266,6 +271,8 @@ New `US-*` stories start as `GAP-HIGH` here until at least one colocated or inte
 | US-DEV-022 | — | none | GAP-LOW |
 | US-DEV-023 | scripts/screenshot.test.ts | unit | GAP-MED |
 | US-DEV-024 | harness/cli/src/startup-telemetry.test.ts, harness/cli/src/launch-harness.test.ts, harness/cli/src/server.test.ts | unit+integration | OK |
+| US-DEV-025 | harness/cli/src/agent-runtimes/toolchain.test.ts, harness/cli/src/pi-subagents.test.ts, harness/cli/src/pi-orchestrator.test.ts | unit | OK |
+| US-DEV-026 | harness/cli/src/server.startup.test.ts | integration | GAP-MED |
 
 ## SEARCH
 
@@ -273,6 +280,7 @@ New `US-*` stories start as `GAP-HIGH` here until at least one colocated or inte
 |----------|-----------|-------|-----|
 | US-SEARCH-001 | harness/cli/src/project-search-service.test.ts, harness/ui/src/components/project-switcher-dialog.test.tsx, harness/ui/src/app.test.tsx | unit+integration | OK |
 | US-SEARCH-002 | harness/ui/src/components/project-switcher-dialog.test.tsx | unit | OK |
+| US-SEARCH-003 | harness/cli/src/server.projects-and-history.test.ts, harness/ui/src/components/project-switcher-dialog.test.tsx | unit+integration | OK |
 
 ## MARKDOWN
 
@@ -301,8 +309,9 @@ New `US-*` stories start as `GAP-HIGH` here until at least one colocated or inte
 
 ### GAP-MED (happy path only)
 
-- US-WORKSPACE-003 / -004, US-THREADS-002 / -005, US-PLANNING-001 / -002 / -005 / -010, US-RUNS-007 / -009 / -011, US-PROVIDERS-001 / -007, US-RUNTIMES-001 / -004, US-WORKTREE-004 / -005, US-ATTACHMENTS-002, US-MODES-001 / -005, US-JOBS-001 / -003 / -004, US-NOTIFICATIONS-001 / -002, US-BROWSER-002 / -003, US-ACTIVATION-002 / -006, US-UI-003 / -008 / -017 / -018, US-PERSISTENCE-006 / -013 / -015, US-DEV-003 / -004 / -020
+- US-WORKSPACE-003 / -004, US-THREADS-002 / -005, US-PLANNING-001 / -002 / -005 / -010, US-RUNS-007 / -009 / -011, US-PROVIDERS-001 / -007, US-RUNTIMES-001 / -004, US-WORKTREE-004 / -005, US-ATTACHMENTS-002, US-MODES-001 / -005, US-JOBS-001 / -003 / -004, US-NOTIFICATIONS-001 / -002, US-BROWSER-002 / -003, US-ACTIVATION-002 / -006, US-UI-003 / -008 / -017 / -018, US-PERSISTENCE-006 / -013 / -015, US-DEV-020 / -026
 
 ### GAP-LOW (exercised indirectly, raise only on drift)
 
-- US-UI-004 (lucide icon consistency), US-DEV-010 (`bun test` invocation), US-DEV-011 (`bun run typecheck` invocation), US-DEV-022 (Tailwind lint enforcement)
+- US-UI-004 (lucide icon consistency), US-DEV-011 (`bun run typecheck` invocation), US-DEV-022 (Tailwind lint enforcement)
+

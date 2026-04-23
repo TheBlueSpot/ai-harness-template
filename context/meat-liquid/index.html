@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Super Meat Boy: Liquid Velocity</title>
+  <link rel="stylesheet" href="./src/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <section class="game-frame" aria-label="Super Meat Boy: Liquid Velocity">
+      <canvas id="game-canvas" width="1600" height="900" aria-label="Game canvas"></canvas>
+      <div id="overlay-root" class="overlay-root" aria-live="polite"></div>
+      <div class="chrome chrome-top">
+        <div class="brand">
+          <span class="brand-kicker">Super Meat Boy: Liquid Velocity</span>
+          <h1>Ghost route precision platforming</h1>
+        </div>
+        <p>Air-strafe through the cave, clip jumps by frame hold, and race the pileup of your failed attempts.</p>
+      </div>
+      <div class="chrome chrome-bottom">
+        <p>Standalone browser canvas build with replay ghosts, sub-pixel collision, and public-domain PNG environment art.</p>
+      </div>
+    </section>
+  </main>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

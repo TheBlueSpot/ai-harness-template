@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { buildExecutionPrompt, chooseExecutionPath, runPlannerTurn, shouldUseReadOnlyExecutionTools } from "./pi-orchestrator";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { buildExecutionPlan, buildExecutionPrompt, chooseExecutionPath, executeReadyRun, runPlannerTurn, shouldUseReadOnlyExecutionTools } from "./pi-orchestrator";
 import type { PiAgentAdapter, PiAgentExecutionController, PiAgentPromptRequest, PiAgentPromptResult } from "./pi-agent-adapter";
-import type { ModeDefinition } from "../../shared/protocol";
+import type { ExecutionPlan, ModeDefinition, PlannerReadyTurn, ProviderModelId } from "../../shared/protocol";
 import { resolveModeExecutionAccess } from "../../shared/modes";
 
 describe("pi execution router", () => {
@@ -11,6 +14,29 @@ describe("pi execution router", () => {
 
   test("routes high difficulty tasks to subagents", () => {
     expect(chooseExecutionPath(41)).toBe("subagents");
+  });
+
+  test("preserves high planner effort while scheduling with bounded effort", () => {
+    const readyPlan = createReadyPlan();
+    readyPlan.contracts![0] = {
+      ...readyPlan.contracts![0]!,
+      effortPoints: 12
+    };
+
+    const executionPlan = buildExecutionPlan({
+      runId: "run-high-effort",
+      planningModelId: "openai/gpt-5.4",
+      plannerResult: readyPlan,
+      subagentWorktreeStrategy: "same-worktree",
+      planExecutionMode: "approve",
+      planExecutionDelaySeconds: 0,
+      correctnessIterationMode: "ask-before-iterate",
+      iteration: 1,
+      origin: "initial"
+    });
+
+    expect(executionPlan.contracts[0]?.effortPoints).toBe(12);
+    expect(executionPlan.actualSubagentCount).toBeGreaterThanOrEqual(0);
   });
 
   test("omits persisted system status rows from execution transcript", () => {
@@ -194,4 +220,161 @@ describe("pi execution router", () => {
     expect(prompt).toContain("Workspace path guidance:");
     expect(prompt).toContain("Execution brief: Create breakout/index.html");
   });
+
+  test("same-worktree subagents receive implementation packets and report contract drift without failing", async () => {
+    const rootPath = mkdtempSync(path.join(tmpdir(), "harness-subagent-drift-"));
+    try {
+      runSync(["git", "init"], rootPath);
+      runSync(["git", "config", "user.email", "test@example.com"], rootPath);
+      runSync(["git", "config", "user.name", "Harness Test"], rootPath);
+      writeFileSync(path.join(rootPath, "package.json"), JSON.stringify({ type: "module" }));
+      mkdirSync(path.join(rootPath, ".agents", "skills", "caveman"), { recursive: true });
+      writeFileSync(path.join(rootPath, ".agents", "skills", "caveman", "SKILL.md"), "# caveman\n");
+      writeFileSync(path.join(rootPath, "AGENTS.md"), "- Start all conversations in /caveman ultra.\n");
+      runSync(["git", "add", "."], rootPath);
+      runSync(["git", "commit", "-m", "seed"], rootPath);
+
+      const calls: PiAgentPromptRequest[] = [];
+      const adapter = createExecutionAdapter(calls, async (request) => {
+        if (request.kind === "subagent") {
+          writeFileSync(path.join(rootPath, "owned.ts"), "export const owned = true;\n");
+          writeFileSync(path.join(rootPath, "drift.ts"), "export const drift = true;\n");
+          return { text: "Changed owned.ts and drift.ts" };
+        }
+
+        return { text: "aggregated result" };
+      });
+      const readyPlan = createReadyPlan();
+
+      const outcome = await executeReadyRun(adapter, {
+        cwd: rootPath,
+        runId: "run-1",
+        sessionId: "thread-1",
+        messages: [],
+        providerBrand: "gpt",
+        readyPlan,
+        executionPlan: createExecutionPlan(readyPlan),
+        debugEnabled: true
+      });
+
+      const subagentPrompt = calls.find((call) => call.kind === "subagent")?.prompt ?? "";
+      const aggregatorPrompt = calls.find((call) => call.kind === "aggregator")?.prompt ?? "";
+
+      expect(outcome.partial).toBe(false);
+      expect(outcome.subagentResults[0]?.contractDriftPaths).toEqual(["drift.ts"]);
+      expect(subagentPrompt).toContain("focused implementation subagent");
+      expect(subagentPrompt).toContain(`Execution cwd: ${rootPath}`);
+      expect(subagentPrompt).toContain("Repository root:");
+      expect(subagentPrompt).toContain("Project path relative to repository root: .");
+      expect(subagentPrompt).toContain(".agents/skills/caveman/SKILL.md");
+      expect(subagentPrompt).not.toContain(".agents/skills/.system");
+      expect(subagentPrompt).toContain("Test-Path .\\tower-hologram");
+      expect(subagentPrompt).toContain("rg --files . | rg \"\\.(png|wav|mp3|ogg)$\"");
+      expect(subagentPrompt).toContain(".wav, .mp3, .ogg, images, and SVG can be used directly in HTML5");
+      expect(subagentPrompt).toContain("Do not run ffmpeg -version unless the task explicitly asks");
+      expect(subagentPrompt).toContain("stable meaning");
+      expect(subagentPrompt).toContain("Create missing directories and the first listed missing file immediately");
+      expect(subagentPrompt).not.toContain("Verification commands:");
+      expect(aggregatorPrompt).toContain("Contract drift paths: drift.ts");
+    } finally {
+      rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
 });
+
+function createReadyPlan(): PlannerReadyTurn {
+  return {
+    type: "ready",
+    difficultyScore: 72,
+    summary: "Implement owned module",
+    executionModelId: "openai/gpt-5.4",
+    usesSubagents: true,
+    subtasks: [
+      {
+        id: "task-1",
+        title: "Owned module",
+        instruction: "Create owned.ts with export const owned."
+      }
+    ],
+    finalExecutionBrief: "Build owned module",
+    contracts: [
+      {
+        taskId: "task-1",
+        title: "Owned module",
+        instruction: "Create owned.ts with export const owned.",
+        effortPoints: 2,
+        ownedPaths: ["owned.ts"],
+        dependsOnPrerequisiteIds: [],
+        deliverables: ["owned.ts"],
+        integrationPoints: ["aggregator"],
+        verificationScope: "owned-files-only",
+        verificationCommands: ["bunx tsc --noEmit owned.ts"],
+        mergeNotes: "Merge owned module."
+      }
+    ]
+  };
+}
+
+function createExecutionPlan(readyPlan: PlannerReadyTurn): ExecutionPlan {
+  return {
+    runId: "run-1",
+    origin: "initial",
+    iteration: 1,
+    summary: readyPlan.summary,
+    finalExecutionBrief: readyPlan.finalExecutionBrief,
+    difficultyScore: readyPlan.difficultyScore,
+    planningModelId: "openai/gpt-5.4",
+    executionModelId: readyPlan.executionModelId as ProviderModelId,
+    route: "pi-subagents",
+    subagentWorktreeStrategy: "same-worktree",
+    targetSubagentCount: 1,
+    actualSubagentCount: 1,
+    gating: {
+      mode: "approve",
+      delaySeconds: 0
+    },
+    prerequisites: [],
+    contracts: readyPlan.contracts ?? [],
+    correctnessPolicy: "ask-before-iterate"
+  };
+}
+
+function createExecutionAdapter(
+  calls: PiAgentPromptRequest[],
+  run: (request: PiAgentPromptRequest) => Promise<PiAgentPromptResult>
+): PiAgentAdapter {
+  return {
+    async runPrompt(request) {
+      calls.push(request);
+      return run(request);
+    },
+    async startExecution(request): Promise<PiAgentExecutionController> {
+      calls.push(request);
+      return {
+        result: run(request),
+        continueWithPrompt() {
+          return run(request);
+        },
+        async abort() {},
+        dispose() {}
+      };
+    },
+    setApiKey() {},
+    hasApiKey() {
+      return false;
+    }
+  };
+}
+
+function runSync(command: string[], cwd: string) {
+  const proc = Bun.spawnSync({
+    cmd: command,
+    cwd,
+    stdout: "pipe",
+    stderr: "pipe"
+  });
+
+  if (proc.exitCode !== 0) {
+    throw new Error(`${command.join(" ")} failed: ${new TextDecoder().decode(proc.stderr)}`);
+  }
+}

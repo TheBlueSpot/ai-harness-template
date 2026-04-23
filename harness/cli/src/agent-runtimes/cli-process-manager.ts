@@ -1,4 +1,5 @@
 import type { Subprocess } from "bun";
+import { buildToolchainPath } from "./toolchain";
 
 export type CliProcessEnvInput = {
   cols: number;
@@ -51,8 +52,10 @@ const WATCHDOG_POLL_MS = 250;
 const FORCE_KILL_DELAY_MS = 3000;
 
 export function buildCliProcessEnv(input: CliProcessEnvInput) {
+  const pathValue = buildToolchainPath({ basePath: Bun.env.PATH }) ?? Bun.env.PATH ?? "";
   return {
     ...Bun.env,
+    PATH: pathValue,
     TERM: "xterm-256color",
     COLORTERM: "truecolor",
     FORCE_COLOR: "1",

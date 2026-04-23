@@ -207,6 +207,197 @@ createUiTest("ChatPanel", () => {
     expect((commands[0] as { type: string }).type).toBe("chat.send");
   });
 
+  it("switches Pi to an alternate usable provider key before sending", () => {
+    const commands: unknown[] = [];
+    const project = createViewProjectFixture({
+      id: "project-send-gemini",
+      draft: "simple task"
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        providerBrand: "gpt",
+        hasUsableApiKey: true,
+        hasUsableOpenAiApiKey: false,
+        hasUsableGoogleApiKey: true,
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    captureDispatchedCommands(commands as never[]);
+    render(() => <ChatPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "Send task to Pi" }));
+
+    expect(commands.map((command) => (command as { type: string }).type)).toEqual(["preferences.save", "chat.send"]);
+    expect(commands[0]).toMatchObject({
+      type: "preferences.save",
+      payload: {
+        providerBrand: "gemini"
+      }
+    });
+  });
+
+  it("disables Pi sends with a tooltip reason when no provider key exists", () => {
+    const project = createViewProjectFixture({
+      id: "project-send-no-keys",
+      draft: "simple task"
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ChatPanel />);
+    const sendButton = screen.getByRole("button", { name: "Send task to Pi" }) as HTMLButtonElement;
+
+    expect(sendButton.disabled).toBe(true);
+    expect(sendButton.getAttribute("aria-description")).toContain("Add an OpenAI or Google API key to use Pi");
+  });
+
+  it("disables Pi send with tooltip reason when only alternate agents are ready", () => {
+    const project = createViewProjectFixture({
+      id: "project-send-pi-disabled",
+      draft: "simple task"
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        availableAgents: [
+          { id: "pi", label: "Pi" },
+          { id: "codex-cli", label: "Codex CLI" }
+        ],
+        agentRuntimes: [
+          {
+            agentId: "codex-cli",
+            label: "Codex CLI",
+            runtimeKind: "cli",
+            installed: true,
+            authenticated: true,
+            interactivePipeCompatible: true,
+            supportsInteractive: true,
+            supportsProgrammatic: true,
+            supportsPlanning: true,
+            supportsReview: true,
+            discoveredModels: ["openai/gpt-5.4"],
+            activeModel: "openai/gpt-5.4",
+            modelDiscoveryConfidence: "exact"
+          }
+        ],
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ChatPanel />);
+    const sendButton = screen.getByRole("button", { name: "Send task to Pi" }) as HTMLButtonElement;
+
+    expect(sendButton.disabled).toBe(true);
+    expect(sendButton.getAttribute("aria-description")).toContain("Add an OpenAI or Google API key to use Pi");
+  });
+
+  it("sends with CLI runtimes without Pi API keys", () => {
+    const commands: unknown[] = [];
+    const project = createViewProjectFixture({
+      id: "project-send-codex",
+      draft: "simple task"
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        selectedAgentId: "codex-cli",
+        hasGlobalSelectedAgentId: true,
+        availableAgents: [
+          { id: "pi", label: "Pi" },
+          { id: "codex-cli", label: "Codex CLI" }
+        ],
+        agentRuntimes: [
+          {
+            agentId: "codex-cli",
+            label: "Codex CLI",
+            runtimeKind: "cli",
+            installed: true,
+            authenticated: true,
+            interactivePipeCompatible: true,
+            supportsInteractive: true,
+            supportsProgrammatic: true,
+            supportsPlanning: true,
+            supportsReview: true,
+            discoveredModels: ["openai/gpt-5.4"],
+            activeModel: "openai/gpt-5.4",
+            modelDiscoveryConfidence: "exact"
+          }
+        ],
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    captureDispatchedCommands(commands as never[]);
+    render(() => <ChatPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "Send task to Codex CLI" }));
+
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      type: "chat.send",
+      payload: {
+        agentId: "codex-cli"
+      }
+    });
+  });
+
+  it("disables selected CLI send with tooltip reason when runtime cannot send", () => {
+    const project = createViewProjectFixture({
+      id: "project-send-codex-disabled",
+      draft: "simple task"
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        selectedAgentId: "codex-cli",
+        hasGlobalSelectedAgentId: true,
+        availableAgents: [
+          { id: "pi", label: "Pi" },
+          { id: "codex-cli", label: "Codex CLI" }
+        ],
+        agentRuntimes: [
+          {
+            agentId: "codex-cli",
+            label: "Codex CLI",
+            runtimeKind: "cli",
+            installed: true,
+            authenticated: false,
+            interactivePipeCompatible: true,
+            supportsInteractive: true,
+            supportsProgrammatic: true,
+            supportsPlanning: true,
+            supportsReview: true,
+            healthMessage: "Run `codex login` before sending tasks.",
+            discoveredModels: ["openai/gpt-5.4"],
+            activeModel: "openai/gpt-5.4",
+            modelDiscoveryConfidence: "exact"
+          }
+        ],
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ChatPanel />);
+    const sendButton = screen.getByRole("button", { name: "Send task to Codex CLI" }) as HTMLButtonElement;
+
+    expect(sendButton.disabled).toBe(true);
+    expect(sendButton.getAttribute("aria-description")).toBe("Run `codex login` before sending tasks.");
+  });
+
   it("locks mode on chat.send when user explicitly selected one", () => {
     const commands: unknown[] = [];
     const project = createViewProjectFixture({
@@ -484,7 +675,7 @@ it("updates composer effort label and sends reasoning plus fast mode", () => {
     );
 
     render(() => <ChatPanel />);
-    expect(screen.getByText("assistant (streaming)")).not.toBeNull();
+    expect(screen.getByText("harness")).not.toBeNull();
     expect(screen.getByRole("heading", { name: "Partial output" })).not.toBeNull();
 
     const clearedProject = createViewProjectFixture({
@@ -509,7 +700,40 @@ it("updates composer effort label and sends reasoning plus fast mode", () => {
     );
     cleanup();
     render(() => <ChatPanel />);
-    expect(screen.queryByText("assistant (streaming)")).toBeNull();
+    expect(screen.queryByText("harness")).toBeNull();
+  });
+
+  it("hides duplicated persisted assistant row while the stream is still live", () => {
+    const threadId = "thread-streaming-dup";
+    const project = createViewProjectFixture({
+      id: "project-streaming-dup",
+      session: {
+        ...createViewProjectFixture().session,
+        sessionId: threadId,
+        isStreaming: true,
+        messages: [
+          {
+            id: "assistant-streaming-dup",
+            role: "assistant",
+            content: "# Partial output",
+            createdAt: new Date().toISOString()
+          }
+        ]
+      },
+      streamingAssistantText: "# Partial output"
+    });
+
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ChatPanel />);
+    expect(screen.getAllByRole("heading", { name: "Partial output" })).toHaveLength(1);
   });
 
   it("renders streamed markdown content from chat.delta state", async () => {
@@ -547,6 +771,146 @@ it("updates composer effort label and sends reasoning plus fast mode", () => {
     expect(document.querySelector(".markdown-code-content")?.textContent).toContain("const streamed = true;");
   });
 
+  it("renders live planning status even before transcript messages exist", () => {
+    const project = createViewProjectFixture({
+      id: "project-stream-status-only",
+      session: {
+        ...createViewProjectFixture().session,
+        messages: []
+      },
+      streamingTailSegments: [
+        {
+          id: "run-1:planning",
+          kind: "status",
+          phase: "planning",
+          content: "**Planning**\n- Need routing target.",
+          updatedAt: new Date().toISOString()
+        }
+      ]
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    cleanup();
+    render(() => <ChatPanel />);
+    expect(screen.queryByText("Choose project, then send task. Each project keeps its own persisted thread history.")).toBeNull();
+    expect(screen.getByText("Need routing target.")).not.toBeNull();
+  });
+
+  it("renders streaming tail after finalized transcript messages", () => {
+    const project = createViewProjectFixture({
+      id: "project-stream-tail",
+      session: {
+        ...createViewProjectFixture().session,
+        messages: [createChatMessage("assistant", "Persisted answer")]
+      },
+      streamingTailSegments: [
+        {
+          id: "run-1:subagents",
+          kind: "status",
+          phase: "subagents",
+          content: "**Subagents**\n- Wired HUD.",
+          updatedAt: new Date().toISOString()
+        }
+      ]
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    cleanup();
+    render(() => <ChatPanel />);
+    const articles = Array.from(document.querySelectorAll("article"));
+    expect(articles.at(-1)?.textContent).toContain("Wired HUD");
+  });
+
+  it("renders status milestones above streaming assistant text without collapsing them together", () => {
+    const project = createViewProjectFixture({
+      id: "project-stream-split-live",
+      session: {
+        ...createViewProjectFixture().session,
+        messages: []
+      },
+      streamingHeartbeatMessages: [
+        {
+          id: "run-1:heartbeat:1",
+          content: "**Subagents**\n- Planning done. Spawning 3 subagents. Parallel slots: 3.",
+          heartbeatCount: 1,
+          locked: false,
+          updatedAt: new Date().toISOString()
+        }
+      ],
+      streamingAssistantText: "New assistant text only."
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    cleanup();
+    render(() => <ChatPanel />);
+    expect(screen.getAllByText("harness").length).toBeGreaterThanOrEqual(2);
+    const articles = Array.from(document.querySelectorAll("article"));
+    expect(articles.at(-2)?.textContent).toContain("Planning done. Spawning 3 subagents. Parallel slots: 3.");
+    expect(articles.at(-1)?.textContent).toContain("New assistant text only.");
+    expect(articles.at(-1)?.textContent).not.toContain("Planning done. Spawning 3 subagents. Parallel slots: 3.");
+  });
+
+  it("renders locked heartbeat rows above current live heartbeat row", () => {
+    const project = createViewProjectFixture({
+      id: "project-stream-heartbeats",
+      session: {
+        ...createViewProjectFixture().session,
+        messages: [createChatMessage("assistant", "Persisted answer")]
+      },
+      streamingHeartbeatMessages: [
+        {
+          id: "run-1:heartbeat:1",
+          content: "**Subagents**\n- Second beat.",
+          heartbeatCount: 2,
+          locked: true,
+          updatedAt: new Date().toISOString()
+        },
+        {
+          id: "run-1:heartbeat:2",
+          content: "**Subagents**\n- Third beat.",
+          heartbeatCount: 1,
+          locked: false,
+          updatedAt: new Date().toISOString()
+        }
+      ]
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    cleanup();
+    render(() => <ChatPanel />);
+    const articles = Array.from(document.querySelectorAll("article"));
+    expect(articles.at(-2)?.textContent).toContain("Second beat");
+    expect(articles.at(-1)?.textContent).toContain("Third beat");
+  });
+
   it("renders transcript markdown instead of raw plain text", () => {
     const project = createViewProjectFixture({
       id: "project-markdown",
@@ -567,6 +931,111 @@ it("updates composer effort label and sends reasoning plus fast mode", () => {
     render(() => <ChatPanel />);
     expect(screen.getByText("bold").tagName).toBe("STRONG");
     expect(screen.getByRole("link", { name: "docs" }).getAttribute("target")).toBe("_blank");
+  });
+
+  it("renders system transcript rows as harness messages", () => {
+    const project = createViewProjectFixture({
+      id: "project-system-message",
+      session: {
+        ...createViewProjectFixture().session,
+        messages: [
+          {
+            id: "system-1",
+            role: "system",
+            content: "Planning task.",
+            createdAt: new Date().toISOString()
+          }
+        ]
+      }
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ChatPanel />);
+    expect(screen.getByText("harness")).not.toBeNull();
+    expect(screen.getByText("Planning task.")).not.toBeNull();
+    expect(screen.queryByText("status")).toBeNull();
+    expect(screen.getByRole("button", { name: "Copy harness message" })).not.toBeNull();
+  });
+
+  it("renders run milestone rows as Harness messages", () => {
+    const createdAt = new Date().toISOString();
+    const project = createViewProjectFixture({
+      id: "project-milestones",
+      session: {
+        ...createViewProjectFixture().session,
+        messages: [
+          createChatMessage("assistant", "- Subagent 1 started", {
+            kind: "run-milestones",
+            metadata: {
+              type: "run-milestones",
+              runId: "run-1",
+              windowId: "window-1",
+              status: "open",
+              startedAt: createdAt,
+              updatedAt: createdAt,
+              lineCount: 1
+            }
+          })
+        ]
+      }
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ChatPanel />);
+    expect(screen.getByText("harness")).not.toBeNull();
+    expect(screen.getByText("In progress")).not.toBeNull();
+    expect(screen.getByText("Subagent 1 started")).not.toBeNull();
+    expect(screen.queryByText("status")).toBeNull();
+  });
+
+  it("renders closed run milestones without in-progress state", () => {
+    const createdAt = new Date().toISOString();
+    const project = createViewProjectFixture({
+      id: "project-closed-milestones",
+      session: {
+        ...createViewProjectFixture().session,
+        messages: [
+          createChatMessage("assistant", "- Subagent 1 done", {
+            kind: "run-milestones",
+            metadata: {
+              type: "run-milestones",
+              runId: "run-1",
+              windowId: "window-1",
+              status: "closed",
+              startedAt: createdAt,
+              updatedAt: createdAt,
+              lineCount: 1
+            }
+          })
+        ]
+      }
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ChatPanel />);
+    expect(screen.getByText("Subagent 1 done")).not.toBeNull();
+    expect(screen.queryByText("In progress")).toBeNull();
   });
 
   it("renders copy buttons for transcript messages and copies plan summaries", async () => {
@@ -612,9 +1081,8 @@ it("updates composer effort label and sends reasoning plus fast mode", () => {
     render(() => <ChatPanel />);
 
     expect(screen.getByRole("button", { name: "Copy user message" })).not.toBeNull();
-    expect(screen.getByRole("button", { name: "Copy assistant message" })).not.toBeNull();
     expect(screen.getByRole("button", { name: "Copy plan summary" })).not.toBeNull();
-    expect(screen.getByRole("button", { name: "Copy streaming assistant message" })).not.toBeNull();
+    expect(screen.getAllByRole("button", { name: "Copy harness message" })).toHaveLength(2);
 
     fireEvent.click(screen.getByRole("button", { name: "Copy plan summary" }));
     await Promise.resolve();
@@ -741,7 +1209,7 @@ it("updates composer effort label and sends reasoning plus fast mode", () => {
 
     captureDispatchedCommands(commands as never[]);
     render(() => <ChatPanel />);
-    fireEvent.click(screen.getByRole("button", { name: "Start execution with this plan" }));
+    fireEvent.click(screen.getByRole("button", { name: "Build this persisted plan now" }));
 
     expect(commands.length).toBe(1);
     expect((commands[0] as { type: string }).type).toBe("run.execute");
@@ -800,5 +1268,122 @@ it("updates composer effort label and sends reasoning plus fast mode", () => {
         target: "ephemeral-experiment"
       }
     });
+  });
+
+  it("builds persisted ready plans from transcript run summaries", () => {
+    const commands: unknown[] = [];
+    const plan = createExecutionPlanFixture({ runId: "run-ready-summary" });
+    const project = createViewProjectFixture({
+      id: "project-ready-summary",
+      session: {
+        ...createViewProjectFixture().session,
+        messages: [createPlanSummaryMessage("run-ready-summary", plan)]
+      },
+      runSummaries: [
+        {
+          id: "run-ready-summary",
+          threadId: "thread-1",
+          status: "ready",
+          resumable: false,
+          retryable: false,
+          updatedAt: new Date().toISOString()
+        }
+      ]
+    });
+    seedHarnessStoreForTests(createHarnessStateFixture({ workspace: { activeProjectId: project.id, projects: [project] } }));
+
+    captureDispatchedCommands(commands as never[]);
+    render(() => <ChatPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "Build this persisted plan now" }));
+
+    expect(commands[0]).toMatchObject({
+      type: "run.execute",
+      payload: { runId: "run-ready-summary" }
+    });
+  });
+
+  it("shows retry and resume actions from persisted plan states", () => {
+    const commands: unknown[] = [];
+    const failedPlan = createExecutionPlanFixture({ runId: "run-failed-summary" });
+    const stoppedPlan = createExecutionPlanFixture({ runId: "run-stopped-summary" });
+    const project = createViewProjectFixture({
+      id: "project-retry-resume-summary",
+      session: {
+        ...createViewProjectFixture().session,
+        messages: [createPlanSummaryMessage("run-failed-summary", failedPlan), createPlanSummaryMessage("run-stopped-summary", stoppedPlan)]
+      },
+      runSummaries: [
+        {
+          id: "run-failed-summary",
+          threadId: "thread-1",
+          status: "failed",
+          resumable: false,
+          retryable: true,
+          updatedAt: new Date().toISOString()
+        },
+        {
+          id: "run-stopped-summary",
+          threadId: "thread-1",
+          status: "stopped",
+          resumable: true,
+          retryable: true,
+          updatedAt: new Date().toISOString()
+        }
+      ]
+    });
+    seedHarnessStoreForTests(createHarnessStateFixture({ workspace: { activeProjectId: project.id, projects: [project] } }));
+
+    captureDispatchedCommands(commands as never[]);
+    render(() => <ChatPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "Retry this persisted run" }));
+    fireEvent.click(screen.getByRole("button", { name: "Resume this persisted run" }));
+
+    expect(commands).toMatchObject([
+      { type: "run.retry", payload: { runId: "run-failed-summary" } },
+      { type: "run.resume", payload: { runId: "run-stopped-summary" } }
+    ]);
+  });
+
+  it("disables terminal or unavailable persisted plan states", () => {
+    const completedPlan = createExecutionPlanFixture({ runId: "run-completed-summary" });
+    const runningPlan = createExecutionPlanFixture({ runId: "run-running-summary" });
+    const missingPlan = createExecutionPlanFixture({ runId: "run-missing-summary" });
+    const project = createViewProjectFixture({
+      id: "project-disabled-summary",
+      session: {
+        ...createViewProjectFixture().session,
+        messages: [
+          createPlanSummaryMessage("run-completed-summary", completedPlan),
+          createPlanSummaryMessage("run-running-summary", runningPlan),
+          createPlanSummaryMessage("run-missing-summary", missingPlan)
+        ]
+      },
+      runSummaries: [
+        {
+          id: "run-completed-summary",
+          threadId: "thread-1",
+          status: "completed",
+          resumable: false,
+          retryable: true,
+          updatedAt: new Date().toISOString(),
+          completedAt: new Date().toISOString()
+        },
+        {
+          id: "run-running-summary",
+          threadId: "thread-1",
+          status: "running-main",
+          resumable: false,
+          retryable: false,
+          updatedAt: new Date().toISOString()
+        }
+      ]
+    });
+    seedHarnessStoreForTests(createHarnessStateFixture({ workspace: { activeProjectId: project.id, projects: [project] } }));
+
+    render(() => <ChatPanel />);
+
+    expect((screen.getByRole("button", { name: "This plan has completed" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "This plan is already in progress" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "This persisted run is not available" }) as HTMLButtonElement).disabled).toBe(true);
   });
 });

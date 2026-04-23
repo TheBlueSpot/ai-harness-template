@@ -10,6 +10,7 @@
         "@openai/codex": "^0.122.0",
         "@openai/codex-sdk": "^0.122.0",
         "@tanstack/solid-hotkeys": "^0.9.1",
+        "@vscode/ripgrep": "^1.17.1",
         "bun-plugin-tailwind": "^0.1.2",
         "class-variance-authority": "^0.7.1",
         "clsx": "^2.1.1",
@@ -551,6 +552,8 @@
     "@uploadthing/mime-types": ["@uploadthing/mime-types@0.3.6", "", {}, "sha512-t3tTzgwFV9+1D7lNDYc7Lr7kBwotHaX0ZsvoCGe7xGnXKo9z0jG2Sjl/msll12FeoLj77nyhsxevXyGpQDBvLg=="],
 
     "@uploadthing/shared": ["@uploadthing/shared@7.1.10", "", { "dependencies": { "@uploadthing/mime-types": "0.3.6", "effect": "3.17.7", "sqids": "^0.3.0" } }, "sha512-R/XSA3SfCVnLIzFpXyGaKPfbwlYlWYSTuGjTFHuJhdAomuBuhopAHLh2Ois5fJibAHzi02uP1QCKbgTAdmArqg=="],
+
+    "@vscode/ripgrep": ["@vscode/ripgrep@1.17.1", "", { "dependencies": { "https-proxy-agent": "^7.0.2", "proxy-from-env": "^1.1.0", "yauzl": "^2.9.2" } }, "sha512-xTs7DGyAO3IsJYOCTBP8LnTvPiYVKEuyv8s0xyJDBXfs8rhBfqnZPvb6xDT+RnwWzcXqW27xLS/aGrkjX7lNWw=="],
 
     "acorn": ["acorn@8.16.0", "", { "bin": { "acorn": "bin/acorn" } }, "sha512-UVJyE9MttOsBQIDKw1skb9nAwQuR5wuGD3+82K6JgJlm/Y+KI92oNsMNGZCYdDsVtRHSak0pcV5Dno5+4jh9sw=="],
 

@@ -1,0 +1,908 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Rebuild: City Management</title>
+  <style>
+    :root {
+      --paper: #f0e8d8;
+      --ink: #231914;
+      --muted: #5d4f46;
+      --panel: rgba(255, 248, 236, 0.9);
+      --panel-strong: rgba(250, 240, 222, 0.96);
+      --line: rgba(63, 41, 28, 0.14);
+      --accent: #b85c38;
+      --accent-strong: #8e3c26;
+      --safe: #4e7f52;
+      --danger: #8f2d2d;
+      --shadow: 0 28px 60px rgba(37, 22, 13, 0.18);
+      font-family: "Palatino Linotype", "Book Antiqua", Georgia, serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, rgba(245, 204, 143, 0.95), transparent 32%),
+        radial-gradient(circle at 82% 12%, rgba(234, 164, 121, 0.75), transparent 24%),
+        linear-gradient(180deg, #e4c68d 0%, #d2a97e 24%, #907b72 68%, #6a5a5a 100%);
+    }
+
+    body {
+      min-height: 100vh;
+    }
+
+    .app-shell {
+      min-height: 100vh;
+      padding: 18px;
+    }
+
+    .frame {
+      position: relative;
+      min-height: calc(100vh - 36px);
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      border-radius: 28px;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.32), rgba(255, 255, 255, 0.08)),
+        rgba(112, 81, 63, 0.22);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .screen {
+      position: absolute;
+      inset: 0;
+      display: none;
+    }
+
+    .screen.is-active {
+      display: grid;
+    }
+
+    .menu-screen {
+      place-items: center;
+      padding: 24px;
+      background:
+        linear-gradient(135deg, rgba(76, 52, 40, 0.2), transparent 55%),
+        linear-gradient(180deg, rgba(255, 245, 229, 0.18), rgba(53, 36, 29, 0.08));
+    }
+
+    .menu-card,
+    .hud-card,
+    .panel-card,
+    .overlay-card,
+    .footer-card {
+      backdrop-filter: blur(10px);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      box-shadow: 0 14px 28px rgba(57, 34, 20, 0.08);
+    }
+
+    .menu-card,
+    .overlay-card {
+      width: min(760px, 100%);
+      padding: 28px;
+    }
+
+    .hero-head {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 18px;
+    }
+
+    .hero-head img,
+    .brand-badge img {
+      width: 54px;
+      height: 54px;
+    }
+
+    .menu-card h1,
+    .overlay-card h1 {
+      margin: 0;
+      font-size: clamp(2.6rem, 6vw, 4.6rem);
+      line-height: 0.92;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .menu-card p,
+    .overlay-card p,
+    .small-copy {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.55;
+    }
+
+    .menu-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin: 22px 0;
+    }
+
+    .rule-card {
+      padding: 14px;
+      border-radius: 16px;
+      background: rgba(184, 92, 56, 0.07);
+      border: 1px solid rgba(184, 92, 56, 0.12);
+    }
+
+    .rule-card strong {
+      display: block;
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-size: 0.82rem;
+    }
+
+    .actions,
+    .top-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 22px;
+    }
+
+    button {
+      appearance: none;
+      border: 1px solid rgba(0, 0, 0, 0.08);
+      border-radius: 999px;
+      padding: 11px 18px;
+      font: inherit;
+      cursor: pointer;
+      background: rgba(255, 255, 255, 0.65);
+      color: var(--ink);
+      transition: transform 140ms ease, background 140ms ease, border-color 140ms ease;
+    }
+
+    button:hover:not(:disabled) {
+      transform: translateY(-1px);
+    }
+
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.45;
+    }
+
+    .button-primary {
+      background: linear-gradient(180deg, var(--accent), var(--accent-strong));
+      border-color: rgba(88, 30, 18, 0.28);
+      color: #fff8f2;
+    }
+
+    .game-screen {
+      grid-template-rows: auto auto 1fr auto;
+      gap: 16px;
+      padding: 18px;
+    }
+
+    .topbar {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px;
+      align-items: center;
+    }
+
+    .brand-badge,
+    .status-strip,
+    .footer-card {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 14px 18px;
+    }
+
+    .brand-badge {
+      background: var(--panel-strong);
+    }
+
+    .brand-title {
+      display: grid;
+      gap: 3px;
+    }
+
+    .brand-title h2,
+    .brand-title p {
+      margin: 0;
+    }
+
+    .brand-title h2 {
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-size: 1rem;
+    }
+
+    .status-strip {
+      padding: 12px 18px;
+      background: rgba(255, 244, 229, 0.78);
+    }
+
+    .status-strip strong {
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-size: 0.78rem;
+    }
+
+    .hud-row {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .hud-card {
+      padding: 14px;
+      min-height: 92px;
+      display: grid;
+      gap: 6px;
+    }
+
+    .hud-card span {
+      color: var(--muted);
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+    }
+
+    .hud-card strong {
+      font-size: 1.8rem;
+      line-height: 1;
+    }
+
+    .content-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.6fr) minmax(320px, 0.95fr);
+      gap: 16px;
+      min-height: 0;
+    }
+
+    .board-wrap,
+    .sidebar {
+      min-height: 0;
+      display: grid;
+      gap: 16px;
+    }
+
+    .board-wrap {
+      grid-template-rows: auto 1fr;
+    }
+
+    .sidebar {
+      grid-template-rows: minmax(250px, auto) minmax(220px, 1fr);
+    }
+
+    .panel-card {
+      padding: 16px;
+      overflow: auto;
+    }
+
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .panel-head h3,
+    .panel-head p {
+      margin: 0;
+    }
+
+    .panel-head h3 {
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-size: 0.86rem;
+    }
+
+    #city-grid {
+      display: grid;
+      gap: 10px;
+      align-content: start;
+      padding: 14px;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(121, 79, 59, 0.12)),
+        rgba(68, 52, 44, 0.08);
+      border-radius: 22px;
+      border: 1px solid rgba(255, 255, 255, 0.24);
+      min-height: 0;
+      overflow: auto;
+    }
+
+    .tile-button {
+      border-radius: 18px;
+      padding: 12px;
+      min-height: 116px;
+      text-align: left;
+      display: grid;
+      gap: 8px;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(232, 219, 201, 0.92));
+      border: 1px solid rgba(68, 43, 30, 0.12);
+    }
+
+    .tile-button.is-border {
+      box-shadow: inset 0 0 0 2px rgba(184, 92, 56, 0.18);
+    }
+
+    .tile-button.is-destroyed {
+      background: linear-gradient(180deg, rgba(116, 95, 91, 0.8), rgba(88, 70, 69, 0.95));
+      color: #f7ece6;
+    }
+
+    .tile-button.is-selected {
+      outline: 3px solid rgba(78, 127, 82, 0.65);
+      outline-offset: 1px;
+      transform: translateY(-2px);
+    }
+
+    .tile-topline,
+    .tile-metrics,
+    .survivor-meta,
+    .log-entry-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .tile-topline img {
+      width: 26px;
+      height: 26px;
+    }
+
+    .tile-type,
+    .tag,
+    .tiny {
+      color: var(--muted);
+      font-size: 0.75rem;
+      letter-spacing: 0.05em;
+    }
+
+    .tile-title {
+      font-size: 1rem;
+      font-weight: 700;
+    }
+
+    .metric-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.54);
+      font-size: 0.76rem;
+    }
+
+    .survivor-list,
+    .log-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .survivor-card,
+    .log-entry {
+      padding: 12px;
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.48);
+      border: 1px solid rgba(61, 40, 28, 0.08);
+    }
+
+    .survivor-card.is-deceased {
+      background: rgba(112, 82, 76, 0.82);
+      color: #fff5f1;
+    }
+
+    .survivor-stats {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin: 10px 0;
+    }
+
+    .survivor-stat {
+      padding: 8px;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.45);
+      text-align: center;
+      font-size: 0.82rem;
+    }
+
+    .assign-button {
+      width: 100%;
+      margin-top: 10px;
+    }
+
+    .log-entry {
+      display: grid;
+      gap: 6px;
+    }
+
+    .report-box {
+      margin-top: 16px;
+      padding: 16px;
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.56);
+      border: 1px solid rgba(61, 40, 28, 0.08);
+      white-space: pre-wrap;
+      font-family: "Cascadia Mono", Consolas, monospace;
+      font-size: 0.84rem;
+      line-height: 1.55;
+    }
+
+    .game-over-screen {
+      place-items: center;
+      padding: 22px;
+      background: rgba(52, 35, 27, 0.36);
+      backdrop-filter: blur(10px);
+    }
+
+    @media (max-width: 1100px) {
+      .hud-row {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .content-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 760px) {
+      .app-shell {
+        padding: 10px;
+      }
+
+      .frame {
+        min-height: calc(100vh - 20px);
+      }
+
+      .game-screen {
+        grid-template-rows: auto auto auto 1fr auto;
+      }
+
+      .topbar {
+        grid-template-columns: 1fr;
+      }
+
+      .hud-row,
+      .menu-grid,
+      .survivor-stats {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="app-shell">
+    <section class="frame">
+      <section id="menu-screen" class="screen menu-screen is-active" aria-label="menu screen">
+        <div class="menu-card">
+          <div class="hero-head">
+            <img src="./assets/wall.svg" alt="" />
+            <div>
+              <p class="small-copy">Turn-based settlement defense</p>
+              <h1>Rebuild: City Management</h1>
+            </div>
+          </div>
+          <p>Keep the perimeter standing through a two-phase loop. In daylight you assign survivors to sectors. At night the city resolves scavenging, repairs, defense, and zombie breaches across the border.</p>
+          <div class="menu-grid">
+            <div class="rule-card">
+              <strong>Plan</strong>
+              Pick a tile, then assign a survivor from the roster.
+            </div>
+            <div class="rule-card">
+              <strong>Night</strong>
+              Breach probability rises with noise, danger, and weak walls.
+            </div>
+            <div class="rule-card">
+              <strong>Lose</strong>
+              The run ends when food is gone or the perimeter collapses.
+            </div>
+          </div>
+          <p class="small-copy">Assets in <code>assets/</code> are transparent original SVGs dedicated to the public domain for this project.</p>
+          <div class="actions">
+            <button id="start-button" class="button-primary" type="button">Start Run</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="game-screen" class="screen game-screen" aria-label="game screen">
+        <div class="topbar">
+          <div class="brand-badge">
+            <img src="./assets/survivor.svg" alt="" />
+            <div class="brand-title">
+              <h2>City Directorate</h2>
+              <p id="phase-label">Planning Phase</p>
+            </div>
+          </div>
+          <div class="top-actions">
+            <button id="restart-button" type="button">Restart</button>
+            <button id="end-turn-button" class="button-primary" type="button">Resolve Night</button>
+          </div>
+        </div>
+
+        <div class="status-strip">
+          <div>
+            <strong>Status</strong>
+            <div id="status-line" class="small-copy">Select a tile to begin assignments.</div>
+          </div>
+          <div class="tag">Menu, HUD, tile grid, event log, and game over report are all live in one page.</div>
+        </div>
+
+        <div id="city-hud" class="hud-row" aria-label="city hud"></div>
+
+        <div class="content-grid">
+          <div class="board-wrap">
+            <div class="panel-card">
+              <div class="panel-head">
+                <div>
+                  <h3>City Grid</h3>
+                  <p class="small-copy">Border sectors face breach checks at night.</p>
+                </div>
+                <div class="tag" id="selected-tile-label">No tile selected</div>
+              </div>
+              <div id="city-grid" aria-label="city grid"></div>
+            </div>
+          </div>
+
+          <aside class="sidebar">
+            <section id="survivor-panel" class="panel-card" aria-label="survivor panel"></section>
+            <section id="event-log" class="panel-card" aria-label="event log"></section>
+          </aside>
+        </div>
+
+        <div class="footer-card">
+          <div class="small-copy">Planning assigns units. Night consumes the queued work in one resolution pass.</div>
+          <div class="tag">Transparent assets: survivor, wall, zombie</div>
+        </div>
+      </section>
+
+      <section id="game-over-screen" class="screen game-over-screen" aria-label="game over screen">
+        <div class="overlay-card">
+          <div class="hero-head">
+            <img src="./assets/zombie.svg" alt="" />
+            <div>
+              <p class="small-copy">Settlement report</p>
+              <h1>Game Over</h1>
+            </div>
+          </div>
+          <p id="game-over-summary">The city has fallen.</p>
+          <div id="game-over-report" class="report-box"></div>
+          <div class="actions">
+            <button id="play-again-button" class="button-primary" type="button">Play Again</button>
+          </div>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <script type="module">
+    import { CityGrid, GAME_PHASES } from './CityGrid.js';
+    import { SurvivorManager } from './SurvivorManager.js';
+    import { EventEngine } from './EventEngine.js';
+
+    const menuScreen = document.getElementById('menu-screen');
+    const gameScreen = document.getElementById('game-screen');
+    const gameOverScreen = document.getElementById('game-over-screen');
+    const cityGridEl = document.getElementById('city-grid');
+    const cityHudEl = document.getElementById('city-hud');
+    const survivorPanelEl = document.getElementById('survivor-panel');
+    const eventLogEl = document.getElementById('event-log');
+    const statusLineEl = document.getElementById('status-line');
+    const phaseLabelEl = document.getElementById('phase-label');
+    const selectedTileLabelEl = document.getElementById('selected-tile-label');
+    const gameOverSummaryEl = document.getElementById('game-over-summary');
+    const gameOverReportEl = document.getElementById('game-over-report');
+    const startButton = document.getElementById('start-button');
+    const endTurnButton = document.getElementById('end-turn-button');
+    const restartButton = document.getElementById('restart-button');
+    const playAgainButton = document.getElementById('play-again-button');
+
+    const TILE_ICONS = {
+      residential: './assets/survivor.svg',
+      commercial: './assets/survivor.svg',
+      industrial: './assets/wall.svg',
+      park: './assets/zombie.svg',
+      utility: './assets/wall.svg'
+    };
+
+    const state = {
+      city: null,
+      survivors: null,
+      events: null,
+      selectedTileId: null,
+      log: [],
+      lastNightReport: null
+    };
+
+    const phaseText = (phase) => phase.replaceAll('_', ' ').toLowerCase();
+
+    const showScreen = (key) => {
+      menuScreen.classList.toggle('is-active', key === 'menu');
+      gameScreen.classList.toggle('is-active', key === 'game');
+      gameOverScreen.classList.toggle('is-active', key === 'game-over');
+    };
+
+    const appendLog = (entries) => {
+      for (const entry of entries) {
+        state.log.push({
+          text: entry,
+          turn: state.city?.getSnapshot().day ?? 1
+        });
+      }
+      state.log = state.log.slice(-24);
+    };
+
+    const getCity = () => state.city.getSnapshot();
+    const getRoster = () => state.survivors.getSnapshot();
+
+    const startRun = () => {
+      state.city = new CityGrid();
+      state.survivors = new SurvivorManager();
+      state.events = new EventEngine();
+      state.selectedTileId = null;
+      state.lastNightReport = null;
+      state.log = [];
+      appendLog([
+        'Dawn briefing: assign survivors before ending the turn.',
+        'Border sectors have the highest breach pressure.'
+      ]);
+      showScreen('game');
+      syncView();
+    };
+
+    const resetToMenu = () => {
+      state.city = null;
+      state.survivors = null;
+      state.events = null;
+      state.selectedTileId = null;
+      state.lastNightReport = null;
+      state.log = [];
+      showScreen('menu');
+    };
+
+    const formatGameOver = (city, roster, report) => {
+      const lines = [
+        `Day survived: ${city.day}`,
+        `Reason: ${report?.gameOverReason ?? report?.gameOverReport?.reason ?? 'unknown'}`,
+        `Food remaining: ${city.food}`,
+        `Wall integrity: ${city.walls}`,
+        `Materials: ${city.materials}`,
+        `Living survivors: ${roster.roster.living}`,
+        `Breaches this night: ${report?.breachEvents?.length ?? 0}`,
+        '',
+        'Last night log:'
+      ];
+
+      for (const line of report?.logLines ?? []) {
+        lines.push(`- ${line}`);
+      }
+
+      return lines.join('\n');
+    };
+
+    const finishGame = (report) => {
+      const city = getCity();
+      const roster = getRoster();
+      gameOverSummaryEl.textContent = report?.gameOverReport?.summary ?? report?.summary ?? 'The settlement was lost.';
+      gameOverReportEl.textContent = formatGameOver(city, roster, report);
+      showScreen('game-over');
+    };
+
+    const renderHud = () => {
+      const city = getCity();
+      const roster = getRoster().roster;
+      const cards = [
+        ['Day', city.day],
+        ['Food', city.food],
+        ['Walls', city.walls],
+        ['Materials', city.materials],
+        ['Living', roster.living],
+        ['Assigned', roster.assigned]
+      ];
+
+      cityHudEl.innerHTML = cards.map(([label, value]) => `
+        <article class="hud-card">
+          <span>${label}</span>
+          <strong>${value}</strong>
+        </article>
+      `).join('');
+
+      phaseLabelEl.textContent = `${phaseText(city.phase)} | day ${city.day}`;
+    };
+
+    const renderGrid = () => {
+      const city = getCity();
+      cityGridEl.style.gridTemplateColumns = `repeat(${city.width}, minmax(0, 1fr))`;
+      cityGridEl.innerHTML = city.tiles.map((tile) => {
+        const isSelected = tile.id === state.selectedTileId;
+        const classNames = [
+          'tile-button',
+          tile.border ? 'is-border' : '',
+          tile.destroyed ? 'is-destroyed' : '',
+          isSelected ? 'is-selected' : ''
+        ].filter(Boolean).join(' ');
+
+        return `
+          <button type="button" class="${classNames}" data-tile-id="${tile.id}">
+            <div class="tile-topline">
+              <img src="${TILE_ICONS[tile.type] ?? './assets/wall.svg'}" alt="" />
+              <span class="metric-pill">${tile.border ? 'Border' : 'Inner'}</span>
+            </div>
+            <div>
+              <div class="tile-title">${tile.label}</div>
+              <div class="tile-type">${tile.type}</div>
+            </div>
+            <div class="tile-metrics">
+              <span class="metric-pill">Danger ${tile.dangerLevel}</span>
+              <span class="metric-pill">Noise ${tile.noise}</span>
+            </div>
+            <div class="tile-metrics">
+              <span class="metric-pill">Wall ${tile.wallHealth}/${tile.maxWallHealth}</span>
+              <span class="metric-pill">${tile.assignment ? tile.assignment : tile.destroyed ? 'Ruined' : 'Open'}</span>
+            </div>
+          </button>
+        `;
+      }).join('');
+
+      const selectedTile = city.tiles.find((tile) => tile.id === state.selectedTileId);
+      selectedTileLabelEl.textContent = selectedTile ? selectedTile.label : 'No tile selected';
+    };
+
+    const renderSurvivors = () => {
+      const city = getCity();
+      const survivors = getRoster().survivors;
+      const selectedTile = city.tiles.find((tile) => tile.id === state.selectedTileId) ?? null;
+      const canAssign = city.phase === GAME_PHASES.PLAYER_PLANNING && selectedTile && !selectedTile.destroyed;
+
+      survivorPanelEl.innerHTML = `
+        <div class="panel-head">
+          <div>
+            <h3>Survivor Panel</h3>
+            <p class="small-copy">Each tile infers a task: scavenge, repair, or defend.</p>
+          </div>
+          <div class="tag">${selectedTile ? `Target: ${selectedTile.label}` : 'Pick a tile first'}</div>
+        </div>
+        <div class="survivor-list">
+          ${survivors.map((survivor) => `
+            <article class="survivor-card ${survivor.status === 'deceased' ? 'is-deceased' : ''}">
+              <div class="survivor-meta">
+                <strong>${survivor.name}</strong>
+                <span class="tag">${survivor.status}</span>
+              </div>
+              <div class="survivor-stats">
+                <div class="survivor-stat">Scav ${survivor.stats.Scavenging}</div>
+                <div class="survivor-stat">Def ${survivor.stats.Defense}</div>
+                <div class="survivor-stat">Eng ${survivor.stats.Engineering}</div>
+              </div>
+              <div class="tiny">${survivor.assignment?.tileLabel ? `Assigned to ${survivor.assignment.tileLabel}` : 'Unassigned'}</div>
+              <button
+                type="button"
+                class="assign-button ${canAssign ? 'button-primary' : ''}"
+                data-survivor-id="${survivor.id}"
+                ${canAssign && survivor.status !== 'deceased' ? '' : 'disabled'}
+              >
+                ${survivor.status === 'deceased' ? 'Lost' : selectedTile ? `Assign to ${selectedTile.label}` : 'Select a tile'}
+              </button>
+            </article>
+          `).join('')}
+        </div>
+      `;
+    };
+
+    const renderLog = () => {
+      eventLogEl.innerHTML = `
+        <div class="panel-head">
+          <div>
+            <h3>Event Log</h3>
+            <p class="small-copy">Newest reports are listed first.</p>
+          </div>
+          <div class="tag">${state.lastNightReport ? state.lastNightReport.summary : 'No night report yet'}</div>
+        </div>
+        <div class="log-list">
+          ${state.log.slice().reverse().map((entry) => `
+            <article class="log-entry">
+              <div class="log-entry-top">
+                <strong>Day ${entry.turn}</strong>
+                <span class="tag">${entry.text.includes('breach') ? 'Night' : 'Ops'}</span>
+              </div>
+              <div>${entry.text}</div>
+            </article>
+          `).join('')}
+        </div>
+      `;
+    };
+
+    const syncView = () => {
+      const city = getCity();
+      renderHud();
+      renderGrid();
+      renderSurvivors();
+      renderLog();
+      statusLineEl.textContent = city.phase === GAME_PHASES.PLAYER_PLANNING
+        ? 'Select a tile, assign survivors, then resolve the night.'
+        : 'Night resolution in progress.';
+      endTurnButton.disabled = city.phase !== GAME_PHASES.PLAYER_PLANNING;
+    };
+
+    const assignSelectedTile = (survivorId) => {
+      const city = getCity();
+      const tile = city.tiles.find((entry) => entry.id === state.selectedTileId);
+      if (!tile || tile.destroyed || city.phase !== GAME_PHASES.PLAYER_PLANNING) {
+        return;
+      }
+
+      state.city.setSurvivorAssignment(survivorId, tile.id);
+      state.survivors.assignSurvivor(survivorId, {
+        tileId: tile.id,
+        tileLabel: tile.label,
+        tileType: tile.type,
+        border: tile.border
+      });
+      appendLog([`Assigned ${survivorId} to ${tile.label}.`]);
+      syncView();
+    };
+
+    const advanceTurn = () => {
+      const beforeNight = getCity();
+      if (beforeNight.phase !== GAME_PHASES.PLAYER_PLANNING) {
+        return;
+      }
+
+      state.city.beginNightResolution();
+      const planningReport = state.survivors.resolvePlanningActions(getCity());
+      const nightReport = state.events.resolveNight(getCity(), planningReport);
+      state.city.applyNightReport(nightReport);
+      state.survivors.clearAssignments();
+      state.selectedTileId = null;
+      state.lastNightReport = nightReport;
+
+      appendLog(planningReport.logLines);
+      appendLog(nightReport.logLines);
+      appendLog([nightReport.summary]);
+
+      syncView();
+
+      if (nightReport.gameOver || getCity().gameOver) {
+        finishGame(nightReport);
+      }
+    };
+
+    cityGridEl.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-tile-id]');
+      if (!button || !state.city) {
+        return;
+      }
+      const tile = getCity().tiles.find((entry) => entry.id === button.dataset.tileId);
+      if (!tile || tile.destroyed || getCity().phase !== GAME_PHASES.PLAYER_PLANNING) {
+        return;
+      }
+      state.selectedTileId = tile.id;
+      syncView();
+    });
+
+    survivorPanelEl.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-survivor-id]');
+      if (!button || !state.city) {
+        return;
+      }
+      assignSelectedTile(button.dataset.survivorId);
+    });
+
+    startButton.addEventListener('click', startRun);
+    playAgainButton.addEventListener('click', startRun);
+    restartButton.addEventListener('click', resetToMenu);
+    endTurnButton.addEventListener('click', advanceTurn);
+
+    showScreen('menu');
+  </script>
+</body>
+</html>

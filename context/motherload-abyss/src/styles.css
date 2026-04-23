@@ -1,0 +1,245 @@
+:root {
+  color-scheme: dark;
+  --bg-0: #04070b;
+  --bg-1: #091018;
+  --bg-2: #13202b;
+  --panel: rgba(8, 12, 16, 0.84);
+  --panel-strong: rgba(11, 16, 22, 0.96);
+  --line: rgba(255, 255, 255, 0.09);
+  --text: #f6f1e7;
+  --muted: rgba(246, 241, 231, 0.7);
+  --accent: #ffbf69;
+  --danger: #ff6b6b;
+  --good: #92efb0;
+  font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 0%, rgba(255, 191, 105, 0.12), transparent 22%),
+    radial-gradient(circle at 0% 100%, rgba(146, 239, 176, 0.08), transparent 18%),
+    linear-gradient(180deg, var(--bg-2), var(--bg-1) 42%, var(--bg-0));
+  color: var(--text);
+}
+
+body {
+  display: grid;
+  place-items: center;
+}
+
+.shell {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+}
+
+canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background:
+    radial-gradient(circle at 50% 0%, rgba(255, 191, 105, 0.06), transparent 18%),
+    linear-gradient(180deg, rgba(7, 10, 14, 0.98), rgba(3, 5, 8, 0.98));
+}
+
+.overlay-root {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.modal {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: clamp(18px, 4vw, 40px);
+}
+
+.panel {
+  width: min(740px, 100%);
+  padding: clamp(22px, 4vw, 36px);
+  border: 1px solid var(--line);
+  border-radius: 28px;
+  background: linear-gradient(180deg, rgba(11, 16, 22, 0.96), rgba(7, 10, 14, 0.94));
+  box-shadow:
+    0 28px 80px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  pointer-events: auto;
+}
+
+.panel.hero {
+  backdrop-filter: blur(18px);
+}
+
+.panel.hero.danger {
+  border-color: rgba(255, 107, 107, 0.28);
+}
+
+.eyebrow {
+  margin: 0 0 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.22em;
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.panel h1 {
+  margin: 0;
+  font-size: clamp(34px, 5vw, 64px);
+  line-height: 0.96;
+}
+
+.lede {
+  margin: 18px 0 0;
+  max-width: 56ch;
+  color: var(--muted);
+  font-size: clamp(16px, 2.1vw, 20px);
+  line-height: 1.55;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px 18px;
+  align-items: center;
+  margin-top: 28px;
+}
+
+button {
+  border: 0;
+  border-radius: 999px;
+  padding: 14px 20px;
+  font: inherit;
+  color: #1a1205;
+  background: linear-gradient(180deg, #ffd28a, #ffb347);
+  cursor: pointer;
+  box-shadow: 0 12px 28px rgba(255, 179, 71, 0.22);
+}
+
+.keys {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.hud-panel {
+  position: absolute;
+  left: 18px;
+  bottom: 18px;
+  width: min(320px, calc(100vw - 36px));
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: var(--panel);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.34);
+  pointer-events: none;
+}
+
+.hud-row,
+.hud-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.hud-row {
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.hud-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 14px;
+}
+
+.hud-grid strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 20px;
+  color: var(--text);
+}
+
+.hud-label {
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.hud-value {
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.meter {
+  width: 100%;
+  height: 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.meter span {
+  display: block;
+  height: 100%;
+  width: 100%;
+  background: linear-gradient(90deg, #92efb0, #ffbf69 70%, #ff6b6b);
+  border-radius: inherit;
+  transform-origin: left center;
+}
+
+.summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 26px 0 0;
+}
+
+.summary div {
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.summary dt {
+  margin: 0 0 6px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 11px;
+}
+
+.summary dd {
+  margin: 0;
+  font-size: 22px;
+  color: var(--text);
+}
+
+@media (max-width: 700px) {
+  .panel h1 {
+    font-size: 34px;
+  }
+
+  .summary {
+    grid-template-columns: 1fr;
+  }
+
+  .hud-panel {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    width: auto;
+  }
+}

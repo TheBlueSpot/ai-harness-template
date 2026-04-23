@@ -196,4 +196,35 @@ createUiTest("TracePanel", () => {
       }
     });
   });
+
+  it("hides aggregation-only traces from the panel", () => {
+    const project = createViewProjectFixture({
+      id: "project-hidden-trace",
+      traces: [
+        {
+          sessionId: "session-1",
+          stage: "aggregation-start",
+          message: "Aggregating subagent results"
+        },
+        {
+          sessionId: "session-1",
+          stage: "verification-complete",
+          message: "Verification done"
+        }
+      ]
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <TracePanel />);
+
+    expect(screen.queryByText("Aggregating subagent results")).toBeNull();
+    expect(screen.getByText("Verification done")).not.toBeNull();
+  });
 });

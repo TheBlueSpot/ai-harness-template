@@ -1,8 +1,9 @@
-import { For, Show, createSignal } from "solid-js";
+import { For, Show, createMemo, createSignal } from "solid-js";
 import { formatForDisplay } from "@tanstack/solid-hotkeys";
 import { createRequestId } from "../../../shared/protocol";
 import { getActiveProject, harnessStore } from "../harness-store";
 import { truncateMiddle } from "../lib/utils";
+import { useHarnessStore } from "../store-providers";
 import { ActionButton } from "./action-button";
 import { Input } from "./primitives/input";
 import { ScrollArea } from "./primitives/scroll-area";
@@ -15,9 +16,32 @@ type ProjectSidebarProps = {
 };
 
 export function ProjectSidebar(props: ProjectSidebarProps) {
-  const state = harnessStore.state;
-  const sendCommand = harnessStore.actions.sendCommand;
+  const store = useHarnessStore();
+  const state = store.state;
+  const sendCommand = store.actions.sendCommand;
   const activeProject = () => getActiveProject(state);
+  const projectCards = createMemo(() => {
+    const cards = state.workspace.projects.map((project) => ({
+      id: project.id,
+      name: project.name,
+      rootPath: project.rootPath,
+      isStreaming: project.session.isStreaming,
+      hasCliSession: Boolean(project.activeCliSession),
+      isActive: project.id === state.workspace.activeProjectId,
+      activeThreadId: project.activeThreadId,
+      threadCount: project.threads.filter((thread) => thread.kind === "user").length,
+      threads: project.threads
+        .filter((thread) => thread.kind === "user")
+        .map((thread) => ({
+          id: thread.id,
+          title: thread.title,
+          lastMessagePreview: thread.lastMessagePreview,
+          badgeState: thread.badgeState,
+          messageCount: thread.messageCount
+        }))
+    }));
+    return cards;
+  });
   const [editingThreadId, setEditingThreadId] = createSignal<string>();
   const [threadTitleDraft, setThreadTitleDraft] = createSignal("");
 
@@ -120,14 +144,13 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
           }
         >
           <div class="space-y-3">
-            <For each={state.workspace.projects}>
+            <For each={projectCards()}>
               {(project) => {
-                const visibleThreads = () => project.threads.filter((thread) => thread.kind === "user");
-                const isActiveProject = () => project.id === state.workspace.activeProjectId;
+                const isActiveProject = () => project.isActive;
                 const removeDisabledReason = () =>
-                  project.session.isStreaming
+                  project.isStreaming
                     ? "Project is streaming"
-                    : project.activeCliSession
+                    : project.hasCliSession
                       ? "Live CLI session attached"
                       : undefined;
 
@@ -154,9 +177,9 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
                           <div class="truncate text-[0.585rem] text-(--muted)">
                             {truncateMiddle(project.rootPath, props.compact ? 24 : 30)}
                           </div>
-                          <div class="flex flex-wrap text-[0.585rem] text-(--muted) gap-0.5">
-                            <span>{visibleThreads().length} threads</span>
-                            {project.session.isStreaming ? <span>streaming</span> : null}
+                          <div class="flex flex-wrap gap-0.5 text-[0.585rem] text-(--muted)">
+                            <span>{project.threadCount} threads</span>
+                            {project.isStreaming ? <span>streaming</span> : null}
                             {isActiveProject() ? <span>active</span> : null}
                           </div>
                         </div>
@@ -186,87 +209,91 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
                     </div>
 
                     <div class="mt-2 space-y-1.5">
-                      <For each={visibleThreads()}>
+                      <For each={project.threads}>
                         {(thread) => {
                           const isActiveThread = () => project.activeThreadId === thread.id;
                           const isEditing = () => editingThreadId() === thread.id;
-                          const badgeStyle = badgeClass(thread.badgeState);
-                          return (
-                            <div class={`rounded-2xl border px-3 py-2 ${isActiveThread() ? "border-teal-500/50 bg-white/80" : "border-(--border) bg-white/60"}`}>
-                              <div class="flex min-w-0 items-start justify-between gap-1.5">
-                                <button
-                                  class="flex min-w-0 flex-1 cursor-pointer flex-col text-left disabled:cursor-not-allowed"
-                                  disabled={isActiveThread()}
-                                  onClick={() => handleActivateThread(project.id, thread.id)}
-                                >
-                                  <Show
-                                    when={isEditing()}
-                                    fallback={
-                                      <Tooltip content={thread.title} triggerClass="block min-w-0 w-full">
-                                        <div class="truncate text-[0.675rem] font-semibold text-(--foreground)">
-                                          {thread.title}
-                                        </div>
-                                      </Tooltip>
-                                    }
-                                  >
-                                    <Input
-                                      value={threadTitleDraft()}
-                                      onInput={(event: InputEvent & { currentTarget: HTMLInputElement; target: Element }) =>
-                                        setThreadTitleDraft(event.currentTarget.value)
-                                      }
-                                      onBlur={() => commitRename(project.id, thread.id)}
-                                      onKeyDown={(event) => {
-                                        if (event.key === "Enter") {
-                                          event.preventDefault();
-                                          commitRename(project.id, thread.id);
-                                        }
-                                        if (event.key === "Escape") {
-                                          setEditingThreadId(undefined);
-                                        }
-                                      }}
-                                    />
-                                  </Show>
-                                  <div class="mt-1 flex w-full min-w-0 items-center justify-between gap-2 text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">
-                                    <Show when={thread.lastMessagePreview}>
-                                      <Tooltip content={thread.lastMessagePreview} triggerClass="flex min-w-0 flex-1">
-                                        <span class="min-w-0 flex-1 truncate normal-case text-[0.625rem] tracking-normal">
-                                          {thread.lastMessagePreview}
-                                        </span>
-                                      </Tooltip>
-                                    </Show>
-                                    <div class="flex shrink-0 items-center gap-2">
-                                      <Show when={thread.badgeState !== "idle"}>
-                                        <span class={`rounded-full px-2 py-0.5 text-[0.46rem] normal-case tracking-normal ${badgeStyle}`}>
-                                          {badgeLabel(thread.badgeState)}
-                                        </span>
-                                      </Show>
-                                      <span>{thread.messageCount} msgs</span>
-                                    </div>
-                                  </div>
-                                </button>
 
-                                <div class="flex shrink-0 gap-0.5">
-                                  <ActionButton
-                                    tooltip="Fork this thread"
-                                    icon={<GitFork class="h-3 w-3" />}
-                                    variant="ghost"
-                                    size="icon"
-                                    class="h-6 w-6 rounded-lg"
-                                    ariaLabel={`Fork ${thread.title}`}
-                                    onClick={() => handleForkThread(project.id, thread.id)}
-                                  />
-                                  <ActionButton
-                                    tooltip="Rename this thread"
-                                    icon={<Edit3 class="h-3 w-3" />}
-                                    variant="ghost"
-                                    size="icon"
-                                    class="h-6 w-6 rounded-lg"
-                                    ariaLabel={`Rename ${thread.title}`}
-                                    onClick={() => startRename(thread.id, thread.title)}
-                                  />
+                          return (
+                              <div
+                                class={`rounded-2xl border px-3 py-2 ${isActiveThread() ? "border-teal-500/50 bg-white/80" : "border-(--border) bg-white/60"}`}
+                              >
+                                <div class="flex min-w-0 items-start justify-between gap-1.5">
+                                  <button
+                                    class="flex min-w-0 flex-1 cursor-pointer flex-col text-left disabled:cursor-not-allowed"
+                                    disabled={isActiveThread()}
+                                    onClick={() => handleActivateThread(project.id, thread.id)}
+                                  >
+                                    <Show
+                                      when={isEditing()}
+                                      fallback={
+                                        <Tooltip content={thread.title} triggerClass="block min-w-0 w-full">
+                                          <div class="truncate text-[0.675rem] font-semibold text-(--foreground)">
+                                            {thread.title}
+                                          </div>
+                                        </Tooltip>
+                                      }
+                                    >
+                                      <Input
+                                        value={threadTitleDraft()}
+                                        onInput={(event: InputEvent & { currentTarget: HTMLInputElement; target: Element }) =>
+                                          setThreadTitleDraft(event.currentTarget.value)
+                                        }
+                                        onBlur={() => commitRename(project.id, thread.id)}
+                                        onKeyDown={(event) => {
+                                          if (event.key === "Enter") {
+                                            event.preventDefault();
+                                            commitRename(project.id, thread.id);
+                                          }
+                                          if (event.key === "Escape") {
+                                            setEditingThreadId(undefined);
+                                          }
+                                        }}
+                                      />
+                                    </Show>
+                                    <div class="mt-1 flex w-full min-w-0 items-center justify-between gap-2 text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">
+                                      <Show when={thread.lastMessagePreview}>
+                                        <Tooltip content={thread.lastMessagePreview} triggerClass="flex min-w-0 flex-1">
+                                          <span class="min-w-0 flex-1 truncate normal-case text-[0.625rem] tracking-normal">
+                                            {thread.lastMessagePreview}
+                                          </span>
+                                        </Tooltip>
+                                      </Show>
+                                      <div class="flex shrink-0 items-center gap-2">
+                                        <Show when={thread.badgeState !== "idle"}>
+                                          <span
+                                            class={`rounded-full px-2 py-0.5 text-[0.46rem] normal-case tracking-normal ${badgeClass(thread.badgeState)}`}
+                                          >
+                                            {badgeLabel(thread.badgeState)}
+                                          </span>
+                                        </Show>
+                                        <span>{thread.messageCount} msgs</span>
+                                      </div>
+                                    </div>
+                                  </button>
+
+                                  <div class="flex shrink-0 gap-0.5">
+                                    <ActionButton
+                                      tooltip="Fork this thread"
+                                      icon={<GitFork class="h-3 w-3" />}
+                                      variant="ghost"
+                                      size="icon"
+                                      class="h-6 w-6 rounded-lg"
+                                      ariaLabel={`Fork ${thread.title}`}
+                                      onClick={() => handleForkThread(project.id, thread.id)}
+                                    />
+                                    <ActionButton
+                                      tooltip="Rename this thread"
+                                      icon={<Edit3 class="h-3 w-3" />}
+                                      variant="ghost"
+                                      size="icon"
+                                      class="h-6 w-6 rounded-lg"
+                                      ariaLabel={`Rename ${thread.title}`}
+                                      onClick={() => startRename(thread.id, thread.title)}
+                                    />
+                                  </div>
                                 </div>
                               </div>
-                            </div>
                           );
                         }}
                       </For>

@@ -1,6 +1,6 @@
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
 import { createRequestId, type BackgroundJob, type BackgroundJobRun } from "../../../shared/protocol";
-import { type BackgroundJobEditorDraft, harnessStore, persistLocalPreferences } from "../harness-store";
+import { type BackgroundJobEditorDraft, harnessStore, persistMergedLocalPreferences } from "../harness-store";
 import { pushToast } from "../toast-store";
 import { ActionButton } from "./action-button";
 import { ScrollArea } from "./primitives/scroll-area";
@@ -155,7 +155,7 @@ export function BackgroundJobsPanel() {
   }
 
   function persistCurrentLocalPreferences(backgroundJobNotificationsEnabled: boolean) {
-    persistLocalPreferences({
+    persistMergedLocalPreferences({
       openAiApiKey: state.openAiApiKeyDraft.trim() || undefined,
       googleApiKey: state.googleApiKeyDraft.trim() || undefined,
       providerBrand: state.providerBrand,
@@ -434,4 +434,3 @@ function runFilterIcon(filter: RunFilter) {
 function resolveBrowserTimezone() {
   return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 }
-

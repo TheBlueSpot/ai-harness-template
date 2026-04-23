@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sword Souls Train</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell" id="app-shell" data-state="training">
+      <div class="backdrop"></div>
+      <header class="top-bar">
+        <div>
+          <p class="eyebrow">Sword Souls Train</p>
+          <h1>Forge the blade, enter the arena.</h1>
+        </div>
+        <div class="top-bar__meta" id="player-summary"></div>
+      </header>
+
+      <main class="stage">
+        <section class="screen screen--training is-active" id="training-screen" data-screen="training" aria-labelledby="training-title">
+          <div class="screen-copy">
+            <p class="eyebrow">Training Hub</p>
+            <h2 id="training-title">Build speed, sharpen crits, and ready your fighter.</h2>
+            <p>Complete drills to raise the live combat stats shown in the forge panel.</p>
+          </div>
+          <div class="layout">
+            <section class="panel">
+              <div class="panel__header">
+                <h3>Training Cards</h3>
+                <p>Pick a drill. Each one scales your sword soul in a different way.</p>
+              </div>
+              <div class="card-grid" id="training-cards"></div>
+            </section>
+            <aside class="panel panel--stats" aria-label="Live stats">
+              <div class="panel__header">
+                <h3>Live Stat Forge</h3>
+                <p>Changes appear instantly after each completed drill.</p>
+              </div>
+              <div class="stat-stack" id="live-stats"></div>
+              <div class="sprite-frame" id="training-sprite">No final art yet. Placeholder crest active.</div>
+            </aside>
+          </div>
+          <div class="screen-actions">
+            <button class="primary-btn" id="go-arena-btn" type="button">Enter Arena</button>
+          </div>
+        </section>
+
+        <section class="screen screen--arena" id="arena-screen" data-screen="arena" aria-labelledby="arena-title" hidden>
+          <div class="screen-copy">
+            <p class="eyebrow">Arena Menu</p>
+            <h2 id="arena-title">Choose an encounter and inspect your fighter.</h2>
+          </div>
+          <div class="layout">
+            <section class="panel">
+              <div class="panel__header">
+                <h3>Encounter Selection</h3>
+                <p>Select a foe. Harder fights hit harder but return better rewards.</p>
+              </div>
+              <div class="encounter-list" id="encounter-list"></div>
+            </section>
+            <aside class="panel panel--stats">
+              <div class="panel__header">
+                <h3>Player Summary</h3>
+                <p>Your current training loadout and battle readiness.</p>
+              </div>
+              <div class="summary-box" id="arena-summary"></div>
+              <div class="screen-actions screen-actions--stack">
+                <button class="primary-btn" id="start-combat-btn" type="button">Start Combat</button>
+                <button class="secondary-btn" id="back-training-btn" type="button">Return to Training</button>
+              </div>
+            </aside>
+          </div>
+        </section>
+
+        <section class="screen screen--combat" id="combat-screen" data-screen="combat" aria-labelledby="combat-title" hidden>
+          <div class="combat-hud">
+            <div>
+              <p class="eyebrow">Active Combat</p>
+              <h2 id="combat-title">Hold the line. Read the log. Spend your actions.</h2>
+            </div>
+            <div class="hud-row" id="combat-hud"></div>
+          </div>
+          <div class="combat-layout">
+            <section class="panel combat-viewport">
+              <div class="sprite-frame sprite-frame--combat" id="combat-sprite">Enemy silhouette placeholder.</div>
+              <div class="action-row" id="combat-actions"></div>
+            </section>
+            <aside class="panel panel--log">
+              <div class="panel__header">
+                <h3>Battle Log</h3>
+                <p>Combat feedback and damage history appear here.</p>
+              </div>
+              <div class="log-list" id="combat-log"></div>
+            </aside>
+          </div>
+        </section>
+
+        <section class="screen screen--result" id="result-screen" data-screen="result" aria-labelledby="result-title" hidden>
+          <div class="screen-copy">
+            <p class="eyebrow">Result Screen</p>
+            <h2 id="result-title">The duel is over.</h2>
+          </div>
+          <div class="layout layout--result">
+            <section class="panel">
+              <div class="panel__header">
+                <h3>Outcome Recap</h3>
+                <p id="result-message">Your path is recorded below.</p>
+              </div>
+              <div class="summary-box summary-box--result" id="result-summary"></div>
+            </section>
+            <aside class="panel panel--stats">
+              <div class="panel__header">
+                <h3>Next Move</h3>
+                <p>Return to training or challenge another foe.</p>
+              </div>
+              <div class="screen-actions screen-actions--stack">
+                <button class="primary-btn" id="result-training-btn" type="button">Back to Training</button>
+                <button class="secondary-btn" id="result-arena-btn" type="button">Pick Another Arena</button>
+              </div>
+            </aside>
+          </div>
+        </section>
+      </main>
+    </div>
+    <script type="module" src="./js/main.js"></script>
+  </body>
+</html>

@@ -1,6 +1,13 @@
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js";
 import { createHotkeys } from "@tanstack/solid-hotkeys";
-import { createRequestId, type ChatAttachment, type ChatMessage, type SetupAction } from "../../../shared/protocol";
+import {
+  createRequestId,
+  type AgentRunState,
+  type AgentRunSummary,
+  type ChatAttachment,
+  type ChatMessage,
+  type SetupAction
+} from "../../../shared/protocol";
 import {
   detectSupportedChatAttachment,
   isSupportedChatAttachment,
@@ -21,8 +28,10 @@ import {
   getResolvedModes,
   harnessStore,
   hasUsableApiKeyForProvider,
-  persistLocalPreferences,
-  shouldShowSetupChecklist
+  persistMergedLocalPreferences,
+  resolveUsablePiProviderBrand,
+  shouldShowSetupChecklist,
+  type ViewProjectState
 } from "../harness-store";
 import { uploadFiles } from "../lib/uploadthing";
 import { pushToast } from "../toast-store";
@@ -45,6 +54,7 @@ import {
   Activity,
   Brain,
   Bot,
+  CalendarClock,
   ClipboardList,
   Clipboard,
   Cpu,
@@ -87,6 +97,29 @@ function getFastModeDescription(enabled: boolean) {
     ? "Prefer lower-latency responses when current runtime and model support it."
     : "Use standard response path with default latency and reasoning behavior.";
 }
+
+function isHarnessTranscriptMessage(message: ChatMessage) {
+  return message.role === "assistant" || message.role === "system";
+}
+
+function getTranscriptRoleLabel(role: ChatMessage["role"]) {
+  return role === "user" ? "user" : "harness";
+}
+
+function getCopyAriaLabel(message: ChatMessage) {
+  return `Copy ${isHarnessTranscriptMessage(message) ? "harness" : message.role} message`;
+}
+
+function getPlanFromMessage(message: ChatMessage) {
+  return message.metadata?.type === "plan-summary" ? message.metadata.plan : undefined;
+}
+
+type LiveHarnessMessage = {
+  id: string;
+  content: string;
+  locked: boolean;
+  kind: "status" | "assistant";
+};
 
 export function ChatPanel() {
   let messageViewport: HTMLDivElement | undefined;
@@ -196,6 +229,14 @@ export function ChatPanel() {
       { id: "events" as const, label: "Events", icon: <Activity class="h-3.5 w-3.5" />, tooltip: "Open execution event history" }
     ] as const;
   const experimentRun = () => activeProject()?.activeRun?.experiment ?? activeProject()?.lastRun?.experiment;
+  const liveHarnessMessages = () => {
+    const project = activeProject();
+    return project ? getStreamingLiveMessages(project) : [];
+  };
+  const liveHarnessMessageKey = () =>
+    liveHarnessMessages()
+      .map((message) => `${message.id}:${message.locked ? "locked" : "live"}:${message.content}`)
+      .join("\n---\n");
   const failedSubtaskCount = () =>
     activeProject()?.activeRun?.subtasks.filter((task) => task.status === "failed").length ?? 0;
   const contextUsage = () => activeProject()?.contextUsage;
@@ -214,6 +255,97 @@ export function ChatPanel() {
   const executionPauseReason = () => "Global execution pause is active";
   const setupBlockedReason = () =>
     requiresFreshTopLevelSend() && blockingSetupCheck() ? blockingSetupCheck()!.summary : undefined;
+  const composerSubmitState = createMemo(() => {
+    const project = activeProject();
+    const content = project?.draft.trim() ?? "";
+    const hasAttachments = draftAttachments().length > 0;
+    const question = pendingQuestion();
+    const readyRunActive = project?.activeRun?.status === "ready";
+    const tooltip = question
+      ? "Send planner answer"
+      : readyRunActive
+        ? "Refine plan before execution"
+        : `Send task to ${selectedAgentLabel()}`;
+
+    if (!project) {
+      return { disabled: true, disabledReason: "Open project first", tooltip };
+    }
+
+    if (executionPaused()) {
+      return { disabled: true, disabledReason: executionPauseReason(), tooltip };
+    }
+
+    if (project.session.isStreaming) {
+      return { disabled: true, disabledReason: "Project is streaming", tooltip };
+    }
+
+    if (uploadingAttachments()) {
+      return { disabled: true, disabledReason: "Attachment upload in progress", tooltip };
+    }
+
+    if ((question || readyRunActive) && hasAttachments) {
+      return {
+        disabled: true,
+        disabledReason: "Attachments are only supported on new top-level tasks right now.",
+        tooltip
+      };
+    }
+
+    if (hasImageDraftAttachments() && !hasVisionCapability()) {
+      return {
+        disabled: true,
+        disabledReason: "Current model lacks vision support for image attachments",
+        tooltip
+      };
+    }
+
+    if (question) {
+      return content
+        ? { disabled: false, disabledReason: undefined, tooltip }
+        : { disabled: true, disabledReason: "Enter answer text", tooltip };
+    }
+
+    if (readyRunActive) {
+      return content
+        ? { disabled: false, disabledReason: undefined, tooltip }
+        : { disabled: true, disabledReason: "Enter plan changes", tooltip };
+    }
+
+    if (resumableRun()) {
+      return {
+        disabled: true,
+        disabledReason: "Use resume failed agents to continue this run",
+        tooltip
+      };
+    }
+
+    if (setupBlockedReason()) {
+      return { disabled: true, disabledReason: setupBlockedReason(), tooltip };
+    }
+
+    if (!content) {
+      return {
+        disabled: true,
+        disabledReason: hasAttachments ? "Describe what to do with attached files" : "Enter task text",
+        tooltip
+      };
+    }
+
+    if (selectedAgentId() === "pi" && !resolveUsablePiProviderBrand(state)) {
+      return {
+        disabled: true,
+        disabledReason: "Add an OpenAI or Google API key to use Pi, or switch agents",
+        tooltip
+      };
+    }
+
+    const unavailableAgentReason = getSelectedAgentUnavailableReason();
+    if (unavailableAgentReason) {
+      return { disabled: true, disabledReason: unavailableAgentReason, tooltip };
+    }
+
+    return { disabled: false, disabledReason: undefined, tooltip };
+  });
   const isComposerFocused = () => document.activeElement === composerTextarea;
   const renderModeControl = (size: "sm" | "md" = "sm", className?: string) => (
     <DropdownControl
@@ -355,7 +487,7 @@ export function ChatPanel() {
 
   createEffect(() => {
     activeProject()?.session.messages.length;
-    activeProject()?.streamingAssistantText;
+    liveHarnessMessageKey();
     scrollToBottom();
   });
 
@@ -497,7 +629,39 @@ export function ChatPanel() {
           harnessStore.startTutorial(action.value);
         }
         return;
+      case "init-git-baseline":
+        handleInitGitBaseline();
+        return;
+      case "disable-dirty-git-check":
+        handleDisableDirtyGitCheck();
+        return;
     }
+  }
+
+  function handleInitGitBaseline() {
+    const project = activeProject();
+    if (!project) {
+      return;
+    }
+
+    harnessStore.prepareNonGitPreflightRepair("git-init");
+    sendCommand({
+      type: "project.git.initBaseline",
+      requestId: createRequestId(),
+      payload: {
+        projectId: project.id
+      }
+    });
+  }
+
+  function handleDisableDirtyGitCheck() {
+    harnessStore.prepareNonGitPreflightRepair("disable-check");
+    harnessStore.setBlockChatOnDirtyGitDefault(false);
+    savePreferences({ blockChatOnDirtyGitDefault: false });
+  }
+
+  function handleCancelNonGitPreflight() {
+    harnessStore.clearBlockingNonGitPreflight();
   }
 
   function clearCountdown() {
@@ -641,15 +805,6 @@ export function ChatPanel() {
       return;
     }
 
-    if (hasImageDraftAttachments() && !hasVisionCapability()) {
-      pushToast(
-        "Vision model required",
-        "Current model cannot inspect attached images. Switch to a vision-capable model before sending.",
-        "error"
-      );
-      return;
-    }
-
     const question = pendingQuestion();
     if (question && project.activeRun) {
       if (draftAttachments().length > 0) {
@@ -697,6 +852,15 @@ export function ChatPanel() {
       return;
     }
 
+    if (hasImageDraftAttachments() && !hasVisionCapability()) {
+      pushToast(
+        "Vision model required",
+        "Current model cannot inspect attached images. Switch to a vision-capable model before sending.",
+        "error"
+      );
+      return;
+    }
+
     if (resumableRun()) {
       pushToast(
         "Resume required",
@@ -707,19 +871,25 @@ export function ChatPanel() {
     }
 
     if (selectedAgentId() === "pi" && !hasUsableApiKeyForProvider(state, state.providerBrand)) {
-      pushToast(
-        `${state.providerBrand === "gemini" ? "Gemini" : "GPT"} API key required`,
-        "Open preferences and add matching provider key before sending chat.",
-        "error"
-      );
-      harnessStore.openPreferencesModal();
-      return;
+      const fallbackProviderBrand = resolveUsablePiProviderBrand(state);
+      if (fallbackProviderBrand) {
+        harnessStore.setProviderBrand(fallbackProviderBrand);
+        persistProviderPreferences(fallbackProviderBrand);
+      } else {
+        pushToast(
+          `${state.providerBrand === "gemini" ? "Gemini" : "GPT"} API key required`,
+          "Open preferences and add an OpenAI or Google key before sending chat.",
+          "error"
+        );
+        harnessStore.openPreferencesModal();
+        return;
+      }
     }
 
     if (selectedAgentId() !== "pi") {
-      const runtime = selectedAgentRuntime();
-      if (!runtime?.installed || !runtime.authenticated) {
-        pushToast("CLI runtime unavailable", runtime?.healthMessage ?? "Install and authenticate selected runtime first.", "error");
+      const unavailableAgentReason = getSelectedAgentUnavailableReason();
+      if (unavailableAgentReason) {
+        pushToast("CLI runtime unavailable", unavailableAgentReason, "error");
         return;
       }
     }
@@ -763,6 +933,27 @@ export function ChatPanel() {
     composerTextarea.style.height = "auto";
     const nextHeight = Math.max(minHeight, Math.min(composerTextarea.scrollHeight, maxHeight));
     composerTextarea.style.height = `${nextHeight}px`;
+  }
+
+  function getSelectedAgentUnavailableReason() {
+    if (selectedAgentId() === "pi") {
+      return undefined;
+    }
+
+    const runtime = selectedAgentRuntime();
+    if (!runtime) {
+      return "Refresh runtime health before using selected runtime";
+    }
+
+    if (!runtime.installed || !runtime.authenticated) {
+      return runtime.healthMessage ?? `Install and authenticate ${runtime.label} before sending.`;
+    }
+
+    if (!runtime.supportsProgrammatic) {
+      return runtime.healthMessage ?? `${runtime.label} cannot send tasks from harness yet.`;
+    }
+
+    return undefined;
   }
 
   function handleStartLiveSession() {
@@ -814,6 +1005,174 @@ export function ChatPanel() {
         ...getComposerControlPayload()
       }
     });
+  }
+
+  function handleResumeRun(runId: string) {
+    if (executionPaused()) {
+      return;
+    }
+    const project = activeProject();
+    if (!project) {
+      return;
+    }
+
+    sendCommand({
+      type: "run.resume",
+      requestId: createRequestId(),
+      payload: {
+        projectId: project.id,
+        threadId: project.activeThreadId,
+        runId,
+        guidanceText: project.draft.trim() || undefined,
+        ...getComposerControlPayload()
+      }
+    });
+
+    harnessStore.setProjectDraft(project.id, "");
+  }
+
+  function handleRetryRun(runId: string) {
+    if (executionPaused()) {
+      return;
+    }
+    const project = activeProject();
+    if (!project) {
+      return;
+    }
+
+    sendCommand({
+      type: "run.retry",
+      requestId: createRequestId(),
+      payload: {
+        projectId: project.id,
+        threadId: project.activeThreadId,
+        runId,
+        ...getComposerControlPayload()
+      }
+    });
+  }
+
+  function resolvePlanRun(runId?: string) {
+    const project = activeProject();
+    if (!project) {
+      return;
+    }
+
+    return [project.activeRun, project.lastRun].find((entry) => entry?.id === runId) ?? (runId ? undefined : project.activeRun ?? project.lastRun);
+  }
+
+  function getPlanRunState(runId: string): AgentRunState | AgentRunSummary | undefined {
+    const project = activeProject();
+    return [project?.activeRun, project?.lastRun].find((entry) => entry?.id === runId) ?? project?.runSummaries.find((run) => run.id === runId);
+  }
+
+  function getPlanRunAction(runId: string) {
+    const run = getPlanRunState(runId);
+    if (!run) {
+      return {
+        kind: "unavailable" as const,
+        label: "Unavailable",
+        tooltip: "This persisted run is not available",
+        disabled: true,
+        disabledReason: "This run is not available"
+      };
+    }
+
+    if (["planning", "awaiting-user-input", "running-main", "running-subagents", "aggregating"].includes(run.status)) {
+      return {
+        kind: "in-progress" as const,
+        label: "In progress",
+        tooltip: "This plan is already in progress",
+        disabled: true,
+        disabledReason: "This plan is already in progress"
+      };
+    }
+
+    if (run.status === "completed") {
+      return {
+        kind: "completed" as const,
+        label: "Completed",
+        tooltip: "This plan has completed",
+        disabled: true,
+        disabledReason: "This plan has completed"
+      };
+    }
+
+    if (run.status === "ready") {
+      return {
+        kind: "execute" as const,
+        label: "Build now",
+        tooltip: "Build this persisted plan now",
+        disabled: executionPaused(),
+        disabledReason: executionPauseReason()
+      };
+    }
+
+    if ((run.status === "partial-complete" || run.status === "stopped") && run.resumable) {
+      return {
+        kind: "resume" as const,
+        label: "Resume",
+        tooltip: "Resume this persisted run",
+        disabled: executionPaused(),
+        disabledReason: executionPauseReason()
+      };
+    }
+
+    if ((run.status === "failed" || run.status === "partial-complete" || run.status === "stopped") && run.retryable) {
+      return {
+        kind: "retry" as const,
+        label: "Retry",
+        tooltip: "Retry this persisted run",
+        disabled: executionPaused(),
+        disabledReason: executionPauseReason()
+      };
+    }
+
+    return {
+      kind: "unavailable" as const,
+      label: "Unavailable",
+      tooltip: "This plan cannot be run from its current state",
+      disabled: true,
+      disabledReason: "This plan cannot be run from its current state"
+    };
+  }
+
+  function handlePlanRunAction(runId: string) {
+    const action = getPlanRunAction(runId);
+    if (action.disabled) {
+      return;
+    }
+
+    if (action.kind === "execute") {
+      handleExecuteRun(runId);
+      return;
+    }
+
+    if (action.kind === "resume") {
+      handleResumeRun(runId);
+      return;
+    }
+
+    if (action.kind === "retry") {
+      handleRetryRun(runId);
+    }
+  }
+
+  function renderPlanRunAction(runId: string) {
+    const action = () => getPlanRunAction(runId);
+    return (
+      <ActionButton
+        tooltip={action().tooltip}
+        disabledReason={action().disabledReason}
+        disabled={action().disabled}
+        icon={action().kind === "completed" ? <Check class="h-3.5 w-3.5" /> : action().kind === "retry" ? <RefreshCcw class="h-3.5 w-3.5" /> : <Play class="h-3.5 w-3.5" />}
+        size="sm"
+        dataTourId={action().kind === "execute" ? "plan-start" : undefined}
+        onClick={() => handlePlanRunAction(runId)}
+      >
+        {action().label}
+      </ActionButton>
+    );
   }
 
   function handleInspectExperiment() {
@@ -1049,10 +1408,6 @@ export function ChatPanel() {
     setEditingThreadTitle(false);
   }
 
-  function isReadyPlanMessage(runId: string) {
-    return readyRun()?.id === runId;
-  }
-
   function getCopyableMessageText(message: ChatMessage) {
     if (message.kind !== "plan-summary" || message.metadata?.type !== "plan-summary") {
       return message.content;
@@ -1098,14 +1453,20 @@ export function ChatPanel() {
   }
 
   function persistProviderPreferences(providerBrand: "gpt" | "gemini") {
-    persistLocalPreferences({
+    savePreferences({ providerBrand });
+  }
+
+  function savePreferences(overrides: { providerBrand?: "gpt" | "gemini"; blockChatOnDirtyGitDefault?: boolean } = {}) {
+    const providerBrand = overrides.providerBrand ?? state.providerBrand;
+    const blockChatOnDirtyGitDefault = overrides.blockChatOnDirtyGitDefault ?? state.blockChatOnDirtyGitDefault;
+    persistMergedLocalPreferences({
       openAiApiKey: state.openAiApiKeyDraft.trim() || undefined,
       googleApiKey: state.googleApiKeyDraft.trim() || undefined,
       providerBrand,
       debugEnabled: state.debugEnabled,
       tracePanelDefaultOpen: state.tracePanelDefaultOpen,
       subagentWorktreeStrategyDefault: state.subagentWorktreeStrategyDefault,
-      blockChatOnDirtyGitDefault: state.blockChatOnDirtyGitDefault,
+      blockChatOnDirtyGitDefault,
       dirtyGitChangeLimitDefault: state.dirtyGitChangeLimitDefault,
       autoCompactContextThresholdPercentDefault: state.autoCompactContextThresholdPercentDefault,
       planExecutionModeDefault: state.planExecutionModeDefault,
@@ -1126,7 +1487,7 @@ export function ChatPanel() {
         debugEnabled: state.debugEnabled,
         tracePanelDefaultOpen: state.tracePanelDefaultOpen,
         subagentWorktreeStrategyDefault: state.subagentWorktreeStrategyDefault,
-        blockChatOnDirtyGitDefault: state.blockChatOnDirtyGitDefault,
+        blockChatOnDirtyGitDefault,
         dirtyGitChangeLimitDefault: state.dirtyGitChangeLimitDefault,
         autoCompactContextThresholdPercentDefault: state.autoCompactContextThresholdPercentDefault,
         planExecutionModeDefault: state.planExecutionModeDefault,
@@ -1287,7 +1648,7 @@ export function ChatPanel() {
       return;
     }
 
-    const run = [project.activeRun, project.lastRun].find((entry) => entry?.id === runId) ?? project.activeRun ?? project.lastRun;
+    const run = resolvePlanRun(runId);
     if (!run) {
       pushToast("Run required", "No AI run available to promote.", "error");
       return;
@@ -1323,6 +1684,31 @@ export function ChatPanel() {
 
   return (
     <section data-test-chat-panel="" class="panel-shell flex h-full min-h-0 flex-col gap-1 rounded-2xl border-t-0 p-4">
+      <Dialog
+        open={Boolean(state.blockingNonGitPreflight)}
+        title="Git setup required"
+        eyebrow="Preflight"
+        description="Dirty-git protection cannot verify this folder because it is not a git repository."
+        onClose={handleCancelNonGitPreflight}
+        footer={
+          <>
+            <ActionButton tooltip="Initialize git and commit the current folder baseline" type="button" onClick={handleInitGitBaseline}>
+              Init Git
+            </ActionButton>
+            <ActionButton tooltip="Disable dirty-git protection and retry this run" type="button" variant="secondary" onClick={handleDisableDirtyGitCheck}>
+              Disable check and continue
+            </ActionButton>
+            <ActionButton tooltip="Cancel this run" type="button" variant="ghost" onClick={handleCancelNonGitPreflight}>
+              Cancel
+            </ActionButton>
+          </>
+        }
+      >
+        <div class="space-y-2 text-xs leading-6 text-(--muted)">
+          <p>{state.blockingNonGitPreflight?.preflight.repairSummary}</p>
+          <p>{state.blockingNonGitPreflight?.preflight.repairDetail}</p>
+        </div>
+      </Dialog>
       <Show when={shouldShowSetupChecklist(state)}>
         <SetupChecklistCard
           checks={state.setup.checks}
@@ -1488,7 +1874,7 @@ export function ChatPanel() {
             <div class="min-h-0 flex-1 overflow-hidden">
             <Show when={currentTab()} keyed>
               {(selectedTab) => (
-                <div class="flex h-full min-h-0 flex-col gap-2">
+                <div class="flex h-full min-h-0 flex-col">
                   <div data-test-chat-pane-nav="" class="surface-tab-strip px-0">
                     <div class="flex flex-wrap items-center gap-1">
                       <For each={visibleTabs()}>
@@ -1520,7 +1906,7 @@ export function ChatPanel() {
                       <div class="relative flex min-h-0 flex-1 flex-col">
                         <ScrollArea ref={messageViewport} class="flex-1 min-h-0 pr-2" onScroll={updateScrollLock}>
                           <Show
-                            when={project().session.messages.length > 0 || project().streamingAssistantText}
+                            when={project().session.messages.length > 0 || liveHarnessMessages().length > 0}
                             fallback={
                               <div class="flex min-h-56 items-center justify-center rounded-3xl border border-dashed border-(--border) bg-white/40 p-8 text-center text-[0.675rem] text-(--muted)">
                                 Choose project, then send task. Each project keeps its own persisted thread history.
@@ -1529,26 +1915,33 @@ export function ChatPanel() {
                           >
                             <div class="flex flex-col gap-3">
                       <For each={project().session.messages}>
-                        {(message) => (
+                        {(message, index) => (
+                          <Show when={!shouldHidePersistedStreamingAssistantMessage(project(), message, index())}>
                           <Show
                             when={message.kind === "plan-summary" && message.metadata?.type === "plan-summary"}
                             fallback={
                               <article
-                                class={`border border-(--border) p-3 shadow-sm ${message.role === "system"
-                                  ? "rounded-[1.15rem] bg-slate-100/85"
-                                  : message.role === "assistant"
-                                    ? "rounded-3xl bg-teal-950/5"
-                                    : "rounded-3xl bg-white/60"
+                                class={`border border-(--border) p-3 shadow-sm ${isHarnessTranscriptMessage(message)
+                                  ? message.kind === "run-milestones" && message.metadata?.type === "run-milestones" && message.metadata.status === "open"
+                                    ? "rounded-3xl bg-teal-950/10 ring-1 ring-teal-700/20"
+                                    : "rounded-3xl bg-teal-950/5"
+                                  : "rounded-3xl bg-white/60"
                                   }`}
                               >
                                 <div class="flex flex-col gap-3">
-                                <div
-                                  class={`text-[0.585rem] font-semibold uppercase tracking-[0.2em] ${message.role === "system"
-                                    ? "text-(--muted)"
-                                    : "text-(--accent-strong)"
-                                    }`}
-                                >
-                                  {message.role === "system" ? "status" : message.role}
+                                <div class="flex items-center gap-2">
+                                  <div
+                                    class={`text-[0.585rem] font-semibold uppercase tracking-[0.2em] ${
+                                      isHarnessTranscriptMessage(message) ? "text-(--accent-strong)" : "text-(--muted)"
+                                      }`}
+                                  >
+                                    {getTranscriptRoleLabel(message.role)}
+                                  </div>
+                                  <Show when={message.kind === "run-milestones" && message.metadata?.type === "run-milestones" && message.metadata.status === "open"}>
+                                    <span class="rounded-full border border-teal-700/25 bg-white/70 px-2 py-0.5 text-[0.55rem] font-semibold uppercase tracking-[0.12em] text-(--accent-strong)">
+                                      In progress
+                                    </span>
+                                  </Show>
                                 </div>
                                 <MarkdownContent content={() => message.content} size="compact" />
                                 <Show when={message.attachments?.length}>
@@ -1575,7 +1968,7 @@ export function ChatPanel() {
                                     copiedDescription="Message copied to clipboard."
                                     size="sm"
                                     variant="ghost"
-                                    ariaLabel={`Copy ${message.role} message`}
+                                    ariaLabel={getCopyAriaLabel(message)}
                                   >
                                     Copy
                                   </CopyTextButton>
@@ -1589,14 +1982,15 @@ export function ChatPanel() {
                                 <Clipboard class="h-3.5 w-3.5" />
                                 Plan summary
                               </div>
-                              <MarkdownContent content={() => message.metadata?.plan.summary ?? ""} />
+                              <MarkdownContent content={() => getPlanFromMessage(message)?.summary ?? ""} />
                               <div class="grid gap-2 text-[0.675rem] text-(--muted) md:grid-cols-2">
-                                <div>Route: {message.metadata?.plan.route}</div>
-                                <div>Difficulty: {message.metadata?.plan.difficultyScore}%</div>
-                                <div>Prereqs: {message.metadata?.plan.prerequisites.length}</div>
-                                <div>Contracts: {message.metadata?.plan.contracts.length}</div>
-                                <div>Isolation: {message.metadata?.plan.subagentWorktreeStrategy}</div>
-                                <div>Correctness: {message.metadata?.plan.correctnessPolicy}</div>
+                                <div>Route: {getPlanFromMessage(message)?.route}</div>
+                                <div>Difficulty: {getPlanFromMessage(message)?.difficultyScore}%</div>
+                                <div>Parallel slots: {getPlanFromMessage(message)?.actualSubagentCount}</div>
+                                <div>Prereqs: {getPlanFromMessage(message)?.prerequisites.length}</div>
+                                <div>Contracts: {getPlanFromMessage(message)?.contracts.length}</div>
+                                <div>Isolation: {getPlanFromMessage(message)?.subagentWorktreeStrategy}</div>
+                                <div>Correctness: {getPlanFromMessage(message)?.correctnessPolicy}</div>
                               </div>
                               <div class="flex flex-wrap gap-2">
                                 <ActionButton
@@ -1604,29 +1998,34 @@ export function ChatPanel() {
                                   icon={<Clipboard class="h-3.5 w-3.5" />}
                                   size="sm"
                                   variant="secondary"
-                                  onClick={() => message.metadata?.plan && harnessStore.openExecutionPlanDialog(message.metadata.plan)}
+                                  onClick={() => {
+                                    const plan = getPlanFromMessage(message);
+                                    if (plan) {
+                                      harnessStore.openExecutionPlanDialog(plan);
+                                    }
+                                  }}
                                 >
                                   Open plan
                                 </ActionButton>
-                                <ActionButton tooltip="Promote this run into scheduled task" size="sm" variant="secondary" onClick={() => handlePromoteScheduledRun(message.metadata?.runId)}>
+                                <ActionButton
+                                  tooltip="Promote this run into scheduled task"
+                                  icon={<CalendarClock class="h-3.5 w-3.5" />}
+                                  size="sm"
+                                  variant="secondary"
+                                  onClick={() => handlePromoteScheduledRun(message.metadata?.runId)}
+                                >
                                   Schedule
                                 </ActionButton>
-                                <Show when={message.metadata?.plan.gating.mode === "approve"}>
-                                  <ActionButton
-                                    tooltip="Start execution with this plan"
-                                    disabledReason={executionPaused() ? executionPauseReason() : "This plan is no longer active"}
-                                    disabled={executionPaused() || !isReadyPlanMessage(message.metadata!.runId)}
-                                    icon={<Play class="h-3.5 w-3.5" />}
-                                    size="sm"
-                                    dataTourId="plan-start"
-                                    onClick={() => handleExecuteRun(message.metadata!.runId)}
-                                  >
-                                    Start now
-                                  </ActionButton>
+                                {renderPlanRunAction(message.metadata!.runId)}
+                                <Show when={getPlanFromMessage(message)?.gating.mode === "approve"}>
                                   <ActionButton
                                     tooltip="Run this plan in isolated virtual branch"
-                                    disabledReason={executionPaused() ? executionPauseReason() : "This plan is no longer active"}
-                                    disabled={executionPaused() || !isReadyPlanMessage(message.metadata!.runId)}
+                                    disabledReason={
+                                      getPlanRunAction(message.metadata!.runId).kind === "execute"
+                                        ? executionPauseReason()
+                                        : "This plan is not ready to build"
+                                    }
+                                    disabled={getPlanRunAction(message.metadata!.runId).kind !== "execute" || executionPaused()}
                                     size="sm"
                                     variant="secondary"
                                     onClick={() => handleExecuteRunTarget(message.metadata!.runId, "ephemeral-experiment")}
@@ -1634,7 +2033,7 @@ export function ChatPanel() {
                                     Try experiment
                                   </ActionButton>
                                 </Show>
-                                <Show when={message.metadata?.plan.gating.mode === "countdown" && isReadyPlanMessage(message.metadata!.runId)}>
+                                <Show when={getPlanFromMessage(message)?.gating.mode === "countdown" && readyRun()?.id === message.metadata!.runId}>
                                   <ActionButton
                                     tooltip={
                                       executionPaused()
@@ -1667,30 +2066,37 @@ export function ChatPanel() {
                               </div>
                             </article>
                           </Show>
+                          </Show>
                         )}
                       </For>
 
-                      <Show when={project().streamingAssistantText}>
-                        <article class="flex flex-col gap-2 rounded-3xl border border-(--border) bg-teal-950/5 p-3 shadow-sm">
-                          <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--accent-strong)">
-                            assistant (streaming)
-                          </div>
-                          <MarkdownContent content={() => project().streamingAssistantText} size="compact" live />
-                          <div class="flex justify-end">
-                            <CopyTextButton
-                              value={project().streamingAssistantText}
-                              tooltip="Copy streaming assistant message"
-                              copiedTitle="Message copied"
-                              copiedDescription="Message copied to clipboard."
-                              size="sm"
-                              variant="ghost"
-                              ariaLabel="Copy streaming assistant message"
-                            >
-                              Copy
-                            </CopyTextButton>
-                          </div>
-                        </article>
-                      </Show>
+                      <For each={liveHarnessMessages()}>
+                        {(message, index) => (
+                          <article
+                            class={`flex flex-col gap-2 rounded-3xl border border-(--border) p-3 shadow-sm ${
+                              message.kind === "status" ? "bg-white/70" : "bg-teal-950/5"
+                            }`}
+                          >
+                            <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--accent-strong)">
+                              harness
+                            </div>
+                            <MarkdownContent content={() => message.content} size="compact" live={!message.locked && index() === liveHarnessMessages().length - 1} />
+                            <div class="flex justify-end">
+                              <CopyTextButton
+                                value={message.content}
+                                tooltip="Copy harness message"
+                                copiedTitle="Message copied"
+                                copiedDescription="Message copied to clipboard."
+                                size="sm"
+                                variant="ghost"
+                                ariaLabel="Copy harness message"
+                              >
+                                Copy
+                              </CopyTextButton>
+                            </div>
+                          </article>
+                        )}
+                      </For>
                             </div>
                           </Show>
                         </ScrollArea>
@@ -1810,9 +2216,18 @@ export function ChatPanel() {
                       <div class="flex items-center justify-between gap-3">
                         <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Run summary</div>
                         <div class="flex flex-wrap items-center gap-2">
-                          <ActionButton tooltip="Promote latest run into scheduled task" size="sm" variant="secondary" onClick={() => handlePromoteScheduledRun()}>
+                          <ActionButton
+                            tooltip="Promote latest run into scheduled task"
+                            icon={<CalendarClock class="h-3.5 w-3.5" />}
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => handlePromoteScheduledRun()}
+                          >
                             Schedule
                           </ActionButton>
+                          <Show when={currentExecutionPlan()}>
+                            {(plan) => renderPlanRunAction(plan().runId)}
+                          </Show>
                           <Show when={experimentRun()}>
                             <ActionButton tooltip="Review virtual branch diff" size="sm" variant="secondary" onClick={handleInspectExperiment}>
                               Review experiment
@@ -2122,37 +2537,9 @@ export function ChatPanel() {
                     onClick={() => attachmentInput?.click()}
                   />
                   <ActionButton
-                    tooltip={
-                      pendingQuestion()
-                        ? "Send planner answer"
-                        : project().activeRun?.status === "ready"
-                          ? "Refine plan before execution"
-                          : `Send task to ${selectedAgentLabel()}`
-                    }
-                    disabledReason={
-                      uploadingAttachments()
-                        ? "Attachment upload in progress"
-                        : executionPaused()
-                          ? executionPauseReason()
-                          : hasImageDraftAttachments() && !hasVisionCapability()
-                            ? "Current model lacks vision support for image attachments"
-                            : setupBlockedReason()
-                              ? setupBlockedReason()
-                              : project().session.isStreaming
-                                ? "Project is streaming"
-                                : resumableRun()
-                                  ? "Use resume failed agents to continue this run"
-                                  : "Enter task text"
-                    }
-                    disabled={
-                      !project().draft.trim() ||
-                      executionPaused() ||
-                      Boolean(resumableRun()) ||
-                      project().session.isStreaming ||
-                      uploadingAttachments() ||
-                      Boolean(setupBlockedReason()) ||
-                      (hasImageDraftAttachments() && !hasVisionCapability())
-                    }
+                    tooltip={composerSubmitState().tooltip}
+                    disabledReason={composerSubmitState().disabledReason}
+                    disabled={composerSubmitState().disabled}
                     icon={<SendHorizontal class="h-4 w-4" />}
                     type="submit"
                     variant="ghost"
@@ -2388,6 +2775,62 @@ function formatReasoningOptionLabel(strength: (typeof COMPOSER_REASONING_STRENGT
   return strength === "high" ? `${label} (default)` : label;
 }
 
+function getStreamingLiveMessages(project: ViewProjectState): LiveHarnessMessage[] {
+  const messages: LiveHarnessMessage[] = [];
+
+  if (project.streamingHeartbeatMessages.length > 0) {
+    messages.push(
+      ...project.streamingHeartbeatMessages.map((message) => ({
+        id: message.id,
+        content: message.content,
+        locked: message.locked,
+        kind: "status" as const
+      }))
+    );
+  } else {
+    messages.push(
+      ...project.streamingTailSegments
+        .filter((segment) => segment.kind === "status")
+        .map((segment) => ({
+          id: segment.id,
+          content: segment.content,
+          locked: true,
+          kind: "status" as const
+        }))
+    );
+  }
+
+  const assistantFallback = [...project.streamingTailSegments].reverse().find((segment) => segment.kind === "assistant")?.content ?? "";
+  const assistantContent = project.streamingAssistantText.trim() || assistantFallback.trim();
+  if (assistantContent) {
+    messages.push({
+      id: "streaming-assistant-fallback",
+      content: assistantContent,
+      locked: false,
+      kind: "assistant"
+    });
+  }
+
+  return messages;
+}
+
+function shouldHidePersistedStreamingAssistantMessage(
+  project: ViewProjectState,
+  message: ViewProjectState["session"]["messages"][number],
+  index: number
+) {
+  if (!project.session.isStreaming || message.role !== "assistant" || message.kind === "run-milestones") {
+    return false;
+  }
+
+  const lastMessageIndex = project.session.messages.length - 1;
+  if (index !== lastMessageIndex) {
+    return false;
+  }
+
+  return getStreamingLiveMessages(project).some((entry) => entry.kind === "assistant");
+}
+
 function formatTokenCount(value: number | undefined) {
   if (value === undefined) {
     return "?";
@@ -2405,3 +2848,4 @@ function formatTokenCount(value: number | undefined) {
   const scaled = value / 1_000_000;
   return `${scaled >= 100 ? Math.round(scaled) : Number(scaled.toFixed(1))}m`;
 }
+

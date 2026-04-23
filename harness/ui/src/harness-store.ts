@@ -3,6 +3,7 @@ import { defaultAgentCatalog } from "../../shared/agent-catalog";
 import { defaultProviderCapabilities } from "../../shared/capabilities";
 import { DEFAULT_MODE_ID, resolveModeById, resolveModeCatalog } from "../../shared/modes";
 import {
+  createRequestId,
   type Assistant,
   type AssistantAssetRef,
   type AssistantLearning,
@@ -13,6 +14,8 @@ import {
   type AssistantTodo,
   type AgentId,
   type AgentPlan,
+  type AgentRunState,
+  type AgentRunSummary,
   type AgentTrace,
   type AgentRuntimeCapability,
   type BackgroundJob,
@@ -38,6 +41,7 @@ import {
   type ClientCommand,
   type ServerEvent,
   type SetupState,
+  type StreamingTailSegment,
   type ExecutionPlan,
   type ExecutionControlState,
   type WorkspaceRuleSource,
@@ -61,11 +65,14 @@ export const CORRECTNESS_ITERATION_MODE_DEFAULT_STORAGE_KEY = "correctness_itera
 export const BACKGROUND_JOB_APPROVAL_POLICY_DEFAULT_STORAGE_KEY = "background_job_approval_policy_default";
 export const BACKGROUND_JOB_NOTIFICATIONS_ENABLED_STORAGE_KEY = "background_job_notifications_enabled";
 export const MEMORY_BANK_ENABLED_DEFAULT_STORAGE_KEY = "memory_bank_enabled_default";
+export const COMPOSER_REASONING_STRENGTH_STORAGE_KEY = "composer_reasoning_strength";
+export const COMPOSER_FAST_MODE_STORAGE_KEY = "composer_fast_mode";
 export const THREAD_DRAFT_STORAGE_KEY_PREFIX = "pi-harness:thread-draft:v1";
 export const TUTORIAL_PROGRESS_STORAGE_KEY = "pi-harness:tutorial-progress:v1";
 export const BROWSER_UI_SESSION_STORAGE_KEY = "pi-harness:browser-ui-session:v1";
 export const DEFAULT_COMPOSER_REASONING_STRENGTH: ComposerReasoningStrength = "high";
 export const COMPOSER_REASONING_STRENGTHS: ComposerReasoningStrength[] = ["low", "medium", "high", "extra-high"];
+const MAX_STREAMING_MESSAGE_HEARTBEATS = 2;
 
 export type HarnessActiveSurface = "chat" | "background-jobs" | "assistants";
 export type AssistantScopeFilter = "global" | "project";
@@ -129,11 +136,30 @@ export type BackgroundJobEditorDraft = {
   shellNetworkAccess: boolean;
 };
 
+export type StreamingHeartbeatMessage = {
+  id: string;
+  content: string;
+  heartbeatCount: number;
+  locked: boolean;
+  updatedAt: string;
+};
+
+export type ThreadLiveTranscriptState = {
+  isStreaming: boolean;
+  streamingAssistantText: string;
+  streamingTailSegments: StreamingTailSegment[];
+  streamingHeartbeatMessages: StreamingHeartbeatMessage[];
+  lastError?: string;
+};
+
 export type ViewProjectState = WorkspaceProjectState & {
   latestPlan?: AgentPlan;
   contextUsage?: ProjectContextUsage;
   traces: AgentTrace[];
   streamingAssistantText: string;
+  streamingTailSegments: StreamingTailSegment[];
+  streamingHeartbeatMessages: StreamingHeartbeatMessage[];
+  threadLiveTranscriptById: Record<string, ThreadLiveTranscriptState>;
   draft: string;
   lastError?: string;
   experimentInspection?: ExperimentInspection;
@@ -242,6 +268,15 @@ export type HarnessViewState = {
   lastActiveProjectId?: string;
   lastActiveThreadByProjectId: Record<string, string>;
   projectPreflights: Record<string, { requestId: string; preflight: RunPreflight } | undefined>;
+  pendingPreflightCommands: Record<string, ClientCommand | undefined>;
+  blockingNonGitPreflight?: {
+    requestId: string;
+    projectId: string;
+    threadId: string;
+    preflight: Extract<RunPreflight, { kind: "git-not-repo" }>;
+    command?: ClientCommand;
+  };
+  pendingPreflightRepairKind?: "git-init" | "disable-check";
   cliSessionTerminal: Record<
     string,
     {
@@ -268,6 +303,8 @@ export type LocalPreferencesState = {
   backgroundJobApprovalPolicyDefault?: BackgroundJobApprovalPolicy;
   memoryBankEnabledDefault?: boolean;
   backgroundJobNotificationsEnabled?: boolean;
+  selectedReasoningStrength?: ComposerReasoningStrength;
+  selectedFastMode?: boolean;
 };
 
 export function createInitialWorkspaceState(): ViewWorkspaceState {
@@ -417,6 +454,9 @@ export function createInitialViewState(): HarnessViewState {
     lastActiveProjectId: undefined,
     lastActiveThreadByProjectId: {},
     projectPreflights: {},
+    pendingPreflightCommands: {},
+    blockingNonGitPreflight: undefined,
+    pendingPreflightRepairKind: undefined,
     cliSessionTerminal: {}
   };
 }
@@ -457,6 +497,9 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
         notifications: event.payload.notifications,
         executionControl: event.payload.executionControl,
         projectPreflights: {},
+        pendingPreflightCommands: {},
+        blockingNonGitPreflight: undefined,
+        pendingPreflightRepairKind: undefined,
         ...applyReadyPreferencesState(state, event.payload.preferences)
       };
     case "notifications.updated":
@@ -545,63 +588,167 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
         threads: project.threads.map((thread) => (thread.id === event.payload.thread.id ? event.payload.thread : thread))
       }));
     case "agent.plan":
-      return updateThreadScopedProject(state, event.payload.projectId, event.payload.threadId, (project) => ({
-        ...project,
-        latestPlan: event.payload.plan,
-        threads: setThreadBadge(project.threads, event.payload.threadId, "planning")
-      }));
+      return updateProjectState(state, event.payload.projectId, (project) =>
+        applyThreadLiveTranscriptState(
+          {
+            ...project,
+            latestPlan: project.activeThreadId === event.payload.threadId ? event.payload.plan : project.latestPlan,
+            threads: setThreadBadge(project.threads, event.payload.threadId, "planning")
+          },
+          event.payload.threadId,
+          project.threadLiveTranscriptById[event.payload.threadId] ??
+            createThreadLiveTranscriptState({
+              isStreaming: project.activeThreadId === event.payload.threadId ? project.session.isStreaming : false
+            })
+        )
+      );
     case "agent.trace":
-      return updateThreadScopedProject(state, event.payload.projectId, event.payload.threadId, (project) => ({
+      return updateProjectState(state, event.payload.projectId, (project) => ({
         ...project,
-        traces: [...project.traces, event.payload.trace]
+        traces: project.activeThreadId === event.payload.threadId ? [...project.traces, event.payload.trace] : project.traces
       }));
     case "chat.delta":
-      return updateThreadScopedProject(state, event.payload.projectId, event.payload.threadId, (project) => ({
-        ...project,
-        streamingAssistantText: `${project.streamingAssistantText}${event.payload.delta}`,
-        threads: setThreadBadge(project.threads, event.payload.threadId, "executing"),
-        session: {
-          ...project.session,
-          isStreaming: true
-        }
-      }));
+      return updateProjectState(state, event.payload.projectId, (project) =>
+        applyThreadLiveTranscriptState(
+          {
+            ...project,
+            threads: setThreadBadge(project.threads, event.payload.threadId, "executing")
+          },
+          event.payload.threadId,
+          createThreadLiveTranscriptState({
+            ...(project.threadLiveTranscriptById[event.payload.threadId] ??
+              (project.activeThreadId === event.payload.threadId
+                ? getActiveThreadLiveTranscriptState(project)
+                : undefined)),
+            isStreaming: true,
+            streamingAssistantText: `${
+              (project.threadLiveTranscriptById[event.payload.threadId]?.streamingAssistantText ??
+                (project.activeThreadId === event.payload.threadId ? project.streamingAssistantText : ""))
+            }${event.payload.delta}`,
+            lastError: undefined
+          })
+        )
+      );
+    case "chat.streaming-tail-updated":
+      return updateProjectState(state, event.payload.projectId, (project) => {
+        const priorLiveTranscript =
+          project.threadLiveTranscriptById[event.payload.threadId] ??
+          (project.activeThreadId === event.payload.threadId ? getActiveThreadLiveTranscriptState(project) : undefined);
+        return applyThreadLiveTranscriptState(
+          {
+            ...project,
+            threads: setThreadBadge(project.threads, event.payload.threadId, "executing"),
+            session:
+              project.activeThreadId === event.payload.threadId
+                ? {
+                  ...event.payload.state,
+                  isStreaming: true,
+                  lastError: undefined
+                }
+                : project.session
+          },
+          event.payload.threadId,
+          createThreadLiveTranscriptState({
+            ...priorLiveTranscript,
+            isStreaming: true,
+            streamingTailSegments: event.payload.segments,
+            streamingHeartbeatMessages: rolloverStreamingHeartbeatMessages(
+              priorLiveTranscript?.streamingHeartbeatMessages ?? [],
+              event.payload.runId,
+              renderStreamingStatusTailSegments(event.payload.segments),
+              getLatestStreamingTailTimestamp(event.payload.segments)
+            ),
+            lastError: undefined
+          })
+        );
+      });
     case "chat.complete":
-      return updateThreadScopedProject(state, event.payload.projectId, event.payload.threadId, (project) => ({
-        ...project,
-        streamingAssistantText: "",
-        lastError: undefined,
-        threads: setThreadBadge(project.threads, event.payload.threadId, "done"),
-        session: {
-          ...event.payload.state,
-          isStreaming: false,
-          lastError: undefined
-        }
-      }));
+      return updateProjectState(state, event.payload.projectId, (project) =>
+        applyThreadLiveTranscriptState(
+          {
+            ...project,
+            threads: updateThreadSummaryFromMessage(
+              setThreadBadge(project.threads, event.payload.threadId, "done"),
+              event.payload.threadId,
+              event.payload.assistantMessage
+            ),
+            session:
+              project.activeThreadId === event.payload.threadId
+                ? {
+                  ...event.payload.state,
+                  isStreaming: false,
+                  lastError: undefined
+                }
+                : project.session
+          },
+          event.payload.threadId,
+          createThreadLiveTranscriptState()
+        )
+      );
     case "chat.message-appended":
-      return updateThreadScopedProject(state, event.payload.projectId, event.payload.threadId, (project) => ({
+      return updateProjectState(state, event.payload.projectId, (project) => ({
         ...project,
-        lastError: undefined,
-        session: {
-          ...event.payload.state,
-          lastError: event.payload.state.lastError
-        }
+        lastError: project.activeThreadId === event.payload.threadId ? undefined : project.lastError,
+        threads: updateThreadSummaryFromMessage(project.threads, event.payload.threadId, event.payload.message),
+        session:
+          project.activeThreadId === event.payload.threadId
+            ? {
+              ...event.payload.state,
+              lastError: event.payload.state.lastError
+            }
+            : project.session
+      }));
+    case "chat.message-updated":
+      return updateProjectState(state, event.payload.projectId, (project) => ({
+        ...project,
+        lastError: project.activeThreadId === event.payload.threadId ? undefined : project.lastError,
+        threads: updateThreadSummaryFromUpdatedMessage(project.threads, event.payload.threadId, event.payload.message),
+        session:
+          project.activeThreadId === event.payload.threadId
+            ? {
+              ...event.payload.state,
+              lastError: event.payload.state.lastError
+            }
+            : project.session
       }));
     case "chat.error":
       if (!event.payload.projectId) {
         return state;
       }
 
-      return updateProjectState(state, event.payload.projectId, (project) => ({
-        ...project,
-        streamingAssistantText: "",
-        lastError: event.payload.detail ?? event.payload.message,
-        threads: event.payload.threadId ? setThreadBadge(project.threads, event.payload.threadId, "error") : project.threads,
-        session: {
-          ...project.session,
-          isStreaming: false,
-          lastError: event.payload.detail ?? event.payload.message
-        }
-      }));
+      if (!event.payload.threadId) {
+        return updateProjectState(state, event.payload.projectId, (project) => ({
+          ...project,
+          lastError: event.payload.detail ?? event.payload.message,
+          session: {
+            ...project.session,
+            isStreaming: false,
+            lastError: event.payload.detail ?? event.payload.message
+          }
+        }));
+      }
+
+      const errorThreadId = event.payload.threadId;
+      return updateProjectState(state, event.payload.projectId, (project) =>
+        applyThreadLiveTranscriptState(
+          {
+            ...project,
+            threads: setThreadBadge(project.threads, errorThreadId, "error"),
+            session:
+              project.activeThreadId === errorThreadId
+                ? {
+                  ...project.session,
+                  isStreaming: false,
+                  lastError: event.payload.detail ?? event.payload.message
+                }
+                : project.session
+          },
+          errorThreadId,
+          createThreadLiveTranscriptState({
+            lastError: event.payload.detail ?? event.payload.message
+          })
+        )
+      );
     case "session.reset":
       return {
         ...updateProjectState(state, event.payload.projectId, (project) => ({
@@ -613,6 +760,12 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
           contextUsage: undefined,
           traces: [],
           streamingAssistantText: "",
+          streamingTailSegments: [],
+          streamingHeartbeatMessages: [],
+          threadLiveTranscriptById: {
+            ...filterThreadLiveTranscriptByKnownThreads(project.threadLiveTranscriptById, project.threads),
+            [event.payload.threadId]: createThreadLiveTranscriptState()
+          },
           lastError: undefined,
           draft: readThreadDraft(event.payload.projectId, event.payload.threadId),
           session: {
@@ -626,23 +779,37 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
       };
     case "run.updated":
       const currentProject = state.workspace.projects.find((project) => project.id === event.payload.projectId);
-      const latestKnownRunId = currentProject?.activeRun?.id ?? currentProject?.lastRun?.id;
+      const isActiveThread = currentProject?.activeThreadId === event.payload.threadId;
+      const latestKnownRunId = isActiveThread ? currentProject?.activeRun?.id ?? currentProject?.lastRun?.id : undefined;
       const resetPlanningTransients =
+        isActiveThread &&
         event.payload.run.status === "planning" &&
         latestKnownRunId !== undefined &&
         latestKnownRunId !== event.payload.run.id;
 
       return {
-        ...updateThreadScopedProject(state, event.payload.projectId, event.payload.threadId, (project) => {
+        ...updateProjectState(state, event.payload.projectId, (project) => {
+          const appliesToActiveThread = project.activeThreadId === event.payload.threadId;
           return {
             ...project,
-            latestPlan: resetPlanningTransients ? undefined : project.latestPlan,
-            contextUsage: resetPlanningTransients ? undefined : project.contextUsage,
-            traces: resetPlanningTransients ? [] : project.traces,
-            streamingAssistantText: resetPlanningTransients ? "" : project.streamingAssistantText,
-            lastError: resetPlanningTransients ? undefined : project.lastError,
-            activeRun: event.payload.run.status === "completed" ? undefined : event.payload.run,
-            lastRun: event.payload.run,
+            latestPlan: appliesToActiveThread && resetPlanningTransients ? undefined : project.latestPlan,
+            contextUsage: appliesToActiveThread && resetPlanningTransients ? undefined : project.contextUsage,
+            traces: appliesToActiveThread && resetPlanningTransients ? [] : project.traces,
+            streamingAssistantText: appliesToActiveThread && resetPlanningTransients ? "" : project.streamingAssistantText,
+            streamingTailSegments: appliesToActiveThread && resetPlanningTransients ? [] : project.streamingTailSegments,
+            streamingHeartbeatMessages:
+              appliesToActiveThread && resetPlanningTransients ? [] : project.streamingHeartbeatMessages,
+            threadLiveTranscriptById:
+              appliesToActiveThread && resetPlanningTransients
+                ? {
+                  ...project.threadLiveTranscriptById,
+                  [event.payload.threadId]: createThreadLiveTranscriptState()
+                }
+                : project.threadLiveTranscriptById,
+            lastError: appliesToActiveThread && resetPlanningTransients ? undefined : project.lastError,
+            activeRun: appliesToActiveThread ? (event.payload.run.status === "completed" ? undefined : event.payload.run) : project.activeRun,
+            lastRun: appliesToActiveThread ? event.payload.run : project.lastRun,
+            runSummaries: appliesToActiveThread ? upsertRunSummary(project.runSummaries, toRunSummary(event.payload.run)) : project.runSummaries,
             threads: setThreadBadge(project.threads, event.payload.threadId, badgeFromRunStatus(event.payload.run.status))
           };
         }),
@@ -659,9 +826,9 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
         }
       };
     case "experiment.inspected":
-      return updateThreadScopedProject(state, event.payload.projectId, event.payload.threadId, (project) => ({
+      return updateProjectState(state, event.payload.projectId, (project) => ({
         ...project,
-        experimentInspection: event.payload.inspection
+        experimentInspection: project.activeThreadId === event.payload.threadId ? event.payload.inspection : project.experimentInspection
       }));
     case "memory.listed":
       return updateProjectState(state, event.payload.projectId, (project) => ({
@@ -697,9 +864,9 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
     case "cli-session.started":
     case "cli-session.updated":
     case "cli-session.exited":
-      return updateThreadScopedProject(state, event.payload.projectId, event.payload.threadId, (project) => ({
+      return updateProjectState(state, event.payload.projectId, (project) => ({
         ...project,
-        activeCliSession: event.payload.session
+        activeCliSession: project.activeThreadId === event.payload.threadId ? event.payload.session : project.activeCliSession
       }));
     case "cli-session.attach-ready":
     case "cli-session.hang-detected":
@@ -809,8 +976,20 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
             requestId: event.requestId,
             preflight: event.payload.preflight
           }
-        }
+        },
+        blockingNonGitPreflight:
+          event.payload.preflight.kind === "git-not-repo"
+            ? {
+                requestId: event.requestId,
+                projectId: event.payload.projectId,
+                threadId: event.payload.threadId,
+                preflight: event.payload.preflight,
+                command: state.pendingPreflightCommands[event.requestId]
+              }
+            : state.blockingNonGitPreflight
       };
+    case "project.git.initialized":
+      return state;
     case "run.cleared":
       return updateThreadScopedProject(state, event.payload.projectId, event.payload.threadId, (project) => ({
         ...project,
@@ -867,6 +1046,12 @@ export function createHarnessStore() {
         }
 
         try {
+          if (isPreflightCapableCommand(command)) {
+            setState("pendingPreflightCommands", {
+              ...state.pendingPreflightCommands,
+              [command.requestId]: command
+            });
+          }
           commandDispatcher(command);
           return true;
         } catch (error) {
@@ -1076,6 +1261,7 @@ export function createHarnessStore() {
       });
       setState(reconcile(nextState));
       persistBrowserUiStateIfChanged(previousSnapshot, nextState);
+      persistComposerControlPreferences(nextState);
     },
     setSelectedFastMode(selectedFastMode: boolean) {
       const previousSnapshot = getBrowserUiSessionSnapshot(state);
@@ -1086,6 +1272,7 @@ export function createHarnessStore() {
       });
       setState(reconcile(nextState));
       persistBrowserUiStateIfChanged(previousSnapshot, nextState);
+      persistComposerControlPreferences(nextState);
     },
     appendCliTerminalOutput(sessionId: string, stream: "stdout" | "stderr", text: string) {
       const existing = state.cliSessionTerminal[sessionId] ?? {
@@ -1214,6 +1401,15 @@ export function createHarnessStore() {
     closeSetupChecklist() {
       setState({ setupChecklistOpen: false });
     },
+    prepareNonGitPreflightRepair(kind: "git-init" | "disable-check") {
+      setState({ pendingPreflightRepairKind: kind });
+    },
+    clearBlockingNonGitPreflight() {
+      setState({
+        blockingNonGitPreflight: undefined,
+        pendingPreflightRepairKind: undefined
+      });
+    },
     startTutorial(tutorialId: string) {
       const progress = readTutorialProgress();
       const dismissedTutorialIds = progress.dismissedTutorialIds.filter((id) => id !== tutorialId);
@@ -1309,6 +1505,11 @@ export function createHarnessStore() {
         memoryBankEnabledDefault: localPreferences.memoryBankEnabledDefault ?? state.memoryBankEnabledDefault,
         backgroundJobNotificationsEnabled:
           localPreferences.backgroundJobNotificationsEnabled ?? state.backgroundJobNotificationsEnabled,
+        selectedReasoningStrength: localPreferences.selectedReasoningStrength ?? state.selectedReasoningStrength,
+        selectedFastMode: localPreferences.selectedFastMode ?? state.selectedFastMode,
+        hasGlobalSelectedReasoningStrength:
+          localPreferences.selectedReasoningStrength !== undefined || state.hasGlobalSelectedReasoningStrength,
+        hasGlobalSelectedFastMode: localPreferences.selectedFastMode !== undefined || state.hasGlobalSelectedFastMode,
         openAiApiKeyDraft: localPreferences.openAiApiKey ?? "",
         googleApiKeyDraft: localPreferences.googleApiKey ?? "",
         apiKeyDirty: false,
@@ -1357,6 +1558,11 @@ export function createHarnessStore() {
         memoryBankEnabledDefault: localPreferences.memoryBankEnabledDefault ?? state.memoryBankEnabledDefault,
         backgroundJobNotificationsEnabled:
           localPreferences.backgroundJobNotificationsEnabled ?? state.backgroundJobNotificationsEnabled,
+        selectedReasoningStrength: localPreferences.selectedReasoningStrength ?? state.selectedReasoningStrength,
+        selectedFastMode: localPreferences.selectedFastMode ?? state.selectedFastMode,
+        hasGlobalSelectedReasoningStrength:
+          localPreferences.selectedReasoningStrength !== undefined || state.hasGlobalSelectedReasoningStrength,
+        hasGlobalSelectedFastMode: localPreferences.selectedFastMode !== undefined || state.hasGlobalSelectedFastMode,
         openAiApiKeyDraft: localPreferences.openAiApiKey ?? "",
         googleApiKeyDraft: localPreferences.googleApiKey ?? "",
         apiKeyDirty: false,
@@ -1392,6 +1598,19 @@ export function createHarnessStore() {
       const nextState = finalizeHarnessViewState(reduceServerEvent(state, event));
       setState(reconcile(nextState));
       persistBrowserUiStateIfChanged(previousSnapshot, nextState);
+      const retryCommand = getRepairedPreflightRetryCommand(nextState, event);
+      if (retryCommand && commandDispatcher) {
+        const nextCommand = cloneCommandWithRequestId(retryCommand, createRequestId());
+        setState({
+          blockingNonGitPreflight: undefined,
+          pendingPreflightRepairKind: undefined,
+          pendingPreflightCommands: {
+            ...state.pendingPreflightCommands,
+            [nextCommand.requestId]: nextCommand
+          }
+        });
+        commandDispatcher(nextCommand);
+      }
     },
     replaceStateForTests(nextState: HarnessViewState) {
       commandDispatcher = undefined;
@@ -1410,6 +1629,10 @@ let activeHarnessStore: HarnessStoreApi | undefined;
 
 export function setActiveHarnessStore(store: HarnessStoreApi | undefined) {
   activeHarnessStore = store;
+}
+
+export function getActiveHarnessStore() {
+  return activeHarnessStore;
 }
 
 export function requireHarnessStore() {
@@ -1434,6 +1657,42 @@ export const harnessStore = new Proxy({} as HarnessStoreApi, {
     return Object.getOwnPropertyDescriptor(requireHarnessStore(), prop);
   }
 });
+
+function isPreflightCapableCommand(command: ClientCommand) {
+  return [
+    "chat.send",
+    "run.execute",
+    "run.retry",
+    "run.resume",
+    "subagent.retry",
+    "subagent.resume"
+  ].includes(command.type);
+}
+
+function getRepairedPreflightRetryCommand(state: HarnessViewState, event: ServerEvent) {
+  if (!state.blockingNonGitPreflight?.command || !state.pendingPreflightRepairKind) {
+    return undefined;
+  }
+
+  if (state.pendingPreflightRepairKind === "git-init" && event.type === "project.git.initialized") {
+    return event.payload.projectId === state.blockingNonGitPreflight.projectId
+      ? state.blockingNonGitPreflight.command
+      : undefined;
+  }
+
+  if (state.pendingPreflightRepairKind === "disable-check" && event.type === "preferences.saved") {
+    return event.payload.blockChatOnDirtyGitDefault === false ? state.blockingNonGitPreflight.command : undefined;
+  }
+
+  return undefined;
+}
+
+function cloneCommandWithRequestId(command: ClientCommand, requestId: string): ClientCommand {
+  return {
+    ...command,
+    requestId
+  } as ClientCommand;
+}
 
 function hydrateAssistants(existing: ViewAssistantsState, incoming: AssistantsState): ViewAssistantsState {
   const nextVisibleId =
@@ -1498,6 +1757,146 @@ function moveProjectToFront(projects: ViewProjectState[], projectId: string) {
   return [target, ...projects.filter((project) => project.id !== projectId)];
 }
 
+function renderStreamingStatusTailSegments(segments: StreamingTailSegment[]) {
+  return segments
+    .filter((segment) => segment.kind === "status")
+    .map((segment) => segment.content)
+    .join("\n\n")
+    .trim();
+}
+
+function getLatestStreamingTailTimestamp(segments: StreamingTailSegment[]) {
+  return segments.reduce((latest, segment) => (segment.updatedAt > latest ? segment.updatedAt : latest), new Date(0).toISOString());
+}
+
+function rolloverStreamingHeartbeatMessages(
+  messages: StreamingHeartbeatMessage[],
+  runId: string,
+  content: string,
+  updatedAt: string
+) {
+  const normalizedContent = content.trim();
+  if (!normalizedContent) {
+    return [];
+  }
+
+  const current = messages.at(-1);
+  if (!current) {
+    return [
+      {
+        id: `${runId}:heartbeat:1`,
+        content: normalizedContent,
+        heartbeatCount: 1,
+        locked: false,
+        updatedAt
+      }
+    ];
+  }
+
+  if (current.content === normalizedContent) {
+    return messages.map((message, index) => (index === messages.length - 1 ? { ...message, updatedAt } : message));
+  }
+
+  if (!current.locked && current.heartbeatCount < MAX_STREAMING_MESSAGE_HEARTBEATS) {
+    return messages.map((message, index) =>
+      index === messages.length - 1
+        ? {
+          ...message,
+          content: normalizedContent,
+          heartbeatCount: message.heartbeatCount + 1,
+          updatedAt
+        }
+        : message
+    );
+  }
+
+  const lockedMessages = current.locked
+    ? messages
+    : messages.map((message, index) => (index === messages.length - 1 ? { ...message, locked: true } : message));
+
+  return [
+    ...lockedMessages,
+    {
+      id: `${runId}:heartbeat:${lockedMessages.length + 1}`,
+      content: normalizedContent,
+      heartbeatCount: 1,
+      locked: false,
+      updatedAt
+    }
+  ];
+}
+
+function createThreadLiveTranscriptState(
+  overrides: Partial<ThreadLiveTranscriptState> = {}
+): ThreadLiveTranscriptState {
+  return {
+    isStreaming: overrides.isStreaming ?? false,
+    streamingAssistantText: overrides.streamingAssistantText ?? "",
+    streamingTailSegments: overrides.streamingTailSegments ?? [],
+    streamingHeartbeatMessages: overrides.streamingHeartbeatMessages ?? [],
+    lastError: overrides.lastError
+  };
+}
+
+function getPersistedThreadLiveTranscriptState(project: Pick<WorkspaceProjectState, "session">) {
+  return createThreadLiveTranscriptState({
+    isStreaming: project.session.isStreaming,
+    streamingAssistantText: getPersistedStreamingAssistantText(project),
+    lastError: project.session.lastError
+  });
+}
+
+function getActiveThreadLiveTranscriptState(project: ViewProjectState) {
+  return createThreadLiveTranscriptState({
+    isStreaming: project.session.isStreaming,
+    streamingAssistantText: project.streamingAssistantText,
+    streamingTailSegments: project.streamingTailSegments,
+    streamingHeartbeatMessages: project.streamingHeartbeatMessages,
+    lastError: project.lastError ?? project.session.lastError
+  });
+}
+
+function filterThreadLiveTranscriptByKnownThreads(
+  liveTranscriptById: Record<string, ThreadLiveTranscriptState>,
+  threads: ViewProjectState["threads"]
+) {
+  const knownThreadIds = new Set(threads.map((thread) => thread.id));
+  return Object.fromEntries(
+    Object.entries(liveTranscriptById).filter(([threadId]) => knownThreadIds.has(threadId))
+  );
+}
+
+function applyThreadLiveTranscriptState(
+  project: ViewProjectState,
+  threadId: string,
+  liveTranscript: ThreadLiveTranscriptState
+) {
+  const nextProject = {
+    ...project,
+    threadLiveTranscriptById: {
+      ...project.threadLiveTranscriptById,
+      [threadId]: liveTranscript
+    }
+  };
+
+  if (nextProject.activeThreadId !== threadId) {
+    return nextProject;
+  }
+
+  return {
+    ...nextProject,
+    streamingAssistantText: liveTranscript.streamingAssistantText,
+    streamingTailSegments: liveTranscript.streamingTailSegments,
+    streamingHeartbeatMessages: liveTranscript.streamingHeartbeatMessages,
+    lastError: liveTranscript.lastError,
+    session: {
+      ...nextProject.session,
+      isStreaming: liveTranscript.isStreaming,
+      lastError: liveTranscript.lastError
+    }
+  };
+}
+
 function hydrateWorkspace(workspace: WorkspaceState): ViewWorkspaceState {
   return {
     activeProjectId: workspace.activeProjectId,
@@ -1522,14 +1921,20 @@ function mergeIncomingWorkspace(existing: ViewWorkspaceState, incoming: ViewWork
 }
 
 function toViewProject(project: WorkspaceProjectState): ViewProjectState {
+  const activeThreadLiveTranscript = getPersistedThreadLiveTranscriptState(project);
   return {
     ...project,
     latestPlan: undefined,
     contextUsage: undefined,
     traces: [],
-    streamingAssistantText: "",
+    streamingAssistantText: activeThreadLiveTranscript.streamingAssistantText,
+    streamingTailSegments: activeThreadLiveTranscript.streamingTailSegments,
+    streamingHeartbeatMessages: activeThreadLiveTranscript.streamingHeartbeatMessages,
+    threadLiveTranscriptById: {
+      [project.activeThreadId]: activeThreadLiveTranscript
+    },
     draft: readThreadDraft(project.id, project.activeThreadId),
-    lastError: undefined,
+    lastError: activeThreadLiveTranscript.lastError,
     experimentInspection: undefined,
     memoryEntries: []
   };
@@ -1537,24 +1942,52 @@ function toViewProject(project: WorkspaceProjectState): ViewProjectState {
 
 function mergeIncomingProject(existing: ViewProjectState, incoming: ViewProjectState): ViewProjectState {
   const activeThreadChanged = existing.activeThreadId !== incoming.activeThreadId;
+  const rememberedThreadLiveTranscript = filterThreadLiveTranscriptByKnownThreads(
+    {
+      ...existing.threadLiveTranscriptById,
+      [existing.activeThreadId]: getActiveThreadLiveTranscriptState(existing)
+    },
+    incoming.threads
+  );
+  const activeThreadLiveTranscript =
+    rememberedThreadLiveTranscript[incoming.activeThreadId] ?? getPersistedThreadLiveTranscriptState(incoming);
   return {
     ...incoming,
     latestPlan: activeThreadChanged ? undefined : existing.latestPlan,
     contextUsage: activeThreadChanged ? undefined : existing.contextUsage,
     traces: activeThreadChanged ? [] : existing.traces,
-    streamingAssistantText: activeThreadChanged ? "" : existing.streamingAssistantText,
+    streamingAssistantText: activeThreadLiveTranscript.streamingAssistantText,
+    streamingTailSegments: activeThreadLiveTranscript.streamingTailSegments,
+    streamingHeartbeatMessages: activeThreadLiveTranscript.streamingHeartbeatMessages,
+    threadLiveTranscriptById: {
+      ...rememberedThreadLiveTranscript,
+      [incoming.activeThreadId]: activeThreadLiveTranscript
+    },
     draft: readThreadDraft(incoming.id, incoming.activeThreadId),
-    lastError: activeThreadChanged ? undefined : existing.lastError,
+    lastError: activeThreadLiveTranscript.lastError,
     experimentInspection: activeThreadChanged ? undefined : existing.experimentInspection,
     memoryEntries: activeThreadChanged ? [] : existing.memoryEntries,
     session: {
       ...incoming.session,
       selectedAgentId: existing.session.selectedAgentId ?? incoming.session.selectedAgentId,
       executionModelId: existing.session.executionModelId ?? incoming.session.executionModelId,
-      isStreaming: activeThreadChanged ? false : existing.session.isStreaming,
-      lastError: activeThreadChanged ? undefined : existing.session.lastError
+      isStreaming: activeThreadLiveTranscript.isStreaming,
+      lastError: activeThreadLiveTranscript.lastError
     }
   };
+}
+
+function getPersistedStreamingAssistantText(project: Pick<WorkspaceProjectState, "session">) {
+  if (!project.session.isStreaming) {
+    return "";
+  }
+
+  const lastMessage = project.session.messages.at(-1);
+  if (!lastMessage || lastMessage.role !== "assistant" || lastMessage.kind === "run-milestones") {
+    return "";
+  }
+
+  return lastMessage.content;
 }
 
 function applyProjectSearchResultsState(
@@ -1577,6 +2010,43 @@ function applyProjectSearchResultsState(
 
 function setThreadBadge(threads: ViewProjectState["threads"], threadId: string, badgeState: ViewProjectState["threads"][number]["badgeState"]) {
   return threads.map((thread) => (thread.id === threadId ? { ...thread, badgeState } : thread));
+}
+
+function updateThreadSummaryFromMessage(
+  threads: ViewProjectState["threads"],
+  threadId: string,
+  message: ViewProjectState["session"]["messages"][number]
+) {
+  return threads.map((thread) =>
+    thread.id === threadId
+      ? {
+        ...thread,
+        messageCount: thread.messageCount + 1,
+        lastMessagePreview: shouldUseMessageForThreadPreview(message) ? message.content : thread.lastMessagePreview,
+        updatedAt: message.createdAt
+      }
+      : thread
+  );
+}
+
+function updateThreadSummaryFromUpdatedMessage(
+  threads: ViewProjectState["threads"],
+  threadId: string,
+  message: ViewProjectState["session"]["messages"][number]
+) {
+  return threads.map((thread) =>
+    thread.id === threadId
+      ? {
+        ...thread,
+        lastMessagePreview: shouldUseMessageForThreadPreview(message) ? message.content : thread.lastMessagePreview,
+        updatedAt: message.createdAt
+      }
+      : thread
+  );
+}
+
+function shouldUseMessageForThreadPreview(message: ViewProjectState["session"]["messages"][number]) {
+  return message.role !== "system" && message.kind !== "run-milestones";
 }
 
 function upsertBackgroundJobRun(
@@ -1707,6 +2177,10 @@ export function readLocalPreferences(): LocalPreferencesState {
   const backgroundJobNotificationsEnabled = parseBooleanStorageValue(
     window.localStorage.getItem(BACKGROUND_JOB_NOTIFICATIONS_ENABLED_STORAGE_KEY)
   );
+  const selectedReasoningStrength = parseReasoningStrengthStorageValue(
+    window.localStorage.getItem(COMPOSER_REASONING_STRENGTH_STORAGE_KEY)
+  );
+  const selectedFastMode = parseBooleanStorageValue(window.localStorage.getItem(COMPOSER_FAST_MODE_STORAGE_KEY));
 
   return {
     openAiApiKey,
@@ -1723,7 +2197,9 @@ export function readLocalPreferences(): LocalPreferencesState {
     correctnessIterationModeDefault,
     backgroundJobApprovalPolicyDefault,
     memoryBankEnabledDefault,
-    backgroundJobNotificationsEnabled
+    backgroundJobNotificationsEnabled,
+    selectedReasoningStrength,
+    selectedFastMode
   };
 }
 
@@ -1815,6 +2291,23 @@ export function persistLocalPreferences(input: LocalPreferencesState) {
   persistStorageValue(BACKGROUND_JOB_APPROVAL_POLICY_DEFAULT_STORAGE_KEY, input.backgroundJobApprovalPolicyDefault);
   persistBooleanStorageValue(MEMORY_BANK_ENABLED_DEFAULT_STORAGE_KEY, input.memoryBankEnabledDefault);
   persistBooleanStorageValue(BACKGROUND_JOB_NOTIFICATIONS_ENABLED_STORAGE_KEY, input.backgroundJobNotificationsEnabled);
+  persistStorageValue(COMPOSER_REASONING_STRENGTH_STORAGE_KEY, input.selectedReasoningStrength);
+  persistBooleanStorageValue(COMPOSER_FAST_MODE_STORAGE_KEY, input.selectedFastMode);
+}
+
+export function persistMergedLocalPreferences(input: LocalPreferencesState) {
+  persistLocalPreferences({
+    ...readLocalPreferences(),
+    ...input
+  });
+}
+
+function persistComposerControlPreferences(state: HarnessViewState) {
+  persistLocalPreferences({
+    ...readLocalPreferences(),
+    selectedReasoningStrength: state.hasGlobalSelectedReasoningStrength ? state.selectedReasoningStrength : undefined,
+    selectedFastMode: state.hasGlobalSelectedFastMode ? state.selectedFastMode : undefined
+  });
 }
 
 export function persistTutorialProgress(input: { completedTutorialIds: string[]; dismissedTutorialIds: string[] }) {
@@ -1974,6 +2467,24 @@ function getBrowserUiSessionSnapshot(state: HarnessViewState): BrowserUiSessionS
   };
 }
 
+function toRunSummary(run: AgentRunState): AgentRunSummary {
+  return {
+    id: run.id,
+    threadId: run.threadId,
+    status: run.status,
+    failureMessage: run.failureMessage,
+    resumable: run.resumable,
+    retryable: run.retryable,
+    updatedAt: run.updatedAt,
+    completedAt: run.completedAt
+  };
+}
+
+function upsertRunSummary(summaries: AgentRunSummary[], next: AgentRunSummary) {
+  const existing = summaries.filter((summary) => summary.id !== next.id);
+  return [next, ...existing].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+}
+
 function finalizeHarnessViewState(state: HarnessViewState): HarnessViewState {
   const activeProject = getActiveProject(state);
   const availableModes = resolveModeCatalog(state.workspace.workspaceModes, activeProject?.projectModes ?? []);
@@ -2088,6 +2599,10 @@ function parseProviderBrandStorageValue(value: string | null): ProviderBrand | u
   return value === "gpt" || value === "gemini" ? value : undefined;
 }
 
+function parseReasoningStrengthStorageValue(value: string | null): ComposerReasoningStrength | undefined {
+  return isComposerReasoningStrength(value) ? value : undefined;
+}
+
 function parseSubagentWorktreeStrategyStorageValue(value: string | null) {
   return value === "same-worktree" || value === "separate-worktrees" ? value : undefined;
 }
@@ -2198,6 +2713,22 @@ function isProviderBrandSelectable(
 
 export function hasUsableApiKeyForProvider(state: HarnessViewState, providerBrand: ProviderBrand) {
   return providerBrand === "gemini" ? state.hasUsableGoogleApiKey : state.hasUsableOpenAiApiKey;
+}
+
+export function resolveUsablePiProviderBrand(state: HarnessViewState): ProviderBrand | undefined {
+  if (hasUsableApiKeyForProvider(state, state.providerBrand)) {
+    return state.providerBrand;
+  }
+
+  if (hasUsableApiKeyForProvider(state, "gpt")) {
+    return "gpt";
+  }
+
+  if (hasUsableApiKeyForProvider(state, "gemini")) {
+    return "gemini";
+  }
+
+  return undefined;
 }
 
 export function getBlockingSetupCheck(state: HarnessViewState) {

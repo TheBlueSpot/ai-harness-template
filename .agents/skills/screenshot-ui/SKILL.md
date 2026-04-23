@@ -46,8 +46,9 @@ Screenshots persist after the BranchFS mount is discarded because they're writte
 
 ## Requirements
 
-- `playwright` is a root `devDependency` — installed by `bun install` and passthrough-symlinked into BranchFS mounts.
-- Chromium binary: one-time host setup via `bunx playwright install chromium`. `bun run bootstrap` invokes this automatically. If the script exits with "playwright module missing" or "Executable doesn't exist", relay the install hint to the user.
+- `playwright` is the root `devDependency`; `@playwright/test` is not required for this script.
+- Check `node_modules/playwright` when debugging dependency installs, not `node_modules/@playwright/test`.
+- Chromium binary: one-time host setup via `bunx playwright install chromium`. `bun run bootstrap` invokes this automatically. If the script exits with "playwright dependency missing" or "playwright chromium launch failed", relay the install hint to the user.
 
 ## Failure modes
 

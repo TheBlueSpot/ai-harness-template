@@ -31,7 +31,7 @@ Roles: `user`, `developer`, `reviewer`.
 | UI | 19 |
 | PERSISTENCE | 15 |
 | PREFERENCES | 3 |
-| DEV | 24 |
+| DEV | 26 |
 | SEARCH | 2 |
 | MARKDOWN | 2 |
 
@@ -97,7 +97,7 @@ US-THREADS-006: As a user, I see the active chat header show the thread title, s
 
 US-THREADS-007: As a user, I switch projects and threads while another thread keeps streaming in the background so that long runs do not block navigation; only destructive removal stays blocked during active execution. (README L68)
 
-US-THREADS-008: As a user, I see high-signal run status persist inline in chat as system messages instead of floating badges above the transcript so that run history is readable in context. (README L67)
+US-THREADS-008: As a user, I see high-signal lifecycle run milestones stream through one live tail message during active work and then persist as compact phase rows before the final assistant answer, with raw tool chatter hidden, so that run history is readable in context. (README L67)
 
 US-THREADS-009: As a user, I see thread badges summarize status as purple User Input, orange Planning, yellow Executing, red Error, green Done so that I can scan a project at a glance. (README L66)
 
@@ -107,7 +107,7 @@ US-PLANNING-001: As a user, I use a shared local memory bank for planner, main e
 
 US-PLANNING-002: As a user, I answer interactive planning questions that pause execution until I reply, with three typed quick options and one recommended path so that clarification is fast and structured. (README L35)
 
-US-PLANNING-003: As a user, I rely on plan-first execution that persists a full execution plan, posts a plan summary into chat, and waits in ready before any code work starts so that I can review before the agent acts. (README L37)
+US-PLANNING-003: As a user, I rely on plan-first execution that persists a full execution plan, posts a durable plan summary into chat, and lets ready cards execute the stored run by id so that I can review before the agent acts. (README L37)
 
 US-PLANNING-004: As a user, I open transcript-level plan summary cards and reach the shared plan modal from chat or trace so that the plan stays one click away while I read the thread. (README L44)
 
@@ -127,9 +127,9 @@ US-PLANNING-010: As a user, I rely on shared setup work modeled as prerequisites
 
 US-RUNS-001: As a user, I pause and resume workspace-global execution so that new launches and follow-up asks block until I resume, while in-flight work continues. (README L21, L36)
 
-US-RUNS-002: As a user, I get resumable partial subagent runs that keep completed work after failure or stop so that I can continue without redoing work. (README L47)
+US-RUNS-002: As a user, I get resumable partial subagent runs whose plan cards show durable Resume state after failure or stop so that I can continue without redoing work. (README L47)
 
-US-RUNS-003: As a user, I retry full runs and individual subagents persistently, including after successful runs, so that iteration is cheap. (README L48)
+US-RUNS-003: As a user, I retry full runs and individual subagents persistently from durable run state, including failed and successful plan cards, so that iteration is cheap. (README L48)
 
 US-RUNS-004: As a user, I manually refresh active runs and active subagents, with deferred refresh while work is still streaming so that I can pull fresh state on demand. (README L49)
 
@@ -151,6 +151,8 @@ US-RUNS-012: As a user, I see a live context usage meter sourced from pi session
 
 US-RUNS-013: As a user, I get deferred planner questions, assistant questions, and browser approvals queued during global pause and released on resume so that nothing gets dropped. (README L21)
 
+US-RUNS-014: As a user, I get a clear non-git repair choice before dirty-git-protected runs so that I can initialize git, disable the preference, or cancel instead of hitting a hidden failure. (README L50)
+
 ### PROVIDERS
 
 US-PROVIDERS-001: As a user, I see capability-aware model metadata so the UI explains tool, vision, browser, context, speed, and cost expectations before execution starts. (README L17)
@@ -161,7 +163,7 @@ US-PROVIDERS-003: As a user, I get brand-aware defaults for GPT or Gemini execut
 
 US-PROVIDERS-004: As a user, I get Gemini planning defaulting to `google/gemini-3-flash-preview` so planning stays fast on that provider. (README L28)
 
-US-PROVIDERS-005: As a user, I get spawned subagents dropping to the cheapest runtime-compatible sibling in the same model family so parallel work stays aligned with the chosen model while keeping cost in check. (README L29)
+US-PROVIDERS-005: As a user, I get spawned subagents dropping to the cheapest runtime-compatible sibling in the same model family and inheriting fast mode when supported so parallel work stays aligned with the chosen model while keeping cost in check. (README L29)
 
 US-PROVIDERS-006: As a user, I persist OpenAI and Google API keys plus provider brand preference locally for this machine so that setup survives restart. (README L69)
 
@@ -171,7 +173,7 @@ US-PROVIDERS-007: As a user, I see provider brand switching gated by matching sa
 
 US-RUNTIMES-001: As a user, I pick from multiple agent runtimes: pi, GitHub Copilot CLI, and Codex CLI so that I can use the agent that fits the task. (README L10)
 
-US-RUNTIMES-002: As a user, I get Codex CLI noninteractive runs through the bundled official Codex SDK and CLI, keep review mode prompt-driven inside the harness instead of special native review routing, and on Windows writable runs auto-use full access because bundled Codex currently downgrades `workspace-write` to read-only there while read-only tasks stay sandboxed. (README L19)
+US-RUNTIMES-002: As a user, I get Codex CLI noninteractive runs through the bundled official Codex SDK and CLI with live web search plus writable shell network access, keep review mode prompt-driven inside the harness instead of special native review routing, and on Windows writable runs auto-use full access because bundled Codex currently downgrades `workspace-write` to read-only there while read-only tasks stay sandboxed. (README L19)
 
 US-RUNTIMES-003: As a user, I use optional live CLI sessions for Copilot CLI and Codex CLI over Bun-managed piped transport with attach tokens, reconnect, and follow-up capture so that terminal-style agents stay inspectable. (README L39)
 
@@ -189,15 +191,19 @@ US-WORKTREE-002: As a user, I rely on isolated BranchFS subagent mounts so that 
 
 US-WORKTREE-003: As a developer, I replay isolated subagent results inside a separate BranchFS integration mount, verify there, and flush only after success so that failed integration does not dirty the host checkout. (README L33)
 
-US-WORKTREE-004: As a user, I default to same-worktree subagent mode when contracts path-split cleanly, and fall back to isolated BranchFS mounts when work is broader so that isolation matches risk. (README L172)
+US-WORKTREE-004: As a user, I default to same-worktree subagent mode when contracts path-split cleanly, fan those subtasks out in parallel until owned paths overlap, and serialize ambiguous same-worktree work so execution speed matches real path safety. (README L172)
 
-US-WORKTREE-005: As a user, I drive subagent work with contracts (prerequisites, owned paths, scoped verification, merge notes) instead of freeform subtask text so that parallel work is enforceable. (README L169)
+US-WORKTREE-005: As a user, I drive subagent work with contracts (prerequisites, owned paths, scoped verification, merge notes) instead of freeform subtask text so that parallel or serialized same-worktree work is enforceable. (README L169)
 
-US-WORKTREE-006: As a user, I replay subagent edits inside a separate BranchFS integration mount when isolated mode is selected; same-worktree mode validates edits against contract-owned paths and limits verification scope. (README L175)
+US-WORKTREE-006: As a user, I replay subagent edits inside a separate BranchFS integration mount when isolated mode is selected; same-worktree mode reports contract drift back to main correctness review without discarding useful worker edits. (README L175)
 
-US-WORKTREE-007: As a user, I keep repo-level BranchFS mounts backing execution when my project points at a nested folder while edit sync stays scoped to the selected folder so that paths align with what I opened. (README L176)
+US-WORKTREE-007: As a user, I keep repo-level context available when my project points at a nested folder while execution stays scoped to the selected project folder so that subagents understand both cwd and repo-root files. (README L176)
 
 US-WORKTREE-008: As a user, I still fan out subagent work in repositories with no commits yet using ephemeral snapshot state so that greenfield repos are usable. (README L173)
+
+US-WORKTREE-009: As a user, I see same-worktree scaffold and import-root work run before dependent sibling subagents so parallel work does not read missing files. (README L174)
+
+US-WORKTREE-010: As a user, I see subagents avoid visible browser or dev-server verification, guessed skill paths, unnecessary media conversion probes, and brittle Windows search quoting so background work stays focused. (README L176)
 
 ### ATTACHMENTS
 
@@ -275,6 +281,8 @@ US-ACTIVATION-005: As a user, I use a shared project switcher dialog that replac
 
 US-ACTIVATION-006: As a developer, I see setup health be server-derived per machine while tutorial progress and dismissal state stay local to the current browser profile. (README L143)
 
+US-ACTIVATION-007: As a user, I can complete onboarding when at least one agent path is usable, whether that is Pi with a provider key or an authenticated CLI runtime. (README L13)
+
 ### UI
 
 US-UI-001: As a user, I use a SolidJS app shell so that the frontend stays reactive and local-first. (README L85)
@@ -305,11 +313,13 @@ US-UI-013: As a user, I see caught UI and command errors surface through toast n
 
 US-UI-014: As a user, I open a Cmd/Ctrl+K keyboard project open flow via TanStack Hotkeys with best-effort Cmd/Ctrl+Space when the browser cooperates. (README L97)
 
-US-UI-015: As a developer, I keep developer traces out of the user-visible transcript while significant orchestration milestones surface in chat as persisted inline status rows. (README L175, L176)
+US-UI-015: As a developer, I keep developer traces out of the user-visible transcript, hide aggregation-only trace stages from user-facing status surfaces, and surface only significant orchestration milestones through the live tail and finalized phase rows. (README L175, L176)
 
-US-UI-016: As a user, I see high-signal run status updates persist inline in chat as system messages instead of floating badges above the transcript. (README L67)
+US-UI-016: As a user, I see all in-flight status and assistant text stay in one final-position live tail message until the run completes, then become finalized transcript rows. (README L67)
 
 US-UI-017: As a user, I see run cockpit expose virtual-branch experiment review, promote, and discard actions plus a shared memory tab for local reusable learnings. (README L101)
+
+US-UI-020: As a user, I inspect shell tool activity from a run pane with command status, concise output previews, classified failure detail, and copyable summaries while chat keeps only interpreted progress and blocking failures. (README L68)
 
 US-UI-018: As a user, I see shared popovers render through portal-backed primitives so that compact overlays (inbox, quick replies, interaction panels) stay well-positioned. (README L93)
 
@@ -329,7 +339,7 @@ US-PERSISTENCE-005: As a developer, I see completed run metadata persist so that
 
 US-PERSISTENCE-006: As a developer, I see completed subagent metadata persist across partial runs so that follow-up work can continue from prior branch commits. (README L74)
 
-US-PERSISTENCE-007: As a developer, I keep planner traces, stream buffers, and toasts as transient runtime state that does not persist across sessions. (README L75)
+US-PERSISTENCE-007: As a developer, I persist in-flight assistant transcript rows for refresh recovery while keeping planner traces, status stream buffers, and toasts as transient runtime state. (README L75)
 
 US-PERSISTENCE-008: As a user, I see draft text persist per thread in browser localStorage so that typed input survives thread switches and reloads. (README L76)
 
@@ -361,9 +371,9 @@ US-DEV-001: As a developer, I run a same-origin web app and websocket server sta
 
 US-DEV-002: As a developer, I run `bun run bootstrap` to install missing dependencies, build the UI, start the server, and open the browser by default. (README L115)
 
-US-DEV-003: As a developer, I run `bun run dev` to start the Bun server with hot reload and serve the Solid app. (README L116)
+US-DEV-003: As a developer, I run `bun run dev` to start the Bun server with hot reload, open the browser only on first ready boot, wait for a 30s quiet window before applying dev UI or backend reloads, auto-reload the browser after successful debounced UI rebuilds, and keep backend state best-effort across same-process hot reloads. (README L118)
 
-US-DEV-004: As a developer, I run `bun run dev:cli` to start the websocket server without the UI route. (README L117)
+US-DEV-004: As a developer, I run `bun run dev:cli` to start the websocket server without the UI route through the same Bun hot-reload path. (README L119)
 
 US-DEV-005: As a developer, I see dev and bootstrap retry on a random open port when `HARNESS_PORT` is unset and `8787` is occupied. (README L118)
 
@@ -375,7 +385,7 @@ US-DEV-008: As a developer, I run `bun run package:launcher` which builds a port
 
 US-DEV-009: As a developer, I see development UI builds emit external source maps for browser debugging. (README L122)
 
-US-DEV-010: As a developer, I run `bun run test` to execute the Bun test suite. (README L123)
+US-DEV-010: As a developer, I run `bun run test` to execute the Bun test suite in parallel with a tuned worker cap and simple local override. (README L123)
 
 US-DEV-011: As a developer, I run `bun run typecheck` to validate TypeScript contracts. (README L124)
 
@@ -401,6 +411,10 @@ US-DEV-021: As a developer, I see development builds re-surface swallowed UI and
 
 US-DEV-022: As a developer, I see Tailwind class canonicalization enforced through editor diagnostics and focused linting so shared UI utilities stay in one preferred form. (README L184)
 
+US-DEV-025: As a developer, I see bundled ripgrep added to the agent toolchain path so subagent search does not depend on the user's global shell PATH. (README L185)
+
+US-DEV-026: As a developer, I see Bun hot reload reuse one live harness server instance with stable websocket listeners, delaying handler swaps until the quiet window ends so active dev chats and runtime state are preserved best-effort instead of restarting on every save. (README L118)
+
 US-DEV-023: As a developer, I run `bun run screenshot` to capture isolated Playwright chromium PNGs of the UI inside a BranchFS mount on a random free port, with outputs written to `.local/screenshots/<runId>/` so agents can inspect visual bugs without touching the host `:8787` server. (README L129)
 
 US-DEV-024: As a developer, I see debug and dev startup telemetry stream current boot phase, weighted progress and ETA, slow-phase hints, and a temp startup log path so stalled boots stop looking dead. (README L119)
@@ -410,6 +424,8 @@ US-DEV-024: As a developer, I see debug and dev startup telemetry stream current
 US-SEARCH-001: As a user, I open a spotlight-style project switcher for recent roots, local folder search, and fast project activation from one shared flow. (README L11)
 
 US-SEARCH-002: As a user, I activate an already-open project from the switcher without creating a fresh thread when the exact path matches. (README L61)
+
+US-SEARCH-003: As a user, I create and open a folder-only project from an absolute path in the project switcher so that I can start a new project without a template or git requirement. (README L11)
 
 ### MARKDOWN
 

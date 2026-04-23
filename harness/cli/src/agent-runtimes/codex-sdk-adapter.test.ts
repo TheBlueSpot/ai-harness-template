@@ -10,16 +10,14 @@ type FakeThreadRun = {
 };
 
 class FakeThread {
-  readonly runCalls: Array<{ input: unknown; signal?: AbortSignal; effort?: string; serviceTier?: string }> = [];
+  readonly runCalls: Array<{ input: unknown; signal?: AbortSignal }> = [];
 
   constructor(private readonly runs: FakeThreadRun[]) {}
 
-  async runStreamed(input: unknown, options: { signal?: AbortSignal; effort?: string; serviceTier?: string } = {}) {
+  async runStreamed(input: unknown, options: { signal?: AbortSignal } = {}) {
     this.runCalls.push({
       input,
-      signal: options.signal,
-      effort: options.effort,
-      serviceTier: options.serviceTier
+      signal: options.signal
     });
     const nextRun = this.runs.shift();
     if (!nextRun) {
@@ -102,9 +100,11 @@ describe("codex sdk adapter", () => {
       sandboxMode: "read-only",
       workingDirectory: "C:\\repo",
       skipGitRepoCheck: true,
-      approvalPolicy: "never"
+      approvalPolicy: "never",
+      networkAccessEnabled: false,
+      webSearchMode: "live"
     });
-    expect(thread.runCalls[0]?.input).toBe("Inspect repo");
+    expect(thread.runCalls[0]?.input).toBe(`${testExports.CODEX_TOOL_GUIDANCE}\n\nInspect repo`);
   });
 
   test("uses danger-full-access for writable Windows runs", () => {
@@ -123,7 +123,7 @@ describe("codex sdk adapter", () => {
     });
   });
 
-  test("maps reasoning effort and fast mode into direct sdk options", async () => {
+  test("maps reasoning, web search, and network into sdk thread options", async () => {
     const thread = new FakeThread([
       {
         events: [
@@ -148,62 +148,16 @@ describe("codex sdk adapter", () => {
     );
 
     expect(client.startThreadCalls[0]).toMatchObject({
-      effort: "xhigh",
-      serviceTier: "fast"
+      modelReasoningEffort: "xhigh",
+      networkAccessEnabled: true,
+      webSearchMode: "live"
     });
-    expect(thread.runCalls[0]).toMatchObject({
-      effort: "xhigh",
-      serviceTier: "fast"
-    });
+    expect(String(thread.runCalls[0]?.input)).toContain("/fast");
   });
 
-  test("builds codex command prelude for non-default settings", () => {
-    expect(
-      testExports.buildCodexCommandPrelude(
-        createRequest({
-          reasoningStrength: "medium",
-          fastMode: true
-        })
-      )
-    ).toBe("/reasoning medium\n/fast");
-    expect(testExports.buildCodexCommandPrelude(createRequest({ reasoningStrength: "extra-high" }))).toBe("/reasoning high");
-  });
-
-  test("falls back to command prelude when direct controls are rejected", async () => {
-    const thread = new FakeThread([
-      {
-        events: [],
-        error: new Error("unsupported effort")
-      },
-      {
-        events: [
-          { type: "item.completed", item: { id: "msg-1", type: "agent_message", text: "fallback" } },
-          { type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } }
-        ]
-      }
-    ]);
-    const client = new FakeCodexClient(thread);
-    const adapter = new CodexSdkAdapter({
-      executablePath: "C:\\codex\\codex.exe",
-      createClient() {
-        return client;
-      }
-    });
-
-    const result = await adapter.runPrompt(
-      createRequest({
-        reasoningStrength: "medium",
-        fastMode: true
-      })
-    );
-
-    expect(result.text).toBe("fallback");
-    expect(thread.runCalls).toHaveLength(2);
-    expect(thread.runCalls[1]).toMatchObject({
-      effort: undefined,
-      serviceTier: undefined
-    });
-    expect(thread.runCalls[0]?.input).toBe("/reasoning medium\n/fast\n\nInspect repo");
+  test("builds codex command prelude for fast mode", () => {
+    expect(testExports.buildCodexCommandPrelude(createRequest({ fastMode: true }))).toBe("/fast");
+    expect(testExports.buildCodexCommandPrelude(createRequest({ reasoningStrength: "extra-high" }))).toBe("");
   });
 
   test("streams appended agent-message deltas and tool events", async () => {

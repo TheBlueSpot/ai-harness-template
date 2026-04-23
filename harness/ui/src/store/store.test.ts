@@ -13,6 +13,8 @@ import {
 import { defaultProviderCapabilities } from "../../../shared/capabilities";
 import {
   BROWSER_UI_SESSION_STORAGE_KEY,
+  COMPOSER_FAST_MODE_STORAGE_KEY,
+  COMPOSER_REASONING_STRENGTH_STORAGE_KEY,
   createEmptyAssistantsState,
   createEmptyBackgroundJobsState,
   createEmptyNotificationInboxState,
@@ -27,6 +29,8 @@ import {
   getFallbackExecutionModelIdForAgent,
   getResolvedModes,
   persistBrowserUiSession,
+  persistMergedLocalPreferences,
+  readLocalPreferences,
   readBrowserUiSession,
   reduceServerEvent
 } from "../harness-store";
@@ -88,6 +92,8 @@ function createProject() {
 
 function clearBrowserUiSessionStorage() {
   globalThis.localStorage?.removeItem(BROWSER_UI_SESSION_STORAGE_KEY);
+  globalThis.localStorage?.removeItem(COMPOSER_REASONING_STRENGTH_STORAGE_KEY);
+  globalThis.localStorage?.removeItem(COMPOSER_FAST_MODE_STORAGE_KEY);
 }
 
 describe("harness store reducer", () => {
@@ -246,6 +252,46 @@ describe("harness store reducer", () => {
       selectedReasoningStrength: "medium",
       selectedFastMode: true
     });
+    expect(readLocalPreferences()).toMatchObject({
+      selectedReasoningStrength: "medium",
+      selectedFastMode: true
+    });
+  });
+
+  test("hydrates composer reasoning and fast mode selections from local preferences", () => {
+    clearBrowserUiSessionStorage();
+    const store = createHarnessStore();
+
+    store.setSelectedReasoningStrength("medium");
+    store.setSelectedFastMode(true);
+    globalThis.localStorage?.removeItem(BROWSER_UI_SESSION_STORAGE_KEY);
+
+    const nextStore = createHarnessStore();
+    nextStore.hydrateLocalPreferences();
+
+    expect(nextStore.state.selectedReasoningStrength).toBe("medium");
+    expect(nextStore.state.selectedFastMode).toBe(true);
+    expect(nextStore.state.hasGlobalSelectedReasoningStrength).toBe(true);
+    expect(nextStore.state.hasGlobalSelectedFastMode).toBe(true);
+  });
+
+  test("merges partial local preference saves without dropping composer controls", () => {
+    clearBrowserUiSessionStorage();
+    const store = createHarnessStore();
+
+    store.setSelectedReasoningStrength("medium");
+    store.setSelectedFastMode(true);
+    persistMergedLocalPreferences({
+      providerBrand: "gpt",
+      debugEnabled: true
+    });
+
+    expect(readLocalPreferences()).toMatchObject({
+      providerBrand: "gpt",
+      debugEnabled: true,
+      selectedReasoningStrength: "medium",
+      selectedFastMode: true
+    });
   });
 
   test("coerces unsupported composer controls for current model and runtime", () => {
@@ -363,6 +409,105 @@ describe("harness store reducer", () => {
         [project.id]: "thread-2"
       }
     });
+  });
+
+  test("hydrates pending planning run when thread activation switches into questioned thread", () => {
+    const project = createWorkspaceProjectState({
+      id: "project-question-thread",
+      name: "repo-question-thread",
+      rootPath: "C:\\repo-question-thread",
+      activeThreadId: "thread-1",
+      threads: [
+        createProjectThreadSummary({
+          id: "thread-1",
+          title: "Thread 1",
+          titleSource: "generated",
+          updatedAt: new Date().toISOString()
+        }),
+        createProjectThreadSummary({
+          id: "thread-2",
+          title: "Thread 2",
+          titleSource: "generated",
+          updatedAt: new Date().toISOString()
+        })
+      ],
+      session: {
+        ...createEmptySession("thread-1"),
+        messages: []
+      }
+    });
+    const initialState = createConnectedState(project);
+    const question = {
+      id: "run-question:question-1",
+      prompt: "Which route should handle this?",
+      placeholder: "api/users/[id]",
+      choices: [
+        {
+          id: "choice-1",
+          label: "API route",
+          description: "Use API route",
+          answerText: "api/users/[id]",
+          recommended: true
+        },
+        {
+          id: "choice-2",
+          label: "Web route",
+          description: "Use page route",
+          answerText: "users/[id]",
+          recommended: false
+        },
+        {
+          id: "choice-3",
+          label: "Custom",
+          description: "Type custom route",
+          answerText: "custom route",
+          recommended: false
+        }
+      ],
+      required: true,
+      status: "pending" as const,
+      askedAt: new Date().toISOString()
+    };
+    const activeRun = {
+      id: "run-question",
+      threadId: "thread-2",
+      status: "awaiting-user-input" as const,
+      latestUserPrompt: "needs clarification",
+      planningModelId: "openai/gpt-5.4",
+      executionModelId: "openai/gpt-5.4",
+      difficultyScore: 40,
+      summary: "Need one detail before planning",
+      finalExecutionBrief: "Wait for user answer",
+      questions: [question],
+      subtasks: [],
+      resumable: false,
+      retryable: false,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    const nextState = reduceServerEvent(initialState, {
+      type: "thread.activated",
+      requestId: "req-thread-question-activated",
+      payload: {
+        projectId: project.id,
+        project: {
+          ...project,
+          activeThreadId: "thread-2",
+          session: {
+            ...createEmptySession("thread-2"),
+            messages: []
+          },
+          activeRun,
+          lastRun: activeRun,
+          runSummaries: []
+        }
+      }
+    });
+
+    expect(nextState.workspace.projects[0]?.activeThreadId).toBe("thread-2");
+    expect(nextState.workspace.projects[0]?.activeRun?.status).toBe("awaiting-user-input");
+    expect(nextState.workspace.projects[0]?.activeRun?.questions[0]?.prompt).toContain("Which route");
+    expect(nextState.workspace.projects[0]?.activeRun?.questions[0]?.status).toBe("pending");
   });
 
   test("builds restore commands for saved project and thread on reopen", () => {
@@ -730,6 +875,522 @@ describe("harness store reducer", () => {
     expect(afterProject?.streamingAssistantText).toBe("");
   });
 
+  test("hydrates persisted in-flight assistant text on reconnect", () => {
+    const threadId = "thread-stream";
+    const project = createWorkspaceProjectState({
+      id: createProjectId(),
+      name: "repo-stream",
+      rootPath: "C:\\repo-stream",
+      activeThreadId: threadId,
+      session: {
+        ...createEmptySession(threadId),
+        isStreaming: true,
+        messages: [
+          {
+            id: "assistant-stream-1",
+            role: "assistant",
+            content: "working",
+            createdAt: new Date().toISOString()
+          }
+        ]
+      }
+    });
+
+    const state = createConnectedState(project);
+    expect(state.workspace.projects[0]?.streamingAssistantText).toBe("working");
+  });
+
+  test("stores streaming tail segments and clears them on completion", () => {
+    const initialProject = createProject();
+    const initialState = createConnectedState(initialProject);
+    const projectId = initialProject.id;
+    const threadId = initialProject.activeThreadId;
+    const updatedAt = new Date().toISOString();
+
+    const tailState = reduceServerEvent(initialState, {
+      type: "chat.streaming-tail-updated",
+      requestId: "req-tail",
+      payload: {
+        projectId,
+        threadId,
+        sessionId: threadId,
+        runId: "run-1",
+        segments: [
+          {
+            id: "run-1:subagents",
+            kind: "status",
+            phase: "subagents",
+            content: "**Subagents**\n- Wired HUD.",
+            updatedAt
+          }
+        ],
+        state: {
+          ...createEmptySession(threadId),
+          isStreaming: true
+        }
+      }
+    });
+
+    const completeState = reduceServerEvent(tailState, {
+      type: "chat.complete",
+      requestId: "req-tail",
+      payload: {
+        projectId,
+        threadId,
+        sessionId: threadId,
+        assistantMessage: {
+          id: "assistant-1",
+          role: "assistant",
+          content: "done",
+          createdAt: updatedAt
+        },
+        state: {
+          ...createEmptySession(threadId),
+          messages: [
+            {
+              id: "assistant-1",
+              role: "assistant",
+              content: "done",
+              createdAt: updatedAt
+            }
+          ],
+          isStreaming: false
+        }
+      }
+    });
+
+    expect(tailState.workspace.projects[0]?.streamingTailSegments).toHaveLength(1);
+    expect(tailState.workspace.projects[0]?.streamingHeartbeatMessages).toHaveLength(1);
+    expect(completeState.workspace.projects[0]?.streamingTailSegments).toHaveLength(0);
+    expect(completeState.workspace.projects[0]?.streamingHeartbeatMessages).toHaveLength(0);
+  });
+
+  test("rolls streaming heartbeat content into a new live message after two updates", () => {
+    const initialProject = createProject();
+    const initialState = createConnectedState(initialProject);
+    const projectId = initialProject.id;
+    const threadId = initialProject.activeThreadId;
+
+    const firstState = reduceServerEvent(initialState, {
+      type: "chat.streaming-tail-updated",
+      requestId: "req-tail-1",
+      payload: {
+        projectId,
+        threadId,
+        sessionId: threadId,
+        runId: "run-1",
+        segments: [
+          {
+            id: "run-1:subagents",
+            kind: "status",
+            phase: "subagents",
+            content: "**Subagents**\n- First beat.",
+            updatedAt: "2026-04-23T12:00:00.000Z"
+          }
+        ],
+        state: {
+          ...createEmptySession(threadId),
+          isStreaming: true
+        }
+      }
+    });
+
+    const secondState = reduceServerEvent(firstState, {
+      type: "chat.streaming-tail-updated",
+      requestId: "req-tail-2",
+      payload: {
+        projectId,
+        threadId,
+        sessionId: threadId,
+        runId: "run-1",
+        segments: [
+          {
+            id: "run-1:subagents",
+            kind: "status",
+            phase: "subagents",
+            content: "**Subagents**\n- Second beat.",
+            updatedAt: "2026-04-23T12:00:01.000Z"
+          }
+        ],
+        state: {
+          ...createEmptySession(threadId),
+          isStreaming: true
+        }
+      }
+    });
+
+    const thirdState = reduceServerEvent(secondState, {
+      type: "chat.streaming-tail-updated",
+      requestId: "req-tail-3",
+      payload: {
+        projectId,
+        threadId,
+        sessionId: threadId,
+        runId: "run-1",
+        segments: [
+          {
+            id: "run-1:subagents",
+            kind: "status",
+            phase: "subagents",
+            content: "**Subagents**\n- Third beat.",
+            updatedAt: "2026-04-23T12:00:02.000Z"
+          }
+        ],
+        state: {
+          ...createEmptySession(threadId),
+          isStreaming: true
+        }
+      }
+    });
+
+    expect(firstState.workspace.projects[0]?.streamingHeartbeatMessages).toEqual([
+      {
+        id: "run-1:heartbeat:1",
+        content: "**Subagents**\n- First beat.",
+        heartbeatCount: 1,
+        locked: false,
+        updatedAt: "2026-04-23T12:00:00.000Z"
+      }
+    ]);
+    expect(secondState.workspace.projects[0]?.streamingHeartbeatMessages).toEqual([
+      {
+        id: "run-1:heartbeat:1",
+        content: "**Subagents**\n- Second beat.",
+        heartbeatCount: 2,
+        locked: false,
+        updatedAt: "2026-04-23T12:00:01.000Z"
+      }
+    ]);
+    expect(thirdState.workspace.projects[0]?.streamingHeartbeatMessages).toEqual([
+      {
+        id: "run-1:heartbeat:1",
+        content: "**Subagents**\n- Second beat.",
+        heartbeatCount: 2,
+        locked: true,
+        updatedAt: "2026-04-23T12:00:01.000Z"
+      },
+      {
+        id: "run-1:heartbeat:2",
+        content: "**Subagents**\n- Third beat.",
+        heartbeatCount: 1,
+        locked: false,
+        updatedAt: "2026-04-23T12:00:02.000Z"
+      }
+    ]);
+  });
+
+  test("keeps status heartbeats separate from assistant streaming tail content", () => {
+    const initialProject = createProject();
+    const initialState = createConnectedState(initialProject);
+    const projectId = initialProject.id;
+    const threadId = initialProject.activeThreadId;
+
+    const nextState = reduceServerEvent(initialState, {
+      type: "chat.streaming-tail-updated",
+      requestId: "req-tail-mixed",
+      payload: {
+        projectId,
+        threadId,
+        sessionId: threadId,
+        runId: "run-1",
+        segments: [
+          {
+            id: "run-1:subagents",
+            kind: "status",
+            phase: "subagents",
+            content: "**Subagents**\n- Planning done. Spawning 3 subagents. Parallel slots: 3.",
+            updatedAt: "2026-04-23T12:00:00.000Z"
+          },
+          {
+            id: "run-1:assistant",
+            kind: "assistant",
+            content: "Next message starts here.",
+            updatedAt: "2026-04-23T12:00:01.000Z"
+          }
+        ],
+        state: {
+          ...createEmptySession(threadId),
+          isStreaming: true
+        }
+      }
+    });
+
+    expect(nextState.workspace.projects[0]?.streamingHeartbeatMessages).toEqual([
+      {
+        id: "run-1:heartbeat:1",
+        content: "**Subagents**\n- Planning done. Spawning 3 subagents. Parallel slots: 3.",
+        heartbeatCount: 1,
+        locked: false,
+        updatedAt: "2026-04-23T12:00:01.000Z"
+      }
+    ]);
+  });
+
+  test("restores inactive thread live transcript when switching back", () => {
+    const projectId = createProjectId();
+    const threadOne = "thread-1";
+    const threadTwo = "thread-2";
+    const initialProject = createWorkspaceProjectState({
+      id: projectId,
+      name: "repo-switch-live",
+      rootPath: "C:\\repo-switch-live",
+      activeThreadId: threadTwo,
+      threads: [
+        createProjectThreadSummary({
+          id: threadOne,
+          title: "Thread 1",
+          titleSource: "generated",
+          updatedAt: new Date().toISOString()
+        }),
+        createProjectThreadSummary({
+          id: threadTwo,
+          title: "Thread 2",
+          titleSource: "generated",
+          updatedAt: new Date().toISOString()
+        })
+      ],
+      session: {
+        ...createEmptySession(threadTwo),
+        messages: []
+      }
+    });
+    const initialState = createConnectedState(initialProject);
+
+    const tailState = reduceServerEvent(initialState, {
+      type: "chat.streaming-tail-updated",
+      requestId: "req-inactive-tail",
+      payload: {
+        projectId,
+        threadId: threadOne,
+        sessionId: threadOne,
+        runId: "run-restore-live",
+        segments: [
+          {
+            id: "run-restore-live:planning",
+            kind: "status",
+            phase: "planning",
+            content: "**Planning**\n- Need routing target.",
+            updatedAt: "2026-04-23T12:00:00.000Z"
+          }
+        ],
+        state: {
+          ...createEmptySession(threadOne),
+          isStreaming: true
+        }
+      }
+    });
+    const deltaState = reduceServerEvent(tailState, {
+      type: "chat.delta",
+      requestId: "req-inactive-delta",
+      payload: {
+        projectId,
+        threadId: threadOne,
+        sessionId: threadOne,
+        delta: "Partial assistant"
+      }
+    });
+
+    expect(deltaState.workspace.projects[0]?.streamingHeartbeatMessages).toEqual([]);
+    expect(deltaState.workspace.projects[0]?.streamingAssistantText).toBe("");
+
+    const switchedBack = reduceServerEvent(deltaState, {
+      type: "thread.activated",
+      requestId: "req-switch-back",
+      payload: {
+        projectId,
+        project: createWorkspaceProjectState({
+          id: projectId,
+          name: "repo-switch-live",
+          rootPath: "C:\\repo-switch-live",
+          activeThreadId: threadOne,
+          threads: initialProject.threads,
+          session: {
+            ...createEmptySession(threadOne),
+            messages: []
+          }
+        })
+      }
+    });
+
+    const restoredProject = switchedBack.workspace.projects[0];
+    expect(restoredProject?.session.isStreaming).toBe(true);
+    expect(restoredProject?.streamingHeartbeatMessages[0]?.content).toContain("Need routing target.");
+    expect(restoredProject?.streamingAssistantText).toBe("Partial assistant");
+  });
+
+  test("clears inactive thread live transcript after completion", () => {
+    const projectId = createProjectId();
+    const threadOne = "thread-1";
+    const threadTwo = "thread-2";
+    const initialProject = createWorkspaceProjectState({
+      id: projectId,
+      name: "repo-switch-complete",
+      rootPath: "C:\\repo-switch-complete",
+      activeThreadId: threadTwo,
+      threads: [
+        createProjectThreadSummary({
+          id: threadOne,
+          title: "Thread 1",
+          titleSource: "generated",
+          updatedAt: new Date().toISOString()
+        }),
+        createProjectThreadSummary({
+          id: threadTwo,
+          title: "Thread 2",
+          titleSource: "generated",
+          updatedAt: new Date().toISOString()
+        })
+      ],
+      session: {
+        ...createEmptySession(threadTwo),
+        messages: []
+      }
+    });
+    const initialState = createConnectedState(initialProject);
+
+    const streamingState = reduceServerEvent(initialState, {
+      type: "chat.delta",
+      requestId: "req-inactive-delta-complete",
+      payload: {
+        projectId,
+        threadId: threadOne,
+        sessionId: threadOne,
+        delta: "Partial assistant"
+      }
+    });
+    const completedState = reduceServerEvent(streamingState, {
+      type: "chat.complete",
+      requestId: "req-inactive-complete",
+      payload: {
+        projectId,
+        threadId: threadOne,
+        sessionId: threadOne,
+        assistantMessage: {
+          id: "assistant-complete",
+          role: "assistant",
+          content: "done",
+          createdAt: new Date().toISOString()
+        },
+        state: {
+          ...createEmptySession(threadOne),
+          isStreaming: false,
+          messages: [
+            {
+              id: "assistant-complete",
+              role: "assistant",
+              content: "done",
+              createdAt: new Date().toISOString()
+            }
+          ]
+        }
+      }
+    });
+    const switchedBack = reduceServerEvent(completedState, {
+      type: "thread.activated",
+      requestId: "req-switch-back-complete",
+      payload: {
+        projectId,
+        project: createWorkspaceProjectState({
+          id: projectId,
+          name: "repo-switch-complete",
+          rootPath: "C:\\repo-switch-complete",
+          activeThreadId: threadOne,
+          threads: initialProject.threads,
+          session: {
+            ...createEmptySession(threadOne),
+            messages: [
+              {
+                id: "assistant-complete",
+                role: "assistant",
+                content: "done",
+                createdAt: new Date().toISOString()
+              }
+            ]
+          }
+        })
+      }
+    });
+
+    const restoredProject = switchedBack.workspace.projects[0];
+    expect(restoredProject?.session.isStreaming).toBe(false);
+    expect(restoredProject?.streamingHeartbeatMessages).toEqual([]);
+    expect(restoredProject?.streamingAssistantText).toBe("");
+  });
+
+  test("keeps active thread state stable when background thread completes", () => {
+    const project = createWorkspaceProjectState({
+      id: createProjectId(),
+      name: "repo-two",
+      rootPath: "C:\\repo-two",
+      activeThreadId: "thread-2",
+      threads: [
+        createProjectThreadSummary({
+          id: "thread-1",
+          title: "Thread 1",
+          titleSource: "generated",
+          badgeState: "executing",
+          messageCount: 1,
+          updatedAt: new Date().toISOString()
+        }),
+        createProjectThreadSummary({
+          id: "thread-2",
+          title: "Thread 2",
+          titleSource: "generated",
+          badgeState: "idle",
+          messageCount: 0,
+          updatedAt: new Date().toISOString()
+        })
+      ],
+      session: {
+        ...createEmptySession("thread-2"),
+        messages: [
+          {
+            id: "user-thread-2",
+            role: "user",
+            content: "new thread",
+            createdAt: new Date().toISOString()
+          }
+        ]
+      }
+    });
+    const initialState = createConnectedState(project);
+    const completedState = reduceServerEvent(initialState, {
+      type: "chat.complete",
+      requestId: "req-background-complete",
+      payload: {
+        projectId: project.id,
+        threadId: "thread-1",
+        sessionId: "thread-1",
+        assistantMessage: {
+          id: "assistant-thread-1",
+          role: "assistant",
+          content: "background done",
+          createdAt: new Date().toISOString()
+        },
+        state: {
+          ...createEmptySession("thread-1"),
+          messages: [
+            {
+              id: "assistant-thread-1",
+              role: "assistant",
+              content: "background done",
+              createdAt: new Date().toISOString()
+            }
+          ],
+          isStreaming: false
+        }
+      }
+    });
+
+    const activeProject = completedState.workspace.projects[0];
+    expect(activeProject?.activeThreadId).toBe("thread-2");
+    expect(activeProject?.session.sessionId).toBe("thread-2");
+    expect(activeProject?.session.messages[0]?.content).toBe("new thread");
+    expect(activeProject?.threads.find((thread) => thread.id === "thread-1")?.badgeState).toBe("done");
+    expect(activeProject?.threads.find((thread) => thread.id === "thread-1")?.messageCount).toBe(2);
+    expect(activeProject?.threads.find((thread) => thread.id === "thread-1")?.lastMessagePreview).toBe("background done");
+  });
+
   test("appends chat messages without waiting for completion", () => {
     const initialProject = createProject();
     const initialState = createConnectedState(initialProject);
@@ -903,6 +1564,112 @@ describe("harness store reducer", () => {
     expect(project?.session.messages).toHaveLength(1);
     expect(project?.session.messages[0]?.role).toBe("system");
     expect(project?.session.messages[0]?.content).toBe("Planning task.");
+  });
+
+  test("updates run milestone messages without duplicating thread counts", () => {
+    const initialProject = createProject();
+    const initialState = createConnectedState(initialProject);
+    const projectId = initialProject.id;
+    const threadId = initialProject.activeThreadId;
+    const createdAt = new Date().toISOString();
+    const appendedState = reduceServerEvent(initialState, {
+      type: "chat.message-appended",
+      requestId: "req-milestone",
+      payload: {
+        projectId,
+        threadId,
+        sessionId: threadId,
+        message: {
+          id: "milestone-1",
+          role: "assistant",
+          kind: "run-milestones",
+          content: "- Started",
+          metadata: {
+            type: "run-milestones",
+            runId: "run-1",
+            windowId: "window-1",
+            status: "open",
+            startedAt: createdAt,
+            updatedAt: createdAt,
+            lineCount: 1
+          },
+          createdAt
+        },
+        state: {
+          ...createEmptySession(threadId),
+          messages: [
+            {
+              id: "milestone-1",
+              role: "assistant",
+              kind: "run-milestones",
+              content: "- Started",
+              metadata: {
+                type: "run-milestones",
+                runId: "run-1",
+                windowId: "window-1",
+                status: "open",
+                startedAt: createdAt,
+                updatedAt: createdAt,
+                lineCount: 1
+              },
+              createdAt
+            }
+          ]
+        }
+      }
+    });
+    const updatedState = reduceServerEvent(appendedState, {
+      type: "chat.message-updated",
+      requestId: "req-milestone-update",
+      payload: {
+        projectId,
+        threadId,
+        sessionId: threadId,
+        message: {
+          id: "milestone-1",
+          role: "assistant",
+          kind: "run-milestones",
+          content: "- Started\n- Finished",
+          metadata: {
+            type: "run-milestones",
+            runId: "run-1",
+            windowId: "window-1",
+            status: "closed",
+            startedAt: createdAt,
+            updatedAt: createdAt,
+            lineCount: 2
+          },
+          createdAt
+        },
+        state: {
+          ...createEmptySession(threadId),
+          messages: [
+            {
+              id: "milestone-1",
+              role: "assistant",
+              kind: "run-milestones",
+              content: "- Started\n- Finished",
+              metadata: {
+                type: "run-milestones",
+                runId: "run-1",
+                windowId: "window-1",
+                status: "closed",
+                startedAt: createdAt,
+                updatedAt: createdAt,
+                lineCount: 2
+              },
+              createdAt
+            }
+          ]
+        }
+      }
+    });
+
+    const project = updatedState.workspace.projects.find((entry) => entry.id === projectId);
+    expect(project?.session.messages).toHaveLength(1);
+    expect(project?.session.messages[0]?.content).toContain("Finished");
+    expect(project?.threads[0]?.messageCount).toBe((initialProject.threads[0]?.messageCount ?? 0) + 1);
+    expect(project?.threads[0]?.lastMessagePreview).toBe(initialProject.threads[0]?.lastMessagePreview);
   });
 
   test("hydrates active run and clears it", () => {
@@ -1198,6 +1965,142 @@ describe("harness store reducer", () => {
     });
 
     expect(nextState.projectPreflights[projectId]?.preflight.changedFileCount).toBe(5);
+  });
+
+  test("stores blocking non-git preflight with original command", () => {
+    const initialProject = createProject();
+    const projectId = initialProject.id;
+    const command = {
+      type: "chat.send" as const,
+      requestId: "req-non-git",
+      payload: {
+        projectId,
+        threadId: initialProject.activeThreadId,
+        agentId: "pi" as const,
+        content: "simple task"
+      }
+    };
+    const initialState = {
+      ...createConnectedState(initialProject),
+      pendingPreflightCommands: {
+        [command.requestId]: command
+      }
+    };
+    const nextState = reduceServerEvent(initialState, {
+      type: "run.preflight",
+      requestId: "req-non-git",
+      payload: {
+        projectId,
+        threadId: initialProject.activeThreadId,
+        preflight: {
+          severity: "blocking",
+          kind: "git-not-repo",
+          message: "Not a git repo.",
+          changedFileCount: 0,
+          repairSummary: "Init git or disable check."
+        }
+      }
+    });
+
+    expect(nextState.blockingNonGitPreflight?.command).toEqual(command);
+    expect(nextState.blockingNonGitPreflight?.preflight.kind).toBe("git-not-repo");
+  });
+
+  test("retries blocked command after git initialization", () => {
+    const store = createHarnessStore();
+    const initialProject = createProject();
+    const command = {
+      type: "chat.send" as const,
+      requestId: "req-old",
+      payload: {
+        projectId: initialProject.id,
+        threadId: initialProject.activeThreadId,
+        agentId: "pi" as const,
+        content: "simple task"
+      }
+    };
+    const commands: unknown[] = [];
+    store.replaceStateForTests({
+      ...createConnectedState(initialProject),
+      blockingNonGitPreflight: {
+        requestId: command.requestId,
+        projectId: initialProject.id,
+        threadId: initialProject.activeThreadId,
+        preflight: {
+          severity: "blocking",
+          kind: "git-not-repo",
+          message: "Not a git repo.",
+          changedFileCount: 0,
+          repairSummary: "Init git or disable check."
+        },
+        command
+      },
+      pendingPreflightRepairKind: "git-init"
+    });
+    store.actions.setCommandDispatcher((nextCommand) => commands.push(nextCommand));
+
+    store.applyServerEvent({
+      type: "project.git.initialized",
+      requestId: "req-init",
+      payload: {
+        projectId: initialProject.id,
+        rootPath: initialProject.rootPath,
+        initialized: true,
+        baselineCommitCreated: true
+      }
+    });
+
+    expect(commands).toHaveLength(1);
+    expect((commands[0] as { type: string }).type).toBe("chat.send");
+    expect((commands[0] as { requestId: string }).requestId).not.toBe(command.requestId);
+  });
+
+  test("retries blocked command after dirty git check is disabled", () => {
+    const store = createHarnessStore();
+    const initialProject = createProject();
+    const command = {
+      type: "chat.send" as const,
+      requestId: "req-old-disable",
+      payload: {
+        projectId: initialProject.id,
+        threadId: initialProject.activeThreadId,
+        agentId: "pi" as const,
+        content: "simple task"
+      }
+    };
+    const commands: unknown[] = [];
+    store.replaceStateForTests({
+      ...createConnectedState(initialProject),
+      blockingNonGitPreflight: {
+        requestId: command.requestId,
+        projectId: initialProject.id,
+        threadId: initialProject.activeThreadId,
+        preflight: {
+          severity: "blocking",
+          kind: "git-not-repo",
+          message: "Not a git repo.",
+          changedFileCount: 0,
+          repairSummary: "Init git or disable check."
+        },
+        command
+      },
+      pendingPreflightRepairKind: "disable-check"
+    });
+    store.actions.setCommandDispatcher((nextCommand) => commands.push(nextCommand));
+
+    store.applyServerEvent({
+      type: "preferences.saved",
+      requestId: "req-pref-disable",
+      payload: {
+        ...defaultPreferences,
+        blockChatOnDirtyGitDefault: false,
+        setup: defaultSetup
+      }
+    });
+
+    expect(commands).toHaveLength(1);
+    expect((commands[0] as { type: string }).type).toBe("chat.send");
+    expect((commands[0] as { requestId: string }).requestId).not.toBe(command.requestId);
   });
 
   test("stores project context usage snapshots", () => {

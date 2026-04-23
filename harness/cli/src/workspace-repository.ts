@@ -18,6 +18,7 @@ import {
   backgroundJobTemplateSchema,
   backgroundRunStatusNotificationSchema,
   browserSessionSchema,
+  executionToolActivitySchema,
   correctnessReviewSchema,
   chatMessageSchema,
   chatAttachmentSchema,
@@ -54,6 +55,7 @@ import {
   type AgentId,
   type AgentRunState,
   type AgentRunStatus,
+  type AgentRunSummary,
   type BackgroundJob,
   type BackgroundJobApprovalPolicy,
   type BackgroundJobRun,
@@ -71,6 +73,7 @@ import {
   type CorrectnessIterationMode,
   type CorrectnessReview,
   type ExecutionControlState,
+  type ExecutionToolActivity,
   type ExecutionPlan,
   type ExperimentRun,
   type NotificationInboxItem,
@@ -199,6 +202,7 @@ type AgentRunRow = {
   plan_json: string | null;
   correctness_review_json: string | null;
   browser_sessions_json: string | null;
+  tool_activities_json: string | null;
   created_at: string;
   updated_at: string;
   completed_at: string | null;
@@ -463,19 +467,31 @@ type OpenProjectResult = {
   resolution: "created-project" | "existing-project-new-thread";
 };
 
+type WorkspaceRepositoryOptions = {
+  durability?: "production" | "test-fast";
+};
+
 export class WorkspaceRepository {
   private readonly db: Database;
   private readonly dbPath: string;
   private readonly allowDevThreadRecovery: boolean;
 
-  constructor(dbPath?: string, _defaultRootPath: string = process.cwd()) {
+  constructor(dbPath?: string, _defaultRootPath: string = process.cwd(), options: WorkspaceRepositoryOptions = {}) {
     this.dbPath = dbPath ?? path.join(process.cwd(), ".local", "harness.db");
     this.allowDevThreadRecovery = Bun.env.NODE_ENV !== "production";
-    mkdirSync(path.dirname(this.dbPath), { recursive: true });
+    if (this.dbPath !== ":memory:") {
+      mkdirSync(path.dirname(this.dbPath), { recursive: true });
+    }
     this.db = new Database(this.dbPath, { create: true, strict: true });
     try {
       this.db.exec("PRAGMA foreign_keys = ON;");
-      this.db.exec("PRAGMA journal_mode = WAL;");
+      if (options.durability === "test-fast") {
+        this.db.exec("PRAGMA journal_mode = MEMORY;");
+        this.db.exec("PRAGMA synchronous = OFF;");
+        this.db.exec("PRAGMA temp_store = MEMORY;");
+      } else {
+        this.db.exec("PRAGMA journal_mode = WAL;");
+      }
       this.db.exec("PRAGMA busy_timeout = 5000;");
       this.migrate();
     } catch (error) {
@@ -750,6 +766,33 @@ export class WorkspaceRepository {
     return this.readProjectSnapshot(projectId);
   }
 
+  updateThreadMessage(
+    projectId: ProjectId,
+    threadId: ThreadId,
+    messageId: string,
+    patch: { content: string; metadata?: ChatMessageMetadata; createdAt?: string }
+  ) {
+    this.readThreadRow(projectId, threadId);
+    const now = new Date().toISOString();
+    const updated = this.db
+      .query(
+        `UPDATE thread_messages
+         SET content = ?4, metadata_json = ?5, created_at = COALESCE(?6, created_at)
+         WHERE id = ?3
+           AND thread_id = ?2
+           AND EXISTS (SELECT 1 FROM project_threads WHERE id = ?2 AND project_id = ?1)`
+      )
+      .run(projectId, threadId, messageId, patch.content, patch.metadata ? JSON.stringify(patch.metadata) : null, patch.createdAt ?? null);
+
+    if (updated.changes === 0) {
+      throw new Error(`Unknown thread message: ${messageId}`);
+    }
+
+    this.db.query(`UPDATE project_threads SET updated_at = ?3 WHERE id = ?1 AND project_id = ?2`).run(threadId, projectId, now);
+    this.touchProject(projectId, now);
+    return this.readProjectSnapshot(projectId);
+  }
+
   createAgentRun(projectId: ProjectId, latestUserPrompt: string, planningModelId?: string, threadId?: ThreadId) {
     const resolvedThreadId = this.resolveThreadId(projectId, threadId);
     this.readThreadRow(projectId, resolvedThreadId);
@@ -774,10 +817,11 @@ export class WorkspaceRepository {
           plan_json,
           correctness_review_json,
           browser_sessions_json,
+          tool_activities_json,
           created_at,
           updated_at,
           completed_at
-        ) VALUES (?1, ?2, ?3, ?4, 'current-project', ?5, ?6, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?7, ?7, NULL)`
+        ) VALUES (?1, ?2, ?3, ?4, 'current-project', ?5, ?6, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?7, ?7, NULL)`
       )
       .run(runId, projectId, resolvedThreadId, "planning", latestUserPrompt, planningModelId ?? null, now);
 
@@ -1124,6 +1168,25 @@ export class WorkspaceRepository {
     return this.readProjectSnapshot(projectId);
   }
 
+  setAgentRunToolActivities(projectId: ProjectId, runId: string, toolActivities: ExecutionToolActivity[]) {
+    const now = new Date().toISOString();
+    const boundedActivities = toolActivities.slice(-512);
+    const updated = this.db
+      .query(
+        `UPDATE agent_runs
+         SET tool_activities_json = ?3,
+             updated_at = ?4
+         WHERE id = ?1 AND project_id = ?2`
+      )
+      .run(runId, projectId, JSON.stringify(boundedActivities), now);
+
+    if (updated.changes === 0) {
+      throw new Error(`Unknown agent run: ${runId}`);
+    }
+
+    return this.readProjectSnapshot(projectId);
+  }
+
   markSubtaskStarted(projectId: ProjectId, runId: string, taskId: string, attemptCount: number) {
     return this.updateSubtask(projectId, runId, taskId, {
       status: "running",
@@ -1194,6 +1257,12 @@ export class WorkspaceRepository {
 
   getProject(projectId: ProjectId): WorkspaceProjectState {
     return this.readProjectSnapshot(projectId);
+  }
+
+  getAgentRun(projectId: ProjectId, threadId: ThreadId, runId: string): AgentRunState | undefined {
+    this.readThreadRow(projectId, threadId);
+    const run = this.readRunRow(projectId, threadId, runId);
+    return run ? this.hydrateRunState(run) : undefined;
   }
 
   getThreadMessages(projectId: ProjectId, threadId: ThreadId) {
@@ -1428,7 +1497,7 @@ export class WorkspaceRepository {
         `SELECT
           id, project_id, thread_id, status, execution_target, latest_user_prompt, planning_model_id, execution_model_id,
           difficulty_score, summary, final_execution_brief, failure_message, plan_json, correctness_review_json,
-          browser_sessions_json,
+          browser_sessions_json, tool_activities_json,
           created_at, updated_at, completed_at
          FROM agent_runs
          WHERE id = ?1 AND project_id = ?2`
@@ -2691,7 +2760,7 @@ export class WorkspaceRepository {
         id TEXT PRIMARY KEY,
         thread_id TEXT NOT NULL,
         role TEXT NOT NULL CHECK(role IN ('system', 'user', 'assistant')),
-        kind TEXT NOT NULL DEFAULT 'plain' CHECK(kind IN ('plain', 'plan-summary')),
+        kind TEXT NOT NULL DEFAULT 'plain' CHECK(kind IN ('plain', 'plan-summary', 'run-milestones')),
         content TEXT NOT NULL,
         attachments_json TEXT NULL,
         metadata_json TEXT NULL,
@@ -2729,6 +2798,7 @@ export class WorkspaceRepository {
         plan_json TEXT NULL,
         correctness_review_json TEXT NULL,
         browser_sessions_json TEXT NULL,
+        tool_activities_json TEXT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         completed_at TEXT NULL,
@@ -3018,7 +3088,7 @@ export class WorkspaceRepository {
         id TEXT PRIMARY KEY,
         assistant_thread_id TEXT NOT NULL,
         role TEXT NOT NULL CHECK(role IN ('system', 'user', 'assistant')),
-        kind TEXT NOT NULL DEFAULT 'plain' CHECK(kind IN ('plain', 'plan-summary')),
+        kind TEXT NOT NULL DEFAULT 'plain' CHECK(kind IN ('plain', 'plan-summary', 'run-milestones')),
         content TEXT NOT NULL,
         metadata_json TEXT NULL,
         created_at TEXT NOT NULL,
@@ -3132,6 +3202,7 @@ export class WorkspaceRepository {
     this.addColumnIfMissing("agent_runs", "plan_json", "TEXT NULL");
     this.addColumnIfMissing("agent_runs", "correctness_review_json", "TEXT NULL");
     this.addColumnIfMissing("agent_runs", "browser_sessions_json", "TEXT NULL");
+    this.addColumnIfMissing("agent_runs", "tool_activities_json", "TEXT NULL");
     this.addColumnIfMissing("background_jobs", "assistant_id", "TEXT NULL");
     this.addColumnIfMissing("background_job_runs", "assistant_id", "TEXT NULL");
     this.addColumnIfMissing("assistants", "pending_reprioritize_reason", "TEXT NULL");
@@ -3141,6 +3212,7 @@ export class WorkspaceRepository {
     this.db.exec(`UPDATE project_threads SET status = 'active' WHERE status = 'archived';`);
 
     this.rebuildAgentRunQuestionsTableIfNeeded();
+    this.rebuildThreadMessagesTableIfNeeded();
     this.rebuildAssistantQuestionsTableIfNeeded();
     this.rebuildBackgroundJobRunsTableIfNeeded();
     this.repairBackgroundJobRunForeignKeysIfNeeded();
@@ -3198,7 +3270,8 @@ export class WorkspaceRepository {
           messages: this.readMessages(activeThread.id as ThreadId)
         },
         activeRun: this.readActiveRun(projectId, activeThread.id as ThreadId),
-        lastRun: this.readLatestRun(projectId, activeThread.id as ThreadId)
+        lastRun: this.readLatestRun(projectId, activeThread.id as ThreadId),
+        runSummaries: this.readThreadRunSummaries(projectId, activeThread.id as ThreadId)
       };
     } catch (error) {
       throw new ThreadLoadError(projectId, activeThread.id as ThreadId, error);
@@ -3277,13 +3350,19 @@ export class WorkspaceRepository {
                FROM thread_messages
                WHERE thread_id = ?1
                  AND role != 'system'
+                 AND kind != 'run-milestones'
                ORDER BY created_at DESC
                LIMIT 1`
             )
             .get(thread.id)?.content ??
           this.db
             .query<{ content: string }, [string]>(
-              `SELECT content FROM thread_messages WHERE thread_id = ?1 ORDER BY created_at DESC LIMIT 1`
+              `SELECT content
+               FROM thread_messages
+               WHERE thread_id = ?1
+                 AND kind != 'run-milestones'
+               ORDER BY created_at DESC
+               LIMIT 1`
             )
             .get(thread.id)?.content ??
           undefined;
@@ -3745,7 +3824,7 @@ export class WorkspaceRepository {
         `SELECT
           id, project_id, thread_id, status, execution_target, latest_user_prompt, planning_model_id, execution_model_id,
           difficulty_score, summary, final_execution_brief, failure_message, plan_json, correctness_review_json,
-          browser_sessions_json,
+          browser_sessions_json, tool_activities_json,
           created_at, updated_at, completed_at
          FROM agent_runs
          WHERE project_id = ?1 AND thread_id = ?2 AND status != 'completed'
@@ -3757,13 +3836,43 @@ export class WorkspaceRepository {
     return run ? this.hydrateRunState(run) : undefined;
   }
 
+  private readRunRow(projectId: ProjectId, threadId: ThreadId, runId: string) {
+    return this.db
+      .query<AgentRunRow, [string, string, string]>(
+        `SELECT
+          id, project_id, thread_id, status, execution_target, latest_user_prompt, planning_model_id, execution_model_id,
+          difficulty_score, summary, final_execution_brief, failure_message, plan_json, correctness_review_json,
+          browser_sessions_json, tool_activities_json,
+          created_at, updated_at, completed_at
+         FROM agent_runs
+         WHERE project_id = ?1 AND thread_id = ?2 AND id = ?3`
+      )
+      .get(projectId, threadId, runId);
+  }
+
+  private readThreadRunSummaries(projectId: ProjectId, threadId: ThreadId): AgentRunSummary[] {
+    return this.db
+      .query<AgentRunRow, [string, string]>(
+        `SELECT
+          id, project_id, thread_id, status, execution_target, latest_user_prompt, planning_model_id, execution_model_id,
+          difficulty_score, summary, final_execution_brief, failure_message, plan_json, correctness_review_json,
+          browser_sessions_json, tool_activities_json,
+          created_at, updated_at, completed_at
+         FROM agent_runs
+         WHERE project_id = ?1 AND thread_id = ?2
+         ORDER BY updated_at DESC`
+      )
+      .all(projectId, threadId)
+      .map((run) => toAgentRunSummary(this.hydrateRunState(run)));
+  }
+
   private readLatestRun(projectId: ProjectId, threadId: ThreadId): AgentRunState | undefined {
     const run = this.db
       .query<AgentRunRow, [string, string]>(
         `SELECT
           id, project_id, thread_id, status, execution_target, latest_user_prompt, planning_model_id, execution_model_id,
           difficulty_score, summary, final_execution_brief, failure_message, plan_json, correctness_review_json,
-          browser_sessions_json,
+          browser_sessions_json, tool_activities_json,
           created_at, updated_at, completed_at
          FROM agent_runs
          WHERE project_id = ?1 AND thread_id = ?2
@@ -3876,6 +3985,7 @@ export class WorkspaceRepository {
       experiment: experiment ? this.hydrateExperimentRun(experiment) : undefined,
       memoryRetrievals: memoryRetrievals.length > 0 ? memoryRetrievals : undefined,
       browserSessions: parseBrowserSessions(run.browser_sessions_json),
+      toolActivities: parseToolActivities(run.tool_activities_json),
       resumable: isRunResumable(run.status, hasExecutionState),
       retryable: isRunRetryable(run.status, hasExecutionState),
       createdAt: run.created_at,
@@ -4150,6 +4260,37 @@ export class WorkspaceRepository {
       DROP TABLE agent_run_questions_legacy;
       CREATE INDEX IF NOT EXISTS agent_run_questions_run_ordinal_idx
       ON agent_run_questions(run_id, ordinal ASC);
+    `);
+  }
+
+  private rebuildThreadMessagesTableIfNeeded() {
+    const createSql = this.readTableCreateSql("thread_messages");
+    if (createSql.includes("'run-milestones'")) {
+      return;
+    }
+
+    this.db.exec(`
+      ALTER TABLE thread_messages RENAME TO thread_messages_legacy;
+      CREATE TABLE thread_messages (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL,
+        role TEXT NOT NULL CHECK(role IN ('system', 'user', 'assistant')),
+        kind TEXT NOT NULL DEFAULT 'plain' CHECK(kind IN ('plain', 'plan-summary', 'run-milestones')),
+        content TEXT NOT NULL,
+        attachments_json TEXT NULL,
+        metadata_json TEXT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(thread_id) REFERENCES project_threads(id) ON DELETE CASCADE
+      );
+      INSERT INTO thread_messages (
+        id, thread_id, role, kind, content, attachments_json, metadata_json, created_at
+      )
+      SELECT
+        id, thread_id, role, COALESCE(kind, 'plain'), content, attachments_json, metadata_json, created_at
+      FROM thread_messages_legacy;
+      DROP TABLE thread_messages_legacy;
+      CREATE INDEX IF NOT EXISTS thread_messages_thread_created_idx
+      ON thread_messages(thread_id, created_at);
     `);
   }
 
@@ -4761,6 +4902,19 @@ function parseBrowserSessions(input: string | null): BrowserSession[] | undefine
   }
 }
 
+function parseToolActivities(input: string | null): ExecutionToolActivity[] | undefined {
+  if (!input) {
+    return undefined;
+  }
+
+  try {
+    const activities = executionToolActivitySchema.array().parse(JSON.parse(input));
+    return activities.length > 0 ? activities.slice(-512) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function parseStringArray(input: string | null) {
   if (!input) {
     return [];
@@ -4861,6 +5015,19 @@ function isRunRetryable(status: AgentRunStatus, hasExecutionState: boolean) {
   }
 
   return status === "failed" ? hasExecutionState : false;
+}
+
+function toAgentRunSummary(run: AgentRunState): AgentRunSummary {
+  return {
+    id: run.id,
+    threadId: run.threadId,
+    status: run.status,
+    failureMessage: run.failureMessage,
+    resumable: run.resumable,
+    retryable: run.retryable,
+    updatedAt: run.updatedAt,
+    completedAt: run.completedAt
+  };
 }
 
 export function normalizeProjectRootPath(rootPath: string) {

@@ -111,7 +111,7 @@ export function ProjectSwitcherDialog() {
       name: trimmedQuery().split(/[\\/]/).filter(Boolean).at(-1) || trimmedQuery(),
       rootPath: trimmedQuery(),
       repoKind: "folder",
-      actionLabel: "Open path"
+      actionLabel: "Create/open folder"
     };
   });
 
@@ -230,7 +230,7 @@ export function ProjectSwitcherDialog() {
     }
 
     sendCommand({
-      type: "project.add",
+      type: result.source === "exact-path" ? "project.create" : "project.add",
       requestId: createRequestId(),
       payload: {
         rootPath: result.rootPath
@@ -492,4 +492,3 @@ export function shouldSearchProjects(query: string) {
   const trimmedQuery = query.trim();
   return Boolean(trimmedQuery) && (isAbsolutePath(trimmedQuery) || trimmedQuery.length >= 2);
 }
-

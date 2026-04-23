@@ -38,7 +38,9 @@ export const setupActionKindSchema = z.enum([
   "refresh-runtime-health",
   "copy-command",
   "open-url",
-  "start-tutorial"
+  "start-tutorial",
+  "init-git-baseline",
+  "disable-dirty-git-check"
 ]);
 export const subagentWorktreeStrategySchema = z.enum(["same-worktree", "separate-worktrees"]);
 export const runExecutionTargetSchema = z.enum(["current-project", "ephemeral-experiment"]);
@@ -46,8 +48,8 @@ export const planExecutionModeSchema = z.enum(["countdown", "approve", "immediat
 export const correctnessIterationModeSchema = z.enum(["ask-before-iterate", "auto-once", "auto-until-clean"]);
 export const dirtyGitChangeLimitSchema = z.number().int().min(0).max(10000);
 export const autoCompactContextThresholdPercentSchema = z.number().int().min(10).max(95);
-export const preflightSeveritySchema = z.enum(["warning"]);
-export const preflightKindSchema = z.enum(["git-dirty"]);
+export const preflightSeveritySchema = z.enum(["warning", "blocking"]);
+export const preflightKindSchema = z.enum(["git-dirty", "git-not-repo"]);
 export const threadTitleSourceSchema = z.enum(["generated", "custom"]);
 export const threadBadgeStateSchema = z.enum(["idle", "needs-input", "planning", "executing", "error", "done"]);
 export const backgroundJobKindSchema = z.enum(["ai-routine", "shell"]);
@@ -92,7 +94,7 @@ export const executionModelIdSchema = z
   .regex(/^(?:[a-zA-Z0-9._:-]+\/)?[a-zA-Z0-9._:-]+$/, "Execution model ids must be provider-qualified or bare CLI ids");
 
 export const chatRoleSchema = z.enum(["system", "user", "assistant"]);
-export const chatMessageKindSchema = z.enum(["plain", "plan-summary"]);
+export const chatMessageKindSchema = z.enum(["plain", "plan-summary", "run-milestones"]);
 export const connectionStateSchema = z.enum(["disconnected", "connecting", "connected", "error"]);
 export const agentTraceStageSchema = z.enum([
   "planning",
@@ -232,7 +234,7 @@ export const subagentContractSchema = z.object({
   taskId: z.string().min(1).max(128),
   title: z.string().min(1),
   instruction: z.string().min(1),
-  effortPoints: z.number().int().min(1).max(5),
+  effortPoints: z.number().finite().int().min(1),
   ownedPaths: z.array(z.string().min(1)).max(32),
   dependsOnPrerequisiteIds: z.array(z.string().min(1).max(128)).max(16),
   deliverables: z.array(z.string().min(1)).max(16),
@@ -295,7 +297,26 @@ export const planSummaryMessageMetadataSchema = z.object({
   plan: executionPlanSchema
 });
 
-export const chatMessageMetadataSchema = z.discriminatedUnion("type", [planSummaryMessageMetadataSchema]);
+export const runMilestonesMessageMetadataSchema = z.object({
+  type: z.literal("run-milestones"),
+  runId: runIdSchema,
+  windowId: z.string().min(1).max(128),
+  status: z.enum(["open", "closed"]),
+  phase: z.enum(["planning", "subagents", "aggregation", "correctness"]).optional(),
+  phaseTitle: z.string().min(1).max(128).optional(),
+  startedAt: z.string().datetime().or(z.string().min(1)),
+  updatedAt: z.string().datetime().or(z.string().min(1)),
+  lineCount: z.number().int().min(0).optional(),
+  overflowCount: z.number().int().min(0).optional(),
+  hiddenLineCount: z.number().int().min(0).optional(),
+  truncatedLineCount: z.number().int().min(0).optional(),
+  lines: z.array(z.string().min(1).max(1200)).max(64).optional()
+});
+
+export const chatMessageMetadataSchema = z.discriminatedUnion("type", [
+  planSummaryMessageMetadataSchema,
+  runMilestonesMessageMetadataSchema
+]);
 
 export const chatAttachmentSchema = z.object({
   id: z.string().min(1).max(128),
@@ -317,6 +338,16 @@ export const chatMessageSchema = z.object({
   attachments: z.array(chatAttachmentSchema).max(8).optional(),
   metadata: chatMessageMetadataSchema.optional(),
   createdAt: z.string().datetime().or(z.string().min(1))
+});
+
+export const streamingTailPhaseSchema = z.enum(["planning", "subagents", "aggregation", "correctness"]);
+
+export const streamingTailSegmentSchema = z.object({
+  id: z.string().min(1).max(128),
+  kind: z.enum(["status", "assistant"]),
+  phase: streamingTailPhaseSchema.optional(),
+  content: z.string().min(1),
+  updatedAt: z.string().datetime().or(z.string().min(1))
 });
 
 export const agentOptionSchema = z.object({
@@ -772,6 +803,8 @@ export const browserApprovalStatusSchema = z.enum(["pending", "deferred", "appro
 export const browserSessionStatusSchema = z.enum(["idle", "awaiting-approval", "running", "blocked", "completed", "failed"]);
 export const browserActivityKindSchema = z.enum(["navigate", "click", "input", "capture", "extract", "verify", "tool", "unknown"]);
 export const browserActivityStatusSchema = z.enum(["pending-approval", "running", "completed", "blocked", "failed"]);
+export const executionToolActivityCategorySchema = z.enum(["shell", "browser", "web", "mcp", "other"]);
+export const executionToolActivityStatusSchema = z.enum(["running", "completed", "failed", "timed-out"]);
 
 export const browserApprovalSchema = z.object({
   toolCallId: z.string().min(1).max(256),
@@ -833,6 +866,26 @@ export const browserSessionSchema = z.object({
   activities: z.array(browserActivitySchema).max(256)
 });
 
+export const executionToolActivitySchema = z.object({
+  id: z.string().min(1).max(128),
+  runId: runIdSchema,
+  owner: z.enum(["main", "subagent", "aggregator"]),
+  subagentId: z.string().min(1).max(128).optional(),
+  toolCallId: z.string().min(1).max(256),
+  toolName: z.string().min(1).max(128),
+  category: executionToolActivityCategorySchema,
+  command: z.string().min(1).max(4000).optional(),
+  argsSummary: z.string().min(1).max(4000).optional(),
+  outputPreview: z.string().min(1).max(4000).optional(),
+  stdoutPreview: z.string().min(1).max(4000).optional(),
+  stderrPreview: z.string().min(1).max(4000).optional(),
+  exitCode: z.number().int().optional(),
+  status: executionToolActivityStatusSchema,
+  startedAt: z.string().datetime().or(z.string().min(1)),
+  updatedAt: z.string().datetime().or(z.string().min(1)),
+  completedAt: z.string().datetime().or(z.string().min(1)).optional()
+});
+
 export const projectContextUsageSchema = z.object({
   sourceKind: projectContextSourceKindSchema,
   sourceLabel: z.string().min(1).max(128),
@@ -844,12 +897,22 @@ export const projectContextUsageSchema = z.object({
   updatedAt: z.string().datetime().or(z.string().min(1))
 });
 
-export const runPreflightSchema = z.object({
-  severity: preflightSeveritySchema,
-  kind: preflightKindSchema,
-  message: z.string().min(1),
-  changedFileCount: z.number().int().min(1)
-});
+export const runPreflightSchema = z.discriminatedUnion("kind", [
+  z.object({
+    severity: z.literal("warning"),
+    kind: z.literal("git-dirty"),
+    message: z.string().min(1),
+    changedFileCount: z.number().int().min(1)
+  }),
+  z.object({
+    severity: z.literal("blocking"),
+    kind: z.literal("git-not-repo"),
+    message: z.string().min(1),
+    changedFileCount: z.literal(0),
+    repairSummary: z.string().min(1).max(512),
+    repairDetail: z.string().min(1).max(2048).optional()
+  })
+]);
 
 export const plannerSubtaskSchema = z.object({
   id: z.string().min(1).max(128),
@@ -932,11 +995,23 @@ export const agentRunStateSchema = z.object({
   questions: z.array(planningQuestionSchema),
   subtasks: z.array(subagentTaskStateSchema),
   browserSessions: z.array(browserSessionSchema).max(32).optional(),
+  toolActivities: z.array(executionToolActivitySchema).max(512).optional(),
   experiment: experimentRunSchema.optional(),
   memoryRetrievals: z.array(memoryRetrievalSchema).max(128).optional(),
   resumable: z.boolean(),
   retryable: z.boolean(),
   createdAt: z.string().datetime().or(z.string().min(1)),
+  updatedAt: z.string().datetime().or(z.string().min(1)),
+  completedAt: z.string().datetime().or(z.string().min(1)).optional()
+});
+
+export const agentRunSummarySchema = z.object({
+  id: runIdSchema,
+  threadId: threadIdSchema,
+  status: agentRunStatusSchema,
+  failureMessage: z.string().min(1).optional(),
+  resumable: z.boolean(),
+  retryable: z.boolean(),
   updatedAt: z.string().datetime().or(z.string().min(1)),
   completedAt: z.string().datetime().or(z.string().min(1)).optional()
 });
@@ -1051,7 +1126,8 @@ export const workspaceProjectStateSchema = z.object({
   session: chatSessionStateSchema,
   activeCliSession: cliSessionSchema.optional(),
   activeRun: agentRunStateSchema.optional(),
-  lastRun: agentRunStateSchema.optional()
+  lastRun: agentRunStateSchema.optional(),
+  runSummaries: z.array(agentRunSummarySchema)
 }).superRefine((project, ctx) => {
   if (!project.threads.some((thread) => thread.id === project.activeThreadId)) {
     ctx.addIssue({
@@ -1117,6 +1193,20 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     requestId: requestIdSchema,
     payload: z.object({
       rootPath: projectRootPathSchema
+    })
+  }),
+  z.object({
+    type: z.literal("project.create"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      rootPath: projectRootPathSchema
+    })
+  }),
+  z.object({
+    type: z.literal("project.git.initBaseline"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema
     })
   }),
   z.object({
@@ -1744,6 +1834,16 @@ export const serverEventSchema = z.discriminatedUnion("type", [
     })
   }),
   z.object({
+    type: z.literal("project.git.initialized"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      rootPath: projectRootPathSchema,
+      initialized: z.literal(true),
+      baselineCommitCreated: z.boolean()
+    })
+  }),
+  z.object({
     type: z.literal("project.removed"),
     requestId: requestIdSchema,
     payload: z.object({
@@ -1845,7 +1945,30 @@ export const serverEventSchema = z.discriminatedUnion("type", [
     })
   }),
   z.object({
+    type: z.literal("chat.streaming-tail-updated"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      threadId: threadIdSchema,
+      sessionId: sessionIdSchema,
+      runId: runIdSchema,
+      segments: z.array(streamingTailSegmentSchema).max(16),
+      state: chatSessionStateSchema
+    })
+  }),
+  z.object({
     type: z.literal("chat.message-appended"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      threadId: threadIdSchema,
+      sessionId: sessionIdSchema,
+      message: chatMessageSchema,
+      state: chatSessionStateSchema
+    })
+  }),
+  z.object({
+    type: z.literal("chat.message-updated"),
     requestId: requestIdSchema,
     payload: z.object({
       projectId: projectIdSchema,
@@ -2175,9 +2298,12 @@ export type CorrectnessGap = z.infer<typeof correctnessGapSchema>;
 export type ExecutionPlan = z.infer<typeof executionPlanSchema>;
 export type CorrectnessReview = z.infer<typeof correctnessReviewSchema>;
 export type PlanSummaryMessageMetadata = z.infer<typeof planSummaryMessageMetadataSchema>;
+export type RunMilestonesMessageMetadata = z.infer<typeof runMilestonesMessageMetadataSchema>;
 export type ChatMessageMetadata = z.infer<typeof chatMessageMetadataSchema>;
 export type ChatAttachment = z.infer<typeof chatAttachmentSchema>;
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
+export type StreamingTailPhase = z.infer<typeof streamingTailPhaseSchema>;
+export type StreamingTailSegment = z.infer<typeof streamingTailSegmentSchema>;
 export type AgentOption = z.infer<typeof agentOptionSchema>;
 export type AgentRuntimeCapability = z.infer<typeof agentRuntimeCapabilitySchema>;
 export type ModelCapability = z.infer<typeof modelCapabilitySchema>;
@@ -2245,6 +2371,9 @@ export type BrowserReplayEntry = z.infer<typeof browserReplayEntrySchema>;
 export type BrowserVerification = z.infer<typeof browserVerificationSchema>;
 export type BrowserActivity = z.infer<typeof browserActivitySchema>;
 export type BrowserSession = z.infer<typeof browserSessionSchema>;
+export type ExecutionToolActivityCategory = z.infer<typeof executionToolActivityCategorySchema>;
+export type ExecutionToolActivityStatus = z.infer<typeof executionToolActivityStatusSchema>;
+export type ExecutionToolActivity = z.infer<typeof executionToolActivitySchema>;
 export type ProjectContextUsage = z.infer<typeof projectContextUsageSchema>;
 export type RunPreflight = z.infer<typeof runPreflightSchema>;
 export type PlannerSubtask = z.infer<typeof plannerSubtaskSchema>;
@@ -2256,6 +2385,7 @@ export type PlanningQuestion = z.infer<typeof planningQuestionSchema>;
 export type SubagentTaskStatus = z.infer<typeof subagentTaskStatusSchema>;
 export type SubagentTaskState = z.infer<typeof subagentTaskStateSchema>;
 export type AgentRunState = z.infer<typeof agentRunStateSchema>;
+export type AgentRunSummary = z.infer<typeof agentRunSummarySchema>;
 export type PlannerQuestionTurn = z.infer<typeof plannerQuestionTurnSchema>;
 export type PlannerReadyTurn = z.infer<typeof plannerReadyTurnSchema>;
 export type PlannerTurnResult = z.infer<typeof plannerTurnResultSchema>;
@@ -2432,7 +2562,8 @@ export function createWorkspaceProjectState(
       ],
     session: input.session ?? createEmptySession(),
     activeRun: undefined,
-    lastRun: undefined
+    lastRun: undefined,
+    runSummaries: []
   };
 }
 

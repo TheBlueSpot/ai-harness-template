@@ -39,17 +39,33 @@ import {
   planTask
 } from "./pi-planner";
 import { buildWorkspacePathGuidance, normalizeWorkspaceRelativePaths } from "./workspace-path-intent";
-import { executeSubagents, type SubagentResult } from "./pi-subagents";
+import {
+  executeSubagents,
+  MAX_SUBAGENT_CONCURRENCY,
+  scheduleSubagentTasks,
+  type SubagentResult
+} from "./pi-subagents";
 import { buildPromptAttachmentContext } from "./chat-attachment-prompt";
 import { resolveSubagentModelId, resolveSubagentReasoningStrength } from "./subagent-defaults";
+import { createMilestoneDeltaParser, extractMilestoneLines, stripMilestoneLines } from "./run-milestone-windows";
+import {
+  buildSubagentEnvironmentBrief,
+  discoverRepoSkillPaths,
+  resolveRepoRoot,
+  SUBAGENT_MILESTONE_INSTRUCTION
+} from "./subagent-environment";
 
 export type PiOrchestratorCallbacks = {
   onPlan?: (plan: AgentPlan) => void;
   onTrace?: (trace: AgentTrace) => void;
   onDelta?: (delta: string) => void;
   onContextUsage?: (contextUsage: ProjectContextUsage) => void;
-  onSubagentStart?: (task: PlannerSubtask) => void;
+  onSubagentStart?: (task: PlannerSubtask, attempt: number) => void;
+  onSubagentRetry?: (task: PlannerSubtask, attempt: number, error: Error) => void;
   onSubagentResult?: (result: SubagentResult) => void;
+  onRunMilestone?: (line: string) => void;
+  closeRunMilestones?: () => void;
+  onAggregationStart?: () => void;
   setExecutionState?: (state: ManagedExecutionState) => void;
   getExecutionState?: (input: Pick<ManagedExecutionState, "runId" | "kind" | "subagentId">) => ManagedExecutionState | undefined;
   clearExecutionState?: (input: Pick<ManagedExecutionState, "runId" | "kind" | "subagentId">) => void;
@@ -269,10 +285,6 @@ export async function executeReadyRun(
 
   if (options.executionPlan?.subagentWorktreeStrategy === "same-worktree") {
     const freshResults = await executeSameWorktreeSubagents(adapter, options);
-    for (const result of freshResults) {
-      options.callbacks?.onSubagentResult?.(result);
-    }
-
     const mergedResults = mergeSubagentResults(
       options.readyPlan.subtasks,
       options.existingSubagentResults ?? [],
@@ -310,6 +322,7 @@ export async function executeReadyRun(
     providerBrand: options.providerBrand,
     executionModelId: options.readyPlan.executionModelId
   });
+  const contracts = options.executionPlan?.contracts ?? options.readyPlan.contracts ?? [];
   const { results: freshResults, retainedSnapshots } = await executeSubagents(adapter, {
     cwd: options.cwd,
     runId: options.runId,
@@ -322,6 +335,12 @@ export async function executeReadyRun(
     reasoningStrength: resolveSubagentReasoningStrength(options.reasoningStrength),
     fastMode: options.fastMode,
     abortSignal: options.abortSignal,
+    verifyResult(input) {
+      return verifySubagentResultAgainstContracts(input.task.id, contracts, input.mountPath, input.abortSignal);
+    },
+    recoveryPrompt({ task, result }) {
+      return buildSubagentRecoveryPrompt(task, result, resolveTaskContractSettings(task.id, contracts), "separate-worktrees");
+    },
     callbacks: {
       onTrace(trace) {
         emitTrace(options.callbacks, {
@@ -330,8 +349,8 @@ export async function executeReadyRun(
           modelId: options.readyPlan.executionModelId
         });
       },
-      onStart(task) {
-        options.callbacks?.onSubagentStart?.(task);
+      onStart(task, attempt) {
+        options.callbacks?.onSubagentStart?.(task, attempt);
         emitTrace(options.callbacks, {
           sessionId: options.sessionId,
           stage: "subagent-start",
@@ -341,11 +360,12 @@ export async function executeReadyRun(
         });
       },
       onRetry(task, attempt, error) {
+        options.callbacks?.onSubagentRetry?.(task, attempt, error);
         emitTrace(options.callbacks, {
           sessionId: options.sessionId,
           stage: "subagent-retry",
           message: `Retrying ${task.title}`,
-          detail: `Attempt ${attempt + 1}: ${error.message}`,
+          detail: `Attempt ${attempt}: ${error.message}`,
           subagentId: task.id,
           modelId: subagentModelId
         });
@@ -364,6 +384,9 @@ export async function executeReadyRun(
           durationMs
         });
       },
+      onMilestone(task, line) {
+        options.callbacks?.onRunMilestone?.(`Subagent ${task.title}: ${line}`);
+      },
       onError(task, error) {
         emitTrace(options.callbacks, {
           sessionId: options.sessionId,
@@ -373,13 +396,12 @@ export async function executeReadyRun(
           subagentId: task.id,
           modelId: subagentModelId
         });
+      },
+      onSettled(result) {
+        options.callbacks?.onSubagentResult?.(result);
       }
     }
   });
-
-  for (const result of freshResults) {
-    options.callbacks?.onSubagentResult?.(result);
-  }
 
   const mergedResults = mergeSubagentResults(
     options.readyPlan.subtasks,
@@ -434,6 +456,8 @@ export async function executeReadyRun(
       sessionId: options.sessionId,
       messages: options.messages,
       executionPlan: options.executionPlan,
+      reasoningStrength: options.reasoningStrength,
+      fastMode: options.fastMode,
       abortSignal: options.abortSignal,
       callbacks: options.callbacks
     },
@@ -471,6 +495,7 @@ async function executeSameWorktreeSubagents(
     resumeNote?: string;
     executionPlan?: ExecutionPlan;
     reasoningStrength?: ComposerReasoningStrength;
+    fastMode?: boolean;
   }
 ) {
   const tasks = options.tasksToRun ?? options.readyPlan.subtasks;
@@ -481,142 +506,232 @@ async function executeSameWorktreeSubagents(
     executionModelId: options.readyPlan.executionModelId
   });
   const subagentReasoningStrength = resolveSubagentReasoningStrength(options.reasoningStrength);
-  const results: SubagentResult[] = [];
+  const repoRoot = resolveRepoRoot(options.cwd);
+  const subagentEnvironmentBrief = buildSubagentEnvironmentBrief({
+    projectRoot: options.cwd,
+    repoRoot,
+    availableSkillPaths: discoverRepoSkillPaths(repoRoot)
+  });
+  return (
+    await scheduleSubagentTasks<
+      {
+        task: PlannerSubtask;
+        startingAttempt: number;
+        recoveryAttempt: number;
+        recoveryPrompt?: string;
+        contractSettings: TaskContractSettings;
+      },
+      SubagentResult,
+      never
+    >({
+      tasks: orderSameWorktreeTasks(tasks, contracts).map((task) => ({
+        task,
+        startingAttempt: 1,
+        recoveryAttempt: 0,
+        recoveryPrompt: undefined as string | undefined,
+        contractSettings: resolveTaskContractSettings(task.id, contracts)
+      })),
+      maxConcurrency: MAX_SUBAGENT_CONCURRENCY,
+      getTaskId(entry) {
+        return entry.task.id;
+      },
+      canStart(entry, activeEntries) {
+        return canRunSameWorktreeTask(entry, activeEntries);
+      },
+      async executeTask(entry) {
+        options.callbacks?.onSubagentStart?.(entry.task, entry.startingAttempt);
+        emitTrace(options.callbacks, {
+          sessionId: options.sessionId,
+          stage: "subagent-start",
+          message: `Starting ${entry.task.title}`,
+          subagentId: entry.task.id,
+          modelId: subagentModelId
+        });
 
-  for (const task of tasks) {
-    options.callbacks?.onSubagentStart?.(task);
-    emitTrace(options.callbacks, {
-      sessionId: options.sessionId,
-      stage: "subagent-start",
-      message: `Starting ${task.title}`,
-      subagentId: task.id,
-      modelId: subagentModelId
-    });
+        const beforePaths = new Set(await listChangedFiles(options.cwd));
+        const startedAt = Date.now();
 
-    const ownedContracts = resolveContractsForTask(task.id, contracts);
-    const ownedPaths = ownedContracts.flatMap((contract) => contract.ownedPaths).filter((value) => value !== "(planner-unspecified)");
-    const verificationCommands = ownedContracts.flatMap((contract) => contract.verificationCommands);
-    const beforePaths = new Set(await listChangedFiles(options.cwd));
-    const startedAt = Date.now();
-
-    try {
-      const basePrompt = [
-        "You are a focused coding subagent.",
-        "Complete only the assigned instruction.",
-        "Work in the same checkout. Edit only owned paths.",
-        ownedPaths.length > 0 ? `Owned paths: ${ownedPaths.join(", ")}` : "Owned paths: planner did not specify paths.",
-        verificationCommands.length > 0 ? `Verification commands: ${verificationCommands.join(" && ")}` : "",
-        "",
-        `Shared brief: ${options.readyPlan.finalExecutionBrief}`,
-        `Subtask title: ${task.title}`,
-        `Subtask instruction: ${task.instruction}`
-      ]
-        .filter(Boolean)
-        .join("\n");
-      const response = await runManagedAgentExecution(adapter, {
-        runId: options.runId,
-        kind: "subagent",
-        subagentId: task.id,
-        originalRequest: {
-          kind: "subagent",
-          cwd: options.cwd,
-          modelId: subagentModelId,
-          prompt: basePrompt,
-          onExecutionEvent(event: PiAgentExecutionEvent) {
-            void options.callbacks?.onExecutionEvent?.({
-              owner: "subagent",
-              subagentId: task.id,
-              event
-            });
-          },
-          requestBrowserApproval(input: { toolCallId: string; toolName: string; args: unknown }) {
-            return options.callbacks?.requestBrowserApproval?.({
-              owner: "subagent",
-              subagentId: task.id,
-              ...input
-            }) ?? Promise.resolve({ approved: true });
+        try {
+          const basePrompt = [
+            "You are a focused implementation subagent.",
+            "Start in the provided cwd and apply the assigned file plan exactly.",
+            "Create missing directories and the first listed missing file immediately when the assignment names new paths.",
+            "Use owned paths as the primary work area; edit integration files when the assignment requires wiring.",
+            "Do not run browser, Playwright, dev server, python -m http.server, visible app smoke tests, or commands that can open windows.",
+            "Do not use Start-Process for verification.",
+            "Do not perform broad verification unless this subtask explicitly names a verification command.",
+            "On Windows, use PowerShell-compatible syntax only; do not use Bash heredocs like <<'EOF'.",
+            "Prefer bundled rg for search. If rg is unavailable, use Get-ChildItem plus Select-String.",
+            "Return a concise changed-file summary.",
+            SUBAGENT_MILESTONE_INSTRUCTION,
+            entry.recoveryPrompt?.trim() ? entry.recoveryPrompt.trim() : "",
+            subagentEnvironmentBrief,
+            entry.contractSettings.explicitOwnedPaths.length > 0
+              ? `Owned paths: ${entry.contractSettings.explicitOwnedPaths.join(", ")}`
+              : "Owned paths: planner did not specify paths.",
+            "",
+            `Shared brief: ${options.readyPlan.finalExecutionBrief}`,
+            `Subtask title: ${entry.task.title}`,
+            `Subtask instruction: ${entry.task.instruction}`
+          ]
+            .filter(Boolean)
+            .join("\n");
+          const milestoneParser = createMilestoneDeltaParser((line) => options.callbacks?.onRunMilestone?.(`Subagent ${entry.task.title}: ${line}`));
+          const response = await runManagedAgentExecution(adapter, {
+            runId: options.runId,
+            kind: "subagent",
+            subagentId: entry.task.id,
+            originalRequest: {
+              kind: "subagent",
+              cwd: options.cwd,
+              modelId: subagentModelId,
+              prompt: basePrompt,
+              reasoningStrength: subagentReasoningStrength,
+              fastMode: options.fastMode,
+              onTextDelta(delta: string) {
+                milestoneParser.push(delta);
+              },
+              onExecutionEvent(event: PiAgentExecutionEvent) {
+                void options.callbacks?.onExecutionEvent?.({
+                  owner: "subagent",
+                  subagentId: entry.task.id,
+                  event
+                });
+              },
+              requestBrowserApproval(input: { toolCallId: string; toolName: string; args: unknown }) {
+                return options.callbacks?.requestBrowserApproval?.({
+                  owner: "subagent",
+                  subagentId: entry.task.id,
+                  ...input
+                }) ?? Promise.resolve({ approved: true });
+              }
+            },
+            continuationRequest: {
+              kind: "subagent",
+              cwd: options.cwd,
+              modelId: subagentModelId,
+              prompt: ["continue", "", basePrompt].join("\n"),
+              reasoningStrength: subagentReasoningStrength,
+              fastMode: options.fastMode,
+              onTextDelta(delta: string) {
+                milestoneParser.push(delta);
+              },
+              onExecutionEvent(event: PiAgentExecutionEvent) {
+                void options.callbacks?.onExecutionEvent?.({
+                  owner: "subagent",
+                  subagentId: entry.task.id,
+                  event
+                });
+              },
+              requestBrowserApproval(input: { toolCallId: string; toolName: string; args: unknown }) {
+                return options.callbacks?.requestBrowserApproval?.({
+                  owner: "subagent",
+                  subagentId: entry.task.id,
+                  ...input
+                }) ?? Promise.resolve({ approved: true });
+              }
+            },
+            abortSignal: options.abortSignal,
+            store: createExecutionStore(options.callbacks, options.runId, "subagent", entry.task.id)
+          });
+          milestoneParser.flush();
+          if (!milestoneParser.hasEmitted()) {
+            for (const line of extractMilestoneLines(response.text)) {
+              options.callbacks?.onRunMilestone?.(`Subagent ${entry.task.title}: ${line}`);
+            }
           }
-        },
-        continuationRequest: {
-          kind: "subagent",
-          cwd: options.cwd,
-          modelId: subagentModelId,
-          prompt: ["continue", "", basePrompt].join("\n"),
-          onExecutionEvent(event: PiAgentExecutionEvent) {
-            void options.callbacks?.onExecutionEvent?.({
-              owner: "subagent",
-              subagentId: task.id,
-              event
-            });
-          },
-          requestBrowserApproval(input: { toolCallId: string; toolName: string; args: unknown }) {
-            return options.callbacks?.requestBrowserApproval?.({
-              owner: "subagent",
-              subagentId: task.id,
-              ...input
-            }) ?? Promise.resolve({ approved: true });
+          const output = stripMilestoneLines(response.text);
+          const contractDriftPaths = await inspectSameWorktreeSubagentDrift(
+            options.cwd,
+            beforePaths,
+            entry.contractSettings
+          );
+
+          emitTrace(options.callbacks, {
+            sessionId: options.sessionId,
+            stage: "subagent-complete",
+            message: `Completed ${entry.task.title}`,
+            detail: formatSubagentCompletionDetail(output, contractDriftPaths),
+            subagentId: entry.task.id,
+            modelId: subagentModelId,
+            durationMs: Date.now() - startedAt
+          });
+          return {
+            result: {
+              id: entry.task.id,
+              title: entry.task.title,
+              instruction: entry.task.instruction,
+              status: "completed" as const,
+              output,
+              attemptCount: entry.startingAttempt,
+              durationMs: Date.now() - startedAt,
+              mountPath: options.cwd,
+              worktreePath: options.cwd,
+              contractDriftPaths: contractDriftPaths.length > 0 ? contractDriftPaths : undefined
+            }
+          };
+        } catch (error) {
+          const typedError = error instanceof Error ? error : new Error("Unknown same-worktree subagent failure");
+          if (options.abortSignal?.aborted) {
+            throw typedError;
           }
-        },
-        abortSignal: options.abortSignal,
-        store: createExecutionStore(options.callbacks, options.runId, "subagent", task.id)
-      });
-      const afterPaths = new Set(await listChangedFiles(options.cwd));
-      const changedByTask = [...afterPaths].filter((relativePath) => !beforePaths.has(relativePath));
-      const outOfScopePaths =
-        ownedPaths.length === 0
-          ? []
-          : changedByTask.filter(
-              (relativePath) => !ownedPaths.some((ownedPath) => isPathWithinScope(relativePath, ownedPath))
-            );
-      if (outOfScopePaths.length > 0) {
-        throw new Error(`Out-of-contract edits: ${outOfScopePaths.join(", ")}`);
+
+          emitTrace(options.callbacks, {
+            sessionId: options.sessionId,
+            stage: "subagent-error",
+            message: `Failed ${entry.task.title}`,
+            detail: typedError.message,
+            subagentId: entry.task.id,
+            modelId: subagentModelId
+          });
+          return {
+            result: {
+              id: entry.task.id,
+              title: entry.task.title,
+              instruction: entry.task.instruction,
+              status: "failed" as const,
+              errorMessage: typedError.message,
+              attemptCount: entry.startingAttempt,
+              durationMs: Date.now() - startedAt,
+              mountPath: options.cwd,
+              worktreePath: options.cwd
+            }
+          };
+        }
+      },
+      async onSettled(_entry, result) {
+        await options.callbacks?.onSubagentResult?.(result);
+      },
+      scheduleRetry(entry, result) {
+        if (result.status !== "failed" || entry.recoveryAttempt > 0 || options.abortSignal?.aborted) {
+          return undefined;
+        }
+
+        const retryError = new Error(result.errorMessage ?? "Unknown same-worktree subagent failure");
+        options.callbacks?.onSubagentRetry?.(entry.task, result.attemptCount + 1, retryError);
+        emitTrace(options.callbacks, {
+          sessionId: options.sessionId,
+          stage: "subagent-retry",
+          message: `Retrying ${entry.task.title}`,
+          detail: `Attempt ${result.attemptCount + 1}: ${retryError.message}`,
+          subagentId: entry.task.id,
+          modelId: subagentModelId
+        });
+
+        return {
+          ...entry,
+          startingAttempt: result.attemptCount + 1,
+          recoveryAttempt: entry.recoveryAttempt + 1,
+          recoveryPrompt: buildSubagentRecoveryPrompt(
+            entry.task,
+            result,
+            entry.contractSettings,
+            "same-worktree"
+          )
+        };
       }
-
-      for (const verificationCommand of verificationCommands) {
-        await runShellCommand(options.cwd, verificationCommand, options.abortSignal);
-      }
-
-      emitTrace(options.callbacks, {
-        sessionId: options.sessionId,
-        stage: "subagent-complete",
-        message: `Completed ${task.title}`,
-        detail: response.text.slice(0, 240),
-        subagentId: task.id,
-        modelId: subagentModelId,
-        durationMs: Date.now() - startedAt
-      });
-      results.push({
-        id: task.id,
-        title: task.title,
-        instruction: task.instruction,
-        status: "completed",
-        output: response.text.trim(),
-        attemptCount: 1,
-        durationMs: Date.now() - startedAt
-      });
-    } catch (error) {
-      const typedError = error instanceof Error ? error : new Error("Unknown same-worktree subagent failure");
-      emitTrace(options.callbacks, {
-        sessionId: options.sessionId,
-        stage: "subagent-error",
-        message: `Failed ${task.title}`,
-        detail: typedError.message,
-        subagentId: task.id,
-        modelId: subagentModelId
-      });
-      results.push({
-        id: task.id,
-        title: task.title,
-        instruction: task.instruction,
-        status: "failed",
-        errorMessage: typedError.message,
-        attemptCount: 1,
-        durationMs: Date.now() - startedAt
-      });
-    }
-  }
-
-  return results;
+    })
+  ).results;
 }
 
 async function executeMainAgent(
@@ -723,18 +838,17 @@ async function executeMainAgent(
 }
 
 async function listChangedFiles(cwd: string) {
-  const tracked = await runShellCommand(cwd, "git diff --name-only --relative");
-  const untracked = await runShellCommand(cwd, "git ls-files --others --exclude-standard");
+  const tracked = await runProcess(cwd, ["git", "diff", "--name-only", "--relative"]);
+  const untracked = await runProcess(cwd, ["git", "ls-files", "--others", "--exclude-standard"]);
   return [...tracked.split(/\r?\n/), ...untracked.split(/\r?\n/)].map((value) => value.trim()).filter(Boolean);
 }
 
-async function runShellCommand(cwd: string, command: string, abortSignal?: AbortSignal) {
+async function runProcess(cwd: string, cmd: string[]) {
   const proc = Bun.spawn({
-    cmd: ["powershell", "-NoProfile", "-Command", command],
+    cmd,
     cwd,
     stdout: "pipe",
-    stderr: "pipe",
-    signal: abortSignal
+    stderr: "pipe"
   });
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
@@ -742,7 +856,7 @@ async function runShellCommand(cwd: string, command: string, abortSignal?: Abort
     proc.exited
   ]);
   if (exitCode !== 0) {
-    throw new Error(stderr.trim() || stdout.trim() || `${command} failed`);
+    throw new Error(stderr.trim() || stdout.trim() || `${cmd.join(" ")} failed`);
   }
 
   return stdout.trim();
@@ -754,6 +868,55 @@ function resolveContractsForTask(taskId: string, contracts: SubagentContract[]) 
   return matchingContracts.length > 0 ? matchingContracts : contracts.filter((contract) => contract.taskId === taskId);
 }
 
+export type TaskContractSettings = {
+  ownedContracts: SubagentContract[];
+  explicitOwnedPaths: string[];
+  verificationCommands: string[];
+  exclusive: boolean;
+};
+
+function resolveTaskContractSettings(taskId: string, contracts: SubagentContract[]): TaskContractSettings {
+  const ownedContracts = resolveContractsForTask(taskId, contracts);
+  const allOwnedPaths = ownedContracts.flatMap((contract) => contract.ownedPaths);
+  const touchesDependencyRoot = allOwnedPaths.some(isDependencyRootPath);
+  return {
+    ownedContracts,
+    explicitOwnedPaths: allOwnedPaths.filter((value) => value !== "(planner-unspecified)"),
+    verificationCommands: ownedContracts.flatMap((contract) => contract.verificationCommands),
+    exclusive: touchesDependencyRoot || allOwnedPaths.includes("(planner-unspecified)") || allOwnedPaths.length === 0
+  };
+}
+
+export function orderSameWorktreeTasks(tasks: PlannerSubtask[], contracts: SubagentContract[]) {
+  return [...tasks].sort((left, right) => {
+    const leftSettings = resolveTaskContractSettings(left.id, contracts);
+    const rightSettings = resolveTaskContractSettings(right.id, contracts);
+    const leftRoot = leftSettings.explicitOwnedPaths.some(isDependencyRootPath);
+    const rightRoot = rightSettings.explicitOwnedPaths.some(isDependencyRootPath);
+    return Number(rightRoot) - Number(leftRoot);
+  });
+}
+
+export function canRunSameWorktreeTask(
+  entry: { contractSettings: TaskContractSettings },
+  activeEntries: Array<{ contractSettings: TaskContractSettings }>
+) {
+  if (entry.contractSettings.exclusive) {
+    return activeEntries.length === 0;
+  }
+
+  return activeEntries.every((activeEntry) => {
+    if (activeEntry.contractSettings.exclusive) {
+      return false;
+    }
+
+    return ownedPathsAreDisjoint(
+      entry.contractSettings.explicitOwnedPaths,
+      activeEntry.contractSettings.explicitOwnedPaths
+    );
+  });
+}
+
 function isPathWithinScope(relativePath: string, ownedPath: string) {
   const normalizedRelativePath = relativePath.replace(/\\/g, "/");
   const normalizedOwnedPath = ownedPath.replace(/\\/g, "/");
@@ -762,6 +925,95 @@ function isPathWithinScope(relativePath: string, ownedPath: string) {
     normalizedRelativePath.startsWith(`${normalizedOwnedPath}/`) ||
     normalizedOwnedPath === "(planner-unspecified)"
   );
+}
+
+function ownedPathsAreDisjoint(leftPaths: string[], rightPaths: string[]) {
+  return leftPaths.every((leftPath) => rightPaths.every((rightPath) => !ownedPathsOverlap(leftPath, rightPath)));
+}
+
+function ownedPathsOverlap(leftPath: string, rightPath: string) {
+  const normalizedLeft = leftPath.replace(/\\/g, "/");
+  const normalizedRight = rightPath.replace(/\\/g, "/");
+  return (
+    normalizedLeft === normalizedRight ||
+    normalizedLeft.startsWith(`${normalizedRight}/`) ||
+    normalizedRight.startsWith(`${normalizedLeft}/`)
+  );
+}
+
+function isDependencyRootPath(relativePath: string) {
+  const normalized = relativePath.replace(/\\/g, "/").toLowerCase();
+  return (
+    /(^|\/)index\.html$/.test(normalized) ||
+    /(^|\/)package\.json$/.test(normalized) ||
+    /(^|\/)src\/main\.[cm]?[jt]sx?$/.test(normalized)
+  );
+}
+
+async function inspectSameWorktreeSubagentDrift(
+  cwd: string,
+  beforePaths: Set<string>,
+  contractSettings: TaskContractSettings
+) {
+  const afterPaths = new Set(await listChangedFiles(cwd));
+  const changedByTask = [...afterPaths].filter((relativePath) => !beforePaths.has(relativePath));
+  const outOfScopePaths =
+    contractSettings.explicitOwnedPaths.length === 0
+      ? []
+      : changedByTask.filter(
+          (relativePath) =>
+            !contractSettings.explicitOwnedPaths.some((ownedPath) => isPathWithinScope(relativePath, ownedPath))
+        );
+  return outOfScopePaths;
+}
+
+async function verifySubagentResultAgainstContracts(
+  taskId: string,
+  contracts: SubagentContract[],
+  cwd: string,
+  _abortSignal?: AbortSignal
+) {
+  const contractSettings = resolveTaskContractSettings(taskId, contracts);
+  try {
+    const changedPaths = await listChangedFiles(cwd);
+    const outOfScopePaths =
+      contractSettings.explicitOwnedPaths.length === 0
+        ? []
+        : changedPaths.filter(
+            (relativePath) =>
+              !contractSettings.explicitOwnedPaths.some((ownedPath) => isPathWithinScope(relativePath, ownedPath))
+          );
+    return outOfScopePaths;
+  } catch (error) {
+    const message = error instanceof Error ? error.message.toLowerCase() : "";
+    if (!message.includes("not a git repository")) {
+      throw error;
+    }
+  }
+
+  return [];
+}
+
+function buildSubagentRecoveryPrompt(
+  task: PlannerSubtask,
+  result: SubagentResult,
+  contractSettings: TaskContractSettings,
+  strategy: "same-worktree" | "separate-worktrees"
+) {
+  return [
+    "Recovery attempt. Repair this subtask.",
+    `Previous failure: ${result.errorMessage ?? "Unknown subagent failure"}`,
+    strategy === "same-worktree"
+      ? "Work in the same checkout and use owned paths as the primary work area."
+      : "Work inside this isolated subagent mount.",
+    contractSettings.explicitOwnedPaths.length > 0
+      ? `Owned paths: ${contractSettings.explicitOwnedPaths.join(", ")}`
+      : "Owned paths: planner did not specify paths. Treat task as exclusive.",
+    `Retry subtask title: ${task.title}`,
+    "Focus on the previous failure cause, complete the file changes, and return a concise changed-file summary."
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 export async function aggregateSubagentResults(
@@ -786,6 +1038,7 @@ export async function aggregateSubagentResults(
 ) {
   const startedAt = Date.now();
   const executionInput = await buildExecutionInput(options.cwd, options.messages, finalExecutionBrief, options.executionPlan);
+  options.callbacks?.onAggregationStart?.();
   emitTrace(options.callbacks, {
     sessionId: options.sessionId,
     stage: "aggregation-start",
@@ -1008,12 +1261,22 @@ function formatSubagentResults(subtasks: PlannerSubtask[], subagentResults: Suba
         `Instruction: ${task.instruction}`,
         `Status: ${result?.status ?? "missing"}`,
         result?.output ? `Output: ${result.output}` : "Output: (missing)",
+        result?.contractDriftPaths && result.contractDriftPaths.length > 0
+          ? `Contract drift paths: ${result.contractDriftPaths.join(", ")}`
+          : "",
         result?.errorMessage ? `Error: ${result.errorMessage}` : ""
       ]
         .filter(Boolean)
         .join("\n");
     })
     .join("\n\n");
+}
+
+function formatSubagentCompletionDetail(output: string, contractDriftPaths: string[]) {
+  return [
+    output.slice(0, 240),
+    contractDriftPaths.length > 0 ? `Contract drift paths: ${contractDriftPaths.join(", ")}` : ""
+  ].filter(Boolean).join("\n");
 }
 
 function mergeSubagentResults(subtasks: PlannerSubtask[], existing: SubagentResult[], incoming: SubagentResult[]) {
@@ -1091,8 +1354,7 @@ export function executionPlanToTasks(executionPlan: ExecutionPlan): PlannerSubta
               contract.instruction,
               contract.deliverables.length > 0 ? `Deliverables: ${contract.deliverables.join(", ")}` : "",
               contract.integrationPoints.length > 0 ? `Integrate with: ${contract.integrationPoints.join(", ")}` : "",
-              contract.ownedPaths.length > 0 ? `Owned paths: ${contract.ownedPaths.join(", ")}` : "",
-              contract.verificationCommands.length > 0 ? `Verify with: ${contract.verificationCommands.join(" && ")}` : ""
+              contract.ownedPaths.length > 0 ? `Owned paths: ${contract.ownedPaths.join(", ")}` : ""
             ]
               .filter(Boolean)
               .join("\n")
@@ -1253,6 +1515,10 @@ function getActualSubagentCount(
     bucketCount -= 1;
   }
 
+  if (subagentWorktreeStrategy === "same-worktree" && targetSubagentCount >= 2 && contracts.length >= 2) {
+    return Math.min(targetSubagentCount, contracts.length);
+  }
+
   return 0;
 }
 
@@ -1270,8 +1536,7 @@ function bucketContracts(
   }
 
   const prepared = contracts.map((contract) => withDerivedVerification(contract, subagentWorktreeStrategy));
-  const totalEffort = prepared.reduce((sum, contract) => sum + contract.effortPoints, 0);
-  const targetEffort = totalEffort / bucketCount;
+  const targetEffort = prepared.reduce((sum, contract) => sum + getSchedulingEffortPoints(contract.effortPoints), 0) / bucketCount;
   const buckets: SubagentContract[][] = [];
   let currentBucket: SubagentContract[] = [];
   let currentEffort = 0;
@@ -1291,7 +1556,7 @@ function bucketContracts(
     }
 
     currentBucket.push(contract);
-    currentEffort += contract.effortPoints;
+    currentEffort += getSchedulingEffortPoints(contract.effortPoints);
   }
 
   if (currentBucket.length > 0) {
@@ -1319,15 +1584,24 @@ function isEvenlyBucketed(buckets: SubagentContract[][]) {
     return false;
   }
 
-  const effortPerBucket = buckets.map((bucket) => bucket.reduce((sum, contract) => sum + contract.effortPoints, 0));
+  const effortPerBucket = buckets.map((bucket) =>
+    bucket.reduce((sum, contract) => sum + getSchedulingEffortPoints(contract.effortPoints), 0)
+  );
   const mean = effortPerBucket.reduce((sum, value) => sum + value, 0) / effortPerBucket.length;
   return effortPerBucket.every((value) => Math.abs(value - mean) <= Math.max(1, mean * 0.25));
+}
+
+function getSchedulingEffortPoints(value: number) {
+  return Math.min(20, Math.max(1, value));
 }
 
 function hasDisjointOwnedPaths(buckets: SubagentContract[][]) {
   const ownedPathSets = buckets.map((bucket) =>
     bucket.flatMap((contract) => contract.ownedPaths).filter((value) => value !== "(planner-unspecified)")
   );
+  if (ownedPathSets.some((paths) => paths.length === 0)) {
+    return false;
+  }
 
   for (let leftIndex = 0; leftIndex < ownedPathSets.length; leftIndex += 1) {
     for (let rightIndex = leftIndex + 1; rightIndex < ownedPathSets.length; rightIndex += 1) {

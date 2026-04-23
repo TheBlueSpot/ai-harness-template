@@ -1,7 +1,50 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { buildUiBundle } from "./ui-build";
+import { buildUiBundle, createUiAssetManager } from "./ui-build";
+
+class FakeClock {
+  private nextTimerId = 1;
+  private readonly timers = new Map<number, { runAt: number; callback: () => void }>();
+  nowMs = 0;
+
+  setTimeout = ((callback: TimerHandler, delay?: number) => {
+    const timerId = this.nextTimerId++;
+    this.timers.set(timerId, {
+      runAt: this.nowMs + Number(delay ?? 0),
+      callback: () => {
+        if (typeof callback !== "function") {
+          throw new Error("String timer callbacks are not supported in tests");
+        }
+
+        callback();
+      }
+    });
+    return timerId as unknown as ReturnType<typeof setTimeout>;
+  }) as unknown as typeof globalThis.setTimeout;
+
+  clearTimeout = ((timerId: ReturnType<typeof setTimeout>) => {
+    this.timers.delete(Number(timerId));
+  }) as unknown as typeof globalThis.clearTimeout;
+
+  advanceBy(durationMs: number) {
+    const targetMs = this.nowMs + durationMs;
+    while (true) {
+      const nextTimer = [...this.timers.entries()].sort((left, right) => left[1].runAt - right[1].runAt)[0];
+      if (!nextTimer || nextTimer[1].runAt > targetMs) {
+        break;
+      }
+
+      this.nowMs = nextTimer[1].runAt;
+      this.timers.delete(nextTimer[0]);
+      nextTimer[1].callback();
+    }
+
+    this.nowMs = targetMs;
+  }
+}
+
+const flushMicrotasks = () => Promise.resolve().then(() => Promise.resolve());
 
 describe("ui build", () => {
   test("emits external source maps in development build", async () => {
@@ -15,5 +58,77 @@ describe("ui build", () => {
     expect(existsSync(jsPath)).toBe(true);
     expect(existsSync(mapPath)).toBe(true);
     expect(sourceMap.sources?.some((source) => source.includes("harness\\ui\\src\\app.tsx"))).toBe(true);
+  });
+
+  test("debounces watch storms and publishes live reload revision only after successful rebuild", async () => {
+    const clock = new FakeClock();
+    const buildCalls: string[] = [];
+    let watcherListener: (() => void) | undefined;
+    let failNextBuild = false;
+    const originalConsoleError = console.error;
+    console.error = () => {};
+
+    try {
+      const manager = createUiAssetManager({
+        debounceMs: 30_000,
+        timerApi: {
+          setTimeout: clock.setTimeout,
+          clearTimeout: clock.clearTimeout
+        },
+        async buildUiBundle() {
+          if (failNextBuild) {
+            failNextBuild = false;
+            throw new Error("broken intermediate edit");
+          }
+
+          buildCalls.push(`build-${buildCalls.length + 1}`);
+        },
+        watchSourceDir(_sourceDir, listener) {
+          watcherListener = listener;
+          return {
+            close() {}
+          };
+        }
+      });
+
+      manager.startWatching();
+      watcherListener?.();
+      watcherListener?.();
+      watcherListener?.();
+
+      expect(buildCalls).toEqual([]);
+      expect(manager.getLiveReloadState()).toEqual({
+        revision: 0,
+        building: false,
+        pending: true
+      });
+
+      clock.advanceBy(29_999);
+      await flushMicrotasks();
+      expect(buildCalls).toEqual([]);
+
+      clock.advanceBy(1);
+      await flushMicrotasks();
+      expect(buildCalls).toEqual(["build-1"]);
+      expect(manager.getLiveReloadState()).toEqual({
+        revision: 1,
+        building: false,
+        pending: false
+      });
+
+      failNextBuild = true;
+      watcherListener?.();
+      clock.advanceBy(30_000);
+      await flushMicrotasks();
+      expect(buildCalls).toEqual(["build-1"]);
+      expect(manager.getLiveReloadState()).toEqual({
+        revision: 1,
+        building: false,
+        pending: false
+      });
+      manager.dispose();
+    } finally {
+      console.error = originalConsoleError;
+    }
   });
 });

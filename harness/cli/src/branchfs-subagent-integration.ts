@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { AgentTrace, ComposerReasoningStrength, PlannerSubtask } from "../../shared/protocol";
 import { BranchfsManager, type BranchfsExperimentLease } from "./branchfs-manager";
@@ -309,7 +309,10 @@ async function copyChangedPath(sourcePath: string, destinationPath: string) {
   }
 
   await mkdir(path.dirname(destinationPath), { recursive: true });
-  await cp(sourcePath, destinationPath, { recursive: true, force: true });
+  await withFsRetry(async () => {
+    await mkdir(path.dirname(destinationPath), { recursive: true });
+    await copyFile(sourcePath, destinationPath);
+  });
 }
 
 async function hashPath(targetPath: string) {
@@ -341,6 +344,20 @@ async function readPathText(targetPath: string) {
 
 function sanitizeTaskId(taskId: string) {
   return taskId.replace(/[^a-zA-Z0-9._-]/g, "-");
+}
+
+async function withFsRetry<T>(operation: () => Promise<T>) {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (!(error instanceof Error) || !("code" in error) || !["ENOENT", "EBUSY", "EPERM", "EACCES"].includes(String(error.code)) || attempt === 3) {
+        throw error;
+      }
+      await Bun.sleep(25 * (attempt + 1));
+    }
+  }
+  throw new Error("unreachable");
 }
 
 async function runCommand(command: string[], cwd: string) {

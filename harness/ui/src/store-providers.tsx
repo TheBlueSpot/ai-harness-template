@@ -1,12 +1,14 @@
 import { createContext, onCleanup, useContext, type JSX } from "solid-js";
 import {
   createHarnessStore,
+  getActiveHarnessStore,
   type HarnessStoreApi,
   requireHarnessStore,
   setActiveHarnessStore
 } from "./harness-store";
 import {
   createToastStoreForProvider,
+  getActiveToastStore,
   type ToastStoreApi,
   requireToastStore,
   setActiveToastStore
@@ -24,8 +26,12 @@ export function UiStateProviders(props: { children: JSX.Element }) {
 
   onCleanup(() => {
     toastStore.dispose();
-    setActiveHarnessStore(undefined);
-    setActiveToastStore(undefined);
+    if (getActiveHarnessStore() === harnessStore) {
+      setActiveHarnessStore(undefined);
+    }
+    if (getActiveToastStore() === toastStore) {
+      setActiveToastStore(undefined);
+    }
   });
 
   return (

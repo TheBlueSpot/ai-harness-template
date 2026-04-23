@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { defaultProviderCapabilities } from "../../shared/capabilities";
-import { parseClientCommand, parseServerEvent, plannerResultSchema } from "../../shared/protocol";
+import { chatMessageSchema, parseClientCommand, parseServerEvent, plannerResultSchema } from "../../shared/protocol";
 
 const defaultExecutionControl = {
   isPaused: false,
@@ -393,7 +393,8 @@ describe("planner result validation", () => {
                   isStreaming: false
                 },
                 activeRun: undefined,
-                lastRun: undefined
+                lastRun: undefined,
+                runSummaries: []
               }
             ],
             workspaceModes: [],
@@ -448,6 +449,85 @@ describe("planner result validation", () => {
         }
       }).type
     ).toBe("connection.ready");
+  });
+
+  test("accepts run milestone messages and update events", () => {
+    const createdAt = new Date().toISOString();
+    const message = chatMessageSchema.parse({
+      id: "message-1",
+      role: "assistant",
+      kind: "run-milestones",
+      content: "- Subagent 1 started",
+      metadata: {
+        type: "run-milestones",
+        runId: "run-1",
+        windowId: "window-1",
+        status: "open",
+        startedAt: createdAt,
+        updatedAt: createdAt,
+        lineCount: 1
+      },
+      createdAt
+    });
+
+    expect(message.kind).toBe("run-milestones");
+    expect(
+      parseServerEvent({
+        type: "chat.message-updated",
+        requestId: "req-update",
+        payload: {
+          projectId: "project-1",
+          threadId: "thread-1",
+          sessionId: "thread-1",
+          message,
+          state: {
+            sessionId: "thread-1",
+            selectedAgentId: "pi",
+            executionModelId: "openai/gpt-5.4",
+            messages: [message],
+            isStreaming: false
+          }
+        }
+      }).type
+    ).toBe("chat.message-updated");
+  });
+
+  test("accepts streaming tail updates", () => {
+    const updatedAt = new Date().toISOString();
+    const event = parseServerEvent({
+      type: "chat.streaming-tail-updated",
+      requestId: "req-tail",
+      payload: {
+        projectId: "project-1",
+        threadId: "thread-1",
+        sessionId: "thread-1",
+        runId: "run-1",
+        segments: [
+          {
+            id: "run-1:subagents",
+            kind: "status",
+            phase: "subagents",
+            content: "**Subagents**\n- Subagent Build UI: wired HUD.",
+            updatedAt
+          },
+          {
+            id: "run-1:assistant",
+            kind: "assistant",
+            content: "Final answer streaming...",
+            updatedAt
+          }
+        ],
+        state: {
+          sessionId: "thread-1",
+          selectedAgentId: "pi",
+          executionModelId: "openai/gpt-5.4",
+          messages: [],
+          isStreaming: true
+        }
+      }
+    });
+
+    expect(event.type).toBe("chat.streaming-tail-updated");
   });
 
   test("accepts empty workspace payload", () => {
@@ -571,7 +651,8 @@ describe("planner result validation", () => {
               isStreaming: false
             },
             activeRun: undefined,
-            lastRun: undefined
+            lastRun: undefined,
+            runSummaries: []
           }
         }
       }).type
@@ -597,6 +678,61 @@ describe("planner result validation", () => {
         }
       }).type
     ).toBe("project.search.results");
+  });
+
+  test("accepts project create and git init contracts", () => {
+    expect(
+      parseClientCommand({
+        type: "project.create",
+        requestId: "req-create",
+        payload: {
+          rootPath: "C:\\repo-new"
+        }
+      }).type
+    ).toBe("project.create");
+
+    expect(
+      parseClientCommand({
+        type: "project.git.initBaseline",
+        requestId: "req-init-git",
+        payload: {
+          projectId: "project-1"
+        }
+      }).type
+    ).toBe("project.git.initBaseline");
+
+    expect(
+      parseServerEvent({
+        type: "project.git.initialized",
+        requestId: "req-init-git",
+        payload: {
+          projectId: "project-1",
+          rootPath: "C:\\repo-new",
+          initialized: true,
+          baselineCommitCreated: true
+        }
+      }).type
+    ).toBe("project.git.initialized");
+  });
+
+  test("accepts blocking non-git preflight payload", () => {
+    expect(
+      parseServerEvent({
+        type: "run.preflight",
+        requestId: "req-non-git",
+        payload: {
+          projectId: "project-1",
+          threadId: "thread-1",
+          preflight: {
+            severity: "blocking",
+            kind: "git-not-repo",
+            message: "This project is not a git repository.",
+            changedFileCount: 0,
+            repairSummary: "Initialize git or disable dirty-git protection."
+          }
+        }
+      }).type
+    ).toBe("run.preflight");
   });
 
   test("accepts planner question payloads", () => {

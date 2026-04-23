@@ -1,6 +1,6 @@
 import { createRequestId } from "../../../shared/protocol";
 import { ClipboardList, FolderOpen, Orbit, Play, RefreshCcw } from "lucide-solid";
-import { canSelectProviderBrand, harnessStore, persistLocalPreferences } from "../harness-store";
+import { canSelectProviderBrand, harnessStore, persistMergedLocalPreferences } from "../harness-store";
 import { pushToast } from "../toast-store";
 import { ModeEditorPanel } from "./mode-editor-panel";
 import { Button } from "./primitives/button";
@@ -60,7 +60,7 @@ export function PreferencesModal() {
       return;
     }
 
-    persistLocalPreferences({
+    persistMergedLocalPreferences({
       openAiApiKey,
       googleApiKey,
       providerBrand: state.providerBrand,
@@ -118,7 +118,7 @@ export function PreferencesModal() {
   }
 
   function handleClearApiKey() {
-    persistLocalPreferences({
+    persistMergedLocalPreferences({
       openAiApiKey: undefined,
       googleApiKey: undefined,
       providerBrand: state.providerBrand,
@@ -218,7 +218,7 @@ export function PreferencesModal() {
         backgroundJobApprovalPolicyDefault: parsed.backgroundJobApprovalPolicyDefault,
         memoryBankEnabledDefault: parsed.memoryBankEnabledDefault
       });
-      persistLocalPreferences({
+      persistMergedLocalPreferences({
         openAiApiKey: state.openAiApiKeyDraft.trim() || undefined,
         googleApiKey: state.googleApiKeyDraft.trim() || undefined,
         providerBrand: parsed.providerBrand ?? state.providerBrand,

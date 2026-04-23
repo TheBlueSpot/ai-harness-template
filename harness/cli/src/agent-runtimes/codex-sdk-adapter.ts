@@ -12,7 +12,10 @@ import type {
   PiAgentPromptResult
 } from "../pi-agent-adapter";
 
-const DEFAULT_REASONING_STRENGTH = "high";
+const CODEX_TOOL_GUIDANCE = [
+  "Use native Codex tools first for general work: shell and apply_patch for local repository changes, and live web search for external or current facts.",
+  "Use repository skills when the user's task matches a listed skill; skill instructions override general tool preference for that workflow."
+].join("\n");
 
 type CodexSdkTextInput = {
   type: "text";
@@ -32,8 +35,6 @@ type CodexSdkRunStreamedResult = {
 
 type CodexSdkTurnOptions = {
   signal?: AbortSignal;
-  effort?: "low" | "medium" | "high" | "xhigh";
-  serviceTier?: "fast";
 };
 
 type CodexSdkThreadOptions = {
@@ -42,8 +43,9 @@ type CodexSdkThreadOptions = {
   workingDirectory?: string;
   skipGitRepoCheck?: boolean;
   approvalPolicy?: "never";
-  effort?: "low" | "medium" | "high" | "xhigh";
-  serviceTier?: "fast";
+  modelReasoningEffort?: "low" | "medium" | "high" | "xhigh";
+  networkAccessEnabled?: boolean;
+  webSearchMode?: "disabled" | "cached" | "live";
 };
 
 type CodexSdkThreadLike = {
@@ -215,7 +217,9 @@ function buildThreadOptions(
     workingDirectory: request.cwd,
     skipGitRepoCheck: true,
     approvalPolicy: "never",
-    ...buildDirectControlOptions(request)
+    modelReasoningEffort: mapReasoningStrengthToCodexEffort(request.reasoningStrength),
+    networkAccessEnabled: !request.readOnly,
+    webSearchMode: "live"
   };
 }
 
@@ -330,33 +334,11 @@ async function runThreadWithCodexControls(
   signal: AbortSignal
 ) {
   const turnOptions = buildTurnOptions(request, signal);
-  try {
-    return await thread.runStreamed(input, turnOptions);
-  } catch (error) {
-    if (!hasDirectCodexControls(turnOptions) || !isCodexControlConfigurationError(error)) {
-      throw error;
-    }
-
-    return thread.runStreamed(input, { signal });
-  }
+  return thread.runStreamed(input, turnOptions);
 }
 
-function buildTurnOptions(request: PiAgentPromptRequest, signal: AbortSignal): CodexSdkTurnOptions {
-  return {
-    signal,
-    ...buildDirectControlOptions(request)
-  };
-}
-
-function buildDirectControlOptions(request: PiAgentPromptRequest) {
-  return {
-    effort: mapReasoningStrengthToCodexEffort(request.reasoningStrength),
-    serviceTier: request.fastMode ? ("fast" as const) : undefined
-  };
-}
-
-function hasDirectCodexControls(options: CodexSdkTurnOptions) {
-  return Boolean(options.effort || options.serviceTier);
+function buildTurnOptions(_request: PiAgentPromptRequest, signal: AbortSignal): CodexSdkTurnOptions {
+  return { signal };
 }
 
 function isCodexControlConfigurationError(error: unknown) {
@@ -392,33 +374,15 @@ function mapReasoningStrengthToCodexEffort(reasoningStrength: PiAgentPromptReque
 
 function buildCodexPromptWithPrelude(request: PiAgentPromptRequest) {
   const prelude = buildCodexCommandPrelude(request);
-  return prelude ? `${prelude}\n\n${request.prompt}` : request.prompt;
+  return [CODEX_TOOL_GUIDANCE, prelude, request.prompt].filter(Boolean).join("\n\n");
 }
 
 function buildCodexCommandPrelude(request: PiAgentPromptRequest) {
   const commands: string[] = [];
-  const reasoningStrength = request.reasoningStrength ?? DEFAULT_REASONING_STRENGTH;
-  if (reasoningStrength !== DEFAULT_REASONING_STRENGTH) {
-    commands.push(`/reasoning ${mapReasoningStrengthToCodexCommand(reasoningStrength)}`);
-  }
   if (request.fastMode) {
     commands.push("/fast");
   }
   return commands.join("\n");
-}
-
-function mapReasoningStrengthToCodexCommand(reasoningStrength: NonNullable<PiAgentPromptRequest["reasoningStrength"]>) {
-  switch (reasoningStrength) {
-    case "low":
-      return "low";
-    case "medium":
-      return "medium";
-    case "extra-high":
-      return "high";
-    case "high":
-    default:
-      return "high";
-  }
 }
 
 function emitCommandExecutionEvent(
@@ -572,5 +536,6 @@ export const testExports = {
   buildTurnOptions,
   buildCodexCommandPrelude,
   buildCodexPromptWithPrelude,
-  isCodexControlConfigurationError
+  isCodexControlConfigurationError,
+  CODEX_TOOL_GUIDANCE
 };

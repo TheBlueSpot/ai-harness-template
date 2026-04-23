@@ -242,10 +242,16 @@ async function capturePagesWithPlaywright(baseUrl: string, opts: ScreenshotOptio
     playwright = await import("playwright");
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`playwright module missing. Run \`bun install\` then \`bunx playwright install chromium\`.\n${detail}`);
+    throw new Error(`playwright dependency missing. This script uses \`playwright\`, not \`@playwright/test\`. Run \`bun install\`.\n${detail}`);
   }
 
-  const browser = await playwright.chromium.launch();
+  let browser: Awaited<ReturnType<typeof playwright.chromium.launch>>;
+  try {
+    browser = await playwright.chromium.launch();
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`playwright chromium launch failed. Run \`bunx playwright install chromium\`.\n${detail}`);
+  }
   try {
     const artifacts: ScreenshotArtifact[] = [];
     for (const viewport of opts.viewports) {

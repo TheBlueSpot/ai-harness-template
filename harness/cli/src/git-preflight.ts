@@ -1,9 +1,10 @@
 import type { RunPreflight } from "../../shared/protocol";
+import { probeInsideWorktree } from "./git-project";
 
 const MAX_DIRTY_FILE_COUNT = 20;
 
 export type GitPreflightResult =
-  | { status: "not-git" | "clean"; changedFileCount: 0 }
+  | { status: "clean"; changedFileCount: 0 }
   | { status: "warning" | "blocked"; changedFileCount: number; preflight: RunPreflight };
 
 type GitPreflightOptions = {
@@ -22,11 +23,20 @@ export async function runGitPreflight(
     };
   }
 
-  const insideWorktree = await runGit(["rev-parse", "--is-inside-work-tree"], rootPath);
-  if (insideWorktree.exitCode !== 0 || insideWorktree.stdout.trim() !== "true") {
+  const insideWorktree = await probeInsideWorktree(rootPath);
+  if (!insideWorktree) {
     return {
-      status: "not-git",
-      changedFileCount: 0
+      status: "blocked",
+      changedFileCount: 0,
+      preflight: {
+        severity: "blocking",
+        kind: "git-not-repo",
+        message: "This project is not a git repository. Dirty-git protection cannot verify run safety.",
+        changedFileCount: 0,
+        repairSummary: "Initialize git with a baseline commit, disable dirty-git protection, or cancel this run.",
+        repairDetail:
+          "If you cancel, the run will not start. If you disable the preference, future runs in non-git folders will continue without dirty-state protection."
+      }
     };
   }
 

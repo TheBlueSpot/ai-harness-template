@@ -32,6 +32,7 @@ export function ActionButton(props: ActionButtonProps) {
           disabled={props.disabled}
           data-tour-id={props.dataTourId}
           aria-label={props.ariaLabel ?? props.tooltip}
+          aria-description={props.disabled && props.disabledReason ? props.disabledReason : undefined}
           onClick={props.onClick}
         >
           {props.icon}
@@ -41,4 +42,3 @@ export function ActionButton(props: ActionButtonProps) {
     </Tooltip>
   );
 }
-

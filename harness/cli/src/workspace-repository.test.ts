@@ -24,7 +24,7 @@ function createTempDir() {
 function createRepository() {
   const tempRoot = createTempDir();
   const dbPath = path.join(tempRoot, `workspace-${crypto.randomUUID()}.sqlite`);
-  return new WorkspaceRepository(dbPath, process.cwd());
+  return new WorkspaceRepository(dbPath, process.cwd(), { durability: "test-fast" });
 }
 
 function addProject(repository: WorkspaceRepository) {
@@ -44,6 +44,15 @@ describe("workspace repository", () => {
       workspaceRuleSource: undefined,
       workspaceMemorySummary: undefined
     });
+  });
+
+  test("supports in-memory test-fast databases", () => {
+    const repository = new WorkspaceRepository(":memory:", process.cwd(), { durability: "test-fast" });
+    const project = addProject(repository);
+
+    repository.appendMessage(project.id, "user", "hello memory");
+
+    expect(repository.loadWorkspace().projects[0]?.session.messages[0]?.content).toBe("hello memory");
   });
 
   test("persists added project history without default bootstrap", () => {
@@ -419,6 +428,80 @@ describe("workspace repository", () => {
     expect(restoredProject.activeRun?.resumable).toBe(true);
   });
 
+  test("persists run summaries and high-effort execution plan contracts across reload", () => {
+    const tempRoot = createTempDir();
+    const dbPath = path.join(tempRoot, `workspace-${crypto.randomUUID()}.sqlite`);
+    const repository = new WorkspaceRepository(dbPath, process.cwd(), { durability: "test-fast" });
+    const project = addProject(repository);
+    const withRun = repository.createAgentRun(project.id, "build persisted plan", "openai/gpt-5.4");
+    const runId = withRun.activeRun?.id;
+    expect(runId).toBeDefined();
+
+    const readyTurn = {
+      type: "ready" as const,
+      difficultyScore: 72,
+      summary: "Persisted plan",
+      executionModelId: "openai/gpt-5.4",
+      usesSubagents: true,
+      subtasks: [{ id: "task-1", title: "Large task", instruction: "Build the large task" }],
+      finalExecutionBrief: "Build and verify",
+      contracts: [
+        {
+          taskId: "task-1",
+          title: "Large task",
+          instruction: "Build the large task",
+          effortPoints: 8,
+          ownedPaths: ["src/large.ts"],
+          dependsOnPrerequisiteIds: [],
+          deliverables: ["large task"],
+          integrationPoints: [],
+          verificationScope: "owned-files-only" as const,
+          verificationCommands: ["bun run typecheck"],
+          mergeNotes: "Merge large task."
+        }
+      ]
+    };
+
+    repository.setAgentRunReady(
+      project.id,
+      runId!,
+      readyTurn,
+      {
+        runId: runId!,
+        origin: "initial",
+        iteration: 1,
+        summary: readyTurn.summary,
+        finalExecutionBrief: readyTurn.finalExecutionBrief,
+        difficultyScore: readyTurn.difficultyScore,
+        planningModelId: "openai/gpt-5.4",
+        executionModelId: "openai/gpt-5.4",
+        route: "pi-subagents",
+        subagentWorktreeStrategy: "same-worktree",
+        targetSubagentCount: 2,
+        actualSubagentCount: 2,
+        gating: { mode: "approve", delaySeconds: 0 },
+        prerequisites: [],
+        contracts: readyTurn.contracts,
+        correctnessPolicy: "ask-before-iterate"
+      },
+      readyTurn.subtasks,
+      "openai/gpt-5.4"
+    );
+
+    const reloadedRepository = new WorkspaceRepository(dbPath, process.cwd(), { durability: "test-fast" });
+    const restoredProject = reloadedRepository.getProject(project.id);
+
+    expect(restoredProject.runSummaries).toContainEqual(
+      expect.objectContaining({
+        id: runId,
+        status: "ready",
+        resumable: false,
+        retryable: false
+      })
+    );
+    expect(restoredProject.activeRun?.plan?.contracts[0]?.effortPoints).toBe(8);
+  });
+
   test("scopes repeated planner question ids per run", () => {
     const repository = createRepository();
     const project = addProject(repository);
@@ -687,6 +770,63 @@ describe("workspace repository", () => {
     const restoredProject = repository.getProject(project.id);
 
     expect(restoredProject.threads[0]?.lastMessagePreview).toBe("build feature");
+  });
+
+  test("persists and updates run milestone messages without taking over thread preview", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    const threadId = project.activeThreadId;
+    const created = repository.appendMessage(project.id, "assistant", "- Subagent started", {
+      threadId,
+      kind: "run-milestones",
+      metadata: {
+        type: "run-milestones",
+        runId: "run-1",
+        windowId: "window-1",
+        status: "open",
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        lineCount: 1
+      }
+    });
+    const messageId = created.session.messages[0]!.id;
+
+    const updated = repository.updateThreadMessage(project.id, threadId, messageId, {
+      content: "- Subagent started\n- Subagent finished",
+      metadata: {
+        type: "run-milestones",
+        runId: "run-1",
+        windowId: "window-1",
+        status: "closed",
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        lineCount: 2
+      }
+    });
+
+    expect(updated.session.messages[0]?.kind).toBe("run-milestones");
+    expect(updated.session.messages[0]?.content).toContain("Subagent finished");
+    expect(updated.threads[0]?.lastMessagePreview).toBeUndefined();
+    repository.appendMessage(project.id, "assistant", "final answer", threadId);
+    expect(repository.getProject(project.id).threads[0]?.lastMessagePreview).toBe("final answer");
+  });
+
+  test("persists updated in-flight assistant messages across reload", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    const threadId = project.activeThreadId;
+
+    const created = repository.appendMessage(project.id, "assistant", "work", threadId);
+    const messageId = created.session.messages[0]!.id;
+    repository.updateThreadMessage(project.id, threadId, messageId, {
+      content: "working"
+    });
+
+    const reloadedRepository = new WorkspaceRepository((repository as any).dbPath, process.cwd());
+    const restoredProject = reloadedRepository.getProject(project.id);
+
+    expect(restoredProject.session.messages.at(-1)?.content).toBe("working");
+    expect(restoredProject.threads[0]?.lastMessagePreview).toBe("working");
   });
 
   test("deletes broken legacy thread rows during dev load recovery", () => {

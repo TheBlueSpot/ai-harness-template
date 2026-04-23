@@ -1,12 +1,26 @@
-import { For, Show } from "solid-js";
-import { createRequestId } from "../../../shared/protocol";
+import { createSignal, For, Show } from "solid-js";
+import { createRequestId, type ExecutionToolActivity } from "../../../shared/protocol";
 import { getActiveProject, harnessStore } from "../harness-store";
-import { getLatestTaskStatusText, getRunRefreshState, isRunWorking } from "../lib/run-status";
+import { getLatestTaskStatusText, getRunRefreshState, getVisibleProjectTraces, isRunWorking } from "../lib/run-status";
 import { ActionButton } from "./action-button";
+import { CopyTextButton } from "./primitives/copy-text-button";
 import { MarkdownContent } from "./markdown-content";
 import { ScrollArea } from "./primitives/scroll-area";
 import { Tooltip } from "./primitives/tooltip";
-import { CheckCircle2, Circle, CircleAlert, CircleHelp, ClipboardList, LoaderCircle, RefreshCcw, ShieldCheck, ShieldX } from "lucide-solid";
+import {
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  Circle,
+  CircleAlert,
+  CircleHelp,
+  ClipboardList,
+  LoaderCircle,
+  RefreshCcw,
+  ShieldCheck,
+  ShieldX,
+  Terminal
+} from "lucide-solid";
 
 export function TracePanel() {
   const state = harnessStore.state;
@@ -17,10 +31,12 @@ export function TracePanel() {
   const runToShow = () => activeProject()?.activeRun ?? activeProject()?.lastRun;
   const deferredBrowserApprovalCount = () => state.executionControl.deferredBrowserApprovalCount;
   const canRetryRun = () => Boolean(activeProject()?.lastRun?.retryable);
+  const visibleTraces = () => getVisibleProjectTraces(activeProject()?.traces ?? []);
   const refreshState = () => {
     const project = activeProject();
     return project ? getRunRefreshState(project, runToShow()) : { disabled: true, disabledReason: "No run available", refreshing: false };
   };
+  const [expandedToolActivityId, setExpandedToolActivityId] = createSignal<string>();
   const planRun = () => runToShow();
   const hasPlanDetails = () => Boolean(activeProject()?.latestPlan?.executionPlan);
 
@@ -288,6 +304,77 @@ export function TracePanel() {
               </div>
             </Show>
 
+            <Show when={runToShow()?.toolActivities?.length}>
+              <div class="rounded-3xl border border-(--border) bg-white/55 p-3">
+                <div class="mb-3 flex items-center gap-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--muted)">
+                  <Terminal class="h-3.5 w-3.5" />
+                  Tool activity
+                </div>
+                <div class="space-y-2">
+                  <For each={runToShow()?.toolActivities ?? []}>
+                    {(activity) => (
+                      <article class="rounded-2xl border border-(--border) bg-white/70 p-3 text-[0.675rem]">
+                        <div class="flex min-w-0 items-center justify-between gap-3 text-(--foreground)">
+                          <div class="flex min-w-0 items-center gap-2 font-semibold">
+                            <ToolActivityStatusIcon status={activity.status} />
+                            <span class="truncate">{formatToolOwner(activity)}</span>
+                            <span class="shrink-0 text-(--muted)">|</span>
+                            <span class="shrink-0">{activity.toolName}</span>
+                          </div>
+                          <span class="shrink-0 uppercase tracking-[0.14em] text-(--accent-strong)">
+                            {activity.exitCode === undefined ? activity.status : `${activity.status} ${activity.exitCode}`}
+                          </span>
+                        </div>
+                        <Show when={activity.command}>
+                          <div class="mt-2 truncate rounded-xl bg-slate-950/5 px-2 py-1 font-mono text-[0.62rem] text-(--foreground)">
+                            {activity.command}
+                          </div>
+                        </Show>
+                        <Show when={activity.outputPreview}>
+                          <MarkdownContent content={() => activity.outputPreview ?? ""} class="mt-2" size="compact" tone={activity.status === "failed" ? "danger" : "muted"} />
+                        </Show>
+                        <Show when={expandedToolActivityId() === activity.id}>
+                          <div class="mt-2 space-y-2 rounded-xl border border-(--border) bg-white/80 p-2">
+                            <Show when={activity.argsSummary}>
+                              <MarkdownContent content={() => `Args: ${activity.argsSummary}`} size="compact" tone="muted" />
+                            </Show>
+                            <Show when={activity.stdoutPreview}>
+                              <MarkdownContent content={() => `Stdout: ${activity.stdoutPreview}`} size="compact" />
+                            </Show>
+                            <Show when={activity.stderrPreview}>
+                              <MarkdownContent content={() => `Stderr: ${activity.stderrPreview}`} size="compact" tone="danger" />
+                            </Show>
+                          </div>
+                        </Show>
+                        <div class="mt-2 flex flex-wrap justify-end gap-2">
+                          <ActionButton
+                            tooltip="Toggle tool details"
+                            icon={expandedToolActivityId() === activity.id ? <ChevronDown class="h-3.5 w-3.5" /> : <ChevronRight class="h-3.5 w-3.5" />}
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => setExpandedToolActivityId(expandedToolActivityId() === activity.id ? undefined : activity.id)}
+                          >
+                            Details
+                          </ActionButton>
+                          <CopyTextButton
+                            value={formatToolActivityCopyText(activity)}
+                            tooltip="Copy tool output"
+                            copiedTitle="Tool output copied"
+                            copiedDescription="Tool output copied to clipboard."
+                            size="sm"
+                            variant="ghost"
+                            ariaLabel="Copy tool output"
+                          >
+                            Copy
+                          </CopyTextButton>
+                        </div>
+                      </article>
+                    )}
+                  </For>
+                </div>
+              </div>
+            </Show>
+
             <Show when={runToShow()?.browserSessions?.length}>
               <div class="rounded-3xl border border-(--border) bg-white/55 p-3">
                 <div class="mb-3 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--muted)">
@@ -383,7 +470,7 @@ export function TracePanel() {
 
             <ScrollArea class="flex-1 min-h-0 space-y-3 pr-2">
               <Show
-                when={project().traces.length > 0}
+                when={visibleTraces().length > 0}
                 fallback={
                   <div class="rounded-3xl border border-dashed border-(--border) bg-white/40 p-5 text-[0.675rem] text-(--muted)">
                     No trace events yet.
@@ -391,7 +478,7 @@ export function TracePanel() {
                 }
               >
                 <div class="space-y-3">
-                  <For each={project().traces}>
+                  <For each={visibleTraces()}>
                     {(trace) => (
                       <article class="rounded-3xl border border-(--border) bg-white/55 p-3">
                         <div class="mb-2 flex items-center justify-between gap-3 text-[0.585rem] font-semibold uppercase tracking-[0.16em] text-(--accent-strong)">
@@ -427,6 +514,37 @@ function TaskStatusIcon(props: { status: "pending" | "running" | "completed" | "
     default:
       return <Circle class="h-3.5 w-3.5 text-(--muted)" aria-label="Subtask pending" />;
   }
+}
+
+function ToolActivityStatusIcon(props: { status: ExecutionToolActivity["status"] }) {
+  switch (props.status) {
+    case "running":
+      return <LoaderCircle class="h-3.5 w-3.5 animate-spin" aria-label="Tool running" />;
+    case "completed":
+      return <CheckCircle2 class="h-3.5 w-3.5 text-emerald-600" aria-label="Tool completed" />;
+    case "failed":
+    case "timed-out":
+      return <CircleAlert class="h-3.5 w-3.5 text-rose-600" aria-label="Tool failed" />;
+  }
+}
+
+function formatToolOwner(activity: ExecutionToolActivity) {
+  if (activity.owner === "subagent") {
+    return activity.subagentId ? `Subagent ${activity.subagentId}` : "Subagent";
+  }
+  return activity.owner === "aggregator" ? "Aggregator" : "Main";
+}
+
+function formatToolActivityCopyText(activity: ExecutionToolActivity) {
+  return [
+    `${formatToolOwner(activity)} ${activity.toolName} ${activity.status}`,
+    activity.exitCode === undefined ? "" : `Exit: ${activity.exitCode}`,
+    activity.command ? `Command:\n${activity.command}` : "",
+    activity.argsSummary ? `Args:\n${activity.argsSummary}` : "",
+    activity.outputPreview ? `Output:\n${activity.outputPreview}` : "",
+    activity.stdoutPreview ? `Stdout:\n${activity.stdoutPreview}` : "",
+    activity.stderrPreview ? `Stderr:\n${activity.stderrPreview}` : ""
+  ].filter(Boolean).join("\n\n");
 }
 
 function formatVerificationSummary(verification: Array<{ status: "passed" | "failed" | "unknown" }>) {

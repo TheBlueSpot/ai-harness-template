@@ -116,6 +116,24 @@ createUiTest("ProjectSwitcherDialog", () => {
     expect((commands[0] as { payload: { rootPath: string } }).payload.rootPath).toBe("C:\\repo-three");
   });
 
+  it("creates exact absolute paths through project.create", async () => {
+    const commands: unknown[] = [];
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        projectSwitcherOpen: true,
+        projectSearchQuery: "C:\\new-repo"
+      })
+    );
+
+    captureDispatchedCommands(commands as never[]);
+    render(() => <ProjectSwitcherDialog />);
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+
+    expect(commands).toHaveLength(1);
+    expect((commands[0] as { type: string }).type).toBe("project.create");
+    expect((commands[0] as { payload: { rootPath: string } }).payload.rootPath).toBe("C:\\new-repo");
+  });
+
   it("activates exact already-open paths instead of adding again", async () => {
     const commands: unknown[] = [];
     const activeProject = createViewProjectFixture({

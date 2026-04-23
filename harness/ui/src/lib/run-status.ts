@@ -9,12 +9,21 @@ export type ChatStatusCard = {
   spinning?: boolean;
 };
 
+export function isHiddenUserTraceStage(stage: AgentTrace["stage"]) {
+  return stage === "aggregation-start" || stage === "aggregation-complete";
+}
+
+export function getVisibleProjectTraces(traces: AgentTrace[]) {
+  return traces.filter((trace) => !isHiddenUserTraceStage(trace.stage));
+}
+
 export function getProjectStatusCards(
   project: ViewProjectState,
   preflightEntry?: { requestId: string; preflight: RunPreflight }
 ) {
   const run = project.activeRun ?? project.lastRun;
   const cards: ChatStatusCard[] = [];
+  const visibleTraces = getVisibleProjectTraces(project.traces);
 
   if (preflightEntry) {
     cards.push({
@@ -61,23 +70,15 @@ export function getProjectStatusCards(
     });
   }
 
-  pushTraceCard(cards, project.traces, ["subagent-retry"], "retry", "retry", "warning");
-  pushTraceCard(cards, project.traces, ["subagent-error"], "fail", "fail", "error");
-  pushTraceCard(cards, project.traces, ["merge-start", "merge-conflict", "merge-complete"], "merge", "merge", "info");
+  pushTraceCard(cards, visibleTraces, ["subagent-retry"], "retry", "retry", "warning");
+  pushTraceCard(cards, visibleTraces, ["subagent-error"], "fail", "fail", "error");
+  pushTraceCard(cards, visibleTraces, ["merge-start", "merge-conflict", "merge-complete"], "merge", "merge", "info");
   pushTraceCard(
     cards,
-    project.traces,
+    visibleTraces,
     ["verification-start", "verification-complete"],
     "verify",
     "verify",
-    "info"
-  );
-  pushTraceCard(
-    cards,
-    project.traces,
-    ["aggregation-start", "aggregation-complete"],
-    "aggregate",
-    "aggregate",
     "info"
   );
 
@@ -85,7 +86,7 @@ export function getProjectStatusCards(
 }
 
 export function getLatestTaskStatusText(project: ViewProjectState, task: SubagentTaskState) {
-  const trace = getLatestTraceForSubagent(project.traces, task.id);
+  const trace = getLatestTraceForSubagent(getVisibleProjectTraces(project.traces), task.id);
   if (trace) {
     return toCavemanTrace(trace);
   }
@@ -232,10 +233,6 @@ function toCavemanTrace(trace: AgentTrace) {
       return "check build.";
     case "verification-complete":
       return "check done.";
-    case "aggregation-start":
-      return "join agent work.";
-    case "aggregation-complete":
-      return "join done.";
     default:
       return trace.message.toLowerCase();
   }

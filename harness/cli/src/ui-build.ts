@@ -12,6 +12,29 @@ type UiBuildOptions = {
   minify?: boolean;
 };
 
+type TimerApi = {
+  setTimeout: typeof globalThis.setTimeout;
+  clearTimeout: typeof globalThis.clearTimeout;
+};
+
+type LiveReloadState = {
+  revision: number;
+  building: boolean;
+  pending: boolean;
+};
+
+type CreateUiAssetManagerOptions = {
+  debounceMs?: number;
+  timerApi?: TimerApi;
+  buildUiBundle?: (options?: UiBuildOptions) => Promise<void>;
+  watchSourceDir?: (
+    sourceDir: string,
+    listener: () => void
+  ) => {
+    close: () => void;
+  };
+};
+
 export async function buildUiBundle({ minify = false }: UiBuildOptions = {}) {
   const start = performance.now();
 
@@ -64,21 +87,33 @@ export async function buildUiBundle({ minify = false }: UiBuildOptions = {}) {
   console.log(`Bundled page in ${Math.round(performance.now() - start)}ms: dist/ui/index.html`);
 }
 
-export function createUiAssetManager() {
+export function createUiAssetManager(options: CreateUiAssetManagerOptions = {}) {
+  const debounceMs = Math.max(0, options.debounceMs ?? 0);
+  const timerApi = options.timerApi ?? {
+    setTimeout: globalThis.setTimeout,
+    clearTimeout: globalThis.clearTimeout
+  };
+  const buildUi = options.buildUiBundle ?? buildUiBundle;
+  const watchSourceDir =
+    options.watchSourceDir ??
+    ((sourceDir: string, listener: () => void) => watch(sourceDir, { recursive: true }, listener));
   let buildInFlight: Promise<void> | undefined;
   let rebuildQueued = false;
   let watcher: FSWatcher | undefined;
+  let rebuildTimer: ReturnType<typeof setTimeout> | undefined;
+  let revision = 0;
 
   const runBuild = async () => {
     try {
-      await buildUiBundle();
+      await buildUi();
+      revision += 1;
     } catch (error) {
       console.error(error);
     } finally {
       buildInFlight = undefined;
       if (rebuildQueued) {
         rebuildQueued = false;
-        buildInFlight = runBuild();
+        queueBuild();
       }
     }
   };
@@ -91,6 +126,28 @@ export function createUiAssetManager() {
 
     buildInFlight = runBuild();
     return buildInFlight;
+  };
+
+  const clearRebuildTimer = () => {
+    if (!rebuildTimer) {
+      return;
+    }
+
+    timerApi.clearTimeout(rebuildTimer);
+    rebuildTimer = undefined;
+  };
+
+  const queueBuild = () => {
+    if (debounceMs === 0) {
+      return scheduleBuild();
+    }
+
+    clearRebuildTimer();
+    rebuildTimer = timerApi.setTimeout(() => {
+      rebuildTimer = undefined;
+      void scheduleBuild();
+    }, debounceMs);
+    return undefined;
   };
 
   return {
@@ -109,9 +166,9 @@ export function createUiAssetManager() {
         return;
       }
 
-      watcher = watch(uiSourceDir, { recursive: true }, () => {
-        void scheduleBuild();
-      });
+      watcher = watchSourceDir(uiSourceDir, () => {
+        void queueBuild();
+      }) as FSWatcher;
     },
     resolveAsset(pathname: string) {
       const relativePath = pathname === "/" ? "index.html" : pathname.slice(1);
@@ -127,7 +184,15 @@ export function createUiAssetManager() {
 
       return assetPath;
     },
+    getLiveReloadState(): LiveReloadState {
+      return {
+        revision,
+        building: buildInFlight !== undefined,
+        pending: rebuildTimer !== undefined || rebuildQueued
+      };
+    },
     dispose() {
+      clearRebuildTimer();
       watcher?.close();
       watcher = undefined;
     }

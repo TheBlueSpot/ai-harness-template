@@ -17,6 +17,7 @@ import type {
   PiAgentPromptResult
 } from "./pi-agent-adapter";
 import type { BranchfsSubagentSnapshot } from "./pi-subagents";
+import { useGitProjectFixture } from "./test-support/git-project-fixture";
 
 const tempPaths: string[] = [];
 
@@ -63,9 +64,21 @@ afterEach(async () => {
 });
 
 describe("branchfs subagent integration", () => {
+  const gitFixture = useGitProjectFixture({
+    fixtureName: "branchfs-subagent-integration",
+    packageName: "branchfs-subagent-test",
+    readmeTitle: "# BranchFS Test\n",
+    gitIgnore: ".local\n",
+    extraFiles: [
+      {
+        relativePath: "README.md",
+        content: "# BranchFS Test\n"
+      }
+    ]
+  });
+
   test("flushes merged isolated subagent changes back to root", async () => {
-    const rootPath = createTempDir("branchfs-subagent-merge");
-    seedBunGitProject(rootPath);
+    const rootPath = await gitFixture.createRepoClone("branchfs-subagent-merge");
 
     const snapshots = await Promise.all([
       createSnapshot(rootPath, "task-1", (lease) => {
@@ -103,8 +116,7 @@ describe("branchfs subagent integration", () => {
   });
 
   test("uses merge resolver when isolated subagent snapshots conflict", async () => {
-    const rootPath = createTempDir("branchfs-subagent-conflict");
-    seedBunGitProject(rootPath);
+    const rootPath = await gitFixture.createRepoClone("branchfs-subagent-conflict");
     writeFileSync(path.join(rootPath, "shared.txt"), "base\n");
     runSync(["git", "add", "shared.txt"], rootPath);
     runSync(["git", "commit", "-m", "shared"], rootPath);
@@ -145,8 +157,7 @@ describe("branchfs subagent integration", () => {
   });
 
   test("scopes integration flush to the selected nested project path", async () => {
-    const repoRoot = createTempDir("branchfs-subagent-slice");
-    seedBunGitProject(repoRoot);
+    const repoRoot = await gitFixture.createRepoClone("branchfs-subagent-slice");
     const projectRoot = path.join(repoRoot, "context");
     mkdirSync(projectRoot, { recursive: true });
     writeFileSync(path.join(projectRoot, "guide.md"), "base guide\n");
@@ -256,17 +267,6 @@ function seedBunProject(rootPath: string) {
     )
   );
   writeFileSync(path.join(rootPath, "bun.lock"), "");
-}
-
-function seedBunGitProject(rootPath: string) {
-  seedBunProject(rootPath);
-  writeFileSync(path.join(rootPath, ".gitignore"), ".local\n");
-  writeFileSync(path.join(rootPath, "README.md"), "# BranchFS Test\n");
-  runSync(["git", "init"], rootPath);
-  runSync(["git", "config", "user.name", "Test User"], rootPath);
-  runSync(["git", "config", "user.email", "test@example.com"], rootPath);
-  runSync(["git", "add", "."], rootPath);
-  runSync(["git", "commit", "-m", "init"], rootPath);
 }
 
 function runSync(command: string[], cwd: string) {

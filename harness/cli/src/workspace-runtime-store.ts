@@ -7,6 +7,7 @@ import {
   type ModeDefinition,
   type ProjectContextUsage,
   type ProjectId,
+  type StreamingTailSegment,
   type WorkspaceRuleSource,
   type WorkspaceProjectState,
   type WorkspaceState
@@ -18,6 +19,7 @@ export type RuntimeProjectState = WorkspaceProjectState & {
   contextUsage?: ProjectContextUsage;
   traces: AgentTrace[];
   streamingAssistantText: string;
+  streamingTailSegments: StreamingTailSegment[];
   draft: string;
   lastError?: string;
 };
@@ -179,10 +181,18 @@ export class WorkspaceRuntimeStore {
     }));
   }
 
+  setStreamingTail(projectId: ProjectId, segments: StreamingTailSegment[]) {
+    this.updateProject(projectId, (project) => ({
+      ...project,
+      streamingTailSegments: segments
+    }));
+  }
+
   clearStreaming(projectId: ProjectId) {
     this.updateProject(projectId, (project) => ({
       ...project,
-      streamingAssistantText: ""
+      streamingAssistantText: "",
+      streamingTailSegments: []
     }));
   }
 
@@ -195,6 +205,7 @@ export class WorkspaceRuntimeStore {
       contextUsage: undefined,
       traces: [],
       streamingAssistantText: "",
+      streamingTailSegments: [],
       lastError: undefined,
       session: {
         ...project.session,
@@ -276,6 +287,7 @@ function createRuntimeProject(project: WorkspaceProjectState): RuntimeProjectSta
     contextUsage: undefined,
     traces: [],
     streamingAssistantText: "",
+    streamingTailSegments: [],
     draft: "",
     lastError: undefined
   };
@@ -287,11 +299,16 @@ function stripRuntimeProject(project: RuntimeProjectState): WorkspaceProjectStat
     name: project.name,
     rootPath: project.rootPath,
     activeThreadId: project.activeThreadId,
+    selectedModeId: project.selectedModeId,
+    projectModes: project.projectModes,
+    projectRuleSource: project.projectRuleSource,
+    threadMemorySummary: project.threadMemorySummary,
     threads: project.threads,
     session: project.session,
     activeCliSession: project.activeCliSession,
     activeRun: project.activeRun,
-    lastRun: project.lastRun
+    lastRun: project.lastRun,
+    runSummaries: project.runSummaries
   };
 }
 
@@ -303,6 +320,7 @@ function hydrateProjectState(existing: RuntimeProjectState, incoming: WorkspaceP
     contextUsage: existing.contextUsage,
     traces: existing.traces,
     streamingAssistantText: existing.streamingAssistantText,
+    streamingTailSegments: existing.streamingTailSegments,
     draft: existing.draft,
     lastError: existing.lastError,
     session: {

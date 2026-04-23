@@ -107,6 +107,10 @@ export function setActiveToastStore(store: ToastStoreApi | undefined) {
   activeToastStore = store;
 }
 
+export function getActiveToastStore() {
+  return activeToastStore;
+}
+
 export function requireToastStore() {
   if (!activeToastStore) {
     throw new Error("Toast store not initialized");

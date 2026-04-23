@@ -1,0 +1,1079 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Missile Command: Kinetic Deflector</title>
+  <style>
+    :root {
+      --bg: #081019;
+      --bg-2: #112338;
+      --panel: rgba(6, 15, 25, 0.76);
+      --line: rgba(173, 223, 255, 0.18);
+      --ink: #eef7ff;
+      --muted: #8da5bd;
+      --accent: #78d2ff;
+      --accent-hot: #ffbc64;
+      --good: #94f0b6;
+      --bad: #ff7d73;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      overflow: hidden;
+      color: var(--ink);
+      font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at top, rgba(120, 210, 255, 0.18), transparent 24%),
+        radial-gradient(circle at 80% 18%, rgba(255, 188, 100, 0.14), transparent 18%),
+        linear-gradient(180deg, var(--bg-2), var(--bg));
+    }
+
+    body {
+      display: grid;
+      place-items: center;
+    }
+
+    .shell {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+    }
+
+    .shell::before,
+    .shell::after {
+      content: "";
+      position: absolute;
+      width: 32vw;
+      height: 32vw;
+      border-radius: 50%;
+      filter: blur(90px);
+      opacity: 0.24;
+      pointer-events: none;
+    }
+
+    .shell::before {
+      top: -10vh;
+      left: -8vw;
+      background: rgba(120, 210, 255, 0.32);
+    }
+
+    .shell::after {
+      right: -10vw;
+      bottom: -12vh;
+      background: rgba(255, 188, 100, 0.28);
+    }
+
+    .frame {
+      position: relative;
+      width: min(1380px, 96vw);
+      padding: 18px;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      aspect-ratio: 16 / 9;
+      border-radius: 28px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      box-shadow:
+        0 28px 80px rgba(0, 0, 0, 0.42),
+        inset 0 1px 0 rgba(255, 255, 255, 0.06);
+      background:
+        radial-gradient(circle at 50% 0%, rgba(120, 210, 255, 0.14), transparent 30%),
+        linear-gradient(180deg, rgba(17, 35, 56, 0.94), rgba(5, 10, 18, 0.98));
+    }
+
+    .hud,
+    .footer {
+      position: absolute;
+      border-radius: 20px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      backdrop-filter: blur(12px);
+      pointer-events: none;
+    }
+
+    .hud {
+      top: 32px;
+      left: 32px;
+      max-width: min(420px, calc(100% - 64px));
+      padding: 14px 16px;
+    }
+
+    .hud h1 {
+      margin: 0 0 8px;
+      font-size: 18px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+
+    .hud p,
+    .footer p {
+      margin: 0;
+      font-size: 13px;
+      line-height: 1.45;
+      color: var(--muted);
+    }
+
+    .footer {
+      right: 32px;
+      bottom: 32px;
+      padding: 12px 14px;
+      text-align: right;
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="frame">
+      <canvas id="game" width="1600" height="900" aria-label="Missile Command Kinetic Deflector"></canvas>
+      <article class="hud">
+        <h1>Missile Command: Kinetic Deflector</h1>
+        <p>Drag to paint kinetic lines. Incoming warheads ricochet off your field and score only when flung back into orbit.</p>
+      </article>
+      <article class="footer">
+        <p>Kenney asset manifest ready. Missing files fall back to vector art and synth SFX.</p>
+      </article>
+    </section>
+  </main>
+
+  <script type="module">
+    const WIDTH = 1600;
+    const HEIGHT = 900;
+    const TAU = Math.PI * 2;
+
+    const GameState = Object.freeze({
+      MENU: "menu",
+      PLAYING: "playing",
+      WIN: "win",
+      LOSE: "lose",
+    });
+
+    const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+    const lerp = (a, b, t) => a + (b - a) * t;
+    const randomRange = (min, max) => min + Math.random() * (max - min);
+    const distance = (ax, ay, bx, by) => Math.hypot(bx - ax, by - ay);
+
+    class Vec2 {
+      constructor(x = 0, y = 0) {
+        this.x = x;
+        this.y = y;
+      }
+
+      copy() {
+        return new Vec2(this.x, this.y);
+      }
+
+      add(other) {
+        this.x += other.x;
+        this.y += other.y;
+        return this;
+      }
+
+      scale(amount) {
+        this.x *= amount;
+        this.y *= amount;
+        return this;
+      }
+
+      length() {
+        return Math.hypot(this.x, this.y);
+      }
+
+      normalize() {
+        const len = this.length() || 1;
+        this.x /= len;
+        this.y /= len;
+        return this;
+      }
+
+      static subtract(a, b) {
+        return new Vec2(a.x - b.x, a.y - b.y);
+      }
+
+      static dot(a, b) {
+        return a.x * b.x + a.y * b.y;
+      }
+    }
+
+    class AssetLoader {
+      constructor(manifest) {
+        this.manifest = manifest;
+        this.images = new Map();
+        this.audio = new Map();
+        this.status = new Map();
+      }
+
+      async loadAll() {
+        const imagePromises = this.manifest.images.map((entry) => this.loadImage(entry));
+        const audioPromises = this.manifest.audio.map((entry) => this.loadAudio(entry));
+        await Promise.all([...imagePromises, ...audioPromises]);
+      }
+
+      loadImage(entry) {
+        return new Promise((resolve) => {
+          const img = new Image();
+          img.onload = () => {
+            this.images.set(entry.id, img);
+            this.status.set(entry.id, "loaded");
+            resolve();
+          };
+          img.onerror = () => {
+            this.status.set(entry.id, "missing");
+            resolve();
+          };
+          img.src = entry.src;
+        });
+      }
+
+      loadAudio(entry) {
+        return new Promise((resolve) => {
+          const audio = new Audio();
+          audio.preload = "auto";
+          audio.oncanplaythrough = () => {
+            this.audio.set(entry.id, audio);
+            this.status.set(entry.id, "loaded");
+            resolve();
+          };
+          audio.onerror = () => {
+            this.status.set(entry.id, "missing");
+            resolve();
+          };
+          audio.src = entry.src;
+          audio.load();
+          setTimeout(resolve, 1400);
+        });
+      }
+
+      getImage(id) {
+        return this.images.get(id) || null;
+      }
+
+      getAudio(id) {
+        return this.audio.get(id) || null;
+      }
+    }
+
+    class AudioSystem {
+      constructor(loader) {
+        this.loader = loader;
+        this.ctx = null;
+      }
+
+      unlock() {
+        if (!this.ctx) {
+          const Ctx = window.AudioContext || window.webkitAudioContext;
+          if (Ctx) {
+            this.ctx = new Ctx();
+          }
+        }
+
+        if (this.ctx && this.ctx.state === "suspended") {
+          this.ctx.resume();
+        }
+      }
+
+      play(id, synthFallback) {
+        this.unlock();
+        const source = this.loader.getAudio(id);
+        if (source) {
+          const audio = source.cloneNode();
+          audio.volume = 0.45;
+          void audio.play().catch(() => synthFallback?.(this.ctx));
+          return;
+        }
+        synthFallback?.(this.ctx);
+      }
+
+      tone(config) {
+        if (!this.ctx) {
+          return;
+        }
+        const now = this.ctx.currentTime;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = config.type || "triangle";
+        osc.frequency.setValueAtTime(config.from, now);
+        osc.frequency.exponentialRampToValueAtTime(config.to, now + config.duration);
+        gain.gain.setValueAtTime(config.volume, now);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + config.duration);
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start(now);
+        osc.stop(now + config.duration);
+      }
+    }
+
+    class Particle {
+      constructor(x, y, options = {}) {
+        this.position = new Vec2(x, y);
+        this.velocity = new Vec2(
+          options.vx ?? randomRange(-180, 180),
+          options.vy ?? randomRange(-180, 180)
+        );
+        this.life = options.life ?? randomRange(0.35, 0.9);
+        this.maxLife = this.life;
+        this.size = options.size ?? randomRange(2, 5);
+        this.color = options.color ?? "rgba(120, 210, 255, 0.9)";
+        this.drag = options.drag ?? 0.95;
+      }
+
+      update(dt) {
+        this.life -= dt;
+        this.position.x += this.velocity.x * dt;
+        this.position.y += this.velocity.y * dt;
+        this.velocity.scale(this.drag);
+        return this.life > 0;
+      }
+
+      draw(ctx) {
+        const alpha = clamp(this.life / this.maxLife, 0, 1);
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = this.color;
+        ctx.beginPath();
+        ctx.arc(this.position.x, this.position.y, this.size * alpha, 0, TAU);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    class ParticleSystem {
+      constructor() {
+        this.items = [];
+      }
+
+      burst(x, y, count, options = {}) {
+        for (let i = 0; i < count; i += 1) {
+          this.items.push(new Particle(x, y, options));
+        }
+      }
+
+      update(dt) {
+        this.items = this.items.filter((particle) => particle.update(dt));
+      }
+
+      draw(ctx) {
+        for (const particle of this.items) {
+          particle.draw(ctx);
+        }
+      }
+    }
+
+    class KineticLine {
+      constructor(start, end) {
+        this.start = start.copy();
+        this.end = end.copy();
+        this.life = 4.3;
+        this.maxLife = this.life;
+        this.thickness = 12;
+        this.cooldown = 0;
+      }
+
+      update(dt) {
+        this.life -= dt;
+        this.cooldown = Math.max(0, this.cooldown - dt);
+        return this.life > 0;
+      }
+
+      draw(ctx) {
+        const alpha = clamp(this.life / this.maxLife, 0, 1);
+        ctx.save();
+        ctx.lineCap = "round";
+        ctx.strokeStyle = `rgba(120, 210, 255, ${0.35 + alpha * 0.65})`;
+        ctx.shadowBlur = 20;
+        ctx.shadowColor = "rgba(120, 210, 255, 0.9)";
+        ctx.lineWidth = this.thickness * (0.8 + alpha * 0.5);
+        ctx.beginPath();
+        ctx.moveTo(this.start.x, this.start.y);
+        ctx.lineTo(this.end.x, this.end.y);
+        ctx.stroke();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = `rgba(255, 255, 255, ${0.55 * alpha})`;
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
+    class Missile {
+      constructor(origin, target, speedScale = 1) {
+        this.position = origin.copy();
+        this.previous = origin.copy();
+        this.target = target.copy();
+        const heading = Vec2.subtract(target, origin).normalize();
+        const speed = randomRange(120, 170) * speedScale;
+        this.velocity = heading.scale(speed);
+        this.radius = 7;
+        this.deflected = false;
+        this.active = true;
+      }
+
+      update(dt) {
+        this.previous.x = this.position.x;
+        this.previous.y = this.position.y;
+        this.position.x += this.velocity.x * dt;
+        this.position.y += this.velocity.y * dt;
+      }
+
+      draw(ctx) {
+        ctx.save();
+        ctx.lineCap = "round";
+        ctx.strokeStyle = this.deflected ? "rgba(148, 240, 182, 0.9)" : "rgba(255, 125, 115, 0.85)";
+        ctx.shadowBlur = 12;
+        ctx.shadowColor = ctx.strokeStyle;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(this.previous.x, this.previous.y);
+        ctx.lineTo(this.position.x, this.position.y);
+        ctx.stroke();
+        ctx.fillStyle = this.deflected ? "#b4ffca" : "#ffd6c7";
+        ctx.beginPath();
+        ctx.arc(this.position.x, this.position.y, this.radius, 0, TAU);
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+
+    class City {
+      constructor(x, y) {
+        this.x = x;
+        this.y = y;
+        this.alive = true;
+      }
+
+      get radius() {
+        return 36;
+      }
+    }
+
+    class InputController {
+      constructor(canvas) {
+        this.canvas = canvas;
+        this.pointer = new Vec2();
+        this.down = false;
+        this.dragStart = null;
+        this.dragCurrent = null;
+        this.justReleased = null;
+        this.bind();
+      }
+
+      bind() {
+        const positionFromEvent = (event) => {
+          const rect = this.canvas.getBoundingClientRect();
+          const sx = WIDTH / rect.width;
+          const sy = HEIGHT / rect.height;
+          return new Vec2(
+            (event.clientX - rect.left) * sx,
+            (event.clientY - rect.top) * sy
+          );
+        };
+
+        this.canvas.addEventListener("pointerdown", (event) => {
+          this.canvas.setPointerCapture(event.pointerId);
+          this.down = true;
+          this.pointer = positionFromEvent(event);
+          this.dragStart = this.pointer.copy();
+          this.dragCurrent = this.pointer.copy();
+        });
+
+        this.canvas.addEventListener("pointermove", (event) => {
+          this.pointer = positionFromEvent(event);
+          if (this.down) {
+            this.dragCurrent = this.pointer.copy();
+          }
+        });
+
+        const release = (event) => {
+          this.pointer = positionFromEvent(event);
+          if (this.down && this.dragStart) {
+            this.justReleased = {
+              start: this.dragStart.copy(),
+              end: this.pointer.copy(),
+            };
+          }
+          this.down = false;
+          this.dragStart = null;
+          this.dragCurrent = null;
+        };
+
+        this.canvas.addEventListener("pointerup", release);
+        this.canvas.addEventListener("pointercancel", release);
+
+        window.addEventListener("keydown", (event) => {
+          if (event.code === "Space" || event.code === "Enter") {
+            this.activatePressed = true;
+          }
+        });
+      }
+
+      consumeRelease() {
+        const released = this.justReleased;
+        this.justReleased = null;
+        return released;
+      }
+
+      consumeActivate() {
+        const value = !!this.activatePressed;
+        this.activatePressed = false;
+        return value;
+      }
+    }
+
+    class Renderer {
+      constructor(ctx, assets) {
+        this.ctx = ctx;
+        this.assets = assets;
+      }
+
+      drawBackground(starsOffset) {
+        const { ctx } = this;
+        ctx.save();
+        ctx.clearRect(0, 0, WIDTH, HEIGHT);
+
+        const gradient = ctx.createLinearGradient(0, 0, 0, HEIGHT);
+        gradient.addColorStop(0, "#112338");
+        gradient.addColorStop(0.65, "#09111a");
+        gradient.addColorStop(1, "#05080e");
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+        const starfield = this.assets.getImage("background");
+        if (starfield) {
+          const shift = starsOffset % WIDTH;
+          ctx.globalAlpha = 0.35;
+          ctx.drawImage(starfield, -shift, 0, WIDTH, HEIGHT);
+          ctx.drawImage(starfield, WIDTH - shift, 0, WIDTH, HEIGHT);
+          ctx.globalAlpha = 1;
+        } else {
+          for (let i = 0; i < 140; i += 1) {
+            const x = (i * 121 + starsOffset * 0.6) % WIDTH;
+            const y = (i * 67) % (HEIGHT * 0.74);
+            const size = (i % 5) + 1;
+            ctx.fillStyle = `rgba(255,255,255,${0.12 + (i % 4) * 0.14})`;
+            ctx.fillRect(x, y, size, size);
+          }
+        }
+
+        const horizon = ctx.createLinearGradient(0, HEIGHT * 0.68, 0, HEIGHT);
+        horizon.addColorStop(0, "rgba(17, 35, 56, 0)");
+        horizon.addColorStop(0.45, "rgba(22, 45, 71, 0.5)");
+        horizon.addColorStop(1, "rgba(5, 8, 14, 1)");
+        ctx.fillStyle = horizon;
+        ctx.fillRect(0, HEIGHT * 0.64, WIDTH, HEIGHT * 0.36);
+
+        ctx.fillStyle = "#071018";
+        ctx.beginPath();
+        ctx.moveTo(0, HEIGHT);
+        ctx.lineTo(0, HEIGHT * 0.79);
+        for (let x = 0; x <= WIDTH; x += 140) {
+          const peak = HEIGHT * 0.72 + Math.sin(x * 0.01) * 34;
+          ctx.lineTo(x, peak);
+        }
+        ctx.lineTo(WIDTH, HEIGHT);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+
+      drawCity(city, assets) {
+        const { ctx } = this;
+        if (!city.alive) {
+          return;
+        }
+        const sprite = assets.getImage("city");
+        if (sprite) {
+          ctx.drawImage(sprite, city.x - 36, city.y - 36, 72, 72);
+          return;
+        }
+        ctx.save();
+        ctx.translate(city.x, city.y);
+        ctx.fillStyle = "#a7c3d8";
+        ctx.beginPath();
+        ctx.rect(-28, -20, 56, 20);
+        ctx.rect(-16, -40, 32, 20);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(120, 210, 255, 0.45)";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(-28, -20, 56, 20);
+        ctx.strokeRect(-16, -40, 32, 20);
+        ctx.restore();
+      }
+
+      drawLauncher(x, y, active) {
+        const { ctx } = this;
+        const sprite = this.assets.getImage("launcher");
+        if (sprite) {
+          ctx.save();
+          ctx.globalAlpha = active ? 1 : 0.35;
+          ctx.drawImage(sprite, x - 28, y - 42, 56, 56);
+          ctx.restore();
+          return;
+        }
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.fillStyle = active ? "#9ae7ff" : "#3a5a73";
+        ctx.beginPath();
+        ctx.moveTo(-18, 10);
+        ctx.lineTo(18, 10);
+        ctx.lineTo(26, -8);
+        ctx.lineTo(0, -28);
+        ctx.lineTo(-26, -8);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+
+      drawOverlay(title, subtitle, accent) {
+        const { ctx } = this;
+        ctx.save();
+        ctx.fillStyle = "rgba(6, 15, 25, 0.58)";
+        ctx.fillRect(0, 0, WIDTH, HEIGHT);
+        ctx.translate(WIDTH / 2, HEIGHT / 2);
+        ctx.fillStyle = accent;
+        ctx.font = "700 68px Trebuchet MS, sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText(title, 0, -30);
+        ctx.fillStyle = "#eef7ff";
+        ctx.font = "400 28px Trebuchet MS, sans-serif";
+        ctx.fillText(subtitle, 0, 26);
+        ctx.font = "400 20px Trebuchet MS, sans-serif";
+        ctx.fillStyle = "#a5bdd1";
+        ctx.fillText("Click, press Space, or Enter", 0, 82);
+        ctx.restore();
+      }
+    }
+
+    class Game {
+      constructor(canvas) {
+        this.canvas = canvas;
+        this.ctx = canvas.getContext("2d");
+        this.input = new InputController(canvas);
+        this.assets = new AssetLoader({
+          images: [
+            { id: "background", src: "./assets/images/backgroundStars.png" },
+            { id: "city", src: "./assets/images/buildingTiles_010.png" },
+            { id: "launcher", src: "./assets/images/towerDefense_tile249.png" },
+            { id: "missile", src: "./assets/images/laserBlue01.png" },
+          ],
+          audio: [
+            { id: "draw", src: "./assets/audio/laserSmall_000.ogg" },
+            { id: "bounce", src: "./assets/audio/impactMetal_001.ogg" },
+            { id: "loss", src: "./assets/audio/lowThreeTone.ogg" },
+            { id: "win", src: "./assets/audio/jingle_win_00.ogg" },
+          ],
+        });
+        this.audio = new AudioSystem(this.assets);
+        this.renderer = new Renderer(this.ctx, this.assets);
+        this.particles = new ParticleSystem();
+        this.state = GameState.MENU;
+        this.starScroll = 0;
+        this.lines = [];
+        this.missiles = [];
+        this.cities = [];
+        this.launcherCharges = 3;
+        this.maxCharges = 3;
+        this.chargeTimer = 0;
+        this.wave = 0;
+        this.score = 0;
+        this.savedMissiles = 0;
+        this.waveTimer = 0;
+        this.spawnedInWave = 0;
+        this.waveQuota = 0;
+        this.waveClearedDelay = 0;
+        this.lastTime = 0;
+      }
+
+      async init() {
+        await this.assets.loadAll();
+        this.resetSession();
+        requestAnimationFrame((time) => this.frame(time));
+      }
+
+      resetSession() {
+        this.lines = [];
+        this.missiles = [];
+        this.cities = [
+          new City(240, 760),
+          new City(520, 780),
+          new City(800, 748),
+          new City(1080, 780),
+          new City(1360, 760),
+        ];
+        this.launcherCharges = this.maxCharges;
+        this.chargeTimer = 0;
+        this.wave = 0;
+        this.score = 0;
+        this.savedMissiles = 0;
+        this.startWave();
+      }
+
+      startWave() {
+        this.wave += 1;
+        this.spawnedInWave = 0;
+        this.waveQuota = 6 + this.wave * 3;
+        this.waveTimer = 0.4;
+        this.waveClearedDelay = 0;
+      }
+
+      frame(time) {
+        const dt = Math.min(0.033, (time - this.lastTime) / 1000 || 0.016);
+        this.lastTime = time;
+        this.update(dt);
+        this.draw();
+        requestAnimationFrame((next) => this.frame(next));
+      }
+
+      setState(nextState) {
+        this.state = nextState;
+      }
+
+      update(dt) {
+        this.starScroll += 14 * dt;
+        this.particles.update(dt);
+
+        if (this.state === GameState.MENU) {
+          if (this.input.consumeActivate() || this.input.consumeRelease()) {
+            this.audio.unlock();
+            this.resetSession();
+            this.setState(GameState.PLAYING);
+          }
+          return;
+        }
+
+        if (this.state === GameState.WIN || this.state === GameState.LOSE) {
+          if (this.input.consumeActivate() || this.input.consumeRelease()) {
+            this.resetSession();
+            this.setState(GameState.PLAYING);
+          }
+          return;
+        }
+
+        this.updatePlaying(dt);
+      }
+
+      updatePlaying(dt) {
+        this.chargeTimer += dt;
+        if (this.chargeTimer >= 1.2) {
+          this.chargeTimer = 0;
+          this.launcherCharges = clamp(this.launcherCharges + 1, 0, this.maxCharges);
+        }
+
+        const release = this.input.consumeRelease();
+        if (release && this.launcherCharges > 0) {
+          const lineLength = distance(release.start.x, release.start.y, release.end.x, release.end.y);
+          if (lineLength >= 56) {
+            this.launcherCharges -= 1;
+            this.lines.push(new KineticLine(release.start, release.end));
+            this.particles.burst(release.end.x, release.end.y, 14, {
+              color: "rgba(120, 210, 255, 0.95)",
+              size: 4,
+              life: 0.65,
+            });
+            this.audio.play("draw", (ctx) => {
+              if (!ctx) {
+                return;
+              }
+              this.audio.tone({ from: 320, to: 820, duration: 0.14, volume: 0.08, type: "triangle" });
+            });
+          }
+        }
+
+        this.lines = this.lines.filter((line) => line.update(dt));
+
+        this.waveTimer -= dt;
+        if (this.spawnedInWave < this.waveQuota && this.waveTimer <= 0) {
+          this.spawnMissile();
+          this.spawnedInWave += 1;
+          this.waveTimer = Math.max(0.18, 0.72 - this.wave * 0.05);
+        }
+
+        for (const missile of this.missiles) {
+          missile.update(dt);
+          this.handleLineCollision(missile);
+          this.handleCityCollision(missile);
+          this.handleBounds(missile);
+        }
+
+        this.missiles = this.missiles.filter((missile) => missile.active);
+
+        const aliveCities = this.cities.filter((city) => city.alive).length;
+        if (aliveCities === 0) {
+          this.audio.play("loss", (ctx) => {
+            if (!ctx) {
+              return;
+            }
+            this.audio.tone({ from: 240, to: 80, duration: 0.5, volume: 0.12, type: "sawtooth" });
+          });
+          this.setState(GameState.LOSE);
+          return;
+        }
+
+        if (this.spawnedInWave >= this.waveQuota && this.missiles.length === 0) {
+          this.waveClearedDelay += dt;
+          if (this.wave >= 4 && this.waveClearedDelay >= 0.8) {
+            this.audio.play("win", (ctx) => {
+              if (!ctx) {
+                return;
+              }
+              this.audio.tone({ from: 440, to: 880, duration: 0.22, volume: 0.08, type: "triangle" });
+              this.audio.tone({ from: 660, to: 990, duration: 0.32, volume: 0.07, type: "triangle" });
+            });
+            this.setState(GameState.WIN);
+            return;
+          }
+          if (this.waveClearedDelay >= 1.1) {
+            this.startWave();
+          }
+        } else {
+          this.waveClearedDelay = 0;
+        }
+      }
+
+      spawnMissile() {
+        const aliveCities = this.cities.filter((city) => city.alive);
+        const fallback = new Vec2(randomRange(180, WIDTH - 180), HEIGHT - 60);
+        const targetCity = aliveCities[Math.floor(Math.random() * aliveCities.length)];
+        const target = targetCity ? new Vec2(targetCity.x, targetCity.y - 12) : fallback;
+        const origin = new Vec2(randomRange(120, WIDTH - 120), randomRange(-80, 40));
+        this.missiles.push(new Missile(origin, target, 1 + this.wave * 0.08));
+      }
+
+      handleLineCollision(missile) {
+        for (const line of this.lines) {
+          if (line.cooldown > 0) {
+            continue;
+          }
+          const segment = Vec2.subtract(line.end, line.start);
+          const lengthSq = segment.x * segment.x + segment.y * segment.y;
+          if (lengthSq <= 0.001) {
+            continue;
+          }
+          const toPoint = Vec2.subtract(missile.position, line.start);
+          const t = clamp(Vec2.dot(toPoint, segment) / lengthSq, 0, 1);
+          const nearest = new Vec2(
+            line.start.x + segment.x * t,
+            line.start.y + segment.y * t
+          );
+          const dist = distance(missile.position.x, missile.position.y, nearest.x, nearest.y);
+          if (dist > missile.radius + line.thickness * 0.7) {
+            continue;
+          }
+
+          const tangent = segment.copy().normalize();
+          const normal = new Vec2(-tangent.y, tangent.x);
+          const towardNormal = Vec2.dot(missile.velocity, normal);
+          if (Math.abs(towardNormal) < 6) {
+            continue;
+          }
+
+          missile.velocity.x -= 2 * towardNormal * normal.x;
+          missile.velocity.y -= 2 * towardNormal * normal.y;
+          missile.velocity.scale(1.08);
+          missile.position.x = nearest.x + normal.x * (missile.radius + line.thickness);
+          missile.position.y = nearest.y + normal.y * (missile.radius + line.thickness);
+          missile.deflected = true;
+          line.cooldown = 0.08;
+          this.score += 35;
+          this.particles.burst(nearest.x, nearest.y, 18, {
+            color: "rgba(148, 240, 182, 0.95)",
+            size: 4,
+            life: 0.7,
+          });
+          this.audio.play("bounce", (ctx) => {
+            if (!ctx) {
+              return;
+            }
+            this.audio.tone({ from: 180, to: 420, duration: 0.12, volume: 0.08, type: "square" });
+          });
+          return;
+        }
+      }
+
+      handleCityCollision(missile) {
+        for (const city of this.cities) {
+          if (!city.alive) {
+            continue;
+          }
+          if (distance(missile.position.x, missile.position.y, city.x, city.y - 12) <= city.radius) {
+            city.alive = false;
+            missile.active = false;
+            this.particles.burst(city.x, city.y - 12, 28, {
+              color: "rgba(255, 125, 115, 0.95)",
+              size: 5,
+              life: 0.9,
+            });
+            this.audio.play("loss", (ctx) => {
+              if (!ctx) {
+                return;
+              }
+              this.audio.tone({ from: 300, to: 110, duration: 0.22, volume: 0.09, type: "sawtooth" });
+            });
+            return;
+          }
+        }
+      }
+
+      handleBounds(missile) {
+        if (missile.position.y > HEIGHT + 80 || missile.position.x < -80 || missile.position.x > WIDTH + 80) {
+          missile.active = false;
+          return;
+        }
+        if (missile.deflected && missile.position.y < -60) {
+          missile.active = false;
+          this.savedMissiles += 1;
+          this.score += 150;
+          this.particles.burst(missile.position.x, 18, 16, {
+            color: "rgba(148, 240, 182, 0.98)",
+            size: 4,
+            life: 0.8,
+          });
+        }
+      }
+
+      drawHud() {
+        const { ctx } = this;
+        ctx.save();
+        ctx.fillStyle = "rgba(6, 15, 25, 0.72)";
+        ctx.strokeStyle = "rgba(173, 223, 255, 0.18)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.roundRect(28, 28, 300, 126, 20);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.font = "700 22px Trebuchet MS, sans-serif";
+        ctx.fillStyle = "#eef7ff";
+        ctx.fillText(`Score ${this.score}`, 52, 66);
+        ctx.font = "400 18px Trebuchet MS, sans-serif";
+        ctx.fillStyle = "#9db1c6";
+        ctx.fillText(`Wave ${this.wave} / 4`, 52, 96);
+        ctx.fillText(`Deflected ${this.savedMissiles}`, 52, 120);
+        ctx.fillText(`Cities ${this.cities.filter((city) => city.alive).length}`, 52, 144);
+
+        ctx.fillStyle = "rgba(6, 15, 25, 0.72)";
+        ctx.beginPath();
+        ctx.roundRect(WIDTH - 334, 28, 306, 100, 20);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = "#eef7ff";
+        ctx.fillText("Launcher Charge", WIDTH - 310, 68);
+        for (let i = 0; i < this.maxCharges; i += 1) {
+          const active = i < this.launcherCharges;
+          this.renderer.drawLauncher(WIDTH - 270 + i * 82, 104, active);
+        }
+        ctx.restore();
+      }
+
+      drawMissileSprite(missile) {
+        const sprite = this.assets.getImage("missile");
+        if (!sprite) {
+          missile.draw(this.ctx);
+          return;
+        }
+        const { ctx } = this;
+        const angle = Math.atan2(missile.velocity.y, missile.velocity.x) + Math.PI / 2;
+        ctx.save();
+        ctx.lineCap = "round";
+        ctx.strokeStyle = missile.deflected ? "rgba(148, 240, 182, 0.8)" : "rgba(255, 125, 115, 0.8)";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(missile.previous.x, missile.previous.y);
+        ctx.lineTo(missile.position.x, missile.position.y);
+        ctx.stroke();
+        ctx.translate(missile.position.x, missile.position.y);
+        ctx.rotate(angle);
+        ctx.globalAlpha = 0.95;
+        ctx.drawImage(sprite, -10, -18, 20, 36);
+        ctx.restore();
+      }
+
+      drawReticle() {
+        const { ctx } = this;
+        const pointer = this.input.pointer;
+        ctx.save();
+        ctx.translate(pointer.x, pointer.y);
+        ctx.strokeStyle = "rgba(120, 210, 255, 0.65)";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(0, 0, 14, 0, TAU);
+        ctx.moveTo(-24, 0);
+        ctx.lineTo(-8, 0);
+        ctx.moveTo(8, 0);
+        ctx.lineTo(24, 0);
+        ctx.moveTo(0, -24);
+        ctx.lineTo(0, -8);
+        ctx.moveTo(0, 8);
+        ctx.lineTo(0, 24);
+        ctx.stroke();
+        if (this.input.down && this.input.dragStart && this.input.dragCurrent) {
+          ctx.restore();
+          ctx.save();
+          ctx.lineCap = "round";
+          ctx.strokeStyle = "rgba(120, 210, 255, 0.45)";
+          ctx.lineWidth = 10;
+          ctx.setLineDash([14, 10]);
+          ctx.beginPath();
+          ctx.moveTo(this.input.dragStart.x, this.input.dragStart.y);
+          ctx.lineTo(this.input.dragCurrent.x, this.input.dragCurrent.y);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      draw() {
+        this.renderer.drawBackground(this.starScroll);
+
+        for (const city of this.cities) {
+          this.renderer.drawCity(city, this.assets);
+        }
+
+        for (const line of this.lines) {
+          line.draw(this.ctx);
+        }
+
+        for (const missile of this.missiles) {
+          this.drawMissileSprite(missile);
+        }
+
+        this.particles.draw(this.ctx);
+        this.drawHud();
+        this.drawReticle();
+
+        if (this.state === GameState.MENU) {
+          this.renderer.drawOverlay(
+            "Kinetic Deflector",
+            "Pull luminous lines under incoming warheads and sling them back above the atmosphere.",
+            "#78d2ff"
+          );
+        } else if (this.state === GameState.WIN) {
+          this.renderer.drawOverlay(
+            "Sky Secure",
+            `Final score ${this.score}. ${this.savedMissiles} missiles returned to orbit.`,
+            "#94f0b6"
+          );
+        } else if (this.state === GameState.LOSE) {
+          this.renderer.drawOverlay(
+            "Impact Cascade",
+            `Final score ${this.score}. Rebuild the grid and try again.`,
+            "#ff7d73"
+          );
+        }
+      }
+    }
+
+    const canvas = document.getElementById("game");
+    const game = new Game(canvas);
+    game.init();
+  </script>
+</body>
+</html>
