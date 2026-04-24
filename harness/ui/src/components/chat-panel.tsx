@@ -1319,7 +1319,7 @@ export function ChatPanel() {
 
   function handleStop() {
     const project = activeProject();
-    if (!project) {
+    if (!project?.activeRun) {
       return;
     }
     sendCommand({
@@ -1327,7 +1327,8 @@ export function ChatPanel() {
       requestId: createRequestId(),
       payload: {
         projectId: project.id,
-        threadId: project.activeThreadId
+        threadId: project.activeThreadId,
+        runId: project.activeRun.id
       }
     });
   }

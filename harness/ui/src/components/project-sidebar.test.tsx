@@ -89,6 +89,51 @@ createUiTest("ProjectSidebar", () => {
     expect((screen.getByRole("button", { name: `Remove ${project.name}` }) as HTMLButtonElement).disabled).toBe(false);
   });
 
+  it("blocks remove when another thread is executing in the background", () => {
+    const project = createViewProjectFixture({
+      id: "project-background-stream",
+      activeThreadId: "thread-2",
+      session: {
+        ...createViewProjectFixture().session,
+        isStreaming: false,
+        messages: []
+      },
+      threads: [
+        {
+          id: "thread-1",
+          kind: "user",
+          title: "Thread 1",
+          titleSource: "generated",
+          badgeState: "executing",
+          messageCount: 3,
+          updatedAt: new Date().toISOString()
+        },
+        {
+          id: "thread-2",
+          kind: "user",
+          title: "Thread 2",
+          titleSource: "generated",
+          badgeState: "idle",
+          messageCount: 1,
+          updatedAt: new Date().toISOString()
+        }
+      ]
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ProjectSidebar />);
+
+    expect((screen.getByRole("button", { name: `Remove ${project.name}` }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByText("Thread 1").closest("button") as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it("hides automation threads from sidebar thread list", () => {
     const project = createViewProjectFixture({
       id: "project-automation",

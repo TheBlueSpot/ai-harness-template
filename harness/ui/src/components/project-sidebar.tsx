@@ -26,6 +26,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
       name: project.name,
       rootPath: project.rootPath,
       isStreaming: project.session.isStreaming,
+      hasWorkingThread: project.threads.some((thread) => thread.badgeState === "planning" || thread.badgeState === "executing"),
       hasCliSession: Boolean(project.activeCliSession),
       isActive: project.id === state.workspace.activeProjectId,
       activeThreadId: project.activeThreadId,
@@ -148,7 +149,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
               {(project) => {
                 const isActiveProject = () => project.isActive;
                 const removeDisabledReason = () =>
-                  project.isStreaming
+                  project.hasWorkingThread
                     ? "Project is streaming"
                     : project.hasCliSession
                       ? "Live CLI session attached"

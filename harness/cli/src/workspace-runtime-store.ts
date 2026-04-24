@@ -1,15 +1,15 @@
 import {
   type AgentPlan,
-  type CliSession,
   type AgentRunState,
   type AgentTrace,
+  type CliSession,
   type MemorySummary,
   type ModeDefinition,
   type ProjectContextUsage,
   type ProjectId,
   type StreamingTailSegment,
-  type WorkspaceRuleSource,
   type WorkspaceProjectState,
+  type WorkspaceRuleSource,
   type WorkspaceState
 } from "../../shared/protocol";
 import { getExecutionKey, type ManagedExecutionState } from "./execution-runtime";
@@ -24,9 +24,21 @@ export type RuntimeProjectState = WorkspaceProjectState & {
   lastError?: string;
 };
 
+type RuntimeThreadState = {
+  sessionId: string;
+  isStreaming: boolean;
+  lastError?: string;
+  latestPlan?: AgentPlan;
+  contextUsage?: ProjectContextUsage;
+  traces: AgentTrace[];
+  streamingAssistantText: string;
+  streamingTailSegments: StreamingTailSegment[];
+};
+
 type RuntimeProjectRecord = {
   project: RuntimeProjectState;
-  abortController?: AbortController;
+  threadStates: Map<string, RuntimeThreadState>;
+  abortControllers: Map<string, AbortController>;
   executions: Map<string, ManagedExecutionState>;
 };
 
@@ -39,8 +51,11 @@ export class WorkspaceRuntimeStore {
 
   constructor(workspace: WorkspaceState) {
     for (const project of workspace.projects) {
+      const runtimeProject = createRuntimeProject(project);
       this.projects.set(project.id, {
-        project: createRuntimeProject(project),
+        project: runtimeProject,
+        threadStates: new Map([[project.activeThreadId, createThreadRuntimeState(runtimeProject)]]),
+        abortControllers: new Map(),
         executions: new Map()
       });
     }
@@ -70,14 +85,38 @@ export class WorkspaceRuntimeStore {
     return project;
   }
 
+  getThreadRuntime(projectId: ProjectId, threadId: string) {
+    const record = this.getProjectRecord(projectId);
+    if (record.project.activeThreadId === threadId) {
+      return createThreadRuntimeState(record.project);
+    }
+
+    return record.threadStates.get(threadId);
+  }
+
   upsertPersistedProject(project: WorkspaceProjectState) {
     const existing = this.projects.get(project.id);
-    const hydratedProject = existing ? hydrateProjectState(existing.project, project) : createRuntimeProject(project);
+    if (!existing) {
+      const runtimeProject = createRuntimeProject(project);
+      this.projects.set(project.id, {
+        project: runtimeProject,
+        threadStates: new Map([[project.activeThreadId, createThreadRuntimeState(runtimeProject)]]),
+        abortControllers: new Map(),
+        executions: new Map()
+      });
+      return;
+    }
+
+    persistActiveThreadState(existing);
+    const nextThreadStates = filterKnownThreadStates(existing.threadStates, project.threads.map((thread) => thread.id));
+    const nextProject = hydrateProjectState(existing.project, nextThreadStates, project);
+    nextThreadStates.set(nextProject.activeThreadId, createThreadRuntimeState(nextProject));
 
     this.projects.set(project.id, {
-      project: hydratedProject,
-      abortController: existing?.abortController,
-      executions: existing?.executions ?? new Map()
+      project: nextProject,
+      threadStates: nextThreadStates,
+      abortControllers: existing.abortControllers,
+      executions: existing.executions
     });
   }
 
@@ -98,24 +137,17 @@ export class WorkspaceRuntimeStore {
     this.activeProjectId = workspace.activeProjectId;
   }
 
-  setProjectStreaming(projectId: ProjectId, isStreaming: boolean) {
-    this.updateProject(projectId, (project) => ({
-      ...project,
-      session: {
-        ...project.session,
-        isStreaming
-      }
+  setProjectStreaming(projectId: ProjectId, isStreaming: boolean, threadId?: string) {
+    this.updateThreadState(projectId, threadId, (state) => ({
+      ...state,
+      isStreaming
     }));
   }
 
-  setProjectError(projectId: ProjectId, lastError?: string) {
-    this.updateProject(projectId, (project) => ({
-      ...project,
-      lastError,
-      session: {
-        ...project.session,
-        lastError
-      }
+  setProjectError(projectId: ProjectId, lastError?: string, threadId?: string) {
+    this.updateThreadState(projectId, threadId, (state) => ({
+      ...state,
+      lastError
     }));
   }
 
@@ -139,9 +171,9 @@ export class WorkspaceRuntimeStore {
     }));
   }
 
-  setProjectPlan(projectId: ProjectId, latestPlan?: AgentPlan) {
-    this.updateProject(projectId, (project) => ({
-      ...project,
+  setProjectPlan(projectId: ProjectId, latestPlan?: AgentPlan, threadId?: string) {
+    this.updateThreadState(projectId, threadId, (state) => ({
+      ...state,
       latestPlan
     }));
   }
@@ -160,73 +192,98 @@ export class WorkspaceRuntimeStore {
     }));
   }
 
-  setProjectContextUsage(projectId: ProjectId, contextUsage?: ProjectContextUsage) {
-    this.updateProject(projectId, (project) => ({
-      ...project,
+  setProjectContextUsage(projectId: ProjectId, contextUsage?: ProjectContextUsage, threadId?: string) {
+    this.updateThreadState(projectId, threadId, (state) => ({
+      ...state,
       contextUsage
     }));
   }
 
-  appendTrace(projectId: ProjectId, trace: AgentTrace) {
-    this.updateProject(projectId, (project) => ({
-      ...project,
-      traces: [...project.traces, trace]
+  appendTrace(projectId: ProjectId, trace: AgentTrace, threadId?: string) {
+    this.updateThreadState(projectId, threadId, (state) => ({
+      ...state,
+      traces: [...state.traces, trace]
     }));
   }
 
-  appendStreamingDelta(projectId: ProjectId, delta: string) {
-    this.updateProject(projectId, (project) => ({
-      ...project,
-      streamingAssistantText: `${project.streamingAssistantText}${delta}`
+  appendStreamingDelta(projectId: ProjectId, delta: string, threadId?: string) {
+    this.updateThreadState(projectId, threadId, (state) => ({
+      ...state,
+      streamingAssistantText: `${state.streamingAssistantText}${delta}`
     }));
   }
 
-  setStreamingTail(projectId: ProjectId, segments: StreamingTailSegment[]) {
-    this.updateProject(projectId, (project) => ({
-      ...project,
+  setStreamingTail(projectId: ProjectId, segments: StreamingTailSegment[], threadId?: string) {
+    this.updateThreadState(projectId, threadId, (state) => ({
+      ...state,
       streamingTailSegments: segments
     }));
   }
 
-  clearStreaming(projectId: ProjectId) {
-    this.updateProject(projectId, (project) => ({
-      ...project,
+  clearStreaming(projectId: ProjectId, threadId?: string) {
+    this.updateThreadState(projectId, threadId, (state) => ({
+      ...state,
       streamingAssistantText: "",
       streamingTailSegments: []
     }));
   }
 
-  clearProjectTransients(projectId: ProjectId) {
-    this.updateProject(projectId, (project) => ({
-      ...project,
+  clearProjectTransients(projectId: ProjectId, threadId?: string) {
+    const record = this.getProjectRecord(projectId);
+    const resolvedThreadId = threadId ?? record.project.activeThreadId;
+
+    this.updateThreadState(projectId, resolvedThreadId, (state) => ({
+      ...state,
       latestPlan: undefined,
-      activeCliSession: undefined,
-      activeRun: undefined,
       contextUsage: undefined,
       traces: [],
       streamingAssistantText: "",
       streamingTailSegments: [],
       lastError: undefined,
-      session: {
-        ...project.session,
-        isStreaming: false,
-        lastError: undefined
-      }
+      isStreaming: false
     }));
-    this.getProjectRecord(projectId).executions.clear();
+
+    record.executions = new Map(
+      [...record.executions.entries()].filter(([, state]) => state.threadId !== resolvedThreadId)
+    );
+
+    if (record.project.activeThreadId === resolvedThreadId) {
+      record.project = {
+        ...record.project,
+        activeCliSession: undefined,
+        activeRun: undefined,
+        latestPlan: undefined,
+        contextUsage: undefined,
+        traces: [],
+        streamingAssistantText: "",
+        streamingTailSegments: [],
+        lastError: undefined,
+        session: {
+          ...record.project.session,
+          isStreaming: false,
+          lastError: undefined
+        }
+      };
+    }
   }
 
-  setAbortController(projectId: ProjectId, abortController?: AbortController) {
-    const record = this.projects.get(projectId);
-    if (!record) {
-      throw new Error(`Unknown project: ${projectId}`);
+  setAbortController(projectId: ProjectId, runId: string, abortController?: AbortController) {
+    const record = this.getProjectRecord(projectId);
+    if (abortController) {
+      record.abortControllers.set(runId, abortController);
+      return;
     }
 
-    record.abortController = abortController;
+    record.abortControllers.delete(runId);
   }
 
-  getAbortController(projectId: ProjectId) {
-    return this.projects.get(projectId)?.abortController;
+  getAbortController(projectId: ProjectId, runId: string) {
+    return this.projects.get(projectId)?.abortControllers.get(runId);
+  }
+
+  hasAnyStreamingThread(projectId: ProjectId) {
+    const record = this.getProjectRecord(projectId);
+    return [...record.threadStates.values()].some((state) => state.isStreaming);
   }
 
   getExecutionState(projectId: ProjectId, input: Pick<ManagedExecutionState, "runId" | "subagentId" | "kind">) {
@@ -261,13 +318,24 @@ export class WorkspaceRuntimeStore {
   }
 
   private updateProject(projectId: ProjectId, updater: (project: RuntimeProjectState) => RuntimeProjectState) {
-    const record = this.projects.get(projectId);
-
-    if (!record) {
-      throw new Error(`Unknown project: ${projectId}`);
-    }
-
+    const record = this.getProjectRecord(projectId);
     record.project = updater(record.project);
+    record.threadStates.set(record.project.activeThreadId, createThreadRuntimeState(record.project));
+  }
+
+  private updateThreadState(
+    projectId: ProjectId,
+    threadId: string | undefined,
+    updater: (state: RuntimeThreadState) => RuntimeThreadState
+  ) {
+    const record = this.getProjectRecord(projectId);
+    const resolvedThreadId = threadId ?? record.project.activeThreadId;
+    const current = getOrCreateThreadState(record, resolvedThreadId);
+    const next = updater(current);
+    record.threadStates.set(resolvedThreadId, next);
+    if (record.project.activeThreadId === resolvedThreadId) {
+      record.project = applyThreadState(record.project, next);
+    }
   }
 
   private getProjectRecord(projectId: ProjectId) {
@@ -312,23 +380,87 @@ function stripRuntimeProject(project: RuntimeProjectState): WorkspaceProjectStat
   };
 }
 
-function hydrateProjectState(existing: RuntimeProjectState, incoming: WorkspaceProjectState): RuntimeProjectState {
-  return {
+function hydrateProjectState(
+  existing: RuntimeProjectState,
+  threadStates: Map<string, RuntimeThreadState>,
+  incoming: WorkspaceProjectState
+): RuntimeProjectState {
+  const fallbackProject = {
     ...existing,
     ...incoming,
-    latestPlan: existing.latestPlan,
-    contextUsage: existing.contextUsage,
-    traces: existing.traces,
-    streamingAssistantText: existing.streamingAssistantText,
-    streamingTailSegments: existing.streamingTailSegments,
+    latestPlan: undefined,
+    contextUsage: undefined,
+    traces: [],
+    streamingAssistantText: "",
+    streamingTailSegments: [],
     draft: existing.draft,
-    lastError: existing.lastError,
+    lastError: undefined,
     session: {
       ...incoming.session,
       selectedAgentId: existing.session.selectedAgentId ?? incoming.session.selectedAgentId,
       executionModelId: existing.session.executionModelId ?? incoming.session.executionModelId,
-      isStreaming: existing.session.isStreaming,
-      lastError: existing.session.lastError
+      isStreaming: incoming.session.isStreaming,
+      lastError: incoming.session.lastError
+    }
+  } satisfies RuntimeProjectState;
+  const threadState = threadStates.get(incoming.activeThreadId) ?? createThreadRuntimeState(fallbackProject);
+  return applyThreadState(fallbackProject, threadState);
+}
+
+function createThreadRuntimeState(project: Pick<
+  RuntimeProjectState,
+  "session" | "latestPlan" | "contextUsage" | "traces" | "streamingAssistantText" | "streamingTailSegments" | "lastError"
+>): RuntimeThreadState {
+  return {
+    sessionId: project.session.sessionId,
+    isStreaming: project.session.isStreaming,
+    lastError: project.lastError ?? project.session.lastError,
+    latestPlan: project.latestPlan,
+    contextUsage: project.contextUsage,
+    traces: [...project.traces],
+    streamingAssistantText: project.streamingAssistantText,
+    streamingTailSegments: [...project.streamingTailSegments]
+  };
+}
+
+function getOrCreateThreadState(record: RuntimeProjectRecord, threadId: string) {
+  return (
+    record.threadStates.get(threadId) ?? {
+      sessionId: threadId,
+      isStreaming: false,
+      lastError: undefined,
+      latestPlan: undefined,
+      contextUsage: undefined,
+      traces: [],
+      streamingAssistantText: "",
+      streamingTailSegments: []
+    }
+  );
+}
+
+function applyThreadState(project: RuntimeProjectState, threadState: RuntimeThreadState): RuntimeProjectState {
+  return {
+    ...project,
+    latestPlan: threadState.latestPlan,
+    contextUsage: threadState.contextUsage,
+    traces: [...threadState.traces],
+    streamingAssistantText: threadState.streamingAssistantText,
+    streamingTailSegments: [...threadState.streamingTailSegments],
+    lastError: threadState.lastError,
+    session: {
+      ...project.session,
+      sessionId: threadState.sessionId,
+      isStreaming: threadState.isStreaming,
+      lastError: threadState.lastError
     }
   };
+}
+
+function persistActiveThreadState(record: RuntimeProjectRecord) {
+  record.threadStates.set(record.project.activeThreadId, createThreadRuntimeState(record.project));
+}
+
+function filterKnownThreadStates(threadStates: Map<string, RuntimeThreadState>, knownThreadIds: string[]) {
+  const knownIds = new Set(knownThreadIds);
+  return new Map([...threadStates.entries()].filter(([threadId]) => knownIds.has(threadId)));
 }

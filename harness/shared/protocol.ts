@@ -435,6 +435,7 @@ export const backgroundJobScheduleSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("one-off"),
     runAt: z.string().datetime().or(z.string().min(1)),
+    consumedAt: z.string().datetime().or(z.string().min(1)).optional(),
     sourceText: z.string().min(1).max(512)
   }),
   z.object({
@@ -1301,7 +1302,8 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     requestId: requestIdSchema,
     payload: z.object({
       projectId: projectIdSchema,
-      threadId: threadIdSchema
+      threadId: threadIdSchema,
+      runId: runIdSchema
     })
   }),
   z.object({

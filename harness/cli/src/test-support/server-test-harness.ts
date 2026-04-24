@@ -2405,8 +2405,10 @@ export function registerServerExecutionMainTests() {
             }
           })
         );
-    
+
         await planPromise;
+        const runId = repository.getProject(projectId).activeRun?.id;
+        expect(runId).toBeDefined();
         const errorPromise = waitForEvent(socket, "chat.error");
     
         socket.send(
@@ -2415,7 +2417,8 @@ export function registerServerExecutionMainTests() {
             requestId: "req-stop-2",
             payload: {
               projectId,
-              threadId
+              threadId,
+              runId
             }
           })
         );
@@ -3369,6 +3372,250 @@ export function registerServerProjectsAndHistoryTests() {
         expect(completed.payload.threadId).toBe(originalThreadId);
         expect(repository.getProject(projectId).activeThreadId).toBe(newThreadId);
         expect(repository.getThreadMessages(projectId, originalThreadId).at(-1)?.content).toBe("main execution result");
+        socket.close();
+      }, 10000);
+
+      test("rejects starting a second thread run while another thread is still working", async () => {
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot);
+        const projectId = opened.payload.project.id;
+        const originalThreadId = opened.payload.project.activeThreadId;
+        const ready = await sendChatUntilReady(socket, {
+          requestId: "req-thread-blocked-1",
+          projectId,
+          threadId: originalThreadId,
+          content: "streaming refresh"
+        });
+        const runningRunPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "running-main");
+        const deltaPromise = waitForEvent(socket, "chat.delta", (event) => event.payload.threadId === originalThreadId);
+        const createThreadPromise = waitForEvent(socket, "thread.created");
+        const rejectedPromise = waitForEvent(socket, "command.rejected");
+
+        socket.send(
+          JSON.stringify({
+            type: "run.execute",
+            requestId: "req-thread-blocked-execute",
+            payload: {
+              projectId,
+              threadId: originalThreadId,
+              runId: ready.payload.run.id
+            }
+          })
+        );
+
+        await runningRunPromise;
+        await deltaPromise;
+
+        socket.send(
+          JSON.stringify({
+            type: "thread.create",
+            requestId: "req-thread-blocked-create",
+            payload: {
+              projectId
+            }
+          })
+        );
+
+        const created = await createThreadPromise;
+        const newThreadId = created.payload.project.activeThreadId;
+
+        socket.send(
+          JSON.stringify({
+            type: "chat.send",
+            requestId: "req-thread-blocked-send",
+            payload: {
+              projectId,
+              threadId: newThreadId,
+              agentId: "pi",
+              content: "should be blocked"
+            }
+          })
+        );
+
+        const rejected = await rejectedPromise;
+        expect(rejected.payload.detail).toContain("Project has active run");
+        socket.close();
+      }, 10000);
+
+      test("stops a background-thread run by run id after switching threads", async () => {
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot);
+        const projectId = opened.payload.project.id;
+        const originalThreadId = opened.payload.project.activeThreadId;
+        const ready = await sendChatUntilReady(socket, {
+          requestId: "req-thread-stop-1",
+          projectId,
+          threadId: originalThreadId,
+          content: "streaming refresh"
+        });
+        const runningRunPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "running-main");
+        const deltaPromise = waitForEvent(socket, "chat.delta", (event) => event.payload.threadId === originalThreadId);
+        const createThreadPromise = waitForEvent(socket, "thread.created");
+        const stoppedRunPromise = waitForEvent(
+          socket,
+          "run.updated",
+          (event) => event.payload.threadId === originalThreadId && event.payload.run.status === "stopped"
+        );
+        const errorPromise = waitForEvent(
+          socket,
+          "chat.error",
+          (event) => event.payload.projectId === projectId && event.payload.threadId === originalThreadId
+        );
+
+        socket.send(
+          JSON.stringify({
+            type: "run.execute",
+            requestId: "req-thread-stop-execute",
+            payload: {
+              projectId,
+              threadId: originalThreadId,
+              runId: ready.payload.run.id
+            }
+          })
+        );
+
+        await runningRunPromise;
+        await deltaPromise;
+
+        socket.send(
+          JSON.stringify({
+            type: "thread.create",
+            requestId: "req-thread-stop-create",
+            payload: {
+              projectId
+            }
+          })
+        );
+
+        await createThreadPromise;
+
+        socket.send(
+          JSON.stringify({
+            type: "chat.stop",
+            requestId: "req-thread-stop-stop",
+            payload: {
+              projectId,
+              threadId: originalThreadId,
+              runId: ready.payload.run.id
+            }
+          })
+        );
+
+        await stoppedRunPromise;
+        const errorEvent = await errorPromise;
+        expect(errorEvent.payload.message).toContain("stopped");
+        socket.close();
+      }, 10000);
+
+      test("refreshes and removal-checks the original run after switching threads", async () => {
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot);
+        const projectId = opened.payload.project.id;
+        const originalThreadId = opened.payload.project.activeThreadId;
+        const ready = await sendChatUntilReady(socket, {
+          requestId: "req-thread-refresh-1",
+          projectId,
+          threadId: originalThreadId,
+          content: "streaming refresh"
+        });
+        const runningRunPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "running-main");
+        const deltaPromise = waitForEvent(socket, "chat.delta", (event) => event.payload.threadId === originalThreadId);
+        const createThreadPromise = waitForEvent(socket, "thread.created");
+
+        socket.send(
+          JSON.stringify({
+            type: "run.execute",
+            requestId: "req-thread-refresh-execute",
+            payload: {
+              projectId,
+              threadId: originalThreadId,
+              runId: ready.payload.run.id
+            }
+          })
+        );
+
+        await runningRunPromise;
+        await deltaPromise;
+
+        socket.send(
+          JSON.stringify({
+            type: "thread.create",
+            requestId: "req-thread-refresh-create",
+            payload: {
+              projectId
+            }
+          })
+        );
+
+        await createThreadPromise;
+        const deferredTracePromise = waitForEvent(
+          socket,
+          "agent.trace",
+          (event) => event.payload.threadId === originalThreadId && event.payload.trace.stage === "refresh-deferred"
+        );
+        const rejectedRemovePromise = waitForEvent(socket, "command.rejected");
+        const removedPromise = waitForEvent(socket, "project.removed");
+
+        socket.send(
+          JSON.stringify({
+            type: "run.refresh",
+            requestId: "req-thread-refresh-refresh",
+            payload: {
+              projectId,
+              threadId: originalThreadId,
+              runId: ready.payload.run.id
+            }
+          })
+        );
+
+        await deferredTracePromise;
+
+        socket.send(
+          JSON.stringify({
+            type: "project.remove",
+            requestId: "req-thread-refresh-remove-blocked",
+            payload: {
+              projectId
+            }
+          })
+        );
+
+        const rejected = await rejectedRemovePromise;
+        expect(rejected.payload.detail).toContain("streaming");
+
+        socket.send(
+          JSON.stringify({
+            type: "chat.stop",
+            requestId: "req-thread-refresh-stop",
+            payload: {
+              projectId,
+              threadId: originalThreadId,
+              runId: ready.payload.run.id
+            }
+          })
+        );
+
+        await waitForEvent(
+          socket,
+          "run.updated",
+          (event) => event.payload.threadId === originalThreadId && event.payload.run.status === "stopped"
+        );
+
+        socket.send(
+          JSON.stringify({
+            type: "project.remove",
+            requestId: "req-thread-refresh-remove",
+            payload: {
+              projectId
+            }
+          })
+        );
+
+        const removed = await removedPromise;
+        expect(removed.payload.projectId).toBe(projectId);
         socket.close();
       }, 10000);
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Correctness Scan"
+  short_description: "Deep UX and CLI correctness review"
+  default_prompt: "Use $correctness-scan to investigate shipped stories against code for edge-case correctness and merge the findings into docs/correctness-review.md. Do not implement fixes."

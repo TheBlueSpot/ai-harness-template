@@ -2360,16 +2360,17 @@ export class WorkspaceRepository {
     input: { schedule?: BackgroundJobSchedule; nextRunAt?: string; lastRunAt?: string }
   ) {
     const now = new Date().toISOString();
+    const serializedSchedule = input.schedule ? JSON.stringify(input.schedule) : null;
     this.db
       .query(
         `UPDATE background_jobs
-         SET schedule_json = COALESCE(?2, schedule_json),
+         SET schedule_json = CASE WHEN ?2 IS NULL THEN schedule_json ELSE ?2 END,
              next_run_at = ?3,
              last_run_at = COALESCE(?4, last_run_at),
              updated_at = ?5
          WHERE id = ?1`
       )
-      .run(jobId, input.schedule ? JSON.stringify(input.schedule) : null, input.nextRunAt ?? null, input.lastRunAt ?? null, now);
+      .run(jobId, serializedSchedule, input.nextRunAt ?? null, input.lastRunAt ?? null, now);
     return this.getBackgroundJob(jobId)!;
   }
 

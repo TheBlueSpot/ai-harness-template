@@ -74,11 +74,26 @@ export function parseScheduleInput(
 export function getDueScheduleAdvance(schedule: BackgroundJobSchedule, now: Date = new Date()) {
   switch (schedule.type) {
     case "one-off": {
+      if (schedule.consumedAt) {
+        return {
+          due: false,
+          skippedOccurrenceCount: 0,
+          nextSchedule: schedule,
+          nextRunAt: undefined
+        };
+      }
+
       const runAt = new Date(schedule.runAt);
       return {
         due: runAt.getTime() <= now.getTime(),
         skippedOccurrenceCount: 0,
-        nextSchedule: undefined,
+        nextSchedule:
+          runAt.getTime() <= now.getTime()
+            ? ({
+                ...schedule,
+                consumedAt: now.toISOString()
+              } satisfies BackgroundJobSchedule)
+            : schedule,
         nextRunAt: undefined
       };
     }

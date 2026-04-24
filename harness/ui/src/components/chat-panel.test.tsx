@@ -638,6 +638,10 @@ it("updates composer effort label and sends reasoning plus fast mode", () => {
     const commands: unknown[] = [];
     const project = createViewProjectFixture({
       id: "project-stop",
+      activeRun: createRunFixture({
+        id: "run-stop",
+        status: "running-main"
+      }),
       session: {
         ...createViewProjectFixture().session,
         isStreaming: true,

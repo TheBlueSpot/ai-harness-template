@@ -1,0 +1,4 @@
+interface:
+  display_name: "Next Gap"
+  short_description: "Fix top correctness gap"
+  default_prompt: "Use $next-gap to take the first unresolved CR-* item from docs/correctness-review.md, confirm it still exists, implement the fix, add coverage, and remove or rewrite the finding once the gap is covered. Do not turn this into a broad scan."

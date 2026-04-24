@@ -23,6 +23,44 @@ describe("background job schedule", () => {
     expect(advance?.nextRunAt).toBe("2026-04-16T12:15:00.000Z");
   });
 
+  test("marks due one-off schedules as consumed", () => {
+    const now = new Date("2026-04-16T12:00:00.000Z");
+    const advance = getDueScheduleAdvance(
+      {
+        type: "one-off",
+        runAt: "2026-04-16T11:00:00.000Z",
+        sourceText: "2026-04-16 11:00"
+      },
+      now
+    );
+
+    expect(advance.due).toBe(true);
+    expect(advance.nextRunAt).toBeUndefined();
+    expect(advance.nextSchedule).toEqual({
+      type: "one-off",
+      runAt: "2026-04-16T11:00:00.000Z",
+      consumedAt: now.toISOString(),
+      sourceText: "2026-04-16 11:00"
+    });
+  });
+
+  test("does not rerun consumed one-off schedules", () => {
+    const advance = getDueScheduleAdvance({
+      type: "one-off",
+      runAt: "2026-04-16T11:00:00.000Z",
+      consumedAt: "2026-04-16T12:00:00.000Z",
+      sourceText: "2026-04-16 11:00"
+    });
+
+    expect(advance.due).toBe(false);
+    expect(advance.nextSchedule).toEqual({
+      type: "one-off",
+      runAt: "2026-04-16T11:00:00.000Z",
+      consumedAt: "2026-04-16T12:00:00.000Z",
+      sourceText: "2026-04-16 11:00"
+    });
+  });
+
   test("rejects ambiguous input", () => {
     const preview = previewBackgroundJobSchedule("next friday maybe", "America/New_York", new Date("2026-04-16T12:00:00.000Z"));
 

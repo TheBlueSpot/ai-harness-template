@@ -75,4 +75,58 @@ describe("background job scheduler", () => {
     expect(state.runs[0]?.skippedOccurrenceCount).toBeGreaterThanOrEqual(2);
     expect(new Date(state.jobs[0]?.nextRunAt ?? 0).getTime()).toBeGreaterThan(now);
   });
+
+  test("queues a due one-off job only once across repeated ticks and restart", async () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    repository.setBackgroundJobApprovalPolicyDefault("allow-all");
+    const createdAt = "2026-04-24T10:00:00.000Z";
+
+    repository.saveBackgroundJob({
+      id: createBackgroundJobId(),
+      projectId: project.id,
+      automationThreadId: createThreadId(),
+      kind: "ai-routine",
+      name: "One-off review",
+      status: "enabled",
+      riskLevel: "safe",
+      definition: {
+        kind: "ai-routine",
+        prompt: "Review repo once.",
+        planExecutionMode: "countdown",
+        subagentWorktreeStrategy: "separate-worktrees"
+      },
+      schedule: {
+        type: "one-off",
+        runAt: "2026-04-24T09:00:00.000Z",
+        sourceText: "2026-04-24 09:00"
+      },
+      scheduleInput: "2026-04-24 09:00",
+      nextRunAt: undefined,
+      createdAt,
+      updatedAt: createdAt
+    });
+
+    const firstScheduler = new BackgroundJobScheduler({ repository });
+    await firstScheduler.tick(true);
+    await firstScheduler.tick(false);
+
+    const afterFirstPass = repository.loadBackgroundJobsState();
+    expect(afterFirstPass.runs).toHaveLength(1);
+    expect(afterFirstPass.jobs[0]?.schedule).toEqual({
+      type: "one-off",
+      runAt: "2026-04-24T09:00:00.000Z",
+      consumedAt: afterFirstPass.jobs[0]?.schedule.type === "one-off" ? afterFirstPass.jobs[0].schedule.consumedAt : undefined,
+      sourceText: "2026-04-24 09:00"
+    });
+    expect(afterFirstPass.jobs[0]?.lastRunAt).toBeDefined();
+
+    const restartedScheduler = new BackgroundJobScheduler({ repository });
+    await restartedScheduler.tick(true);
+
+    const afterRestart = repository.loadBackgroundJobsState();
+    expect(afterRestart.runs).toHaveLength(1);
+    expect(afterRestart.jobs[0]?.schedule.type).toBe("one-off");
+    expect(afterRestart.jobs[0]?.schedule.type === "one-off" ? afterRestart.jobs[0].schedule.consumedAt : undefined).toBeDefined();
+  });
 });

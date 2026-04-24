@@ -65,7 +65,8 @@ export class BackgroundJobScheduler {
 
         this.options.repository.updateBackgroundJobSchedule(job.id, {
           schedule: advance.nextSchedule,
-          nextRunAt: advance.nextRunAt
+          nextRunAt: advance.nextRunAt,
+          lastRunAt: now.toISOString()
         });
         const queuedRun = this.options.repository.createBackgroundJobRun({
           jobId: job.id,

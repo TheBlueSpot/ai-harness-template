@@ -1319,7 +1319,7 @@ async function handleCommand(
     }
     case "project.remove": {
       const project = runtime.getProject(command.payload.projectId);
-      if (project.session.isStreaming) {
+      if (runtime.hasAnyStreamingThread(command.payload.projectId)) {
         throw new Error("Project is streaming");
       }
 
@@ -1365,7 +1365,7 @@ async function handleCommand(
     case "thread.create": {
       const nextProject = repository.createThread(command.payload.projectId);
       runtime.upsertPersistedProject(nextProject);
-      runtime.clearProjectTransients(command.payload.projectId);
+      runtime.clearProjectTransients(command.payload.projectId, nextProject.activeThreadId);
       sendEvent(ws, {
         type: "thread.created",
         requestId: command.requestId,
@@ -1379,7 +1379,6 @@ async function handleCommand(
     }
     case "thread.activate": {
       const nextProject = repository.activateThread(command.payload.projectId, command.payload.threadId);
-      runtime.clearProjectTransients(command.payload.projectId);
       runtime.upsertPersistedProject(nextProject);
       sendEvent(ws, {
         type: "thread.activated",
@@ -1395,7 +1394,7 @@ async function handleCommand(
     case "thread.fork": {
       const nextProject = repository.forkThread(command.payload.projectId, command.payload.sourceThreadId);
       runtime.upsertPersistedProject(nextProject);
-      runtime.clearProjectTransients(command.payload.projectId);
+      runtime.clearProjectTransients(command.payload.projectId, nextProject.activeThreadId);
       sendEvent(ws, {
         type: "thread.created",
         requestId: command.requestId,
@@ -1437,7 +1436,7 @@ async function handleCommand(
 
       const project = repository.resetProject(command.payload.projectId);
       runtime.upsertPersistedProject(project);
-      runtime.clearProjectTransients(command.payload.projectId);
+      runtime.clearProjectTransients(command.payload.projectId, project.activeThreadId);
 
       const nextProject = runtime.getProject(command.payload.projectId);
       sendEvent(ws, {
@@ -1453,27 +1452,33 @@ async function handleCommand(
       return;
     }
     case "chat.stop": {
-      const project = runtime.getProject(command.payload.projectId);
-      assertActiveThread(project, command.payload.threadId);
-      const activeRun = project.activeRun;
-      runtime.getAbortController(command.payload.projectId)?.abort();
-      runtime.setProjectStreaming(command.payload.projectId, false);
-      runtime.clearStreaming(command.payload.projectId);
-      runtime.setProjectError(command.payload.projectId, "Chat request stopped by user");
+      requirePersistedThreadRun(
+        repository,
+        command.payload.projectId,
+        command.payload.threadId,
+        command.payload.runId
+      );
+      runtime.getAbortController(command.payload.projectId, command.payload.runId)?.abort();
+      runtime.setProjectStreaming(command.payload.projectId, false, command.payload.threadId);
+      runtime.clearStreaming(command.payload.projectId, command.payload.threadId);
+      runtime.setProjectError(command.payload.projectId, "Chat request stopped by user", command.payload.threadId);
 
-      if (activeRun) {
-        rejectPendingBrowserApprovalsForRun(pendingBrowserApprovals, command.payload.projectId, activeRun.id, "Run stopped");
-        const stoppedProject = repository.setAgentRunStatus(command.payload.projectId, activeRun.id, "stopped");
-        runtime.upsertPersistedProject(stoppedProject);
-        emitRunUpdated(ws, command.requestId, runtime.getProject(command.payload.projectId));
-      }
+      rejectPendingBrowserApprovalsForRun(
+        pendingBrowserApprovals,
+        command.payload.projectId,
+        command.payload.runId,
+        "Run stopped"
+      );
+      const stoppedProject = repository.setAgentRunStatus(command.payload.projectId, command.payload.runId, "stopped");
+      runtime.upsertPersistedProject(stoppedProject);
+      emitRunUpdatedById(ws, command.requestId, repository, command.payload.projectId, command.payload.runId);
 
       sendEvent(ws, {
         type: "chat.error",
         requestId: command.requestId,
         payload: {
           projectId: command.payload.projectId,
-          threadId: project.activeThreadId,
+          threadId: command.payload.threadId,
           message: "Chat request stopped by user"
         }
       });
@@ -1490,7 +1495,7 @@ async function handleCommand(
       const agentRuntime = runtimeRegistry.get(command.payload.agentId);
       const agentCapability = agentRuntime.getCapability() ?? (await agentRuntime.refreshCapability());
       assertActiveThread(project, command.payload.threadId);
-      assertProjectCanStartRun(project);
+      assertProjectCanStartRun(repository, runtime, projectId);
       assertRuntimeAvailable(agentRuntime, agentCapability);
       await enforceExecutionPreflight(ws, command.requestId, runtime, repository, project);
       const providerBrand = repository.getProviderBrand();
@@ -1506,7 +1511,7 @@ async function handleCommand(
 
       repository.activateProject(projectId);
       runtime.setActiveProject(projectId);
-      runtime.clearProjectTransients(projectId);
+      runtime.clearProjectTransients(projectId, command.payload.threadId);
       runtime.setProjectSelectedAgentId(projectId, command.payload.agentId);
 
       const resolvedModes = resolveModeCatalog(runtime.getWorkspace().workspaceModes, project.projectModes);
@@ -1547,9 +1552,9 @@ async function handleCommand(
       emitRunUpdated(ws, command.requestId, runProject);
 
       runtime.setProjectExecutionModel(projectId, effectiveExecutionModelId);
-      runtime.setProjectError(projectId, undefined);
-      runtime.setProjectStreaming(projectId, true);
-      runtime.clearStreaming(projectId);
+      runtime.setProjectError(projectId, undefined, command.payload.threadId);
+      runtime.setProjectStreaming(projectId, true, command.payload.threadId);
+      runtime.clearStreaming(projectId, command.payload.threadId);
       const quickTaskBypassEligible =
         (command.payload.attachments?.length ?? 0) === 0 &&
         resolveModeExecutionAccess(effectiveMode) === "workspace-write" &&
@@ -1567,7 +1572,10 @@ async function handleCommand(
       }
 
       const abortController = new AbortController();
-      runtime.setAbortController(projectId, abortController);
+      if (!runProject.activeRun?.id) {
+        throw new Error("Run was not created");
+      }
+      runtime.setAbortController(projectId, runProject.activeRun.id, abortController);
 
       try {
         if (quickTaskBypassEligible) {
@@ -1614,8 +1622,8 @@ async function handleCommand(
           runProject.activeRun?.id
         );
       } finally {
-        runtime.setProjectStreaming(projectId, false);
-        runtime.setAbortController(projectId, undefined);
+        runtime.setProjectStreaming(projectId, false, command.payload.threadId);
+        runtime.setAbortController(projectId, runProject.activeRun.id, undefined);
       }
 
       return;
@@ -1646,7 +1654,7 @@ async function handleCommand(
       emitMessageAppended(ws, command.requestId, runtime, projectId);
 
       repository.setAgentRunStatus(projectId, activeRun.id, "stopped", "Plan refined before execution");
-      runtime.clearProjectTransients(projectId);
+      runtime.clearProjectTransients(projectId, command.payload.threadId);
 
       const runProject = repository.createAgentRun(
         projectId,
@@ -1657,12 +1665,15 @@ async function handleCommand(
       runtime.upsertPersistedProject(runProject);
       emitRunUpdated(ws, command.requestId, runProject);
       runtime.setProjectExecutionModel(projectId, executionModelId);
-      runtime.setProjectError(projectId, undefined);
-      runtime.setProjectStreaming(projectId, true);
-      runtime.clearStreaming(projectId);
+      runtime.setProjectError(projectId, undefined, command.payload.threadId);
+      runtime.setProjectStreaming(projectId, true, command.payload.threadId);
+      runtime.clearStreaming(projectId, command.payload.threadId);
 
       const abortController = new AbortController();
-      runtime.setAbortController(projectId, abortController);
+      if (!runProject.activeRun?.id) {
+        throw new Error("Run was not created");
+      }
+      runtime.setAbortController(projectId, runProject.activeRun.id, abortController);
 
       try {
         await continueRunLifecycle(ws, command.requestId, runtime, repository, agentRuntime.getAdapter(), pendingBrowserApprovals, connections, {
@@ -1694,8 +1705,8 @@ async function handleCommand(
           runProject.activeRun?.id
         );
       } finally {
-        runtime.setProjectStreaming(projectId, false);
-        runtime.setAbortController(projectId, undefined);
+        runtime.setProjectStreaming(projectId, false, command.payload.threadId);
+        runtime.setAbortController(projectId, runProject.activeRun.id, undefined);
       }
 
       return;
@@ -1743,12 +1754,12 @@ async function handleCommand(
         emitNotificationsUpdatedToAll(connections, command.requestId, repository.loadNotificationInboxState());
       }
 
-      runtime.setProjectError(projectId, undefined);
-      runtime.setProjectStreaming(projectId, true);
-      runtime.clearStreaming(projectId);
+      runtime.setProjectError(projectId, undefined, command.payload.threadId);
+      runtime.setProjectStreaming(projectId, true, command.payload.threadId);
+      runtime.clearStreaming(projectId, command.payload.threadId);
 
       const abortController = new AbortController();
-      runtime.setAbortController(projectId, abortController);
+      runtime.setAbortController(projectId, activeRun.id, abortController);
 
       try {
         await continueRunLifecycle(ws, command.requestId, runtime, repository, agentRuntime.getAdapter(), pendingBrowserApprovals, connections, {
@@ -1785,8 +1796,8 @@ async function handleCommand(
           activeRun.id
         );
       } finally {
-        runtime.setProjectStreaming(projectId, false);
-        runtime.setAbortController(projectId, undefined);
+        runtime.setProjectStreaming(projectId, false, command.payload.threadId);
+        runtime.setAbortController(projectId, activeRun.id, undefined);
       }
 
       return;
@@ -1797,7 +1808,7 @@ async function handleCommand(
       const project = runtime.getProject(projectId);
       const agentRuntime = resolveProjectAgentRuntime(runtimeRegistry, project);
       assertActiveThread(project, command.payload.threadId);
-      assertNoOtherWorkingRun(project, command.payload.runId);
+      assertNoOtherWorkingRun(repository, runtime, projectId, command.payload.runId);
       const activeRun = requirePersistedThreadRun(repository, projectId, command.payload.threadId, command.payload.runId);
       if (activeRun.status !== "ready") {
         throw new Error(`Run status ${activeRun.status} is not executable`);
@@ -1805,12 +1816,12 @@ async function handleCommand(
       await enforceExecutionPreflight(ws, command.requestId, runtime, repository, project);
 
       const providerBrand = repository.getProviderBrand();
-      runtime.setProjectError(projectId, undefined);
-      runtime.setProjectStreaming(projectId, true);
-      runtime.clearStreaming(projectId);
+      runtime.setProjectError(projectId, undefined, command.payload.threadId);
+      runtime.setProjectStreaming(projectId, true, command.payload.threadId);
+      runtime.clearStreaming(projectId, command.payload.threadId);
 
       const abortController = new AbortController();
-      runtime.setAbortController(projectId, abortController);
+      runtime.setAbortController(projectId, activeRun.id, abortController);
 
       try {
         await executeRunLifecycle(ws, command.requestId, runtime, repository, agentRuntime.getAdapter(), pendingBrowserApprovals, connections, {
@@ -1846,8 +1857,8 @@ async function handleCommand(
           activeRun.id
         );
       } finally {
-        runtime.setProjectStreaming(projectId, false);
-        runtime.setAbortController(projectId, undefined);
+        runtime.setProjectStreaming(projectId, false, command.payload.threadId);
+        runtime.setAbortController(projectId, activeRun.id, undefined);
       }
 
       return;
@@ -1988,7 +1999,7 @@ async function handleCommand(
       const project = runtime.getProject(projectId);
       const agentRuntime = resolveProjectAgentRuntime(runtimeRegistry, project);
       assertActiveThread(project, command.payload.threadId);
-      assertNoOtherWorkingRun(project, command.payload.runId);
+      assertNoOtherWorkingRun(repository, runtime, projectId, command.payload.runId);
       const activeRun = requirePersistedThreadRun(repository, projectId, command.payload.threadId, command.payload.runId);
       if (!activeRun.resumable) {
         throw new Error("Run is not resumable");
@@ -2002,12 +2013,12 @@ async function handleCommand(
         emitMessageAppended(ws, command.requestId, runtime, projectId);
       }
 
-      runtime.setProjectError(projectId, undefined);
-      runtime.setProjectStreaming(projectId, true);
-      runtime.clearStreaming(projectId);
+      runtime.setProjectError(projectId, undefined, command.payload.threadId);
+      runtime.setProjectStreaming(projectId, true, command.payload.threadId);
+      runtime.clearStreaming(projectId, command.payload.threadId);
 
       const abortController = new AbortController();
-      runtime.setAbortController(projectId, abortController);
+      runtime.setAbortController(projectId, activeRun.id, abortController);
 
       try {
         await resumeRunLifecycle(
@@ -2051,8 +2062,8 @@ async function handleCommand(
           activeRun.id
         );
       } finally {
-        runtime.setProjectStreaming(projectId, false);
-        runtime.setAbortController(projectId, undefined);
+        runtime.setProjectStreaming(projectId, false, command.payload.threadId);
+        runtime.setAbortController(projectId, activeRun.id, undefined);
       }
 
       return;
@@ -2063,7 +2074,7 @@ async function handleCommand(
       const project = runtime.getProject(projectId);
       const agentRuntime = resolveProjectAgentRuntime(runtimeRegistry, project);
       assertActiveThread(project, command.payload.threadId);
-      assertProjectCanStartRetry(project, command.payload.runId);
+      assertProjectCanStartRetry(repository, runtime, projectId, command.payload.runId);
       await enforceExecutionPreflight(ws, command.requestId, runtime, repository, project);
 
       const retryRun = requireRetryablePersistedRun(repository, projectId, command.payload.threadId, command.payload.runId);
@@ -2076,12 +2087,12 @@ async function handleCommand(
       }).modelId;
       const debugEnabled = repository.getDebugEnabledDefault();
 
-      runtime.setProjectError(projectId, undefined);
-      runtime.setProjectStreaming(projectId, true);
-      runtime.clearStreaming(projectId);
+      runtime.setProjectError(projectId, undefined, command.payload.threadId);
+      runtime.setProjectStreaming(projectId, true, command.payload.threadId);
+      runtime.clearStreaming(projectId, command.payload.threadId);
 
       const abortController = new AbortController();
-      runtime.setAbortController(projectId, abortController);
+      let executionRunId: string | undefined;
 
       try {
         if (!command.payload.subagentId) {
@@ -2091,6 +2102,12 @@ async function handleCommand(
             retryRun.planningModelId ?? agentRuntime.getDefaultPlanningModelId(providerBrand),
             command.payload.threadId
           );
+          const nextRunId = runProject.activeRun?.id;
+          if (!nextRunId) {
+            throw new Error("Retry run was not created");
+          }
+          executionRunId = nextRunId;
+          runtime.setAbortController(projectId, nextRunId, abortController);
           runtime.upsertPersistedProject(runProject);
           emitRunUpdated(ws, command.requestId, runtime.getProject(projectId));
           runtime.setProjectExecutionModel(projectId, executionModelId);
@@ -2123,6 +2140,8 @@ async function handleCommand(
           if (!nextRunId) {
             throw new Error("Retry run was not created");
           }
+          executionRunId = nextRunId;
+          runtime.setAbortController(projectId, nextRunId, abortController);
 
           const retryExecutionPlan = buildExecutionPlanFromRun(retryRun, nextRunId);
           runProject = repository.setAgentRunReady(
@@ -2206,11 +2225,13 @@ async function handleCommand(
           connections,
           projectId,
           message,
-          retryRun.id
+          executionRunId ?? retryRun.id
         );
       } finally {
-        runtime.setProjectStreaming(projectId, false);
-        runtime.setAbortController(projectId, undefined);
+        runtime.setProjectStreaming(projectId, false, command.payload.threadId);
+        if (executionRunId) {
+          runtime.setAbortController(projectId, executionRunId, undefined);
+        }
       }
 
       return;
@@ -2218,12 +2239,7 @@ async function handleCommand(
     case "run.refresh": {
       assertGlobalExecutionNotPaused(repository);
       const projectId = command.payload.projectId;
-      const project = runtime.getProject(projectId);
-      assertActiveThread(project, command.payload.threadId);
-      const targetRun = [project.activeRun, project.lastRun].find((run) => run?.id === command.payload.runId);
-      if (!targetRun) {
-        throw new Error(`Run ${command.payload.runId} is not available`);
-      }
+      const targetRun = requirePersistedThreadRun(repository, projectId, command.payload.threadId, command.payload.runId);
       assertRunCanRefresh(targetRun);
 
       const executionStates = runtime
@@ -2241,7 +2257,7 @@ async function handleCommand(
           runtime,
           repository,
           projectId,
-          project.activeThreadId,
+          executionState.threadId,
           executionState
         );
       }
@@ -2777,8 +2793,8 @@ async function continueRunLifecycle(
     runtime.upsertPersistedProject(questionProject);
     emitRunUpdatedById(ws, requestId, repository, options.projectId, activeRun.id);
 
-    runtime.setProjectStreaming(options.projectId, false);
-    runtime.clearStreaming(options.projectId);
+    runtime.setProjectStreaming(options.projectId, false, activeRun.threadId);
+    runtime.clearStreaming(options.projectId, activeRun.threadId);
     if (questionStatus === "pending") {
       const promptProject = repository.appendMessage(
         options.projectId,
@@ -2819,7 +2835,7 @@ async function continueRunLifecycle(
   emitRunUpdatedById(ws, requestId, repository, options.projectId, activeRun.id);
 
   if (plannerTurn.plan) {
-    runtime.setProjectPlan(options.projectId, plannerTurn.plan);
+    runtime.setProjectPlan(options.projectId, plannerTurn.plan, activeRun.threadId);
     sendEvent(ws, {
       type: "agent.plan",
       requestId,
@@ -2831,8 +2847,8 @@ async function continueRunLifecycle(
     });
   }
 
-  runtime.setProjectStreaming(options.projectId, false);
-  runtime.clearStreaming(options.projectId);
+  runtime.setProjectStreaming(options.projectId, false, activeRun.threadId);
+  runtime.clearStreaming(options.projectId, activeRun.threadId);
   if (shouldAppendPlanSummaryMessage(plannerTurn.executionPlan)) {
     const planSummaryProject = repository.appendMessage(options.projectId, "assistant", plannerTurn.executionPlan.summary, {
       threadId: activeRun.threadId,
@@ -2934,8 +2950,8 @@ async function continueQuickTaskLifecycle(
   );
   runtime.upsertPersistedProject(readyProject);
   emitRunUpdatedById(ws, requestId, repository, projectId, activeRun.id);
-  runtime.setProjectStreaming(projectId, false);
-  runtime.clearStreaming(projectId);
+  runtime.setProjectStreaming(projectId, false, activeRun.threadId);
+  runtime.clearStreaming(projectId, activeRun.threadId);
   emitProjectTrace(ws, requestId, runtime, projectId, activeRun.threadId, {
     sessionId: project.session.sessionId,
     stage: "plan-presented",
@@ -3183,9 +3199,9 @@ async function executeRunLifecycle(
       detail: correctnessReview.gaps.map((gap) => gap.description).join("\n")
     });
     executionCallbacks.closeRunMilestones();
-    runtime.clearStreaming(options.projectId);
-    runtime.setProjectStreaming(options.projectId, false);
-    runtime.setProjectError(options.projectId, undefined);
+    runtime.clearStreaming(options.projectId, activeRun.threadId);
+    runtime.setProjectStreaming(options.projectId, false, activeRun.threadId);
+    runtime.setProjectError(options.projectId, undefined, activeRun.threadId);
     await presentCorrectivePlan(ws, requestId, runtime, repository, options.projectId, {
       sessionId: effectiveProject.session.sessionId,
       agentId: options.agentId,
@@ -3257,9 +3273,9 @@ async function executeRunLifecycle(
 
   const messageProject = executionCallbacks.persistFinalAssistantMessage(outcome.assistantMessage.content);
   runtime.upsertPersistedProject(messageProject);
-  runtime.clearStreaming(options.projectId);
-  runtime.setProjectStreaming(options.projectId, false);
-  runtime.setProjectError(options.projectId, undefined);
+  runtime.clearStreaming(options.projectId, activeRun.threadId);
+  runtime.setProjectStreaming(options.projectId, false, activeRun.threadId);
+  runtime.setProjectError(options.projectId, undefined, activeRun.threadId);
 
   const threadSession = getThreadSessionState(runtime, repository, options.projectId, activeRun.threadId);
   const assistantMessage = findLatestAssistantMessage({
@@ -3426,9 +3442,9 @@ async function executeInlineSubagentRetryLifecycle(
 
   const messageProject = repository.appendMessage(options.projectId, "assistant", assistantMessage.content, options.sourceRun.threadId);
   runtime.upsertPersistedProject(messageProject);
-  runtime.clearStreaming(options.projectId);
-  runtime.setProjectStreaming(options.projectId, false);
-  runtime.setProjectError(options.projectId, undefined);
+  runtime.clearStreaming(options.projectId, options.sourceRun.threadId);
+  runtime.setProjectStreaming(options.projectId, false, options.sourceRun.threadId);
+  runtime.setProjectError(options.projectId, undefined, options.sourceRun.threadId);
 
   const threadSession = getThreadSessionState(runtime, repository, options.projectId, options.sourceRun.threadId);
   const persistedAssistantMessage = findLatestAssistantMessage({
@@ -3525,7 +3541,7 @@ function createExecutionCallbacks(
     tailFlushTimer = undefined;
     const segments = transcriptDraft.getSegments();
     persistStreamingAssistantMessage();
-    runtime.setStreamingTail(projectId, segments);
+    runtime.setStreamingTail(projectId, segments, threadId);
     const state = getThreadSessionState(runtime, repository, projectId, threadId);
     emitControlEvent(connections, {
       type: "chat.streaming-tail-updated",
@@ -3613,9 +3629,7 @@ function createExecutionCallbacks(
 
   return {
     onTrace(trace: AgentTrace) {
-      if (runtime.getProject(projectId).activeThreadId === threadId) {
-        runtime.appendTrace(projectId, trace);
-      }
+      runtime.appendTrace(projectId, trace, threadId);
       emitControlEvent(connections, {
         type: "agent.trace",
         requestId,
@@ -3640,9 +3654,7 @@ function createExecutionCallbacks(
       return persistFinalAssistantMessage(content);
     },
     onDelta(delta: string) {
-      if (runtime.getProject(projectId).activeThreadId === threadId) {
-        runtime.appendStreamingDelta(projectId, delta);
-      }
+      runtime.appendStreamingDelta(projectId, delta, threadId);
       transcriptDraft.appendAssistantDelta(delta);
       persistStreamingAssistantMessage();
       scheduleTailFlush();
@@ -3658,9 +3670,7 @@ function createExecutionCallbacks(
       });
     },
     onContextUsage(contextUsage: ProjectContextUsage) {
-      if (runtime.getProject(projectId).activeThreadId === threadId) {
-        runtime.setProjectContextUsage(projectId, contextUsage);
-      }
+      runtime.setProjectContextUsage(projectId, contextUsage, threadId);
       emitControlEvent(connections, {
         type: "project.context",
         requestId,
@@ -3723,7 +3733,10 @@ function createExecutionCallbacks(
       emitRunUpdatedById(ws, requestId, repository, projectId, runId, connections);
     },
     setExecutionState(state: ManagedExecutionState) {
-      runtime.setExecutionState(projectId, state);
+      runtime.setExecutionState(projectId, {
+        ...state,
+        threadId
+      });
     },
     getExecutionState(input: Pick<ManagedExecutionState, "runId" | "kind" | "subagentId">) {
       return runtime.getExecutionState(projectId, input);
@@ -3732,9 +3745,7 @@ function createExecutionCallbacks(
       runtime.clearExecutionState(projectId, input);
     },
     onExecutionEvent(input: { owner: "main" | "subagent" | "aggregator"; subagentId?: string; event: PiAgentExecutionEvent }) {
-      const project = runtime.getProject(projectId);
-      const run = [project.activeRun, project.lastRun].find((entry) => entry?.id === runId);
-      const persistedRun = run ?? repository.getRun(projectId, runId);
+      const persistedRun = repository.getRun(projectId, runId);
       if (!persistedRun) {
         return;
       }
@@ -4290,10 +4301,18 @@ async function handleRunFailure(
     });
   }
 
-  runtime.setProjectError(projectId, message);
-  runtime.setProjectStreaming(projectId, false);
-  runtime.clearStreaming(projectId);
-  appendSystemStatus(ws, requestId, runtime, repository, projectId, failedRun?.threadId ?? project.activeThreadId, `Run failed. ${message}`);
+  runtime.setProjectError(projectId, message, failedRun?.threadId ?? project.activeThreadId);
+  runtime.setProjectStreaming(projectId, false, failedRun?.threadId ?? project.activeThreadId);
+  runtime.clearStreaming(projectId, failedRun?.threadId ?? project.activeThreadId);
+  appendSystemStatus(
+    ws,
+    requestId,
+    runtime,
+    repository,
+    projectId,
+    failedRun?.threadId ?? project.activeThreadId,
+    `Run failed. ${message}`
+  );
 
   emitControlEvent(connections, {
     type: "chat.error",
@@ -4586,7 +4605,7 @@ function emitProjectTrace(
   threadId: string,
   trace: AgentTrace
 ) {
-  runtime.appendTrace(projectId, trace);
+  runtime.appendTrace(projectId, trace, threadId);
   sendEvent(ws, {
     type: "agent.trace",
     requestId,
@@ -4634,8 +4653,12 @@ function getThreadSessionState(
     return project.session;
   }
 
+  const threadRuntime = runtime.getThreadRuntime(projectId, threadId);
   return {
     ...createEmptySession(threadId),
+    sessionId: threadRuntime?.sessionId ?? threadId,
+    isStreaming: threadRuntime?.isStreaming ?? false,
+    lastError: threadRuntime?.lastError,
     messages: repository.getThreadMessages(projectId, threadId)
   };
 }
@@ -4784,6 +4807,7 @@ async function completeExecutionPlanPrerequisites(
   const updatedProject = repository.setAgentRunExecutionPlan(projectId, executionPlan.runId, executionPlan);
   runtime.upsertPersistedProject(updatedProject);
   emitRunUpdated(ws, requestId, updatedProject);
+  const planRun = repository.getRun(projectId, executionPlan.runId);
   runtime.setProjectPlan(
     projectId,
     createAgentPlanFromExecutionPlan(
@@ -4791,7 +4815,8 @@ async function completeExecutionPlanPrerequisites(
       runtime.getProject(projectId).session.selectedAgentId ?? "pi",
       planningModelId ?? executionPlan.planningModelId,
       executionPlan
-    )
+    ),
+    planRun?.threadId
   );
   return executionPlan;
 }
@@ -4950,7 +4975,7 @@ async function presentCorrectivePlan(
   emitRunUpdatedById(ws, requestId, repository, projectId, input.executionPlan.runId);
 
   const agentPlan = createAgentPlanFromExecutionPlan(input.sessionId, input.agentId, input.planningModelId, input.executionPlan);
-  runtime.setProjectPlan(projectId, agentPlan);
+  runtime.setProjectPlan(projectId, agentPlan, correctiveRun.threadId);
   sendEvent(ws, {
     type: "agent.plan",
     requestId,
@@ -5102,10 +5127,14 @@ function assertRunCanRefresh(run: AgentRunState) {
   }
 }
 
-function assertProjectCanStartRun(project: ProjectLike) {
+function assertProjectCanStartRun(repository: WorkspaceRepository, runtime: WorkspaceRuntimeStore, projectId: ProjectId) {
+  if (runtime.hasAnyStreamingThread(projectId)) {
+    throw new Error("Project has active run in status running-main");
+  }
   const blockingStatuses = new Set(["planning", "awaiting-user-input", "ready", "running-main", "running-subagents", "aggregating", "partial-complete"]);
-  if (project.activeRun && blockingStatuses.has(project.activeRun.status)) {
-    throw new Error(`Project has active run in status ${project.activeRun.status}`);
+  const blockingRun = findProjectRunWithStatuses(repository, projectId, blockingStatuses);
+  if (blockingRun) {
+    throw new Error(`Project has active run in status ${blockingRun.status}`);
   }
 }
 
@@ -5115,18 +5144,60 @@ function assertActiveThread(project: ProjectLike, threadId: string) {
   }
 }
 
-function assertProjectCanStartRetry(project: ProjectLike, runId: string) {
+function assertProjectCanStartRetry(
+  repository: WorkspaceRepository,
+  runtime: WorkspaceRuntimeStore,
+  projectId: ProjectId,
+  runId: string
+) {
+  if (runtime.hasAnyStreamingThread(projectId)) {
+    throw new Error("Project has active run in status running-main");
+  }
   const blockingStatuses = new Set(["planning", "awaiting-user-input", "running-main", "running-subagents", "aggregating"]);
-  if (project.activeRun && project.activeRun.id !== runId && blockingStatuses.has(project.activeRun.status)) {
-    throw new Error(`Project has active run in status ${project.activeRun.status}`);
+  const blockingRun = findProjectRunWithStatuses(repository, projectId, blockingStatuses, runId);
+  if (blockingRun) {
+    throw new Error(`Project has active run in status ${blockingRun.status}`);
   }
 }
 
-function assertNoOtherWorkingRun(project: ProjectLike, runId: string) {
-  const workingStatuses = new Set(["planning", "awaiting-user-input", "running-main", "running-subagents", "aggregating"]);
-  if (project.activeRun && project.activeRun.id !== runId && workingStatuses.has(project.activeRun.status)) {
-    throw new Error(`Project has active run in status ${project.activeRun.status}`);
+function assertNoOtherWorkingRun(
+  repository: WorkspaceRepository,
+  runtime: WorkspaceRuntimeStore,
+  projectId: ProjectId,
+  runId: string
+) {
+  const activeExecution = runtime
+    .getRunExecutionStates(projectId, runId)
+    .some((state) => ["queued", "provisioning", "api-starting", "active", "finishing", "waiting-input"].includes(state.phase));
+  if (runtime.hasAnyStreamingThread(projectId) && !activeExecution) {
+    throw new Error("Project has active run in status running-main");
   }
+  const workingStatuses = new Set(["planning", "awaiting-user-input", "running-main", "running-subagents", "aggregating"]);
+  const workingRun = findProjectRunWithStatuses(repository, projectId, workingStatuses, runId);
+  if (workingRun) {
+    throw new Error(`Project has active run in status ${workingRun.status}`);
+  }
+}
+
+function findProjectRunWithStatuses(
+  repository: WorkspaceRepository,
+  projectId: ProjectId,
+  statuses: Set<string>,
+  excludedRunId?: string
+) {
+  const project = repository.getProject(projectId);
+  const seenRunIds = new Set<string>();
+  for (const run of [project.activeRun, project.lastRun, ...project.runSummaries]) {
+    if (!run || seenRunIds.has(run.id)) {
+      continue;
+    }
+    seenRunIds.add(run.id);
+    if (run.id !== excludedRunId && statuses.has(run.status)) {
+      return run;
+    }
+  }
+
+  return undefined;
 }
 
 function requirePersistedThreadRun(repository: WorkspaceRepository, projectId: ProjectId, threadId: ThreadId, runId: string) {

@@ -37,6 +37,7 @@ export type SubagentSpawnTimingSnapshot = {
 
 export type ManagedExecutionState = {
   runId: string;
+  threadId: string;
   subagentId?: string;
   kind: ManagedExecutionKind;
   phase: ManagedExecutionPhase;

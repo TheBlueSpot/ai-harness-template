@@ -17,6 +17,7 @@ export async function runManagedAgentExecution(
   adapter: PiAgentAdapter,
   options: {
     runId: string;
+    threadId?: string;
     kind: Exclude<ManagedExecutionKind, "planner">;
     subagentId?: string;
     originalRequest: PiAgentPromptRequest;
@@ -44,6 +45,7 @@ export async function runManagedAgentExecution(
     const existingState = options.store.getState();
     options.store.setState({
       runId: options.runId,
+      threadId: options.threadId ?? existingState?.threadId ?? options.runId,
       kind: options.kind,
       subagentId: options.subagentId,
       phase: existingState?.phase ?? "api-starting",
@@ -104,11 +106,18 @@ export async function runManagedAgentExecution(
         throw error;
       }
 
-      const baseState = {
+      const baseState: ManagedExecutionState = {
         ...(latestState ?? {
           runId: options.runId,
+          threadId: options.threadId ?? options.runId,
           kind: options.kind,
           subagentId: options.subagentId,
+          phase: "api-starting" as const,
+          hasReceivedActivity: false,
+          lastProgressAt: Date.now(),
+          refreshRequested: false,
+          refreshDeferred: false,
+          pendingRefreshAction: undefined,
           originalRequest: snapshotRequest(options.originalRequest),
           continuationRequest: snapshotRequest(options.continuationRequest),
           spawnTiming: undefined
@@ -156,12 +165,13 @@ export async function runManagedAgentExecution(
 
 function handleExecutionEvent(
   store: ManagedExecutionStore,
-  options: Pick<Parameters<typeof runManagedAgentExecution>[1], "runId" | "kind" | "subagentId" | "originalRequest" | "continuationRequest">,
+  options: Pick<Parameters<typeof runManagedAgentExecution>[1], "runId" | "threadId" | "kind" | "subagentId" | "originalRequest" | "continuationRequest">,
   controller: PiAgentExecutionController | undefined,
   event: PiAgentExecutionEvent
 ) {
-  const current = store.getState() ?? {
+  const current: ManagedExecutionState = store.getState() ?? {
     runId: options.runId,
+    threadId: options.threadId ?? options.runId,
     kind: options.kind,
     subagentId: options.subagentId,
     phase: "api-starting" as const,
@@ -171,7 +181,8 @@ function handleExecutionEvent(
     refreshDeferred: false,
     pendingRefreshAction: undefined,
     originalRequest: snapshotRequest(options.originalRequest),
-    continuationRequest: snapshotRequest(options.continuationRequest)
+    continuationRequest: snapshotRequest(options.continuationRequest),
+    spawnTiming: undefined
   };
 
   if (event.type === "session-created") {
