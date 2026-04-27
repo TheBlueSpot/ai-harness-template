@@ -1,6 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal, type JSX } from "solid-js";
 import {
   Bot,
+  CircleAlert,
   CirclePause,
   CircleHelp,
   CirclePlay,
@@ -37,6 +38,7 @@ import { ActionButton } from "./action-button";
 import { MarkdownContent } from "./markdown-content";
 import { buttonVariants } from "./primitives/button";
 import { CopyTextButton } from "./primitives/copy-text-button";
+import { Dialog } from "./primitives/dialog";
 import { DropdownControl } from "./primitives/dropdown";
 import { ScrollArea } from "./primitives/scroll-area";
 import { Textarea } from "./primitives/textarea";
@@ -54,13 +56,20 @@ const assistantTodoStateOptions = [
   { value: "cancelled", label: "cancelled", description: "Work was intentionally stopped." }
 ] satisfies Array<{ value: AssistantTodo["state"]; label: string; description: string }>;
 
-export function AssistantsPanel() {
+type AssistantsPanelProps = {
+  initialCircuitBreakerAssistantId?: string;
+};
+
+export function AssistantsPanel(props: AssistantsPanelProps = {}) {
   const state = harnessStore.state;
   const sendCommand = harnessStore.actions.sendCommand;
   const [activeTab, setActiveTab] = createSignal<AssistantTab>("chat");
   const [chatDraft, setChatDraft] = createSignal("");
   const [newTodoTitle, setNewTodoTitle] = createSignal("");
   const [expandedLogId, setExpandedLogId] = createSignal<string>();
+  const [selectedCircuitBreakerAssistantId, setSelectedCircuitBreakerAssistantId] = createSignal<string | undefined>(
+    props.initialCircuitBreakerAssistantId
+  );
   const [questionAnswers, setQuestionAnswers] = createSignal<Record<string, string>>({});
   const visibleAssistants = createMemo(() => getVisibleAssistants(state));
   const selectedAssistant = createMemo(() => getSelectedAssistant(state));
@@ -99,6 +108,27 @@ export function AssistantsPanel() {
     [...state.backgroundJobs.runs]
       .filter((run) => run.assistantId === selectedAssistant()?.id)
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+  );
+  const circuitBreakerAssistant = createMemo(() =>
+    state.assistants.assistants.find((assistant) => assistant.id === selectedCircuitBreakerAssistantId())
+  );
+  const circuitBreakerLogs = createMemo(() =>
+    [...state.assistants.logs]
+      .filter((entry) => entry.assistantId === selectedCircuitBreakerAssistantId())
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .slice(0, 5)
+  );
+  const circuitBreakerRuns = createMemo(() =>
+    [...state.backgroundJobs.runs]
+      .filter((run) => run.assistantId === selectedCircuitBreakerAssistantId())
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .slice(0, 5)
+  );
+  const circuitBreakerQuestions = createMemo(() =>
+    [...state.assistants.questions]
+      .filter((question) => question.assistantId === selectedCircuitBreakerAssistantId() && question.status === "pending")
+      .sort((left, right) => right.askedAt.localeCompare(left.askedAt))
+      .slice(0, 5)
   );
   const streamingText = createMemo(() => state.assistants.streamingByAssistantId[selectedAssistant()?.id ?? ""] ?? "");
   const executionPaused = createMemo(() => state.executionControl.isPaused);
@@ -293,8 +323,139 @@ export function AssistantsPanel() {
     });
   }
 
+  function retryCircuitBreaker(assistant: Assistant) {
+    if (executionPaused()) {
+      return;
+    }
+    sendCommand({
+      type: "assistant.circuit-breaker.retry",
+      requestId: createRequestId(),
+      payload: {
+        assistantId: assistant.id
+      }
+    });
+    setSelectedCircuitBreakerAssistantId(undefined);
+  }
+
+  function openCircuitBreakerJobs() {
+    setSelectedCircuitBreakerAssistantId(undefined);
+    harnessStore.setActiveSurface("background-jobs");
+  }
+
   return (
     <section data-test-assistants-panel="" class="panel-shell flex h-full min-h-0 flex-col gap-4 rounded-2xl border-t-0 p-4">
+      <Show when={selectedCircuitBreakerAssistantId()}>
+        <Dialog
+          open
+          title="Circuit breaker"
+          eyebrow="Assistant recovery"
+          description="Inspect latest failure context, then retry recovery when ready."
+          onClose={() => setSelectedCircuitBreakerAssistantId(undefined)}
+          footer={
+            <Show when={circuitBreakerAssistant()}>
+              {(assistant) => (
+                <>
+                  <ActionButton
+                    tooltip="Keep assistant paused and close this dialog"
+                    variant="secondary"
+                    onClick={() => setSelectedCircuitBreakerAssistantId(undefined)}
+                  >
+                    Keep paused
+                  </ActionButton>
+                  <ActionButton tooltip="Open assistant-owned background jobs" variant="secondary" onClick={openCircuitBreakerJobs}>
+                    Open jobs
+                  </ActionButton>
+                  <ActionButton
+                    tooltip="Focus this assistant in the Assistants surface"
+                    variant="secondary"
+                    onClick={() => {
+                      harnessStore.setSelectedAssistantId(assistant().id);
+                      setSelectedCircuitBreakerAssistantId(undefined);
+                    }}
+                  >
+                    Open assistant
+                  </ActionButton>
+                  <ActionButton
+                    tooltip={executionPaused() ? executionPauseReason : "Clear circuit breaker, resume assistant, and retry recovery"}
+                    disabled={executionPaused()}
+                    disabledReason={executionPauseReason}
+                    icon={<RefreshCcw class="h-4 w-4" />}
+                    ariaLabel="Retry"
+                    onClick={() => retryCircuitBreaker(assistant())}
+                  >
+                    Retry
+                  </ActionButton>
+                </>
+              )}
+            </Show>
+          }
+        >
+          <Show when={circuitBreakerAssistant()}>
+            {(assistant) => (
+              <div class="flex flex-col gap-4">
+              <div class="grid gap-2 text-[0.675rem] text-(--muted) md:grid-cols-2">
+                <div><span class="font-semibold text-(--foreground)">Assistant:</span> {assistant().name}</div>
+                <div><span class="font-semibold text-(--foreground)">Scope:</span> {assistant().scope}</div>
+                <div><span class="font-semibold text-(--foreground)">Run state:</span> {assistant().runState}</div>
+                <div><span class="font-semibold text-(--foreground)">Bootstrap:</span> {assistant().bootstrapState}</div>
+                <div><span class="font-semibold text-(--foreground)">Failure streak:</span> {assistant().failureStreakCount}</div>
+                <div><span class="font-semibold text-(--foreground)">Breaker:</span> {assistant().circuitBreakerState}</div>
+              </div>
+              <section class="rounded-2xl border border-(--border) bg-white/70 p-3">
+                <div class="mb-2 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Reason</div>
+                <div class="text-[0.75rem] leading-5 text-(--foreground)">{assistant().circuitBreakerReason ?? "No failure reason recorded."}</div>
+              </section>
+              <section class="rounded-2xl border border-(--border) bg-white/70 p-3">
+                <div class="mb-2 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Latest logs</div>
+                <Show when={circuitBreakerLogs().length > 0} fallback={<div class="text-[0.675rem] text-(--muted)">No recent logs.</div>}>
+                  <div class="space-y-2">
+                    <For each={circuitBreakerLogs()}>
+                      {(entry) => (
+                        <div class="rounded-xl border border-(--border) bg-white/70 p-2 text-[0.675rem] leading-5">
+                          <div class="font-semibold text-(--foreground)">{entry.level} | {entry.summary}</div>
+                          <div class="text-(--muted)">{entry.detail ?? "No detail."}</div>
+                          <div class="mt-1 text-[0.575rem] uppercase tracking-[0.12em] text-(--muted)">{entry.createdAt}</div>
+                        </div>
+                      )}
+                    </For>
+                  </div>
+                </Show>
+              </section>
+              <section class="rounded-2xl border border-(--border) bg-white/70 p-3">
+                <div class="mb-2 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Latest runs</div>
+                <Show when={circuitBreakerRuns().length > 0} fallback={<div class="text-[0.675rem] text-(--muted)">No assistant-owned job runs.</div>}>
+                  <div class="space-y-2">
+                    <For each={circuitBreakerRuns()}>
+                      {(run) => (
+                        <div class="rounded-xl border border-(--border) bg-white/70 p-2 text-[0.675rem] leading-5">
+                          <div class="font-semibold text-(--foreground)">{run.status}</div>
+                          <div class="text-(--muted)">{run.failureMessage ?? run.summary ?? run.id}</div>
+                          <div class="mt-1 text-[0.575rem] uppercase tracking-[0.12em] text-(--muted)">{run.updatedAt}</div>
+                        </div>
+                      )}
+                    </For>
+                  </div>
+                </Show>
+              </section>
+              <section class="rounded-2xl border border-(--border) bg-white/70 p-3">
+                <div class="mb-2 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Pending questions</div>
+                <Show when={circuitBreakerQuestions().length > 0} fallback={<div class="text-[0.675rem] text-(--muted)">No pending questions.</div>}>
+                  <div class="space-y-2">
+                    <For each={circuitBreakerQuestions()}>
+                      {(question) => (
+                        <div class="rounded-xl border border-(--border) bg-white/70 p-2 text-[0.675rem] leading-5 text-(--foreground)">
+                          {question.prompt}
+                        </div>
+                      )}
+                    </For>
+                  </div>
+                </Show>
+              </section>
+              </div>
+            )}
+          </Show>
+        </Dialog>
+      </Show>
       <div class="px-1 py-1">
         <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div class="flex items-center gap-2 text-[0.585rem] font-semibold tracking-[0.2em] text-(--muted)">
@@ -428,6 +589,23 @@ export function AssistantsPanel() {
                     </div>
 
                     <div class="flex flex-wrap gap-2">
+                      <Show when={assistant().circuitBreakerState === "tripped"}>
+                        <Tooltip content="Inspect circuit breaker failure and retry">
+                          <button
+                            type="button"
+                            class={buttonVariants({ variant: "warning" })}
+                            aria-label="Inspect failure"
+                            on:click={(event) => {
+                              event.stopPropagation();
+                              setSelectedCircuitBreakerAssistantId(assistant().id);
+                              console.log("selected breaker id", selectedCircuitBreakerAssistantId());
+                            }}
+                          >
+                            <CircleAlert class="h-4 w-4" />
+                            Inspect failure
+                          </button>
+                        </Tooltip>
+                      </Show>
                       <ActionButton tooltip="Edit assistant config" icon={<SquarePen class="h-4 w-4" />} variant="secondary" onClick={() => openEditAssistant(assistant())}>Edit</ActionButton>
                       <ActionButton
                         tooltip={assistant().runState === "paused" ? "Resume assistant background work" : "Pause assistant background work"}

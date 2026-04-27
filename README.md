@@ -36,7 +36,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - Global execution pause does not cancel in-flight work; it only blocks new launches and queues new follow-up asks until resume
 - Plan-first execution that persists a full execution plan, posts a durable plan summary into chat, and lets that card execute the stored run by id while it is `ready`
 - Obvious low-complexity workspace actions such as direct file or folder requests, plus correction-style follow-ups that refine where the edit should land, can auto-switch into `implement` mode and skip planner turn-taking; simple leading-slash task paths like `/breakout` are normalized to workspace-relative targets when the request is clearly local
-- Optional live CLI sessions for Copilot CLI and Codex CLI over Bun-managed piped transport, with attach tokens, reconnect, and follow-up capture
+- Optional live CLI sessions for Copilot CLI and Codex CLI over Bun-managed piped transport, with thread-owned attach tokens, reconnect, and captured terminal context that can feed the next prompt
 - Built-in modes now differ on confirmation defaults and execution access: `plan` stays approval-first and read-only by default, `ask` suppresses transcript plan cards for direct Q&A without forcing read-only, and `implement` auto-runs unless the frozen plan fans out to multiple subagents
 - Composer input can auto-switch built-in modes when message intent is clear enough, using recent thread context to repair correction follow-ups so direct questions, review requests, debugging prompts, planning asks, and local workspace edits do not depend only on stale sticky mode state; an explicit user mode selection stays pinned for that send
 - Formatted markdown rendering across chat, plan, and trace surfaces with safe links, GFM tables and task lists, footnotes, and copyable highlighted code blocks
@@ -120,7 +120,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - When `HARNESS_PORT` is unset, dev and bootstrap retry on a random open port if `8787` is already occupied
 - Development startup now prints a temp startup log path immediately, then streams current boot phase, weighted progress, ETA updates, and slow-phase hints to stdout
 - `bun run build:ui` builds the browser bundle through `Bun.build(...)` with Solid and Tailwind plugin support
-- `bun run doctor` prints the shared activation and runtime health report and exits non-zero when required first-task checks fail
+- `bun run doctor` prints the shared activation and runtime health report, supports machine-readable JSON output, and exits non-zero when required first-task checks fail
 - `bun run package:launcher` builds a portable Bun launcher folder for the current OS target
 - Portable launcher startup failures now write a timestamped crash log under `logs/` next to the executable and print that path before exit
 - Development UI builds emit external source maps for browser debugging

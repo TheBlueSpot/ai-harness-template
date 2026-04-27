@@ -319,6 +319,7 @@ function parseAssetRefs(input: string, assistantId: string) {
       kind: kind as (typeof assistantAssetKinds)[number],
       label,
       value: refValue,
+      resolutionStatus: "resolved",
       createdAt: new Date().toISOString()
     });
   }

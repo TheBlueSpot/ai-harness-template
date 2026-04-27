@@ -1,6 +1,9 @@
 import { cp, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { buildUiBundle } from "../harness/cli/src/ui-build";
+import { CliUsageError, parseCliOptions } from "../harness/cli/src/cli-options";
+
+const HELP = `Usage: bun run package:launcher [--all|--target <target>] [--help]`;
 
 const ALL_LAUNCHER_TARGETS = [
   "bun-windows-x64",
@@ -15,12 +18,39 @@ type LauncherTarget = (typeof ALL_LAUNCHER_TARGETS)[number];
 const repoRoot = path.resolve(import.meta.dir, "..");
 const releaseRoot = path.join(repoRoot, "release");
 const entrypoint = path.join(repoRoot, "harness/cli/src/index.ts");
-const buildAll = process.argv.includes("--all");
-const targetArg = readTargetArg();
+let parsedOptions: ReturnType<typeof parseCliOptions<"--all" | "--target" | "--help">>;
+try {
+  parsedOptions = parseCliOptions(process.argv.slice(2), {
+    flags: ["--all", "--target", "--help"],
+    valueFlags: ["--target"],
+    conflicts: [["--all", "--target"]]
+  });
+} catch (error) {
+  if (error instanceof CliUsageError) {
+    console.error(error.message);
+    process.exit(2);
+  }
+  throw error;
+}
+if (parsedOptions.flags.has("--help")) {
+  console.log(HELP);
+  process.exit(0);
+}
+const buildAll = parsedOptions.flags.has("--all");
+const targetArg = parsedOptions.values.get("--target");
 
 process.chdir(repoRoot);
 
-const targets: LauncherTarget[] = resolveRequestedTargets();
+let targets: LauncherTarget[];
+try {
+  targets = resolveRequestedTargets();
+} catch (error) {
+  if (error instanceof CliUsageError) {
+    console.error(error.message);
+    process.exit(2);
+  }
+  throw error;
+}
 
 await buildUiBundle({ minify: true });
 
@@ -84,22 +114,13 @@ function resolveRequestedTargets(): LauncherTarget[] {
 
   if (targetArg) {
     if (!isLauncherTarget(targetArg)) {
-      throw new Error(`Unsupported launcher target: ${targetArg}`);
+      throw new CliUsageError(`Unsupported launcher target: ${targetArg}`);
     }
 
     return [targetArg];
   }
 
   return [resolveCurrentCompileTarget()];
-}
-
-function readTargetArg(): string | undefined {
-  const targetIndex = process.argv.indexOf("--target");
-  if (targetIndex === -1) {
-    return undefined;
-  }
-
-  return process.argv[targetIndex + 1];
 }
 
 function isLauncherTarget(value: string): value is LauncherTarget {

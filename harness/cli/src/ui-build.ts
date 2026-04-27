@@ -1,5 +1,5 @@
 import { existsSync, watch, type FSWatcher } from "node:fs";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { SolidPlugin } from "@dschz/bun-plugin-solid";
 import tailwindPlugin from "bun-plugin-tailwind";
@@ -66,6 +66,10 @@ export async function buildUiBundle({ minify = false }: UiBuildOptions = {}) {
     );
   }
 
+  if (!minify) {
+    await appendDevSourceMapReference();
+  }
+
   await writeFile(
     path.join(uiOutDir, "index.html"),
     `<!doctype html>
@@ -85,6 +89,18 @@ export async function buildUiBundle({ minify = false }: UiBuildOptions = {}) {
   );
 
   console.log(`Bundled page in ${Math.round(performance.now() - start)}ms: dist/ui/index.html`);
+}
+
+async function appendDevSourceMapReference() {
+  const jsPath = path.join(uiOutDir, "main.js");
+  const sourceMapReference = "//# sourceMappingURL=main.js.map";
+  const contents = await readFile(jsPath, "utf8");
+
+  if (contents.includes(sourceMapReference)) {
+    return;
+  }
+
+  await writeFile(jsPath, `${contents.trimEnd()}\n${sourceMapReference}\n`);
 }
 
 export function createUiAssetManager(options: CreateUiAssetManagerOptions = {}) {

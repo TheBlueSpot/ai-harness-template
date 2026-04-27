@@ -1,14 +1,35 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { CliUsageError, parseCliOptions } from "../harness/cli/src/cli-options";
+
+const HELP = `Usage: bun run bootstrap [--server-only] [--open|--no-open] [--skip-playwright] [--help]`;
 
 const repoRoot = path.resolve(import.meta.dir, "..");
 process.chdir(repoRoot);
 
-const serverOnly = process.argv.includes("--server-only");
-const forceOpen = process.argv.includes("--open");
-const disableOpen = process.argv.includes("--no-open");
-const skipPlaywright = process.argv.includes("--skip-playwright");
+let parsedOptions: ReturnType<typeof parseCliOptions<"--server-only" | "--open" | "--no-open" | "--skip-playwright" | "--help">>;
+try {
+  parsedOptions = parseCliOptions(process.argv.slice(2), {
+    flags: ["--server-only", "--open", "--no-open", "--skip-playwright", "--help"],
+    conflicts: [["--open", "--no-open"]]
+  });
+} catch (error) {
+  if (error instanceof CliUsageError) {
+    console.error(error.message);
+    process.exit(2);
+  }
+  throw error;
+}
+if (parsedOptions.flags.has("--help")) {
+  console.log(HELP);
+  process.exit(0);
+}
+
+const serverOnly = parsedOptions.flags.has("--server-only");
+const forceOpen = parsedOptions.flags.has("--open");
+const disableOpen = parsedOptions.flags.has("--no-open");
+const skipPlaywright = parsedOptions.flags.has("--skip-playwright");
 const rawPort = Bun.env.HARNESS_PORT?.trim();
 const configuredPort = rawPort ? Number(rawPort) : Number.NaN;
 const port = Number.isFinite(configuredPort) ? configuredPort : 8787;

@@ -1,4 +1,4 @@
-import { ZodError } from "zod";
+import { ZodError, type ZodIssue } from "zod";
 import {
   plannerTurnResultSchema,
   type ChatMessage,
@@ -74,6 +74,10 @@ export async function planTask(
     "- Contract integrationPoints must name the sibling files, imports, call sites, or runtime surfaces the main agent will merge or verify.",
     "- Contract verificationCommands are for the main harness verification pass; do not put verification work into subtask instructions.",
     "- Contract verificationScope must be exactly \"owned-files-only\" or \"worktree-full\". Use \"worktree-full\" for full app, full workspace, or whole project checks.",
+    "- prerequisites[].owner must be exactly \"main\" or \"subagent\".",
+    "- Use prerequisites[].owner=\"main\" for user-requested setup, shared setup, scaffolding, repo inspection, migrations, and any work not owned by one subagent.",
+    "- Never emit \"user\", \"human\", \"developer\", \"assistant\", \"executor\", or \"agent\" as a prerequisite owner.",
+    "- Every enum field must use one of the exact schema literals shown.",
     "- Same-worktree parallel work requires contracts with non-overlapping ownedPaths.",
     "- For greenfield apps, use prerequisites for shared scaffold/setup, then split subagents by concrete files or folders.",
     "- For new directories, include the first file each subagent should create so implementation can start without extra discovery.",
@@ -122,11 +126,10 @@ export async function planTask(
     readOnly: true
   });
 
+  let rawPayload = parseJsonPayload(result.text);
+
   try {
-    const parsed = normalizePlannerWorkspacePaths(
-      plannerTurnResultSchema.parse(normalizePlannerPayload(parseJsonPayload(result.text))),
-      options.cwd
-    );
+    const parsed = normalizePlannerWorkspacePaths(parsePlannerTurnPayload(rawPayload), options.cwd);
     return {
       plannerResult: parsed,
       contextUsage: result.contextUsage
@@ -144,11 +147,86 @@ export async function planTask(
     };
   } catch (error) {
     if (error instanceof ZodError) {
-      throw new Error(`Planner returned invalid JSON payload: ${error.message}`);
+      const repairResult = await adapter.runPrompt({
+        kind: "planner",
+        cwd: options.cwd,
+        modelId: planningModelId,
+        prompt: buildPlannerRepairPrompt(prompt, rawPayload, error),
+        images: attachmentContext.images,
+        reasoningStrength: options.reasoningStrength,
+        fastMode: options.fastMode,
+        abortSignal: options.abortSignal,
+        readOnly: true
+      });
+
+      try {
+        rawPayload = parseJsonPayload(repairResult.text);
+        const parsed = normalizePlannerWorkspacePaths(parsePlannerTurnPayload(rawPayload), options.cwd);
+        return {
+          plannerResult: parsed,
+          contextUsage: repairResult.contextUsage
+            ? {
+                sourceKind: "planner",
+                sourceLabel: "planner",
+                modelId: planningModelId,
+                tokens: repairResult.contextUsage.tokens,
+                contextWindow: repairResult.contextUsage.contextWindow,
+                usagePercent: repairResult.contextUsage.usagePercent,
+                totalProcessedTokens: repairResult.contextUsage.sessionStats.tokens.total,
+                updatedAt: new Date().toISOString()
+              }
+            : undefined
+        };
+      } catch (repairError) {
+        if (repairError instanceof ZodError) {
+          throw new Error(`Planner returned invalid JSON payload after repair: ${formatZodIssues(repairError.issues)}`);
+        }
+
+        if (repairError instanceof SyntaxError) {
+          throw new Error(`Planner repair returned invalid JSON: ${repairError.message}`);
+        }
+
+        throw repairError;
+      }
     }
 
     throw error;
   }
+}
+
+function parsePlannerTurnPayload(input: unknown) {
+  return plannerTurnResultSchema.parse(normalizePlannerPayload(input));
+}
+
+function buildPlannerRepairPrompt(originalPrompt: string, invalidPayload: unknown, error: ZodError) {
+  return [
+    "Repair the planner JSON payload so it exactly matches the schema.",
+    "Return JSON only. Do not wrap it in markdown fences.",
+    "Do not change the user intent, task ids, paths, or model ids unless required by the schema.",
+    "Use exact enum literals from the schema. In particular, prerequisite owner must be \"main\" or \"subagent\" only.",
+    "",
+    "Validation errors:",
+    formatZodIssues(error.issues),
+    "",
+    "Invalid payload:",
+    JSON.stringify(invalidPayload, null, 2),
+    "",
+    "Original planner instructions:",
+    originalPrompt
+  ].join("\n");
+}
+
+function formatZodIssues(issues: ZodIssue[]) {
+  return issues.map(formatZodIssue).join("; ");
+}
+
+function formatZodIssue(issue: ZodIssue) {
+  const path = issue.path.length > 0 ? issue.path.join(".") : "(root)";
+  if (issue.code === "invalid_enum_value") {
+    return `${path}: expected ${issue.options.map((option) => JSON.stringify(option)).join(" | ")}, received ${JSON.stringify(issue.received)}`;
+  }
+
+  return `${path}: ${issue.message}`;
 }
 
 function formatPlanningQuestions(questions: PlanningQuestion[]) {
@@ -263,12 +341,15 @@ function extractFirstJsonPayload(input: string) {
 
 export const testExports = {
   parseJsonPayload,
+  parsePlannerTurnPayload,
   normalizePlannerPayload,
+  normalizePlannerPrerequisiteOwner,
+  normalizePlannerPrerequisites,
   normalizePlannerWorkspacePaths
 };
 
 function normalizePlannerPayload(input: unknown) {
-  const normalized = normalizePlannerVerificationScopes(input);
+  const normalized = normalizePlannerPrerequisites(normalizePlannerVerificationScopes(input));
   if (
     normalized &&
     typeof normalized === "object" &&
@@ -283,6 +364,50 @@ function normalizePlannerPayload(input: unknown) {
   }
 
   return normalized;
+}
+
+function normalizePlannerPrerequisites(input: unknown): unknown {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return input;
+  }
+
+  const payload = input as Record<string, unknown>;
+  if (!Array.isArray(payload.prerequisites)) {
+    return input;
+  }
+
+  return {
+    ...payload,
+    prerequisites: payload.prerequisites.map((prerequisite) => {
+      if (!prerequisite || typeof prerequisite !== "object" || Array.isArray(prerequisite)) {
+        return prerequisite;
+      }
+
+      const prerequisiteRecord = prerequisite as Record<string, unknown>;
+      return {
+        ...prerequisiteRecord,
+        owner: normalizePlannerPrerequisiteOwner(prerequisiteRecord.owner),
+        status: prerequisiteRecord.status ?? "pending"
+      };
+    })
+  };
+}
+
+function normalizePlannerPrerequisiteOwner(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (["user", "human", "developer", "assistant", "executor", "agent"].includes(normalized)) {
+    return "main";
+  }
+
+  if (["sub-agent", "sub_agent", "worker"].includes(normalized)) {
+    return "subagent";
+  }
+
+  return value;
 }
 
 function normalizePlannerVerificationScopes(input: unknown): unknown {

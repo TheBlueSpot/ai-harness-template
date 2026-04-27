@@ -1,5 +1,5 @@
 import { Check, ChevronDown } from "lucide-solid";
-import { Show, createMemo, createSignal, type JSX } from "solid-js";
+import { For, Show, createMemo, createSignal, type JSX } from "solid-js";
 import { cn } from "../../lib/utils";
 import { Popover } from "./popover";
 import { Tooltip } from "./tooltip";
@@ -91,9 +91,10 @@ export function DropdownControl(props: DropdownSelectProps | DropdownTriggerProp
           contentClass={cn("rounded-[1rem] p-1.5", props.contentClass)}
           content={
             <div class="inline-flex flex-col gap-0.5">
-              {props.options.map((option) => {
-                const selected = () => selectedOption()?.value === option.value;
-                return (
+              <For each={props.options}>
+                {(option) => {
+                  const selected = () => selectedOption()?.value === option.value;
+                  return (
                   <Tooltip content={option.description} triggerClass="block" side="right">
                     <button
                       type="button"
@@ -120,8 +121,9 @@ export function DropdownControl(props: DropdownSelectProps | DropdownTriggerProp
                       </Show>
                     </button>
                   </Tooltip>
-                );
-              })}
+                  );
+                }}
+              </For>
             </div>
           }
         >

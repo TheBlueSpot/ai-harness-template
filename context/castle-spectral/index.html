@@ -1,0 +1,939 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Castlevania Spectral Mirror</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg-0: #08040b;
+      --bg-1: #140b18;
+      --bg-2: #2a1830;
+      --panel: rgba(14, 10, 18, 0.88);
+      --line: rgba(255, 219, 178, 0.18);
+      --text: #f6ecd8;
+      --muted: rgba(246, 236, 216, 0.72);
+      --gold: #f3c67b;
+      --rose: #ef7f93;
+      --violet: #b294ff;
+      --ember: #ffb15e;
+      --mist: #9dd3ff;
+      --stone: #241a2a;
+      --stone-2: #312138;
+      font-family: Georgia, "Times New Roman", serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      background:
+        radial-gradient(circle at top, rgba(178, 148, 255, 0.16), transparent 34%),
+        radial-gradient(circle at 20% 30%, rgba(255, 177, 94, 0.12), transparent 24%),
+        linear-gradient(180deg, var(--bg-2), var(--bg-1) 48%, var(--bg-0));
+      color: var(--text);
+    }
+
+    body {
+      display: grid;
+      place-items: center;
+      padding: 18px;
+    }
+
+    .shell {
+      width: min(100%, 1180px);
+      display: grid;
+      gap: 14px;
+    }
+
+    .frame {
+      position: relative;
+      padding: 16px;
+      border-radius: 30px;
+      border: 1px solid var(--line);
+      background:
+        linear-gradient(180deg, rgba(54, 34, 64, 0.36), rgba(8, 5, 12, 0.92)),
+        linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent);
+      box-shadow:
+        0 32px 90px rgba(0, 0, 0, 0.5),
+        inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    }
+
+    canvas {
+      width: 100%;
+      height: auto;
+      display: block;
+      border-radius: 22px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: linear-gradient(180deg, #0f0a17, #060408);
+    }
+
+    .hud-strip {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      padding: 0 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.16em;
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .hud-strip span {
+      padding: 8px 12px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: rgba(18, 12, 24, 0.72);
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="frame">
+      <canvas id="game" width="1280" height="720" aria-label="Castlevania Spectral Mirror"></canvas>
+    </section>
+    <div class="hud-strip">
+      <span>Move: A D or arrows</span>
+      <span>Jump: Space</span>
+      <span>Whip: J</span>
+      <span>Collect 3 sigils, then reach the mirror</span>
+    </div>
+  </main>
+
+  <script>
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+
+    const WIDTH = canvas.width;
+    const HEIGHT = canvas.height;
+    const TILE = 48;
+    const GRAVITY = 2200;
+    const keys = new Set();
+
+    const mapRows = [
+      "........................",
+      "........................",
+      "........................",
+      ".....T..............T...",
+      "....###......R.....###..",
+      "...........S............",
+      "..P....####.....####....",
+      "......................M.",
+      "....T..........T........",
+      "..####....R....####.....",
+      "..............S.........",
+      ".........#####..........",
+      "...R....................",
+      "......S.........T.......",
+      "..########....#####.....",
+      "........................",
+      ".######################.",
+      "########################"
+    ];
+
+    const state = {
+      scene: "menu",
+      time: 0,
+      cameraX: 0,
+      messageTimer: 0,
+      message: "",
+      shake: 0,
+      startTime: 0,
+      elapsed: 0,
+      torches: [],
+      solids: [],
+      relics: [],
+      skeletons: [],
+      mirror: null,
+      player: null
+    };
+
+    const palette = {
+      skyTop: "#1a1021",
+      skyBottom: "#07050b",
+      moon: "#f7e9c7",
+      mist: "rgba(157, 211, 255, 0.16)",
+      stone: "#2f2436",
+      stone2: "#201822",
+      mortar: "#48354e",
+      torch: "#ffbf78",
+      torchGlow: "rgba(255, 191, 120, 0.34)",
+      shadow: "rgba(4, 2, 8, 0.78)",
+      player: "#ddd8ff",
+      playerCoat: "#7a2f42",
+      whip: "#ffda8f",
+      skeleton: "#efe7d2",
+      bone: "#baa98a",
+      mirror: "#a5dfff",
+      relic: "#98f0d4",
+      danger: "#ef7f93",
+      ui: "#f6ecd8"
+    };
+
+    function clamp(value, min, max) {
+      return Math.max(min, Math.min(max, value));
+    }
+
+    function lerp(a, b, t) {
+      return a + (b - a) * t;
+    }
+
+    function overlaps(a, b) {
+      return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+    }
+
+    function tileAt(tx, ty) {
+      if (ty < 0 || ty >= mapRows.length || tx < 0 || tx >= mapRows[0].length) {
+        return "#";
+      }
+      return mapRows[ty][tx];
+    }
+
+    function solidAtPixel(x, y) {
+      return tileAt(Math.floor(x / TILE), Math.floor(y / TILE)) === "#";
+    }
+
+    function makeWhipChain(player) {
+      const origin = {
+        x: player.x + player.w * 0.5 + player.facing * 18,
+        y: player.y + 28
+      };
+      const phase = clamp(player.attackTimer / player.attackDuration, 0, 1);
+      const swing = Math.sin(phase * Math.PI);
+      const angle = -0.85 + player.facing * 0.95 + Math.sin(phase * Math.PI * 1.2) * 0.4 * player.facing;
+      const distance = 40 + swing * 92;
+      const target = {
+        x: origin.x + Math.cos(angle) * distance,
+        y: origin.y + Math.sin(angle) * distance - swing * 18
+      };
+      const segmentLength = 18;
+      const chain = new Array(6).fill(0).map(() => ({ x: origin.x, y: origin.y }));
+      chain[0] = origin;
+      chain[chain.length - 1] = target;
+
+      for (let iteration = 0; iteration < 3; iteration += 1) {
+        for (let i = chain.length - 2; i >= 0; i -= 1) {
+          const next = chain[i + 1];
+          const point = chain[i];
+          const dx = point.x - next.x;
+          const dy = point.y - next.y;
+          const length = Math.hypot(dx, dy) || 1;
+          point.x = next.x + (dx / length) * segmentLength;
+          point.y = next.y + (dy / length) * segmentLength;
+        }
+        chain[0] = origin;
+        for (let i = 1; i < chain.length; i += 1) {
+          const prev = chain[i - 1];
+          const point = chain[i];
+          const dx = point.x - prev.x;
+          const dy = point.y - prev.y;
+          const length = Math.hypot(dx, dy) || 1;
+          point.x = prev.x + (dx / length) * segmentLength;
+          point.y = prev.y + (dy / length) * segmentLength;
+        }
+      }
+
+      return chain;
+    }
+
+    function buildWorld() {
+      state.torches = [];
+      state.solids = [];
+      state.relics = [];
+      state.skeletons = [];
+      state.mirror = null;
+      state.player = null;
+
+      for (let y = 0; y < mapRows.length; y += 1) {
+        for (let x = 0; x < mapRows[y].length; x += 1) {
+          const cell = mapRows[y][x];
+          const px = x * TILE;
+          const py = y * TILE;
+          if (cell === "#") {
+            state.solids.push({ x: px, y: py, w: TILE, h: TILE });
+          } else if (cell === "P") {
+            state.player = {
+              x: px + 8,
+              y: py - 12,
+              w: 28,
+              h: 56,
+              vx: 0,
+              vy: 0,
+              speed: 280,
+              jumpVelocity: -760,
+              facing: 1,
+              onGround: false,
+              health: 5,
+              maxHealth: 5,
+              invuln: 0,
+              attackTimer: 0,
+              attackDuration: 0.24,
+              attackCooldown: 0,
+              whipHitSet: new WeakSet(),
+              chain: [],
+              relics: 0
+            };
+          } else if (cell === "T") {
+            state.torches.push({
+              x: px + TILE * 0.5,
+              y: py + 16,
+              flicker: Math.random() * Math.PI * 2
+            });
+          } else if (cell === "R") {
+            state.relics.push({
+              x: px + 10,
+              y: py + 10,
+              w: 28,
+              h: 28,
+              baseY: py + 10,
+              phase: Math.random() * Math.PI * 2,
+              collected: false
+            });
+          } else if (cell === "S") {
+            state.skeletons.push({
+              x: px + 8,
+              y: py - 6,
+              w: 28,
+              h: 54,
+              vx: 0,
+              vy: 0,
+              facing: -1,
+              onGround: false,
+              health: 3,
+              think: Math.random() * 0.2,
+              state: "patrol",
+              attackTimer: 0,
+              cooldown: Math.random() * 0.4,
+              stun: 0,
+              homeX: px + 8
+            });
+          } else if (cell === "M") {
+            state.mirror = {
+              x: px + 4,
+              y: py - 52,
+              w: 40,
+              h: 92,
+              active: false
+            };
+          }
+        }
+      }
+
+      state.scene = "menu";
+      state.time = 0;
+      state.cameraX = 0;
+      state.message = "";
+      state.messageTimer = 0;
+      state.shake = 0;
+      state.elapsed = 0;
+    }
+
+    function startRun() {
+      buildWorld();
+      state.scene = "play";
+      state.startTime = performance.now();
+      state.message = "Gather the three sigils.";
+      state.messageTimer = 3;
+    }
+
+    function resolveSolids(entity) {
+      entity.onGround = false;
+
+      entity.x += entity.vx * dt;
+      for (const solid of state.solids) {
+        if (!overlaps(entity, solid)) {
+          continue;
+        }
+        if (entity.vx > 0) {
+          entity.x = solid.x - entity.w;
+        } else if (entity.vx < 0) {
+          entity.x = solid.x + solid.w;
+        }
+        entity.vx = 0;
+      }
+
+      entity.y += entity.vy * dt;
+      for (const solid of state.solids) {
+        if (!overlaps(entity, solid)) {
+          continue;
+        }
+        if (entity.vy > 0) {
+          entity.y = solid.y - entity.h;
+          entity.onGround = true;
+        } else if (entity.vy < 0) {
+          entity.y = solid.y + solid.h;
+        }
+        entity.vy = 0;
+      }
+    }
+
+    function hitPlayer(amount) {
+      const player = state.player;
+      if (player.invuln > 0 || state.scene !== "play") {
+        return;
+      }
+      player.health -= amount;
+      player.invuln = 1.1;
+      player.vx = -player.facing * 220;
+      player.vy = -240;
+      state.shake = 0.3;
+      state.message = "The crypt pushes back.";
+      state.messageTimer = 1.1;
+      if (player.health <= 0) {
+        state.scene = "lose";
+      }
+    }
+
+    function updatePlayer() {
+      const player = state.player;
+      const move = (keys.has("ArrowLeft") || keys.has("KeyA") ? -1 : 0) + (keys.has("ArrowRight") || keys.has("KeyD") ? 1 : 0);
+      const accel = player.onGround ? 0.18 : 0.1;
+      player.vx = lerp(player.vx, move * player.speed, accel);
+
+      if (move !== 0) {
+        player.facing = move;
+      }
+
+      if (keys.has("Space") && player.onGround && !keys.has("_jumpLock")) {
+        player.vy = player.jumpVelocity;
+        player.onGround = false;
+        keys.add("_jumpLock");
+      }
+      if (!keys.has("Space")) {
+        keys.delete("_jumpLock");
+      }
+
+      if (keys.has("KeyJ") && player.attackCooldown <= 0 && player.attackTimer <= 0) {
+        player.attackTimer = player.attackDuration;
+        player.attackCooldown = 0.28;
+        player.whipHitSet = new WeakSet();
+      }
+
+      player.attackCooldown = Math.max(0, player.attackCooldown - dt);
+      player.attackTimer = Math.max(0, player.attackTimer - dt);
+      player.invuln = Math.max(0, player.invuln - dt);
+      player.vy += GRAVITY * dt;
+
+      resolveSolids(player);
+
+      if (player.attackTimer > 0) {
+        player.chain = makeWhipChain(player);
+        const tip = player.chain[player.chain.length - 1];
+        const hurtbox = { x: tip.x - 22, y: tip.y - 22, w: 44, h: 44 };
+        for (const skeleton of state.skeletons) {
+          if (skeleton.health <= 0 || player.whipHitSet.has(skeleton)) {
+            continue;
+          }
+          if (overlaps(hurtbox, skeleton)) {
+            skeleton.health -= 1;
+            skeleton.stun = 0.24;
+            skeleton.vx = player.facing * 320;
+            skeleton.vy = -260;
+            skeleton.facing = -player.facing;
+            player.whipHitSet.add(skeleton);
+            state.shake = 0.16;
+          }
+        }
+      } else {
+        player.chain = [];
+      }
+
+      for (const relic of state.relics) {
+        if (!relic.collected && overlaps(player, relic)) {
+          relic.collected = true;
+          player.relics += 1;
+          state.message = player.relics === state.relics.length ? "Mirror unsealed." : "Sigil secured.";
+          state.messageTimer = 2;
+        }
+      }
+
+      state.mirror.active = player.relics === state.relics.length;
+      if (state.mirror.active && overlaps(player, state.mirror)) {
+        state.elapsed = (performance.now() - state.startTime) / 1000;
+        state.scene = "win";
+      }
+
+      if (player.y > mapRows.length * TILE + 120) {
+        player.health = 0;
+        state.scene = "lose";
+      }
+    }
+
+    function updateSkeletons() {
+      const player = state.player;
+      for (let i = state.skeletons.length - 1; i >= 0; i -= 1) {
+        const skeleton = state.skeletons[i];
+        if (skeleton.health <= 0) {
+          state.skeletons.splice(i, 1);
+          continue;
+        }
+
+        skeleton.cooldown = Math.max(0, skeleton.cooldown - dt);
+        skeleton.stun = Math.max(0, skeleton.stun - dt);
+        skeleton.think -= dt;
+
+        const dx = player.x - skeleton.x;
+        const distance = Math.abs(dx);
+        const sameBand = Math.abs(player.y - skeleton.y) < 90;
+        const closeToHome = Math.abs(skeleton.x - skeleton.homeX) < 180;
+
+        if (skeleton.think <= 0) {
+          if (distance < 220 && sameBand) {
+            skeleton.state = "chase";
+          } else if (!closeToHome) {
+            skeleton.state = "return";
+          } else {
+            skeleton.state = "patrol";
+          }
+          skeleton.think = 0.1 + Math.random() * 0.14;
+        }
+
+        if (skeleton.stun <= 0) {
+          let desired = 0;
+          if (skeleton.state === "chase") {
+            desired = Math.sign(dx) * 110;
+          } else if (skeleton.state === "return") {
+            desired = Math.sign(skeleton.homeX - skeleton.x) * 90;
+          } else {
+            desired = Math.sin(state.time * 1.4 + skeleton.homeX * 0.01) > 0 ? 65 : -65;
+          }
+
+          const lookAhead = skeleton.x + skeleton.w * 0.5 + Math.sign(desired || skeleton.facing) * 28;
+          const footY = skeleton.y + skeleton.h + 6;
+          const wallX = skeleton.x + (desired > 0 ? skeleton.w + 4 : -4);
+          const blocked = solidAtPixel(wallX, skeleton.y + 18) || solidAtPixel(wallX, skeleton.y + skeleton.h - 8);
+          const groundAhead = solidAtPixel(lookAhead, footY);
+
+          if (blocked || !groundAhead) {
+            desired *= -1;
+          }
+
+          for (const other of state.skeletons) {
+            if (other === skeleton || other.health <= 0) {
+              continue;
+            }
+            const apart = skeleton.x - other.x;
+            if (Math.abs(apart) < 28 && Math.abs(skeleton.y - other.y) < 40) {
+              desired += Math.sign(apart || 1) * 70;
+            }
+          }
+
+          if (distance < 64 && sameBand && skeleton.cooldown <= 0) {
+            skeleton.attackTimer = 0.28;
+            skeleton.cooldown = 1;
+          }
+
+          if (skeleton.attackTimer > 0) {
+            desired = 0;
+          }
+
+          skeleton.vx = lerp(skeleton.vx, desired, 0.12);
+          if (desired !== 0) {
+            skeleton.facing = Math.sign(desired);
+          }
+        }
+
+        skeleton.attackTimer = Math.max(0, skeleton.attackTimer - dt);
+        if (skeleton.attackTimer > 0.12 && skeleton.attackTimer < 0.18) {
+          const swipe = {
+            x: skeleton.facing > 0 ? skeleton.x + skeleton.w - 4 : skeleton.x - 22,
+            y: skeleton.y + 14,
+            w: 26,
+            h: 18
+          };
+          if (overlaps(swipe, player)) {
+            hitPlayer(1);
+          }
+        }
+
+        skeleton.vy += GRAVITY * dt;
+        resolveSolids(skeleton);
+      }
+    }
+
+    function updateCamera() {
+      const player = state.player;
+      const target = clamp(player.x - WIDTH * 0.35, 0, mapRows[0].length * TILE - WIDTH);
+      state.cameraX = lerp(state.cameraX, target, 0.08);
+    }
+
+    function updateScene() {
+      if (state.scene === "menu") {
+        if (keys.has("Enter") || keys.has("Space") || keys.has("KeyJ")) {
+          startRun();
+        }
+        return;
+      }
+
+      if (state.scene === "win" || state.scene === "lose") {
+        if (keys.has("Enter") || keys.has("KeyR")) {
+          startRun();
+        }
+        return;
+      }
+
+      updatePlayer();
+      updateSkeletons();
+      updateCamera();
+
+      state.messageTimer = Math.max(0, state.messageTimer - dt);
+      if (state.messageTimer <= 0) {
+        state.message = "";
+      }
+    }
+
+    function drawBackground(cameraX) {
+      const sky = ctx.createLinearGradient(0, 0, 0, HEIGHT);
+      sky.addColorStop(0, palette.skyTop);
+      sky.addColorStop(1, palette.skyBottom);
+      ctx.fillStyle = sky;
+      ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+      ctx.fillStyle = "rgba(247, 233, 199, 0.18)";
+      ctx.beginPath();
+      ctx.arc(1040, 120, 54, 0, Math.PI * 2);
+      ctx.fill();
+
+      for (let i = 0; i < 5; i += 1) {
+        const ridgeY = 220 + i * 54;
+        ctx.fillStyle = `rgba(18, 12, 24, ${0.24 + i * 0.07})`;
+        ctx.beginPath();
+        ctx.moveTo(0, HEIGHT);
+        for (let x = 0; x <= WIDTH; x += 80) {
+          const worldX = x + cameraX;
+          const y = ridgeY + Math.sin(worldX * 0.002 + i * 1.4) * (24 + i * 6);
+          ctx.lineTo(x, y);
+        }
+        ctx.lineTo(WIDTH, HEIGHT);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      ctx.fillStyle = palette.mist;
+      for (let i = 0; i < 4; i += 1) {
+        const offset = (cameraX * (0.12 + i * 0.04) + state.time * (16 + i * 4)) % (WIDTH + 220);
+        ctx.beginPath();
+        ctx.ellipse(offset - 120, 520 - i * 48, 220 - i * 16, 48, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    function drawTiles(cameraX) {
+      for (const solid of state.solids) {
+        const x = solid.x - cameraX;
+        const y = solid.y;
+        ctx.fillStyle = palette.stone;
+        ctx.fillRect(x, y, solid.w, solid.h);
+        ctx.fillStyle = palette.stone2;
+        ctx.fillRect(x, y + solid.h * 0.55, solid.w, solid.h * 0.45);
+        ctx.strokeStyle = palette.mortar;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x + 1, y + 1, solid.w - 2, solid.h - 2);
+        ctx.beginPath();
+        ctx.moveTo(x, y + solid.h * 0.45);
+        ctx.lineTo(x + solid.w, y + solid.h * 0.45);
+        ctx.stroke();
+      }
+    }
+
+    function drawTorches(cameraX) {
+      for (const torch of state.torches) {
+        const x = torch.x - cameraX;
+        const y = torch.y;
+        const flame = 10 + Math.sin(state.time * 12 + torch.flicker) * 3;
+        ctx.fillStyle = "#8f6a42";
+        ctx.fillRect(x - 4, y - 6, 8, 18);
+        const glow = ctx.createRadialGradient(x, y, 4, x, y, 56 + flame);
+        glow.addColorStop(0, "rgba(255, 235, 170, 0.95)");
+        glow.addColorStop(0.25, "rgba(255, 177, 94, 0.65)");
+        glow.addColorStop(1, "rgba(255, 177, 94, 0)");
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(x, y, 56 + flame, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = palette.torch;
+        ctx.beginPath();
+        ctx.moveTo(x, y - 14);
+        ctx.quadraticCurveTo(x + 10, y - 2, x, y + 6);
+        ctx.quadraticCurveTo(x - 8, y - 2, x, y - 14);
+        ctx.fill();
+      }
+    }
+
+    function drawRelics(cameraX) {
+      for (const relic of state.relics) {
+        if (relic.collected) {
+          continue;
+        }
+        relic.y = relic.baseY + Math.sin(state.time * 2 + relic.phase) * 8;
+        const x = relic.x - cameraX;
+        const y = relic.y;
+        const glow = ctx.createRadialGradient(x + 14, y + 14, 4, x + 14, y + 14, 30);
+        glow.addColorStop(0, "rgba(152, 240, 212, 0.92)");
+        glow.addColorStop(1, "rgba(152, 240, 212, 0)");
+        ctx.fillStyle = glow;
+        ctx.fillRect(x - 10, y - 10, 48, 48);
+        ctx.fillStyle = palette.relic;
+        ctx.beginPath();
+        ctx.moveTo(x + 14, y);
+        ctx.lineTo(x + 28, y + 14);
+        ctx.lineTo(x + 14, y + 28);
+        ctx.lineTo(x, y + 14);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+
+    function drawMirror(cameraX) {
+      const mirror = state.mirror;
+      const x = mirror.x - cameraX;
+      const y = mirror.y;
+      ctx.fillStyle = "#6a546d";
+      ctx.fillRect(x - 10, y + 10, mirror.w + 20, mirror.h + 18);
+      ctx.fillStyle = mirror.active ? "rgba(165, 223, 255, 0.8)" : "rgba(95, 110, 132, 0.46)";
+      ctx.fillRect(x, y, mirror.w, mirror.h);
+      ctx.strokeStyle = mirror.active ? "#e8fbff" : "#7d7387";
+      ctx.lineWidth = 4;
+      ctx.strokeRect(x, y, mirror.w, mirror.h);
+      if (mirror.active) {
+        ctx.fillStyle = "rgba(255,255,255,0.26)";
+        ctx.fillRect(x + 6, y + 6, 10, mirror.h - 12);
+      }
+    }
+
+    function drawPlayer(cameraX) {
+      const player = state.player;
+      const x = player.x - cameraX;
+      const y = player.y;
+      ctx.save();
+      if (player.invuln > 0 && Math.floor(player.invuln * 12) % 2 === 0) {
+        ctx.globalAlpha = 0.46;
+      }
+      ctx.fillStyle = palette.playerCoat;
+      ctx.fillRect(x + 6, y + 18, 16, 28);
+      ctx.fillStyle = palette.player;
+      ctx.fillRect(x + 8, y + 4, 14, 16);
+      ctx.fillStyle = "#28161d";
+      ctx.fillRect(x + (player.facing > 0 ? 18 : 6), y + 10, 4, 4);
+      ctx.fillStyle = "#d9d2be";
+      ctx.fillRect(x + 2, y + 22, 8, 10);
+      ctx.fillRect(x + 18, y + 22, 8, 10);
+      ctx.fillRect(x + 8, y + 46, 6, 10);
+      ctx.fillRect(x + 16, y + 46, 6, 10);
+
+      if (player.chain.length > 1) {
+        ctx.strokeStyle = palette.whip;
+        ctx.lineWidth = 5;
+        ctx.lineJoin = "round";
+        ctx.beginPath();
+        ctx.moveTo(player.chain[0].x - cameraX, player.chain[0].y);
+        for (let i = 1; i < player.chain.length; i += 1) {
+          ctx.lineTo(player.chain[i].x - cameraX, player.chain[i].y);
+        }
+        ctx.stroke();
+        const tip = player.chain[player.chain.length - 1];
+        ctx.fillStyle = "#fff2c0";
+        ctx.beginPath();
+        ctx.arc(tip.x - cameraX, tip.y, 8, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    function drawSkeletons(cameraX) {
+      for (const skeleton of state.skeletons) {
+        const x = skeleton.x - cameraX;
+        const y = skeleton.y;
+        ctx.fillStyle = palette.skeleton;
+        ctx.fillRect(x + 8, y + 4, 12, 14);
+        ctx.fillRect(x + 10, y + 18, 8, 18);
+        ctx.fillStyle = palette.bone;
+        ctx.fillRect(x + 4, y + 20, 6, 22);
+        ctx.fillRect(x + 18, y + 20, 6, 22);
+        ctx.fillRect(x + 9, y + 36, 5, 16);
+        ctx.fillRect(x + 15, y + 36, 5, 16);
+        ctx.fillStyle = "#181218";
+        ctx.fillRect(x + 10, y + 9, 2, 2);
+        ctx.fillRect(x + 16, y + 9, 2, 2);
+        if (skeleton.attackTimer > 0) {
+          ctx.strokeStyle = palette.danger;
+          ctx.lineWidth = 4;
+          ctx.beginPath();
+          const startX = x + (skeleton.facing > 0 ? 22 : 6);
+          ctx.moveTo(startX, y + 28);
+          ctx.lineTo(startX + skeleton.facing * 22, y + 18);
+          ctx.stroke();
+        }
+      }
+    }
+
+    function drawLighting(cameraX) {
+      ctx.save();
+      ctx.fillStyle = palette.shadow;
+      ctx.fillRect(0, 0, WIDTH, HEIGHT);
+      ctx.globalCompositeOperation = "destination-out";
+
+      for (const torch of state.torches) {
+        const x = torch.x - cameraX;
+        const radius = 90 + Math.sin(state.time * 7 + torch.flicker) * 8;
+        const glow = ctx.createRadialGradient(x, torch.y, 8, x, torch.y, radius);
+        glow.addColorStop(0, "rgba(0,0,0,0.94)");
+        glow.addColorStop(0.36, "rgba(0,0,0,0.65)");
+        glow.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(x, torch.y, radius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      const player = state.player;
+      const lightX = player.x - cameraX + player.w * 0.5;
+      const lightY = player.y + 22;
+      const playerGlow = ctx.createRadialGradient(lightX, lightY, 10, lightX, lightY, 76);
+      playerGlow.addColorStop(0, "rgba(0,0,0,0.82)");
+      playerGlow.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = playerGlow;
+      ctx.beginPath();
+      ctx.arc(lightX, lightY, 76, 0, Math.PI * 2);
+      ctx.fill();
+
+      if (state.mirror.active) {
+        const mx = state.mirror.x - cameraX + state.mirror.w * 0.5;
+        const my = state.mirror.y + state.mirror.h * 0.5;
+        const mirrorGlow = ctx.createRadialGradient(mx, my, 20, mx, my, 120);
+        mirrorGlow.addColorStop(0, "rgba(0,0,0,0.8)");
+        mirrorGlow.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = mirrorGlow;
+        ctx.beginPath();
+        ctx.arc(mx, my, 120, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.restore();
+    }
+
+    function drawHUD() {
+      const player = state.player;
+      ctx.fillStyle = "rgba(12, 8, 16, 0.72)";
+      ctx.fillRect(24, 20, 360, 84);
+      ctx.strokeStyle = "rgba(255, 236, 200, 0.12)";
+      ctx.strokeRect(24, 20, 360, 84);
+
+      ctx.fillStyle = palette.ui;
+      ctx.font = "20px Georgia";
+      ctx.fillText("Belmont Echo", 40, 48);
+
+      for (let i = 0; i < player.maxHealth; i += 1) {
+        ctx.fillStyle = i < player.health ? palette.rose : "rgba(255,255,255,0.12)";
+        ctx.fillRect(40 + i * 28, 62, 20, 12);
+      }
+
+      ctx.fillStyle = palette.ui;
+      ctx.font = "16px Georgia";
+      ctx.fillText(`Sigils ${player.relics}/${state.relics.length}`, 40, 98);
+      ctx.fillText(state.mirror.active ? "Mirror awake" : "Mirror sealed", 166, 98);
+
+      if (state.message) {
+        ctx.fillStyle = "rgba(12, 8, 16, 0.76)";
+        ctx.fillRect(WIDTH * 0.5 - 160, 24, 320, 40);
+        ctx.strokeStyle = "rgba(255, 236, 200, 0.1)";
+        ctx.strokeRect(WIDTH * 0.5 - 160, 24, 320, 40);
+        ctx.fillStyle = palette.ui;
+        ctx.textAlign = "center";
+        ctx.fillText(state.message, WIDTH * 0.5, 50);
+        ctx.textAlign = "left";
+      }
+    }
+
+    function drawOverlay(title, subtitle, prompt) {
+      ctx.fillStyle = "rgba(5, 3, 8, 0.62)";
+      ctx.fillRect(0, 0, WIDTH, HEIGHT);
+      ctx.fillStyle = "rgba(14, 10, 18, 0.88)";
+      ctx.fillRect(WIDTH * 0.5 - 260, HEIGHT * 0.5 - 140, 520, 280);
+      ctx.strokeStyle = "rgba(255, 219, 178, 0.18)";
+      ctx.strokeRect(WIDTH * 0.5 - 260, HEIGHT * 0.5 - 140, 520, 280);
+      ctx.textAlign = "center";
+      ctx.fillStyle = palette.ui;
+      ctx.font = "48px Georgia";
+      ctx.fillText(title, WIDTH * 0.5, HEIGHT * 0.5 - 48);
+      ctx.font = "22px Georgia";
+      ctx.fillStyle = "rgba(246, 236, 216, 0.82)";
+      ctx.fillText(subtitle, WIDTH * 0.5, HEIGHT * 0.5 + 4);
+      ctx.font = "18px Georgia";
+      ctx.fillStyle = "rgba(246, 236, 216, 0.72)";
+      ctx.fillText(prompt, WIDTH * 0.5, HEIGHT * 0.5 + 74);
+      ctx.textAlign = "left";
+    }
+
+    function render() {
+      const cameraX = state.cameraX + (state.shake > 0 ? (Math.random() - 0.5) * 18 * state.shake : 0);
+      drawBackground(cameraX);
+
+      if (state.scene === "menu") {
+        drawOverlay(
+          "Spectral Mirror",
+          "A torchlit castle run with whip arcs, skeleton pressure, and a sealed exit mirror.",
+          "Press Enter, Space, or J to descend."
+        );
+        return;
+      }
+
+      drawTiles(cameraX);
+      drawMirror(cameraX);
+      drawRelics(cameraX);
+      drawTorches(cameraX);
+      drawSkeletons(cameraX);
+      drawPlayer(cameraX);
+      drawLighting(cameraX);
+      drawHUD();
+
+      if (state.scene === "win") {
+        drawOverlay(
+          "Mirror Cleared",
+          `Escape time ${state.elapsed.toFixed(1)} seconds.`,
+          "Press Enter or R to run again."
+        );
+      } else if (state.scene === "lose") {
+        drawOverlay(
+          "Echo Fallen",
+          "The keep closes unless the sigils are claimed and the mirror reached.",
+          "Press Enter or R to retry."
+        );
+      }
+    }
+
+    let last = performance.now();
+    let dt = 0;
+
+    function frame(now) {
+      dt = Math.min(1 / 30, (now - last) / 1000);
+      last = now;
+      state.time += dt;
+      state.shake = Math.max(0, state.shake - dt * 2.8);
+      updateScene();
+      render();
+      requestAnimationFrame(frame);
+    }
+
+    window.addEventListener("keydown", (event) => {
+      if (["ArrowLeft", "ArrowRight", "Space"].includes(event.code)) {
+        event.preventDefault();
+      }
+      keys.add(event.code);
+    });
+
+    window.addEventListener("keyup", (event) => {
+      keys.delete(event.code);
+    });
+
+    buildWorld();
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>

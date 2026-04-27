@@ -33,6 +33,7 @@ type RuntimeThreadState = {
   traces: AgentTrace[];
   streamingAssistantText: string;
   streamingTailSegments: StreamingTailSegment[];
+  capturedCliContext?: CapturedCliSessionContext;
 };
 
 type RuntimeProjectRecord = {
@@ -40,6 +41,13 @@ type RuntimeProjectRecord = {
   threadStates: Map<string, RuntimeThreadState>;
   abortControllers: Map<string, AbortController>;
   executions: Map<string, ManagedExecutionState>;
+};
+
+export type CapturedCliSessionContext = {
+  sessionId: string;
+  capturedAt: string;
+  visibleBuffer: string;
+  stderrTail?: string;
 };
 
 export class WorkspaceRuntimeStore {
@@ -85,10 +93,14 @@ export class WorkspaceRuntimeStore {
     return project;
   }
 
+  hasProject(projectId: ProjectId) {
+    return this.projects.has(projectId);
+  }
+
   getThreadRuntime(projectId: ProjectId, threadId: string) {
     const record = this.getProjectRecord(projectId);
     if (record.project.activeThreadId === threadId) {
-      return createThreadRuntimeState(record.project);
+      return record.threadStates.get(threadId) ?? createThreadRuntimeState(record.project);
     }
 
     return record.threadStates.get(threadId);
@@ -188,8 +200,31 @@ export class WorkspaceRuntimeStore {
   setProjectCliSession(projectId: ProjectId, activeCliSession?: CliSession) {
     this.updateProject(projectId, (project) => ({
       ...project,
-      activeCliSession
+      activeCliSession:
+        activeCliSession && project.activeThreadId === activeCliSession.threadId
+          ? activeCliSession
+          : project.activeCliSession?.threadId === activeCliSession?.threadId
+            ? undefined
+            : project.activeCliSession,
+      cliSessions: upsertCliSession(project.cliSessions ?? [], activeCliSession)
     }));
+  }
+
+  setThreadCapturedCliContext(projectId: ProjectId, threadId: string, context?: CapturedCliSessionContext) {
+    this.updateThreadState(projectId, threadId, (state) => ({
+      ...state,
+      capturedCliContext: context
+    }));
+  }
+
+  consumeThreadCapturedCliContext(projectId: ProjectId, threadId: string) {
+    const current = this.getThreadRuntime(projectId, threadId)?.capturedCliContext;
+    if (!current) {
+      return undefined;
+    }
+
+    this.setThreadCapturedCliContext(projectId, threadId, undefined);
+    return current;
   }
 
   setProjectContextUsage(projectId: ProjectId, contextUsage?: ProjectContextUsage, threadId?: string) {
@@ -250,7 +285,7 @@ export class WorkspaceRuntimeStore {
     if (record.project.activeThreadId === resolvedThreadId) {
       record.project = {
         ...record.project,
-        activeCliSession: undefined,
+        activeCliSession: record.project.activeCliSession?.threadId === resolvedThreadId ? undefined : record.project.activeCliSession,
         activeRun: undefined,
         latestPlan: undefined,
         contextUsage: undefined,
@@ -319,8 +354,12 @@ export class WorkspaceRuntimeStore {
 
   private updateProject(projectId: ProjectId, updater: (project: RuntimeProjectState) => RuntimeProjectState) {
     const record = this.getProjectRecord(projectId);
+    const previousThreadState = record.threadStates.get(record.project.activeThreadId);
     record.project = updater(record.project);
-    record.threadStates.set(record.project.activeThreadId, createThreadRuntimeState(record.project));
+    record.threadStates.set(record.project.activeThreadId, {
+      ...createThreadRuntimeState(record.project),
+      capturedCliContext: previousThreadState?.capturedCliContext
+    });
   }
 
   private updateThreadState(
@@ -374,6 +413,7 @@ function stripRuntimeProject(project: RuntimeProjectState): WorkspaceProjectStat
     threads: project.threads,
     session: project.session,
     activeCliSession: project.activeCliSession,
+    cliSessions: project.cliSessions,
     activeRun: project.activeRun,
     lastRun: project.lastRun,
     runSummaries: project.runSummaries
@@ -388,6 +428,7 @@ function hydrateProjectState(
   const fallbackProject = {
     ...existing,
     ...incoming,
+    cliSessions: existing.cliSessions,
     latestPlan: undefined,
     contextUsage: undefined,
     traces: [],
@@ -433,7 +474,8 @@ function getOrCreateThreadState(record: RuntimeProjectRecord, threadId: string) 
       contextUsage: undefined,
       traces: [],
       streamingAssistantText: "",
-      streamingTailSegments: []
+      streamingTailSegments: [],
+      capturedCliContext: undefined
     }
   );
 }
@@ -447,6 +489,7 @@ function applyThreadState(project: RuntimeProjectState, threadState: RuntimeThre
     streamingAssistantText: threadState.streamingAssistantText,
     streamingTailSegments: [...threadState.streamingTailSegments],
     lastError: threadState.lastError,
+    activeCliSession: (project.cliSessions ?? []).find((session) => session.threadId === threadState.sessionId),
     session: {
       ...project.session,
       sessionId: threadState.sessionId,
@@ -456,8 +499,24 @@ function applyThreadState(project: RuntimeProjectState, threadState: RuntimeThre
   };
 }
 
+function upsertCliSession(sessions: CliSession[], session?: CliSession) {
+  if (!session) {
+    return sessions;
+  }
+
+  const next = sessions.filter((entry) => entry.id !== session.id);
+  if (session.status !== "exited" && session.status !== "failed" && session.status !== "stopped") {
+    next.push(session);
+  }
+  return next;
+}
+
 function persistActiveThreadState(record: RuntimeProjectRecord) {
-  record.threadStates.set(record.project.activeThreadId, createThreadRuntimeState(record.project));
+  const previous = record.threadStates.get(record.project.activeThreadId);
+  record.threadStates.set(record.project.activeThreadId, {
+    ...createThreadRuntimeState(record.project),
+    capturedCliContext: previous?.capturedCliContext
+  });
 }
 
 function filterKnownThreadStates(threadStates: Map<string, RuntimeThreadState>, knownThreadIds: string[]) {

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="hood" x1="0" x2="1">
+      <stop offset="0" stop-color="#8cf3bc"/>
+      <stop offset="1" stop-color="#4ecf89"/>
+    </linearGradient>
+  </defs>
+  <circle cx="54" cy="28" r="13" fill="#f3d8bf"/>
+  <path d="M36 48c5-11 28-13 37-2l10 20-7 39H49L34 70Z" fill="url(#hood)"/>
+  <path d="M79 24c10 8 15 22 15 40 0 18-5 31-16 40" fill="none" stroke="#ffd77a" stroke-width="5" stroke-linecap="round"/>
+  <path d="M76 31c12 17 19 39 22 55" fill="none" stroke="#ffe7a8" stroke-width="2"/>
+  <path d="M18 48h31" fill="none" stroke="#d7eef9" stroke-width="4" stroke-linecap="round"/>
+  <path d="M16 48l12-6v12Z" fill="#f6f9ff"/>
+  <path d="M47 82l-11 18h10l9-16Zm24 0 11 18H72l-9-16Z" fill="#d2fff0"/>
+</svg>

@@ -13,11 +13,12 @@ import {
   createRunFixture,
   createViewProjectFixture
 } from "../utils/tests/test-fixtures";
-import { createChatMessage } from "../../../shared/protocol";
+import { createChatMessage, createEmptySession } from "../../../shared/protocol";
 
 createUiTest("ChatPanel", () => {
   beforeEach(() => {
     clearBrowserStateForTests();
+    toastStore.toasts.length = 0;
   });
 
   it("submits planner answers when a planning question is pending", () => {
@@ -179,7 +180,8 @@ createUiTest("ChatPanel", () => {
 
     fireEvent.submit(form);
     expect(commands.length).toBe(0);
-    expect(toastStore.toasts[0]?.title).toBe("Resume required");
+    expect(toastStore.toasts[0]?.title).toBe("Cannot send yet");
+    expect(toastStore.toasts[0]?.description).toBe("Use resume failed agents to continue this run");
   });
 
   it("submits top-level chat sends for plain drafts", () => {
@@ -300,6 +302,114 @@ createUiTest("ChatPanel", () => {
 
     expect(sendButton.disabled).toBe(true);
     expect(sendButton.getAttribute("aria-description")).toContain("Add an OpenAI or Google API key to use Pi");
+  });
+
+  it("uses agent-available readiness to default sends to a ready CLI runtime", () => {
+    const commands: unknown[] = [];
+    const project = createViewProjectFixture({
+      id: "project-send-agent-available",
+      draft: "simple task"
+    });
+    const state = createHarnessStateFixture({
+      availableAgents: [
+        { id: "pi", label: "Pi" },
+        { id: "codex-cli", label: "Codex CLI" }
+      ],
+      agentRuntimes: [
+        {
+          agentId: "codex-cli",
+          label: "Codex CLI",
+          runtimeKind: "cli",
+          installed: true,
+          authenticated: true,
+          interactivePipeCompatible: true,
+          supportsInteractive: true,
+          supportsProgrammatic: true,
+          supportsPlanning: true,
+          supportsReview: true,
+          discoveredModels: ["openai/gpt-5.4"],
+          activeModel: "openai/gpt-5.4",
+          modelDiscoveryConfidence: "exact"
+        }
+      ],
+      setup: {
+        launchMode: "source",
+        updatedAt: new Date(0).toISOString(),
+        readyRequiredCount: 1,
+        totalRequiredCount: 1,
+        checks: [
+          {
+            id: "agent-available",
+            title: "Agent available",
+            summary: "Codex CLI can run without a Pi provider key.",
+            status: "ready",
+            requiredForFirstTask: true,
+            updatedAt: new Date(0).toISOString()
+          },
+          {
+            id: "provider-auth",
+            title: "Pi provider missing",
+            summary: "Add an OpenAI or Google API key to enable Pi.",
+            status: "action-required",
+            requiredForFirstTask: false,
+            updatedAt: new Date(0).toISOString()
+          }
+        ]
+      },
+      workspace: {
+        activeProjectId: project.id,
+        projects: [project]
+      }
+    });
+
+    harnessStore.applyServerEvent({
+      type: "connection.ready",
+      payload: {
+        agents: state.availableAgents,
+        workspace: state.workspace,
+        executionControl: state.executionControl,
+        preferences: {
+          hasUsableApiKey: state.hasUsableApiKey,
+          hasStoredApiKey: state.hasStoredApiKey,
+          hasUsableOpenAiApiKey: state.hasUsableOpenAiApiKey,
+          hasStoredOpenAiApiKey: state.hasStoredOpenAiApiKey,
+          hasUsableGoogleApiKey: state.hasUsableGoogleApiKey,
+          hasStoredGoogleApiKey: state.hasStoredGoogleApiKey,
+          providerBrand: state.providerBrand,
+          debugEnabledDefault: state.debugEnabled,
+          tracePanelDefaultOpen: state.tracePanelDefaultOpen,
+          subagentWorktreeStrategyDefault: state.subagentWorktreeStrategyDefault,
+          blockChatOnDirtyGitDefault: state.blockChatOnDirtyGitDefault,
+          dirtyGitChangeLimitDefault: state.dirtyGitChangeLimitDefault,
+          autoCompactContextThresholdPercentDefault: state.autoCompactContextThresholdPercentDefault,
+          planExecutionModeDefault: state.planExecutionModeDefault,
+          planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
+          correctnessIterationModeDefault: state.correctnessIterationModeDefault,
+          backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
+          memoryBankEnabledDefault: state.memoryBankEnabledDefault,
+          attachmentsEnabled: state.attachmentsEnabled,
+          capabilities: state.capabilities,
+          agentRuntimes: state.agentRuntimes
+        },
+        setup: state.setup,
+        backgroundJobs: state.backgroundJobs,
+        assistants: state.assistants,
+        notifications: state.notifications
+      }
+    });
+    harnessStore.setProjectDraft(project.id, "simple task");
+
+    captureDispatchedCommands(commands as never[]);
+    render(() => <ChatPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "Send task to Codex CLI" }));
+
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      type: "chat.send",
+      payload: {
+        agentId: "codex-cli"
+      }
+    });
   });
 
   it("sends with CLI runtimes without Pi API keys", () => {
@@ -549,6 +659,221 @@ it("updates composer effort label and sends reasoning plus fast mode", () => {
     expect((commands[0] as { type: string }).type).toBe("chat.send");
   });
 
+  it("blocks Enter submit while the active thread is streaming", () => {
+    const commands: unknown[] = [];
+    const project = createViewProjectFixture({
+      id: "project-enter-streaming",
+      draft: "send while streaming",
+      session: {
+        ...createEmptySession("thread-1"),
+        messages: [],
+        isStreaming: true
+      }
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        hasUsableApiKey: true,
+        hasUsableOpenAiApiKey: true,
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    captureDispatchedCommands(commands as never[]);
+    render(() => <ChatPanel />);
+    const textbox = screen.getByRole("textbox");
+    fireEvent.keyDown(textbox, { key: "Enter" });
+
+    expect(commands).toHaveLength(0);
+    expect(toastStore.toasts[0]?.description).toBe("Project is streaming");
+  });
+
+  it("shows a waiting timer above the composer while the active thread is streaming", () => {
+    const project = createViewProjectFixture({
+      id: "project-waiting-timer",
+      activeRun: createRunFixture({
+        id: "run-waiting-timer",
+        status: "running-main",
+        createdAt: new Date(Date.now() - 65_000).toISOString()
+      }),
+      session: {
+        ...createEmptySession("thread-1"),
+        messages: [],
+        isStreaming: true
+      }
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ChatPanel />);
+
+    expect(screen.getByRole("status").textContent).toContain("Working for 1m 5s");
+    expect(document.querySelector("[data-test-waiting-timer]")).not.toBeNull();
+    expect(document.querySelectorAll(".agent-waiting-dot")).toHaveLength(3);
+    expect(document.querySelector(".agent-waiting-dot-2")).not.toBeNull();
+    expect(document.querySelector(".agent-waiting-dot-3")).not.toBeNull();
+  });
+
+  it("shows the last response time and duration above the composer after the agent finishes", () => {
+    const completedAt = new Date("2026-04-27T17:10:33.000Z");
+    const project = createViewProjectFixture({
+      id: "project-last-response-timer",
+      lastRun: createRunFixture({
+        id: "run-last-response-timer",
+        status: "completed",
+        createdAt: new Date(completedAt.getTime() - 13_000).toISOString(),
+        updatedAt: completedAt.toISOString(),
+        completedAt: completedAt.toISOString()
+      })
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ChatPanel />);
+
+    const timerText = screen.getByRole("status").textContent ?? "";
+    expect(timerText).toContain("• 13s");
+    expect(timerText).not.toContain("Working");
+  });
+
+  it("keeps active thread rename and copy controls available while streaming", async () => {
+    let copiedText = "";
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (value: string) => {
+          copiedText = value;
+        }
+      }
+    });
+    const project = createViewProjectFixture({
+      id: "project-rename-streaming",
+      activeThreadId: "thread-streaming",
+      session: {
+        ...createEmptySession("thread-streaming"),
+        messages: [],
+        isStreaming: true
+      },
+      threads: [
+        {
+          id: "thread-streaming",
+          kind: "user",
+          title: "Thread 1",
+          titleSource: "generated",
+          badgeState: "executing",
+          messageCount: 1,
+          updatedAt: new Date().toISOString()
+        }
+      ]
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        hasUsableApiKey: true,
+        hasUsableOpenAiApiKey: true,
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ChatPanel />);
+    const renameButton = screen.getByRole("button", { name: "Rename this thread" }) as HTMLButtonElement;
+    expect(renameButton.disabled).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy thread id" }));
+    await Promise.resolve();
+    expect(copiedText).toBe("thread-streaming");
+    expect(toastStore.toasts[0]?.title).toBe("Thread id copied");
+  });
+
+  it("blocks Enter submit while setup gates fresh tasks", () => {
+    const commands: unknown[] = [];
+    const project = createViewProjectFixture({
+      id: "project-enter-setup",
+      draft: "send before setup"
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        hasUsableApiKey: true,
+        hasUsableOpenAiApiKey: true,
+        setup: {
+          launchMode: "source",
+          updatedAt: new Date(0).toISOString(),
+          readyRequiredCount: 1,
+          totalRequiredCount: 1,
+          checks: [
+            {
+              id: "runtime-auth",
+              title: "Runtime auth",
+              summary: "Connect a runtime before first task",
+              status: "action-required",
+              requiredForFirstTask: true,
+              updatedAt: new Date(0).toISOString()
+            }
+          ]
+        },
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    captureDispatchedCommands(commands as never[]);
+    render(() => <ChatPanel />);
+    const textbox = screen.getByRole("textbox");
+    fireEvent.keyDown(textbox, { key: "Enter" });
+
+    expect(commands).toHaveLength(0);
+    expect(toastStore.toasts[0]?.description).toBe("Connect a runtime before first task");
+  });
+
+  it("blocks Enter submit for resumable runs", () => {
+    const commands: unknown[] = [];
+    const project = createViewProjectFixture({
+      id: "project-enter-resume",
+      draft: "resume hint",
+      activeRun: createRunFixture({
+        id: "run-enter-resume",
+        status: "failed",
+        resumable: true
+      })
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        hasUsableApiKey: true,
+        hasUsableOpenAiApiKey: true,
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    captureDispatchedCommands(commands as never[]);
+    render(() => <ChatPanel />);
+    const textbox = screen.getByRole("textbox");
+    fireEvent.keyDown(textbox, { key: "Enter" });
+
+    expect(commands).toHaveLength(0);
+    expect(toastStore.toasts[0]?.description).toBe("Use resume failed agents to continue this run");
+  });
+
   it("does not render a transcript plan card when the backend suppresses ask-mode summaries", () => {
     const plan = createExecutionPlanFixture({
       gating: {
@@ -738,6 +1063,43 @@ it("updates composer effort label and sends reasoning plus fast mode", () => {
 
     render(() => <ChatPanel />);
     expect(screen.getAllByRole("heading", { name: "Partial output" })).toHaveLength(1);
+  });
+
+  it("renders assistant action cards and dispatches typed actions", () => {
+    const commands: unknown[] = [];
+    const project = createViewProjectFixture({
+      id: "project-assistant-action-card",
+      session: {
+        ...createEmptySession("thread-assistant-action-card"),
+        messages: [
+          createChatMessage("assistant", "Created assistant job.", {
+            metadata: {
+              type: "assistant-action",
+              assistantId: "assistant-1",
+              assistantName: "Release watcher",
+              actionKind: "run-job",
+              jobId: "job-1",
+              summaryRows: [{ label: "Assistant", value: "Release watcher" }],
+              actions: [
+                { kind: "open-assistant", label: "Open assistant" },
+                { kind: "open-jobs", label: "Open jobs" },
+                { kind: "run-job", label: "Run job" },
+                { kind: "pause", label: "Pause" }
+              ]
+            }
+          })
+        ]
+      }
+    });
+    seedHarnessStoreForTests(createHarnessStateFixture({ workspace: { activeProjectId: project.id, projects: [project] } }));
+    captureDispatchedCommands(commands);
+
+    render(() => <ChatPanel />);
+    expect(screen.getByText("Assistant action")).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Run job" }));
+    fireEvent.click(screen.getByRole("button", { name: "Pause" }));
+
+    expect(commands.map((command) => (command as { type: string }).type)).toEqual(["background-job.run-now", "assistant.pause"]);
   });
 
   it("renders streamed markdown content from chat.delta state", async () => {
@@ -935,6 +1297,31 @@ it("updates composer effort label and sends reasoning plus fast mode", () => {
     render(() => <ChatPanel />);
     expect(screen.getByText("bold").tagName).toBe("STRONG");
     expect(screen.getByRole("link", { name: "docs" }).getAttribute("target")).toBe("_blank");
+  });
+
+  it("caps long transcript lists and exposes recovery control", () => {
+    const project = createViewProjectFixture({
+      id: "project-long-transcript",
+      session: {
+        ...createViewProjectFixture().session,
+        messages: Array.from({ length: 125 }, (_, index) => createChatMessage("user", `message ${index}`))
+      }
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ChatPanel />);
+
+    expect(screen.queryByText("message 0")).toBeNull();
+    expect(screen.getByText("message 124")).not.toBeNull();
+
+    expect(screen.getByRole("button", { name: "Show every transcript row" })).not.toBeNull();
   });
 
   it("renders system transcript rows as harness messages", () => {

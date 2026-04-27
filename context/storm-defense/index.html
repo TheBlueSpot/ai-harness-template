@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Storm the House: Ballistic Siege</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="game-shell" id="game-shell" data-state="menu">
+      <canvas id="game-canvas" width="1280" height="720" aria-label="Storm the House battlefield"></canvas>
+
+      <section class="overlay overlay--menu" id="menu-screen" aria-labelledby="menu-title">
+        <p class="eyebrow">High-intensity siege defense</p>
+        <h1 id="menu-title">Storm the House: Ballistic Siege</h1>
+        <p class="lede">Mouse aim. Hold fire. Kill the horde. Spend intermission gold before the next wall of stickmen arrives.</p>
+        <p class="hint">Controls: move mouse to aim, hold click to fire, buy support between waves.</p>
+        <button id="start-button" class="action action--primary" type="button">Start Run</button>
+      </section>
+
+      <aside class="hud" id="hud" aria-live="polite">
+        <div>Health <strong id="health-value">0</strong></div>
+        <div>Gold <strong id="gold-value">0</strong></div>
+        <div>Ammo <strong id="ammo-value">0 / 0</strong></div>
+        <div>Wave <strong id="wave-value">1</strong></div>
+      </aside>
+
+      <section class="overlay overlay--intermission" id="intermission-screen" aria-labelledby="intermission-title">
+        <p class="eyebrow">Intermission</p>
+        <h2 id="intermission-title">Rearm the line</h2>
+        <p id="intermission-status" class="lede">Spend gold before the next wave breaks.</p>
+        <div id="shop-offers" class="shop" aria-live="polite"></div>
+        <button id="advance-button" class="action action--primary" type="button">Launch Next Wave</button>
+      </section>
+
+      <section class="overlay overlay--gameover" id="gameover-screen" aria-labelledby="gameover-title">
+        <p class="eyebrow">Game over</p>
+        <h2 id="gameover-title">The house fell.</h2>
+        <p id="gameover-wave" class="lede">Final wave reached: 0</p>
+        <p id="gameover-stats" class="hint">Kills 0 | Gold earned 0 | Gold spent 0</p>
+        <button id="restart-button" class="action action--primary" type="button">Restart</button>
+      </section>
+    </div>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>

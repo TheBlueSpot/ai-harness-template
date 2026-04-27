@@ -18,8 +18,8 @@ import { getDefaultExecutionModelId } from "./pi-planner";
 import { type AgentRuntimeRegistry } from "./agent-runtimes/runtime-registry";
 import { type PiAgentAdapter } from "./pi-agent-adapter";
 import { WorkspaceRepository } from "./workspace-repository";
-
-const DEBUG_TELEMETRY_ENABLED = process.env.NODE_ENV !== "production";
+import { debugLog } from "./logging";
+import { assertAssistantRunnableForLaunch } from "./assistant-launch-gate";
 
 type AssistantManagerCallbacks = {
   onAssistantsUpdated: () => void;
@@ -83,8 +83,13 @@ export class AssistantManager {
   ) {}
 
   async bootstrapAssistant(assistantId: string) {
-    const assistant = this.repository.getAssistant(assistantId);
-    if (!assistant || assistant.runState === "paused" || this.repository.getGlobalExecutionPaused()) {
+    let assistant: Assistant;
+    try {
+      assistant = assertAssistantRunnableForLaunch(this.repository, assistantId, { allowGlobalPauseDeferral: true });
+    } catch {
+      return;
+    }
+    if (this.repository.getGlobalExecutionPaused()) {
       return;
     }
 
@@ -170,10 +175,7 @@ export class AssistantManager {
   }
 
   async sendAssistantChat(assistantId: string, content: string) {
-    const assistant = this.repository.getAssistant(assistantId);
-    if (!assistant) {
-      throw new Error(`Unknown assistant: ${assistantId}`);
-    }
+    const assistant = assertAssistantRunnableForLaunch(this.repository, assistantId);
 
     const thread = this.repository.appendAssistantMessage(assistantId, "user", content.trim());
     const runtime = await this.resolveRuntime(assistant);
@@ -268,6 +270,24 @@ export class AssistantManager {
     await this.bootstrapAssistant(assistantId);
   }
 
+  async recoverAssistant(assistantId: string) {
+    const assistant = this.repository.recoverAssistantCircuitBreaker(assistantId);
+    this.appendLog({
+      assistantId,
+      level: "info",
+      summary: "Circuit breaker reset",
+      detail: "Recovery retry requested by user."
+    });
+    this.callbacks.onAssistantsUpdated();
+
+    if (assistant.bootstrapState === "failed" || assistant.bootstrapState === "pending") {
+      await this.retryBootstrap(assistantId);
+      return;
+    }
+
+    this.scheduleReprioritize(assistantId, "circuit-breaker-recovery");
+  }
+
   async handleBackgroundJobRunOutcome(input: {
     assistantId: string;
     status: "succeeded" | "failed" | "cancelled";
@@ -308,8 +328,9 @@ export class AssistantManager {
   }
 
   scheduleReprioritize(assistantId: string, reason: string) {
-    const assistant = this.repository.getAssistant(assistantId);
-    if (!assistant || assistant.runState === "paused" || assistant.deletedAt) {
+    try {
+      assertAssistantRunnableForLaunch(this.repository, assistantId, { allowGlobalPauseDeferral: true });
+    } catch {
       return;
     }
 
@@ -358,7 +379,12 @@ export class AssistantManager {
 
     try {
       const assistant = this.repository.getAssistant(assistantId);
-      if (!assistant || assistant.runState === "paused" || assistant.deletedAt) {
+      if (!assistant) {
+        return;
+      }
+      try {
+        assertAssistantRunnableForLaunch(this.repository, assistantId);
+      } catch {
         return;
       }
 
@@ -518,7 +544,9 @@ export class AssistantManager {
       `Personality prompt:\n${assistant.personalityPrompt}`,
       `Job prompt:\n${assistant.jobPrompt}`,
       state.summary ? `Thread summary:\n${state.summary}` : undefined,
-      state.assetRefs.length > 0 ? `Linked assets:\n${state.assetRefs.map((asset) => `- [${asset.kind}] ${asset.label}: ${asset.value}`).join("\n")}` : undefined,
+      state.assetRefs.length > 0
+        ? `Linked assets:\n${state.assetRefs.map((asset) => `- [${asset.kind}] ${asset.label}: ${asset.canonicalValue ?? asset.value}`).join("\n")}`
+        : undefined,
       state.activeTodos.length > 0
         ? `Active todos:\n${state.activeTodos.map((todo) => `- (${todo.id}) ${todo.state}: ${todo.title}${todo.blockerReason ? ` | blocker: ${todo.blockerReason}` : ""}`).join("\n")}`
         : "Active todos: none",
@@ -576,7 +604,7 @@ export class AssistantManager {
       .filter((todo) => ["pending", "in-progress", "blocked"].includes(todo.state));
     const questions = this.repository.getAssistantQuestions(assistantId).filter((question) => question.status === "pending");
     const learnings = this.repository.getAssistantLearnings(assistantId).slice(0, 12);
-    const assetRefs = this.repository.getAssistantAssetRefs(assistantId);
+    const assetRefs = this.repository.getAssistantAssetRefs(assistantId).filter((assetRef) => assetRef.resolutionStatus === "resolved");
 
     return {
       summary: thread.memorySummary?.content,
@@ -608,6 +636,7 @@ export class AssistantManager {
   }
 
   private async resolveRuntime(assistant: Assistant) {
+    this.repository.assertAssistantAssetRefsResolved(assistant.id);
     const providerBrand = this.repository.getProviderBrand();
     const runtime = this.runtimeRegistry.get(assistant.agentId);
     const capability = runtime.getCapability() ?? (await runtime.refreshCapability());
@@ -626,11 +655,11 @@ export class AssistantManager {
       getDefaultExecutionModelId(providerBrand);
     const mode = resolveAssistantMode(assistant.modeId, this.repository.loadWorkspace().workspaceModes ?? [], project);
     const readOnly = modeUsesReadOnlyExecution(mode) || !assistant.projectId;
-    if (DEBUG_TELEMETRY_ENABLED) {
-      // #region agent log
-      fetch('http://127.0.0.1:7467/ingest/8f3f8e64-2064-4541-a606-af61e33e104f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'26847a'},body:JSON.stringify({sessionId:'26847a',runId:'initial-003',hypothesisId:'H6',location:'assistant-manager.ts:629',message:'assistant runtime resolved',data:{assistantId:assistant.id,assistantModeId:assistant.modeId ?? null,projectId:assistant.projectId ?? null,toolPolicy:mode?.toolPolicy ?? null,readOnly,cwd,modelId},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
-    }
+    debugLog("assistant.runtime.resolved", {
+      assistantId: assistant.id,
+      projectId: assistant.projectId,
+      readOnly
+    });
     return {
       adapter: runtime.getAdapter(),
       cwd,
@@ -760,8 +789,7 @@ function normalizeErrorMessage(error: unknown) {
 function serializeError(error: unknown) {
   if (error instanceof Error) {
     return {
-      message: error.message,
-      stack: error.stack
+      message: error.message
     };
   }
   return { value: error };

@@ -227,4 +227,31 @@ createUiTest("TracePanel", () => {
     expect(screen.queryByText("Aggregating subagent results")).toBeNull();
     expect(screen.getByText("Verification done")).not.toBeNull();
   });
+
+  it("caps long trace lists and exposes recovery control", () => {
+    const traces = Array.from({ length: 85 }, (_, index) => ({
+      sessionId: "session-1",
+      stage: "verification-complete" as const,
+      message: `trace ${index}`
+    }));
+    const project = createViewProjectFixture({
+      id: "project-long-trace",
+      traces
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <TracePanel />);
+
+    expect(screen.queryByText("trace 0")).toBeNull();
+    expect(screen.getByText("trace 84")).not.toBeNull();
+
+    expect(screen.getByRole("button", { name: "Show every trace event" })).not.toBeNull();
+  });
 });

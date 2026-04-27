@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Gladiator Soul</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="app" class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-kicker">Arena ledger</span>
+          <h1>Gladiator Soul</h1>
+        </div>
+        <div id="hud" class="hud" aria-live="polite"></div>
+      </header>
+
+      <main class="layout">
+        <section id="menu-screen" class="screen screen--active" aria-label="Main menu">
+          <div class="hero-card">
+            <div class="hero-copy">
+              <p class="eyebrow">Public domain fighters</p>
+              <h2>Fight, train, trade, win the crowd.</h2>
+              <p class="lede">Built as a single-page arena with deterministic screen swaps and transparent gladiator art.</p>
+              <div class="menu-actions" data-role="menu-actions"></div>
+            </div>
+            <div class="hero-art">
+              <img id="menu-art" alt="Gladiator art" />
+            </div>
+          </div>
+          <div id="menu-summary" class="panel-grid"></div>
+        </section>
+
+        <section id="arena-screen" class="screen" aria-label="Arena">
+          <div class="screen-grid">
+            <article class="fighter-card" id="player-card"></article>
+            <article class="arena-stage">
+              <div class="arena-art" id="arena-art"></div>
+              <div class="combat-log" id="combat-log" aria-live="polite"></div>
+              <div class="action-bar" data-role="combat-actions"></div>
+            </article>
+            <article class="fighter-card" id="enemy-card"></article>
+          </div>
+        </section>
+
+        <section id="marketplace-screen" class="screen" aria-label="Marketplace">
+          <div class="section-head">
+            <h2>Marketplace</h2>
+            <p>Buy gear, restock, and inspect loadouts.</p>
+          </div>
+          <div id="marketplace-body" class="marketplace-grid"></div>
+        </section>
+
+        <section id="training-screen" class="screen" aria-label="Training">
+          <div class="section-head">
+            <h2>Training Yard</h2>
+            <p>Convert gold into stamina, damage, and crowd control.</p>
+          </div>
+          <div id="training-body" class="training-grid"></div>
+        </section>
+
+        <section id="champion-screen" class="screen" aria-label="Champion">
+          <div class="champion-layout">
+            <div class="champion-art"><img id="champion-art" alt="Champion gladiator" /></div>
+            <div id="champion-body" class="champion-copy"></div>
+          </div>
+        </section>
+      </main>
+
+      <footer class="footer">
+        <span id="status-line">Idle.</span>
+      </footer>
+    </div>
+
+    <script type="module">
+      import { CombatLogic } from "./js/CombatLogic.js";
+      import { CharacterSheet, applyEquipmentModifiers, applyTraining, cloneFighterState, createGladiator } from "./js/CharacterSheet.js";
+      import { InventoryManager } from "./js/InventoryManager.js";
+      import { UIManager } from "./js/UIManager.js";
+
+      const sheet = new CharacterSheet(createGladiator({ inventory: { owned: [], equipped: {} } }));
+      const inventory = new InventoryManager();
+      const combat = new CombatLogic();
+      const ui = new UIManager({ root: document.getElementById("app") });
+
+      const state = {
+        screen: "menu",
+        fighter: sheet.getSnapshot(),
+        combat: combat.getSnapshot(),
+        result: null,
+      };
+
+      const getBuffTurns = (fighter) =>
+        Math.max(
+          0,
+          ...(Array.isArray(fighter?.buffs) ? fighter.buffs.map((buff) => Number(buff.turns) || 0) : [0]),
+        );
+
+      const syncFighter = (nextFighter) => {
+        state.fighter = sheet.setState(nextFighter);
+        return state.fighter;
+      };
+
+      const applyCurrentEquipment = (fighter) =>
+        applyEquipmentModifiers(fighter, inventory.getEquipmentModifiers(fighter));
+
+      const buildInventoryState = () => ({
+        gold: state.fighter.gold,
+        shopItems: inventory.getMarketplaceStock(),
+        training: inventory.getTrainingOptions(),
+        equippedItems: inventory.getEquippedItems(state.fighter),
+        visual: inventory.getVisualLoadout(state.fighter),
+      });
+
+      const updateHud = () => {
+        ui.updateHUD({
+          health: state.fighter.health,
+          maxHealth: state.fighter.maxHealth,
+          stamina: state.fighter.stamina,
+          maxStamina: state.fighter.maxStamina,
+          crowdFavor: state.fighter.crowdFavor,
+          buffTurns: getBuffTurns(state.fighter),
+          gold: state.fighter.gold,
+          status: state.fighter.status,
+        });
+      };
+
+      const render = () => {
+        const snapshot = {
+          fighter: state.fighter,
+          combat: state.combat,
+          inventory: buildInventoryState(),
+          result: state.result,
+        };
+
+        if (state.screen === "menu") ui.renderMenu(snapshot);
+        if (state.screen === "arena") ui.renderArena(snapshot);
+        if (state.screen === "marketplace") ui.renderMarketplace(snapshot);
+        if (state.screen === "training") ui.renderTraining(snapshot);
+        if (state.screen === "champion") ui.renderChampion(snapshot);
+        updateHud();
+      };
+
+      const route = (screen) => {
+        state.screen = screen;
+        render();
+      };
+
+      const resetPlayerForArena = () => {
+        const next = cloneFighterState({
+          ...state.fighter,
+          health: state.fighter.maxHealth,
+          stamina: state.fighter.maxStamina,
+          tiredTurns: 0,
+          status: "READY",
+          buffs: [],
+        });
+        syncFighter(next);
+      };
+
+      const awardVictory = (result) => {
+        if (!result?.victory) return;
+        syncFighter(
+          cloneFighterState({
+            ...state.fighter,
+            gold: state.fighter.gold + (result.rewardGold ?? 0),
+            wins: (state.fighter.wins ?? 0) + 1,
+            health: state.fighter.maxHealth,
+            stamina: state.fighter.maxStamina,
+            status: "READY",
+            tiredTurns: 0,
+          }),
+        );
+      };
+
+      window.__gladiatorSoulDebug = {
+        getState: () => structuredClone(state),
+        patchArena({ fighter = null, enemy = null } = {}) {
+          if (fighter) {
+            syncFighter(cloneFighterState({ ...state.fighter, ...fighter }));
+            state.combat.player = cloneFighterState({ ...state.combat.player, ...state.fighter });
+          }
+          if (enemy) {
+            state.combat.enemy = cloneFighterState({ ...state.combat.enemy, ...enemy });
+          }
+          state.combat = combat.setState(state.combat);
+          syncFighter(state.combat.player);
+          render();
+        },
+      };
+
+      ui.bindActions({
+        onStartArena: () => {
+          resetPlayerForArena();
+          state.result = null;
+          state.combat = combat.startEncounter(state.fighter);
+          syncFighter(state.combat.player);
+          route("arena");
+        },
+        onTrain: () => route("training"),
+        onMarket: () => route("marketplace"),
+        onChampion: () => route("champion"),
+        onBackToMenu: () => route("menu"),
+        onBuyItem: (itemId) => {
+          const outcome = inventory.purchaseItem(itemId, state.fighter);
+          if (outcome.reason === "insufficient-gold") {
+            ui.setStatusLine("Need more gold for that purchase.");
+            return;
+          }
+
+          syncFighter(applyCurrentEquipment(outcome.fighterState));
+          route("marketplace");
+          ui.setStatusLine(
+            outcome.reason === "owned" ? "Item already owned." : `${outcome.purchased?.name ?? "Item"} added to loadout.`,
+          );
+        },
+        onEquipItem: (slot, itemId) => {
+          const outcome = inventory.equipItem(slot, itemId, state.fighter);
+          syncFighter(applyCurrentEquipment(outcome.fighterState));
+          route("marketplace");
+          ui.setStatusLine(outcome.reason === "equipped" ? "Loadout changed." : "Cannot equip that item.");
+        },
+        onTrainStat: (trainingId) => {
+          const option = inventory.getTrainingOption(trainingId);
+          if (!option) {
+            ui.setStatusLine("Training drill missing.");
+            return;
+          }
+          if (state.fighter.gold < option.cost) {
+            ui.setStatusLine("Need more gold for training.");
+            return;
+          }
+
+          const paid = cloneFighterState({ ...state.fighter, gold: state.fighter.gold - option.cost });
+          syncFighter(applyCurrentEquipment(applyTraining(paid, trainingId)));
+          route("training");
+          ui.setStatusLine(`${option.title} complete.`);
+        },
+        onPlayerAction: (action) => {
+          state.combat = combat.resolveTurn(action);
+          syncFighter(state.combat.player);
+          if (state.combat.finished) {
+            state.result = state.combat.result;
+            awardVictory(state.result);
+            route("champion");
+            return;
+          }
+          route("arena");
+        },
+      });
+
+      syncFighter(applyCurrentEquipment(state.fighter));
+      route("menu");
+    </script>
+  </body>
+</html>

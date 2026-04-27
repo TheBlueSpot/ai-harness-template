@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { resolveModeExecutionAccess } from "../../shared/modes";
+import { createStableBoundedId } from "./notification-ids";
 import {
   assistantsStateSchema,
   agentRunStateSchema,
@@ -42,6 +43,7 @@ import {
   memoryRetrievalSchema,
   notificationInboxItemSchema,
   notificationInboxStateSchema,
+  planningQuestionIntentSchema,
   type Assistant,
   type AssistantAssetRef,
   type AssistantLearning,
@@ -105,6 +107,7 @@ import {
   type WorkspaceState
 } from "../../shared/protocol";
 import { defaultBackgroundJobTemplates } from "../../shared/background-job-templates";
+import { assertResolvedAssistantAssetRefs, resolveAssistantAssetRefs } from "./assistant-capabilities";
 import { debugLog } from "./logging";
 
 const ACTIVE_THREAD_STATUS = "active";
@@ -215,6 +218,7 @@ type AgentRunQuestionRow = {
   prompt: string;
   placeholder: string | null;
   choices_json: string | null;
+  intent_json: string | null;
   status: "pending" | "deferred" | "answered";
   answer_text: string | null;
   asked_at: string;
@@ -344,6 +348,14 @@ type BackgroundJobRunEventRow = {
   created_at: string;
 };
 
+type ChatAttachmentUploadRow = {
+  key: string;
+  project_id: string | null;
+  thread_id: string | null;
+  attachment_json: string;
+  created_at: string;
+};
+
 type NotificationRow = {
   id: string;
   kind: NotificationInboxItem["kind"];
@@ -459,6 +471,11 @@ type AssistantAssetRefRow = {
   kind: "skill" | "script" | "mode" | "background-template";
   label: string;
   value: string;
+  canonical_value: string | null;
+  scope: "workspace" | "project" | null;
+  provenance: "repo-skill" | "repo-script" | "workspace-mode" | "project-mode" | "background-template" | null;
+  resolution_status: "resolved" | "missing" | "out-of-scope" | null;
+  resolution_error: string | null;
   created_at: string;
 };
 
@@ -474,10 +491,12 @@ type WorkspaceRepositoryOptions = {
 export class WorkspaceRepository {
   private readonly db: Database;
   private readonly dbPath: string;
+  private readonly repoRoot: string;
   private readonly allowDevThreadRecovery: boolean;
 
-  constructor(dbPath?: string, _defaultRootPath: string = process.cwd(), options: WorkspaceRepositoryOptions = {}) {
+  constructor(dbPath?: string, defaultRootPath: string = process.cwd(), options: WorkspaceRepositoryOptions = {}) {
     this.dbPath = dbPath ?? path.join(process.cwd(), ".local", "harness.db");
+    this.repoRoot = defaultRootPath;
     this.allowDevThreadRecovery = Bun.env.NODE_ENV !== "production";
     if (this.dbPath !== ":memory:") {
       mkdirSync(path.dirname(this.dbPath), { recursive: true });
@@ -648,7 +667,7 @@ export class WorkspaceRepository {
         forkedFromThreadId: sourceThread.id as ThreadId
       });
 
-      for (const message of sourceMessages) {
+      for (const message of sourceMessages.flatMap(toForkableTranscriptMessage)) {
         this.db
           .query(
             `INSERT INTO thread_messages (id, thread_id, role, kind, content, attachments_json, metadata_json, created_at)
@@ -766,6 +785,41 @@ export class WorkspaceRepository {
     return this.readProjectSnapshot(projectId);
   }
 
+  saveChatAttachmentUpload(input: { projectId?: ProjectId; threadId?: ThreadId; attachment: ChatAttachment }) {
+    const now = new Date().toISOString();
+    this.db
+      .query(
+        `INSERT INTO chat_attachment_uploads (key, project_id, thread_id, attachment_json, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(key) DO UPDATE SET
+           project_id = excluded.project_id,
+           thread_id = excluded.thread_id,
+           attachment_json = excluded.attachment_json`
+      )
+      .run(input.attachment.key, input.projectId ?? null, input.threadId ?? null, JSON.stringify(input.attachment), now);
+  }
+
+  getChatAttachmentUpload(key: string) {
+    const row = this.db
+      .query<ChatAttachmentUploadRow, [string]>(
+        `SELECT key, project_id, thread_id, attachment_json, created_at
+         FROM chat_attachment_uploads
+         WHERE key = ?1`
+      )
+      .get(key);
+    if (!row) {
+      return undefined;
+    }
+
+    return {
+      key: row.key,
+      projectId: row.project_id ?? undefined,
+      threadId: row.thread_id ?? undefined,
+      attachment: chatAttachmentSchema.parse(JSON.parse(row.attachment_json)),
+      createdAt: row.created_at
+    };
+  }
+
   updateThreadMessage(
     projectId: ProjectId,
     threadId: ThreadId,
@@ -833,18 +887,18 @@ export class WorkspaceRepository {
   appendPlanningQuestion(
     projectId: ProjectId,
     runId: string,
-    question: Pick<PlanningQuestion, "id" | "prompt" | "placeholder" | "choices" | "required">,
+    question: Pick<PlanningQuestion, "id" | "prompt" | "placeholder" | "choices" | "required" | "intent">,
     status: Extract<PlanningQuestion["status"], "pending" | "deferred"> = "pending"
   ) {
     const now = new Date().toISOString();
-    const questionId = scopePlanningQuestionId(runId, question.id);
-    const ordinal =
-      (this.db
-        .query<{ count: number }, [string]>(`SELECT COUNT(*) AS count FROM agent_run_questions WHERE run_id = ?1`)
-        .get(runId)?.count ?? 0) + 1;
 
     const tx = this.db.transaction(() => {
       this.assertRunExists(projectId, runId);
+      const ordinal =
+        (this.db
+          .query<{ count: number }, [string]>(`SELECT COUNT(*) AS count FROM agent_run_questions WHERE run_id = ?1`)
+          .get(runId)?.count ?? 0) + 1;
+      const questionId = this.createAvailablePlanningQuestionId(runId, question.id, ordinal);
       this.db
         .query(
           `INSERT INTO agent_run_questions (
@@ -854,11 +908,12 @@ export class WorkspaceRepository {
             prompt,
             placeholder,
             choices_json,
+            intent_json,
             status,
             answer_text,
             asked_at,
             answered_at
-          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, NULL)`
+          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9, NULL)`
         )
         .run(
           questionId,
@@ -867,6 +922,7 @@ export class WorkspaceRepository {
           question.prompt,
           question.placeholder ?? null,
           JSON.stringify(question.choices),
+          question.intent ? JSON.stringify(question.intent) : null,
           status,
           now
         );
@@ -882,6 +938,23 @@ export class WorkspaceRepository {
     tx();
 
     return this.readProjectSnapshot(projectId);
+  }
+
+  private createAvailablePlanningQuestionId(runId: string, questionId: string, ordinal: number) {
+    const idQuery = this.db.query<{ id: string }, [string]>(`SELECT id FROM agent_run_questions WHERE id = ?1`);
+    const idExists = (id: string) => Boolean(idQuery.get(id));
+    const baseId = scopePlanningQuestionId(runId, questionId);
+    if (!idExists(baseId)) {
+      return baseId;
+    }
+
+    let suffix = ordinal;
+    let candidate = scopePlanningQuestionId(runId, `${questionId}:${suffix}`);
+    while (idExists(candidate)) {
+      suffix += 1;
+      candidate = scopePlanningQuestionId(runId, `${questionId}:${suffix}`);
+    }
+    return candidate;
   }
 
   promoteDeferredPlanningQuestions() {
@@ -1064,14 +1137,14 @@ export class WorkspaceRepository {
 
   setAgentRunStatus(projectId: ProjectId, runId: string, status: AgentRunStatus, failureMessage?: string) {
     const now = new Date().toISOString();
-    const completedAt = status === "completed" ? now : null;
+    const completedAt = isTerminalAgentRunStatus(status) ? now : null;
     const updated = this.db
       .query(
         `UPDATE agent_runs
          SET status = ?3,
              failure_message = ?4,
              updated_at = ?5,
-             completed_at = CASE WHEN ?6 IS NULL THEN completed_at ELSE ?6 END
+             completed_at = CASE WHEN ?6 IS NULL THEN completed_at ELSE COALESCE(completed_at, ?6) END
          WHERE id = ?1 AND project_id = ?2`
       )
       .run(runId, projectId, status, failureMessage ?? null, now, completedAt);
@@ -1544,6 +1617,16 @@ export class WorkspaceRepository {
       this.assertProjectExists(assistant.projectId);
     }
 
+    const resolvedAssetRefs = resolveAssistantAssetRefs({
+      repoRoot: this.repoRoot,
+      assistant,
+      assetRefs,
+      workspaceModes: this.readWorkspaceModes(),
+      projectModes: assistant.projectId ? this.readProjectModes(assistant.projectId) : [],
+      backgroundTemplates: this.readBackgroundJobTemplates()
+    });
+    assertResolvedAssistantAssetRefs(resolvedAssetRefs);
+
     const now = new Date().toISOString();
     const tx = this.db.transaction(() => {
       this.db
@@ -1611,13 +1694,26 @@ export class WorkspaceRepository {
       }
 
       this.db.query(`DELETE FROM assistant_asset_refs WHERE assistant_id = ?1`).run(assistant.id);
-      for (const assetRef of assetRefs) {
+      for (const assetRef of resolvedAssetRefs) {
         this.db
           .query(
-            `INSERT INTO assistant_asset_refs (id, assistant_id, kind, label, value, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)`
+            `INSERT INTO assistant_asset_refs (
+              id, assistant_id, kind, label, value, canonical_value, scope, provenance, resolution_status, resolution_error, created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`
           )
-          .run(assetRef.id, assistant.id, assetRef.kind, assetRef.label, assetRef.value, assetRef.createdAt);
+          .run(
+            assetRef.id,
+            assistant.id,
+            assetRef.kind,
+            assetRef.label,
+            assetRef.value,
+            assetRef.canonicalValue ?? null,
+            assetRef.scope ?? null,
+            assetRef.provenance ?? null,
+            assetRef.resolutionStatus,
+            assetRef.resolutionError ?? null,
+            assetRef.createdAt
+          );
       }
     });
     tx();
@@ -1722,13 +1818,16 @@ export class WorkspaceRepository {
   answerAssistantQuestion(assistantId: string, questionId: string, answerText: string) {
     this.assertAssistantExists(assistantId);
     const now = new Date().toISOString();
-    this.db
+    const updated = this.db
       .query(
         `UPDATE assistant_questions
          SET status = 'answered', answer_text = ?3, answered_at = ?4
          WHERE id = ?1 AND assistant_id = ?2`
       )
       .run(questionId, assistantId, answerText.trim(), now);
+    if (updated.changes === 0) {
+      throw new Error("Unknown assistant question for assistant");
+    }
     this.touchAssistant(assistantId, now);
     return this.getAssistantQuestion(questionId)!;
   }
@@ -1882,6 +1981,24 @@ export class WorkspaceRepository {
     return this.readAssistantAssetRefs().filter((assetRef) => assetRef.assistantId === assistantId);
   }
 
+  assertAssistantAssetRefsResolved(assistantId: string) {
+    const assistant = this.getAssistant(assistantId);
+    if (!assistant) {
+      throw new Error(`Unknown assistant: ${assistantId}`);
+    }
+
+    const resolvedAssetRefs = resolveAssistantAssetRefs({
+      repoRoot: this.repoRoot,
+      assistant,
+      assetRefs: this.getAssistantAssetRefs(assistantId),
+      workspaceModes: this.readWorkspaceModes(),
+      projectModes: assistant.projectId ? this.readProjectModes(assistant.projectId) : [],
+      backgroundTemplates: this.readBackgroundJobTemplates()
+    });
+    assertResolvedAssistantAssetRefs(resolvedAssetRefs);
+    return resolvedAssetRefs;
+  }
+
   getAssistantLogEntries(assistantId: string) {
     this.assertAssistantExists(assistantId);
     return this.readAssistantLogEntries().filter((entry) => entry.assistantId === assistantId);
@@ -1957,6 +2074,30 @@ export class WorkspaceRepository {
         input.runState ?? null,
         now
       );
+    return this.getAssistant(assistantId)!;
+  }
+
+  recoverAssistantCircuitBreaker(assistantId: string) {
+    const assistant = this.getAssistant(assistantId, true);
+    if (!assistant) {
+      throw new Error(`Unknown assistant: ${assistantId}`);
+    }
+    if (assistant.deletedAt) {
+      throw new Error(`Assistant ${assistant.name} is deleted`);
+    }
+    const now = new Date().toISOString();
+    this.db
+      .query(
+        `UPDATE assistants
+         SET failure_streak_count = 0,
+             circuit_breaker_state = 'closed',
+             circuit_breaker_reason = NULL,
+             run_state = 'active',
+             updated_at = ?2,
+             latest_activity_at = ?2
+         WHERE id = ?1`
+      )
+      .run(assistantId, now);
     return this.getAssistant(assistantId)!;
   }
 
@@ -2772,6 +2913,14 @@ export class WorkspaceRepository {
       CREATE INDEX IF NOT EXISTS thread_messages_thread_created_idx
       ON thread_messages(thread_id, created_at);
 
+      CREATE TABLE IF NOT EXISTS chat_attachment_uploads (
+        key TEXT PRIMARY KEY,
+        project_id TEXT NULL,
+        thread_id TEXT NULL,
+        attachment_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS agent_runs (
         id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL,
@@ -2817,6 +2966,7 @@ export class WorkspaceRepository {
         prompt TEXT NOT NULL,
         placeholder TEXT NULL,
         choices_json TEXT NULL,
+        intent_json TEXT NULL,
         status TEXT NOT NULL CHECK(status IN ('pending', 'deferred', 'answered')),
         answer_text TEXT NULL,
         asked_at TEXT NOT NULL,
@@ -3166,6 +3316,11 @@ export class WorkspaceRepository {
         kind TEXT NOT NULL CHECK(kind IN ('skill', 'script', 'mode', 'background-template')),
         label TEXT NOT NULL,
         value TEXT NOT NULL,
+        canonical_value TEXT NULL,
+        scope TEXT NULL CHECK(scope IN ('workspace', 'project')),
+        provenance TEXT NULL CHECK(provenance IN ('repo-skill', 'repo-script', 'workspace-mode', 'project-mode', 'background-template')),
+        resolution_status TEXT NOT NULL DEFAULT 'resolved' CHECK(resolution_status IN ('resolved', 'missing', 'out-of-scope')),
+        resolution_error TEXT NULL,
         created_at TEXT NOT NULL,
         FOREIGN KEY(assistant_id) REFERENCES assistants(id) ON DELETE CASCADE
       );
@@ -3196,6 +3351,7 @@ export class WorkspaceRepository {
       "TEXT NULL CHECK(execution_access IN ('workspace-write', 'read-only'))"
     );
     this.addColumnIfMissing("agent_run_questions", "choices_json", "TEXT NULL");
+    this.addColumnIfMissing("agent_run_questions", "intent_json", "TEXT NULL");
     this.addColumnIfMissing("agent_run_subtasks", "commit_sha", "TEXT NULL");
     this.addColumnIfMissing("agent_run_subtasks", "worktree_path", "TEXT NULL");
     this.addColumnIfMissing("agent_run_subtasks", "mount_path", "TEXT NULL");
@@ -3208,6 +3364,19 @@ export class WorkspaceRepository {
     this.addColumnIfMissing("background_job_runs", "assistant_id", "TEXT NULL");
     this.addColumnIfMissing("assistants", "pending_reprioritize_reason", "TEXT NULL");
     this.addColumnIfMissing("assistants", "pending_reprioritize_requested_at", "TEXT NULL");
+    this.addColumnIfMissing("assistant_asset_refs", "canonical_value", "TEXT NULL");
+    this.addColumnIfMissing("assistant_asset_refs", "scope", "TEXT NULL CHECK(scope IN ('workspace', 'project'))");
+    this.addColumnIfMissing(
+      "assistant_asset_refs",
+      "provenance",
+      "TEXT NULL CHECK(provenance IN ('repo-skill', 'repo-script', 'workspace-mode', 'project-mode', 'background-template'))"
+    );
+    this.addColumnIfMissing(
+      "assistant_asset_refs",
+      "resolution_status",
+      "TEXT NOT NULL DEFAULT 'resolved' CHECK(resolution_status IN ('resolved', 'missing', 'out-of-scope'))"
+    );
+    this.addColumnIfMissing("assistant_asset_refs", "resolution_error", "TEXT NULL");
 
     this.db.exec(`DROP INDEX IF EXISTS project_threads_active_project_idx;`);
     this.db.exec(`UPDATE project_threads SET status = 'active' WHERE status = 'archived';`);
@@ -3370,6 +3539,16 @@ export class WorkspaceRepository {
         const messageCount =
           this.db.query<{ count: number }, [string]>(`SELECT COUNT(*) AS count FROM thread_messages WHERE thread_id = ?1`).get(thread.id)
             ?.count ?? 0;
+        const lastUserMessageAt = this.db
+          .query<{ created_at: string }, [string]>(
+            `SELECT created_at
+             FROM thread_messages
+             WHERE thread_id = ?1
+               AND role = 'user'
+             ORDER BY created_at DESC
+             LIMIT 1`
+          )
+          .get(thread.id)?.created_at;
 
         return createProjectThreadSummary({
           id: thread.id as ThreadId,
@@ -3379,6 +3558,8 @@ export class WorkspaceRepository {
           badgeState: getThreadBadgeState(latestRun),
           messageCount,
           lastMessagePreview: preview ? summarizeMessagePreview(preview) : undefined,
+          createdAt: thread.created_at,
+          lastUserMessageAt,
           updatedAt: thread.updated_at,
           forkedFromThreadId: (thread.forked_from_thread_id ?? undefined) as ThreadId | undefined
         });
@@ -3576,7 +3757,9 @@ export class WorkspaceRepository {
   private readAssistantAssetRefs() {
     return this.db
       .query<AssistantAssetRefRow, []>(
-        `SELECT id, assistant_id, kind, label, value, created_at
+        `SELECT
+          id, assistant_id, kind, label, value, canonical_value, scope, provenance,
+          resolution_status, resolution_error, created_at
          FROM assistant_asset_refs
          WHERE assistant_id IN (SELECT id FROM assistants WHERE deleted_at IS NULL)
          ORDER BY created_at ASC`
@@ -3745,6 +3928,11 @@ export class WorkspaceRepository {
       kind: row.kind,
       label: row.label,
       value: row.value,
+      canonicalValue: row.canonical_value ?? undefined,
+      scope: row.scope ?? undefined,
+      provenance: row.provenance ?? undefined,
+      resolutionStatus: row.resolution_status ?? "resolved",
+      resolutionError: row.resolution_error ?? undefined,
       createdAt: row.created_at
     });
   }
@@ -3888,7 +4076,7 @@ export class WorkspaceRepository {
   private hydrateRunState(run: AgentRunRow): AgentRunState {
     const questions = this.db
       .query<AgentRunQuestionRow, [string]>(
-        `SELECT id, run_id, ordinal, prompt, placeholder, choices_json, status, answer_text, asked_at, answered_at
+        `SELECT id, run_id, ordinal, prompt, placeholder, choices_json, intent_json, status, answer_text, asked_at, answered_at
          FROM agent_run_questions
          WHERE run_id = ?1
          ORDER BY ordinal ASC`
@@ -3902,6 +4090,7 @@ export class WorkspaceRepository {
         required: true,
         status: question.status,
         answerText: question.answer_text ?? undefined,
+        intent: parsePlanningQuestionIntent(question.intent_json),
         askedAt: question.asked_at,
         answeredAt: question.answered_at ?? undefined
       }));
@@ -4246,6 +4435,7 @@ export class WorkspaceRepository {
         prompt TEXT NOT NULL,
         placeholder TEXT NULL,
         choices_json TEXT NULL,
+        intent_json TEXT NULL,
         status TEXT NOT NULL CHECK(status IN ('pending', 'deferred', 'answered')),
         answer_text TEXT NULL,
         asked_at TEXT NOT NULL,
@@ -4253,10 +4443,10 @@ export class WorkspaceRepository {
         FOREIGN KEY(run_id) REFERENCES agent_runs(id) ON DELETE CASCADE
       );
       INSERT INTO agent_run_questions (
-        id, run_id, ordinal, prompt, placeholder, choices_json, status, answer_text, asked_at, answered_at
+        id, run_id, ordinal, prompt, placeholder, choices_json, intent_json, status, answer_text, asked_at, answered_at
       )
       SELECT
-        id, run_id, ordinal, prompt, placeholder, choices_json, status, answer_text, asked_at, answered_at
+        id, run_id, ordinal, prompt, placeholder, choices_json, NULL, status, answer_text, asked_at, answered_at
       FROM agent_run_questions_legacy;
       DROP TABLE agent_run_questions_legacy;
       CREATE INDEX IF NOT EXISTS agent_run_questions_run_ordinal_idx
@@ -4830,6 +5020,14 @@ function parsePlanningChoices(input: string | null): PlanningChoice[] {
   return createFallbackPlanningChoices("Provide answer");
 }
 
+function parsePlanningQuestionIntent(input: string | null): PlanningQuestion["intent"] {
+  if (!input) {
+    return undefined;
+  }
+
+  return planningQuestionIntentSchema.parse(JSON.parse(input));
+}
+
 function parseChatMessageMetadata(input: string | null): ChatMessageMetadata | undefined {
   if (!input) {
     return undefined;
@@ -4999,7 +5197,25 @@ function toGeneratedThreadTitle(content: string | undefined, fallback: string) {
 }
 
 function scopePlanningQuestionId(runId: string, questionId: string) {
-  return `${runId}:${questionId}`.slice(0, 128);
+  return createStableBoundedId([runId, questionId]);
+}
+
+function toForkableTranscriptMessage(message: ChatMessage): ChatMessage[] {
+  if ((message.kind ?? "plain") !== "plain") {
+    return [];
+  }
+
+  return [
+    {
+      ...message,
+      kind: "plain",
+      metadata: undefined
+    }
+  ];
+}
+
+function isTerminalAgentRunStatus(status: AgentRunStatus) {
+  return status === "completed" || status === "partial-complete" || status === "stopped" || status === "failed";
 }
 
 function isRunResumable(status: AgentRunStatus, hasExecutionState: boolean) {

@@ -31,6 +31,11 @@ Apply when work touches harness behavior, defaults, protocol shape, runtime wiri
 - Keep command handling behind a narrow, typed bridge.
 - Fail fast on invalid input, malformed payloads, and unexpected message types.
 - Validate unknown payloads with zod at boundaries.
+- Treat all LLM/provider JSON as hostile boundary input.
+- Never rely on prompt-only enum compliance for provider-generated structured payloads.
+- For LLM-generated structured payloads, keep exact zod schemas and add deterministic alias normalization only for known-safe synonyms before parsing.
+- For recoverable LLM schema failures, make one bounded repair attempt before failing a user-visible run.
+- Do not widen domain types to accept invalid model vocabulary.
 - Keep development local-first.
 - Do not reintroduce old OpenAI-only restriction. Current harness can support multiple providers.
 - Debug-only code should key off `process.env.NODE_ENV !== "production"`; do not add separate debug env toggles like `HARNESS_DEBUG`.
@@ -90,6 +95,7 @@ Apply when work touches harness behavior, defaults, protocol shape, runtime wiri
 ## Testing Preferences
 
 - Core functionality updates must be thoroughly covered with both unit tests and integration tests before done.
+- LLM/provider structured-output changes must test canonical valid payloads, known alias normalization, unknown invalid values, repair success, repair failure, and persisted canonical output.
 - Treat websocket protocol, workspace persistence, planning or run lifecycle, preferences storage, worktree orchestration, and shared UI state or transport logic as core functionality.
 - Pure copy, content, or visual-only layout tweaks without behavior change do only need unit testing.
 - Prefer colocated harness tests next to source files.

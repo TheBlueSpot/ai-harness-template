@@ -1,4 +1,5 @@
 import type { Subprocess } from "bun";
+import { BoundedOutputBuffer, formatOutputCapExceeded } from "../bounded-output-buffer";
 import { buildToolchainPath } from "./toolchain";
 
 export type CliProcessEnvInput = {
@@ -13,6 +14,8 @@ export type CliProcessExecutionResult = {
   exitCode: number;
   hangDetected: boolean;
   timedOut: boolean;
+  outputLimitExceeded?: boolean;
+  outputLimitMessage?: string;
 };
 
 export type InteractiveCliProcess = {
@@ -50,6 +53,7 @@ type InteractiveOptions = {
 
 const WATCHDOG_POLL_MS = 250;
 const FORCE_KILL_DELAY_MS = 3000;
+export const CLI_PROCESS_OUTPUT_CAP_BYTES = 2 * 1024 * 1024;
 
 export function buildCliProcessEnv(input: CliProcessEnvInput) {
   const pathValue = buildToolchainPath({ basePath: Bun.env.PATH }) ?? Bun.env.PATH ?? "";
@@ -84,26 +88,38 @@ export class CliProcessManager {
       stderr: "pipe"
     });
 
-    let stdout = "";
-    let stderr = "";
+    const stdout = new BoundedOutputBuffer(CLI_PROCESS_OUTPUT_CAP_BYTES);
+    const stderr = new BoundedOutputBuffer(CLI_PROCESS_OUTPUT_CAP_BYTES);
     const startedAt = Date.now();
     let lastOutputAt = Date.now();
     let hangDetected = false;
     let timedOut = false;
+    let outputLimitExceeded = false;
+    let outputLimitMessage: string | undefined;
     let settled = false;
 
     const stdoutReader = consumeStream(proc.stdout, {
       onChunk: (chunk) => {
-        stdout += decodeChunk(chunk);
+        const snapshot = stdout.append(chunk);
         lastOutputAt = Date.now();
         options.onStdout?.(chunk);
+        if (snapshot.exceeded && !outputLimitExceeded) {
+          outputLimitExceeded = true;
+          outputLimitMessage = formatOutputCapExceeded("stdout", snapshot);
+          void terminateProcess(proc);
+        }
       }
     });
     const stderrReader = consumeStream(proc.stderr, {
       onChunk: (chunk) => {
-        stderr += decodeChunk(chunk);
+        const snapshot = stderr.append(chunk);
         lastOutputAt = Date.now();
         options.onStderr?.(chunk);
+        if (snapshot.exceeded && !outputLimitExceeded) {
+          outputLimitExceeded = true;
+          outputLimitMessage = formatOutputCapExceeded("stderr", snapshot);
+          void terminateProcess(proc);
+        }
       }
     });
 
@@ -138,11 +154,13 @@ export class CliProcessManager {
       clearInterval(watchdog);
       options.abortSignal?.removeEventListener("abort", abortHandler);
       return {
-        stdout,
-        stderr,
+        stdout: stdout.text(),
+        stderr: stderr.text(),
         exitCode,
         hangDetected,
-        timedOut
+        timedOut,
+        outputLimitExceeded,
+        outputLimitMessage
       };
     } finally {
       settled = true;
@@ -165,18 +183,18 @@ export class CliProcessManager {
       stderr: "pipe"
     });
 
-    let stdout = "";
-    let stderr = "";
+    const stdout = new BoundedOutputBuffer(CLI_PROCESS_OUTPUT_CAP_BYTES);
+    const stderr = new BoundedOutputBuffer(CLI_PROCESS_OUTPUT_CAP_BYTES);
 
     const stdoutReader = consumeStream(proc.stdout, {
       onChunk: (chunk) => {
-        stdout += decodeChunk(chunk);
+        stdout.append(chunk);
         options.onStdout?.(chunk);
       }
     });
     const stderrReader = consumeStream(proc.stderr, {
       onChunk: (chunk) => {
-        stderr += decodeChunk(chunk);
+        stderr.append(chunk);
         options.onStderr?.(chunk);
       }
     });
@@ -190,8 +208,8 @@ export class CliProcessManager {
 
     return {
       proc,
-      stdoutText: () => stdout,
-      stderrText: () => stderr,
+      stdoutText: () => stdout.text(),
+      stderrText: () => stderr.text(),
       settled,
       async write(data: Uint8Array) {
         await proc.stdin.write(data);
@@ -201,10 +219,6 @@ export class CliProcessManager {
       }
     };
   }
-}
-
-function decodeChunk(chunk: Uint8Array) {
-  return new TextDecoder().decode(chunk);
 }
 
 async function consumeStream(

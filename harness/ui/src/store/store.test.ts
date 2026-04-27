@@ -15,6 +15,7 @@ import {
   BROWSER_UI_SESSION_STORAGE_KEY,
   COMPOSER_FAST_MODE_STORAGE_KEY,
   COMPOSER_REASONING_STRENGTH_STORAGE_KEY,
+  PROJECT_SIDEBAR_PREFERENCES_STORAGE_KEY,
   createEmptyAssistantsState,
   createEmptyBackgroundJobsState,
   createEmptyNotificationInboxState,
@@ -27,11 +28,13 @@ import {
   getComposerControlState,
   getExecutionModelOptionsForAgent,
   getFallbackExecutionModelIdForAgent,
+  getVisibleAssistants,
   getResolvedModes,
   persistBrowserUiSession,
   persistMergedLocalPreferences,
   readLocalPreferences,
   readBrowserUiSession,
+  readProjectSidebarPreferences,
   reduceServerEvent
 } from "../harness-store";
 
@@ -94,6 +97,7 @@ function clearBrowserUiSessionStorage() {
   globalThis.localStorage?.removeItem(BROWSER_UI_SESSION_STORAGE_KEY);
   globalThis.localStorage?.removeItem(COMPOSER_REASONING_STRENGTH_STORAGE_KEY);
   globalThis.localStorage?.removeItem(COMPOSER_FAST_MODE_STORAGE_KEY);
+  globalThis.localStorage?.removeItem(PROJECT_SIDEBAR_PREFERENCES_STORAGE_KEY);
 }
 
 describe("harness store reducer", () => {
@@ -142,6 +146,65 @@ describe("harness store reducer", () => {
     expect(store.state.selectedModeId).toBe("implement");
     expect(store.state.hasGlobalSelectedModeId).toBe(true);
     expect(readBrowserUiSession().selectedModeId).toBe("implement");
+  });
+
+  test("repairs and persists project sidebar preferences", () => {
+    clearBrowserUiSessionStorage();
+    globalThis.localStorage?.setItem(
+      PROJECT_SIDEBAR_PREFERENCES_STORAGE_KEY,
+      JSON.stringify({
+        projectSort: "manual",
+        threadSort: "bad",
+        grouping: "repository-path",
+        manualProjectOrder: ["project-2", "missing-project", "project-2"]
+      })
+    );
+    const firstProject = createWorkspaceProjectState({
+      id: "project-1",
+      name: "repo-one",
+      rootPath: "C:\\repos\\repo-one"
+    });
+    const secondProject = createWorkspaceProjectState({
+      id: "project-2",
+      name: "repo-two",
+      rootPath: "C:\\repos\\repo-two"
+    });
+    const store = createHarnessStore();
+
+    store.applyServerEvent({
+      type: "connection.ready",
+      payload: {
+        agents: [{ id: "pi", label: "Pi" }],
+        workspace: {
+          projects: [firstProject, secondProject],
+          activeProjectId: firstProject.id
+        },
+        preferences: defaultPreferences,
+        setup: defaultSetup,
+        backgroundJobs: createEmptyBackgroundJobsState(),
+        assistants: createEmptyAssistantsState(),
+        notifications: defaultNotifications,
+        executionControl: defaultExecutionControl
+      }
+    });
+    store.hydrateLocalPreferences();
+
+    expect(store.state.projectSidebarPreferences).toMatchObject({
+      projectSort: "manual",
+      threadSort: "last-user-message",
+      grouping: "repository-path",
+      manualProjectOrder: ["project-2", "project-1"]
+    });
+
+    store.setProjectSidebarPreferences({
+      projectSort: "created-at",
+      manualProjectOrder: ["project-1", "project-2"]
+    });
+
+    expect(readProjectSidebarPreferences()).toMatchObject({
+      projectSort: "created-at",
+      manualProjectOrder: ["project-1", "project-2"]
+    });
   });
 
   test("explicit global mode override beats later project mode updates", () => {
@@ -736,10 +799,67 @@ describe("harness store reducer", () => {
       }
     });
 
-    expect(withCreatedCard.activeSurface).toBe("assistants");
+    expect(withCreatedCard.activeSurface).toBe(hydratedState.activeSurface);
     expect(withCreatedCard.assistants.selectedAssistantId).toBe(assistantId);
+    expect(withCreatedCard.assistants.scopeFilter).toBe("project");
+    expect(getVisibleAssistants(withCreatedCard)[0]?.id).toBe(assistantId);
     expect(withDelta.assistants.streamingByAssistantId[assistantId]).toBe("wax on");
     expect(withQuestion.assistants.questions[0]?.prompt).toContain("Kata");
+  });
+
+  test("assistant created card switches to created assistant scope", () => {
+    const project = createProject();
+    const connectedState = createConnectedState(project);
+    const now = new Date().toISOString();
+    const globalAssistant = {
+      id: "assistant-global",
+      name: "Release watcher",
+      scope: "global" as const,
+      projectId: undefined,
+      description: "Watch releases",
+      personalityPrompt: "Concise.",
+      jobPrompt: "Watch releases.",
+      agentId: "pi" as const,
+      modeId: undefined,
+      executionModelId: undefined,
+      runState: "active" as const,
+      bootstrapState: "completed" as const,
+      clonedFromAssistantId: undefined,
+      failureStreakCount: 0,
+      circuitBreakerState: "closed" as const,
+      circuitBreakerReason: undefined,
+      deletedAt: undefined,
+      latestActivityAt: now,
+      unreadQuestionCount: 0,
+      createdAt: now,
+      updatedAt: now
+    };
+
+    const hydratedState = reduceServerEvent(connectedState, {
+      type: "assistants.updated",
+      requestId: "assistant-global",
+      payload: {
+        assistants: {
+          assistants: [globalAssistant],
+          threads: [],
+          todos: [],
+          learnings: [],
+          questions: [],
+          logs: [],
+          assetRefs: []
+        }
+      }
+    });
+    const withCreatedCard = reduceServerEvent(hydratedState, {
+      type: "assistant.created-card",
+      requestId: "assistant-global-card",
+      payload: {
+        assistant: globalAssistant
+      }
+    });
+
+    expect(withCreatedCard.assistants.scopeFilter).toBe("global");
+    expect(getVisibleAssistants(withCreatedCard)[0]?.id).toBe("assistant-global");
   });
 
   test("records plans and traces on active project without polluting messages", () => {
@@ -1218,6 +1338,105 @@ describe("harness store reducer", () => {
     expect(restoredProject?.streamingAssistantText).toBe("Partial assistant");
   });
 
+  test("restores inactive thread pending question and run state when switching back", () => {
+    const projectId = createProjectId();
+    const threadOne = "thread-1";
+    const threadTwo = "thread-2";
+    const initialProject = createWorkspaceProjectState({
+      id: projectId,
+      name: "repo-question-switch",
+      rootPath: "C:\\repo-question-switch",
+      activeThreadId: threadTwo,
+      threads: [
+        createProjectThreadSummary({
+          id: threadOne,
+          title: "Thread 1",
+          titleSource: "generated",
+          updatedAt: new Date().toISOString()
+        }),
+        createProjectThreadSummary({
+          id: threadTwo,
+          title: "Thread 2",
+          titleSource: "generated",
+          updatedAt: new Date().toISOString()
+        })
+      ],
+      session: {
+        ...createEmptySession(threadTwo),
+        messages: [
+          {
+            id: "thread-2-user",
+            role: "user",
+            content: "active thread text",
+            createdAt: new Date().toISOString()
+          }
+        ]
+      }
+    });
+    const initialState = createConnectedState(initialProject);
+    const questionRun = {
+      id: "run-thread-1-question",
+      threadId: threadOne,
+      status: "awaiting-user-input" as const,
+      latestUserPrompt: "needs clarification",
+      questions: [
+        {
+          id: "run-thread-1-question:question-1",
+          prompt: "Which route?",
+          choices: [],
+          required: true,
+          status: "pending" as const,
+          askedAt: new Date().toISOString()
+        }
+      ],
+      subtasks: [],
+      resumable: false,
+      retryable: false,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    const questionedState = reduceServerEvent(initialState, {
+      type: "run.updated",
+      requestId: "req-inactive-question",
+      payload: {
+        projectId,
+        threadId: threadOne,
+        run: questionRun
+      }
+    });
+
+    expect(questionedState.workspace.projects[0]?.activeThreadId).toBe(threadTwo);
+    expect(questionedState.workspace.projects[0]?.activeRun).toBeUndefined();
+    expect(questionedState.workspace.projects[0]?.session.messages[0]?.content).toBe("active thread text");
+    expect(questionedState.workspace.projects[0]?.threads.find((thread) => thread.id === threadOne)?.badgeState).toBe("needs-input");
+
+    const switchedBack = reduceServerEvent(questionedState, {
+      type: "thread.activated",
+      requestId: "req-switch-back-question",
+      payload: {
+        projectId,
+        project: createWorkspaceProjectState({
+          id: projectId,
+          name: "repo-question-switch",
+          rootPath: "C:\\repo-question-switch",
+          activeThreadId: threadOne,
+          threads: initialProject.threads,
+          session: {
+            ...createEmptySession(threadOne),
+            messages: []
+          }
+        })
+      }
+    });
+
+    const restoredProject = switchedBack.workspace.projects[0];
+    expect(restoredProject?.activeRun?.id).toBe(questionRun.id);
+    expect(restoredProject?.activeRun?.questions[0]?.prompt).toBe("Which route?");
+    expect(restoredProject?.lastRun?.id).toBe(questionRun.id);
+    expect(restoredProject?.runSummaries[0]?.id).toBe(questionRun.id);
+  });
+
   test("clears inactive thread live transcript after completion", () => {
     const projectId = createProjectId();
     const threadOne = "thread-1";
@@ -1428,6 +1647,57 @@ describe("harness store reducer", () => {
     expect(project?.session.messages[0]?.content).toBe("hello planner");
   });
 
+  test("uses appended thread summary to refresh generated thread title", () => {
+    const initialProject = createProject();
+    const initialState = createConnectedState(initialProject);
+    const projectId = initialProject.id;
+    const threadId = initialProject.activeThreadId;
+    const createdAt = new Date().toISOString();
+    const nextState = reduceServerEvent(initialState, {
+      type: "chat.message-appended",
+      requestId: "req-title-refresh",
+      payload: {
+        projectId,
+        threadId,
+        sessionId: threadId,
+        message: {
+          id: "user-title",
+          role: "user",
+          content: "build project sorting",
+          createdAt
+        },
+        thread: createProjectThreadSummary({
+          ...(initialProject.threads[0] ?? {
+            id: threadId,
+            title: "Thread 1",
+            titleSource: "generated" as const,
+            updatedAt: createdAt
+          }),
+          title: "build project sorting",
+          messageCount: 1,
+          lastMessagePreview: "build project sorting",
+          lastUserMessageAt: createdAt,
+          updatedAt: createdAt
+        }),
+        state: {
+          ...createEmptySession(threadId),
+          messages: [
+            {
+              id: "user-title",
+              role: "user",
+              content: "build project sorting",
+              createdAt
+            }
+          ]
+        }
+      }
+    });
+
+    const project = nextState.workspace.projects.find((entry) => entry.id === projectId);
+    expect(project?.threads.find((thread) => thread.id === threadId)?.title).toBe("build project sorting");
+    expect(project?.threads.find((thread) => thread.id === threadId)?.messageCount).toBe(1);
+  });
+
   test("uses appended session streaming state instead of stale local streaming state", () => {
     const initialProject = createProject();
     const initialState = createConnectedState(initialProject);
@@ -1526,6 +1796,49 @@ describe("harness store reducer", () => {
 
     expect(streamingState.workspace.projects[0]?.session.isStreaming).toBe(true);
     expect(nextState.workspace.projects[0]?.session.isStreaming).toBe(false);
+  });
+
+  test("uses thread appended session streaming state for planner responses", () => {
+    const initialProject = createProject();
+    const initialState = createConnectedState(initialProject);
+    const projectId = initialProject.id;
+    const threadId = initialProject.activeThreadId;
+    const streamingState = reduceServerEvent(initialState, {
+      type: "chat.delta",
+      requestId: "req-thread-streaming",
+      payload: {
+        projectId,
+        threadId,
+        sessionId: threadId,
+        delta: "question"
+      }
+    });
+
+    const questionMessage = {
+      id: "assistant-question",
+      role: "assistant" as const,
+      content: "Which route?",
+      createdAt: new Date().toISOString()
+    };
+    const nextState = reduceServerEvent(streamingState, {
+      type: "thread.message-appended",
+      requestId: "req-thread-question",
+      payload: {
+        projectId,
+        threadId,
+        sessionId: threadId,
+        message: questionMessage,
+        state: {
+          ...createEmptySession(threadId),
+          messages: [questionMessage],
+          isStreaming: false
+        }
+      }
+    });
+
+    expect(streamingState.workspace.projects[0]?.session.isStreaming).toBe(true);
+    expect(nextState.workspace.projects[0]?.session.isStreaming).toBe(false);
+    expect(nextState.workspace.projects[0]?.streamingAssistantText).toBe("");
   });
 
   test("stores persisted system status messages inline with chat history", () => {

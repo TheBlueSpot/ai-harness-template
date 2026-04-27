@@ -8,15 +8,38 @@ import { PiRuntime } from "./agent-runtimes/pi-runtime";
 import { buildSetupState, detectSetupLaunchMode, formatSetupDoctorReport } from "./setup-health";
 import { createStartupTelemetrySession } from "./startup-telemetry";
 import { WorkspaceRepository } from "./workspace-repository";
+import { CliUsageError, parseCliOptions } from "./cli-options";
+
+const CLI_HELP = `Usage: pi-harness [--server-only] [--open|--no-open] [--doctor [--json]] [--help]
+
+Options:
+  --help         Print this help.
+  --server-only Start websocket/backend server without opening browser.
+  --open        Open browser after startup.
+  --no-open     Do not open browser after startup.
+  --doctor      Print setup health and exit.
+  --json        With --doctor, print machine-readable setup health.`;
 
 export async function main() {
+  const options = parseCliOptions(process.argv.slice(2), {
+    flags: ["--help", "--server-only", "--doctor", "--json", "--open", "--no-open"],
+    conflicts: [["--open", "--no-open"]]
+  });
+  if (options.flags.has("--help")) {
+    console.log(CLI_HELP);
+    process.exit(0);
+  }
+  if (options.flags.has("--json") && !options.flags.has("--doctor")) {
+    throw new CliUsageError("--json requires --doctor");
+  }
+
   const rawPort = Bun.env.HARNESS_PORT?.trim();
   const configuredPort = rawPort ? Number(rawPort) : Number.NaN;
   const port = Number.isFinite(configuredPort) ? configuredPort : 8787;
-  const serverOnly = process.argv.includes("--server-only");
-  const doctorOnly = process.argv.includes("--doctor");
-  const forceOpen = process.argv.includes("--open");
-  const disableOpen = process.argv.includes("--no-open");
+  const serverOnly = options.flags.has("--server-only");
+  const doctorOnly = options.flags.has("--doctor");
+  const forceOpen = options.flags.has("--open");
+  const disableOpen = options.flags.has("--no-open");
   const launchMode = detectSetupLaunchMode();
   const STARTUP_TELEMETRY_ENABLED = process.env.NODE_ENV !== "production";
 
@@ -25,8 +48,8 @@ export async function main() {
   }
 
   if (doctorOnly) {
-    await runDoctor();
-    process.exit(0);
+    const setup = await runDoctor({ json: options.flags.has("--json") });
+    process.exit(setup.readyRequiredCount === setup.totalRequiredCount ? 0 : 1);
   }
 
   const startupTelemetry = STARTUP_TELEMETRY_ENABLED ? createStartupTelemetrySession({ serverOnly }) : undefined;
@@ -57,7 +80,7 @@ export async function main() {
   }
 }
 
-async function runDoctor() {
+async function runDoctor(options: { json?: boolean } = {}) {
   const launchMode = detectSetupLaunchMode();
   const repository = new WorkspaceRepository(Bun.env.HARNESS_DB_PATH);
   const adapter = new PiSdkAgentAdapter();
@@ -107,10 +130,22 @@ async function runDoctor() {
     launchMode
   });
 
-  console.log(formatSetupDoctorReport(setup));
-  if (setup.readyRequiredCount !== setup.totalRequiredCount) {
-    process.exit(1);
+  if (options.json) {
+    console.log(
+      JSON.stringify({
+        version: 1,
+        launchMode,
+        ready: setup.readyRequiredCount === setup.totalRequiredCount,
+        readyRequiredCount: setup.readyRequiredCount,
+        totalRequiredCount: setup.totalRequiredCount,
+        checks: setup.checks
+      })
+    );
+  } else {
+    console.log(formatSetupDoctorReport(setup));
   }
+
+  return setup;
 }
 
 function describeError(error: unknown) {

@@ -3,7 +3,7 @@ import { beforeEach, expect, it, mock } from "bun:test";
 import { createUiTest } from "../utils/tests/test-harness";
 import { cleanup, fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { captureDispatchedCommands, clearBrowserStateForTests, seedHarnessStoreForTests } from "../utils/tests/store-test-utils";
-import { createExecutionPlanFixture, createHarnessStateFixture, createRunFixture, createViewProjectFixture } from "../utils/tests/test-fixtures";
+import { createHarnessStateFixture, createViewProjectFixture } from "../utils/tests/test-fixtures";
 import { toastStore } from "../toast-store";
 
 let uploadInvocationCount = 0;
@@ -23,11 +23,12 @@ const uploadedFiles = [
     }
   }
 ];
+let uploadFilesImpl: () => Promise<typeof uploadedFiles>;
 
 mock.module("../lib/uploadthing", () => ({
   uploadFiles: async () => {
     uploadInvocationCount += 1;
-    return uploadedFiles;
+    return uploadFilesImpl();
   }
 }));
 
@@ -39,38 +40,25 @@ createUiTest("ChatPanel attachment guardrails", () => {
     cleanup();
     toastStore.toasts.length = 0;
     uploadInvocationCount = 0;
+    uploadFilesImpl = async () => uploadedFiles;
   });
 
-  it("keeps attachments blocked during plan refinement", async () => {
+  it("blocks Enter submit while attachments are uploading", async () => {
     const commands: unknown[] = [];
-    const plan = createExecutionPlanFixture({
-      gating: {
-        mode: "approve",
-        delaySeconds: 0
-      }
-    });
+    let finishUpload!: () => void;
+    uploadFilesImpl = () =>
+      new Promise((resolve) => {
+        finishUpload = () => resolve(uploadedFiles);
+      });
     const project = createViewProjectFixture({
-      id: "project-ready-attachments",
-      draft: "tighten plan",
-      activeRun: createRunFixture({
-        id: "run-ready-attachments",
-        status: "ready",
-        plan
-      }),
-      latestPlan: {
-        sessionId: "session-1",
-        agentId: "pi",
-        planningModelId: "openai/gpt-5.4",
-        difficultyScore: 18,
-        usesSubagents: false,
-        executionModelId: "openai/gpt-5.4",
-        subtaskCount: 0,
-        executionPlan: plan
-      }
+      id: "project-uploading-enter",
+      draft: "use file"
     });
     seedHarnessStoreForTests(
       createHarnessStateFixture({
         attachmentsEnabled: true,
+        hasUsableApiKey: true,
+        hasUsableOpenAiApiKey: true,
         workspace: {
           activeProjectId: project.id,
           projects: [project]
@@ -101,9 +89,10 @@ createUiTest("ChatPanel attachment guardrails", () => {
       expect(uploadInvocationCount).toBe(1);
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Refine plan before execution" }));
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
 
     expect(commands).toHaveLength(0);
-    expect(toastStore.toasts[0]?.title).toBe("Attachments not supported here");
+    expect(toastStore.toasts[0]?.description).toBe("Wait for attachments to finish uploading before sending.");
+    finishUpload();
   });
 });

@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Epic War: Summoner Siege</title>
+    <meta
+      name="description"
+      content="A compact lane defense game with mana, gold, spells, and castle pressure."
+    />
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg-1: #07111d;
+        --bg-2: #101f33;
+        --panel: rgba(8, 14, 24, 0.84);
+        --panel-2: rgba(11, 20, 34, 0.72);
+        --line: rgba(255, 255, 255, 0.08);
+        --text: #eff4ff;
+        --muted: #9fb0ca;
+        --accent: #8be3ff;
+        --gold: #ffd77a;
+        --good: #78f0b3;
+        --bad: #ff6e89;
+        --shadow: 0 20px 80px rgba(0, 0, 0, 0.42);
+      }
+
+      * { box-sizing: border-box; }
+      html, body { margin: 0; width: 100%; height: 100%; }
+      body {
+        font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+        background:
+          radial-gradient(circle at 15% 10%, rgba(139, 227, 255, 0.16), transparent 24%),
+          radial-gradient(circle at 85% 14%, rgba(255, 215, 122, 0.12), transparent 20%),
+          linear-gradient(180deg, var(--bg-1), var(--bg-2));
+        color: var(--text);
+        overflow: hidden;
+      }
+
+      .shell {
+        position: relative;
+        width: 100%;
+        height: 100%;
+      }
+
+      #game-canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+
+      .overlay {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        padding: 20px;
+      }
+
+      .panel {
+        width: min(1100px, 100%);
+        border: 1px solid var(--line);
+        border-radius: 26px;
+        background: var(--panel);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(12px);
+      }
+
+      .screen {
+        display: none;
+      }
+
+      .screen.is-visible {
+        display: grid;
+      }
+
+      #menu-screen,
+      #victory-screen {
+        gap: 18px;
+        padding: 30px;
+      }
+
+      .hero {
+        display: grid;
+        gap: 12px;
+        max-width: 68ch;
+      }
+
+      .eyebrow {
+        margin: 0;
+        color: var(--accent);
+        text-transform: uppercase;
+        letter-spacing: 0.18em;
+        font-size: 12px;
+      }
+
+      h1, h2, p { margin: 0; }
+      h1 { font-size: clamp(42px, 6vw, 76px); letter-spacing: -0.06em; }
+      h2 { font-size: clamp(30px, 4vw, 50px); letter-spacing: -0.05em; }
+      .lede, .copy { color: var(--muted); line-height: 1.55; max-width: 70ch; }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+
+      button {
+        appearance: none;
+        border: 1px solid var(--line);
+        background: rgba(8, 14, 24, 0.98);
+        color: var(--text);
+        border-radius: 14px;
+        padding: 12px 16px;
+        font: inherit;
+        cursor: pointer;
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+
+      button.primary {
+        background: linear-gradient(180deg, rgba(139, 227, 255, 0.24), rgba(139, 227, 255, 0.08));
+        border-color: rgba(139, 227, 255, 0.38);
+      }
+
+      .hud {
+        position: absolute;
+        inset: 0;
+        display: none;
+        pointer-events: none;
+      }
+
+      .hud.is-visible {
+        display: grid;
+      }
+
+      .hud-top {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        padding: 18px;
+        align-items: start;
+      }
+
+      .stat, .spell-card, .lane-card {
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: var(--panel-2);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(10px);
+      }
+
+      .stat {
+        padding: 12px 14px;
+      }
+
+      .stat span {
+        display: block;
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.16em;
+        margin-bottom: 6px;
+      }
+
+      .stat strong {
+        font-size: 22px;
+      }
+
+      .hud-main {
+        align-self: end;
+        display: grid;
+        grid-template-columns: 1.1fr 1fr;
+        gap: 16px;
+        padding: 18px;
+      }
+
+      .spell-column, .lane-column {
+        display: grid;
+        gap: 12px;
+      }
+
+      #spell-bar {
+        display: grid;
+        gap: 10px;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        pointer-events: auto;
+      }
+
+      #upgrade-hud,
+      #lane-status {
+        pointer-events: auto;
+      }
+
+      .spell-card {
+        padding: 12px;
+        text-align: left;
+      }
+
+      .spell-card strong, .lane-card strong { display: block; margin-bottom: 4px; }
+      .spell-card span, .lane-card span { display: block; color: var(--muted); font-size: 13px; line-height: 1.45; }
+      .spell-card[aria-pressed="true"] { border-color: rgba(139, 227, 255, 0.45); }
+
+      .lane-grid {
+        display: grid;
+        gap: 10px;
+      }
+
+      .lane-card {
+        padding: 12px 14px;
+      }
+
+      #upgrade-hud {
+        display: grid;
+        gap: 10px;
+      }
+
+      .action-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        margin-top: 12px;
+      }
+
+      .meter-row {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 10px;
+        align-items: center;
+        font-size: 14px;
+      }
+
+      .meter {
+        height: 10px;
+        border-radius: 999px;
+        background: rgba(255,255,255,0.08);
+        overflow: hidden;
+      }
+
+      .meter > i {
+        display: block;
+        height: 100%;
+        width: 50%;
+        background: linear-gradient(90deg, var(--accent), var(--gold));
+      }
+
+      #victory-screen {
+        gap: 16px;
+      }
+
+      .hidden { display: none !important; }
+
+      @media (max-width: 920px) {
+        .hud-top, .hud-main { grid-template-columns: 1fr; }
+        #spell-bar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell" id="game-shell">
+      <canvas id="game-canvas" width="1600" height="900" aria-label="Epic War battlefield"></canvas>
+
+      <section id="menu-screen" class="overlay screen is-visible" aria-labelledby="menu-title">
+        <div class="panel">
+          <div class="hero">
+            <p class="eyebrow">epic war</p>
+            <h1 id="menu-title">Epic War: Summoner Siege</h1>
+            <p class="lede">
+              Hold a three-lane fantasy siege by spending mana on units and spells. Gold funds
+              upgrades, lane focus changes your target, and victory comes from breaking the enemy
+              keep before yours falls.
+            </p>
+          </div>
+          <div class="actions">
+            <button id="start-button" class="primary" type="button">Start battle</button>
+          </div>
+          <div class="copy" id="menu-summary">
+            Three lanes, frame-triggered attacks, cooldown spells, authored transparent fantasy
+            assets, and a full menu-to-victory loop.
+          </div>
+        </div>
+      </section>
+
+      <section id="game-screen" class="hud" aria-label="Battle HUD">
+        <header class="hud-top">
+          <div class="stat"><span>Mana</span><strong id="mana-value">0</strong></div>
+          <div class="stat"><span>Gold</span><strong id="gold-value">0</strong></div>
+          <div class="stat"><span>Your Castle</span><strong id="castle-health-value">0</strong></div>
+          <div class="stat"><span>Enemy Castle</span><strong id="enemy-castle-health-value">0</strong></div>
+        </header>
+
+        <section class="hud-main">
+          <div class="spell-column">
+            <div id="spell-bar" aria-label="Spell bar"></div>
+            <div id="upgrade-hud" aria-label="Upgrade hud"></div>
+          </div>
+          <div class="lane-column">
+            <div class="lane-grid" id="lane-status" aria-label="Lane status"></div>
+            <div class="lane-card">
+              <strong>Battle state</strong>
+              <span id="battle-status">Menu ready</span>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section id="victory-screen" class="overlay screen" aria-labelledby="victory-title" aria-hidden="true">
+        <div class="panel">
+          <div class="hero">
+            <p class="eyebrow">siege resolved</p>
+            <h2 id="victory-title">Victory</h2>
+            <p id="victory-copy" class="copy">The enemy castle fell first.</p>
+          </div>
+          <div class="actions">
+            <button id="restart-button" class="primary" type="button">Play again</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="./Summoner.js"></script>
+  </body>
+</html>

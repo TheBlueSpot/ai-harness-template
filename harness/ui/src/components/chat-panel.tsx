@@ -2,6 +2,7 @@ import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCle
 import { createHotkeys } from "@tanstack/solid-hotkeys";
 import {
   createRequestId,
+  type AssistantActionMessageMetadata,
   type AgentRunState,
   type AgentRunSummary,
   type ChatAttachment,
@@ -75,7 +76,8 @@ import {
   SendHorizontal,
   Settings2,
   X,
-  Split
+  Split,
+  Briefcase
 } from "lucide-solid";
 import { cn } from "../lib/utils";
 
@@ -126,6 +128,7 @@ export function ChatPanel() {
   let attachmentInput: HTMLInputElement | undefined;
   let composerTextarea: HTMLTextAreaElement | undefined;
   let countdownTimer: number | undefined;
+  let waitingTimer: number | undefined;
   const state = harnessStore.state;
   const sendCommand = harnessStore.actions.sendCommand;
   const activeProject = () => getActiveProject(state);
@@ -136,6 +139,7 @@ export function ChatPanel() {
   const [countdownRemainingMs, setCountdownRemainingMs] = createSignal(0);
   const [countdownPaused, setCountdownPaused] = createSignal(false);
   const [countdownFrozenByExecutionPause, setCountdownFrozenByExecutionPause] = createSignal(false);
+  const [elapsedNowMs, setElapsedNowMs] = createSignal(Date.now());
   const [autoExecutedRunId, setAutoExecutedRunId] = createSignal<string>();
   const [activeTab, setActiveTab] = createSignal<"chat" | "plan" | "run" | "events" | "memory">("chat");
   const currentTab = createMemo(activeTab);
@@ -147,10 +151,15 @@ export function ChatPanel() {
   const [composerSettingsOpen, setComposerSettingsOpen] = createSignal(false);
   const [desktopReasoningMenuOpen, setDesktopReasoningMenuOpen] = createSignal(false);
   const [mobileReasoningMenuOpen, setMobileReasoningMenuOpen] = createSignal(false);
+  const [showAllTranscript, setShowAllTranscript] = createSignal(false);
+  const [showAllRunSubtasks, setShowAllRunSubtasks] = createSignal(false);
+  const [showAllEventRows, setShowAllEventRows] = createSignal(false);
+  const [showAllMemoryRows, setShowAllMemoryRows] = createSignal(false);
   const pendingQuestion = () => activeProject()?.activeRun?.questions.find((question) => question.status === "pending");
   const resumableRun = () => (activeProject()?.activeRun?.resumable ? activeProject()?.activeRun : undefined);
   const retryableRun = () => (activeProject()?.lastRun?.retryable ? activeProject()?.lastRun : undefined);
   const readyRun = () => (activeProject()?.activeRun?.status === "ready" ? activeProject()?.activeRun : undefined);
+  const workingRun = () => (activeProject()?.session.isStreaming ? activeProject()?.activeRun : undefined);
   const activeThread = () => activeProject()?.threads.find((thread) => thread.id === activeProject()?.activeThreadId);
   const currentExecutionPlan = () => activeProject()?.latestPlan?.executionPlan ?? readyRun()?.plan;
   const resolvedModes = () => getResolvedModes(state, activeProject());
@@ -166,6 +175,33 @@ export function ChatPanel() {
   const composerReasoningLabel = () => formatReasoningStrengthLabel(selectedReasoningStrength());
   const composerSettingsLabel = () => (selectedFastMode() ? `${composerReasoningLabel()} · Fast` : composerReasoningLabel());
   const selectedAgentLabel = () => state.availableAgents.find((agent) => agent.id === selectedAgentId())?.label ?? "selected agent";
+  const composerTimerState = () => {
+    const run = workingRun();
+    if (run) {
+      const startedAtMs = Date.parse(run.createdAt);
+      return {
+        kind: "working" as const,
+        label: Number.isNaN(startedAtMs) ? "Working" : `Working for ${formatElapsedDuration(elapsedNowMs() - startedAtMs)}`
+      };
+    }
+
+    const lastRun = activeProject()?.lastRun;
+    const finishedAt = lastRun?.completedAt ?? lastRun?.updatedAt;
+    if (!lastRun || !finishedAt) {
+      return undefined;
+    }
+
+    const startedAtMs = Date.parse(lastRun.createdAt);
+    const finishedAtMs = Date.parse(finishedAt);
+    if (Number.isNaN(startedAtMs) || Number.isNaN(finishedAtMs)) {
+      return undefined;
+    }
+
+    return {
+      kind: "complete" as const,
+      label: `${formatResponseTime(finishedAtMs)} • ${formatElapsedDuration(finishedAtMs - startedAtMs)}`
+    };
+  };
   const modeDropdownOptions = () =>
     resolvedModes().map((mode) => ({
       value: mode.id,
@@ -233,6 +269,12 @@ export function ChatPanel() {
     const project = activeProject();
     return project ? getStreamingLiveMessages(project) : [];
   };
+  const visibleTranscriptMessages = createMemo(() => capLatest(activeProject()?.session.messages ?? [], CHAT_TRANSCRIPT_LIMIT, showAllTranscript()));
+  const visibleRunSubtasks = createMemo(() =>
+    capLatest(activeProject()?.activeRun?.subtasks ?? activeProject()?.lastRun?.subtasks ?? [], CHAT_RUN_SUBTASK_LIMIT, showAllRunSubtasks())
+  );
+  const visibleEventRows = createMemo(() => capLatest(activeProject()?.traces ?? [], CHAT_EVENT_LIMIT, showAllEventRows()));
+  const visibleMemoryRows = createMemo(() => capLatest(activeProject()?.memoryEntries ?? [], CHAT_MEMORY_LIMIT, showAllMemoryRows()));
   const liveHarnessMessageKey = () =>
     liveHarnessMessages()
       .map((message) => `${message.id}:${message.locked ? "locked" : "live"}:${message.content}`)
@@ -472,12 +514,33 @@ export function ChatPanel() {
     setStickToBottom(distanceFromBottom <= 32);
   };
 
+  function handleShowAllTranscript() {
+    setShowAllTranscript(true);
+  }
+
+  function handleShowAllRunSubtasks() {
+    setShowAllRunSubtasks(true);
+  }
+
+  function handleShowAllEventRows() {
+    setShowAllEventRows(true);
+  }
+
+  function handleShowAllMemoryRows() {
+    setShowAllMemoryRows(true);
+  }
+
   onMount(() => {
     scrollToBottom(true);
+    waitingTimer = window.setInterval(() => setElapsedNowMs(Date.now()), 1000);
   });
 
   onCleanup(() => {
     clearCountdown();
+    if (waitingTimer !== undefined) {
+      window.clearInterval(waitingTimer);
+      waitingTimer = undefined;
+    }
   });
 
   createEffect(() => {
@@ -499,6 +562,10 @@ export function ChatPanel() {
     setThreadMemoryDraft(activeProject()?.threadMemorySummary?.content ?? "");
     setDraftAttachments([]);
     setUploadingAttachments(false);
+    setShowAllTranscript(false);
+    setShowAllRunSubtasks(false);
+    setShowAllEventRows(false);
+    setShowAllMemoryRows(false);
   });
 
   createEffect(() => {
@@ -783,7 +850,11 @@ export function ChatPanel() {
   function handleSubmit(event: SubmitEvent) {
     event.preventDefault();
 
-    if (executionPaused()) {
+    const submitState = composerSubmitState();
+    if (submitState.disabled) {
+      if (submitState.disabledReason) {
+        pushToast("Cannot send yet", submitState.disabledReason, "error");
+      }
       return;
     }
 
@@ -805,13 +876,17 @@ export function ChatPanel() {
       return;
     }
 
+    if (hasImageDraftAttachments() && !hasVisionCapability()) {
+      pushToast(
+        "Vision model required",
+        "Current model cannot inspect attached images. Switch to a vision-capable model before sending.",
+        "error"
+      );
+      return;
+    }
+
     const question = pendingQuestion();
     if (question && project.activeRun) {
-      if (draftAttachments().length > 0) {
-        pushToast("Attachments not supported here", "Attachments are only supported on new top-level tasks right now.", "error");
-        return;
-      }
-
       sendCommand({
         type: "planning.answer",
         requestId: createRequestId(),
@@ -821,20 +896,17 @@ export function ChatPanel() {
           runId: project.activeRun.id,
           questionId: question.id,
           content,
+          attachments: draftAttachments(),
           ...getComposerControlPayload()
         }
       });
 
       harnessStore.setProjectDraft(project.id, "");
+      setDraftAttachments([]);
       return;
     }
 
     if (project.activeRun?.status === "ready") {
-      if (draftAttachments().length > 0) {
-        pushToast("Attachments not supported here", "Attachments are only supported on new top-level tasks right now.", "error");
-        return;
-      }
-
       sendCommand({
         type: "planning.refine",
         requestId: createRequestId(),
@@ -843,21 +915,14 @@ export function ChatPanel() {
           threadId: project.activeThreadId,
           runId: project.activeRun.id,
           content,
+          attachments: draftAttachments(),
           ...getComposerControlPayload()
         }
       });
 
       harnessStore.setProjectDraft(project.id, "");
+      setDraftAttachments([]);
       clearCountdown();
-      return;
-    }
-
-    if (hasImageDraftAttachments() && !hasVisionCapability()) {
-      pushToast(
-        "Vision model required",
-        "Current model cannot inspect attached images. Switch to a vision-capable model before sending.",
-        "error"
-      );
       return;
     }
 
@@ -1683,6 +1748,111 @@ export function ChatPanel() {
     });
   }
 
+  function handleAssistantActionCardAction(metadata: AssistantActionMessageMetadata, actionKind: AssistantActionMessageMetadata["actions"][number]["kind"]) {
+    const project = activeProject();
+    if (actionKind === "open-assistant") {
+      harnessStore.setSelectedAssistantId(metadata.assistantId);
+      harnessStore.setActiveSurface("assistants");
+      return;
+    }
+    if (actionKind === "open-jobs") {
+      harnessStore.setActiveSurface("background-jobs");
+      return;
+    }
+    if (actionKind === "pause" || actionKind === "resume") {
+      sendCommand({
+        type: actionKind === "pause" ? "assistant.pause" : "assistant.resume",
+        requestId: createRequestId(),
+        payload: {
+          assistantId: metadata.assistantId
+        }
+      });
+      return;
+    }
+    if (actionKind === "recover") {
+      sendCommand({
+        type: "assistant.circuit-breaker.retry",
+        requestId: createRequestId(),
+        payload: {
+          assistantId: metadata.assistantId
+        }
+      });
+      return;
+    }
+    if (actionKind === "run-job" && project && metadata.jobId) {
+      sendCommand({
+        type: "background-job.run-now",
+        requestId: createRequestId(),
+        payload: {
+          projectId: project.id,
+          jobId: metadata.jobId
+        }
+      });
+      return;
+    }
+    if (actionKind === "answer-question" && metadata.questionId) {
+      sendCommand({
+        type: "assistant.question.answer",
+        requestId: createRequestId(),
+        payload: {
+          assistantId: metadata.assistantId,
+          questionId: metadata.questionId,
+          content: "Acknowledged from project chat."
+        }
+      });
+    }
+  }
+
+  function renderAssistantActionCard(metadata: AssistantActionMessageMetadata) {
+    return (
+      <div data-test-assistant-action-card="" class="flex flex-col gap-3 rounded-2xl border border-teal-700/20 bg-white/75 p-3">
+        <div class="flex items-center gap-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--accent-strong)">
+          <Bot class="h-3.5 w-3.5" />
+          Assistant action
+        </div>
+        <div class="grid gap-2 text-[0.675rem] text-(--muted) md:grid-cols-2">
+          <For each={metadata.summaryRows}>
+            {(row) => (
+              <div class="min-w-0">
+                <span class="font-semibold text-(--foreground)">{row.label}: </span>
+                <span class="wrap-break-words">{row.value}</span>
+              </div>
+            )}
+          </For>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <For each={metadata.actions}>
+            {(action) => (
+              <ActionButton
+                tooltip={action.disabled ? action.disabledReason ?? action.label : action.label}
+                disabled={action.disabled}
+                disabledReason={action.disabledReason}
+                icon={
+                  action.kind === "open-jobs" || action.kind === "run-job" ? (
+                    <Briefcase class="h-3.5 w-3.5" />
+                  ) : action.kind === "pause" ? (
+                    <Pause class="h-3.5 w-3.5" />
+                  ) : action.kind === "resume" ? (
+                    <Play class="h-3.5 w-3.5" />
+                  ) : action.kind === "recover" ? (
+                    <RefreshCcw class="h-3.5 w-3.5" />
+                  ) : (
+                    <Bot class="h-3.5 w-3.5" />
+                  )
+                }
+                size="sm"
+                variant="secondary"
+                onClick={() => handleAssistantActionCardAction(metadata, action.kind)}
+              >
+                {action.label}
+              </ActionButton>
+            )}
+          </For>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <section data-test-chat-panel="" class="panel-shell flex h-full min-h-0 flex-col gap-1 rounded-2xl border-t-0 p-4">
       <Dialog
@@ -1915,7 +2085,15 @@ export function ChatPanel() {
                             }
                           >
                             <div class="flex flex-col gap-3">
-                      <For each={project().session.messages}>
+                      <Show when={project().session.messages.length > CHAT_TRANSCRIPT_LIMIT && !showAllTranscript()}>
+                        <div class="flex items-center justify-between gap-3 rounded-3xl border border-(--border) bg-white/55 p-3 text-[0.675rem] text-(--muted)">
+                          <span>Showing latest {CHAT_TRANSCRIPT_LIMIT} of {project().session.messages.length} transcript rows.</span>
+                          <ActionButton tooltip="Show every transcript row" size="sm" variant="ghost" onClick={handleShowAllTranscript}>
+                            Show all
+                          </ActionButton>
+                        </div>
+                      </Show>
+                      <For each={visibleTranscriptMessages()}>
                         {(message, index) => (
                           <Show when={!shouldHidePersistedStreamingAssistantMessage(project(), message, index())}>
                           <Show
@@ -1945,6 +2123,9 @@ export function ChatPanel() {
                                   </Show>
                                 </div>
                                 <MarkdownContent content={() => message.content} size="compact" />
+                                <Show when={message.metadata?.type === "assistant-action"}>
+                                  {renderAssistantActionCard(message.metadata as AssistantActionMessageMetadata)}
+                                </Show>
                                 <Show when={message.attachments?.length}>
                                   <div class="flex flex-wrap gap-2">
                                     <For each={message.attachments}>
@@ -2013,28 +2194,28 @@ export function ChatPanel() {
                                   icon={<CalendarClock class="h-3.5 w-3.5" />}
                                   size="sm"
                                   variant="secondary"
-                                  onClick={() => handlePromoteScheduledRun(message.metadata?.runId)}
+                                  onClick={() => handlePromoteScheduledRun((message.metadata as { runId: string }).runId)}
                                 >
                                   Schedule
                                 </ActionButton>
-                                {renderPlanRunAction(message.metadata!.runId)}
+                                {renderPlanRunAction((message.metadata as { runId: string }).runId)}
                                 <Show when={getPlanFromMessage(message)?.gating.mode === "approve"}>
                                   <ActionButton
                                     tooltip="Run this plan in isolated virtual branch"
                                     disabledReason={
-                                      getPlanRunAction(message.metadata!.runId).kind === "execute"
+                                      getPlanRunAction((message.metadata as { runId: string }).runId).kind === "execute"
                                         ? executionPauseReason()
                                         : "This plan is not ready to build"
                                     }
-                                    disabled={getPlanRunAction(message.metadata!.runId).kind !== "execute" || executionPaused()}
+                                    disabled={getPlanRunAction((message.metadata as { runId: string }).runId).kind !== "execute" || executionPaused()}
                                     size="sm"
                                     variant="secondary"
-                                    onClick={() => handleExecuteRunTarget(message.metadata!.runId, "ephemeral-experiment")}
+                                    onClick={() => handleExecuteRunTarget((message.metadata as { runId: string }).runId, "ephemeral-experiment")}
                                   >
                                     Try experiment
                                   </ActionButton>
                                 </Show>
-                                <Show when={getPlanFromMessage(message)?.gating.mode === "countdown" && readyRun()?.id === message.metadata!.runId}>
+                                <Show when={getPlanFromMessage(message)?.gating.mode === "countdown" && readyRun()?.id === (message.metadata as { runId: string }).runId}>
                                   <ActionButton
                                     tooltip={
                                       executionPaused()
@@ -2246,12 +2427,14 @@ export function ChatPanel() {
                         <div>Status: {project().activeRun?.status ?? project().lastRun?.status ?? "idle"}</div>
                         <div>Retryable: {project().lastRun?.retryable ? "yes" : "no"}</div>
                         <div>Resumable: {project().activeRun?.resumable ? "yes" : "no"}</div>
-                        <div
-                          class="truncate"
-                          title={project().activeRun?.latestUserPrompt ?? project().lastRun?.latestUserPrompt ?? undefined}
+                        <Tooltip
+                          content={project().activeRun?.latestUserPrompt ?? project().lastRun?.latestUserPrompt ?? undefined}
+                          triggerClass="block min-w-0"
                         >
-                          Prompt: {project().activeRun?.latestUserPrompt ?? project().lastRun?.latestUserPrompt ?? "n/a"}
-                        </div>
+                          <div class="truncate">
+                            Prompt: {project().activeRun?.latestUserPrompt ?? project().lastRun?.latestUserPrompt ?? "n/a"}
+                          </div>
+                        </Tooltip>
                       </div>
                       <Show when={experimentRun()}>
                         <div class="flex min-w-0 flex-col gap-1 pt-2">
@@ -2263,7 +2446,15 @@ export function ChatPanel() {
                         </div>
                       </Show>
                     </div>
-                    <For each={project().activeRun?.subtasks ?? project().lastRun?.subtasks ?? []}>
+                    <Show when={(project().activeRun?.subtasks ?? project().lastRun?.subtasks ?? []).length > CHAT_RUN_SUBTASK_LIMIT && !showAllRunSubtasks()}>
+                      <div class="flex items-center justify-between gap-3 rounded-[1.2rem] border border-(--border) bg-white/55 p-3 text-[0.675rem] text-(--muted)">
+                        <span>Showing latest {CHAT_RUN_SUBTASK_LIMIT} of {(project().activeRun?.subtasks ?? project().lastRun?.subtasks ?? []).length} subtasks.</span>
+                        <ActionButton tooltip="Show every subtask row" size="sm" variant="ghost" onClick={handleShowAllRunSubtasks}>
+                          Show all
+                        </ActionButton>
+                      </div>
+                    </Show>
+                    <For each={visibleRunSubtasks()}>
                       {(task) => (
                         <div class="rounded-[1.2rem] border border-(--border) bg-white/60 p-4 text-[0.675rem] leading-6 text-(--foreground)">
                           <div class="font-semibold">{task.title}</div>
@@ -2295,7 +2486,15 @@ export function ChatPanel() {
                     }
                   >
                     <div class="flex flex-col gap-3">
-                      <For each={project().traces}>
+                      <Show when={project().traces.length > CHAT_EVENT_LIMIT && !showAllEventRows()}>
+                        <div class="flex items-center justify-between gap-3 rounded-[1.35rem] border border-(--border) bg-white/55 p-3 text-[0.675rem] text-(--muted)">
+                          <span>Showing latest {CHAT_EVENT_LIMIT} of {project().traces.length} events.</span>
+                          <ActionButton tooltip="Show every event row" size="sm" variant="ghost" onClick={handleShowAllEventRows}>
+                            Show all
+                          </ActionButton>
+                        </div>
+                      </Show>
+                      <For each={visibleEventRows()}>
                         {(trace) => (
                           <article class="rounded-[1.35rem] border border-(--border) bg-white/55 p-4">
                             <div class="flex items-center justify-between gap-3 text-[0.585rem] font-semibold uppercase tracking-[0.16em] text-(--accent-strong)">
@@ -2326,7 +2525,15 @@ export function ChatPanel() {
                     }
                   >
                     <div class="flex flex-col gap-3">
-                      <For each={project().memoryEntries}>
+                      <Show when={project().memoryEntries.length > CHAT_MEMORY_LIMIT && !showAllMemoryRows()}>
+                        <div class="flex items-center justify-between gap-3 rounded-[1.35rem] border border-(--border) bg-white/55 p-3 text-[0.675rem] text-(--muted)">
+                          <span>Showing latest {CHAT_MEMORY_LIMIT} of {project().memoryEntries.length} memory entries.</span>
+                          <ActionButton tooltip="Show every memory row" size="sm" variant="ghost" onClick={handleShowAllMemoryRows}>
+                            Show all
+                          </ActionButton>
+                        </div>
+                      </Show>
+                      <For each={visibleMemoryRows()}>
                         {(entry) => (
                           <article class="rounded-[1.35rem] border border-(--border) bg-white/55 p-4">
                             <div class="flex items-center justify-between gap-3">
@@ -2500,6 +2707,26 @@ export function ChatPanel() {
                 {(message) => (
                   <div class="rounded-[1.2rem] border border-sky-200 bg-sky-50/80 p-3 text-[0.675rem] leading-6 text-sky-950">
                     {message()}
+                  </div>
+                )}
+              </Show>
+
+              <Show when={composerTimerState()}>
+                {(timer) => (
+                  <div
+                    aria-live="polite"
+                    data-test-waiting-timer=""
+                    role="status"
+                    class="flex items-center gap-2 px-1 text-[0.675rem] font-medium text-(--muted)"
+                  >
+                    <Show when={timer().kind === "working"}>
+                      <span aria-hidden="true" class="agent-waiting-dots">
+                        <span class="agent-waiting-dot" />
+                        <span class="agent-waiting-dot agent-waiting-dot-2" />
+                        <span class="agent-waiting-dot agent-waiting-dot-3" />
+                      </span>
+                    </Show>
+                    <span>{timer().label}</span>
                   </div>
                 )}
               </Show>
@@ -2776,6 +3003,15 @@ function formatReasoningOptionLabel(strength: (typeof COMPOSER_REASONING_STRENGT
   return strength === "high" ? `${label} (default)` : label;
 }
 
+const CHAT_TRANSCRIPT_LIMIT = 120;
+const CHAT_RUN_SUBTASK_LIMIT = 24;
+const CHAT_EVENT_LIMIT = 80;
+const CHAT_MEMORY_LIMIT = 80;
+
+function capLatest<T>(items: readonly T[], limit: number, showAll: boolean) {
+  return showAll || items.length <= limit ? items : items.slice(-limit);
+}
+
 function getStreamingLiveMessages(project: ViewProjectState): LiveHarnessMessage[] {
   const messages: LiveHarnessMessage[] = [];
 
@@ -2848,5 +3084,30 @@ function formatTokenCount(value: number | undefined) {
 
   const scaled = value / 1_000_000;
   return `${scaled >= 100 ? Math.round(scaled) : Number(scaled.toFixed(1))}m`;
+}
+
+function formatElapsedDuration(elapsedMs: number) {
+  const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
+  if (totalSeconds < 60) {
+    return `${totalSeconds}s`;
+  }
+
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (totalMinutes < 60) {
+    return `${totalMinutes}m ${seconds}s`;
+  }
+
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return minutes > 0 ? `${hours}h ${minutes}m ${seconds}s` : `${hours}h ${seconds}s`;
+}
+
+function formatResponseTime(timestampMs: number) {
+  return new Date(timestampMs).toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit"
+  });
 }
 

@@ -4,4 +4,5 @@ This directory contains configurations and documentation for various AI assistan
 
 ## Available Assistants:
 
-*   **Alpha**: An orchestrator assistant responsible for clarifying user requirements, delegating tasks to subagents, and reporting issues asynchronously.
+*   **Alpha**: Orchestrator assistant for clarifying requests and delegating work.
+*   **Catalog Builder**: Queue-first game builder that pulls from `todo.md` and seeds new ideas from the catalog when needed.

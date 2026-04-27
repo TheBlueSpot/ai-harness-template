@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { PlannerSubtask } from "../../shared/protocol";
-import { canRunSameWorktreeTask, orderSameWorktreeTasks, type TaskContractSettings } from "./pi-orchestrator";
+import {
+  canRunSameWorktreeTask,
+  isPathWithinSameWorktreeScope,
+  orderSameWorktreeTasks,
+  sameWorktreeOwnedPathsOverlap,
+  type TaskContractSettings
+} from "./pi-orchestrator";
 import { buildSubagentPrompt, scheduleSubagentTasks, type SubagentResult } from "./pi-subagents";
 import { buildSubagentEnvironmentBrief } from "./subagent-environment";
 
@@ -191,6 +197,12 @@ describe("subagent scheduler", () => {
 
     release.release("task-b");
     await run;
+  });
+
+  test("same-worktree path helpers support Windows case-insensitive ownership", () => {
+    expect(sameWorktreeOwnedPathsOverlap("src/Foo.ts", "src/foo.ts", "case-insensitive")).toBe(true);
+    expect(isPathWithinSameWorktreeScope("src/Foo.ts", "src/foo.ts", "case-insensitive")).toBe(true);
+    expect(sameWorktreeOwnedPathsOverlap("src/Foo.ts", "src/foo.ts", "case-sensitive")).toBe(false);
   });
 
   test("settled callbacks fire before sibling work finishes", async () => {

@@ -1,0 +1,10 @@
+Epic War asset pack
+
+These SVG assets were authored for this repository run.
+You may use, modify, remix, and redistribute them for any purpose, including commercial use.
+No attribution is required.
+
+Intent:
+- transparent backgrounds
+- simple fantasy silhouettes for browser playtests and iteration
+- permissive local asset contract for `Epic War: Summoner Siege`

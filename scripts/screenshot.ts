@@ -1,5 +1,6 @@
 import path from "node:path";
 import { mkdir } from "node:fs/promises";
+import { BoundedOutputBuffer } from "../harness/cli/src/bounded-output-buffer";
 import { BranchfsManager, type BranchfsExperimentLease } from "../harness/cli/src/branchfs-manager";
 
 export type Viewport = {
@@ -55,6 +56,7 @@ const VIEWPORT_PRESETS: Record<string, Viewport> = {
 const DEFAULT_VIEWPORT_NAMES = ["desktop", "mobile"];
 const LISTENING_REGEX = /Harness server listening on (http:\/\/localhost:\d+)/;
 const DEV_SERVER_READY_TIMEOUT_MS = 60_000;
+export const SCREENSHOT_SERVER_OUTPUT_CAP_BYTES = 256 * 1024;
 const PAGE_NAVIGATION_TIMEOUT_MS = 30_000;
 
 export function resolveViewport(spec: string) {
@@ -174,8 +176,8 @@ async function startDevServerInMount(mountPath: string): Promise<DevServerHandle
   });
 
   const decoder = new TextDecoder();
-  let stdoutBuffer = "";
-  let stderrBuffer = "";
+  const stdoutBuffer = new BoundedOutputBuffer(SCREENSHOT_SERVER_OUTPUT_CAP_BYTES);
+  const stderrBuffer = new BoundedOutputBuffer(SCREENSHOT_SERVER_OUTPUT_CAP_BYTES);
 
   const drainStderr = async () => {
     if (!proc.stderr) {
@@ -188,7 +190,7 @@ async function startDevServerInMount(mountPath: string): Promise<DevServerHandle
         if (done) {
           return;
         }
-        stderrBuffer += decoder.decode(value, { stream: true });
+        stderrBuffer.append(decoder.decode(value, { stream: true }));
       }
     } catch {
       // stream closed during shutdown; nothing to do.
@@ -198,7 +200,7 @@ async function startDevServerInMount(mountPath: string): Promise<DevServerHandle
 
   const baseUrl = await new Promise<string>((resolve, reject) => {
     const timer = setTimeout(() => {
-      reject(new Error(`dev server did not report listening within ${DEV_SERVER_READY_TIMEOUT_MS}ms. stderr tail:\n${stderrBuffer.slice(-2000)}`));
+      reject(new Error(`dev server did not report listening within ${DEV_SERVER_READY_TIMEOUT_MS}ms. stderr tail:\n${stderrBuffer.text().slice(-2000)}`));
     }, DEV_SERVER_READY_TIMEOUT_MS);
 
     const pump = async () => {
@@ -208,11 +210,11 @@ async function startDevServerInMount(mountPath: string): Promise<DevServerHandle
           const { value, done } = await reader.read();
           if (done) {
             clearTimeout(timer);
-            reject(new Error(`dev server exited before listening. stdout tail:\n${stdoutBuffer.slice(-2000)}\nstderr tail:\n${stderrBuffer.slice(-2000)}`));
+            reject(new Error(`dev server exited before listening. stdout tail:\n${stdoutBuffer.text().slice(-2000)}\nstderr tail:\n${stderrBuffer.text().slice(-2000)}`));
             return;
           }
-          stdoutBuffer += decoder.decode(value, { stream: true });
-          const match = LISTENING_REGEX.exec(stdoutBuffer);
+          stdoutBuffer.append(decoder.decode(value, { stream: true }));
+          const match = LISTENING_REGEX.exec(stdoutBuffer.text());
           if (match) {
             clearTimeout(timer);
             resolve(match[1]);

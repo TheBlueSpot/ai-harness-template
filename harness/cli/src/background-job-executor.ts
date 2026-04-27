@@ -14,6 +14,8 @@ import {
   type MemorySummary
 } from "../../shared/protocol";
 import { executeReadyRun, runPlannerTurn } from "./pi-orchestrator";
+import { BoundedOutputBuffer, formatOutputCapExceeded } from "./bounded-output-buffer";
+import { createStableBoundedId } from "./notification-ids";
 import { getDefaultExecutionModelId, getDefaultPlanningModelId } from "./pi-planner";
 import type { PiAgentAdapter } from "./pi-agent-adapter";
 import { WorkspaceRepository } from "./workspace-repository";
@@ -35,6 +37,7 @@ type BackgroundJobExecutorOptions = {
 export const MIN_SHELL_TIMEOUT_SECONDS = 1;
 export const MAX_SHELL_TIMEOUT_SECONDS = 24 * 60 * 60;
 export const DEFAULT_SHELL_TIMEOUT_SECONDS = 60;
+export const SHELL_OUTPUT_CAP_BYTES = 2 * 1024 * 1024;
 
 export function resolveShellTimeoutMs(input: unknown) {
   const numeric = typeof input === "number" ? input : Number(input);
@@ -121,7 +124,7 @@ async function executeAiRoutineJob({
       throw new Error("Deferred planning question was not persisted for background run");
     }
 
-    repository.saveNotification(createPlanningQuestionNotification(job, run, activeRun.id, deferredQuestion));
+    repository.saveNotification(createPlanningQuestionNotification(job, activeRun.id, deferredQuestion));
     repository.appendBackgroundJobRunEvent(
       run.id,
       "awaiting-user-input",
@@ -206,11 +209,20 @@ async function executeShellJob({ repository, job, run, abortSignal }: Background
     proc.kill();
   }, resolveShellTimeoutMs(definition.timeoutSeconds));
 
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
+  let outputLimitMessage: string | undefined;
+  const [stdoutSnapshot, stderrSnapshot, exitCode] = await Promise.all([
+    consumeBoundedStream(proc.stdout, "stdout", (message) => {
+      outputLimitMessage ??= message;
+      proc.kill();
+    }),
+    consumeBoundedStream(proc.stderr, "stderr", (message) => {
+      outputLimitMessage ??= message;
+      proc.kill();
+    }),
     proc.exited
   ]).finally(() => clearTimeout(timeoutId));
+  const stdout = stdoutSnapshot.text;
+  const stderr = stderrSnapshot.text;
 
   if (stdout.trim()) {
     repository.appendBackgroundJobRunEvent(run.id, "stdout", "Stdout", stdout.slice(0, 4000));
@@ -219,7 +231,13 @@ async function executeShellJob({ repository, job, run, abortSignal }: Background
     repository.appendBackgroundJobRunEvent(run.id, "stderr", "Stderr", stderr.slice(0, 4000));
   }
 
-  if (exitCode === 0) {
+  if (outputLimitMessage) {
+    repository.appendBackgroundJobRunEvent(run.id, "failed", "Shell output exceeded cap", outputLimitMessage);
+    repository.setBackgroundJobRunStatus(run.id, "failed", {
+      summary: summarizeShellOutput(stdout, stderr),
+      failureMessage: outputLimitMessage
+    });
+  } else if (exitCode === 0) {
     repository.appendBackgroundJobRunEvent(run.id, "exit", "Shell job completed", `Exit code ${exitCode}`);
     repository.setBackgroundJobRunStatus(run.id, "succeeded", {
       summary: summarizeShellOutput(stdout, stderr)
@@ -303,14 +321,36 @@ function summarizeShellOutput(stdout: string, stderr: string) {
   return primary.replace(/\s+/g, " ").trim().slice(0, 240);
 }
 
+async function consumeBoundedStream(
+  stream: ReadableStream<Uint8Array>,
+  label: "stdout" | "stderr",
+  onExceeded: (message: string) => void
+) {
+  const buffer = new BoundedOutputBuffer(SHELL_OUTPUT_CAP_BYTES);
+  const reader = stream.getReader();
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) {
+        return buffer.snapshot();
+      }
+      const snapshot = buffer.append(next.value);
+      if (snapshot.exceeded) {
+        onExceeded(formatOutputCapExceeded(label, snapshot));
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 function createPlanningQuestionNotification(
   job: BackgroundJob,
-  run: BackgroundJobRun,
   linkedAgentRunId: string,
   question: PlanningQuestion
 ): PlanningQuestionNotification {
   return {
-    id: createNotificationId("planning-question", run.id, question.id),
+    id: createNotificationId("planning-question", linkedAgentRunId, question.id),
     kind: "planning-question",
     interactive: true,
     createdAt: new Date().toISOString(),
@@ -325,7 +365,7 @@ function createPlanningQuestionNotification(
 }
 
 function createNotificationId(kind: string, primaryId: string, secondaryId: string) {
-  return `${kind}:${primaryId}:${secondaryId}`.slice(0, 128);
+  return createStableBoundedId([kind, primaryId, secondaryId]);
 }
 
 function resolveEnvironmentRefs(envRefs: string[] | undefined) {

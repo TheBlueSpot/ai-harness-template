@@ -1,4 +1,4 @@
-import { createSignal, For, Show } from "solid-js";
+import { createMemo, createSignal, For, Show } from "solid-js";
 import { createRequestId, type ExecutionToolActivity } from "../../../shared/protocol";
 import { getActiveProject, harnessStore } from "../harness-store";
 import { getLatestTaskStatusText, getRunRefreshState, getVisibleProjectTraces, isRunWorking } from "../lib/run-status";
@@ -37,8 +37,16 @@ export function TracePanel() {
     return project ? getRunRefreshState(project, runToShow()) : { disabled: true, disabledReason: "No run available", refreshing: false };
   };
   const [expandedToolActivityId, setExpandedToolActivityId] = createSignal<string>();
+  const [showAllSubtasks, setShowAllSubtasks] = createSignal(false);
+  const [showAllToolActivities, setShowAllToolActivities] = createSignal(false);
+  const [showAllBrowserSessions, setShowAllBrowserSessions] = createSignal(false);
+  const [showAllTraces, setShowAllTraces] = createSignal(false);
   const planRun = () => runToShow();
   const hasPlanDetails = () => Boolean(activeProject()?.latestPlan?.executionPlan);
+  const visibleSubtasks = createMemo(() => capLatest(runToShow()?.subtasks ?? [], TRACE_SUBTASK_LIMIT, showAllSubtasks()));
+  const visibleToolActivities = createMemo(() => capLatest(runToShow()?.toolActivities ?? [], TRACE_TOOL_ACTIVITY_LIMIT, showAllToolActivities()));
+  const visibleBrowserSessions = createMemo(() => capLatest(runToShow()?.browserSessions ?? [], TRACE_BROWSER_SESSION_LIMIT, showAllBrowserSessions()));
+  const visibleTraceRows = createMemo(() => capLatest(visibleTraces(), TRACE_EVENT_LIMIT, showAllTraces()));
 
   function handleRetryRun() {
     const project = activeProject();
@@ -120,6 +128,22 @@ export function TracePanel() {
     });
   }
 
+  function handleShowAllSubtasks() {
+    setShowAllSubtasks(true);
+  }
+
+  function handleShowAllToolActivities() {
+    setShowAllToolActivities(true);
+  }
+
+  function handleShowAllBrowserSessions() {
+    setShowAllBrowserSessions(true);
+  }
+
+  function handleShowAllTraces() {
+    setShowAllTraces(true);
+  }
+
   function handleResolveBrowserApproval(sessionId: string, toolCallId: string, approved: boolean) {
     const project = activeProject();
     const run = project?.activeRun ?? project?.lastRun;
@@ -157,7 +181,7 @@ export function TracePanel() {
       <Show
         when={activeProject()}
         fallback={
-          <div class="flex flex-1 items-center">
+          <div class="flex">
             <div class="w-full rounded-3xl border border-dashed border-(--border) bg-white/40 p-5 text-[0.675rem] leading-5 text-(--muted)">
               Open project root to inspect plans, retries, and trace events.
             </div>
@@ -238,7 +262,9 @@ export function TracePanel() {
                   <div>Status: {runToShow()?.status}</div>
                   <div>Retryable: {runToShow()?.retryable ? "yes" : "no"}</div>
                   <div>Resumable: {runToShow()?.resumable ? "yes" : "no"}</div>
-                  <div class="truncate" title={runToShow()?.latestUserPrompt}>Prompt: {runToShow()?.latestUserPrompt}</div>
+                  <Tooltip content={runToShow()?.latestUserPrompt} triggerClass="block min-w-0">
+                    <div class="truncate">Prompt: {runToShow()?.latestUserPrompt}</div>
+                  </Tooltip>
                   <Show when={runToShow()?.failureMessage}>
                     <div class="wrap-anywhere">Failure: {runToShow()?.failureMessage}</div>
                   </Show>
@@ -246,17 +272,26 @@ export function TracePanel() {
 
                 <Show when={runToShow()?.subtasks.length}>
                   <div class="mt-4 space-y-2">
-                    <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--muted)">
-                      Subtasks
+                    <div class="flex items-center justify-between gap-3">
+                      <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--muted)">
+                        Subtasks
+                      </div>
+                      <Show when={(runToShow()?.subtasks.length ?? 0) > TRACE_SUBTASK_LIMIT && !showAllSubtasks()}>
+                        <ActionButton tooltip="Show every subtask row" size="sm" variant="ghost" onClick={handleShowAllSubtasks}>
+                          Show all {runToShow()?.subtasks.length}
+                        </ActionButton>
+                      </Show>
                     </div>
                     <div class="space-y-2">
-                      <For each={runToShow()?.subtasks}>
+                      <For each={visibleSubtasks()}>
                         {(task) => (
                           <div class="rounded-2xl border border-(--border) bg-white/70 p-3 text-[0.675rem]">
                             <div class="flex min-w-0 items-center justify-between gap-3 text-(--foreground)">
                               <span class="flex min-w-0 flex-1 items-center gap-2 font-semibold">
                                 <TaskStatusIcon status={task.status} />
-                                <span class="min-w-0 flex-1 truncate" title={task.title}>{task.title}</span>
+                                <Tooltip content={task.title} triggerClass="min-w-0 flex-1">
+                                  <span class="block truncate">{task.title}</span>
+                                </Tooltip>
                               </span>
                               <span class="shrink-0 uppercase tracking-[0.14em] text-(--accent-strong)">{task.status}</span>
                             </div>
@@ -306,12 +341,19 @@ export function TracePanel() {
 
             <Show when={runToShow()?.toolActivities?.length}>
               <div class="rounded-3xl border border-(--border) bg-white/55 p-3">
-                <div class="mb-3 flex items-center gap-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--muted)">
-                  <Terminal class="h-3.5 w-3.5" />
-                  Tool activity
+                <div class="mb-3 flex items-center justify-between gap-3">
+                  <div class="flex items-center gap-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--muted)">
+                    <Terminal class="h-3.5 w-3.5" />
+                    Tool activity
+                  </div>
+                  <Show when={(runToShow()?.toolActivities?.length ?? 0) > TRACE_TOOL_ACTIVITY_LIMIT && !showAllToolActivities()}>
+                    <ActionButton tooltip="Show every tool activity row" size="sm" variant="ghost" onClick={handleShowAllToolActivities}>
+                      Show all {runToShow()?.toolActivities?.length}
+                    </ActionButton>
+                  </Show>
                 </div>
                 <div class="space-y-2">
-                  <For each={runToShow()?.toolActivities ?? []}>
+                  <For each={visibleToolActivities()}>
                     {(activity) => (
                       <article class="rounded-2xl border border-(--border) bg-white/70 p-3 text-[0.675rem]">
                         <div class="flex min-w-0 items-center justify-between gap-3 text-(--foreground)">
@@ -385,8 +427,15 @@ export function TracePanel() {
                     {deferredBrowserApprovalCount()} browser approvals queued until resume.
                   </div>
                 </Show>
+                <div class="mb-3 flex justify-end">
+                  <Show when={(runToShow()?.browserSessions?.length ?? 0) > TRACE_BROWSER_SESSION_LIMIT && !showAllBrowserSessions()}>
+                    <ActionButton tooltip="Show every browser session row" size="sm" variant="ghost" onClick={handleShowAllBrowserSessions}>
+                      Show all {runToShow()?.browserSessions?.length}
+                    </ActionButton>
+                  </Show>
+                </div>
                 <div class="space-y-3">
-                  <For each={runToShow()?.browserSessions ?? []}>
+                  <For each={visibleBrowserSessions()}>
                     {(session) => (
                       <article class="rounded-2xl border border-(--border) bg-white/70 p-3 text-[0.675rem]">
                         <div class="flex items-center justify-between gap-3 text-(--foreground)">
@@ -430,33 +479,33 @@ export function TracePanel() {
                         </Show>
 
                         <div class="mt-3 space-y-2">
-                          <For each={session.activities}>
+                          <For each={capLatest(session.activities, TRACE_BROWSER_ACTIVITY_LIMIT, showAllBrowserSessions())}>
                             {(activity) => (
                               <Show when={activity.approval?.status !== "deferred"}>
-                              <div class="rounded-xl border border-(--border) bg-white/80 p-3">
-                                <div class="flex items-center justify-between gap-3 text-(--foreground)">
-                                  <span class="font-semibold">{activity.label}</span>
-                                  <span class="uppercase tracking-[0.14em] text-(--muted)">{activity.status}</span>
-                                </div>
-                                <div class="mt-1 text-(--muted)">
-                                  {activity.toolName} | {activity.kind}
-                                </div>
-                                <Show when={activity.outputSummary}>
-                                  <MarkdownContent content={() => activity.outputSummary ?? ""} class="mt-2" size="compact" />
-                                </Show>
-                                <Show when={activity.replay.length > 0}>
-                                  <div class="mt-2 space-y-1 text-(--muted)">
-                                    <For each={activity.replay.slice(-3)}>
-                                      {(entry) => <div>{entry.summary}</div>}
-                                    </For>
+                                <div class="rounded-xl border border-(--border) bg-white/80 p-3">
+                                  <div class="flex items-center justify-between gap-3 text-(--foreground)">
+                                    <span class="font-semibold">{activity.label}</span>
+                                    <span class="uppercase tracking-[0.14em] text-(--muted)">{activity.status}</span>
                                   </div>
-                                </Show>
-                                <Show when={activity.verification.length > 0}>
-                                  <div class="mt-2 text-emerald-800/80">
-                                    {formatVerificationSummary(activity.verification)}
+                                  <div class="mt-1 text-(--muted)">
+                                    {activity.toolName} | {activity.kind}
                                   </div>
-                                </Show>
-                              </div>
+                                  <Show when={activity.outputSummary}>
+                                    <MarkdownContent content={() => activity.outputSummary ?? ""} class="mt-2" size="compact" />
+                                  </Show>
+                                  <Show when={activity.replay.length > 0}>
+                                    <div class="mt-2 space-y-1 text-(--muted)">
+                                      <For each={activity.replay.slice(-3)}>
+                                        {(entry) => <div>{entry.summary}</div>}
+                                      </For>
+                                    </div>
+                                  </Show>
+                                  <Show when={activity.verification.length > 0}>
+                                    <div class="mt-2 text-emerald-800/80">
+                                      {formatVerificationSummary(activity.verification)}
+                                    </div>
+                                  </Show>
+                                </div>
                               </Show>
                             )}
                           </For>
@@ -478,7 +527,15 @@ export function TracePanel() {
                 }
               >
                 <div class="space-y-3">
-                  <For each={visibleTraces()}>
+                  <Show when={visibleTraces().length > TRACE_EVENT_LIMIT && !showAllTraces()}>
+                    <div class="flex items-center justify-between gap-3 rounded-2xl border border-(--border) bg-white/55 p-3 text-[0.675rem] text-(--muted)">
+                      <span>Showing latest {TRACE_EVENT_LIMIT} of {visibleTraces().length} trace events.</span>
+                      <ActionButton tooltip="Show every trace event" size="sm" variant="ghost" onClick={handleShowAllTraces}>
+                        Show all
+                      </ActionButton>
+                    </div>
+                  </Show>
+                  <For each={visibleTraceRows()}>
                     {(trace) => (
                       <article class="rounded-3xl border border-(--border) bg-white/55 p-3">
                         <div class="mb-2 flex items-center justify-between gap-3 text-[0.585rem] font-semibold uppercase tracking-[0.16em] text-(--accent-strong)">
@@ -501,6 +558,16 @@ export function TracePanel() {
 
     </aside>
   );
+}
+
+const TRACE_SUBTASK_LIMIT = 24;
+const TRACE_TOOL_ACTIVITY_LIMIT = 50;
+const TRACE_BROWSER_SESSION_LIMIT = 10;
+const TRACE_BROWSER_ACTIVITY_LIMIT = 25;
+const TRACE_EVENT_LIMIT = 80;
+
+function capLatest<T>(items: readonly T[], limit: number, showAll: boolean) {
+  return showAll || items.length <= limit ? items : items.slice(-limit);
 }
 
 function TaskStatusIcon(props: { status: "pending" | "running" | "completed" | "failed" }) {

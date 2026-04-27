@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { readdir, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ProjectSearchResult } from "../../shared/protocol";
@@ -25,6 +25,14 @@ type SearchProjectsOptions = {
   cwd?: string;
   homeDir?: string;
   platform?: NodeJS.Platform;
+  signal?: AbortSignal;
+  maxConcurrentReads?: number;
+  fsAdapter?: ProjectSearchFsAdapter;
+};
+
+type ProjectSearchFsAdapter = {
+  readdir: (rootPath: string, options: { withFileTypes: true }) => Promise<Array<{ name: string; isDirectory: () => boolean }>>;
+  stat: (rootPath: string) => Promise<{ isDirectory: () => boolean }>;
 };
 
 type CachedDirectoryEntry = {
@@ -40,55 +48,69 @@ type QueueEntry = {
 };
 
 const directoryCache = new Map<string, { expiresAt: number; entries: CachedDirectoryEntry[] }>();
+const defaultFsAdapter: ProjectSearchFsAdapter = {
+  readdir: (rootPath, options) => readdir(rootPath, options),
+  stat: (rootPath) => stat(rootPath)
+};
 
-export function searchProjectFolders({
+export async function searchProjectFolders({
   query,
   workspaceProjectPaths = [],
   cwd = process.cwd(),
   homeDir = os.homedir(),
-  platform = process.platform
+  platform = process.platform,
+  signal,
+  fsAdapter = defaultFsAdapter
 }: SearchProjectsOptions) {
   const trimmedQuery = normalizeWindowsEscapedPath(query.trim());
   if (!trimmedQuery) {
     return [];
   }
 
+  throwIfAborted(signal);
   return isAbsolutePath(trimmedQuery, platform)
-    ? searchAbsolutePath(trimmedQuery, platform)
-    : searchSearchRoots(trimmedQuery, workspaceProjectPaths, cwd, homeDir, platform);
+    ? searchAbsolutePath(trimmedQuery, platform, fsAdapter, signal)
+    : searchSearchRoots(trimmedQuery, workspaceProjectPaths, cwd, homeDir, platform, fsAdapter, signal);
 }
 
 export function clearProjectSearchCacheForTests() {
   directoryCache.clear();
 }
 
-function searchAbsolutePath(query: string, platform: NodeJS.Platform) {
+async function searchAbsolutePath(
+  query: string,
+  platform: NodeJS.Platform,
+  fsAdapter: ProjectSearchFsAdapter,
+  signal: AbortSignal | undefined
+) {
   const results = new Map<string, RankedResult>();
   const resolvedQuery = path.resolve(query);
   const queryEndsWithSeparator = /[\\/]$/.test(query);
-  const baseDir = queryEndsWithSeparator || isExistingDirectory(resolvedQuery) ? resolvedQuery : path.dirname(resolvedQuery);
+  const resolvedIsDirectory = await isExistingDirectory(resolvedQuery, fsAdapter, signal);
+  const baseDir = queryEndsWithSeparator || resolvedIsDirectory ? resolvedQuery : path.dirname(resolvedQuery);
   const normalizedBaseDir = normalizeSearchPath(baseDir, platform);
   const normalizedQuery = normalizeSearchPath(resolvedQuery, platform);
 
-  if (isExistingDirectory(resolvedQuery)) {
+  if (resolvedIsDirectory) {
     addRankedResult(
       results,
       {
         id: resolvedQuery,
         name: path.basename(resolvedQuery) || resolvedQuery,
         rootPath: resolvedQuery,
-        repoKind: detectRepoKind(resolvedQuery),
+        repoKind: await detectRepoKind(resolvedQuery, fsAdapter, signal),
         matchKind: "exact"
       },
       platform
     );
   }
 
-  if (!normalizedBaseDir || !isExistingDirectory(baseDir)) {
+  if (!normalizedBaseDir || !(await isExistingDirectory(baseDir, fsAdapter, signal))) {
     return finalizeResults(results, platform);
   }
 
-  for (const entry of readDirectory(baseDir)) {
+  for (const entry of await readDirectory(baseDir, fsAdapter, signal)) {
+    throwIfAborted(signal);
     if (!entry.isDirectory) {
       continue;
     }
@@ -104,7 +126,7 @@ function searchAbsolutePath(query: string, platform: NodeJS.Platform) {
         id: entry.fullPath,
         name: entry.name,
         rootPath: entry.fullPath,
-        repoKind: detectRepoKind(entry.fullPath),
+        repoKind: await detectRepoKind(entry.fullPath, fsAdapter, signal),
         matchKind: "path-prefix"
       },
       platform
@@ -114,20 +136,28 @@ function searchAbsolutePath(query: string, platform: NodeJS.Platform) {
   return finalizeResults(results, platform);
 }
 
-function searchSearchRoots(
+async function searchSearchRoots(
   query: string,
   workspaceProjectPaths: string[],
   cwd: string,
   homeDir: string,
-  platform: NodeJS.Platform
+  platform: NodeJS.Platform,
+  fsAdapter: ProjectSearchFsAdapter,
+  signal: AbortSignal | undefined
 ) {
   const normalizedQuery = normalizeSearchPath(query, platform);
+  const existingCandidates: string[] = [];
+  for (const entry of [
+    ...workspaceProjectPaths.map((projectPath) => path.dirname(projectPath)),
+    cwd,
+    homeDir
+  ]) {
+    if (await isExistingDirectory(entry, fsAdapter, signal)) {
+      existingCandidates.push(entry);
+    }
+  }
   const roots = dedupePaths(
-    [
-      ...workspaceProjectPaths.map((projectPath) => path.dirname(projectPath)),
-      cwd,
-      homeDir
-    ].filter((entry) => isExistingDirectory(entry)),
+    existingCandidates,
     platform
   );
 
@@ -143,6 +173,7 @@ function searchSearchRoots(
   let traversedDirectoryCount = 0;
 
   while (queue.length > 0 && traversedDirectoryCount < MAX_TRAVERSED_DIRECTORIES) {
+    throwIfAborted(signal);
     const current = queue.shift();
     if (!current) {
       break;
@@ -156,7 +187,8 @@ function searchSearchRoots(
     visited.add(currentKey);
     traversedDirectoryCount += 1;
 
-    for (const entry of readDirectory(current.dir)) {
+    for (const entry of await readDirectory(current.dir, fsAdapter, signal)) {
+      throwIfAborted(signal);
       if (!entry.isDirectory) {
         continue;
       }
@@ -169,7 +201,7 @@ function searchSearchRoots(
             id: entry.fullPath,
             name: entry.name,
             rootPath: entry.fullPath,
-            repoKind: detectRepoKind(entry.fullPath),
+            repoKind: await detectRepoKind(entry.fullPath, fsAdapter, signal),
             matchKind
           },
           platform
@@ -271,24 +303,38 @@ function getMatchKind(fullPath: string, name: string, normalizedQuery: string, p
   return undefined;
 }
 
-function detectRepoKind(rootPath: string): ProjectSearchResult["repoKind"] {
-  return existsSync(path.join(rootPath, ".git")) ? "git-repo" : "folder";
+async function detectRepoKind(
+  rootPath: string,
+  fsAdapter: ProjectSearchFsAdapter,
+  signal: AbortSignal | undefined
+): Promise<ProjectSearchResult["repoKind"]> {
+  return (await isExistingDirectory(path.join(rootPath, ".git"), fsAdapter, signal)) ? "git-repo" : "folder";
 }
 
-function readDirectory(rootPath: string) {
+async function readDirectory(
+  rootPath: string,
+  fsAdapter: ProjectSearchFsAdapter,
+  signal: AbortSignal | undefined
+) {
+  throwIfAborted(signal);
   const now = Date.now();
   const cached = directoryCache.get(rootPath);
   if (cached && cached.expiresAt > now) {
     return cached.entries;
   }
 
-  const entries = readdirSync(rootPath, { withFileTypes: true })
-    .filter((entry) => !IGNORED_DIRECTORY_NAMES.has(entry.name))
-    .map((entry) => ({
-      name: entry.name,
-      fullPath: path.join(rootPath, entry.name),
-      isDirectory: entry.isDirectory()
-    }));
+  let entries: CachedDirectoryEntry[];
+  try {
+    entries = (await fsAdapter.readdir(rootPath, { withFileTypes: true }))
+      .filter((entry) => !IGNORED_DIRECTORY_NAMES.has(entry.name))
+      .map((entry) => ({
+        name: entry.name,
+        fullPath: path.join(rootPath, entry.name),
+        isDirectory: entry.isDirectory()
+      }));
+  } catch {
+    entries = [];
+  }
 
   directoryCache.set(rootPath, {
     expiresAt: now + DIRECTORY_CACHE_TTL_MS,
@@ -301,11 +347,22 @@ function isAbsolutePath(value: string, platform: NodeJS.Platform) {
   return platform === "win32" ? /^[a-zA-Z]:\\/.test(value) || value.startsWith("\\\\") : value.startsWith("/");
 }
 
-function isExistingDirectory(rootPath: string) {
+async function isExistingDirectory(
+  rootPath: string,
+  fsAdapter: ProjectSearchFsAdapter,
+  signal: AbortSignal | undefined
+) {
+  throwIfAborted(signal);
   try {
-    return statSync(rootPath).isDirectory();
+    return (await fsAdapter.stat(rootPath)).isDirectory();
   } catch {
     return false;
+  }
+}
+
+function throwIfAborted(signal: AbortSignal | undefined) {
+  if (signal?.aborted) {
+    throw new DOMException("Project search aborted", "AbortError");
   }
 }
 

@@ -233,6 +233,12 @@ export function createViewProjectFixture(overrides: Partial<ViewProjectState> = 
           streamingAssistantText: overrides.streamingAssistantText ?? "",
           streamingTailSegments: overrides.streamingTailSegments ?? [],
           streamingHeartbeatMessages: overrides.streamingHeartbeatMessages ?? [],
+          latestPlan: overrides.latestPlan,
+          contextUsage: overrides.contextUsage,
+          traces: overrides.traces ?? [],
+          activeRun: overrides.activeRun ?? baseProject.activeRun,
+          lastRun: overrides.lastRun ?? baseProject.lastRun,
+          runSummaries: overrides.runSummaries ?? baseProject.runSummaries,
           lastError: overrides.lastError
         }
       },

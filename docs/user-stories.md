@@ -233,7 +233,7 @@ US-MODES-007: As a developer, I see the UI send typed project and chat commands 
 
 ### ASSISTANTS
 
-US-ASSISTANTS-001: As a user, I use local assistant operators with named personas, role prompts, project or global scope, pause and resume controls, chat, todo lists, learnings, open questions, clone-to-project flow, and high-level plus deep-debug logs. (README L24)
+US-ASSISTANTS-001: As a user, I use local assistant operators with named personas, role prompts, project or global scope, chat-addressable actions from project chat, assistant-owned background job creation, pause and resume controls, chat, todo lists, learnings, open questions, clone-to-project flow, and high-level plus deep-debug logs. (README L24)
 
 US-ASSISTANTS-002: As a user, I get a dedicated Assistants surface that keeps assistant chat, todos, questions, learnings, logs, and assistant-owned jobs inspectable outside normal project chat. (README L103)
 

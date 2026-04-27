@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { runCli } from "./cli-entry";
+import { CliUsageError } from "./cli-options";
 
 describe("runCli", () => {
   test("reports startup failure and exits non-zero when main load fails", async () => {
@@ -54,5 +55,32 @@ describe("runCli", () => {
     });
 
     expect(registeredEvents).toEqual(["uncaughtException", "unhandledRejection"]);
+  });
+
+  test("usage errors exit with code 2 without fatal startup report", async () => {
+    const exitCodes: number[] = [];
+    const reported: unknown[] = [];
+
+    await runCli({
+      registerFatalHandlers: false,
+      loadMain: async () => ({
+        async main() {
+          throw new CliUsageError("Unknown option: --wat");
+        }
+      }),
+      reportFatalError(error) {
+        reported.push(error);
+        return {
+          origin: "startup",
+          message: "unused"
+        };
+      },
+      exit(code) {
+        exitCodes.push(code);
+      }
+    });
+
+    expect(exitCodes).toEqual([2]);
+    expect(reported).toHaveLength(0);
   });
 });

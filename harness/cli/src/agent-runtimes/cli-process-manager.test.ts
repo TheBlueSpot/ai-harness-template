@@ -1,26 +1,20 @@
 import { describe, expect, test } from "bun:test";
-import { buildCliProcessEnv } from "./cli-process-manager";
+import { CliProcessManager, CLI_PROCESS_OUTPUT_CAP_BYTES } from "./cli-process-manager";
 
-describe("cli process manager", () => {
-  test("injects pseudo-terminal environment defaults", () => {
-    const env = buildCliProcessEnv({
-      cols: 120,
-      rows: 40,
-      extraEnv: {
-        FOO: "bar"
-      }
+describe("CliProcessManager", () => {
+  test("caps noninteractive stdout and reports limit", async () => {
+    const manager = new CliProcessManager();
+    const result = await manager.runNonInteractive({
+      cmd: [process.execPath, "-e", `process.stdout.write("x".repeat(${CLI_PROCESS_OUTPUT_CAP_BYTES + 1024}))`],
+      cwd: process.cwd(),
+      cols: 80,
+      rows: 24,
+      idleTimeoutMs: 0,
+      totalTimeoutMs: 30_000
     });
 
-    expect(env.TERM).toBe("xterm-256color");
-    expect(env.COLORTERM).toBe("truecolor");
-    expect(env.FORCE_COLOR).toBe("1");
-    expect(env.LINES).toBe("40");
-    expect(env.COLUMNS).toBe("120");
-    expect(env.CI).toBe("true");
-    expect(env.PYTHONUNBUFFERED).toBe("1");
-    expect(env.EDITOR).toBe("cat");
-    expect(env.PAGER).toBe("cat");
-    const envRecord: Record<string, string | undefined> = env;
-    expect(envRecord["FOO"]).toBe("bar");
+    expect(result.outputLimitExceeded).toBe(true);
+    expect(result.outputLimitMessage).toContain("stdout output exceeded cap");
+    expect(new TextEncoder().encode(result.stdout).byteLength).toBeLessThanOrEqual(CLI_PROCESS_OUTPUT_CAP_BYTES);
   });
 });

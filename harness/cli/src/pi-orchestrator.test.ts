@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { buildExecutionPlan, buildExecutionPrompt, chooseExecutionPath, executeReadyRun, runPlannerTurn, shouldUseReadOnlyExecutionTools } from "./pi-orchestrator";
+import { buildExecutionPlan, buildExecutionPrompt, chooseExecutionPath, executePlanPrerequisites, executeReadyRun, runPlannerTurn, shouldUseReadOnlyExecutionTools } from "./pi-orchestrator";
 import type { PiAgentAdapter, PiAgentExecutionController, PiAgentPromptRequest, PiAgentPromptResult } from "./pi-agent-adapter";
 import type { ExecutionPlan, ModeDefinition, PlannerReadyTurn, ProviderModelId } from "../../shared/protocol";
 import { resolveModeExecutionAccess } from "../../shared/modes";
@@ -280,6 +280,179 @@ describe("pi execution router", () => {
       rmSync(rootPath, { recursive: true, force: true });
     }
   });
+
+  test("executes prerequisites before subagents and aggregation", async () => {
+    const rootPath = createSeededGitRepo("harness-prereq-order-");
+    try {
+      const calls: PiAgentPromptRequest[] = [];
+      const adapter = createExecutionAdapter(calls, async (request) => {
+        if (request.kind === "subagent") {
+          request.onTextDelta?.("MILESTONE: subagent done\n");
+          return { text: "subagent complete" };
+        }
+
+        return { text: request.kind === "aggregator" ? "aggregated" : "setup complete" };
+      });
+      const readyPlan = createReadyPlan();
+      readyPlan.subtasks = [
+        { id: "task-1", title: "Inspect files", instruction: "Inspect the codebase" },
+        { id: "task-2", title: "Patch code", instruction: "Patch the code" }
+      ];
+      readyPlan.contracts = [
+        ...readyPlan.contracts!,
+        {
+          taskId: "task-2",
+          title: "Patch code",
+          instruction: "Patch the code",
+          effortPoints: 2,
+          ownedPaths: ["patch.ts"],
+          dependsOnPrerequisiteIds: ["setup-1"],
+          deliverables: ["patch"],
+          integrationPoints: ["aggregator"],
+          verificationScope: "owned-files-only",
+          verificationCommands: ["echo ok"],
+          mergeNotes: "Merge patch."
+        }
+      ];
+      const executionPlan = {
+        ...createExecutionPlan(readyPlan),
+        prerequisites: [
+          {
+            id: "setup-1",
+            title: "Create scaffold",
+            instruction: "Create shared scaffold before fan-out",
+            reason: "Subagents need shared files",
+            requiredForTaskIds: ["task-1", "task-2"],
+            owner: "main" as const,
+            status: "pending" as const
+          }
+        ]
+      };
+
+      const updatedPlan = await executePlanPrerequisites(adapter, {
+        cwd: rootPath,
+        runId: "run-1",
+        sessionId: "session-1",
+        messages: [],
+        executionPlan,
+        executionModelId: readyPlan.executionModelId as ProviderModelId
+      });
+      await executeReadyRun(adapter, {
+        cwd: rootPath,
+        runId: "run-1",
+        sessionId: "session-1",
+        messages: [],
+        providerBrand: "gpt",
+        readyPlan,
+        debugEnabled: false,
+        executionPlan: updatedPlan
+      });
+
+      expect(calls.map((call) => call.kind)).toEqual(["executor", "subagent", "subagent", "aggregator"]);
+      expect(calls[0]?.prompt).toContain("Create shared scaffold before fan-out");
+      expect(updatedPlan.prerequisites[0]?.status).toBe("completed");
+    } finally {
+      rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  test("same-worktree drift ignores unchanged preexisting dirty files", async () => {
+    const rootPath = createSeededGitRepo("harness-subagent-clean-dirty-");
+    try {
+      writeFileSync(path.join(rootPath, "dirty.ts"), "export const dirty = true;\n");
+      const calls: PiAgentPromptRequest[] = [];
+      const adapter = createExecutionAdapter(calls, async (request) => {
+        if (request.kind === "subagent") {
+          writeFileSync(path.join(rootPath, "owned.ts"), "export const owned = true;\n");
+          return { text: "Changed owned.ts" };
+        }
+
+        return { text: "aggregated result" };
+      });
+      const readyPlan = createReadyPlan();
+
+      const outcome = await executeReadyRun(adapter, {
+        cwd: rootPath,
+        runId: "run-1",
+        sessionId: "thread-1",
+        messages: [],
+        providerBrand: "gpt",
+        readyPlan,
+        executionPlan: createExecutionPlan(readyPlan),
+        debugEnabled: true
+      });
+
+      expect(outcome.subagentResults[0]?.contractDriftPaths).toBeUndefined();
+    } finally {
+      rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  test("same-worktree drift reports modified preexisting dirty files", async () => {
+    const rootPath = createSeededGitRepo("harness-subagent-modified-dirty-");
+    try {
+      writeFileSync(path.join(rootPath, "dirty.ts"), "export const dirty = true;\n");
+      const calls: PiAgentPromptRequest[] = [];
+      const adapter = createExecutionAdapter(calls, async (request) => {
+        if (request.kind === "subagent") {
+          writeFileSync(path.join(rootPath, "owned.ts"), "export const owned = true;\n");
+          writeFileSync(path.join(rootPath, "dirty.ts"), "export const dirty = false;\n");
+          return { text: "Changed owned.ts and dirty.ts" };
+        }
+
+        return { text: "aggregated result" };
+      });
+      const readyPlan = createReadyPlan();
+
+      const outcome = await executeReadyRun(adapter, {
+        cwd: rootPath,
+        runId: "run-1",
+        sessionId: "thread-1",
+        messages: [],
+        providerBrand: "gpt",
+        readyPlan,
+        executionPlan: createExecutionPlan(readyPlan),
+        debugEnabled: true
+      });
+
+      expect(outcome.subagentResults[0]?.contractDriftPaths).toEqual(["dirty.ts"]);
+    } finally {
+      rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  test("same-worktree drift reports deleted preexisting dirty files", async () => {
+    const rootPath = createSeededGitRepo("harness-subagent-deleted-dirty-");
+    try {
+      writeFileSync(path.join(rootPath, "dirty.ts"), "export const dirty = true;\n");
+      const calls: PiAgentPromptRequest[] = [];
+      const adapter = createExecutionAdapter(calls, async (request) => {
+        if (request.kind === "subagent") {
+          writeFileSync(path.join(rootPath, "owned.ts"), "export const owned = true;\n");
+          unlinkSync(path.join(rootPath, "dirty.ts"));
+          return { text: "Changed owned.ts and removed dirty.ts" };
+        }
+
+        return { text: "aggregated result" };
+      });
+      const readyPlan = createReadyPlan();
+
+      const outcome = await executeReadyRun(adapter, {
+        cwd: rootPath,
+        runId: "run-1",
+        sessionId: "thread-1",
+        messages: [],
+        providerBrand: "gpt",
+        readyPlan,
+        executionPlan: createExecutionPlan(readyPlan),
+        debugEnabled: true
+      });
+
+      expect(outcome.subagentResults[0]?.contractDriftPaths).toEqual(["dirty.ts"]);
+    } finally {
+      rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
 });
 
 function createReadyPlan(): PlannerReadyTurn {
@@ -377,4 +550,15 @@ function runSync(command: string[], cwd: string) {
   if (proc.exitCode !== 0) {
     throw new Error(`${command.join(" ")} failed: ${new TextDecoder().decode(proc.stderr)}`);
   }
+}
+
+function createSeededGitRepo(prefix: string) {
+  const rootPath = mkdtempSync(path.join(tmpdir(), prefix));
+  runSync(["git", "init"], rootPath);
+  runSync(["git", "config", "user.email", "test@example.com"], rootPath);
+  runSync(["git", "config", "user.name", "Harness Test"], rootPath);
+  writeFileSync(path.join(rootPath, "package.json"), JSON.stringify({ type: "module" }));
+  runSync(["git", "add", "."], rootPath);
+  runSync(["git", "commit", "-m", "seed"], rootPath);
+  return rootPath;
 }

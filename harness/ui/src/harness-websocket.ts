@@ -15,13 +15,52 @@ type HarnessSocket = {
 };
 
 const ptySockets = new Map<string, WebSocket>();
+const CONTROL_HEARTBEAT_INTERVAL_MS = 15_000;
+const CONTROL_MISSED_PONG_LIMIT = 2;
+const PTY_HEARTBEAT = 0x00;
 
 export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint()): HarnessSocket {
   harnessStore.setConnectionState("connecting");
   const socket = new WebSocket(endpoint);
+  let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+  let missedPongs = 0;
+
+  const stopHeartbeat = () => {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = undefined;
+    }
+  };
+  const startHeartbeat = () => {
+    stopHeartbeat();
+    heartbeatTimer = setInterval(() => {
+      if (socket.readyState !== WebSocket.OPEN) {
+        return;
+      }
+      if (missedPongs === 1) {
+        harnessStore.setConnectionState("stale", "Waiting for server heartbeat");
+      }
+      if (missedPongs >= CONTROL_MISSED_PONG_LIMIT) {
+        socket.close();
+        return;
+      }
+      socket.send(
+        JSON.stringify({
+          type: "connection.ping",
+          requestId: createRequestId(),
+          payload: {
+            timestamp: Date.now()
+          }
+        } satisfies ClientCommand)
+      );
+      missedPongs += 1;
+    }, CONTROL_HEARTBEAT_INTERVAL_MS);
+  };
 
   socket.addEventListener("open", () => {
     harnessStore.setConnectionState("connected");
+    missedPongs = 0;
+    startHeartbeat();
     socket.send(
       JSON.stringify({
         type: "agent.list",
@@ -34,9 +73,16 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
     try {
       const browserUiSession = readBrowserUiSession();
       const parsed = parseServerEvent(JSON.parse(event.data));
+      if (parsed.type === "connection.pong") {
+        missedPongs = 0;
+        harnessStore.setConnectionState("connected");
+      }
       const wasExecutionPaused = harnessStore.state.executionControl.isPaused;
       const previousRun =
-        parsed.type === "run.updated" || parsed.type === "chat.error" || parsed.type === "chat.message-appended"
+        parsed.type === "run.updated" ||
+        parsed.type === "chat.error" ||
+        parsed.type === "chat.message-appended" ||
+        parsed.type === "thread.message-appended"
           ? harnessStore.state.workspace.projects.find((project) => project.id === parsed.payload.projectId)?.activeRun
           : undefined;
       harnessStore.applyServerEvent(parsed);
@@ -213,6 +259,7 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
   });
 
   socket.addEventListener("close", () => {
+    stopHeartbeat();
     harnessStore.setConnectionState("disconnected");
   });
 
@@ -232,6 +279,7 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
       socket.send(JSON.stringify(command));
     },
     dispose() {
+      stopHeartbeat();
       socket.close();
       for (const ptySocket of ptySockets.values()) {
         ptySocket.close();
@@ -316,6 +364,10 @@ function openCliSessionSocket(controlEndpoint: string, sessionId: string, client
 
     const frame = new Uint8Array(event.data);
     const streamId = frame[0];
+    if (streamId === PTY_HEARTBEAT) {
+      socket.send(new Uint8Array([PTY_HEARTBEAT]));
+      return;
+    }
     const text = new TextDecoder().decode(frame.slice(1));
     harnessStore.appendCliTerminalOutput(sessionId, streamId === 0x02 ? "stderr" : "stdout", text);
   });

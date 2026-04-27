@@ -5,7 +5,6 @@ import path from "node:path";
 import type { AgentRuntimeCapability } from "../../../shared/protocol";
 import type { PiAgentAdapter, PiAgentExecutionController, PiAgentPromptRequest, PiAgentPromptResult } from "../pi-agent-adapter";
 import {
-  createDataUrl,
   createSampleDocxBuffer,
   createSampleOdtBuffer,
   createSamplePdfBuffer,
@@ -162,6 +161,94 @@ export class FakePiAgentAdapter implements PiAgentAdapter {
         await new Promise((resolve) => setTimeout(resolve, 150));
       }
 
+      if (request.prompt.includes("same-run repeated question")) {
+        if (!request.prompt.includes("first answer")) {
+          return withUsage(
+            JSON.stringify({
+              type: "question",
+              summary: "Need first detail",
+              question: {
+                id: "question-1",
+                prompt: "First repeated question?",
+                choices: [
+                  {
+                    id: "choice-1",
+                    label: "First",
+                    description: "Use first answer.",
+                    answerText: "first answer",
+                    recommended: true
+                  },
+                  {
+                    id: "choice-2",
+                    label: "Second",
+                    description: "Use second option.",
+                    answerText: "second option",
+                    recommended: false
+                  },
+                  {
+                    id: "choice-3",
+                    label: "Custom",
+                    description: "Type custom answer.",
+                    answerText: "custom answer",
+                    recommended: false
+                  }
+                ],
+                required: true
+              }
+            })
+          );
+        }
+
+        if (!request.prompt.includes("second answer")) {
+          return withUsage(
+            JSON.stringify({
+              type: "question",
+              summary: "Need second detail",
+              question: {
+                id: "question-1",
+                prompt: "Second repeated question?",
+                choices: [
+                  {
+                    id: "choice-1",
+                    label: "Second",
+                    description: "Use second answer.",
+                    answerText: "second answer",
+                    recommended: true
+                  },
+                  {
+                    id: "choice-2",
+                    label: "Alternative",
+                    description: "Use alternative answer.",
+                    answerText: "alternative answer",
+                    recommended: false
+                  },
+                  {
+                    id: "choice-3",
+                    label: "Custom",
+                    description: "Type custom answer.",
+                    answerText: "custom answer",
+                    recommended: false
+                  }
+                ],
+                required: true
+              }
+            })
+          );
+        }
+
+        return withUsage(
+          JSON.stringify({
+            type: "ready",
+            difficultyScore: 20,
+            summary: "Ready after repeated questions",
+            executionModelId: defaultExecutionModelId,
+            usesSubagents: false,
+            subtasks: [],
+            finalExecutionBrief: "single-step request"
+          })
+        );
+      }
+
       if (request.prompt.includes("needs clarification")) {
         if (request.prompt.includes("Prior planning Q/A:\n(none)")) {
           return withUsage(
@@ -240,6 +327,76 @@ export class FakePiAgentAdapter implements PiAgentAdapter {
       }
 
       if (request.prompt.includes("complex")) {
+        if (
+          request.prompt.includes("complex prerequisite task") ||
+          request.prompt.includes("complex aliased prerequisite task") ||
+          request.prompt.includes("complex failing prerequisite task")
+        ) {
+          const shouldFailPrerequisite = request.prompt.includes("complex failing prerequisite task");
+          const shouldUseAliasedOwner = request.prompt.includes("complex aliased prerequisite task");
+          return withUsage(
+            JSON.stringify({
+              difficultyScore: 72,
+              summary: "Split into setup and subagent work",
+              executionModelId: defaultExecutionModelId,
+              usesSubagents: true,
+              prerequisites: [
+                {
+                  id: "setup-1",
+                  title: shouldFailPrerequisite ? "Fail shared setup" : "Create shared setup",
+                  instruction: shouldFailPrerequisite
+                    ? "Fail shared setup before fan-out"
+                    : "Create shared scaffold before fan-out",
+                  reason: "Subagents need shared setup first",
+                  requiredForTaskIds: ["task-1", "task-2"],
+                  owner: shouldUseAliasedOwner ? "user" : "main"
+                }
+              ],
+              subtasks: [
+                {
+                  id: "task-1",
+                  title: "Inspect files",
+                  instruction: "Inspect the codebase"
+                },
+                {
+                  id: "task-2",
+                  title: "Patch code",
+                  instruction: "Patch the code"
+                }
+              ],
+              contracts: [
+                {
+                  taskId: "task-1",
+                  title: "Inspect files",
+                  instruction: "Inspect the codebase",
+                  effortPoints: 2,
+                  ownedPaths: ["inspection.txt"],
+                  dependsOnPrerequisiteIds: ["setup-1"],
+                  deliverables: ["Inspect current codebase state"],
+                  integrationPoints: ["Aggregator summary"],
+                  verificationScope: "owned-files-only",
+                  verificationCommands: ["echo verified"],
+                  mergeNotes: "No merge conflicts expected."
+                },
+                {
+                  taskId: "task-2",
+                  title: "Patch code",
+                  instruction: "Patch the code",
+                  effortPoints: 2,
+                  ownedPaths: ["patch.txt"],
+                  dependsOnPrerequisiteIds: ["setup-1"],
+                  deliverables: ["Patch requested code path"],
+                  integrationPoints: ["Aggregator summary"],
+                  verificationScope: "owned-files-only",
+                  verificationCommands: ["echo verified"],
+                  mergeNotes: "No merge conflicts expected."
+                }
+              ],
+              finalExecutionBrief: "Combine setup and subagent outputs into one answer"
+            })
+          );
+        }
+
         if (request.prompt.includes("tool failure burst")) {
           return withUsage(
             JSON.stringify({
@@ -489,6 +646,10 @@ export class FakePiAgentAdapter implements PiAgentAdapter {
           { once: true }
         );
       });
+    }
+
+    if (request.kind === "executor" && request.prompt.includes("Fail shared setup before fan-out")) {
+      throw new Error("prerequisite setup failed");
     }
 
     if (request.kind === "aggregator" && request.prompt.includes("status window")) {
@@ -1600,6 +1761,38 @@ export function registerServerPreferencesAndModesTests() {
         socket.close();
       }, 60000);
 
+      test("chat.send message append includes refreshed generated thread title", async () => {
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot);
+        const projectId = opened.payload.project.id;
+        const threadId = opened.payload.project.activeThreadId;
+        const appendPromise = waitForEvent(
+          socket,
+          "chat.message-appended",
+          (event) => event.payload.threadId === threadId && event.payload.message.role === "user",
+          10000
+        );
+
+        socket.send(
+          JSON.stringify({
+            type: "chat.send",
+            requestId: "req-generated-title-refresh",
+            payload: {
+              projectId,
+              threadId,
+              agentId: "pi",
+              content: "build sidebar sorting"
+            }
+          })
+        );
+
+        const appended = await appendPromise;
+        expect(appended.payload.thread?.title).toBe("build sidebar sorting");
+        expect(appended.payload.thread?.lastUserMessageAt).toBe(appended.payload.message.createdAt);
+        socket.close();
+      }, 60000);
+
 
     
       test("chat.send presents a ready plan before execution", async () => {
@@ -1641,6 +1834,271 @@ export function registerServerPreferencesAndModesTests() {
         socket.close();
       });
 
+      test("chat.send creates explicit project assistants without running project planner", async () => {
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot);
+        const projectId = opened.payload.project.id;
+        const threadId = opened.payload.project.activeThreadId;
+        const assistantUpdatePromise = waitForEvent(
+          socket,
+          "assistants.updated",
+          (event) => event.payload.assistants.assistants.some((assistant: { name: string }) => assistant.name === "Catalog builder"),
+          10000
+        );
+        const cardPromise = waitForEvent(
+          socket,
+          "assistant.created-card",
+          (event) => event.payload.assistant.name === "Catalog builder",
+          10000
+        );
+        const messagePromise = waitForEvent(
+          socket,
+          "thread.message-appended",
+          (event) => event.payload.message.role === "assistant" && event.payload.message.content.includes("Created project assistant"),
+          10000
+        );
+
+        socket.send(
+          JSON.stringify(
+            createChatSendCommand({
+              requestId: "req-create-assistant-chat",
+              projectId,
+              threadId,
+              content: "Create a project assistant named Catalog builder to execute todo-games.md"
+            })
+          )
+        );
+
+        const assistantUpdate = await assistantUpdatePromise;
+        const card = await cardPromise;
+        await messagePromise;
+
+        expect(card.payload.assistant.scope).toBe("project");
+        expect(card.payload.assistant.projectId).toBe(projectId);
+        expect(assistantUpdate.payload.assistants.assistants.some((assistant: { name: string }) => assistant.name === "Catalog builder")).toBe(true);
+        expect(adapter.calls.some((call) => call.kind === "executor")).toBe(false);
+
+        const reconnectSocket = createSocket(port);
+        const reconnectReady = await waitForEvent(reconnectSocket, "connection.ready");
+        expect(
+          reconnectReady.payload.assistants.assistants.some(
+            (assistant: { name: string; scope: string; projectId?: string }) =>
+              assistant.name === "Catalog builder" && assistant.scope === "project" && assistant.projectId === projectId
+          )
+        ).toBe(true);
+        reconnectSocket.close();
+        socket.close();
+      }, 60000);
+
+      test("chat.send asks before converting ambiguous assistant-like prompts", async () => {
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot);
+        const projectId = opened.payload.project.id;
+        const threadId = opened.payload.project.activeThreadId;
+        const questionRunPromise = waitForEvent(
+          socket,
+          "run.updated",
+          (event) =>
+            event.payload.run.status === "awaiting-user-input" &&
+            event.payload.run.questions.some((question: { prompt: string }) =>
+              question.prompt.includes("create a project assistant named \"Catalog builder\"")
+            ),
+          10000
+        );
+        const questionMessagePromise = waitForEvent(
+          socket,
+          "thread.message-appended",
+          (event) =>
+            event.payload.message.role === "assistant" &&
+            event.payload.message.content.includes("create a project assistant named \"Catalog builder\""),
+          10000
+        );
+
+        socket.send(
+          JSON.stringify(
+            createChatSendCommand({
+              requestId: "req-ambiguous-assistant-chat",
+              projectId,
+              threadId,
+              content: "Catalog builder start executing todos"
+            })
+          )
+        );
+
+        const questionRun = await questionRunPromise;
+        await questionMessagePromise;
+
+        expect(questionRun.payload.run.questions[0]?.intent?.type).toBe("assistant-create-intent");
+        expect(adapter.calls).toHaveLength(0);
+        socket.close();
+      }, 60000);
+
+      test("ambiguous assistant question answer can create assistant", async () => {
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot);
+        const projectId = opened.payload.project.id;
+        const threadId = opened.payload.project.activeThreadId;
+        const questionRunPromise = waitForEvent(
+          socket,
+          "run.updated",
+          (event) => event.payload.run.status === "awaiting-user-input",
+          10000
+        );
+
+        socket.send(
+          JSON.stringify(
+            createChatSendCommand({
+              requestId: "req-ambiguous-create-start",
+              projectId,
+              threadId,
+              content: "Catalog builder start executing todos"
+            })
+          )
+        );
+
+        const questionRun = await questionRunPromise;
+        const question = questionRun.payload.run.questions[0];
+        const cardPromise = waitForEvent(
+          socket,
+          "assistant.created-card",
+          (event) => event.payload.assistant.name === "Catalog builder",
+          10000
+        );
+        const completedRunPromise = waitForEvent(
+          socket,
+          "run.updated",
+          (event) => event.payload.run.id === questionRun.payload.run.id && event.payload.run.status === "completed",
+          10000
+        );
+
+        socket.send(
+          JSON.stringify({
+            type: "planning.answer",
+            requestId: "req-ambiguous-create-answer",
+            payload: {
+              projectId,
+              threadId,
+              runId: questionRun.payload.run.id,
+              questionId: question.id,
+              content: question.choices[0].answerText
+            }
+          })
+        );
+
+        const card = await cardPromise;
+        await completedRunPromise;
+        expect(card.payload.assistant.name).toBe("Catalog builder");
+        expect(repository.loadAssistantsState().assistants.filter((assistant) => assistant.name === "Catalog builder")).toHaveLength(1);
+        socket.close();
+      }, 60000);
+
+      test("ambiguous assistant question answer can run once", async () => {
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot);
+        const projectId = opened.payload.project.id;
+        const threadId = opened.payload.project.activeThreadId;
+        const questionRunPromise = waitForEvent(
+          socket,
+          "run.updated",
+          (event) => event.payload.run.status === "awaiting-user-input",
+          10000
+        );
+
+        socket.send(
+          JSON.stringify(
+            createChatSendCommand({
+              requestId: "req-ambiguous-run-start",
+              projectId,
+              threadId,
+              content: "Catalog builder start executing todos"
+            })
+          )
+        );
+
+        const questionRun = await questionRunPromise;
+        const question = questionRun.payload.run.questions[0];
+        const readyPromise = waitForEvent(
+          socket,
+          "run.updated",
+          (event) => event.payload.run.id === questionRun.payload.run.id && event.payload.run.status === "ready",
+          10000
+        );
+
+        socket.send(
+          JSON.stringify({
+            type: "planning.answer",
+            requestId: "req-ambiguous-run-answer",
+            payload: {
+              projectId,
+              threadId,
+              runId: questionRun.payload.run.id,
+              questionId: question.id,
+              content: question.choices[1].answerText
+            }
+          })
+        );
+
+        await readyPromise;
+        expect(adapter.calls.some((call) => call.kind === "planner")).toBe(true);
+        expect(repository.loadAssistantsState().assistants.some((assistant) => assistant.name === "Catalog builder")).toBe(false);
+        socket.close();
+      }, 60000);
+
+      test("assistant.create-from-thread creates and dedupes project assistants", async () => {
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot);
+        const projectId = opened.payload.project.id;
+        const threadId = opened.payload.project.activeThreadId;
+        const cardPromise = waitForEvent(
+          socket,
+          "assistant.created-card",
+          (event) => event.payload.assistant.name === "Catalog builder",
+          10000
+        );
+
+        socket.send(
+          JSON.stringify({
+            type: "assistant.create-from-thread",
+            requestId: "req-create-from-thread",
+            payload: {
+              projectId,
+              threadId,
+              sourcePrompt: "Catalog builder start executing todos",
+              name: "Catalog builder"
+            }
+          })
+        );
+
+        await cardPromise;
+        const secondCardPromise = waitForEvent(
+          socket,
+          "assistant.created-card",
+          (event) => event.payload.assistant.name === "Catalog builder",
+          10000
+        );
+        socket.send(
+          JSON.stringify({
+            type: "assistant.create-from-thread",
+            requestId: "req-create-from-thread-repeat",
+            payload: {
+              projectId,
+              threadId,
+              sourcePrompt: "Catalog builder start executing todos",
+              name: "Catalog builder"
+            }
+          })
+        );
+
+        await secondCardPromise;
+        expect(repository.loadAssistantsState().assistants.filter((assistant) => assistant.name === "Catalog builder")).toHaveLength(1);
+        socket.close();
+      }, 60000);
+
 
     
       test("ask mode auto-runs immediately without appending a plan summary message", async () => {
@@ -1654,7 +2112,10 @@ export function registerServerPreferencesAndModesTests() {
         let planMessageSeen = false;
         socket.addEventListener("message", (event) => {
           const payload = JSON.parse(event.data as string);
-          if (payload.type === "chat.message-appended" && payload.payload?.message?.kind === "plan-summary") {
+          if (
+            (payload.type === "chat.message-appended" || payload.type === "thread.message-appended") &&
+            payload.payload?.message?.kind === "plan-summary"
+          ) {
             planMessageSeen = true;
           }
         });
@@ -2383,6 +2844,82 @@ export function registerServerExecutionMainTests() {
         socket.close();
       });
 
+      test("same run can receive repeated planner question ids after an answer", async () => {
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot);
+        const projectId = opened.payload.project.id;
+        const threadId = opened.payload.project.activeThreadId;
+        const rejectedEvents: any[] = [];
+        const rejectListener = (event: MessageEvent) => {
+          const payload = JSON.parse(event.data as string);
+          if (payload.type === "command.rejected") {
+            rejectedEvents.push(payload);
+          }
+        };
+        socket.addEventListener("message", rejectListener);
+
+        socket.send(
+          JSON.stringify(
+            createChatSendCommand({
+              requestId: "req-same-run-repeat-question",
+              projectId,
+              threadId,
+              content: "same-run repeated question"
+            })
+          )
+        );
+        const firstRun = await waitForEvent(
+          socket,
+          "run.updated",
+          (event) => event.payload.run.status === "awaiting-user-input",
+          10000
+        );
+
+        socket.send(
+          JSON.stringify({
+            type: "planning.answer",
+            requestId: "req-same-run-repeat-answer-1",
+            payload: {
+              projectId,
+              threadId,
+              runId: firstRun.payload.run.id,
+              questionId: firstRun.payload.run.questions[0].id,
+              content: "first answer"
+            }
+          })
+        );
+
+        const secondRun = await waitForEvent(
+          socket,
+          "run.updated",
+          (event) =>
+            event.payload.run.id === firstRun.payload.run.id &&
+            event.payload.run.status === "awaiting-user-input" &&
+            event.payload.run.questions.length === 2,
+          10000
+        );
+        expect(secondRun.payload.run.questions[0].id).not.toBe(secondRun.payload.run.questions[1].id);
+        expect(secondRun.payload.run.questions[1].id).toContain(":question-1:2");
+
+        const complete = await answerPlanningQuestionAndExecute(
+          socket,
+          {
+            requestId: "req-same-run-repeat-answer-2",
+            projectId,
+            threadId,
+            runId: firstRun.payload.run.id,
+            questionId: secondRun.payload.run.questions[1].id,
+            content: "second answer"
+          },
+          10000
+        );
+        expect(complete.payload.threadId).toBe(threadId);
+        expect(rejectedEvents).toHaveLength(0);
+        socket.removeEventListener("message", rejectListener);
+        socket.close();
+      }, 15000);
+
 
     
       test("chat.stop aborts running work", async () => {
@@ -2445,8 +2982,28 @@ export function registerServerSubagentTests() {
     let extraProjectRoot: string;
     let projectRoot: string;
     let port: number;
+    let originalFetch: typeof globalThis.fetch;
+    const attachmentFetchBodies = new Map<string, { body: BodyInit; mimeType: string }>();
 
     beforeEach(async () => {
+      attachmentFetchBodies.clear();
+      originalFetch = globalThis.fetch;
+      globalThis.fetch = Object.assign(
+        async (input: URL | RequestInfo, init?: RequestInit | BunFetchRequestInit) => {
+          const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+          const fixtureBody = attachmentFetchBodies.get(url);
+          if (fixtureBody) {
+            return new Response(fixtureBody.body, {
+              status: 200,
+              headers: {
+                "content-type": fixtureBody.mimeType
+              }
+            });
+          }
+          return originalFetch(input, init);
+        },
+        { preconnect: originalFetch.preconnect }
+      );
       projectRoot = await fixture.createRepoClone(`repo-${crypto.randomUUID()}`);
       extraProjectRoot = fixture.createTempDir(`project-${crypto.randomUUID()}`);
       dbPath = ":memory:";
@@ -2464,6 +3021,7 @@ export function registerServerSubagentTests() {
     });
 
     afterEach(() => {
+      globalThis.fetch = originalFetch;
       server?.stop(true);
     });
 
@@ -2548,6 +3106,41 @@ export function registerServerSubagentTests() {
         const opened = await openProject(socket, projectRoot, "req-attach-open");
         const tinyPng =
           "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9s3FoXcAAAAASUVORK5CYII=";
+        const textAttachment = {
+          id: "attachment-text",
+          kind: "text",
+          name: "spec.md",
+          mimeType: "text/markdown",
+          sizeBytes: 29,
+          url: "https://example.com/spec.md",
+          key: "attachment-text",
+          uploadedAt: new Date().toISOString()
+        } as const;
+        const imageAttachment = {
+          id: "attachment-image",
+          kind: "image",
+          name: "bug.png",
+          mimeType: "image/png",
+          sizeBytes: tinyPng.length,
+          url: "https://example.com/bug.png",
+          key: "attachment-image",
+          uploadedAt: new Date().toISOString()
+        } as const;
+        repository.saveChatAttachmentUpload({
+          projectId: opened.payload.project.id,
+          threadId: opened.payload.project.activeThreadId,
+          attachment: textAttachment
+        });
+        repository.saveChatAttachmentUpload({
+          projectId: opened.payload.project.id,
+          threadId: opened.payload.project.activeThreadId,
+          attachment: imageAttachment
+        });
+        attachmentFetchBodies.set(textAttachment.url, { body: "Ship the smallest safe fix", mimeType: "text/markdown" });
+        attachmentFetchBodies.set(imageAttachment.url, {
+          body: Buffer.from(tinyPng, "base64"),
+          mimeType: "image/png"
+        });
         const readyPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "ready");
     
         socket.send(
@@ -2557,28 +3150,7 @@ export function registerServerSubagentTests() {
               projectId: opened.payload.project.id,
               threadId: opened.payload.project.activeThreadId,
               content: "Use attached context",
-              attachments: [
-                {
-                  id: "attachment-text",
-                  kind: "text",
-                  name: "spec.md",
-                  mimeType: "text/markdown",
-                  sizeBytes: 29,
-                  url: "data:text/markdown,Ship%20the%20smallest%20safe%20fix",
-                  key: "attachment-text",
-                  uploadedAt: new Date().toISOString()
-                },
-                {
-                  id: "attachment-image",
-                  kind: "image",
-                  name: "bug.png",
-                  mimeType: "image/png",
-                  sizeBytes: tinyPng.length,
-                  url: `data:image/png;base64,${tinyPng}`,
-                  key: "attachment-image",
-                  uploadedAt: new Date().toISOString()
-                }
-              ]
+              attachments: [textAttachment, imageAttachment]
             })
           )
         );
@@ -2600,6 +3172,81 @@ export function registerServerSubagentTests() {
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot, "req-doc-open");
         const readyPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "ready");
+        const documentAttachments = [
+          {
+            id: "attachment-pdf",
+            kind: "document",
+            documentType: "pdf",
+            name: "spec.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: createSamplePdfBuffer().length,
+            url: "https://example.com/spec.pdf",
+            key: "attachment-pdf",
+            uploadedAt: new Date().toISOString()
+          },
+          {
+            id: "attachment-docx",
+            kind: "document",
+            documentType: "docx",
+            name: "brief.docx",
+            mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            sizeBytes: createSampleDocxBuffer().length,
+            url: "https://example.com/brief.docx",
+            key: "attachment-docx",
+            uploadedAt: new Date().toISOString()
+          },
+          {
+            id: "attachment-xlsx",
+            kind: "document",
+            documentType: "xlsx",
+            name: "backlog.xlsx",
+            mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            sizeBytes: createSampleXlsxBuffer().length,
+            url: "https://example.com/backlog.xlsx",
+            key: "attachment-xlsx",
+            uploadedAt: new Date().toISOString()
+          },
+          {
+            id: "attachment-pptx",
+            kind: "document",
+            documentType: "pptx",
+            name: "deck.pptx",
+            mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            sizeBytes: createSamplePptxBuffer().length,
+            url: "https://example.com/deck.pptx",
+            key: "attachment-pptx",
+            uploadedAt: new Date().toISOString()
+          },
+          {
+            id: "attachment-odt",
+            kind: "document",
+            documentType: "odt",
+            name: "notes.odt",
+            mimeType: "application/vnd.oasis.opendocument.text",
+            sizeBytes: createSampleOdtBuffer().length,
+            url: "https://example.com/notes.odt",
+            key: "attachment-odt",
+            uploadedAt: new Date().toISOString()
+          }
+        ] as const;
+        const documentBodies = [
+          createSamplePdfBuffer(),
+          createSampleDocxBuffer(),
+          createSampleXlsxBuffer(),
+          createSamplePptxBuffer(),
+          createSampleOdtBuffer()
+        ];
+        for (const [index, attachment] of documentAttachments.entries()) {
+          repository.saveChatAttachmentUpload({
+            projectId: opened.payload.project.id,
+            threadId: opened.payload.project.activeThreadId,
+            attachment
+          });
+          attachmentFetchBodies.set(attachment.url, {
+            body: documentBodies[index]!,
+            mimeType: attachment.mimeType
+          });
+        }
     
         socket.send(
           JSON.stringify(
@@ -2608,72 +3255,7 @@ export function registerServerSubagentTests() {
               projectId: opened.payload.project.id,
               threadId: opened.payload.project.activeThreadId,
               content: "Use attached office docs",
-              attachments: [
-                {
-                  id: "attachment-pdf",
-                  kind: "document",
-                  documentType: "pdf",
-                  name: "spec.pdf",
-                  mimeType: "application/pdf",
-                  sizeBytes: createSamplePdfBuffer().length,
-                  url: createDataUrl("application/pdf", createSamplePdfBuffer()),
-                  key: "attachment-pdf",
-                  uploadedAt: new Date().toISOString()
-                },
-                {
-                  id: "attachment-docx",
-                  kind: "document",
-                  documentType: "docx",
-                  name: "brief.docx",
-                  mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                  sizeBytes: createSampleDocxBuffer().length,
-                  url: createDataUrl(
-                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    createSampleDocxBuffer()
-                  ),
-                  key: "attachment-docx",
-                  uploadedAt: new Date().toISOString()
-                },
-                {
-                  id: "attachment-xlsx",
-                  kind: "document",
-                  documentType: "xlsx",
-                  name: "backlog.xlsx",
-                  mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                  sizeBytes: createSampleXlsxBuffer().length,
-                  url: createDataUrl(
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    createSampleXlsxBuffer()
-                  ),
-                  key: "attachment-xlsx",
-                  uploadedAt: new Date().toISOString()
-                },
-                {
-                  id: "attachment-pptx",
-                  kind: "document",
-                  documentType: "pptx",
-                  name: "deck.pptx",
-                  mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                  sizeBytes: createSamplePptxBuffer().length,
-                  url: createDataUrl(
-                    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                    createSamplePptxBuffer()
-                  ),
-                  key: "attachment-pptx",
-                  uploadedAt: new Date().toISOString()
-                },
-                {
-                  id: "attachment-odt",
-                  kind: "document",
-                  documentType: "odt",
-                  name: "notes.odt",
-                  mimeType: "application/vnd.oasis.opendocument.text",
-                  sizeBytes: createSampleOdtBuffer().length,
-                  url: createDataUrl("application/vnd.oasis.opendocument.text", createSampleOdtBuffer()),
-                  key: "attachment-odt",
-                  uploadedAt: new Date().toISOString()
-                }
-              ]
+              attachments: [...documentAttachments]
             })
           )
         );
@@ -2695,6 +3277,26 @@ export function registerServerSubagentTests() {
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot, "req-bad-doc-open");
         const readyPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "ready");
+        const badAttachment = {
+          id: "attachment-bad-docx",
+          kind: "document",
+          documentType: "docx",
+          name: "broken.docx",
+          mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          sizeBytes: 9,
+          url: "https://example.com/broken.docx",
+          key: "attachment-bad-docx",
+          uploadedAt: new Date().toISOString()
+        } as const;
+        repository.saveChatAttachmentUpload({
+          projectId: opened.payload.project.id,
+          threadId: opened.payload.project.activeThreadId,
+          attachment: badAttachment
+        });
+        attachmentFetchBodies.set(badAttachment.url, {
+          body: Buffer.from("not-a-zip"),
+          mimeType: badAttachment.mimeType
+        });
     
         socket.send(
           JSON.stringify(
@@ -2703,22 +3305,7 @@ export function registerServerSubagentTests() {
               projectId: opened.payload.project.id,
               threadId: opened.payload.project.activeThreadId,
               content: "Handle malformed document",
-              attachments: [
-                {
-                  id: "attachment-bad-docx",
-                  kind: "document",
-                  documentType: "docx",
-                  name: "broken.docx",
-                  mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                  sizeBytes: 9,
-                  url: createDataUrl(
-                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    Buffer.from("not-a-zip")
-                  ),
-                  key: "attachment-bad-docx",
-                  uploadedAt: new Date().toISOString()
-                }
-              ]
+              attachments: [badAttachment]
             })
           )
         );
@@ -2772,6 +3359,137 @@ export function registerServerSubagentTests() {
         socket.close();
       }, 60000);
 
+      test("runs prerequisites before subagent fan-out and persists completion", async () => {
+        repository.setSubagentWorktreeStrategyDefault("separate-worktrees");
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot);
+        const projectId = opened.payload.project.id;
+        const threadId = opened.payload.project.activeThreadId;
+        const ready = await sendChatUntilReady(socket, {
+          requestId: "req-prereq",
+          projectId,
+          threadId,
+          content: "complex prerequisite task"
+        }, 30000);
+        const prerequisiteTracePromise = waitForEvent(
+          socket,
+          "agent.trace",
+          (event) => event.payload.trace.stage === "prerequisite-complete",
+          30000
+        );
+
+        socket.send(
+          JSON.stringify({
+            type: "run.execute",
+            requestId: "req-prereq-execute",
+            payload: {
+              projectId,
+              threadId,
+              runId: ready.payload.run.id
+            }
+          })
+        );
+
+        await prerequisiteTracePromise;
+        await waitForAdapterCall(adapter, "aggregator", 30000);
+        const callKinds = adapter.calls.map((call) => call.kind);
+        const prerequisiteIndex = callKinds.indexOf("executor");
+        const firstSubagentIndex = callKinds.indexOf("subagent");
+        expect(prerequisiteIndex).toBeGreaterThan(-1);
+        expect(firstSubagentIndex).toBeGreaterThan(-1);
+        expect(prerequisiteIndex).toBeLessThan(firstSubagentIndex);
+        expect(repository.getRun(projectId, ready.payload.run.id)?.plan?.prerequisites[0]?.status).toBe("completed");
+        socket.close();
+      }, 60000);
+
+      test("normalizes planner prerequisite owner aliases before persisting and executing", async () => {
+        repository.setSubagentWorktreeStrategyDefault("separate-worktrees");
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot);
+        const projectId = opened.payload.project.id;
+        const threadId = opened.payload.project.activeThreadId;
+        const ready = await sendChatUntilReady(socket, {
+          requestId: "req-prereq-alias",
+          projectId,
+          threadId,
+          content: "complex aliased prerequisite task"
+        }, 30000);
+        expect(repository.getRun(projectId, ready.payload.run.id)?.plan?.prerequisites[0]?.owner).toBe("main");
+        const prerequisiteTracePromise = waitForEvent(
+          socket,
+          "agent.trace",
+          (event) => event.payload.trace.stage === "prerequisite-complete",
+          30000
+        );
+
+        socket.send(
+          JSON.stringify({
+            type: "run.execute",
+            requestId: "req-prereq-alias-execute",
+            payload: {
+              projectId,
+              threadId,
+              runId: ready.payload.run.id
+            }
+          })
+        );
+
+        await prerequisiteTracePromise;
+        await waitForAdapterCall(adapter, "aggregator", 30000);
+        const callKinds = adapter.calls.map((call) => call.kind);
+        const prerequisiteIndex = callKinds.indexOf("executor");
+        const firstSubagentIndex = callKinds.indexOf("subagent");
+        expect(prerequisiteIndex).toBeGreaterThan(-1);
+        expect(firstSubagentIndex).toBeGreaterThan(-1);
+        expect(prerequisiteIndex).toBeLessThan(firstSubagentIndex);
+        const persistedPrerequisite = repository.getRun(projectId, ready.payload.run.id)?.plan?.prerequisites[0];
+        expect(persistedPrerequisite?.owner).toBe("main");
+        expect(persistedPrerequisite?.status).toBe("completed");
+        socket.close();
+      }, 60000);
+
+      test("fails run when prerequisite execution fails before subagents start", async () => {
+        repository.setSubagentWorktreeStrategyDefault("separate-worktrees");
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot);
+        const projectId = opened.payload.project.id;
+        const threadId = opened.payload.project.activeThreadId;
+        const ready = await sendChatUntilReady(socket, {
+          requestId: "req-prereq-fail",
+          projectId,
+          threadId,
+          content: "complex failing prerequisite task"
+        }, 30000);
+        const failedRunPromise = waitForEvent(
+          socket,
+          "run.updated",
+          (event) => event.payload.run.id === ready.payload.run.id && event.payload.run.status === "failed",
+          30000
+        );
+
+        socket.send(
+          JSON.stringify({
+            type: "run.execute",
+            requestId: "req-prereq-fail-execute",
+            payload: {
+              projectId,
+              threadId,
+              runId: ready.payload.run.id
+            }
+          })
+        );
+
+        const failedRun = await failedRunPromise;
+        expect(failedRun.payload.run.failureMessage).toContain("prerequisite setup failed");
+        const callKinds = adapter.calls.map((call) => call.kind);
+        expect(callKinds).toContain("executor");
+        expect(callKinds).not.toContain("subagent");
+        socket.close();
+      }, 60000);
+
 
       test("emits live Harness milestone windows and hides aggregation noise", async () => {
         repository.setSubagentWorktreeStrategyDefault("same-worktree");
@@ -2785,7 +3503,7 @@ export function registerServerSubagentTests() {
         const streamingTailContents: string[] = [];
         const listener = (event: MessageEvent) => {
           const payload = JSON.parse(event.data as string);
-          if (payload.type === "chat.message-appended") {
+          if (payload.type === "chat.message-appended" || payload.type === "thread.message-appended") {
             appendedMessages.push(payload.payload.message);
           }
           if (payload.type === "chat.message-updated") {
@@ -3006,7 +3724,7 @@ export function registerServerSubagentTests() {
         const chatMessages: string[] = [];
         const listener = (event: MessageEvent) => {
           const payload = JSON.parse(event.data as string);
-          if (payload.type === "chat.message-appended") {
+          if (payload.type === "chat.message-appended" || payload.type === "thread.message-appended") {
             chatMessages.push(payload.payload.message.content);
           }
         };
@@ -3375,7 +4093,123 @@ export function registerServerProjectsAndHistoryTests() {
         socket.close();
       }, 10000);
 
-      test("rejects starting a second thread run while another thread is still working", async () => {
+      test("planner question from background thread stays on owning thread after focus changes", async () => {
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot);
+        const projectId = opened.payload.project.id;
+        const originalThreadId = opened.payload.project.activeThreadId;
+        const questionRunPromise = waitForEvent(
+          socket,
+          "run.updated",
+          (event) => event.payload.threadId === originalThreadId && event.payload.run.status === "awaiting-user-input",
+          10000
+        );
+        const questionMessagePromise = waitForEvent(
+          socket,
+          "thread.message-appended",
+          (event) =>
+            event.payload.threadId === originalThreadId &&
+            event.payload.message.content.includes("Which route should handle this?"),
+          10000
+        );
+        const createThreadPromise = waitForEvent(socket, "thread.created");
+
+        socket.send(
+          JSON.stringify(
+            createChatSendCommand({
+              requestId: "req-background-question-send",
+              projectId,
+              threadId: originalThreadId,
+              content: "slow needs clarification"
+            })
+          )
+        );
+        socket.send(
+          JSON.stringify({
+            type: "thread.create",
+            requestId: "req-background-question-create",
+            payload: {
+              projectId
+            }
+          })
+        );
+
+        const created = await createThreadPromise;
+        const focusedThreadId = created.payload.project.activeThreadId;
+        expect(focusedThreadId).not.toBe(originalThreadId);
+        const questionRun = await questionRunPromise;
+        const questionMessage = await questionMessagePromise;
+
+        expect(questionRun.payload.run.threadId).toBe(originalThreadId);
+        expect(questionMessage.payload.threadId).toBe(originalThreadId);
+        expect(repository.getProject(projectId).activeThreadId).toBe(focusedThreadId);
+        expect(repository.getThreadMessages(projectId, originalThreadId).at(-1)?.content).toContain("Which route should handle this?");
+        expect(repository.getThreadMessages(projectId, focusedThreadId).some((message) => message.content.includes("Which route should handle this?"))).toBe(false);
+        socket.close();
+      }, 10000);
+
+      test("renames a thread while it is streaming", async () => {
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot);
+        const projectId = opened.payload.project.id;
+        const threadId = opened.payload.project.activeThreadId;
+        const ready = await sendChatUntilReady(socket, {
+          requestId: "req-thread-rename-streaming-1",
+          projectId,
+          threadId,
+          content: "streaming refresh"
+        });
+        const runningRunPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "running-main");
+        const deltaPromise = waitForEvent(socket, "chat.delta", (event) => event.payload.threadId === threadId);
+        const renamedPromise = waitForEvent(socket, "thread.renamed");
+        const completePromise = waitForEvent(
+          socket,
+          "chat.complete",
+          (event) => event.payload.projectId === projectId && event.payload.threadId === threadId,
+          10000
+        );
+
+        socket.send(
+          JSON.stringify({
+            type: "run.execute",
+            requestId: "req-thread-rename-streaming-execute",
+            payload: {
+              projectId,
+              threadId,
+              runId: ready.payload.run.id
+            }
+          })
+        );
+
+        await runningRunPromise;
+        await deltaPromise;
+
+        socket.send(
+          JSON.stringify({
+            type: "thread.rename",
+            requestId: "req-thread-rename-streaming-rename",
+            payload: {
+              projectId,
+              threadId,
+              title: "Renamed during stream"
+            }
+          })
+        );
+
+        const renamed = await renamedPromise;
+        expect(renamed.payload.thread.id).toBe(threadId);
+        expect(renamed.payload.thread.title).toBe("Renamed during stream");
+
+        const completed = await completePromise;
+        expect(completed.payload.threadId).toBe(threadId);
+        expect(repository.getProject(projectId).threads.find((thread) => thread.id === threadId)?.title).toBe("Renamed during stream");
+        expect(repository.getThreadMessages(projectId, threadId).at(-1)?.content).toBe("main execution result");
+        socket.close();
+      }, 10000);
+
+      test("starts a second thread run while another thread is still working", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot);
@@ -3390,7 +4224,12 @@ export function registerServerProjectsAndHistoryTests() {
         const runningRunPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "running-main");
         const deltaPromise = waitForEvent(socket, "chat.delta", (event) => event.payload.threadId === originalThreadId);
         const createThreadPromise = waitForEvent(socket, "thread.created");
-        const rejectedPromise = waitForEvent(socket, "command.rejected");
+        const secondReadyPromise = waitForEvent(
+          socket,
+          "run.updated",
+          (event) => event.payload.run.threadId !== originalThreadId && event.payload.run.status === "ready",
+          10000
+        );
 
         socket.send(
           JSON.stringify({
@@ -3423,18 +4262,22 @@ export function registerServerProjectsAndHistoryTests() {
         socket.send(
           JSON.stringify({
             type: "chat.send",
-            requestId: "req-thread-blocked-send",
+            requestId: "req-thread-parallel-send",
             payload: {
               projectId,
               threadId: newThreadId,
               agentId: "pi",
-              content: "should be blocked"
+              content: "second thread work"
             }
           })
         );
 
-        const rejected = await rejectedPromise;
-        expect(rejected.payload.detail).toContain("Project has active run");
+        const secondReady = await secondReadyPromise;
+        expect(secondReady.payload.threadId).toBe(newThreadId);
+        expect(secondReady.payload.run.threadId).toBe(newThreadId);
+        const secondThreadMessages = repository.getThreadMessages(projectId, newThreadId);
+        expect(secondThreadMessages.some((message) => message.content === "second thread work")).toBe(true);
+        expect(secondThreadMessages.at(-1)?.kind).toBe("plan-summary");
         socket.close();
       }, 10000);
 
@@ -4545,9 +5388,22 @@ function waitForEvent(socket: EventTarget, type: string, predicate?: (payload: a
         return;
       }
       const payload = JSON.parse(event.data as string);
-      if (payload.type === type && (predicate ? predicate(payload) : true)) {
+      const effectivePayload =
+        type === "chat.message-appended" && payload.type === "thread.message-appended"
+          ? {
+              ...payload,
+              type: "chat.message-appended",
+              payload: {
+                ...payload.payload,
+                state: {
+                  isStreaming: false
+                }
+              }
+            }
+          : payload;
+      if (effectivePayload.type === type && (predicate ? predicate(effectivePayload) : true)) {
         cleanup();
-        resolve(payload);
+        resolve(effectivePayload);
       }
     };
 

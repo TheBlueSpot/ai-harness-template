@@ -1,11 +1,13 @@
 import type { BackgroundJob, BackgroundJobRun, BackgroundJobRunStatus } from "../../shared/protocol";
 import { getDueScheduleAdvance } from "./background-job-schedule";
+import { assertAssistantRunnableForLaunch } from "./assistant-launch-gate";
 import { WorkspaceRepository } from "./workspace-repository";
 
 type BackgroundJobSchedulerOptions = {
   repository: WorkspaceRepository;
   intervalMs?: number;
   onRunQueued?: (run: BackgroundJobRun, job: BackgroundJob) => Promise<void> | void;
+  onTickFailed?: (error: unknown) => void;
 };
 
 export class BackgroundJobScheduler {
@@ -22,9 +24,9 @@ export class BackgroundJobScheduler {
       return;
     }
 
-    void this.tick(true);
+    void this.tick(true).catch((error) => this.options.onTickFailed?.(error));
     this.timer = setInterval(() => {
-      void this.tick(false);
+      void this.tick(false).catch((error) => this.options.onTickFailed?.(error));
     }, this.intervalMs);
   }
 
@@ -52,8 +54,9 @@ export class BackgroundJobScheduler {
       const jobs = this.options.repository.loadBackgroundJobsState().jobs.filter((job) => job.status === "enabled");
       for (const job of jobs) {
         if (job.assistantId) {
-          const assistant = this.options.repository.getAssistant(job.assistantId);
-          if (!assistant || assistant.runState === "paused" || assistant.deletedAt) {
+          try {
+            assertAssistantRunnableForLaunch(this.options.repository, job.assistantId);
+          } catch {
             continue;
           }
         }
@@ -85,7 +88,20 @@ export class BackgroundJobScheduler {
           `Queued ${job.name}`,
           advance.skippedOccurrenceCount > 0 ? `Skipped ${advance.skippedOccurrenceCount} missed occurrence(s).` : undefined
         );
-        await this.options.onRunQueued?.(this.options.repository.getBackgroundJobRun(queuedRun.id)!, job);
+        try {
+          await this.options.onRunQueued?.(this.options.repository.getBackgroundJobRun(queuedRun.id)!, job);
+        } catch (error) {
+          const failureMessage = error instanceof Error ? error.message : "Unknown background job launch failure";
+          this.options.repository.setBackgroundJobRunStatus(queuedRun.id, "failed", {
+            failureMessage
+          });
+          this.options.repository.appendBackgroundJobRunEvent(
+            queuedRun.id,
+            "failed",
+            "Background run failed",
+            failureMessage
+          );
+        }
       }
     } finally {
       this.running = false;

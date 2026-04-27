@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
   createAssistantId,
+  createAssistantAssetRefId,
   createAssistantLearningId,
   createAssistantLogEntryId,
   createAssistantQuestionId,
@@ -85,6 +86,35 @@ describe("workspace repository", () => {
     expect(reopened.project.id).toBe(created.project.id);
     expect(reopened.project.threads).toHaveLength(2);
     expect(reopened.project.activeThreadId).not.toBe(created.project.activeThreadId);
+  });
+
+  test("forkThread copies only plain transcript messages", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    const attachment = {
+      id: "att-1",
+      kind: "text" as const,
+      name: "notes.txt",
+      url: "https://example.com/notes.txt",
+      sizeBytes: 12,
+      mimeType: "text/plain",
+      key: "notes-key",
+      uploadedAt: new Date().toISOString()
+    };
+
+    repository.appendMessage(project.id, "user", "source request");
+    repository.appendMessage(project.id, "assistant", "source answer", { attachments: [attachment] });
+    repository.appendMessage(project.id, "assistant", "old plan", { kind: "plan-summary" });
+    repository.appendMessage(project.id, "assistant", "old milestones", { kind: "run-milestones" });
+
+    const forked = repository.forkThread(project.id, project.activeThreadId);
+
+    expect(forked.activeThreadId).not.toBe(project.activeThreadId);
+    expect(forked.threads.find((thread) => thread.id === forked.activeThreadId)?.forkedFromThreadId).toBe(project.activeThreadId);
+    expect(forked.session.messages.map((message) => message.content)).toEqual(["source request", "source answer"]);
+    expect(forked.session.messages.every((message) => message.kind === "plain")).toBe(true);
+    expect(forked.session.messages.every((message) => message.metadata === undefined)).toBe(true);
+    expect(forked.session.messages[1]?.attachments).toEqual([attachment]);
   });
 
   test("removeProject can clear final project and active selection", () => {
@@ -231,6 +261,33 @@ describe("workspace repository", () => {
     expect(restoredProject.session.messages[0]?.attachments?.[0]?.kind).toBe("text");
   });
 
+  test("persists trusted chat attachment upload metadata", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    const attachment = {
+      id: "attachment-1",
+      kind: "text",
+      name: "spec.md",
+      mimeType: "text/markdown",
+      sizeBytes: 128,
+      url: "https://example.com/spec.md",
+      key: "spec-key",
+      uploadedAt: new Date().toISOString()
+    } as const;
+
+    repository.saveChatAttachmentUpload({
+      projectId: project.id,
+      threadId: project.activeThreadId,
+      attachment
+    });
+
+    expect(repository.getChatAttachmentUpload("spec-key")).toMatchObject({
+      projectId: project.id,
+      threadId: project.activeThreadId,
+      attachment
+    });
+  });
+
   test("persists assistant state and purges assistant jobs on delete", () => {
     const repository = createRepository();
     const project = addProject(repository);
@@ -355,6 +412,38 @@ describe("workspace repository", () => {
     expect(repository.getBackgroundJobRun(savedRun.id)).toBeUndefined();
   });
 
+  test("recovers tripped assistant circuit breaker", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    const assistantId = createAssistantId();
+    const now = new Date().toISOString();
+
+    repository.saveAssistant({
+      id: assistantId,
+      name: "Recovery helper",
+      scope: "project",
+      projectId: project.id,
+      personalityPrompt: "Recover carefully.",
+      jobPrompt: "Recover assistant state.",
+      agentId: "pi",
+      runState: "paused",
+      bootstrapState: "completed",
+      failureStreakCount: 3,
+      circuitBreakerState: "tripped",
+      circuitBreakerReason: "Repeated executor failure",
+      unreadQuestionCount: 0,
+      createdAt: now,
+      updatedAt: now
+    });
+
+    const recovered = repository.recoverAssistantCircuitBreaker(assistantId);
+
+    expect(recovered.runState).toBe("active");
+    expect(recovered.failureStreakCount).toBe(0);
+    expect(recovered.circuitBreakerState).toBe("closed");
+    expect(recovered.circuitBreakerReason).toBeUndefined();
+  });
+
   test("persists active run questions and resumable subtasks across reload", () => {
     const repository = createRepository();
     const project = addProject(repository);
@@ -426,6 +515,176 @@ describe("workspace repository", () => {
     expect(restoredProject.activeRun?.subtasks.find((task) => task.id === "task-1")?.status).toBe("completed");
     expect(restoredProject.activeRun?.subtasks.find((task) => task.id === "task-2")?.status).toBe("failed");
     expect(restoredProject.activeRun?.resumable).toBe(true);
+  });
+
+  test("persists planning question assistant intent metadata", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    const withRun = repository.createAgentRun(project.id, "Catalog builder start executing todos", "openai/gpt-5.4");
+    const runId = withRun.activeRun?.id;
+    expect(runId).toBeDefined();
+
+    const withQuestion = repository.appendPlanningQuestion(project.id, runId!, {
+      id: "assistant-create-intent",
+      prompt: "Do you want to create a project assistant named \"Catalog builder\", or run this once in project chat?",
+      choices: [
+        {
+          id: "choice-1",
+          label: "Create project assistant",
+          description: "Create a project-scoped assistant.",
+          answerText: "Create a project assistant named \"Catalog builder\" from this prompt.",
+          recommended: true
+        },
+        {
+          id: "choice-2",
+          label: "Run once",
+          description: "Run once in project chat.",
+          answerText: "Run once.",
+          recommended: false
+        },
+        {
+          id: "choice-3",
+          label: "Cancel",
+          description: "Cancel this request.",
+          answerText: "Cancel this request.",
+          recommended: false
+        }
+      ],
+      required: true,
+      intent: {
+        type: "assistant-create-intent",
+        projectId: project.id,
+        threadId: project.activeThreadId,
+        sourcePrompt: "Catalog builder start executing todos",
+        suggestedName: "Catalog builder",
+        defaultScope: "project"
+      }
+    });
+
+    const storedIntent = withQuestion.activeRun?.questions[0]?.intent;
+    expect(storedIntent?.type).toBe("assistant-create-intent");
+    expect(storedIntent?.type === "assistant-create-intent" ? storedIntent.suggestedName : undefined).toBe("Catalog builder");
+
+    const reloadedRepository = new WorkspaceRepository((repository as any).dbPath, process.cwd());
+    const restoredProject = reloadedRepository.getProject(project.id);
+    const restoredIntent = restoredProject.activeRun?.questions[0]?.intent;
+    expect(restoredIntent?.type).toBe("assistant-create-intent");
+    expect(restoredIntent?.type === "assistant-create-intent" ? restoredIntent.suggestedName : undefined).toBe("Catalog builder");
+  });
+
+  test("resolves assistant skill refs before persisting", () => {
+    const tempRoot = createTempDir();
+    const repoRoot = path.join(tempRoot, `assistant-repo-${crypto.randomUUID()}`);
+    const skillPath = path.join(repoRoot, ".agents", "skills", "review", "SKILL.md");
+    mkdirSync(path.dirname(skillPath), { recursive: true });
+    writeFileSync(skillPath, "# Review\n");
+    const repository = new WorkspaceRepository(path.join(tempRoot, `workspace-${crypto.randomUUID()}.sqlite`), repoRoot, {
+      durability: "test-fast"
+    });
+    const assistantId = createAssistantId();
+    const now = new Date().toISOString();
+
+    repository.saveAssistant(
+      {
+        id: assistantId,
+        name: "Reviewer",
+        scope: "global",
+        personalityPrompt: "Precise.",
+        jobPrompt: "Review code.",
+        agentId: "pi",
+        runState: "active",
+        bootstrapState: "pending",
+        failureStreakCount: 0,
+        circuitBreakerState: "closed",
+        unreadQuestionCount: 0,
+        createdAt: now,
+        updatedAt: now
+      },
+      [
+        {
+          id: createAssistantAssetRefId(),
+          assistantId,
+          kind: "skill",
+          label: "Review",
+          value: "review",
+          resolutionStatus: "resolved",
+          createdAt: now
+        }
+      ]
+    );
+
+    expect(repository.getAssistantAssetRefs(assistantId)[0]).toMatchObject({
+      canonicalValue: ".agents/skills/review/SKILL.md",
+      provenance: "repo-skill",
+      resolutionStatus: "resolved"
+    });
+  });
+
+  test("rejects unresolved assistant refs", () => {
+    const repository = createRepository();
+    const assistantId = createAssistantId();
+    const now = new Date().toISOString();
+
+    expect(() =>
+      repository.saveAssistant(
+        {
+          id: assistantId,
+          name: "Reviewer",
+          scope: "global",
+          personalityPrompt: "Precise.",
+          jobPrompt: "Review code.",
+          agentId: "pi",
+          runState: "active",
+          bootstrapState: "pending",
+          failureStreakCount: 0,
+          circuitBreakerState: "closed",
+          unreadQuestionCount: 0,
+          createdAt: now,
+          updatedAt: now
+        },
+        [
+          {
+            id: createAssistantAssetRefId(),
+            assistantId,
+            kind: "skill",
+            label: "Missing",
+            value: "missing-skill",
+            resolutionStatus: "resolved",
+            createdAt: now
+          }
+        ]
+      )
+    ).toThrow(/Assistant asset Missing is missing/);
+  });
+
+  test("sets completedAt for every terminal run status without overwriting it", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    const createRun = (prompt: string) => {
+      const withRun = repository.createAgentRun(project.id, prompt, "openai/gpt-5.4");
+      const runId = withRun.activeRun?.id;
+      expect(runId).toBeDefined();
+      return runId!;
+    };
+
+    const failedRunId = createRun("failed run");
+    repository.setAgentRunStatus(project.id, failedRunId, "failed");
+    const failedCompletedAt = repository.getRun(project.id, failedRunId)?.completedAt;
+    expect(failedCompletedAt).toBeDefined();
+    repository.setAgentRunStatus(project.id, failedRunId, "stopped");
+    expect(repository.getRun(project.id, failedRunId)?.completedAt).toBe(failedCompletedAt);
+
+    const stoppedRunId = createRun("stopped run");
+    repository.setAgentRunStatus(project.id, stoppedRunId, "stopped");
+    expect(repository.getRun(project.id, stoppedRunId)?.completedAt).toBeDefined();
+
+    const partialRunId = createRun("partial run");
+    repository.setAgentRunStatus(project.id, partialRunId, "partial-complete");
+    expect(repository.getRun(project.id, partialRunId)?.completedAt).toBeDefined();
+
+    const runningRunId = createRun("running run");
+    repository.setAgentRunStatus(project.id, runningRunId, "running-main");
+    expect(repository.getRun(project.id, runningRunId)?.completedAt).toBeUndefined();
   });
 
   test("persists run summaries and high-effort execution plan contracts across reload", () => {
@@ -577,6 +836,68 @@ describe("workspace repository", () => {
     expect(firstQuestion.activeRun?.questions[0]?.id).toBe(`${firstRunId}:question-1`);
     expect(secondQuestion.activeRun?.questions[0]?.id).toBe(`${secondRunId}:question-1`);
     expect(firstQuestion.activeRun?.questions[0]?.id).not.toBe(secondQuestion.activeRun?.questions[0]?.id);
+  });
+
+  test("scopes repeated planner question ids within the same run", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+
+    repository.appendMessage(project.id, "user", "needs repeated clarifications");
+    const withRun = repository.createAgentRun(project.id, "needs repeated clarifications", "openai/gpt-5.4");
+    const runId = withRun.activeRun?.id;
+    expect(runId).toBeDefined();
+
+    const first = repository.appendPlanningQuestion(project.id, runId!, {
+      id: "question-1",
+      prompt: "Which route should handle this?",
+      choices: [],
+      required: true
+    });
+    const second = repository.appendPlanningQuestion(project.id, runId!, {
+      id: "question-1",
+      prompt: "Which database table should this use?",
+      choices: [],
+      required: true
+    });
+
+    const questionIds = second.activeRun?.questions.map((question) => question.id) ?? [];
+    expect(questionIds).toHaveLength(2);
+    expect(questionIds[0]).toBe(`${runId}:question-1`);
+    expect(questionIds[1]).toBe(`${runId}:question-1:2`);
+    expect(questionIds[1]).not.toBe(first.activeRun?.questions[0]?.id);
+  });
+
+  test("keeps long scoped planner question ids distinct after readable prefix", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+
+    repository.appendMessage(project.id, "user", "needs long clarifications");
+    const withRun = repository.createAgentRun(project.id, "needs long clarifications", "openai/gpt-5.4");
+    const runId = withRun.activeRun?.id;
+    expect(runId).toBeDefined();
+
+    const sharedPrefix = "question-" + "x".repeat(180);
+    const first = repository.appendPlanningQuestion(project.id, runId!, {
+      id: `${sharedPrefix}-left`,
+      prompt: "First long question?",
+      choices: [],
+      required: true
+    });
+    const second = repository.appendPlanningQuestion(project.id, runId!, {
+      id: `${sharedPrefix}-right`,
+      prompt: "Second long question?",
+      choices: [],
+      required: true
+    });
+
+    const questionIds = second.activeRun?.questions.map((question) => question.id) ?? [];
+    expect(questionIds).toHaveLength(2);
+    expect(questionIds[0]).toBeDefined();
+    expect(questionIds[1]).toBeDefined();
+    expect(first.activeRun?.questions[0]?.id).toBeDefined();
+    expect(questionIds[0]!).toBe(first.activeRun!.questions[0]!.id);
+    expect(questionIds[0]!).not.toBe(questionIds[1]!);
+    expect(questionIds.every((id) => id.length <= 128)).toBe(true);
   });
 
   test("persists browser sessions on active runs across reload", () => {

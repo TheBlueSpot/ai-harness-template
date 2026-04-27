@@ -9,6 +9,7 @@ const allowedLinkProtocols = new Set(["http:", "https:", "mailto:"]);
 
 export const markdownRemarkPlugins: PluggableList = [remarkGfm, remarkBreaks];
 export const markdownRehypePlugins: PluggableList = [rehypeSanitize, [rehypeHighlight, { detect: false }]];
+export const markdownLiveRehypePlugins: PluggableList = [rehypeSanitize];
 
 export type LinkKind = "hash" | "external" | "mailto" | "invalid";
 

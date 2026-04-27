@@ -3,11 +3,19 @@ import type { WorkspaceRuntimeStore } from "../workspace-runtime-store";
 import type { AgentRuntime } from "./agent-runtime";
 import { createSecureToken } from "./cli-health";
 import { CliProcessManager, type InteractiveCliProcess } from "./cli-process-manager";
+import { StreamPump } from "../stream-pump";
+import { guardedWebsocketSend } from "../websocket-send-guard";
 
+export const STREAM_HEARTBEAT = 0x00;
 const STREAM_STDOUT = 0x01;
 const STREAM_STDERR = 0x02;
 const ATTACH_TOKEN_TTL_MS = 30_000;
 const DEFAULT_INTERACTIVE_IDLE_TIMEOUT_MS = 30 * 60_000;
+const PTY_HEARTBEAT_INTERVAL_MS = 15_000;
+const PTY_STALE_TIMEOUT_MS = 30_000;
+const PTY_STREAM_FLUSH_MS = 50;
+const PTY_STREAM_MAX_BUFFERED_BYTES = 8 * 1024;
+const PTY_SEND_QUEUE_CAP_BYTES = 256 * 1024;
 
 type SessionRecord = {
   runtime: AgentRuntime;
@@ -15,6 +23,9 @@ type SessionRecord = {
   session: CliSession;
   attachedClientId?: string;
   attachedSocket?: Bun.ServerWebSocket<{ clientId: string; kind: "control" | "pty"; sessionId?: string }>;
+  ptyHeartbeatTimer?: ReturnType<typeof setInterval>;
+  lastPtyPongAt?: number;
+  terminalPumps?: Partial<Record<"stdout" | "stderr", StreamPump>>;
   stderrTail: string;
   visibleBuffer?: string;
 };
@@ -36,6 +47,7 @@ type CliSessionManagerOptions = {
     sessionId: string;
     attachToken: CliAttachToken;
   }) => void;
+  onWriteFailed?: (input: { requestId: string; projectId: ProjectId; threadId: ThreadId; session: CliSession; error: unknown }) => void;
 };
 
 export class CliSessionManager {
@@ -146,7 +158,7 @@ export class CliSessionManager {
   }
 
   async stopSession(input: { projectId: ProjectId; threadId: ThreadId; sessionId: string }) {
-    const record = this.sessions.get(input.sessionId);
+    const record = this.getOwnedSession(input);
     if (!record) {
       return;
     }
@@ -167,24 +179,12 @@ export class CliSessionManager {
   }
 
   resizeSession(input: { requestId: string; projectId: ProjectId; threadId: ThreadId; sessionId: string; cols: number; rows: number }) {
-    const record = this.requireSession(input.sessionId);
-    record.session = {
-      ...record.session,
-      cols: input.cols,
-      rows: input.rows,
-      updatedAt: new Date().toISOString()
-    };
-    this.options.runtimeStore.setProjectCliSession(input.projectId, record.session);
-    this.options.onSessionUpdated({
-      requestId: input.requestId,
-      projectId: input.projectId,
-      threadId: input.threadId,
-      session: record.session
-    });
+    this.requireOwnedSession(input);
+    throw new Error("CLI session resize is not supported by the current transport");
   }
 
   attachSession(input: { requestId: string; projectId: ProjectId; threadId: ThreadId; sessionId: string; clientId: string }) {
-    this.requireSession(input.sessionId);
+    this.requireOwnedSession(input);
     const attachToken = this.issueAttachToken({
       sessionId: input.sessionId,
       projectId: input.projectId,
@@ -200,12 +200,18 @@ export class CliSessionManager {
     });
   }
 
-  captureVisibleBuffer(input: { sessionId: string; visibleBuffer: string; stderrTail?: string }) {
-    const record = this.requireSession(input.sessionId);
+  captureVisibleBuffer(input: { projectId: ProjectId; threadId: ThreadId; sessionId: string; visibleBuffer: string; stderrTail?: string }) {
+    const record = this.requireOwnedSession(input);
     record.visibleBuffer = input.visibleBuffer;
     if (input.stderrTail) {
       record.stderrTail = input.stderrTail.slice(-32_000);
     }
+    this.options.runtimeStore.setThreadCapturedCliContext(record.session.projectId, record.session.threadId, {
+      sessionId: record.session.id,
+      capturedAt: new Date().toISOString(),
+      visibleBuffer: input.visibleBuffer,
+      stderrTail: input.stderrTail
+    });
   }
 
   consumeAttachToken(token: string, clientId: string) {
@@ -224,6 +230,14 @@ export class CliSessionManager {
     return record;
   }
 
+  invalidateClientAttachTokens(clientId: string) {
+    for (const [token, record] of this.attachTokens.entries()) {
+      if (record.clientId === clientId && !record.usedAt) {
+        this.attachTokens.delete(token);
+      }
+    }
+  }
+
   attachSocket(input: {
     sessionId: string;
     clientId: string;
@@ -232,6 +246,7 @@ export class CliSessionManager {
     const record = this.requireSession(input.sessionId);
     record.attachedClientId = input.clientId;
     record.attachedSocket = input.socket;
+    record.lastPtyPongAt = Date.now();
     record.session = {
       ...record.session,
       attachState: "attached",
@@ -244,6 +259,7 @@ export class CliSessionManager {
       threadId: record.session.threadId,
       session: record.session
     });
+    this.startPtyHeartbeat(record);
   }
 
   detachSocket(sessionId: string) {
@@ -252,8 +268,7 @@ export class CliSessionManager {
       return;
     }
 
-    record.attachedSocket = undefined;
-    record.attachedClientId = undefined;
+    this.clearPtyTransport(record);
     record.session = {
       ...record.session,
       attachState: "detached",
@@ -268,13 +283,49 @@ export class CliSessionManager {
     });
   }
 
+  detachClient(clientId: string) {
+    this.invalidateClientAttachTokens(clientId);
+    for (const record of this.sessions.values()) {
+      if (record.attachedClientId === clientId) {
+        this.detachSocket(record.session.id);
+      }
+    }
+  }
+
+  recordPtyPong(sessionId: string, clientId: string) {
+    const record = this.sessions.get(sessionId);
+    if (!record || record.attachedClientId !== clientId) {
+      return false;
+    }
+    record.lastPtyPongAt = Date.now();
+    return true;
+  }
+
   async writeToSession(sessionId: string, data: Uint8Array) {
     const record = this.requireSession(sessionId);
-    await record.process.write(data);
+    try {
+      await record.process.write(data);
+    } catch (error) {
+      this.markWriteFailed(record, error);
+      throw error;
+    }
   }
 
   getSession(sessionId: string) {
     return this.sessions.get(sessionId)?.session;
+  }
+
+  getCapturedContext(sessionId: string) {
+    const record = this.sessions.get(sessionId);
+    if (!record?.visibleBuffer) {
+      return undefined;
+    }
+
+    return {
+      sessionId,
+      visibleBuffer: record.visibleBuffer,
+      stderrTail: record.stderrTail
+    };
   }
 
   private issueAttachToken(input: { sessionId: string; projectId: ProjectId; threadId: ThreadId; clientId: string }) {
@@ -319,11 +370,8 @@ export class CliSessionManager {
       return;
     }
 
-    const payload = normalizeTerminalChunk(chunk);
-    const frame = new Uint8Array(payload.length + 1);
-    frame[0] = stream === "stdout" ? STREAM_STDOUT : STREAM_STDERR;
-    frame.set(payload, 1);
-    socket.send(frame);
+    const pump = this.getTerminalPump(record, stream);
+    pump.push(new TextDecoder().decode(normalizeTerminalChunk(chunk)));
   }
 
   private async handleExit(sessionId: string, exitCode: number) {
@@ -349,7 +397,32 @@ export class CliSessionManager {
       session: record.session
     });
     this.sessionKeyToId.delete(getSessionKey(record.session.projectId, record.session.threadId, record.session.agentId));
+    this.clearPtyTransport(record);
     this.sessions.delete(sessionId);
+  }
+
+  private markWriteFailed(record: SessionRecord, error: unknown) {
+    const now = new Date().toISOString();
+    this.clearPtyTransport(record);
+    record.session = {
+      ...record.session,
+      status: "failed",
+      attachState: "detached",
+      exitedAt: now,
+      updatedAt: now
+    };
+    this.options.runtimeStore.setProjectCliSession(record.session.projectId, record.session);
+    const event = {
+      requestId: createRequestId(),
+      projectId: record.session.projectId,
+      threadId: record.session.threadId,
+      session: record.session
+    };
+    this.options.onSessionUpdated(event);
+    this.options.onWriteFailed?.({
+      ...event,
+      error
+    });
   }
 
   private requireSession(sessionId: string) {
@@ -359,6 +432,83 @@ export class CliSessionManager {
     }
 
     return record;
+  }
+
+  private getOwnedSession(input: { projectId: ProjectId; threadId: ThreadId; sessionId: string }) {
+    const record = this.sessions.get(input.sessionId);
+    if (!record) {
+      return undefined;
+    }
+
+    if (record.session.projectId !== input.projectId || record.session.threadId !== input.threadId) {
+      throw new Error(`CLI session ${input.sessionId} belongs to another thread`);
+    }
+
+    return record;
+  }
+
+  private requireOwnedSession(input: { projectId: ProjectId; threadId: ThreadId; sessionId: string }) {
+    const record = this.getOwnedSession(input);
+    if (!record) {
+      throw new Error(`Unknown CLI session: ${input.sessionId}`);
+    }
+
+    return record;
+  }
+
+  private getTerminalPump(record: SessionRecord, stream: "stdout" | "stderr") {
+    record.terminalPumps ??= {};
+    record.terminalPumps[stream] ??= new StreamPump({
+      flushIntervalMs: PTY_STREAM_FLUSH_MS,
+      maxBufferedBytes: PTY_STREAM_MAX_BUFFERED_BYTES,
+      onFlush: (text) => this.sendTerminalFrame(record, stream, text)
+    });
+    return record.terminalPumps[stream];
+  }
+
+  private sendTerminalFrame(record: SessionRecord, stream: "stdout" | "stderr", text: string) {
+    const socket = record.attachedSocket;
+    if (!socket) {
+      return;
+    }
+    const payload = new TextEncoder().encode(text);
+    const frame = new Uint8Array(payload.length + 1);
+    frame[0] = stream === "stdout" ? STREAM_STDOUT : STREAM_STDERR;
+    frame.set(payload, 1);
+    guardedWebsocketSend(socket, frame, { maxQueuedBytes: PTY_SEND_QUEUE_CAP_BYTES });
+  }
+
+  private startPtyHeartbeat(record: SessionRecord) {
+    if (record.ptyHeartbeatTimer) {
+      clearInterval(record.ptyHeartbeatTimer);
+    }
+    record.ptyHeartbeatTimer = setInterval(() => {
+      const socket = record.attachedSocket;
+      if (!socket || !record.attachedClientId) {
+        return;
+      }
+      if (Date.now() - (record.lastPtyPongAt ?? 0) > PTY_STALE_TIMEOUT_MS) {
+        socket.close(4000, "PTY heartbeat missed");
+        this.detachSocket(record.session.id);
+        return;
+      }
+      guardedWebsocketSend(socket, new Uint8Array([STREAM_HEARTBEAT]), { maxQueuedBytes: PTY_SEND_QUEUE_CAP_BYTES });
+    }, PTY_HEARTBEAT_INTERVAL_MS);
+  }
+
+  private clearPtyTransport(record: SessionRecord) {
+    if (record.ptyHeartbeatTimer) {
+      clearInterval(record.ptyHeartbeatTimer);
+      record.ptyHeartbeatTimer = undefined;
+    }
+    for (const pump of Object.values(record.terminalPumps ?? {})) {
+      void pump.flush();
+      pump.close();
+    }
+    record.terminalPumps = undefined;
+    record.attachedSocket = undefined;
+    record.attachedClientId = undefined;
+    record.lastPtyPongAt = undefined;
   }
 }
 

@@ -3,7 +3,7 @@ import { createComponent } from "solid-js/web";
 import { SolidMarkdown } from "../../../../node_modules/solid-markdown/dist/index.js";
 import type { SolidMarkdownComponents } from "solid-markdown";
 import type { Element, Properties } from "hast";
-import { markdownRehypePlugins, markdownRemarkPlugins, classifyLinkHref, extractTextContent, findFirstChildElement, getCodeLanguage, getElementClassNames, normalizeAllowedHref } from "../lib/markdown";
+import { markdownLiveRehypePlugins, markdownRehypePlugins, markdownRemarkPlugins, classifyLinkHref, extractTextContent, findFirstChildElement, getCodeLanguage, getElementClassNames, normalizeAllowedHref } from "../lib/markdown";
 import { cn } from "../lib/utils";
 import { CopyTextButton } from "./primitives/copy-text-button";
 
@@ -128,7 +128,9 @@ export function MarkdownContent(props: MarkdownContentProps) {
     },
     skipHtml: true,
     remarkPlugins: markdownRemarkPlugins,
-    rehypePlugins: markdownRehypePlugins,
+    get rehypePlugins() {
+      return props.live ? markdownLiveRehypePlugins : markdownRehypePlugins;
+    },
     get renderingStrategy() {
       return props.live ? ("reconcile" as const) : ("memo" as const);
     },

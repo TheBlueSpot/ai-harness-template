@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Stick War: Empire RTS</title>
+    <meta
+      name="description"
+      content="Modular RTS scaffold with economy, selection, possession, formation seams, and code-native SVG stick placeholders."
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell" id="app-shell">
+      <canvas id="battlefield" width="1600" height="900" aria-label="Stick empire battlefield"></canvas>
+
+      <header class="hud-bar">
+        <div class="hud-chip">
+          <span>Gold</span>
+          <strong id="gold-value">0</strong>
+        </div>
+        <div class="hud-chip">
+          <span>GoldRate</span>
+          <strong id="gold-rate-value">0</strong>
+        </div>
+        <div class="hud-chip">
+          <span>Population</span>
+          <strong id="pop-value">0</strong>
+        </div>
+        <div class="hud-chip">
+          <span>PopCap</span>
+          <strong id="pop-cap-value">0</strong>
+        </div>
+        <div class="hud-chip">
+          <span>Selection</span>
+          <strong id="selection-value">None</strong>
+        </div>
+        <div class="hud-chip">
+          <span>Possession</span>
+          <strong id="possession-value">None</strong>
+        </div>
+      </header>
+
+      <aside class="hud-stack hud-left">
+        <section class="hud-panel">
+          <p class="panel-kicker">Base-Building HUD</p>
+          <h1>Stick War: Empire RTS</h1>
+          <p class="panel-copy">
+            Real-time economy, training queue, multi-select formations, direct possession, and statue-siege win flow
+            are live in this single-page prototype.
+          </p>
+          <div class="button-grid" id="base-build-menu" aria-label="Build units"></div>
+        </section>
+
+        <section class="hud-panel">
+          <p class="panel-kicker">Command Menu</p>
+          <div class="button-grid" id="unit-command-menu" aria-label="Unit commands"></div>
+        </section>
+      </aside>
+
+      <aside class="hud-stack hud-right">
+        <section class="hud-panel">
+          <p class="panel-kicker">Battle Feed</p>
+          <p class="status-text" id="status-value">Selection drag active. Click a unit to possess it.</p>
+          <div class="feed-list" id="event-feed"></div>
+        </section>
+
+        <section class="hud-panel">
+          <p class="panel-kicker">Swap-Ready Assets</p>
+          <p class="panel-copy">
+            Transparent code-native SVG placeholders occupy stable slots so public-domain art can replace
+            unit, structure, and resource visuals later without changing game logic.
+          </p>
+        </section>
+      </aside>
+
+      <section class="overlay" id="result-overlay" aria-hidden="true">
+        <div class="overlay-card">
+          <p class="panel-kicker">Statue Destroyed</p>
+          <h2 id="overlay-title">Battle resolved</h2>
+          <p class="panel-copy" id="overlay-body">One empire has fallen.</p>
+          <button id="overlay-button" type="button">Restart match</button>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

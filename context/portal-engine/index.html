@@ -1,0 +1,759 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Portal: 2D Flash Paradox</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #07111c;
+      --panel: rgba(8, 18, 31, 0.9);
+      --panel-strong: rgba(10, 23, 38, 0.98);
+      --ink: #eef7ff;
+      --muted: #8ca5be;
+      --portal-blue: #4fc5ff;
+      --portal-orange: #ffab4f;
+      --success: #9de7a6;
+      --danger: #ff9e94;
+      --line: rgba(255, 255, 255, 0.1);
+      font-family: Georgia, "Trebuchet MS", serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at top, rgba(79, 197, 255, 0.16), transparent 24%),
+        radial-gradient(circle at 70% 10%, rgba(255, 171, 79, 0.12), transparent 20%),
+        linear-gradient(180deg, #08121f 0%, #04080f 100%);
+      color: var(--ink);
+    }
+
+    main {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 18px;
+    }
+
+    #app {
+      width: min(1120px, 100%);
+      min-height: min(100vh - 36px, 780px);
+      border-radius: 26px;
+      overflow: hidden;
+      position: relative;
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, rgba(6, 13, 22, 0.97), rgba(7, 12, 20, 0.99));
+      box-shadow: 0 32px 90px rgba(0, 0, 0, 0.46);
+    }
+
+    .screen {
+      position: absolute;
+      inset: 0;
+      display: none;
+      padding: 28px;
+    }
+
+    .screen.active { display: grid; }
+
+    .shell {
+      display: grid;
+      align-content: center;
+      gap: 16px;
+      max-width: 720px;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      width: fit-content;
+      padding: 8px 12px;
+      border-radius: 999px;
+      border: 1px solid rgba(79, 197, 255, 0.28);
+      background: rgba(79, 197, 255, 0.1);
+      color: #bbebff;
+      font-size: 0.88rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    h1, h2, h3, p {
+      margin: 0;
+    }
+
+    .title {
+      font-size: clamp(2.8rem, 5vw, 5rem);
+      line-height: 0.92;
+      letter-spacing: -0.04em;
+    }
+
+    .lede {
+      max-width: 60ch;
+      color: var(--muted);
+      font-size: 1.02rem;
+      line-height: 1.5;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 18px;
+      backdrop-filter: blur(10px);
+    }
+
+    .stack {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    button {
+      appearance: none;
+      border: 0;
+      border-radius: 999px;
+      padding: 12px 18px;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+      background: linear-gradient(180deg, #8ad2ff, #4d84df);
+      color: #04111f;
+    }
+
+    button.secondary {
+      background: linear-gradient(180deg, #24334f, #172337);
+      color: var(--ink);
+      border: 1px solid var(--line);
+    }
+
+    button.ghost {
+      background: transparent;
+      color: var(--ink);
+      border: 1px solid var(--line);
+    }
+
+    .level-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 14px;
+      width: 100%;
+    }
+
+    .level-card {
+      display: grid;
+      gap: 10px;
+      padding: 18px;
+      border-radius: 18px;
+      background: var(--panel-strong);
+      border: 1px solid var(--line);
+    }
+
+    .meta {
+      color: var(--muted);
+      font-size: 0.92rem;
+      line-height: 1.45;
+    }
+
+    .play-screen {
+      grid-template-columns: minmax(0, 1fr) 300px;
+      align-items: start;
+      gap: 18px;
+      height: 100%;
+    }
+
+    .viewport {
+      min-height: 640px;
+      border-radius: 22px;
+      border: 1px solid var(--line);
+      overflow: hidden;
+      background:
+        linear-gradient(180deg, rgba(82, 140, 214, 0.12), transparent 24%),
+        #06101b;
+      display: grid;
+    }
+
+    canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    .rail {
+      display: grid;
+      gap: 14px;
+    }
+
+    .tiny {
+      color: var(--muted);
+      font-size: 0.9rem;
+      line-height: 1.45;
+    }
+
+    .result-shell {
+      display: grid;
+      gap: 16px;
+      align-content: center;
+      justify-items: start;
+      max-width: 680px;
+    }
+
+    .cake {
+      font-size: clamp(3.2rem, 8vw, 6rem);
+      line-height: 0.95;
+    }
+
+    .status-line {
+      min-height: 1.4em;
+      color: #d6ecff;
+    }
+
+    @media (max-width: 940px) {
+      .screen { padding: 16px; }
+      .play-screen {
+        grid-template-columns: 1fr;
+      }
+      .viewport {
+        min-height: 52vh;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div id="app">
+      <section class="screen active" data-screen="menu">
+        <div class="shell">
+          <span class="eyebrow">Momentum-Link Prototype</span>
+          <h1 class="title">Portal: 2D Flash Paradox</h1>
+          <p class="lede">A standalone browser puzzle prototype with fixed-step physics, ray-cast portal placement, weighted cube button logic, and a final cake screen.</p>
+          <div class="stack">
+            <button type="button" data-action="start">Start Campaign</button>
+            <button type="button" class="secondary" data-action="levels">Level Select</button>
+          </div>
+          <div class="panel tiny">
+            Left click fires the blue portal. Right click fires the orange portal. Move with A/D or Left/Right, jump with W or Space, grab or drop with E, reset with R.
+          </div>
+        </div>
+      </section>
+
+      <section class="screen" data-screen="levels">
+        <div class="shell" style="max-width:none;">
+          <h2 class="title" style="font-size:clamp(2rem,4vw,3.4rem);">Level Select</h2>
+          <p class="lede">Built-in test chambers are local, self-contained, and tuned around portalable panel surfaces only.</p>
+          <div class="level-grid" id="level-grid"></div>
+          <div class="stack">
+            <button type="button" class="ghost" data-action="menu">Back</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="screen play-screen" data-screen="play">
+        <div class="viewport">
+          <canvas id="game-canvas" width="960" height="640" aria-label="Portal game viewport"></canvas>
+        </div>
+        <aside class="rail">
+          <div class="panel">
+            <div class="tiny">Current Chamber</div>
+            <h3 id="hud-title">Waiting</h3>
+            <p class="tiny" id="hud-objective">Pick a level.</p>
+          </div>
+          <div class="panel">
+            <div class="tiny">Portal State</div>
+            <p class="tiny" id="portal-state">Blue: offline. Orange: offline.</p>
+            <p class="status-line tiny" id="status-line">Ready.</p>
+          </div>
+          <div class="panel">
+            <div class="tiny">Controls</div>
+            <p class="tiny">A/D move, W/Space jump, E grab or drop, R reset, Esc menu.</p>
+            <div class="stack" style="margin-top:12px;">
+              <button type="button" class="secondary" data-action="reset">Reset</button>
+              <button type="button" class="ghost" data-action="menu">Menu</button>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="tiny">World Readout</div>
+            <p class="tiny" id="world-readout">Simulation idle.</p>
+          </div>
+        </aside>
+      </section>
+
+      <section class="screen" data-screen="result">
+        <div class="result-shell">
+          <span class="eyebrow">Final Chamber Complete</span>
+          <h2 class="cake">Cake Achieved</h2>
+          <p class="lede">The paradox resolves with a slice of victory. Replay the chambers or head back to the main menu.</p>
+          <div class="stack">
+            <button type="button" data-action="replay">Replay Campaign</button>
+            <button type="button" class="secondary" data-action="menu">Menu</button>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script src="./PhysicsCore.js"></script>
+  <script src="./PortalLogic.js"></script>
+  <script src="./LevelParser.js"></script>
+  <script>
+    (function bootstrapPortalEngine(globalScope) {
+      "use strict";
+
+      var PhysicsCore = globalScope.PhysicsCore;
+      var PortalLogic = globalScope.PortalLogic;
+      var LevelParser = globalScope.LevelParser;
+
+      if (!PhysicsCore || !PortalLogic || !LevelParser) {
+        throw new Error("Portal engine bootstrap failed: modules are missing.");
+      }
+
+      var app = document.getElementById("app");
+      var canvas = document.getElementById("game-canvas");
+      var context = canvas.getContext("2d");
+      var levelGrid = document.getElementById("level-grid");
+      var hudTitle = document.getElementById("hud-title");
+      var hudObjective = document.getElementById("hud-objective");
+      var portalState = document.getElementById("portal-state");
+      var statusLine = document.getElementById("status-line");
+      var worldReadout = document.getElementById("world-readout");
+      var screens = {
+        menu: app.querySelector('[data-screen="menu"]'),
+        levels: app.querySelector('[data-screen="levels"]'),
+        play: app.querySelector('[data-screen="play"]'),
+        result: app.querySelector('[data-screen="result"]')
+      };
+
+      var levels = LevelParser.parseLevels(LevelParser.createBuiltinLevels());
+      var levelIndexById = {};
+      var activeScreen = "menu";
+      var activeLevelIndex = 0;
+      var world = null;
+      var portalSystem = null;
+      var lastTimestamp = 0;
+      var statusTimer = 0;
+      var pendingAdvance = 0;
+      var images = {
+        portalFrame: new Image(),
+        cube: new Image(),
+        button: new Image()
+      };
+      var input = {
+        left: false,
+        right: false,
+        jumpHeld: false,
+        jumpPressed: false,
+        grabPressed: false,
+        dropPressed: false
+      };
+      var pointer = {
+        x: canvas.width * 0.5,
+        y: canvas.height * 0.5
+      };
+
+      images.portalFrame.src = "./assets/images/portal-frame.svg";
+      images.cube.src = "./assets/images/cube.svg";
+      images.button.src = "./assets/images/button.svg";
+
+      levels.forEach(function rememberIndex(level, index) {
+        levelIndexById[level.id] = index;
+      });
+
+      function showScreen(name) {
+        Object.keys(screens).forEach(function updateScreen(key) {
+          screens[key].classList.toggle("active", key === name);
+        });
+        activeScreen = name;
+      }
+
+      function currentLevel() {
+        return levels[activeLevelIndex];
+      }
+
+      function setStatus(message, seconds) {
+        statusLine.textContent = message;
+        statusTimer = typeof seconds === "number" ? seconds : 2.4;
+      }
+
+      function setHud(level) {
+        hudTitle.textContent = level.title;
+        hudObjective.textContent = level.objective;
+      }
+
+      function bootLevel(index) {
+        activeLevelIndex = Math.max(0, Math.min(index, levels.length - 1));
+        world = new PhysicsCore.PhysicsWorld(currentLevel());
+        portalSystem = new PortalLogic.PortalSystem(currentLevel());
+        pendingAdvance = 0;
+        setHud(currentLevel());
+        setStatus("Chamber online.", 2);
+        showScreen("play");
+      }
+
+      function restartCampaign() {
+        bootLevel(0);
+      }
+
+      function populateLevelCards() {
+        levelGrid.innerHTML = "";
+        levels.forEach(function renderCard(level, index) {
+          var card = document.createElement("article");
+          var button = document.createElement("button");
+          button.type = "button";
+          button.textContent = "Play";
+          button.addEventListener("click", function onClick() {
+            bootLevel(index);
+          });
+
+          card.className = "level-card";
+          card.innerHTML = [
+            "<h3>" + level.title + "</h3>",
+            "<p class='meta'>" + level.objective + "</p>",
+            "<p class='meta'>Portalable panels are bright lab plates. Dark stone rejects portal placement.</p>"
+          ].join("");
+          card.appendChild(button);
+          levelGrid.appendChild(card);
+        });
+      }
+
+      function getMoveX() {
+        return (input.right ? 1 : 0) - (input.left ? 1 : 0);
+      }
+
+      function resetTransientInput() {
+        input.jumpPressed = false;
+        input.grabPressed = false;
+        input.dropPressed = false;
+      }
+
+      function getPlayerActor(state) {
+        var i;
+        for (i = 0; i < state.actors.length; i += 1) {
+          if (state.actors[i].type === "player") {
+            return state.actors[i];
+          }
+        }
+        return null;
+      }
+
+      function attemptPortal(color) {
+        if (activeScreen !== "play" || !world || !portalSystem) {
+          return;
+        }
+
+        var player = world.player;
+        var origin = {
+          x: player.bounds.centerX(),
+          y: player.bounds.centerY()
+        };
+        var direction = {
+          x: pointer.x - origin.x,
+          y: pointer.y - origin.y
+        };
+        var result = portalSystem.tryPlacePortal(color, origin, direction, currentLevel());
+
+        if (result.placed) {
+          setStatus(color.charAt(0).toUpperCase() + color.slice(1) + " portal locked.", 1.6);
+        } else if (result.reason === "surface-too-small") {
+          setStatus("Surface too small for a stable portal.", 2);
+        } else {
+          setStatus("Portal rejected: target surface is not portalable.", 2);
+        }
+      }
+
+      function drawSurface(surface) {
+        context.fillStyle = surface.isPortalable ? "#213c52" : "#121b28";
+        context.fillRect(surface.x, surface.y, surface.width, surface.height);
+        context.strokeStyle = surface.isPortalable ? "rgba(141, 214, 255, 0.35)" : "rgba(255, 255, 255, 0.08)";
+        context.strokeRect(surface.x + 0.5, surface.y + 0.5, surface.width - 1, surface.height - 1);
+      }
+
+      function drawPortal(portal) {
+        var x = portal.center.x - portal.width * 0.5;
+        var y = portal.center.y - portal.height * 0.5;
+        context.save();
+        context.fillStyle = portal.color === "orange" ? "rgba(255, 171, 79, 0.92)" : "rgba(79, 197, 255, 0.92)";
+        context.shadowBlur = 24;
+        context.shadowColor = portal.color === "orange" ? "#ffab4f" : "#4fc5ff";
+        context.beginPath();
+        context.ellipse(portal.center.x, portal.center.y, Math.max(8, portal.width * 0.6), Math.max(8, portal.height * 0.6), 0, 0, Math.PI * 2);
+        context.fill();
+        context.shadowBlur = 0;
+
+        if (images.portalFrame.complete) {
+          context.drawImage(images.portalFrame, x - 10, y - 10, portal.width + 20, portal.height + 20);
+        }
+        context.restore();
+      }
+
+      function drawButton(button) {
+        if (images.button.complete) {
+          context.drawImage(images.button, button.x, button.y - 8, button.width, button.height + 16);
+        } else {
+          context.fillStyle = button.pressed ? "#9de7a6" : "#7e8ca8";
+          context.fillRect(button.x, button.y, button.width, button.height);
+        }
+      }
+
+      function drawDoor(door) {
+        context.fillStyle = door.open ? "rgba(157, 231, 166, 0.44)" : "rgba(255, 114, 102, 0.38)";
+        context.fillRect(door.x, door.y, door.width, door.height);
+        context.strokeStyle = door.open ? "#9de7a6" : "#ff9e94";
+        context.lineWidth = 3;
+        context.strokeRect(door.x + 1.5, door.y + 1.5, door.width - 3, door.height - 3);
+      }
+
+      function drawActor(actor) {
+        if (actor.type === "player") {
+          context.fillStyle = "#f2f7ff";
+          context.fillRect(actor.x, actor.y, actor.width, actor.height);
+          context.fillStyle = "#08111d";
+          context.fillRect(actor.x + actor.width * 0.2, actor.y + actor.height * 0.24, actor.width * 0.2, actor.height * 0.14);
+          context.fillRect(actor.x + actor.width * 0.6, actor.y + actor.height * 0.24, actor.width * 0.2, actor.height * 0.14);
+        } else if (actor.type === "weightedCube") {
+          if (images.cube.complete) {
+            context.drawImage(images.cube, actor.x, actor.y, actor.width, actor.height);
+          } else {
+            context.fillStyle = "#d7e4f8";
+            context.fillRect(actor.x, actor.y, actor.width, actor.height);
+          }
+        }
+      }
+
+      function drawPointerLine(playerActor) {
+        context.save();
+        context.strokeStyle = "rgba(255,255,255,0.18)";
+        context.setLineDash([6, 8]);
+        context.beginPath();
+        context.moveTo(playerActor.x + playerActor.width * 0.5, playerActor.y + playerActor.height * 0.5);
+        context.lineTo(pointer.x, pointer.y);
+        context.stroke();
+        context.restore();
+      }
+
+      function drawScene(state) {
+        var playerActor = getPlayerActor(state);
+        var renderState = portalSystem.getRenderState();
+
+        context.clearRect(0, 0, canvas.width, canvas.height);
+        context.fillStyle = "#07111c";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        context.fillStyle = "rgba(52, 84, 124, 0.16)";
+        context.fillRect(0, 0, canvas.width, 120);
+
+        currentLevel().surfaces.forEach(drawSurface);
+        state.buttons.forEach(drawButton);
+        state.doors.forEach(drawDoor);
+        renderState.portals.forEach(drawPortal);
+
+        state.actors.forEach(function draw(actor) {
+          if (actor.type === "player" || actor.type === "weightedCube") {
+            drawActor(actor);
+          }
+        });
+
+        if (playerActor) {
+          drawPointerLine(playerActor);
+        }
+      }
+
+      function updateReadout(state) {
+        var renderState = portalSystem.getRenderState();
+        var blueOnline = renderState.portals.some(function checkBlue(portal) {
+          return portal.color === "blue";
+        });
+        var orangeOnline = renderState.portals.some(function checkOrange(portal) {
+          return portal.color === "orange";
+        });
+        var carried = state.carryingId ? ("Carrying " + state.carryingId) : "Hands free";
+        var openDoors = state.doors.filter(function filterOpen(door) {
+          return door.open;
+        }).length;
+
+        portalState.textContent = "Blue: " + (blueOnline ? "online" : "offline") + ". Orange: " + (orangeOnline ? "online" : "offline") + ".";
+        worldReadout.textContent = carried + " | Buttons: " + state.buttons.filter(function filterPressed(button) {
+          return button.pressed;
+        }).length + "/" + state.buttons.length + " | Doors open: " + openDoors + "/" + state.doors.length;
+      }
+
+      function advanceAfterCompletion() {
+        var nextLevelId = currentLevel().nextLevelId;
+        if (!nextLevelId) {
+          showScreen("result");
+          return;
+        }
+
+        if (Object.prototype.hasOwnProperty.call(levelIndexById, nextLevelId)) {
+          bootLevel(levelIndexById[nextLevelId]);
+        } else {
+          showScreen("result");
+        }
+      }
+
+      function tick(timestamp) {
+        var dt = lastTimestamp ? Math.min((timestamp - lastTimestamp) / 1000, 0.05) : 1 / 60;
+        lastTimestamp = timestamp;
+
+        if (activeScreen === "play" && world && portalSystem) {
+          var state = world.step(dt, {
+            moveX: getMoveX(),
+            jumpPressed: input.jumpPressed,
+            grabPressed: input.grabPressed,
+            dropPressed: input.dropPressed
+          }, portalSystem);
+
+          portalSystem.updateEntityTransitions(world);
+          drawScene(state);
+          updateReadout(state);
+
+          if (statusTimer > 0) {
+            statusTimer = Math.max(0, statusTimer - dt);
+            if (statusTimer === 0) {
+              statusLine.textContent = "Ready.";
+            }
+          }
+
+          if (state.isComplete && pendingAdvance <= 0) {
+            pendingAdvance = 0.8;
+            setStatus(currentLevel().nextLevelId ? "Door clear. Advancing to next chamber." : "Final chamber clear. Cake incoming.", 2.4);
+          }
+          if (pendingAdvance > 0) {
+            pendingAdvance = Math.max(0, pendingAdvance - dt);
+            if (pendingAdvance === 0) {
+              advanceAfterCompletion();
+            }
+          }
+        }
+
+        resetTransientInput();
+        globalScope.requestAnimationFrame(tick);
+      }
+
+      app.addEventListener("click", function onClick(event) {
+        var action = event.target && event.target.getAttribute && event.target.getAttribute("data-action");
+        if (!action) {
+          return;
+        }
+
+        if (action === "start") {
+          restartCampaign();
+        } else if (action === "levels") {
+          populateLevelCards();
+          showScreen("levels");
+        } else if (action === "reset") {
+          bootLevel(activeLevelIndex);
+        } else if (action === "menu") {
+          showScreen("menu");
+          setStatus("Ready.", 0);
+        } else if (action === "replay") {
+          restartCampaign();
+        }
+      });
+
+      canvas.addEventListener("mousemove", function onMouseMove(event) {
+        var rect = canvas.getBoundingClientRect();
+        pointer.x = (event.clientX - rect.left) * (canvas.width / rect.width);
+        pointer.y = (event.clientY - rect.top) * (canvas.height / rect.height);
+      });
+
+      canvas.addEventListener("mousedown", function onMouseDown(event) {
+        if (event.button === 0) {
+          attemptPortal("blue");
+        } else if (event.button === 2) {
+          attemptPortal("orange");
+        }
+      });
+
+      canvas.addEventListener("contextmenu", function preventMenu(event) {
+        event.preventDefault();
+      });
+
+      globalScope.addEventListener("keydown", function onKeyDown(event) {
+        if (event.key === "a" || event.key === "A" || event.key === "ArrowLeft") {
+          input.left = true;
+        } else if (event.key === "d" || event.key === "D" || event.key === "ArrowRight") {
+          input.right = true;
+        } else if (event.key === "w" || event.key === "W" || event.key === " " || event.key === "ArrowUp") {
+          if (!input.jumpHeld) {
+            input.jumpPressed = true;
+          }
+          input.jumpHeld = true;
+        } else if (event.key === "e" || event.key === "E") {
+          if (world && world.player && world.player.carryingId) {
+            input.dropPressed = true;
+          } else {
+            input.grabPressed = true;
+          }
+        } else if ((event.key === "r" || event.key === "R") && activeScreen === "play") {
+          bootLevel(activeLevelIndex);
+        } else if (event.key === "Escape") {
+          showScreen("menu");
+        }
+      });
+
+      globalScope.addEventListener("keyup", function onKeyUp(event) {
+        if (event.key === "a" || event.key === "A" || event.key === "ArrowLeft") {
+          input.left = false;
+        } else if (event.key === "d" || event.key === "D" || event.key === "ArrowRight") {
+          input.right = false;
+        } else if (event.key === "w" || event.key === "W" || event.key === " " || event.key === "ArrowUp") {
+          input.jumpHeld = false;
+        }
+      });
+
+      populateLevelCards();
+      showScreen("menu");
+      globalScope.requestAnimationFrame(tick);
+      globalScope.PortalEngine = Object.freeze({
+        start: restartCampaign,
+        loadLevel: bootLevel,
+        showMenu: function showMenu() {
+          showScreen("menu");
+        },
+        debug: {
+          snapshot: function snapshot() {
+            return {
+              screen: activeScreen,
+              levelId: world ? currentLevel().id : null,
+              worldState: world ? world.getSerializableState() : null,
+              portalState: portalSystem ? portalSystem.getRenderState() : null
+            };
+          },
+          moveActor: function moveActor(id, x, y) {
+            var actor;
+            if (!world) {
+              return false;
+            }
+            if (world.player && world.player.id === id) {
+              world.player.bounds.x = x;
+              world.player.bounds.y = y;
+              return true;
+            }
+            actor = world.entities.find(function findEntity(entity) {
+              return entity.id === id;
+            });
+            if (!actor) {
+              return false;
+            }
+            actor.bounds.x = x;
+            actor.bounds.y = y;
+            return true;
+          },
+          step: function step(seconds) {
+            var elapsed = typeof seconds === "number" ? seconds : 1 / 60;
+            if (!world || !portalSystem) {
+              return null;
+            }
+            return world.step(elapsed, {
+              moveX: 0,
+              jumpPressed: false,
+              grabPressed: false,
+              dropPressed: false
+            }, portalSystem);
+          }
+        }
+      });
+    })(window);
+  </script>
+</body>
+</html>

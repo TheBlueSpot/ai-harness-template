@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="cloak" x1="0" x2="1">
+      <stop offset="0" stop-color="#9ef0ff"/>
+      <stop offset="1" stop-color="#5cb2ff"/>
+    </linearGradient>
+  </defs>
+  <circle cx="64" cy="28" r="14" fill="#f4dcc4"/>
+  <path d="M46 52c7-10 29-10 36 0l8 26-13 31H51L38 78Z" fill="url(#cloak)"/>
+  <path d="M52 57h24v19H52Z" fill="#19334e"/>
+  <path d="M45 84l-12 12 8 8 15-10Zm38 0 12 12-8 8-15-10Z" fill="#d7eef9"/>
+  <path d="M34 46h14l-2 37H32Zm54 0h8l9 33-9 3-12-32Z" fill="#cfe6ff"/>
+  <path d="M92 35h8l2 12h-8Z" fill="#7cc9ff"/>
+</svg>

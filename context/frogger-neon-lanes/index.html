@@ -1,0 +1,1013 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Frogger: Neon Lanes</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg-0: #050816;
+      --bg-1: #0a1330;
+      --bg-2: #111f48;
+      --panel: rgba(8, 14, 30, 0.8);
+      --line: rgba(150, 196, 255, 0.16);
+      --text: #eef7ff;
+      --muted: rgba(238, 247, 255, 0.7);
+      --mint: #7fffd4;
+      --cyan: #56d7ff;
+      --rose: #ff6aa2;
+      --amber: #ffd36c;
+      --grass: #0f332b;
+      --grass-2: #14503d;
+      --road: #14172a;
+      --river: #07182f;
+      --dock: #11253e;
+      font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      background:
+        radial-gradient(circle at 20% 20%, rgba(86, 215, 255, 0.12), transparent 22%),
+        radial-gradient(circle at 80% 10%, rgba(255, 106, 162, 0.12), transparent 18%),
+        linear-gradient(180deg, var(--bg-2), var(--bg-1) 45%, var(--bg-0));
+      color: var(--text);
+    }
+
+    body {
+      display: grid;
+      place-items: center;
+      padding: 16px;
+    }
+
+    .shell {
+      width: min(100%, 1180px);
+      display: grid;
+      gap: 14px;
+    }
+
+    .stage {
+      position: relative;
+      display: grid;
+      place-items: center;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 28px;
+      background: linear-gradient(180deg, rgba(9, 16, 34, 0.92), rgba(5, 9, 22, 0.92));
+      box-shadow:
+        0 28px 70px rgba(0, 0, 0, 0.45),
+        inset 0 1px 0 rgba(255, 255, 255, 0.05);
+      overflow: hidden;
+    }
+
+    .stage::before,
+    .stage::after {
+      content: "";
+      position: absolute;
+      width: 28vw;
+      height: 28vw;
+      border-radius: 999px;
+      filter: blur(72px);
+      opacity: 0.28;
+      pointer-events: none;
+    }
+
+    .stage::before {
+      top: -10vw;
+      left: -8vw;
+      background: rgba(86, 215, 255, 0.18);
+    }
+
+    .stage::after {
+      right: -10vw;
+      bottom: -10vw;
+      background: rgba(255, 106, 162, 0.18);
+    }
+
+    canvas {
+      width: 100%;
+      max-width: 1024px;
+      aspect-ratio: 4 / 3;
+      display: block;
+      border-radius: 22px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: #081121;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    }
+
+    .banner {
+      position: absolute;
+      top: 28px;
+      left: 28px;
+      padding: 12px 14px;
+      max-width: min(360px, calc(100% - 56px));
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      backdrop-filter: blur(12px);
+      pointer-events: none;
+    }
+
+    .banner h1 {
+      margin: 0 0 6px;
+      font-size: 15px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+    }
+
+    .banner p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .controls {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(70px, 96px));
+      justify-content: center;
+      gap: 10px;
+      margin: 0 auto;
+    }
+
+    .controls button {
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 14px 10px;
+      background: linear-gradient(180deg, rgba(16, 26, 50, 0.95), rgba(8, 14, 28, 0.95));
+      color: var(--text);
+      font: 700 15px/1 "Trebuchet MS", sans-serif;
+      box-shadow: 0 10px 22px rgba(0, 0, 0, 0.24);
+      touch-action: manipulation;
+    }
+
+    .controls button:active {
+      transform: translateY(1px) scale(0.99);
+    }
+
+    .up {
+      grid-column: 2;
+    }
+
+    .left {
+      grid-column: 1;
+    }
+
+    .down {
+      grid-column: 2;
+    }
+
+    .right {
+      grid-column: 3;
+    }
+
+    @media (max-width: 760px) {
+      body {
+        padding: 10px;
+      }
+
+      .stage {
+        padding: 10px;
+        border-radius: 22px;
+      }
+
+      .banner {
+        top: 18px;
+        left: 18px;
+        padding: 10px 12px;
+      }
+
+      .banner h1 {
+        font-size: 13px;
+      }
+
+      .banner p {
+        font-size: 12px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="stage">
+      <canvas id="game" width="1024" height="768" aria-label="Frogger Neon Lanes game canvas"></canvas>
+      <aside class="banner">
+        <h1>Frogger: Neon Lanes</h1>
+        <p>Arrow keys, WASD, or tap controls. Ride barges, dodge traffic, and charge five docking pads before the timer burns out.</p>
+      </aside>
+    </section>
+
+    <section class="controls" aria-label="Touch controls">
+      <button class="up" data-move="up" type="button">UP</button>
+      <button class="left" data-move="left" type="button">LEFT</button>
+      <button class="down" data-move="down" type="button">DOWN</button>
+      <button class="right" data-move="right" type="button">RIGHT</button>
+    </section>
+  </main>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const CONFIG = Object.freeze({
+        width: 1024,
+        height: 768,
+        cell: 64,
+        cols: 16,
+        rows: 12,
+        startX: 512,
+        startY: 672,
+        frogSize: 36,
+        hopTime: 0.12,
+        roundTime: 45,
+        maxLives: 4,
+        maxFrame: 0.05
+      });
+
+      const STATES = Object.freeze({
+        MENU: "MENU",
+        PLAYING: "PLAYING",
+        WIN: "WIN",
+        LOSE: "LOSE"
+      });
+
+      const ROAD_ROWS = new Set([6, 7, 8, 9]);
+      const RIVER_ROWS = new Set([1, 2, 3, 4]);
+
+      const canvas = document.getElementById("game");
+      const ctx = canvas.getContext("2d");
+      const controlButtons = document.querySelectorAll("[data-move]");
+
+      const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+      const lerp = (from, to, t) => from + (to - from) * t;
+      const rand = (min, max) => min + Math.random() * (max - min);
+
+      const goalSlots = [
+        { x: 104, width: 102, filled: false },
+        { x: 296, width: 102, filled: false },
+        { x: 488, width: 102, filled: false },
+        { x: 680, width: 102, filled: false },
+        { x: 872, width: 102, filled: false }
+      ];
+
+      function roundRectPath(context, x, y, width, height, radius) {
+        const r = Math.min(radius, width * 0.5, height * 0.5);
+        context.beginPath();
+        context.moveTo(x + r, y);
+        context.arcTo(x + width, y, x + width, y + height, r);
+        context.arcTo(x + width, y + height, x, y + height, r);
+        context.arcTo(x, y + height, x, y, r);
+        context.arcTo(x, y, x + width, y, r);
+        context.closePath();
+      }
+
+      function makeLane(config) {
+        const items = [];
+        for (let i = 0; i < config.count; i += 1) {
+          items.push({
+            x: config.offset + i * (config.itemWidth + config.gap),
+            width: config.itemWidth
+          });
+        }
+
+        return {
+          ...config,
+          y: config.row * CONFIG.cell,
+          items,
+          loop: config.count * (config.itemWidth + config.gap)
+        };
+      }
+
+      class Soundboard {
+        constructor() {
+          this.context = null;
+          this.unlocked = false;
+        }
+
+        unlock() {
+          this.unlocked = true;
+          if (!this.context) {
+            const AudioContextRef = window.AudioContext || window.webkitAudioContext;
+            if (AudioContextRef) {
+              this.context = new AudioContextRef();
+            }
+          }
+          if (this.context && this.context.state === "suspended") {
+            this.context.resume().catch(() => {});
+          }
+        }
+
+        play(type) {
+          if (!this.unlocked || !this.context) {
+            return;
+          }
+
+          const table = {
+            hop: { wave: "triangle", start: 380, end: 590, time: 0.08, gain: 0.04 },
+            goal: { wave: "sine", start: 440, end: 880, time: 0.28, gain: 0.06 },
+            hit: { wave: "sawtooth", start: 180, end: 70, time: 0.18, gain: 0.07 },
+            drown: { wave: "triangle", start: 260, end: 120, time: 0.22, gain: 0.06 },
+            win: { wave: "triangle", start: 520, end: 1040, time: 0.44, gain: 0.08 }
+          };
+          const tone = table[type] || table.hop;
+          const now = this.context.currentTime;
+          const osc = this.context.createOscillator();
+          const gain = this.context.createGain();
+          osc.type = tone.wave;
+          osc.frequency.setValueAtTime(tone.start, now);
+          osc.frequency.exponentialRampToValueAtTime(tone.end, now + tone.time);
+          gain.gain.setValueAtTime(0.001, now);
+          gain.gain.exponentialRampToValueAtTime(tone.gain, now + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.0001, now + tone.time);
+          osc.connect(gain);
+          gain.connect(this.context.destination);
+          osc.start(now);
+          osc.stop(now + tone.time + 0.02);
+        }
+      }
+
+      class ParticleSystem {
+        constructor() {
+          this.items = [];
+        }
+
+        burst(x, y, amount, palette, speed, gravity = 20) {
+          for (let i = 0; i < amount; i += 1) {
+            const angle = Math.random() * Math.PI * 2;
+            const drift = rand(0.35, 1);
+            this.items.push({
+              x,
+              y,
+              vx: Math.cos(angle) * speed * drift,
+              vy: Math.sin(angle) * speed * drift,
+              life: rand(0.25, 0.7),
+              maxLife: rand(0.25, 0.7),
+              size: rand(2, 5),
+              gravity,
+              color: palette[(Math.random() * palette.length) | 0]
+            });
+          }
+        }
+
+        update(dt) {
+          for (let i = this.items.length - 1; i >= 0; i -= 1) {
+            const item = this.items[i];
+            item.life -= dt;
+            if (item.life <= 0) {
+              this.items.splice(i, 1);
+              continue;
+            }
+            item.vx *= 0.993;
+            item.vy += item.gravity * dt;
+            item.x += item.vx * dt;
+            item.y += item.vy * dt;
+          }
+        }
+
+        draw(context) {
+          for (const item of this.items) {
+            context.globalAlpha = item.life / item.maxLife;
+            context.fillStyle = item.color;
+            context.beginPath();
+            context.arc(item.x, item.y, item.size, 0, Math.PI * 2);
+            context.fill();
+          }
+          context.globalAlpha = 1;
+        }
+      }
+
+      class NeonLanesGame {
+        constructor(context) {
+          this.ctx = context;
+          this.soundboard = new Soundboard();
+          this.particles = new ParticleSystem();
+          this.state = STATES.MENU;
+          this.message = "Cross five neon docks.";
+          this.score = 0;
+          this.lives = CONFIG.maxLives;
+          this.timeLeft = CONFIG.roundTime;
+          this.elapsed = 0;
+          this.flash = 0;
+          this.stars = Array.from({ length: 120 }, () => ({
+            x: Math.random() * CONFIG.width,
+            y: Math.random() * CONFIG.height,
+            size: rand(0.8, 2.6),
+            alpha: rand(0.18, 0.9),
+            drift: rand(8, 22)
+          }));
+          this.lanes = [
+            makeLane({ row: 1, kind: "river", speed: -88, itemWidth: 180, gap: 118, count: 5, offset: 18, colorA: "#77f6ff", colorB: "#198fbf" }),
+            makeLane({ row: 2, kind: "river", speed: 118, itemWidth: 220, gap: 122, count: 4, offset: -90, colorA: "#9df6d8", colorB: "#18906d" }),
+            makeLane({ row: 3, kind: "river", speed: -164, itemWidth: 152, gap: 108, count: 6, offset: 26, colorA: "#e0ff9e", colorB: "#89af27" }),
+            makeLane({ row: 4, kind: "river", speed: 92, itemWidth: 252, gap: 164, count: 4, offset: -120, colorA: "#fce28c", colorB: "#d68d1f" }),
+            makeLane({ row: 6, kind: "road", speed: 186, itemWidth: 148, gap: 132, count: 5, offset: 8, colorA: "#ff8eb3", colorB: "#d22e72" }),
+            makeLane({ row: 7, kind: "road", speed: -248, itemWidth: 92, gap: 116, count: 7, offset: 32, colorA: "#6efff0", colorB: "#1895ba" }),
+            makeLane({ row: 8, kind: "road", speed: 140, itemWidth: 182, gap: 144, count: 5, offset: -40, colorA: "#ffc17d", colorB: "#d86e1a" }),
+            makeLane({ row: 9, kind: "road", speed: -304, itemWidth: 120, gap: 104, count: 6, offset: 14, colorA: "#d2a3ff", colorB: "#7c36d6" })
+          ];
+          this.resetGoals();
+          this.resetFrog();
+          this.bindInput();
+        }
+
+        bindInput() {
+          const moveMap = {
+            ArrowUp: "up",
+            KeyW: "up",
+            ArrowDown: "down",
+            KeyS: "down",
+            ArrowLeft: "left",
+            KeyA: "left",
+            ArrowRight: "right",
+            KeyD: "right"
+          };
+
+          window.addEventListener("keydown", (event) => {
+            if (event.code === "Space" || event.code === "Enter") {
+              event.preventDefault();
+              this.soundboard.unlock();
+              this.handlePrimaryAction();
+              return;
+            }
+
+            const move = moveMap[event.code];
+            if (!move) {
+              return;
+            }
+            event.preventDefault();
+            this.soundboard.unlock();
+            if (this.state === STATES.PLAYING) {
+              this.queueMove(move);
+            } else {
+              this.handlePrimaryAction();
+            }
+          });
+
+          controlButtons.forEach((button) => {
+            const handle = (event) => {
+              event.preventDefault();
+              this.soundboard.unlock();
+              if (this.state === STATES.PLAYING) {
+                this.queueMove(button.dataset.move);
+              } else {
+                this.handlePrimaryAction();
+              }
+            };
+            button.addEventListener("pointerdown", handle);
+            button.addEventListener("click", handle);
+          });
+
+          canvas.addEventListener("pointerdown", () => {
+            this.soundboard.unlock();
+            if (this.state !== STATES.PLAYING) {
+              this.handlePrimaryAction();
+            }
+          });
+        }
+
+        resetGoals() {
+          goalSlots.forEach((slot) => {
+            slot.filled = false;
+          });
+        }
+
+        resetFrog() {
+          this.frog = {
+            x: CONFIG.startX,
+            y: CONFIG.startY,
+            fromX: CONFIG.startX,
+            fromY: CONFIG.startY,
+            targetX: CONFIG.startX,
+            targetY: CONFIG.startY,
+            progress: 1,
+            moving: false,
+            size: CONFIG.frogSize
+          };
+        }
+
+        startGame() {
+          this.resetGoals();
+          this.score = 0;
+          this.lives = CONFIG.maxLives;
+          this.timeLeft = CONFIG.roundTime;
+          this.flash = 0;
+          this.message = "Cross five neon docks.";
+          this.death = null;
+          this.resetFrog();
+          this.state = STATES.PLAYING;
+        }
+
+        handlePrimaryAction() {
+          if (this.state === STATES.MENU) {
+            this.startGame();
+            return;
+          }
+          if (this.state === STATES.WIN || this.state === STATES.LOSE) {
+            this.startGame();
+          }
+        }
+
+        queueMove(direction) {
+          if (this.death || this.frog.moving) {
+            return;
+          }
+
+          let nextX = this.frog.x;
+          let nextY = this.frog.y;
+
+          if (direction === "up") {
+            nextY -= CONFIG.cell;
+          } else if (direction === "down") {
+            nextY += CONFIG.cell;
+          } else if (direction === "left") {
+            nextX -= CONFIG.cell;
+          } else if (direction === "right") {
+            nextX += CONFIG.cell;
+          }
+
+          nextX = clamp(nextX, CONFIG.cell * 0.5, CONFIG.width - CONFIG.cell * 0.5);
+          nextY = clamp(nextY, CONFIG.cell * 0.5, CONFIG.height - CONFIG.cell * 0.5);
+
+          if (nextX === this.frog.x && nextY === this.frog.y) {
+            return;
+          }
+
+          this.frog.fromX = this.frog.x;
+          this.frog.fromY = this.frog.y;
+          this.frog.targetX = nextX;
+          this.frog.targetY = nextY;
+          this.frog.progress = 0;
+          this.frog.moving = true;
+          if (direction === "up") {
+            this.score += 10;
+          }
+          this.soundboard.play("hop");
+        }
+
+        getCurrentRow() {
+          return clamp(Math.round((this.frog.y - CONFIG.cell * 0.5) / CONFIG.cell), 0, CONFIG.rows - 1);
+        }
+
+        getLaneForRow(row) {
+          return this.lanes.find((lane) => lane.row === row) || null;
+        }
+
+        resolveSupport(row) {
+          const lane = this.getLaneForRow(row);
+          if (!lane || lane.kind !== "river") {
+            return null;
+          }
+
+          const frogHalf = this.frog.size * 0.55;
+          for (const item of lane.items) {
+            if (this.frog.x + frogHalf > item.x && this.frog.x - frogHalf < item.x + item.width) {
+              return lane;
+            }
+          }
+          return null;
+        }
+
+        frogHitsVehicle(row) {
+          const lane = this.getLaneForRow(row);
+          if (!lane || lane.kind !== "road") {
+            return false;
+          }
+
+          const frogHalf = this.frog.size * 0.48;
+          const laneTop = lane.y + 8;
+          const laneBottom = lane.y + CONFIG.cell - 8;
+          if (this.frog.y + frogHalf < laneTop || this.frog.y - frogHalf > laneBottom) {
+            return false;
+          }
+
+          for (const item of lane.items) {
+            const carTop = lane.y + 12;
+            const carBottom = lane.y + CONFIG.cell - 12;
+            if (
+              this.frog.x + frogHalf > item.x + 6 &&
+              this.frog.x - frogHalf < item.x + item.width - 6 &&
+              this.frog.y + frogHalf > carTop &&
+              this.frog.y - frogHalf < carBottom
+            ) {
+              return true;
+            }
+          }
+          return false;
+        }
+
+        clearLife(reason, soundKey, palette) {
+          if (this.death || this.state !== STATES.PLAYING) {
+            return;
+          }
+
+          this.lives -= 1;
+          this.flash = 1;
+          this.message = reason;
+          this.particles.burst(this.frog.x, this.frog.y, 24, palette, 240, 34);
+          this.soundboard.play(soundKey);
+          this.death = {
+            timer: 0.95,
+            final: this.lives <= 0
+          };
+        }
+
+        scoreGoal(slot) {
+          slot.filled = true;
+          this.score += 200 + Math.round(this.timeLeft * 5);
+          this.message = "Dock secured. Push the next lane.";
+          this.particles.burst(slot.x, CONFIG.cell * 0.5, 30, ["#7fffd4", "#56d7ff", "#ffffff"], 220, 16);
+          this.soundboard.play("goal");
+          if (goalSlots.every((entry) => entry.filled)) {
+            this.state = STATES.WIN;
+            this.message = "All five docks charged.";
+            this.soundboard.play("win");
+            return;
+          }
+          this.timeLeft = CONFIG.roundTime;
+          this.resetFrog();
+        }
+
+        failTopRow() {
+          this.clearLife("Missed the dock gap.", "drown", ["#56d7ff", "#9be6ff", "#ffffff"]);
+        }
+
+        updateLanes(dt) {
+          for (const lane of this.lanes) {
+            for (const item of lane.items) {
+              item.x += lane.speed * dt;
+              if (lane.speed > 0 && item.x > CONFIG.width) {
+                item.x -= lane.loop;
+              } else if (lane.speed < 0 && item.x + item.width < 0) {
+                item.x += lane.loop;
+              }
+            }
+          }
+        }
+
+        updateStars(dt) {
+          for (const star of this.stars) {
+            star.y += star.drift * dt;
+            if (star.y > CONFIG.height + 4) {
+              star.y = -4;
+              star.x = Math.random() * CONFIG.width;
+            }
+          }
+        }
+
+        update(dt) {
+          this.elapsed += dt;
+          this.flash = Math.max(0, this.flash - dt * 1.7);
+          this.updateStars(dt);
+          this.updateLanes(dt);
+          this.particles.update(dt);
+
+          if (this.state !== STATES.PLAYING) {
+            return;
+          }
+
+          if (this.death) {
+            this.death.timer -= dt;
+            if (this.death.timer <= 0) {
+              if (this.death.final) {
+                this.state = STATES.LOSE;
+                return;
+              }
+              this.timeLeft = CONFIG.roundTime;
+              this.resetFrog();
+              this.death = null;
+            }
+            return;
+          }
+
+          this.timeLeft -= dt;
+          if (this.timeLeft <= 0) {
+            this.timeLeft = 0;
+            this.clearLife("Clock burned out.", "hit", ["#ffd36c", "#ff8f59", "#ffffff"]);
+            return;
+          }
+
+          if (this.frog.moving) {
+            this.frog.progress += dt / CONFIG.hopTime;
+            const t = Math.min(this.frog.progress, 1);
+            const arc = Math.sin(t * Math.PI) * 12;
+            this.frog.x = lerp(this.frog.fromX, this.frog.targetX, t);
+            this.frog.y = lerp(this.frog.fromY, this.frog.targetY, t) - arc;
+            if (t >= 1) {
+              this.frog.x = this.frog.targetX;
+              this.frog.y = this.frog.targetY;
+              this.frog.moving = false;
+            }
+          }
+
+          const row = this.getCurrentRow();
+          if (RIVER_ROWS.has(row)) {
+            const support = this.resolveSupport(row);
+            if (!support) {
+              this.clearLife("Current pulled you under.", "drown", ["#56d7ff", "#9be6ff", "#ffffff"]);
+              return;
+            }
+            this.frog.x += support.speed * dt;
+          }
+
+          if (this.frog.x < CONFIG.cell * 0.25 || this.frog.x > CONFIG.width - CONFIG.cell * 0.25) {
+            this.clearLife("Drifted out of the lane.", "drown", ["#56d7ff", "#9be6ff", "#ffffff"]);
+            return;
+          }
+
+          if (ROAD_ROWS.has(row) && this.frogHitsVehicle(row)) {
+            this.clearLife("Traffic caught the hop.", "hit", ["#ff6aa2", "#ffd36c", "#ffffff"]);
+            return;
+          }
+
+          if (!this.frog.moving && row === 0) {
+            const slot = goalSlots.find(
+              (entry) => !entry.filled && Math.abs(this.frog.x - entry.x) < entry.width * 0.42
+            );
+            if (slot) {
+              this.scoreGoal(slot);
+            } else {
+              this.failTopRow();
+            }
+          }
+        }
+
+        drawBackdrop() {
+          const bg = this.ctx.createLinearGradient(0, 0, 0, CONFIG.height);
+          bg.addColorStop(0, "#09152b");
+          bg.addColorStop(1, "#050a16");
+          this.ctx.fillStyle = bg;
+          this.ctx.fillRect(0, 0, CONFIG.width, CONFIG.height);
+
+          for (const star of this.stars) {
+            this.ctx.globalAlpha = star.alpha;
+            this.ctx.fillStyle = "#dff6ff";
+            this.ctx.beginPath();
+            this.ctx.arc(star.x, star.y, star.size, 0, Math.PI * 2);
+            this.ctx.fill();
+          }
+          this.ctx.globalAlpha = 1;
+
+          this.ctx.strokeStyle = "rgba(255, 255, 255, 0.03)";
+          this.ctx.lineWidth = 1;
+          for (let x = 0; x <= CONFIG.width; x += CONFIG.cell) {
+            this.ctx.beginPath();
+            this.ctx.moveTo(x, 0);
+            this.ctx.lineTo(x, CONFIG.height);
+            this.ctx.stroke();
+          }
+        }
+
+        drawRows() {
+          const safeFill = this.ctx.createLinearGradient(0, 0, 0, CONFIG.height);
+          safeFill.addColorStop(0, "#153e33");
+          safeFill.addColorStop(1, "#0e2c23");
+
+          this.ctx.fillStyle = "#11253e";
+          this.ctx.fillRect(0, 0, CONFIG.width, CONFIG.cell);
+
+          this.ctx.fillStyle = "#07182f";
+          this.ctx.fillRect(0, CONFIG.cell, CONFIG.width, CONFIG.cell * 4);
+
+          this.ctx.fillStyle = safeFill;
+          this.ctx.fillRect(0, CONFIG.cell * 5, CONFIG.width, CONFIG.cell);
+          this.ctx.fillRect(0, CONFIG.cell * 10, CONFIG.width, CONFIG.cell * 2);
+
+          this.ctx.fillStyle = "#14172a";
+          this.ctx.fillRect(0, CONFIG.cell * 6, CONFIG.width, CONFIG.cell * 4);
+
+          for (let row = 1; row <= 4; row += 1) {
+            const y = row * CONFIG.cell;
+            this.ctx.strokeStyle = "rgba(86, 215, 255, 0.12)";
+            for (let i = -1; i < 12; i += 1) {
+              const waveX = (i * 96) + ((this.elapsed * 42 * (row % 2 === 0 ? 1 : -1)) % 96);
+              this.ctx.beginPath();
+              this.ctx.moveTo(waveX, y + 18);
+              this.ctx.quadraticCurveTo(waveX + 26, y + 6, waveX + 52, y + 18);
+              this.ctx.quadraticCurveTo(waveX + 78, y + 30, waveX + 96, y + 18);
+              this.ctx.stroke();
+            }
+          }
+
+          for (let row = 6; row <= 9; row += 1) {
+            const y = row * CONFIG.cell;
+            this.ctx.strokeStyle = "rgba(255, 255, 255, 0.07)";
+            this.ctx.setLineDash([26, 18]);
+            this.ctx.beginPath();
+            this.ctx.moveTo(0, y + CONFIG.cell * 0.5);
+            this.ctx.lineTo(CONFIG.width, y + CONFIG.cell * 0.5);
+            this.ctx.stroke();
+            this.ctx.setLineDash([]);
+          }
+
+          for (const slot of goalSlots) {
+            const x = slot.x - slot.width * 0.5;
+            this.ctx.fillStyle = slot.filled ? "rgba(127, 255, 212, 0.26)" : "rgba(17, 37, 62, 0.95)";
+            roundRectPath(this.ctx, x, 12, slot.width, 40, 16);
+            this.ctx.fill();
+            this.ctx.strokeStyle = slot.filled ? "rgba(127, 255, 212, 0.8)" : "rgba(86, 215, 255, 0.2)";
+            this.ctx.lineWidth = 2;
+            this.ctx.stroke();
+
+            this.ctx.fillStyle = slot.filled ? "#7fffd4" : "rgba(255, 255, 255, 0.08)";
+            this.ctx.beginPath();
+            this.ctx.arc(slot.x, 32, slot.filled ? 11 : 8, 0, Math.PI * 2);
+            this.ctx.fill();
+          }
+        }
+
+        drawLaneItems() {
+          for (const lane of this.lanes) {
+            for (const item of lane.items) {
+              const height = lane.kind === "river" ? 34 : 40;
+              const y = lane.y + (CONFIG.cell - height) * 0.5;
+              const fill = this.ctx.createLinearGradient(item.x, y, item.x + item.width, y + height);
+              fill.addColorStop(0, lane.colorA);
+              fill.addColorStop(1, lane.colorB);
+
+              this.ctx.save();
+              this.ctx.shadowBlur = 18;
+              this.ctx.shadowColor = lane.kind === "river" ? "rgba(86, 215, 255, 0.35)" : "rgba(255, 106, 162, 0.28)";
+              this.ctx.fillStyle = fill;
+              roundRectPath(this.ctx, item.x, y, item.width, height, lane.kind === "river" ? 16 : 14);
+              this.ctx.fill();
+              this.ctx.restore();
+
+              this.ctx.strokeStyle = "rgba(255, 255, 255, 0.2)";
+              this.ctx.lineWidth = 2;
+              this.ctx.stroke();
+
+              if (lane.kind === "river") {
+                this.ctx.fillStyle = "rgba(255, 255, 255, 0.28)";
+                this.ctx.fillRect(item.x + 18, y + 8, Math.max(30, item.width - 36), 5);
+                this.ctx.fillRect(item.x + 18, y + height - 13, Math.max(30, item.width - 36), 4);
+              } else {
+                this.ctx.fillStyle = "rgba(6, 10, 22, 0.45)";
+                roundRectPath(this.ctx, item.x + 18, y + 7, item.width - 36, height - 14, 10);
+                this.ctx.fill();
+                this.ctx.fillStyle = "#ffffff";
+                this.ctx.beginPath();
+                this.ctx.arc(item.x + 18, y + height * 0.5, 5, 0, Math.PI * 2);
+                this.ctx.arc(item.x + item.width - 18, y + height * 0.5, 5, 0, Math.PI * 2);
+                this.ctx.fill();
+              }
+            }
+          }
+        }
+
+        drawFrog() {
+          if (this.death) {
+            return;
+          }
+
+          const size = this.frog.size;
+          const x = this.frog.x - size * 0.5;
+          const y = this.frog.y - size * 0.5;
+          const pulse = 0.9 + Math.sin(this.elapsed * 8) * 0.08;
+
+          this.ctx.save();
+          this.ctx.shadowBlur = 22;
+          this.ctx.shadowColor = "rgba(127, 255, 212, 0.45)";
+          this.ctx.fillStyle = "#7fffd4";
+          roundRectPath(this.ctx, x, y, size, size, 12);
+          this.ctx.fill();
+          this.ctx.restore();
+
+          this.ctx.fillStyle = "#0f4137";
+          roundRectPath(this.ctx, x + 6, y + 8, size - 12, size - 14, 10);
+          this.ctx.fill();
+
+          this.ctx.fillStyle = "#c9fff0";
+          this.ctx.beginPath();
+          this.ctx.arc(this.frog.x - 8, y + 11, 5 * pulse, 0, Math.PI * 2);
+          this.ctx.arc(this.frog.x + 8, y + 11, 5 * pulse, 0, Math.PI * 2);
+          this.ctx.fill();
+        }
+
+        drawHud() {
+          this.ctx.fillStyle = "rgba(7, 13, 28, 0.8)";
+          roundRectPath(this.ctx, 18, CONFIG.height - 72, 988, 54, 18);
+          this.ctx.fill();
+          this.ctx.strokeStyle = "rgba(150, 196, 255, 0.18)";
+          this.ctx.lineWidth = 1;
+          this.ctx.stroke();
+
+          this.ctx.fillStyle = "#eef7ff";
+          this.ctx.font = "700 18px Trebuchet MS, sans-serif";
+          this.ctx.fillText(`Score ${this.score.toString().padStart(5, "0")}`, 40, CONFIG.height - 39);
+          this.ctx.fillText(`Lives ${Math.max(this.lives, 0)}`, 248, CONFIG.height - 39);
+          this.ctx.fillText(`Docks ${goalSlots.filter((slot) => slot.filled).length}/5`, 388, CONFIG.height - 39);
+
+          this.ctx.fillStyle = "#ffd36c";
+          this.ctx.fillText(`Timer ${Math.ceil(this.timeLeft)}`, 560, CONFIG.height - 39);
+
+          this.ctx.fillStyle = "rgba(238, 247, 255, 0.76)";
+          this.ctx.font = "15px Trebuchet MS, sans-serif";
+          this.ctx.fillText(this.message, 714, CONFIG.height - 38);
+        }
+
+        drawOverlay() {
+          if (this.state === STATES.PLAYING) {
+            return;
+          }
+
+          this.ctx.fillStyle = "rgba(3, 7, 16, 0.58)";
+          this.ctx.fillRect(0, 0, CONFIG.width, CONFIG.height);
+
+          const panelX = 168;
+          const panelY = 164;
+          const panelW = 688;
+          const panelH = 394;
+
+          this.ctx.fillStyle = "rgba(8, 14, 30, 0.93)";
+          roundRectPath(this.ctx, panelX, panelY, panelW, panelH, 28);
+          this.ctx.fill();
+          this.ctx.strokeStyle = "rgba(150, 196, 255, 0.18)";
+          this.ctx.lineWidth = 2;
+          this.ctx.stroke();
+
+          const title = this.state === STATES.MENU ? "Frogger: Neon Lanes" : this.state === STATES.WIN ? "District Cleared" : "Rush Failed";
+          const subtitle = this.state === STATES.MENU
+            ? "Cyber-arcade lane crossing with rushing traffic and live river drift."
+            : this.state === STATES.WIN
+              ? "Five charging pads lit up before the city grid could close."
+              : "Traffic, current, or the clock broke the route.";
+
+          this.ctx.fillStyle = "#eef7ff";
+          this.ctx.font = "700 46px Trebuchet MS, sans-serif";
+          this.ctx.fillText(title, panelX + 48, panelY + 84);
+          this.ctx.fillStyle = "rgba(238, 247, 255, 0.72)";
+          this.ctx.font = "22px Trebuchet MS, sans-serif";
+          this.ctx.fillText(subtitle, panelX + 48, panelY + 128);
+
+          const lines = this.state === STATES.MENU
+            ? [
+                "Hop one lane at a time with arrow keys, WASD, or touch buttons.",
+                "Use neon barges as moving platforms in the river rows.",
+                "Every missed dock, crash, drift, or timeout costs one life.",
+                "Fill all five docks to clear the district."
+              ]
+            : [
+                `Final score ${this.score.toString().padStart(5, "0")} with ${goalSlots.filter((slot) => slot.filled).length} docks secured.`,
+                "Press space, enter, or tap the canvas to restart.",
+                "Short forward hops still score, but dock clears matter most."
+              ];
+
+          this.ctx.font = "18px Trebuchet MS, sans-serif";
+          lines.forEach((line, index) => {
+            this.ctx.fillStyle = index === 0 && this.state !== STATES.MENU ? "#ffd36c" : "#d9efff";
+            this.ctx.fillText(`- ${line}`, panelX + 52, panelY + 194 + index * 42);
+          });
+
+          this.ctx.fillStyle = "#7fffd4";
+          this.ctx.font = "700 20px Trebuchet MS, sans-serif";
+          this.ctx.fillText(
+            this.state === STATES.MENU ? "Press space or tap to start" : "Press space or tap to run again",
+            panelX + 48,
+            panelY + panelH - 48
+          );
+        }
+
+        drawFlash() {
+          if (this.flash <= 0) {
+            return;
+          }
+          this.ctx.fillStyle = `rgba(255, 106, 162, ${this.flash * 0.14})`;
+          this.ctx.fillRect(0, 0, CONFIG.width, CONFIG.height);
+        }
+
+        render() {
+          this.drawBackdrop();
+          this.drawRows();
+          this.drawLaneItems();
+          this.drawFrog();
+          this.particles.draw(this.ctx);
+          this.drawHud();
+          this.drawOverlay();
+          this.drawFlash();
+        }
+      }
+
+      const game = new NeonLanesGame(ctx);
+
+      let lastTime = performance.now();
+
+      function frame(now) {
+        const dt = Math.min(CONFIG.maxFrame, (now - lastTime) / 1000);
+        lastTime = now;
+        game.update(dt);
+        game.render();
+        requestAnimationFrame(frame);
+      }
+
+      requestAnimationFrame(frame);
+    })();
+  </script>
+</body>
+</html>

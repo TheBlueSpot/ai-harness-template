@@ -1,0 +1,232 @@
+:root {
+  color-scheme: dark;
+  --bg-top: #121b28;
+  --bg-bottom: #040608;
+  --panel: rgba(13, 15, 21, 0.86);
+  --line: rgba(255, 190, 116, 0.22);
+  --text: #f7f0e6;
+  --muted: #d2b58d;
+  --accent: #ffb347;
+  --accent-strong: #ff6f2c;
+  --danger: #ff5d4b;
+}
+
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  background:
+    radial-gradient(circle at top, rgba(255, 165, 94, 0.12), transparent 32%),
+    linear-gradient(180deg, var(--bg-top), var(--bg-bottom));
+  color: var(--text);
+  font-family: Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif;
+}
+
+body {
+  overflow: hidden;
+}
+
+.game-shell {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+}
+
+#game-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: linear-gradient(180deg, #192331 0%, #07090c 100%);
+}
+
+.overlay,
+.hud {
+  position: absolute;
+  z-index: 2;
+}
+
+.overlay {
+  inset: auto auto 6vh 4vw;
+  max-width: 34rem;
+  padding: 1.5rem 1.5rem 1.25rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  box-shadow: 0 1.5rem 4rem rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(16px);
+}
+
+.overlay--menu {
+  top: 8vh;
+}
+
+.overlay--intermission,
+.overlay--gameover {
+  display: none;
+  top: 8vh;
+  right: 4vw;
+  left: auto;
+}
+
+.eyebrow {
+  margin: 0 0 0.4rem;
+  color: var(--muted);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  font-size: 0.9rem;
+}
+
+h1,
+h2,
+.hud strong {
+  letter-spacing: 0.04em;
+}
+
+h1,
+h2,
+.lede,
+.hint,
+.action,
+.offer {
+  margin: 0;
+}
+
+h1,
+h2 {
+  font-size: clamp(2rem, 4vw, 3.7rem);
+  line-height: 0.94;
+  text-transform: uppercase;
+}
+
+.lede {
+  margin-top: 0.9rem;
+  font-family: "Trebuchet MS", Arial, sans-serif;
+  line-height: 1.4;
+}
+
+.hint {
+  margin-top: 0.7rem;
+  color: rgba(247, 240, 230, 0.7);
+  font-family: "Trebuchet MS", Arial, sans-serif;
+  line-height: 1.4;
+}
+
+.hud {
+  top: 1rem;
+  left: 1rem;
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.9rem 1rem;
+  background: rgba(6, 8, 12, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  min-width: 12rem;
+  font-family: "Trebuchet MS", Arial, sans-serif;
+}
+
+.shop {
+  display: grid;
+  gap: 0.75rem;
+  margin: 1rem 0 1.1rem;
+}
+
+.offer {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02));
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.offer__title,
+.offer__meta,
+.offer__cost {
+  text-transform: uppercase;
+}
+
+.offer__meta,
+.offer__cost,
+.offer__desc {
+  font-family: "Trebuchet MS", Arial, sans-serif;
+}
+
+.offer__meta,
+.offer__cost {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.offer__desc {
+  color: rgba(247, 240, 230, 0.78);
+  line-height: 1.35;
+}
+
+.offer[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.action {
+  margin-top: 0.6rem;
+  padding: 0.9rem 1.15rem;
+  border: 0;
+  font: inherit;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.action--primary {
+  background: linear-gradient(180deg, var(--accent), var(--accent-strong));
+  color: #150903;
+}
+
+.game-shell[data-state="menu"] #menu-screen,
+.game-shell[data-state="intermission"] #intermission-screen,
+.game-shell[data-state="gameover"] #gameover-screen {
+  display: block;
+}
+
+.game-shell[data-state="live"] #hud {
+  display: grid;
+}
+
+.game-shell[data-state="menu"] #hud,
+.game-shell[data-state="menu"] #intermission-screen,
+.game-shell[data-state="menu"] #gameover-screen,
+.game-shell[data-state="live"] #menu-screen,
+.game-shell[data-state="live"] #intermission-screen,
+.game-shell[data-state="live"] #gameover-screen,
+.game-shell[data-state="intermission"] #menu-screen,
+.game-shell[data-state="intermission"] #hud,
+.game-shell[data-state="intermission"] #gameover-screen,
+.game-shell[data-state="gameover"] #menu-screen,
+.game-shell[data-state="gameover"] #hud,
+.game-shell[data-state="gameover"] #intermission-screen {
+  display: none;
+}
+
+@media (max-width: 720px) {
+  .overlay {
+    inset: auto 1rem 1rem 1rem;
+    max-width: none;
+  }
+
+  .overlay--menu,
+  .overlay--intermission,
+  .overlay--gameover {
+    top: auto;
+  }
+
+  .hud {
+    top: auto;
+    bottom: 1rem;
+    left: 1rem;
+    right: 1rem;
+    min-width: 0;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

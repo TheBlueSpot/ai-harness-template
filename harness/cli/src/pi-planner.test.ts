@@ -3,6 +3,42 @@ import { planTask, testExports } from "./pi-planner";
 import type { PiAgentAdapter, PiAgentExecutionController, PiAgentPromptRequest } from "./pi-agent-adapter";
 
 describe("pi planner payload parsing", () => {
+  const buildReadyPayload = (overrides: Record<string, unknown> = {}) => ({
+    type: "ready",
+    difficultyScore: 72,
+    summary: "Create app",
+    executionModelId: "openai/gpt-5.4",
+    usesSubagents: true,
+    subtasks: [{ id: "task-1", title: "Create app", instruction: "Write app" }],
+    finalExecutionBrief: "Build app",
+    prerequisites: [
+      {
+        id: "setup-1",
+        title: "Create setup",
+        instruction: "Create setup",
+        reason: "Subagents need setup",
+        requiredForTaskIds: ["task-1"],
+        owner: "main"
+      }
+    ],
+    contracts: [
+      {
+        taskId: "task-1",
+        title: "Create app",
+        instruction: "Write app",
+        effortPoints: 8,
+        ownedPaths: ["src/app.ts"],
+        dependsOnPrerequisiteIds: ["setup-1"],
+        deliverables: ["src/app.ts"],
+        integrationPoints: [],
+        verificationScope: "owned-files-only",
+        verificationCommands: ["bun run typecheck"],
+        mergeNotes: "Merge after app check."
+      }
+    ],
+    ...overrides
+  });
+
   test("parses pure json payloads", () => {
     expect(
       testExports.parseJsonPayload('{"type":"ready","difficultyScore":20,"summary":"Plan","executionModelId":"openai/gpt-5.4","usesSubagents":false,"subtasks":[],"finalExecutionBrief":"Do work"}')
@@ -131,6 +167,172 @@ describe("pi planner payload parsing", () => {
       throw new Error("Expected ready result");
     }
     expect(result.plannerResult.contracts?.[0]?.verificationScope).toBe("worktree-full");
+  });
+
+  test("normalizes planner prerequisite owner aliases before schema validation", () => {
+    const userOwner = testExports.parsePlannerTurnPayload(
+      buildReadyPayload({
+        prerequisites: [
+          {
+            id: "setup-1",
+            title: "Create setup",
+            instruction: "Create setup",
+            reason: "Subagents need setup",
+            requiredForTaskIds: ["task-1"],
+            owner: "user"
+          }
+        ]
+      })
+    );
+    const humanOwner = testExports.parsePlannerTurnPayload(
+      buildReadyPayload({
+        prerequisites: [
+          {
+            id: "setup-1",
+            title: "Create setup",
+            instruction: "Create setup",
+            reason: "Subagents need setup",
+            requiredForTaskIds: ["task-1"],
+            owner: "human"
+          }
+        ]
+      })
+    );
+    const workerOwner = testExports.parsePlannerTurnPayload(
+      buildReadyPayload({
+        prerequisites: [
+          {
+            id: "setup-1",
+            title: "Create setup",
+            instruction: "Create setup",
+            reason: "Subagents need setup",
+            requiredForTaskIds: ["task-1"],
+            owner: "worker"
+          }
+        ]
+      })
+    );
+
+    expect(userOwner.type).toBe("ready");
+    expect(humanOwner.type).toBe("ready");
+    expect(workerOwner.type).toBe("ready");
+    if (userOwner.type !== "ready" || humanOwner.type !== "ready" || workerOwner.type !== "ready") {
+      throw new Error("Expected ready planner results");
+    }
+    expect(userOwner.prerequisites?.[0]?.owner).toBe("main");
+    expect(humanOwner.prerequisites?.[0]?.owner).toBe("main");
+    expect(workerOwner.prerequisites?.[0]?.owner).toBe("subagent");
+    expect(userOwner.prerequisites?.[0]?.status).toBe("pending");
+  });
+
+  test("rejects unknown prerequisite owner aliases", () => {
+    expect(() =>
+      testExports.parsePlannerTurnPayload(
+        buildReadyPayload({
+          prerequisites: [
+            {
+              id: "setup-1",
+              title: "Create setup",
+              instruction: "Create setup",
+              reason: "Subagents need setup",
+              requiredForTaskIds: ["task-1"],
+              owner: "external-system"
+            }
+          ]
+        })
+      )
+    ).toThrow();
+  });
+
+  test("repairs invalid planner payload once after schema validation fails", async () => {
+    const calls: PiAgentPromptRequest[] = [];
+    const adapter: PiAgentAdapter = {
+      async runPrompt(request) {
+        calls.push(request);
+        return {
+          text: JSON.stringify(
+            calls.length === 1
+              ? buildReadyPayload({
+                  prerequisites: [
+                    {
+                      id: "setup-1",
+                      title: "Create setup",
+                      instruction: "Create setup",
+                      reason: "Subagents need setup",
+                      requiredForTaskIds: ["task-1"],
+                      owner: "external-system"
+                    }
+                  ]
+                })
+              : buildReadyPayload()
+          )
+        };
+      },
+      async startExecution(): Promise<PiAgentExecutionController> {
+        throw new Error("not used");
+      },
+      setApiKey() {},
+      hasApiKey() {
+        return false;
+      }
+    };
+
+    const result = await planTask(adapter, {
+      cwd: "C:\\repo\\context",
+      messages: [],
+      latestUserPrompt: "Create app",
+      providerBrand: "gpt"
+    });
+
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.prompt).toContain("Repair the planner JSON payload");
+    expect(result.plannerResult.type).toBe("ready");
+    if (result.plannerResult.type !== "ready") {
+      throw new Error("Expected ready planner result");
+    }
+    expect(result.plannerResult.prerequisites?.[0]?.owner).toBe("main");
+  });
+
+  test("fails with concise validation error when planner repair is still invalid", async () => {
+    const calls: PiAgentPromptRequest[] = [];
+    const adapter: PiAgentAdapter = {
+      async runPrompt(request) {
+        calls.push(request);
+        return {
+          text: JSON.stringify(
+            buildReadyPayload({
+              prerequisites: [
+                {
+                  id: "setup-1",
+                  title: "Create setup",
+                  instruction: "Create setup",
+                  reason: "Subagents need setup",
+                  requiredForTaskIds: ["task-1"],
+                  owner: "external-system"
+                }
+              ]
+            })
+          )
+        };
+      },
+      async startExecution(): Promise<PiAgentExecutionController> {
+        throw new Error("not used");
+      },
+      setApiKey() {},
+      hasApiKey() {
+        return false;
+      }
+    };
+
+    await expect(
+      planTask(adapter, {
+        cwd: "C:\\repo\\context",
+        messages: [],
+        latestUserPrompt: "Create app",
+        providerBrand: "gpt"
+      })
+    ).rejects.toThrow('prerequisites.0.owner: expected "main" | "subagent", received "external-system"');
+    expect(calls).toHaveLength(2);
   });
 
   test("normalizes planner contract paths and prompts for concrete same-worktree ownership", async () => {

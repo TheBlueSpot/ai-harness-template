@@ -1,0 +1,4 @@
+interface:
+  display_name: "Assistant Actions"
+  short_description: "Runbook for chat-driven assistant actions"
+  default_prompt: "Use assistant actions runbook."

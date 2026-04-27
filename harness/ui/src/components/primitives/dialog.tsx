@@ -1,4 +1,4 @@
-import { createEffect, onCleanup, Show, type JSX } from "solid-js";
+import { createEffect, createMemo, onCleanup, Show, type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import { X } from "lucide-solid";
 import { cn } from "../../lib/utils";
@@ -21,9 +21,10 @@ function shouldBypassPortalForTests() {
 
 export function Dialog(props: DialogProps) {
   let surfaceRef: HTMLElement | undefined;
+  const isOpen = createMemo(() => Boolean(props.open));
 
   createEffect(() => {
-    if (!props.open) {
+    if (!isOpen()) {
       return;
     }
 
@@ -45,7 +46,7 @@ export function Dialog(props: DialogProps) {
   });
 
   const content = (
-    <Show when={props.open}>
+    <Show when={isOpen()}>
       <div data-test-dialog-backdrop="" class="fixed inset-0 z-[80] bg-black/45 backdrop-blur-sm" onClick={() => props.onClose?.()} />
       <div class="fixed inset-0 z-[81] flex items-center justify-center px-3 py-3 md:px-5 md:py-5">
         <section

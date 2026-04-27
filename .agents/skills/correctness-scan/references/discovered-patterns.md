@@ -37,3 +37,119 @@ Update this file when a scan finds a reusable failure pattern, missing probe, or
 - Watch for transport or runtime overlays that belong to one thread but are cached on whole-project state and then reused after thread activation changes.
 - Live CLI sessions, terminal attach state, browser approvals, pending questions, and similar bridge-owned overlays should validate ownership on every command and rehydrate the right thread-scoped surface after reconnect.
 - Probe thread switch during active bridge state, then try stop, attach, resize, retry, or capture actions from the new thread. If caller-supplied ids win over persisted ownership, UI and backend can relabel or mutate the wrong session.
+
+### Development instrumentation as hidden product behavior
+
+- Treat dev-only telemetry, debug fetches, local ingest hooks, and prompt or output logging as shipped risk until proven removable or explicitly configured.
+- Probe runtime adapters, assistant managers, and launch paths for hardcoded URLs, swallowed debug failures, prompt snippets, terminal tails, cwd, environment data, and provider details.
+- Debug code should use one shared logger, avoid sensitive prompt or output content by default, and surface local failures during development.
+
+### Fire-and-forget async boundaries
+
+- `void someAsyncWork()` is only safe when the callee cannot reject or the caller attaches a visible `.catch()` path.
+- Probe websocket data planes, scheduler ticks, delayed timers, hot reload builders, assistant bootstrap queues, and process exit handlers.
+- Failures should become durable state, toast or command rejection, job or run event, or at least a development console error that includes the triggering operation.
+
+### Repository UI rules without enforcement
+
+- Shared UI rules drift when they are only documented and not linted or tested.
+- Probe dense run, trace, inbox, and settings surfaces for raw `title` tooltips, direct button-like markup, margin spacing utilities, arbitrary Tailwind values with canonical equivalents, and duplicated dialog or overlay shells.
+- Prefer focused lint rules or small static tests for repo-specific UI bans so reviewers do not rediscover the same style regressions manually.
+
+## 2026-04-25
+
+### Ambient capability namespace vs scoped refs
+
+- Treat linked skills, scripts, modes, templates, connectors, and assistant assets as risky unless they are resolved to scoped capabilities before runtime.
+- Probe whether refs are only persisted or printed into prompts, or whether save and launch paths validate existence, provenance, scope, stale deletion, duplicate labels, and clone behavior.
+- Broad repo-level discovery should be discoverability, not authority. Runtime prompts should make clear which capabilities are explicitly attached to the actor and which are merely available in the workspace.
+
+### Metadata validation without resource ownership
+
+- Treat payloads that carry remote URLs, attachment refs, session ids, or file keys as risky when schemas validate shape but not server ownership.
+- Probe whether clients can bypass intended upload, auth, or attach-token flows by sending plausible metadata directly over the websocket.
+- Resource-bearing commands should validate provenance, allowed origin, bounded size, active ownership, stale deletion, and whether the server can resolve the resource from trusted state.
+
+### Unbounded stream accumulation before preview truncation
+
+- Truncating output when persisting events is not enough if stdout, stderr, terminal buffers, or server logs are accumulated fully in memory first.
+- Probe CLI runtimes, background shell jobs, screenshot/dev-server helpers, terminal sessions, and build watchers for full-string buffers fed by untrusted or long-running processes.
+- Prefer bounded ring buffers, byte caps, temp-file spill for debug artifacts, and explicit failure or detach behavior when caps are exceeded.
+
+### Passive liveness contracts
+
+- A ping/pong schema does not prove zombie detection unless a heartbeat loop drives it and missed heartbeats change state.
+- Probe control websockets, PTY attach sockets, browser approvals, and run/session ownership after sleep, network changes, reloads, and reconnects.
+- Stale sockets should detach owned runtime state and reconnect should rehydrate from server-owned session identity, not caller-supplied ids.
+
+### Streaming without workload boundaries
+
+- Treat live token, terminal, trace, and status streams as risky unless batching, bounded persistence cadence, and slow-client behavior are explicit.
+- Probe whether raw provider deltas, process chunks, or progress events emit one websocket message per tiny chunk and whether each chunk triggers database writes or full markdown rerenders.
+- Streaming paths should coalesce by time or byte size, flush final state synchronously, cap per-connection queues, and degrade or detach slow consumers.
+
+### Typed snapshots used as hot-path deltas
+
+- A typed websocket payload can still be too broad for frequent events.
+- Probe append, status, trace, and subtask updates for whole-session, whole-project, whole-workspace, or whole-run snapshots that grow with unrelated history.
+- Hot events should be narrow id-addressed deltas; full snapshots should be reserved for connection ready, explicit refresh, and recovery.
+
+### Live markdown and dense DOM growth
+
+- Markdown correctness tests do not prove streamed markdown is cheap enough under long code blocks or frequent deltas.
+- Probe live markdown surfaces for repeated syntax highlighting, full parse work, and unvirtualized transcript, trace, tool, browser replay, or log rows.
+- In-flight markdown can use a cheaper renderer or debounced parse path, then run full highlighting after the message locks. Dense panes need row caps, windowing, or explicit "show more" affordances.
+
+### Actor launch gates split across status fields
+
+- Treat actor-owned execution as risky when pause, circuit breaker, deleted state, global pause, and project ownership are checked in separate places.
+- Probe every launch path, not only scheduled work: direct chat, retry, bootstrap, manual run, resume release, scheduler catch-up, and reprioritize timers.
+- Prefer one shared launch predicate that blocks on every relevant state field and is used before runtime dispatch, queue release, and background-run start.
+
+### Hidden surface contamination
+
+- A feature can have a dedicated surface while still writing its transcript or logs into the older main surface.
+- Probe background jobs, assistants, browser approvals, and automation threads for project-chat writes, persisted prompts, or promoted summaries that later become normal chat context.
+- Dedicated surfaces should own their raw transcript. Main chat should only receive explicit user-approved promotions or narrow linked status rows.
+
+### Single-flight bootstrap and retry
+
+- Any retryable setup, bootstrap, or self-repair flow needs an attempt id or in-memory single-flight guard.
+- Probe repeated clicks, reconnect release, process reload during `running`, and stale async completions that race with newer attempts.
+- Retry should join, reject, cancel, or supersede the active attempt explicitly, then persist enough state to explain which attempt won.
+
+### Overlay stack without ownership
+
+- Independent `Escape`, outside-click, focus, and z-index handling looks fine in single-layer tests but breaks when popovers sit inside dialogs, sheets, tutorials, or header overlays.
+- Probe nested overlay priority, focus trap and release, scroll containment, tooltip/toaster layering, and whether only the topmost dismissible surface closes.
+- Shared overlay primitives should own layer tokens, active-stack identity, focus cycling, and dismissal routing instead of each surface registering global listeners independently.
+
+### Global hotkeys without input ownership
+
+- Keyboard shortcuts can become hostile when global handlers opt out of input ignoring or only special-case one focused control.
+- Probe every global shortcut from chat, assistant, scheduler, notification, preferences, and modal text inputs.
+- Submit shortcuts should share the same eligibility predicate as the visible button, avoid duplicate form and hotkey paths, and leave `Shift+Enter` behavior explicit.
+
+### Attachment affordance vs upload lifecycle
+
+- File selection support does not imply drag/drop confidence or unsent upload durability.
+- Probe drag-over/drop feedback, blocked drop states, thread or project switching with unsent chips, reload behavior, and orphan cleanup when an upload is removed before send.
+- Attachment text drafts and attachment refs need an explicit ownership model so the UI does not preserve one while silently dropping the other.
+
+### Stable test hooks vs style-coupled assertions
+
+- Treat UI tests that assert Tailwind, syntax-highlighter, or DOM-shape classes as drift risk unless the class is itself the contract.
+- Probe modal, overlay, markdown, status badge, and dense panel tests for selectors that should use `data-test-*`, accessible roles, or visible text instead.
+- Style-coupled tests can make visual refactors noisy while still missing semantic regressions such as focus ownership, disabled reasons, portal clipping, and overlay priority.
+
+### Capability-backed magic affordances
+
+- Treat "magic" UI polish as suspect when it infers product state from local component hints instead of typed backend or store contracts.
+- Probe project switchers, setup flows, run visualizations, proof bundles, and file-drop flows for missing metadata, stale ownership, OS/browser capability limits, and recovery after deletion or reconnect.
+- Browser drag/drop of local folders is especially risky: without a trusted directory handle or native bridge, it should fall back to browse or explicit path entry instead of pretending an absolute root path exists.
+
+### Motion polish as correctness surface
+
+- Animations, glows, ambient tints, skeletons, confetti, shortcut overlays, smooth-scroll magnets, and selection popovers need shared ownership instead of one-off component state.
+- Probe `prefers-reduced-motion`, keyboard focus, editable-target hotkey ownership, non-color status cues, no layout shift, and teardown on fast project/thread switches.
+- Add stable hooks and accessibility assertions before treating visual delight as shippable polish.

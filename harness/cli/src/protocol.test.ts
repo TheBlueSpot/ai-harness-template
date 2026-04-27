@@ -1,6 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import { defaultProviderCapabilities } from "../../shared/capabilities";
-import { chatMessageSchema, parseClientCommand, parseServerEvent, plannerResultSchema } from "../../shared/protocol";
+import {
+  chatMessageSchema,
+  createProjectThreadSummary,
+  parseClientCommand,
+  parseServerEvent,
+  planPrerequisiteSchema,
+  planningQuestionSchema,
+  plannerResultSchema
+} from "../../shared/protocol";
+import { testExports as plannerTestExports } from "./pi-planner";
 
 const defaultExecutionControl = {
   isPaused: false,
@@ -131,6 +140,92 @@ describe("client command validation", () => {
         }
       }).type
     ).toBe("planning.answer");
+  });
+
+  test("accepts assistant.create-from-thread payloads", () => {
+    expect(
+      parseClientCommand({
+        type: "assistant.create-from-thread",
+        requestId: "req-assistant-thread",
+        payload: {
+          projectId: "project-1",
+          threadId: "thread-1",
+          sourcePrompt: "Catalog builder start executing todos",
+          name: "Catalog builder",
+          scope: "project",
+          modeId: "implement",
+          executionModelId: "openai/gpt-5.4",
+          agentId: "pi"
+        }
+      }).type
+    ).toBe("assistant.create-from-thread");
+  });
+
+  test("accepts assistant circuit breaker retry payloads", () => {
+    expect(
+      parseClientCommand({
+        type: "assistant.circuit-breaker.retry",
+        requestId: "req-assistant-recover",
+        payload: {
+          assistantId: "assistant-1"
+        }
+      }).type
+    ).toBe("assistant.circuit-breaker.retry");
+  });
+
+  test("rejects malformed assistant.create-from-thread payloads", () => {
+    expect(() =>
+      parseClientCommand({
+        type: "assistant.create-from-thread",
+        requestId: "req-assistant-thread",
+        payload: {
+          threadId: "thread-1",
+          sourcePrompt: "Catalog builder start executing todos"
+        }
+      })
+    ).toThrow();
+  });
+
+  test("accepts planning payloads with attachments", () => {
+    const attachment = {
+      id: "attachment-plan",
+      kind: "text",
+      name: "plan.md",
+      mimeType: "text/markdown",
+      sizeBytes: 120,
+      url: "https://example.com/plan.md",
+      key: "plan-key",
+      uploadedAt: new Date().toISOString()
+    } as const;
+
+    expect(
+      parseClientCommand({
+        type: "planning.answer",
+        requestId: "req-answer-attach",
+        payload: {
+          projectId: "project-1",
+          threadId: "thread-1",
+          runId: "run-1",
+          questionId: "question-1",
+          content: "Use the uploaded plan.",
+          attachments: [attachment]
+        }
+      }).type
+    ).toBe("planning.answer");
+
+    expect(
+      parseClientCommand({
+        type: "planning.refine",
+        requestId: "req-refine-attach",
+        payload: {
+          projectId: "project-1",
+          threadId: "thread-1",
+          runId: "run-1",
+          content: "Refine with uploaded plan.",
+          attachments: [attachment]
+        }
+      }).type
+    ).toBe("planning.refine");
   });
 
   test("accepts composer control payloads on chat and run commands", () => {
@@ -449,6 +544,33 @@ describe("planner result validation", () => {
         }
       }).type
     ).toBe("connection.ready");
+  });
+
+  test("rejects data URL attachments at command boundary", () => {
+    expect(() =>
+      parseClientCommand({
+        type: "chat.send",
+        requestId: "req-data-attach",
+        payload: {
+          projectId: "project-1",
+          threadId: "thread-1",
+          agentId: "pi",
+          content: "Review attached files",
+          attachments: [
+            {
+              id: "attachment-data",
+              kind: "text",
+              name: "spec.md",
+              mimeType: "text/markdown",
+              sizeBytes: 120,
+              url: "data:text/markdown,hello",
+              key: "spec-key",
+              uploadedAt: new Date().toISOString()
+            }
+          ]
+        }
+      })
+    ).toThrow();
   });
 
   test("accepts run milestone messages and update events", () => {
@@ -773,6 +895,131 @@ describe("planner result validation", () => {
     ).toBe("question");
   });
 
+  test("accepts planning question assistant intent metadata", () => {
+    expect(
+      planningQuestionSchema.parse({
+        id: "question-1",
+        prompt: "Do you want to create a project assistant named \"Catalog builder\", or run this once in project chat?",
+        choices: [
+          {
+            id: "choice-1",
+            label: "Create project assistant",
+            description: "Create a project-scoped assistant.",
+            answerText: "Create a project assistant named \"Catalog builder\" from this prompt.",
+            recommended: true
+          },
+          {
+            id: "choice-2",
+            label: "Run once",
+            description: "Run once in project chat.",
+            answerText: "Run once.",
+            recommended: false
+          },
+          {
+            id: "choice-3",
+            label: "Cancel",
+            description: "Cancel this request.",
+            answerText: "Cancel this request.",
+            recommended: false
+          }
+        ],
+        required: true,
+        status: "pending",
+        intent: {
+          type: "assistant-create-intent",
+          projectId: "project-1",
+          threadId: "thread-1",
+          sourcePrompt: "Catalog builder start executing todos",
+          suggestedName: "Catalog builder",
+          defaultScope: "project"
+        },
+        askedAt: new Date().toISOString()
+      }).intent?.type
+    ).toBe("assistant-create-intent");
+
+    expect(() =>
+      planningQuestionSchema.parse({
+        id: "question-1",
+        prompt: "Invalid?",
+        choices: [],
+        required: true,
+        status: "pending",
+        intent: {
+          type: "unknown"
+        },
+        askedAt: new Date().toISOString()
+      })
+    ).toThrow();
+  });
+
+  test("keeps prerequisite owner schema strict", () => {
+    expect(() =>
+      planPrerequisiteSchema.parse({
+        id: "setup-1",
+        title: "Create setup",
+        instruction: "Create setup",
+        reason: "Subagents need setup",
+        requiredForTaskIds: ["task-1"],
+        owner: "user",
+        status: "pending"
+      })
+    ).toThrow();
+
+    expect(
+      plannerResultSchema.parse({
+        type: "ready",
+        difficultyScore: 50,
+        summary: "Do setup",
+        executionModelId: "openai/gpt-5.4",
+        usesSubagents: true,
+        subtasks: [{ id: "task-1", title: "Task", instruction: "Do task" }],
+        finalExecutionBrief: "Do setup before task",
+        prerequisites: [
+          {
+            id: "setup-1",
+            title: "Create setup",
+            instruction: "Create setup",
+            reason: "Subagents need setup",
+            requiredForTaskIds: ["task-1"],
+            owner: "main",
+            status: "pending"
+          }
+        ]
+      }).type
+    ).toBe("ready");
+  });
+
+  test("normalizes planner prerequisite aliases without widening protocol schema", () => {
+    const rawPayload = {
+      type: "ready",
+      difficultyScore: 50,
+      summary: "Do setup",
+      executionModelId: "openai/gpt-5.4",
+      usesSubagents: true,
+      subtasks: [{ id: "task-1", title: "Task", instruction: "Do task" }],
+      finalExecutionBrief: "Do setup before task",
+      prerequisites: [
+        {
+          id: "setup-1",
+          title: "Create setup",
+          instruction: "Create setup",
+          reason: "Subagents need setup",
+          requiredForTaskIds: ["task-1"],
+          owner: "user"
+        }
+      ]
+    };
+
+    expect(() => plannerResultSchema.parse(rawPayload)).toThrow();
+    const parsed = plannerTestExports.parsePlannerTurnPayload(rawPayload);
+    expect(parsed.type).toBe("ready");
+    if (parsed.type !== "ready") {
+      throw new Error("Expected ready planner result");
+    }
+    expect(parsed.prerequisites?.[0]?.owner).toBe("main");
+    expect(parsed.prerequisites?.[0]?.status).toBe("pending");
+  });
+
   test("accepts run.updated payload", () => {
     expect(
       parseServerEvent({
@@ -828,5 +1075,67 @@ describe("planner result validation", () => {
         }
       }).type
     ).toBe("run.updated");
+  });
+
+  test("accepts narrow thread and run patch events", () => {
+    const now = new Date().toISOString();
+    expect(
+      parseServerEvent({
+        type: "thread.message-appended",
+        requestId: "req-message",
+        payload: {
+          projectId: "project-1",
+          threadId: "thread-1",
+          sessionId: "session-1",
+          message: {
+            id: "message-1",
+            role: "assistant",
+            kind: "plain",
+            content: "Done",
+            createdAt: now
+          },
+          thread: createProjectThreadSummary({
+            id: "thread-1",
+            title: "Done",
+            titleSource: "generated",
+            messageCount: 1,
+            lastMessagePreview: "Done",
+            createdAt: now,
+            lastUserMessageAt: now,
+            updatedAt: now
+          }),
+          state: {
+            sessionId: "session-1",
+            messages: [
+              {
+                id: "message-1",
+                role: "assistant",
+                kind: "plain",
+                content: "Done",
+                createdAt: now
+              }
+            ],
+            isStreaming: false
+          }
+        }
+      }).type
+    ).toBe("thread.message-appended");
+
+    expect(
+      parseServerEvent({
+        type: "run.status-patched",
+        requestId: "req-run-patch",
+        payload: {
+          projectId: "project-1",
+          threadId: "thread-1",
+          runId: "run-1",
+          status: "completed",
+          resumable: false,
+          retryable: true,
+          updatedAt: now,
+          completedAt: now
+        }
+      }).type
+    ).toBe("run.status-patched");
   });
 });

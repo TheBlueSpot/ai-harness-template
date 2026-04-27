@@ -105,6 +105,13 @@ Footnote here.[^1]
     expect(toastStore.toasts[0]?.title).toBe("Code copied");
   });
 
+  it("skips syntax highlighting while content is live", () => {
+    render(() => <MarkdownContent content={"```ts\nconst value = 1;\n```"} live />);
+
+    expect(document.querySelector(".markdown-code-block")).not.toBeNull();
+    expect(document.querySelector(".hljs-keyword")).toBeNull();
+  });
+
   it("surfaces copy failure", async () => {
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,

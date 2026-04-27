@@ -1,0 +1,4 @@
+interface:
+  display_name: "Craftpix Download"
+  short_description: "Download Craftpix assets with exported browser cookies."
+  default_prompt: "Use exported Craftpix browser cookies to fetch a Craftpix asset into a game-local folder."

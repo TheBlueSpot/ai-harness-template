@@ -22,6 +22,9 @@ import {
   type SubagentWorktreeStrategy,
   type WorkspaceRuleSource
 } from "../../shared/protocol";
+import { createHash } from "node:crypto";
+import { readFile, stat } from "node:fs/promises";
+import path from "node:path";
 import type { ManagedExecutionState, ManagedRefreshAction } from "./execution-runtime";
 import { debugLog } from "./logging";
 import { runManagedAgentExecution } from "./managed-agent-execution";
@@ -548,7 +551,7 @@ async function executeSameWorktreeSubagents(
           modelId: subagentModelId
         });
 
-        const beforePaths = new Set(await listChangedFiles(options.cwd));
+        const beforeSnapshot = await snapshotChangedFiles(options.cwd);
         const startedAt = Date.now();
 
         try {
@@ -643,7 +646,7 @@ async function executeSameWorktreeSubagents(
           const output = stripMilestoneLines(response.text);
           const contractDriftPaths = await inspectSameWorktreeSubagentDrift(
             options.cwd,
-            beforePaths,
+            beforeSnapshot,
             entry.contractSettings
           );
 
@@ -843,6 +846,84 @@ async function listChangedFiles(cwd: string) {
   return [...tracked.split(/\r?\n/), ...untracked.split(/\r?\n/)].map((value) => value.trim()).filter(Boolean);
 }
 
+export async function executePlanPrerequisites(
+  adapter: PiAgentAdapter,
+  options: {
+    cwd: string;
+    runId: string;
+    sessionId: string;
+    messages: ChatMessage[];
+    executionPlan: ExecutionPlan;
+    executionModelId: ProviderModelId;
+    agentId?: AgentId;
+    reasoningStrength?: ComposerReasoningStrength;
+    fastMode?: boolean;
+    abortSignal?: AbortSignal;
+    callbacks?: PiOrchestratorCallbacks;
+    onPrerequisiteComplete?: (executionPlan: ExecutionPlan) => void | Promise<void>;
+  }
+) {
+  if (options.executionPlan.prerequisites.every((prerequisite) => prerequisite.status === "completed")) {
+    return options.executionPlan;
+  }
+
+  const executionPlan = {
+    ...options.executionPlan,
+    prerequisites: options.executionPlan.prerequisites.map((prerequisite) => ({ ...prerequisite }))
+  };
+
+  for (const prerequisite of executionPlan.prerequisites) {
+    if (prerequisite.status === "completed") {
+      continue;
+    }
+
+    emitTrace(options.callbacks, {
+      sessionId: options.sessionId,
+      stage: "prerequisite-start",
+      message: `Running prerequisite: ${prerequisite.title}`,
+      detail: prerequisite.instruction,
+      modelId: options.executionModelId
+    });
+
+    const prompt = buildPrerequisitePrompt(options.messages, executionPlan, prerequisite, options.cwd);
+    const response = await adapter.runPrompt({
+      kind: "executor",
+      cwd: options.cwd,
+      modelId: options.executionModelId,
+      prompt,
+      readOnly: shouldUseReadOnlyExecutionTools(executionPlan),
+      reasoningStrength: options.reasoningStrength,
+      fastMode: options.fastMode,
+      abortSignal: options.abortSignal
+    });
+
+    if (response.contextUsage) {
+      options.callbacks?.onContextUsage?.({
+        sourceKind: "main",
+        sourceLabel: "prerequisite",
+        modelId: options.executionModelId,
+        tokens: response.contextUsage.tokens,
+        contextWindow: response.contextUsage.contextWindow,
+        usagePercent: response.contextUsage.usagePercent,
+        totalProcessedTokens: response.contextUsage.sessionStats.tokens.total,
+        updatedAt: new Date().toISOString()
+      });
+    }
+
+    prerequisite.status = "completed";
+    emitTrace(options.callbacks, {
+      sessionId: options.sessionId,
+      stage: "prerequisite-complete",
+      message: `Completed prerequisite: ${prerequisite.title}`,
+      detail: stripMilestoneLines(response.text).slice(0, 800),
+      modelId: options.executionModelId
+    });
+    await options.onPrerequisiteComplete?.(executionPlan);
+  }
+
+  return executionPlan;
+}
+
 async function runProcess(cwd: string, cmd: string[]) {
   const proc = Bun.spawn({
     cmd,
@@ -917,9 +998,40 @@ export function canRunSameWorktreeTask(
   });
 }
 
-function isPathWithinScope(relativePath: string, ownedPath: string) {
-  const normalizedRelativePath = relativePath.replace(/\\/g, "/");
-  const normalizedOwnedPath = ownedPath.replace(/\\/g, "/");
+export type SameWorktreePathCaseMode = "case-sensitive" | "case-insensitive";
+
+type ChangedFileSnapshot = {
+  relativePath: string;
+  normalizedPath: string;
+  fingerprint: string;
+};
+
+const defaultSameWorktreePathCaseMode: SameWorktreePathCaseMode =
+  process.platform === "win32" ? "case-insensitive" : "case-sensitive";
+
+export function normalizeSameWorktreePath(
+  relativePath: string,
+  caseMode: SameWorktreePathCaseMode = defaultSameWorktreePathCaseMode
+) {
+  if (relativePath === "(planner-unspecified)") {
+    return relativePath;
+  }
+
+  let normalized = relativePath.replace(/\\/g, "/").replace(/\/+/g, "/");
+  while (normalized.startsWith("./")) {
+    normalized = normalized.slice(2);
+  }
+  normalized = normalized.replace(/\/+$/g, "");
+  return caseMode === "case-insensitive" ? normalized.toLowerCase() : normalized;
+}
+
+export function isPathWithinSameWorktreeScope(
+  relativePath: string,
+  ownedPath: string,
+  caseMode: SameWorktreePathCaseMode = defaultSameWorktreePathCaseMode
+) {
+  const normalizedRelativePath = normalizeSameWorktreePath(relativePath, caseMode);
+  const normalizedOwnedPath = normalizeSameWorktreePath(ownedPath, caseMode);
   return (
     normalizedRelativePath === normalizedOwnedPath ||
     normalizedRelativePath.startsWith(`${normalizedOwnedPath}/`) ||
@@ -928,12 +1040,18 @@ function isPathWithinScope(relativePath: string, ownedPath: string) {
 }
 
 function ownedPathsAreDisjoint(leftPaths: string[], rightPaths: string[]) {
-  return leftPaths.every((leftPath) => rightPaths.every((rightPath) => !ownedPathsOverlap(leftPath, rightPath)));
+  return leftPaths.every((leftPath) =>
+    rightPaths.every((rightPath) => !sameWorktreeOwnedPathsOverlap(leftPath, rightPath))
+  );
 }
 
-function ownedPathsOverlap(leftPath: string, rightPath: string) {
-  const normalizedLeft = leftPath.replace(/\\/g, "/");
-  const normalizedRight = rightPath.replace(/\\/g, "/");
+export function sameWorktreeOwnedPathsOverlap(
+  leftPath: string,
+  rightPath: string,
+  caseMode: SameWorktreePathCaseMode = defaultSameWorktreePathCaseMode
+) {
+  const normalizedLeft = normalizeSameWorktreePath(leftPath, caseMode);
+  const normalizedRight = normalizeSameWorktreePath(rightPath, caseMode);
   return (
     normalizedLeft === normalizedRight ||
     normalizedLeft.startsWith(`${normalizedRight}/`) ||
@@ -942,7 +1060,7 @@ function ownedPathsOverlap(leftPath: string, rightPath: string) {
 }
 
 function isDependencyRootPath(relativePath: string) {
-  const normalized = relativePath.replace(/\\/g, "/").toLowerCase();
+  const normalized = normalizeSameWorktreePath(relativePath, "case-insensitive");
   return (
     /(^|\/)index\.html$/.test(normalized) ||
     /(^|\/)package\.json$/.test(normalized) ||
@@ -952,19 +1070,75 @@ function isDependencyRootPath(relativePath: string) {
 
 async function inspectSameWorktreeSubagentDrift(
   cwd: string,
-  beforePaths: Set<string>,
+  beforeSnapshot: Map<string, ChangedFileSnapshot>,
   contractSettings: TaskContractSettings
 ) {
-  const afterPaths = new Set(await listChangedFiles(cwd));
-  const changedByTask = [...afterPaths].filter((relativePath) => !beforePaths.has(relativePath));
+  const afterSnapshot = await snapshotChangedFiles(cwd);
+  const normalizedPaths = new Set([...beforeSnapshot.keys(), ...afterSnapshot.keys()]);
+  const changedByTask = [...normalizedPaths].flatMap((normalizedPath) => {
+    const before = beforeSnapshot.get(normalizedPath);
+    const after = afterSnapshot.get(normalizedPath);
+    if (before?.fingerprint === after?.fingerprint) {
+      return [];
+    }
+
+    return [after?.relativePath ?? before!.relativePath];
+  });
   const outOfScopePaths =
     contractSettings.explicitOwnedPaths.length === 0
       ? []
       : changedByTask.filter(
           (relativePath) =>
-            !contractSettings.explicitOwnedPaths.some((ownedPath) => isPathWithinScope(relativePath, ownedPath))
+            !contractSettings.explicitOwnedPaths.some((ownedPath) =>
+              isPathWithinSameWorktreeScope(relativePath, ownedPath)
+            )
         );
   return outOfScopePaths;
+}
+
+async function snapshotChangedFiles(
+  cwd: string,
+  caseMode: SameWorktreePathCaseMode = defaultSameWorktreePathCaseMode
+) {
+  const entries = await Promise.all(
+    (await listChangedFiles(cwd)).map(async (relativePath): Promise<ChangedFileSnapshot> => {
+      const normalizedPath = normalizeSameWorktreePath(relativePath, caseMode);
+      return {
+        relativePath,
+        normalizedPath,
+        fingerprint: await fingerprintChangedFile(cwd, relativePath)
+      };
+    })
+  );
+
+  return new Map(entries.map((entry) => [entry.normalizedPath, entry]));
+}
+
+async function fingerprintChangedFile(cwd: string, relativePath: string) {
+  const absolutePath = path.resolve(cwd, relativePath);
+  try {
+    const fileStat = await stat(absolutePath);
+    if (!fileStat.isFile()) {
+      return "non-file";
+    }
+
+    return createHash("sha256").update(await readFile(absolutePath)).digest("hex");
+  } catch (error) {
+    if (isMissingFileError(error)) {
+      return "missing";
+    }
+
+    throw error;
+  }
+}
+
+function isMissingFileError(error: unknown) {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "ENOENT"
+  );
 }
 
 async function verifySubagentResultAgainstContracts(
@@ -981,7 +1155,9 @@ async function verifySubagentResultAgainstContracts(
         ? []
         : changedPaths.filter(
             (relativePath) =>
-              !contractSettings.explicitOwnedPaths.some((ownedPath) => isPathWithinScope(relativePath, ownedPath))
+              !contractSettings.explicitOwnedPaths.some((ownedPath) =>
+                isPathWithinSameWorktreeScope(relativePath, ownedPath)
+              )
           );
     return outOfScopePaths;
   } catch (error) {
@@ -1212,6 +1388,29 @@ function buildContinuationPrompt(
   executionPlan?: ExecutionPlan
 ) {
   return [prefix, "", buildExecutionPrompt(messages, finalExecutionBrief, executionPlan, cwd)].join("\n");
+}
+
+function buildPrerequisitePrompt(
+  messages: ChatMessage[],
+  executionPlan: ExecutionPlan,
+  prerequisite: PlanPrerequisite,
+  cwd: string
+) {
+  const requiredTasks = prerequisite.requiredForTaskIds.length > 0
+    ? prerequisite.requiredForTaskIds.join(", ")
+    : "all planned work";
+  return [
+    buildExecutionPrompt(messages, executionPlan.finalExecutionBrief, executionPlan, cwd),
+    "",
+    "Run this prerequisite setup step now. Complete only this prerequisite before subagent work starts.",
+    `Prerequisite id: ${prerequisite.id}`,
+    `Title: ${prerequisite.title}`,
+    `Instruction: ${prerequisite.instruction}`,
+    `Reason: ${prerequisite.reason}`,
+    `Required for task ids: ${requiredTasks}`,
+    "",
+    "Report concise setup result when complete."
+  ].join("\n");
 }
 
 async function buildExecutionInput(

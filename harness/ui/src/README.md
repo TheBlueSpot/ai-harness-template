@@ -3,7 +3,9 @@
 Solid UI source for harness frontend.
 
 - `harness-store.ts` owns websocket-driven view state and transient UI state.
+- Assistant creation events switch the Assistants view to the created assistant's scope so project and global assistants are visible immediately.
 - Browser-local preference saves merge partial updates so composer controls like fast mode and reasoning survive refresh-time sync and unrelated settings edits.
+- Project sidebar sort, grouping, and manual order choices stay browser-local so navigation can be personalized without changing workspace data.
 - `components/` renders transcript, planning, run state, assistants, and supporting surfaces.
 - Live transcript rendering keeps harness progress rows thread-local so switching threads and switching back restores in-flight transcript state, while reconnect can still rebuild partial assistant text from the persisted transcript row without duplicating it in chat.
 - `mount-app.tsx` owns the browser mount boundary so dev remount or reload flows keep root wiring in one place.

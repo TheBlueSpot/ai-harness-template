@@ -1,4 +1,5 @@
 import { createFatalStartupLogger } from "./fatal-startup-log";
+import { CliUsageError } from "./cli-options";
 
 type CliMainModule = {
   main: () => Promise<void>;
@@ -41,6 +42,11 @@ export async function runCli(options: RunCliOptions = {}) {
     const cliModule = await (options.loadMain ?? (() => import("./index-main")))();
     await cliModule.main();
   } catch (error) {
+    if (error instanceof CliUsageError) {
+      console.error(error.message);
+      exit(2);
+      return;
+    }
     reportFatalError(error, "startup");
     exit(1);
   }

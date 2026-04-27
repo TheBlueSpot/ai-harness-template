@@ -57,7 +57,20 @@ describe("ui build", () => {
 
     expect(existsSync(jsPath)).toBe(true);
     expect(existsSync(mapPath)).toBe(true);
+    expect(readFileSync(jsPath, "utf8")).toContain("//# sourceMappingURL=main.js.map");
     expect(sourceMap.sources?.some((source) => source.includes("harness\\ui\\src\\app.tsx"))).toBe(true);
+  });
+
+  test("omits source maps in production build", async () => {
+    await buildUiBundle({ minify: true });
+
+    const uiOutDir = path.resolve(process.cwd(), "dist/ui");
+    const jsPath = path.join(uiOutDir, "main.js");
+    const mapPath = path.join(uiOutDir, "main.js.map");
+
+    expect(existsSync(jsPath)).toBe(true);
+    expect(existsSync(mapPath)).toBe(false);
+    expect(readFileSync(jsPath, "utf8")).not.toContain("sourceMappingURL");
   });
 
   test("debounces watch storms and publishes live reload revision only after successful rebuild", async () => {
