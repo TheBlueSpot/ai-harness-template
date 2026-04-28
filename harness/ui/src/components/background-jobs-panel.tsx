@@ -1,8 +1,11 @@
-import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
+import { For, Show, createEffect, createMemo } from "solid-js";
 import { createRequestId, type BackgroundJob, type BackgroundJobRun } from "../../../shared/protocol";
-import { type BackgroundJobEditorDraft, harnessStore, persistMergedLocalPreferences } from "../harness-store";
+import { type BackgroundJobEditorDraft, type JobsRunFilter, harnessStore, persistMergedLocalPreferences } from "../harness-store";
+import { formatShortTimestamp, resolveBrowserTimezone } from "../lib/time-format";
 import { pushToast } from "../toast-store";
 import { ActionButton } from "./action-button";
+import { ExecutionLog } from "./primitives/execution-log";
+import { Input } from "./primitives/input";
 import { ScrollArea } from "./primitives/scroll-area";
 import { Tooltip } from "./primitives/tooltip";
 import {
@@ -22,40 +25,69 @@ import {
   Trash2
 } from "lucide-solid";
 
-type RunFilter = "approval" | "queued" | "running" | "failed" | "done";
+type BackgroundJobsPanelProps = {
+  variant?: "full" | "left" | "detail";
+};
 
-export function BackgroundJobsPanel() {
+export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
   const state = harnessStore.state;
   const sendCommand = harnessStore.actions.sendCommand;
   const executionPaused = () => state.executionControl.isPaused;
   const executionPauseReason = "Global execution pause is active";
-  const [runFilter, setRunFilter] = createSignal<RunFilter>("approval");
-  const [selectedRunId, setSelectedRunId] = createSignal<string>();
+  const runFilter = () => state.jobsRunFilter;
+  const variant = () => props.variant ?? "full";
+  const showLeft = () => variant() !== "detail";
+  const showDetail = () => variant() !== "left";
+  const jobsPane = () => state.jobsPanePreferences;
+  const selectedRunId = () => jobsPane().selectedRunId;
+  const selectedJobId = () => jobsPane().selectedJobId;
 
   const jobs = createMemo(() =>
-    [...state.backgroundJobs.jobs].sort((left, right) => {
-      const leftKey = left.nextRunAt ?? left.updatedAt;
-      const rightKey = right.nextRunAt ?? right.updatedAt;
-      return rightKey.localeCompare(leftKey);
-    })
+    [...state.backgroundJobs.jobs]
+      .filter((job) => matchesJobFilters(job, state))
+      .filter((job) => fuzzyMatches(jobSearchHaystack(job, state), jobsPane().search))
+      .sort((left, right) => compareJobs(left, right, jobsPane().jobSort))
   );
   const filteredRuns = createMemo(() =>
     [...state.backgroundJobs.runs]
       .filter((run) => matchesRunFilter(run, runFilter()))
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .filter((run) => fuzzyMatches(runSearchHaystack(run, state), jobsPane().search))
+      .sort(compareRunsByUrgency)
   );
-  const selectedRun = createMemo(() => filteredRuns().find((run) => run.id === selectedRunId()) ?? filteredRuns()[0]);
-  const selectedJob = createMemo(() => jobs().find((job) => job.id === selectedRun()?.jobId));
+  const selectedRun = createMemo(() => {
+    const explicitRunId = selectedRunId();
+    if (explicitRunId) {
+      return filteredRuns().find((run) => run.id === explicitRunId);
+    }
+    return jobsPane().segment === "inbox" ? filteredRuns()[0] : undefined;
+  });
+  const selectedJob = createMemo(
+    () =>
+      jobs().find((job) => job.id === selectedRun()?.jobId) ??
+      jobs().find((job) => job.id === selectedJobId()) ??
+      jobs()[0]
+  );
+  const selectedJobRuns = createMemo(() => {
+    const jobId = selectedJob()?.id;
+    if (!jobId) {
+      return [];
+    }
+    return [...state.backgroundJobs.runs].filter((run) => run.jobId === jobId).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  });
 
   createEffect(() => {
     const currentRun = selectedRun();
+    if (jobsPane().segment === "jobs") {
+      return;
+    }
+
     if (!currentRun) {
-      setSelectedRunId(undefined);
+      harnessStore.setJobsPanePreferences({ selectedRunId: undefined });
       return;
     }
 
     if (selectedRunId() !== currentRun.id) {
-      setSelectedRunId(currentRun.id);
+      harnessStore.setJobsPanePreferences({ selectedRunId: currentRun.id });
     }
   });
 
@@ -175,218 +207,269 @@ export function BackgroundJobsPanel() {
 
   return (
     <section data-test-background-jobs-panel="" class="panel-shell flex h-full min-h-0 flex-col gap-4 rounded-2xl border-t-0 p-4">
-      <div class="px-1 py-1">
-        <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div class="flex items-center gap-2 text-[0.585rem] font-semibold tracking-[0.2em] text-(--muted)">
-            <span>Background jobs</span>
-            <Tooltip content="Durable scheduler. Jobs catch up on startup, run in hidden automation threads, summarize here.">
-              <span class="inline-flex">
-                <CircleHelp class="h-3.5 w-3.5 text-(--muted)" aria-label="Background jobs help" />
-              </span>
-            </Tooltip>
-          </div>
-          <div class="flex items-center gap-2">
-            <ActionButton
-              tooltip="Create scheduled AI routine"
-              icon={<Bot class="h-4 w-4" />}
-              size="icon"
-              variant="ghost"
-              ariaLabel="Create scheduled AI routine"
-              onClick={() => handleCreateJob("ai-routine")}
-            />
-            <ActionButton
-              tooltip="Create scheduled shell task"
-              icon={<Terminal class="h-4 w-4" />}
-              size="icon"
-              variant="ghost"
-              ariaLabel="Create scheduled shell task"
-              onClick={() => handleCreateJob("shell")}
-            />
-            <ActionButton
-              tooltip={state.backgroundJobNotificationsEnabled ? "Disable desktop notifications" : "Enable desktop notifications"}
-              icon={state.backgroundJobNotificationsEnabled ? <Bell class="h-4 w-4" /> : <BellOff class="h-4 w-4" />}
-              size="icon"
-              variant="ghost"
-              ariaLabel={state.backgroundJobNotificationsEnabled ? "Disable desktop notifications" : "Enable desktop notifications"}
-              onClick={handleToggleNotifications}
-            />
+      <Show when={showLeft()}>
+        <div class="px-1 py-1">
+          <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div class="flex items-center gap-2 text-[0.585rem] font-semibold tracking-[0.2em] text-(--muted)">
+              <span>Background jobs</span>
+              <Tooltip content="Durable scheduler. Jobs catch up on startup, run in hidden automation threads, summarize here.">
+                <span class="inline-flex">
+                  <CircleHelp class="h-3.5 w-3.5 text-(--muted)" aria-label="Background jobs help" />
+                </span>
+              </Tooltip>
+            </div>
+            <div class="flex items-center gap-2">
+              <ActionButton
+                tooltip="Create scheduled AI routine"
+                icon={<Bot class="h-4 w-4" />}
+                size="icon"
+                variant="ghost"
+                ariaLabel="Create scheduled AI routine"
+                onClick={() => handleCreateJob("ai-routine")}
+              />
+              <ActionButton
+                tooltip="Create scheduled shell task"
+                icon={<Terminal class="h-4 w-4" />}
+                size="icon"
+                variant="ghost"
+                ariaLabel="Create scheduled shell task"
+                onClick={() => handleCreateJob("shell")}
+              />
+              <ActionButton
+                tooltip={state.backgroundJobNotificationsEnabled ? "Disable desktop notifications" : "Enable desktop notifications"}
+                icon={state.backgroundJobNotificationsEnabled ? <Bell class="h-4 w-4" /> : <BellOff class="h-4 w-4" />}
+                size="icon"
+                variant="ghost"
+                ariaLabel={state.backgroundJobNotificationsEnabled ? "Disable desktop notifications" : "Enable desktop notifications"}
+                onClick={handleToggleNotifications}
+              />
+            </div>
           </div>
         </div>
-      </div>
+      </Show>
 
-      <div class="grid min-h-0 flex-1 gap-4 xl:grid-cols-[minmax(22rem,28rem)_minmax(0,1fr)]">
-        <div class="grid min-h-0 gap-4 xl:grid-rows-[minmax(16rem,1fr)_minmax(18rem,1.2fr)]">
-          <section class="flex min-h-0 flex-col rounded-[1.35rem] border border-(--border) bg-white/55 p-4">
-            <div class="mb-3 flex items-center justify-between gap-3">
-              <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Jobs</div>
-              <span class="text-[0.625rem] text-(--muted)">{jobs().length} total</span>
-            </div>
-            <ScrollArea class="min-h-0 flex-1 pr-2">
-              <Show
-                when={jobs().length > 0}
-                fallback={<div class="rounded-[1.2rem] border border-dashed border-(--border) bg-white/45 p-4 text-[0.675rem] leading-5 text-(--muted)">No scheduled tasks yet. Promote finished AI work or create one from scratch.</div>}
-              >
-                <div class="space-y-3">
-                  <For each={jobs()}>
-                    {(job) => (
-                      <article class="rounded-[1.2rem] border border-(--border) bg-white/70 p-3">
-                        <div class="flex items-start justify-between gap-3">
-                          <div>
-                            <div class="text-[0.75rem] font-semibold text-(--foreground)">{job.name}</div>
-                            <div class="mt-1 text-[0.625rem] uppercase tracking-[0.14em] text-(--muted)">
-                              {job.kind} | {job.status} | {job.riskLevel}
+      <Show when={showLeft()}>
+        <div class="flex items-center gap-2 rounded-2xl border border-(--border) bg-white/55 p-1">
+          <button
+            type="button"
+            class={`flex-1 rounded-[0.8rem] px-3 py-2 text-[0.675rem] font-semibold ${jobsPane().segment === "jobs" ? "bg-(--accent) text-white" : "text-(--foreground)"}`}
+            onClick={() => harnessStore.setJobsPanePreferences({ segment: "jobs" })}
+          >
+            Jobs
+          </button>
+          <button
+            type="button"
+            class={`flex-1 rounded-[0.8rem] px-3 py-2 text-[0.675rem] font-semibold ${jobsPane().segment === "inbox" ? "bg-(--accent) text-white" : "text-(--foreground)"}`}
+            onClick={() => harnessStore.setJobsPanePreferences({ segment: "inbox" })}
+          >
+            Inbox
+          </button>
+        </div>
+        <Input
+          value={jobsPane().search}
+          placeholder="Search jobs and runs"
+          onInput={(event) => harnessStore.setJobsPanePreferences({ search: event.currentTarget.value })}
+        />
+      </Show>
+
+      <div class={showLeft() && showDetail() ? "grid min-h-0 flex-1 gap-4 xl:grid-cols-[minmax(22rem,28rem)_minmax(0,1fr)]" : "grid min-h-0 flex-1 gap-4"}>
+        <Show when={showLeft()}>
+          <div class="grid min-h-0 gap-4">
+            <Show when={jobsPane().segment === "jobs"}>
+              <section class="flex min-h-0 flex-col rounded-[1.35rem] border border-(--border) bg-white/55 p-4">
+                <div class="mb-3 flex items-center justify-between gap-3">
+                  <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Jobs</div>
+                  <span class="text-[0.625rem] text-(--muted)">{jobs().length} total</span>
+                </div>
+                <ScrollArea class="min-h-0 flex-1 pr-2">
+                  <Show
+                    when={jobs().length > 0}
+                    fallback={<div class="rounded-[1.2rem] border border-dashed border-(--border) bg-white/45 p-4 text-[0.675rem] leading-5 text-(--muted)">No scheduled tasks yet. Promote finished AI work or create one from scratch.</div>}
+                  >
+                    <div class="space-y-3">
+                      <For each={jobs()}>
+                        {(job) => (
+                          <article
+                            class={`rounded-[1.2rem] border p-3 cursor-pointer ${selectedJob()?.id === job.id ? "border-(--accent) bg-[linear-gradient(135deg,rgba(15,118,110,0.14),rgba(255,255,255,0.92))]" : "border-(--border) bg-white/70"}`}
+                            onClick={() => harnessStore.setJobsPanePreferences({ segment: "jobs", selectedJobId: job.id, selectedRunId: undefined })}
+                          >
+                            <div class="flex items-start justify-between gap-3">
+                              {/* <button
+                                type="button"
+                                class="min-w-0 flex-1 text-left cursor-pointer"
+                                onClick={() => harnessStore.setJobsPanePreferences({ segment: "jobs", selectedJobId: job.id, selectedRunId: undefined })}
+                              > */}
+                              <div class="text-[0.75rem] font-semibold text-(--foreground)">{job.name}</div>
+                              {/* </button> */}
                             </div>
-                          </div>
-                          <div class="flex gap-1">
-                            <ActionButton tooltip="Run task now" disabled={executionPaused()} disabledReason={executionPauseReason} icon={<Play class="h-3.5 w-3.5" />} size="icon" variant="ghost" ariaLabel={`Run ${job.name} now`} onClick={() => sendCommand({ type: "background-job.run-now", requestId: createRequestId(), payload: { projectId: job.projectId, jobId: job.id } })} />
-                            <ActionButton
-                              tooltip={job.status === "enabled" ? "Pause task" : "Resume task"}
-                              icon={job.status === "enabled" ? <Pause class="h-3.5 w-3.5" /> : <Play class="h-3.5 w-3.5" />}
-                              size="icon"
-                              variant="ghost"
-                              ariaLabel={job.status === "enabled" ? `Pause ${job.name}` : `Resume ${job.name}`}
-                              onClick={() => sendCommand({
-                                type: job.status === "enabled" ? "background-job.pause" : "background-job.resume",
-                                requestId: createRequestId(),
-                                payload: {
-                                  projectId: job.projectId,
-                                  jobId: job.id
-                                }
-                              })}
-                            />
-                            <ActionButton tooltip="Edit task" icon={<RefreshCcw class="h-3.5 w-3.5" />} size="icon" variant="ghost" ariaLabel={`Edit ${job.name}`} onClick={() => handleEditJob(job)} />
-                            <ActionButton tooltip="Delete task" icon={<Trash2 class="h-3.5 w-3.5" />} size="icon" variant="ghost" ariaLabel={`Delete ${job.name}`} onClick={() => sendCommand({ type: "background-job.delete", requestId: createRequestId(), payload: { projectId: job.projectId, jobId: job.id } })} />
-                          </div>
-                        </div>
-                        <div class="mt-3 text-[0.675rem] leading-5 text-(--muted)">
-                          <div>{job.description ?? job.scheduleInput}</div>
-                          <div class="mt-1">Next: {job.nextRunAt ?? "n/a"}</div>
-                          <div>Project: {state.workspace.projects.find((project) => project.id === job.projectId)?.name ?? job.projectId}</div>
-                        </div>
-                      </article>
-                    )}
-                  </For>
-                </div>
-              </Show>
-            </ScrollArea>
-          </section>
-
-          <section class="flex min-h-0 flex-col rounded-[1.35rem] border border-(--border) bg-white/55 p-4">
-            <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
-              <div class="text-[0.585rem] font-semibold tracking-[0.04em] text-(--muted)">Inbox</div>
-              <div class="flex flex-wrap gap-2">
-                <For each={["approval", "queued", "running", "failed", "done"] satisfies RunFilter[]}>
-                  {(filter) => (
-                    <Tooltip content={runFilterLabel(filter)}>
-                      <button
-                        class={`inline-flex h-8 w-8 items-center justify-center rounded-full border transition ${
-                          runFilter() === filter
-                            ? "border-(--accent) bg-(--accent) text-white"
-                            : "border-(--border) bg-white/70 text-(--foreground)"
-                        }`}
-                        type="button"
-                        aria-label={runFilterLabel(filter)}
-                        onClick={() => setRunFilter(filter)}
-                      >
-                        {runFilterIcon(filter)}
-                      </button>
-                    </Tooltip>
-                  )}
-                </For>
-              </div>
-            </div>
-            <ScrollArea class="min-h-0 flex-1 pr-2">
-              <Show when={filteredRuns().length > 0} fallback={<div class="rounded-[1.2rem] border border-dashed border-(--border) bg-white/45 p-4 text-[0.675rem] leading-5 text-(--muted)">No runs match current filter.</div>}>
-                <div class="space-y-3">
-                  <For each={filteredRuns()}>
-                    {(run) => (
-                      <button
-                        class={`w-full rounded-[1.2rem] border p-3 text-left transition ${
-                          selectedRun()?.id === run.id
-                            ? "border-(--accent) bg-[linear-gradient(135deg,rgba(15,118,110,0.14),rgba(255,255,255,0.92))]"
-                            : "border-(--border) bg-white/70"
-                        }`}
-                        type="button"
-                        onClick={() => setSelectedRunId(run.id)}
-                      >
-                        <div class="flex items-center justify-between gap-3">
-                          <div class="text-[0.725rem] font-semibold text-(--foreground)">
-                            {state.backgroundJobs.jobs.find((job) => job.id === run.jobId)?.name ?? run.jobId}
-                          </div>
-                          <div class="text-[0.575rem] uppercase tracking-[0.16em] text-(--muted)">{run.status}</div>
-                        </div>
-                        <div class="mt-2 text-[0.675rem] leading-5 text-(--muted)">
-                          <div>{run.summary ?? run.failureMessage ?? `${run.triggerSource} run`}</div>
-                          <div class="mt-1">Queued: {run.queuedAt}</div>
-                        </div>
-                      </button>
-                    )}
-                  </For>
-                </div>
-              </Show>
-            </ScrollArea>
-          </section>
-        </div>
-
-        <section class="flex min-h-0 flex-col rounded-[1.35rem] border border-(--border) bg-white/55 p-4">
-          <Show when={selectedRun()} fallback={<div class="flex h-full min-h-80 items-center justify-center rounded-[1.2rem] border border-dashed border-(--border) bg-white/45 p-6 text-center text-[0.675rem] text-(--muted)">Select background run to inspect milestones and actions.</div>}>
-            {(run) => (
-              <div class="flex h-full min-h-0 flex-col gap-4">
-                <div class="rounded-[1.2rem] border border-(--border) bg-white/70 p-4">
-                  <div class="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Run detail</div>
-                      <h2 class="mt-1 text-[1.2rem] font-semibold tracking-[-0.04em] text-(--foreground)">{selectedJob()?.name}</h2>
-                      <div class="mt-2 text-[0.675rem] leading-5 text-(--muted)">
-                        <div>Status: {run().status}</div>
-                        <div>Trigger: {run().triggerSource}</div>
-                        <div>Approval: {run().approvalStatus}</div>
-                        <div>Summary: {run().summary ?? "n/a"}</div>
-                        <Show when={run().failureMessage}><div>Failure: {run().failureMessage}</div></Show>
-                      </div>
+                            <div class="flex gap-0.25">
+                              <ActionButton tooltip="Run task now" disabled={executionPaused()} disabledReason={executionPauseReason} icon={<Play class="h-3 w-3" />} size="icon" variant="ghost" ariaLabel={`Run ${job.name} now`} onClick={() => sendCommand({ type: "background-job.run-now", requestId: createRequestId(), payload: { projectId: job.projectId, jobId: job.id } })} />
+                              <ActionButton
+                                tooltip={job.status === "enabled" ? "Pause task" : "Resume task"}
+                                icon={job.status === "enabled" ? <Pause class="h-3 w-3" /> : <Play class="h-3 w-3" />}
+                                size="icon"
+                                variant="ghost"
+                                ariaLabel={job.status === "enabled" ? `Pause ${job.name}` : `Resume ${job.name}`}
+                                onClick={() => sendCommand({
+                                  type: job.status === "enabled" ? "background-job.pause" : "background-job.resume",
+                                  requestId: createRequestId(),
+                                  payload: {
+                                    projectId: job.projectId,
+                                    jobId: job.id
+                                  }
+                                })}
+                              />
+                              <ActionButton tooltip="Edit task" icon={<RefreshCcw class="h-3 w-3" />} size="icon" variant="ghost" ariaLabel={`Edit ${job.name}`} onClick={() => handleEditJob(job)} />
+                              <ActionButton tooltip="Delete task" icon={<Trash2 class="h-3 w-3" />} size="icon" variant="ghost" ariaLabel={`Delete ${job.name}`} onClick={() => sendCommand({ type: "background-job.delete", requestId: createRequestId(), payload: { projectId: job.projectId, jobId: job.id } })} />
+                            </div>
+                            <div class="mt-3 text-[0.675rem] leading-5 text-(--muted)">
+                              <div class="mt-1 text-[0.625rem] uppercase tracking-[0.14em] text-(--muted)">
+                                {job.kind} | {job.status} | {job.riskLevel}
+                              </div>
+                              <div>{job.description ?? job.scheduleInput}</div>
+                              <div class="mt-1">Next: {formatJobNextRun(job, state.backgroundJobs.runs)}</div>
+                              <div>Project: {state.workspace.projects.find((project) => project.id === job.projectId)?.name ?? job.projectId}</div>
+                            </div>
+                          </article>
+                        )}
+                      </For>
                     </div>
+                  </Show>
+                </ScrollArea>
+              </section>
+            </Show>
 
-                    <div class="flex flex-wrap gap-2">
-                      <Show when={run().status === "awaiting-approval"}>
-                        <ActionButton tooltip="Approve this background run" disabled={executionPaused()} disabledReason={executionPauseReason} icon={<Play class="h-4 w-4" />} onClick={() => sendCommand({ type: "background-job.approve-run", requestId: createRequestId(), payload: { projectId: run().projectId, runId: run().id } })}>Approve</ActionButton>
-                        <ActionButton tooltip="Reject this background run" variant="secondary" onClick={() => sendCommand({ type: "background-job.reject-run", requestId: createRequestId(), payload: { projectId: run().projectId, runId: run().id } })}>Reject</ActionButton>
-                      </Show>
-                      <Show when={run().status === "running"}>
-                        <ActionButton tooltip="Stop this background run" variant="secondary" icon={<Pause class="h-4 w-4" />} onClick={() => sendCommand({ type: "background-job.stop-run", requestId: createRequestId(), payload: { projectId: run().projectId, runId: run().id } })}>Stop</ActionButton>
-                      </Show>
-                      <Show when={run().status === "failed" || run().status === "cancelled"}>
-                        <ActionButton tooltip="Retry this background run" disabled={executionPaused()} disabledReason={executionPauseReason} icon={<RefreshCcw class="h-4 w-4" />} onClick={() => sendCommand({ type: "background-job.retry-run", requestId: createRequestId(), payload: { projectId: run().projectId, runId: run().id } })}>Retry</ActionButton>
-                      </Show>
-                    </div>
-                  </div>
-                </div>
-
-                <ScrollArea class="flex-1 min-h-0 pr-2">
-                  <div class="space-y-3">
-                    <For each={run().events}>
-                      {(event) => (
-                        <article class="rounded-[1.1rem] border border-(--border) bg-white/70 p-4">
-                          <div class="flex items-center justify-between gap-3 text-[0.585rem] font-semibold uppercase tracking-[0.16em] text-(--accent-strong)">
-                            <span>{event.stage}</span>
-                            <span>{event.createdAt}</span>
-                          </div>
-                          <div class="mt-2 text-[0.75rem] font-semibold text-(--foreground)">{event.message}</div>
-                          <Show when={event.detail}><div class="mt-2 whitespace-pre-wrap text-[0.675rem] leading-5 text-(--muted)">{event.detail}</div></Show>
-                        </article>
+            <Show when={jobsPane().segment === "inbox"}>
+              <section class="flex min-h-0 flex-col rounded-[1.35rem] border border-(--border) bg-white/55 p-4">
+                <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
+                  <div class="text-[0.585rem] font-semibold tracking-[0.04em] text-(--muted)">Inbox</div>
+                  <div class="flex flex-wrap gap-2">
+                    <For each={["approval", "queued", "running", "failed", "done"] satisfies JobsRunFilter[]}>
+                      {(filter) => (
+                        <Tooltip content={runFilterLabel(filter)}>
+                          <button
+                            class={`inline-flex h-8 w-8 items-center justify-center rounded-full border transition ${runFilter() === filter
+                              ? "border-(--accent) bg-(--accent) text-white"
+                              : "border-(--border) bg-white/70 text-(--foreground)"
+                              }`}
+                            type="button"
+                            aria-label={runFilterLabel(filter)}
+                            onClick={() => harnessStore.setJobsRunFilter(filter)}
+                          >
+                            {runFilterIcon(filter)}
+                          </button>
+                        </Tooltip>
                       )}
                     </For>
                   </div>
+                </div>
+                <ScrollArea class="min-h-0 flex-1 pr-2">
+                  <Show when={filteredRuns().length > 0} fallback={<div class="rounded-[1.2rem] border border-dashed border-(--border) bg-white/45 p-4 text-[0.675rem] leading-5 text-(--muted)">No runs match current filter.</div>}>
+                    <div class="space-y-3">
+                      <For each={filteredRuns()}>
+                        {(run) => (
+                          <button
+                            class={`w-full rounded-[1.2rem] border p-3 text-left transition ${selectedRun()?.id === run.id
+                              ? "border-(--accent) bg-[linear-gradient(135deg,rgba(15,118,110,0.14),rgba(255,255,255,0.92))]"
+                              : "border-(--border) bg-white/70"
+                              }`}
+                            type="button"
+                            onClick={() => harnessStore.setJobsPanePreferences({ segment: "inbox", selectedRunId: run.id, selectedJobId: run.jobId })}
+                          >
+                            <div class="flex items-center justify-between gap-3">
+                              <div class="text-[0.725rem] font-semibold text-(--foreground)">
+                                {state.backgroundJobs.jobs.find((job) => job.id === run.jobId)?.name ?? run.jobId}
+                              </div>
+                              <div class="text-[0.575rem] uppercase tracking-[0.16em] text-(--muted)">{run.status}</div>
+                            </div>
+                            <div class="mt-2 text-[0.675rem] leading-5 text-(--muted)">
+                              <div>{run.summary ?? run.failureMessage ?? `${run.triggerSource} run`}</div>
+                              <div class="mt-1">Queued: {formatShortTimestamp(run.queuedAt)}</div>
+                            </div>
+                          </button>
+                        )}
+                      </For>
+                    </div>
+                  </Show>
                 </ScrollArea>
-              </div>
-            )}
-          </Show>
-        </section>
+              </section>
+            </Show>
+          </div>
+        </Show>
+
+        <Show when={showDetail()}>
+          <section class="flex min-h-0 flex-col rounded-[1.35rem] border border-(--border) bg-white/55 p-4">
+            <Show when={jobsPane().segment === "jobs" && !selectedRun()}>
+              <JobDetail
+                job={selectedJob()}
+                runs={selectedJobRuns()}
+                executionPaused={executionPaused()}
+                executionPauseReason={executionPauseReason}
+                onRunNow={(job) => sendCommand({ type: "background-job.run-now", requestId: createRequestId(), payload: { projectId: job.projectId, jobId: job.id } })}
+                onEdit={handleEditJob}
+              />
+            </Show>
+            <Show when={jobsPane().segment !== "jobs" || selectedRun()} fallback={null}>
+              <Show when={selectedRun()} fallback={<div class="flex h-full min-h-80 items-center justify-center rounded-[1.2rem] border border-dashed border-(--border) bg-white/45 p-6 text-center text-[0.675rem] text-(--muted)">Select background run or job to inspect details.</div>}>
+                {(run) => (
+                  <div class="flex h-full min-h-0 flex-col gap-4">
+                    <div class="rounded-[1.2rem] border border-(--border) bg-white/70 p-4">
+                      <div class="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Run detail</div>
+                          <h2 class="mt-1 text-[1.2rem] font-semibold tracking-[-0.04em] text-(--foreground)">{selectedJob()?.name}</h2>
+                          <div class="mt-2 text-[0.675rem] leading-5 text-(--muted)">
+                            <div>Status: {run().status}</div>
+                            <div>Trigger: {run().triggerSource}</div>
+                            <div>Approval: {run().approvalStatus}</div>
+                            <div>Summary: {run().summary ?? "n/a"}</div>
+                            <Show when={run().failureMessage}><div>Failure: {run().failureMessage}</div></Show>
+                          </div>
+                        </div>
+
+                        <div class="flex flex-wrap gap-2">
+                          <Show when={run().status === "awaiting-approval"}>
+                            <ActionButton tooltip="Approve this background run" disabled={executionPaused()} disabledReason={executionPauseReason} icon={<Play class="h-4 w-4" />} onClick={() => sendCommand({ type: "background-job.approve-run", requestId: createRequestId(), payload: { projectId: run().projectId, runId: run().id } })}>Approve</ActionButton>
+                            <ActionButton tooltip="Reject this background run" variant="secondary" onClick={() => sendCommand({ type: "background-job.reject-run", requestId: createRequestId(), payload: { projectId: run().projectId, runId: run().id } })}>Reject</ActionButton>
+                          </Show>
+                          <Show when={run().status === "running"}>
+                            <ActionButton tooltip="Stop this background run" variant="secondary" icon={<Pause class="h-4 w-4" />} onClick={() => sendCommand({ type: "background-job.stop-run", requestId: createRequestId(), payload: { projectId: run().projectId, runId: run().id } })}>Stop</ActionButton>
+                          </Show>
+                          <Show when={run().status === "failed" || run().status === "cancelled"}>
+                            <ActionButton tooltip="Retry this background run" disabled={executionPaused()} disabledReason={executionPauseReason} icon={<RefreshCcw class="h-4 w-4" />} onClick={() => sendCommand({ type: "background-job.retry-run", requestId: createRequestId(), payload: { projectId: run().projectId, runId: run().id } })}>Retry</ActionButton>
+                          </Show>
+                        </div>
+                      </div>
+                    </div>
+
+                    <ScrollArea class="flex-1 min-h-0 pr-2">
+                      <div class="space-y-3">
+                        <For each={run().events}>
+                          {(event) => (
+                            <article class="rounded-[1.1rem] border border-(--border) bg-white/70 p-4">
+                              <div class="flex items-center justify-between gap-3 text-[0.585rem] font-semibold uppercase tracking-[0.16em] text-(--accent-strong)">
+                                <span>{event.stage}</span>
+                                <span>{formatShortTimestamp(event.createdAt)}</span>
+                              </div>
+                              <div class="mt-2 text-[0.75rem] font-semibold text-(--foreground)">{event.message}</div>
+                              <Show when={event.detail}><div class="mt-2 whitespace-pre-wrap text-[0.675rem] leading-5 text-(--muted)">{event.detail}</div></Show>
+                            </article>
+                          )}
+                        </For>
+                      </div>
+                    </ScrollArea>
+                  </div>
+                )}
+              </Show>
+            </Show>
+          </section>
+        </Show>
       </div>
     </section>
   );
 }
 
-function matchesRunFilter(run: BackgroundJobRun, filter: RunFilter) {
+function matchesRunFilter(run: BackgroundJobRun, filter: JobsRunFilter) {
   switch (filter) {
     case "approval":
       return run.status === "awaiting-approval" || run.approvalStatus === "pending";
@@ -401,7 +484,247 @@ function matchesRunFilter(run: BackgroundJobRun, filter: RunFilter) {
   }
 }
 
-function runFilterLabel(filter: RunFilter) {
+function matchesJobFilters(job: BackgroundJob, state: typeof harnessStore.state) {
+  const preferences = state.jobsPanePreferences;
+  if (preferences.projectId && job.projectId !== preferences.projectId) {
+    return false;
+  }
+  if (preferences.assistantId && job.assistantId !== preferences.assistantId) {
+    return false;
+  }
+  if (preferences.kind && job.kind !== preferences.kind) {
+    return false;
+  }
+  if (preferences.status && job.status !== preferences.status) {
+    return false;
+  }
+  if (preferences.risk && job.riskLevel !== preferences.risk) {
+    return false;
+  }
+  return true;
+}
+
+function compareJobs(left: BackgroundJob, right: BackgroundJob, sort: "next-run" | "updated" | "created" | "status" | "risk") {
+  if (sort === "updated") {
+    return right.updatedAt.localeCompare(left.updatedAt);
+  }
+  if (sort === "created") {
+    return right.createdAt.localeCompare(left.createdAt);
+  }
+  if (sort === "status") {
+    return left.status.localeCompare(right.status) || right.updatedAt.localeCompare(left.updatedAt);
+  }
+  if (sort === "risk") {
+    return riskRank(right.riskLevel) - riskRank(left.riskLevel) || right.updatedAt.localeCompare(left.updatedAt);
+  }
+  return compareOptionalIsoAsc(resolveJobNextRunAt(left), resolveJobNextRunAt(right)) || right.updatedAt.localeCompare(left.updatedAt);
+}
+
+function compareRunsByUrgency(left: BackgroundJobRun, right: BackgroundJobRun) {
+  return runUrgencyRank(left) - runUrgencyRank(right) || right.updatedAt.localeCompare(left.updatedAt);
+}
+
+function runUrgencyRank(run: BackgroundJobRun) {
+  if (run.status === "awaiting-user-input" || run.status === "awaiting-approval" || run.approvalStatus === "pending") {
+    return 0;
+  }
+  if (run.status === "running") {
+    return 1;
+  }
+  if (run.status === "failed" || run.status === "cancelled") {
+    return 2;
+  }
+  if (run.status === "queued") {
+    return 3;
+  }
+  return 4;
+}
+
+function riskRank(risk: BackgroundJob["riskLevel"]) {
+  switch (risk) {
+    case "unsafe":
+      return 3;
+    case "slightly-unsafe":
+      return 2;
+    case "safe":
+      return 1;
+  }
+}
+
+function compareOptionalIsoAsc(left?: string, right?: string) {
+  if (!left && !right) {
+    return 0;
+  }
+  if (!left) {
+    return 1;
+  }
+  if (!right) {
+    return -1;
+  }
+  return left.localeCompare(right);
+}
+
+function resolveJobNextRunAt(job: BackgroundJob) {
+  if (job.nextRunAt) {
+    return job.nextRunAt;
+  }
+  if (job.schedule.type === "interval" || job.schedule.type === "cron") {
+    return job.schedule.nextRunAt;
+  }
+  return job.schedule.consumedAt ? undefined : job.schedule.runAt;
+}
+
+function formatJobNextRun(job: BackgroundJob, runs: BackgroundJobRun[]) {
+  const activeRun = runs.find((run) => run.jobId === job.id && run.status === "running");
+  if (activeRun) {
+    return "running";
+  }
+  return formatShortTimestamp(resolveJobNextRunAt(job));
+}
+
+function fuzzyMatches(haystack: string, query: string) {
+  const tokens = query
+    .toLowerCase()
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+  if (tokens.length === 0) {
+    return true;
+  }
+  const normalized = haystack.toLowerCase();
+  return tokens.every((token) => normalized.includes(token) || fuzzyTokenMatch(normalized, token));
+}
+
+function fuzzyTokenMatch(haystack: string, token: string) {
+  let cursor = 0;
+  for (const char of token) {
+    cursor = haystack.indexOf(char, cursor);
+    if (cursor < 0) {
+      return false;
+    }
+    cursor += 1;
+  }
+  return true;
+}
+
+function jobSearchHaystack(job: BackgroundJob, state: typeof harnessStore.state) {
+  const project = state.workspace.projects.find((entry) => entry.id === job.projectId);
+  const assistant = state.assistants.assistants.find((entry) => entry.id === job.assistantId);
+  const prompt = job.definition.kind === "ai-routine" ? job.definition.prompt : [job.definition.executable, ...job.definition.args].join(" ");
+  return [
+    job.name,
+    job.description,
+    job.scheduleInput,
+    job.status,
+    job.kind,
+    job.riskLevel,
+    prompt,
+    project?.name,
+    project?.rootPath,
+    assistant?.name
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function runSearchHaystack(run: BackgroundJobRun, state: typeof harnessStore.state) {
+  const job = state.backgroundJobs.jobs.find((entry) => entry.id === run.jobId);
+  return [
+    job?.name,
+    run.status,
+    run.approvalStatus,
+    run.triggerSource,
+    run.summary,
+    run.failureMessage,
+    ...run.events.flatMap((event) => [event.stage, event.message, event.detail])
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function JobDetail(props: {
+  job?: BackgroundJob;
+  runs: BackgroundJobRun[];
+  executionPaused: boolean;
+  executionPauseReason: string;
+  onRunNow: (job: BackgroundJob) => void;
+  onEdit: (job: BackgroundJob) => void;
+}) {
+  const latestRun = createMemo(() => props.runs[0]);
+  const latestRunEvents = createMemo(() =>
+    (latestRun()?.events ?? []).map((event) => ({
+      id: event.id,
+      message: event.message,
+      level: event.stage,
+      createdAt: event.createdAt,
+      detail: event.detail
+    }))
+  );
+
+  return (
+    <Show
+      when={props.job}
+      fallback={
+        <div class="flex h-full min-h-80 items-center justify-center rounded-[1.2rem] border border-dashed border-(--border) bg-white/45 p-6 text-center text-[0.675rem] text-(--muted)">
+          Select background job to inspect schedule and actions.
+        </div>
+      }
+    >
+      {(job) => (
+        <div class="flex h-full min-h-0 flex-col gap-4">
+          <div class="rounded-[1.2rem] border border-(--border) bg-white/70 p-4">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Job detail</div>
+                <h2 class="mt-1 text-[1.2rem] font-semibold tracking-[-0.04em] text-(--foreground)">{job().name}</h2>
+                <div class="mt-2 text-[0.675rem] leading-5 text-(--muted)">
+                  <div>Status: {job().status}</div>
+                  <div>Kind: {job().kind}</div>
+                  <div>Risk: {job().riskLevel}</div>
+                  <div>Schedule: {job().scheduleInput}</div>
+                  <div>Next: {formatJobNextRun(job(), props.runs)}</div>
+                  <Show when={job().description}>
+                    <div>Description: {job().description}</div>
+                  </Show>
+                </div>
+              </div>
+              <div class="flex flex-wrap gap-2">
+                <ActionButton
+                  tooltip="Run task now"
+                  disabled={props.executionPaused}
+                  disabledReason={props.executionPauseReason}
+                  icon={<Play class="h-4 w-4" />}
+                  onClick={() => props.onRunNow(job())}
+                >
+                  Run now
+                </ActionButton>
+                <ActionButton tooltip="Edit task" variant="secondary" icon={<RefreshCcw class="h-4 w-4" />} onClick={() => props.onEdit(job())}>
+                  Edit
+                </ActionButton>
+              </div>
+            </div>
+          </div>
+          <section class="flex min-h-0 flex-1 flex-col rounded-[1.2rem] border border-(--border) bg-white/70 p-4">
+            <div class="mb-3 flex items-center justify-between gap-3">
+              <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Execution log</div>
+              <Show when={latestRun()}>
+                {(run) => <div class="text-[0.625rem] text-(--muted)">{run().status}</div>}
+              </Show>
+            </div>
+            <Show
+              when={latestRun()?.events.length}
+              fallback={<div class="rounded-[0.9rem] border border-dashed border-(--border) bg-white/45 p-3 text-[0.675rem] text-(--muted)">No execution log yet.</div>}
+            >
+              <ExecutionLog entries={latestRunEvents()} emptyMessage="No execution log yet." />
+            </Show>
+          </section>
+        </div>
+      )}
+    </Show>
+  );
+}
+
+function runFilterLabel(filter: JobsRunFilter) {
   switch (filter) {
     case "approval":
       return "Approval";
@@ -416,7 +739,7 @@ function runFilterLabel(filter: RunFilter) {
   }
 }
 
-function runFilterIcon(filter: RunFilter) {
+function runFilterIcon(filter: JobsRunFilter) {
   switch (filter) {
     case "approval":
       return <ShieldCheck class="h-3.5 w-3.5" />;
@@ -429,8 +752,4 @@ function runFilterIcon(filter: RunFilter) {
     case "done":
       return <CheckCircle2 class="h-3.5 w-3.5" />;
   }
-}
-
-function resolveBrowserTimezone() {
-  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 }

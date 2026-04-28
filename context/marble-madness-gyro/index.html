@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Marble Madness Gyro</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="frame">
+        <div class="hud">
+          <div class="hud__group">
+            <span class="hud__label">Stage</span>
+            <span id="stage-value">1 / 3</span>
+          </div>
+          <div class="hud__group">
+            <span class="hud__label">Time</span>
+            <span id="time-value">90.0</span>
+          </div>
+          <div class="hud__group">
+            <span class="hud__label">Gems</span>
+            <span id="gem-value">0 / 0</span>
+          </div>
+          <div class="hud__group">
+            <span class="hud__label">Falls</span>
+            <span id="fall-value">0</span>
+          </div>
+        </div>
+        <canvas id="game" width="1280" height="720" aria-label="Marble Madness Gyro"></canvas>
+        <div id="overlay" class="overlay">
+          <div class="overlay__panel">
+            <p id="overlay-kicker" class="overlay__kicker">Marble Madness Gyro</p>
+            <h1 id="overlay-title">Tilt Into The Course</h1>
+            <p id="overlay-body">
+              Guide the marble with tilt controls, clear every checkpoint ring, grab gems, and survive the gyro arms.
+            </p>
+            <ul class="overlay__tips">
+              <li>Use arrow keys or WASD to tilt the board.</li>
+              <li>Hit the glowing ring in front of you to lock the next checkpoint.</li>
+              <li>Avoid pits and use bumpers to redirect speed.</li>
+            </ul>
+            <button id="overlay-button" type="button">Start Run</button>
+          </div>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

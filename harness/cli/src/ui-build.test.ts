@@ -76,7 +76,7 @@ describe("ui build", () => {
   test("debounces watch storms and publishes live reload revision only after successful rebuild", async () => {
     const clock = new FakeClock();
     const buildCalls: string[] = [];
-    let watcherListener: (() => void) | undefined;
+    let watcherListener: ((changedPath?: string) => void) | undefined;
     let failNextBuild = false;
     const originalConsoleError = console.error;
     console.error = () => {};
@@ -143,5 +143,31 @@ describe("ui build", () => {
     } finally {
       console.error = originalConsoleError;
     }
+  });
+
+  test("ignores context watch events", async () => {
+    const buildCalls: string[] = [];
+    let watcherListener: ((changedPath?: string) => void) | undefined;
+    const manager = createUiAssetManager({
+      async buildUiBundle() {
+        buildCalls.push(`build-${buildCalls.length + 1}`);
+      },
+      watchSourceDir(_sourceDir, listener) {
+        watcherListener = listener;
+        return {
+          close() {}
+        };
+      }
+    });
+
+    manager.startWatching();
+    watcherListener?.(path.resolve(process.cwd(), "context/notes.md"));
+    await flushMicrotasks();
+    expect(buildCalls).toEqual([]);
+
+    watcherListener?.(path.resolve(process.cwd(), "harness/ui/src/app.tsx"));
+    await flushMicrotasks();
+    expect(buildCalls).toEqual(["build-1"]);
+    manager.dispose();
   });
 });

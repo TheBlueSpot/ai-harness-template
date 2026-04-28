@@ -142,6 +142,24 @@ describe("client command validation", () => {
     ).toBe("planning.answer");
   });
 
+  test("accepts planning.answer-batch payloads", () => {
+    expect(
+      parseClientCommand({
+        type: "planning.answer-batch",
+        requestId: "req-answer-batch",
+        payload: {
+          projectId: "project-1",
+          threadId: "thread-1",
+          runId: "run-1",
+          answers: [
+            { questionId: "question-1", content: "Use the API route." },
+            { questionId: "question-2", content: "Keep current styling." }
+          ]
+        }
+      }).type
+    ).toBe("planning.answer-batch");
+  });
+
   test("accepts assistant.create-from-thread payloads", () => {
     expect(
       parseClientCommand({
@@ -171,6 +189,22 @@ describe("client command validation", () => {
         }
       }).type
     ).toBe("assistant.circuit-breaker.retry");
+  });
+
+  test("accepts assistant.question.answer-batch payloads", () => {
+    expect(
+      parseClientCommand({
+        type: "assistant.question.answer-batch",
+        requestId: "req-assistant-answer-batch",
+        payload: {
+          assistantId: "assistant-1",
+          answers: [
+            { questionId: "assistant-question-1", content: "Proceed with defaults." },
+            { questionId: "assistant-question-2", content: "Run validation after." }
+          ]
+        }
+      }).type
+    ).toBe("assistant.question.answer-batch");
   });
 
   test("rejects malformed assistant.create-from-thread payloads", () => {
@@ -650,6 +684,36 @@ describe("planner result validation", () => {
     });
 
     expect(event.type).toBe("chat.streaming-tail-updated");
+  });
+
+  test("accepts assistant chat message appended events", () => {
+    const createdAt = new Date().toISOString();
+    const message = {
+      id: "message-1",
+      role: "user",
+      kind: "plain",
+      content: "Need status",
+      createdAt
+    };
+    const event = parseServerEvent({
+      type: "assistant.chat.message-appended",
+      requestId: "req-assistant-chat-appended",
+      payload: {
+        assistantId: "assistant-1",
+        sessionId: "session-1",
+        message,
+        thread: {
+          id: "assistant-thread-1",
+          assistantId: "assistant-1",
+          sessionId: "session-1",
+          messageCount: 1,
+          messages: [message],
+          updatedAt: createdAt
+        }
+      }
+    });
+
+    expect(event.type).toBe("assistant.chat.message-appended");
   });
 
   test("accepts empty workspace payload", () => {

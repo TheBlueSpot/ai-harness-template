@@ -51,8 +51,18 @@ export class BackgroundJobScheduler {
       }
 
       const now = new Date();
-      const jobs = this.options.repository.loadBackgroundJobsState().jobs.filter((job) => job.status === "enabled");
+      const backgroundState = this.options.repository.loadBackgroundJobsState();
+      const jobs = backgroundState.jobs.filter((job) => job.status === "enabled");
       for (const job of jobs) {
+        const existingActiveRun = backgroundState.runs.some(
+          (run) =>
+            run.jobId === job.id &&
+            ["queued", "awaiting-approval", "awaiting-user-input", "running"].includes(run.status)
+        );
+        if (existingActiveRun) {
+          continue;
+        }
+
         if (job.assistantId) {
           try {
             assertAssistantRunnableForLaunch(this.options.repository, job.assistantId);

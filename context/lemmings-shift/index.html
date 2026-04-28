@@ -1,0 +1,809 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Lemmings Shift</title>
+  <style>
+    :root {
+      --bg: #101722;
+      --panel: rgba(9, 14, 22, 0.82);
+      --line: rgba(182, 220, 255, 0.2);
+      --text: #eef7ff;
+      --soft: #9db5c9;
+      --gold: #ffd56a;
+      --green: #5ce2a7;
+      --red: #ff7f7f;
+      --blue: #77c8ff;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(circle at top, rgba(114, 162, 255, 0.18), transparent 30%),
+        linear-gradient(180deg, #162233 0%, #0b1119 58%, #070a10 100%);
+      color: var(--text);
+      font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+    }
+
+    .shell {
+      width: min(1100px, 100vw);
+      padding: 18px;
+    }
+
+    .frame {
+      position: relative;
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      padding: 16px;
+      background: linear-gradient(180deg, rgba(17, 25, 39, 0.96), rgba(7, 10, 16, 0.94));
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      border-radius: 14px;
+      background: linear-gradient(180deg, #26436a 0%, #1a2b43 52%, #0f1722 100%);
+    }
+
+    .hud {
+      position: absolute;
+      inset: 16px;
+      pointer-events: none;
+    }
+
+    .panel {
+      position: absolute;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--panel);
+      backdrop-filter: blur(8px);
+      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.25);
+    }
+
+    .top-left { top: 0; left: 0; }
+    .top-right { top: 0; right: 0; text-align: right; }
+    .bottom-left { left: 0; bottom: 0; }
+
+    .label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.18em;
+      color: var(--soft);
+    }
+
+    .value {
+      margin-top: 4px;
+      font-size: 24px;
+      font-weight: 700;
+    }
+
+    .ability-bar {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px;
+      pointer-events: auto;
+    }
+
+    .ability {
+      min-width: 112px;
+      padding: 9px 10px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: rgba(13, 20, 32, 0.95);
+      color: var(--text);
+      cursor: pointer;
+      transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
+    }
+
+    .ability:hover,
+    .ability.active {
+      transform: translateY(-1px);
+      border-color: rgba(255, 213, 106, 0.8);
+      background: rgba(41, 31, 10, 0.95);
+    }
+
+    .ability:disabled {
+      cursor: default;
+      opacity: 0.45;
+      transform: none;
+    }
+
+    .ability strong {
+      display: block;
+      font-size: 13px;
+      margin-bottom: 3px;
+    }
+
+    .ability span {
+      font-size: 11px;
+      color: var(--soft);
+    }
+
+    .overlay {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: rgba(4, 8, 13, 0.46);
+    }
+
+    .card {
+      max-width: 640px;
+      padding: 24px 26px;
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      background: rgba(9, 14, 22, 0.9);
+      text-align: center;
+    }
+
+    .card h1, .card h2 {
+      margin: 0 0 12px;
+      font-size: clamp(28px, 4vw, 48px);
+    }
+
+    .card p {
+      margin: 0 0 12px;
+      line-height: 1.45;
+      color: var(--soft);
+    }
+
+    .cta {
+      margin-top: 14px;
+      padding: 12px 18px;
+      border: none;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #ffd56a, #ffb84d);
+      color: #1b1200;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
+
+    .hint {
+      position: absolute;
+      max-width: 220px;
+      padding: 9px 11px;
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      background: rgba(12, 16, 25, 0.88);
+      color: var(--text);
+      font-size: 12px;
+      line-height: 1.35;
+      box-shadow: 0 8px 20px rgba(0, 0, 0, 0.25);
+      transform: translate(-50%, -100%);
+      pointer-events: none;
+    }
+
+    .hint strong { color: var(--gold); }
+
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="frame">
+      <canvas id="game" width="960" height="540" aria-label="Lemmings Shift"></canvas>
+      <div class="hud">
+        <div class="panel top-left">
+          <div class="label">Rescue Goal</div>
+          <div class="value"><span id="rescuedCount">0</span> / <span id="goalCount">4</span></div>
+        </div>
+        <div class="panel top-right">
+          <div class="label">Status</div>
+          <div class="value" id="statusText">Hold the line</div>
+        </div>
+        <div class="panel bottom-left">
+          <div class="label">Assignments</div>
+          <div class="ability-bar" id="abilityBar"></div>
+        </div>
+      </div>
+      <div class="overlay" id="menuOverlay">
+        <div class="card">
+          <h1>Lemmings Shift</h1>
+          <p>Guide tiny climbers from the hatch to the exit. Pick one skill, then click a runner right before the obstacle that needs it.</p>
+          <p>The route asks for a builder at the opening trench, a digger on the mid ledge, then a final builder near the finish pit. Blocker is your traffic-control spare.</p>
+          <button class="cta" id="startButton">Start Run</button>
+        </div>
+      </div>
+      <div class="overlay hidden" id="endOverlay">
+        <div class="card">
+          <h2 id="endTitle">Shift Complete</h2>
+          <p id="endBody"></p>
+          <button class="cta" id="restartButton">Run Again</button>
+        </div>
+      </div>
+      <div class="hint hidden" id="hintBox"></div>
+    </div>
+  </div>
+
+  <script type="module">
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+    const rescuedCountEl = document.getElementById("rescuedCount");
+    const goalCountEl = document.getElementById("goalCount");
+    const statusTextEl = document.getElementById("statusText");
+    const abilityBar = document.getElementById("abilityBar");
+    const menuOverlay = document.getElementById("menuOverlay");
+    const endOverlay = document.getElementById("endOverlay");
+    const endTitle = document.getElementById("endTitle");
+    const endBody = document.getElementById("endBody");
+    const hintBox = document.getElementById("hintBox");
+
+    const TILE = 24;
+    const COLS = 40;
+    const ROWS = 22;
+    const GOAL = 4;
+    const TOTAL = 6;
+    const GRAVITY = 1100;
+    const WALK_SPEED = 42;
+    const FALL_FATAL = 120;
+    const HATCH = { x: 3.5 * TILE, y: 4 * TILE };
+    const EXIT = { x: 36.5 * TILE, y: 17.2 * TILE, radius: 18 };
+
+    const abilities = [
+      { id: "builder", name: "Builder", key: "1", uses: 2, blurb: "Bridge gaps" },
+      { id: "digger", name: "Digger", key: "2", uses: 2, blurb: "Cut the shelf" },
+      { id: "blocker", name: "Blocker", key: "3", uses: 1, blurb: "Turn the pack" },
+    ];
+
+    const prompts = [
+      { id: "builder", x: 11.6 * TILE, y: 17.4 * TILE, text: "Pick <strong>Builder</strong>, then click a walker right at the first trench." },
+      { id: "digger", x: 20.2 * TILE, y: 15.2 * TILE, text: "The mid ledge dead-ends. Click one walker with <strong>Digger</strong> to open a drop route." },
+      { id: "blocker", x: 30.6 * TILE, y: 17.1 * TILE, text: "If the line bunches near the last gap, use <strong>Blocker</strong> to hold the crowd while a builder makes the finish bridge." },
+    ];
+
+    const state = {
+      mode: "menu",
+      lemmings: [],
+      particles: [],
+      abilities: [],
+      selectedAbility: "builder",
+      spawnTimer: 0,
+      spawned: 0,
+      rescued: 0,
+      lost: 0,
+      promptsSeen: new Set(),
+      terrain: [],
+      blockers: [],
+      lastTime: 0,
+    };
+
+    function buildTerrain() {
+      const grid = Array.from({ length: ROWS }, () => Array(COLS).fill(0));
+      for (let x = 0; x < COLS; x += 1) {
+        for (let y = 18; y < ROWS; y += 1) {
+          grid[y][x] = 1;
+        }
+      }
+
+      for (let x = 10; x <= 12; x += 1) {
+        for (let y = 18; y < ROWS; y += 1) {
+          grid[y][x] = 0;
+        }
+      }
+
+      for (let x = 13; x <= 21; x += 1) {
+        grid[16][x] = 1;
+        grid[17][x] = 1;
+      }
+
+      for (let x = 19; x <= 21; x += 1) {
+        grid[16][x] = 2;
+        grid[17][x] = 2;
+      }
+
+      for (let x = 30; x <= 32; x += 1) {
+        for (let y = 18; y < ROWS; y += 1) {
+          grid[y][x] = 0;
+        }
+      }
+
+      for (let y = 5; y <= 17; y += 1) {
+        grid[y][0] = 1;
+        grid[y][COLS - 1] = 1;
+      }
+
+      return grid;
+    }
+
+    function resetGame() {
+      state.mode = "playing";
+      state.lemmings = [];
+      state.particles = [];
+      state.abilities = abilities.map((ability) => ({ ...ability, remaining: ability.uses }));
+      state.selectedAbility = "builder";
+      state.spawnTimer = 0;
+      state.spawned = 0;
+      state.rescued = 0;
+      state.lost = 0;
+      state.promptsSeen = new Set();
+      state.terrain = buildTerrain();
+      state.blockers = [];
+      state.lastTime = performance.now();
+      menuOverlay.classList.add("hidden");
+      endOverlay.classList.add("hidden");
+      updateHud();
+      renderAbilityButtons();
+    }
+
+    function tileAtPixel(x, y) {
+      const tx = Math.floor(x / TILE);
+      const ty = Math.floor(y / TILE);
+      if (tx < 0 || ty < 0 || tx >= COLS || ty >= ROWS) {
+        return 1;
+      }
+      return state.terrain[ty][tx];
+    }
+
+    function setTile(tx, ty, value) {
+      if (tx < 0 || ty < 0 || tx >= COLS || ty >= ROWS) {
+        return;
+      }
+      state.terrain[ty][tx] = value;
+    }
+
+    function spawnLemming() {
+      state.lemmings.push({
+        x: HATCH.x,
+        y: HATCH.y,
+        vx: WALK_SPEED,
+        vy: 0,
+        dir: 1,
+        width: 12,
+        height: 18,
+        onGround: false,
+        alive: true,
+        state: "walker",
+        fallDistance: 0,
+        taskTimer: 0,
+        taskCount: 0,
+      });
+      state.spawned += 1;
+    }
+
+    function updateHud() {
+      rescuedCountEl.textContent = `${state.rescued}`;
+      goalCountEl.textContent = `${GOAL}`;
+      const active = state.abilities.find((ability) => ability.id === state.selectedAbility);
+      const verb = active ? `${active.name} selected` : "Choose an assignment";
+      statusTextEl.textContent = `${verb} · ${TOTAL - state.rescued - state.lost} in field`;
+    }
+
+    function renderAbilityButtons() {
+      abilityBar.innerHTML = "";
+      state.abilities.forEach((ability) => {
+        const button = document.createElement("button");
+        button.className = `ability${ability.id === state.selectedAbility ? " active" : ""}`;
+        button.disabled = ability.remaining <= 0 || state.mode !== "playing";
+        button.innerHTML = `<strong>${ability.key}. ${ability.name} ×${ability.remaining}</strong><span>${ability.blurb}</span>`;
+        button.addEventListener("click", () => {
+          state.selectedAbility = ability.id;
+          renderAbilityButtons();
+          updateHud();
+        });
+        abilityBar.appendChild(button);
+      });
+    }
+
+    function assignAbility(lemming) {
+      if (state.mode !== "playing" || !lemming.alive) {
+        return false;
+      }
+      if (lemming.state !== "walker") {
+        return false;
+      }
+      const ability = state.abilities.find((entry) => entry.id === state.selectedAbility);
+      if (!ability || ability.remaining <= 0) {
+        return false;
+      }
+
+      ability.remaining -= 1;
+      lemming.state = ability.id;
+      lemming.taskTimer = 0;
+      lemming.taskCount = 0;
+      if (ability.id === "blocker") {
+        lemming.vx = 0;
+        state.blockers.push(lemming);
+      }
+      burst(lemming.x, lemming.y - 8, ability.id === "builder" ? "#ffd56a" : ability.id === "digger" ? "#77c8ff" : "#5ce2a7");
+      renderAbilityButtons();
+      updateHud();
+      return true;
+    }
+
+    function burst(x, y, color) {
+      for (let i = 0; i < 9; i += 1) {
+        const angle = (Math.PI * 2 * i) / 9;
+        state.particles.push({
+          x,
+          y,
+          vx: Math.cos(angle) * (20 + Math.random() * 45),
+          vy: Math.sin(angle) * (20 + Math.random() * 45) - 20,
+          life: 0.55 + Math.random() * 0.25,
+          color,
+        });
+      }
+    }
+
+    function digTileUnder(lemming) {
+      const tx = Math.floor(lemming.x / TILE);
+      const ty = Math.floor((lemming.y + lemming.height * 0.5) / TILE);
+      const current = state.terrain[ty]?.[tx] ?? 1;
+      if (current !== 0) {
+        setTile(tx, ty, 0);
+        burst(tx * TILE + TILE / 2, ty * TILE + TILE / 2, "#77c8ff");
+      } else {
+        lemming.state = "walker";
+      }
+    }
+
+    function layBuilderStep(lemming) {
+      const baseX = Math.floor((lemming.x + lemming.dir * 8) / TILE);
+      const baseY = Math.floor((lemming.y + 4) / TILE);
+      const tx = baseX;
+      const ty = baseY - 1;
+      setTile(tx, ty, 1);
+      lemming.x += lemming.dir * 8;
+      lemming.y -= 6;
+      lemming.taskCount += 1;
+      burst(tx * TILE + TILE / 2, ty * TILE + TILE / 2, "#ffd56a");
+      if (lemming.taskCount >= 9) {
+        lemming.state = "walker";
+      }
+    }
+
+    function updateLemming(lemming, dt) {
+      if (!lemming.alive) {
+        return;
+      }
+
+      if (lemming.state === "blocker") {
+        lemming.vy += GRAVITY * dt;
+      } else if (lemming.state === "builder") {
+        lemming.taskTimer += dt;
+        if (lemming.taskTimer >= 0.22) {
+          lemming.taskTimer = 0;
+          layBuilderStep(lemming);
+        }
+        lemming.vx = lemming.dir * 18;
+        lemming.vy += GRAVITY * dt;
+      } else if (lemming.state === "digger") {
+        lemming.vx = 0;
+        lemming.taskTimer += dt;
+        if (lemming.taskTimer >= 0.18) {
+          lemming.taskTimer = 0;
+          digTileUnder(lemming);
+        }
+        lemming.vy += GRAVITY * dt;
+      } else {
+        lemming.vx = lemming.dir * WALK_SPEED;
+        lemming.vy += GRAVITY * dt;
+      }
+
+      const previousY = lemming.y;
+      let nextX = lemming.x + lemming.vx * dt;
+      let nextY = lemming.y + lemming.vy * dt;
+
+      const probeX = nextX + lemming.dir * (lemming.width * 0.55);
+      const probeY = lemming.y - 4;
+      if (lemming.state !== "blocker" && tileAtPixel(probeX, probeY) !== 0) {
+        lemming.dir *= -1;
+        nextX = lemming.x;
+      }
+
+      if (lemming.state === "walker") {
+        const footAheadX = nextX + lemming.dir * 8;
+        const footAheadY = lemming.y + lemming.height * 0.6 + 6;
+        if (tileAtPixel(footAheadX, footAheadY) === 0 && lemming.onGround) {
+          lemming.dir *= -1;
+          nextX = lemming.x;
+        }
+      }
+
+      lemming.onGround = false;
+      const footY = nextY + lemming.height * 0.5;
+      if (tileAtPixel(nextX, footY) !== 0 || tileAtPixel(nextX - lemming.width * 0.35, footY) !== 0 || tileAtPixel(nextX + lemming.width * 0.35, footY) !== 0) {
+        nextY = Math.floor(footY / TILE) * TILE - lemming.height * 0.5;
+        lemming.vy = 0;
+        lemming.onGround = true;
+        if (previousY < nextY) {
+          lemming.fallDistance += nextY - previousY;
+        }
+        if (lemming.fallDistance > FALL_FATAL) {
+          lemming.alive = false;
+          state.lost += 1;
+          burst(lemming.x, lemming.y, "#ff7f7f");
+          return;
+        }
+        lemming.fallDistance = 0;
+      } else if (nextY > previousY) {
+        lemming.fallDistance += nextY - previousY;
+      }
+
+      lemming.x = nextX;
+      lemming.y = nextY;
+
+      if (lemming.state !== "blocker") {
+        for (const blocker of state.blockers) {
+          if (!blocker.alive) {
+            continue;
+          }
+          if (Math.abs(blocker.x - lemming.x) < 16 && Math.abs(blocker.y - lemming.y) < 18) {
+            lemming.dir = lemming.x < blocker.x ? -1 : 1;
+            lemming.x += lemming.dir * -8;
+          }
+        }
+      }
+
+      if (Math.hypot(lemming.x - EXIT.x, lemming.y - EXIT.y) < EXIT.radius) {
+        lemming.alive = false;
+        state.rescued += 1;
+        burst(lemming.x, lemming.y, "#5ce2a7");
+      }
+
+      if (lemming.y > canvas.height + 60) {
+        lemming.alive = false;
+        state.lost += 1;
+        burst(lemming.x, canvas.height - 10, "#ff7f7f");
+      }
+    }
+
+    function updateParticles(dt) {
+      state.particles = state.particles.filter((particle) => {
+        particle.x += particle.vx * dt;
+        particle.y += particle.vy * dt;
+        particle.vy += 120 * dt;
+        particle.life -= dt;
+        return particle.life > 0;
+      });
+    }
+
+    function updatePrompts() {
+      const live = state.lemmings.find((lemming) => lemming.alive);
+      if (!live) {
+        hintBox.classList.add("hidden");
+        return;
+      }
+
+      const prompt = prompts.find((entry) => !state.promptsSeen.has(entry.id) && Math.abs(live.x - entry.x) < 70);
+      if (!prompt) {
+        hintBox.classList.add("hidden");
+        return;
+      }
+
+      state.promptsSeen.add(prompt.id);
+      hintBox.innerHTML = prompt.text;
+      hintBox.style.left = `${prompt.x}px`;
+      hintBox.style.top = `${prompt.y}px`;
+      hintBox.classList.remove("hidden");
+      setTimeout(() => hintBox.classList.add("hidden"), 3500);
+    }
+
+    function finishRun(won) {
+      state.mode = "ended";
+      renderAbilityButtons();
+      updateHud();
+      endTitle.textContent = won ? "Shift Complete" : "Shift Failed";
+      endBody.textContent = won
+        ? `You rescued ${state.rescued} of ${TOTAL}. The route held long enough for the crowd to reach the exit.`
+        : `Only ${state.rescued} made it out. Bridge the spikes earlier and save a builder for the late shelf or blocker turn.`;
+      endOverlay.classList.remove("hidden");
+    }
+
+    function tick(timestamp) {
+      const dt = Math.min(0.033, (timestamp - state.lastTime) / 1000 || 0.016);
+      state.lastTime = timestamp;
+
+      if (state.mode === "playing") {
+        state.spawnTimer += dt;
+        if (state.spawned < TOTAL && state.spawnTimer >= 1.4) {
+          state.spawnTimer = 0;
+          spawnLemming();
+        }
+
+        state.lemmings.forEach((lemming) => updateLemming(lemming, dt));
+        state.lemmings = state.lemmings.filter((lemming) => lemming.alive);
+        state.blockers = state.blockers.filter((blocker) => blocker.alive && blocker.state === "blocker");
+        updateParticles(dt);
+        updatePrompts();
+        updateHud();
+
+        if (state.rescued >= GOAL) {
+          finishRun(true);
+        } else if (state.rescued + state.lost >= TOTAL) {
+          finishRun(false);
+        }
+      } else {
+        updateParticles(dt);
+      }
+
+      render();
+      requestAnimationFrame(tick);
+    }
+
+    function drawTerrain() {
+      for (let y = 0; y < ROWS; y += 1) {
+        for (let x = 0; x < COLS; x += 1) {
+          const tile = state.terrain[y][x];
+          if (tile === 0) {
+            continue;
+          }
+          const px = x * TILE;
+          const py = y * TILE;
+          if (tile === 2) {
+            ctx.fillStyle = "#7384b2";
+            ctx.fillRect(px, py, TILE, TILE);
+            ctx.fillStyle = "rgba(255,255,255,0.1)";
+            ctx.fillRect(px + 4, py + 4, TILE - 8, 4);
+          } else {
+            const gradient = ctx.createLinearGradient(px, py, px, py + TILE);
+            gradient.addColorStop(0, "#48634e");
+            gradient.addColorStop(1, "#2e3e31");
+            ctx.fillStyle = gradient;
+            ctx.fillRect(px, py, TILE, TILE);
+            ctx.fillStyle = "rgba(0,0,0,0.1)";
+            ctx.fillRect(px, py + TILE - 4, TILE, 4);
+          }
+        }
+      }
+
+      ctx.fillStyle = "#d45d5d";
+      for (let x = 10; x <= 12; x += 1) {
+        const baseX = x * TILE;
+        const baseY = 18 * TILE;
+        for (let i = 0; i < 3; i += 1) {
+          ctx.beginPath();
+          ctx.moveTo(baseX + i * 8, baseY);
+          ctx.lineTo(baseX + 4 + i * 8, baseY - 14);
+          ctx.lineTo(baseX + 8 + i * 8, baseY);
+          ctx.fill();
+        }
+      }
+    }
+
+    function drawLemming(lemming) {
+      ctx.save();
+      ctx.translate(lemming.x, lemming.y);
+      ctx.scale(lemming.dir, 1);
+
+      ctx.fillStyle = lemming.state === "blocker" ? "#5ce2a7" : "#7ad7ff";
+      ctx.fillRect(-5, -12, 10, 12);
+      ctx.fillStyle = "#27496b";
+      ctx.fillRect(-5, 0, 4, 7);
+      ctx.fillRect(1, 0, 4, 7);
+      ctx.fillStyle = "#f6d8b5";
+      ctx.beginPath();
+      ctx.arc(0, -15, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#71d14a";
+      ctx.fillRect(-6, -20, 12, 4);
+
+      if (lemming.state === "builder") {
+        ctx.strokeStyle = "#ffd56a";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(2, -5);
+        ctx.lineTo(12, -10);
+        ctx.stroke();
+      } else if (lemming.state === "digger") {
+        ctx.strokeStyle = "#77c8ff";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(0, 2);
+        ctx.lineTo(0, 12);
+        ctx.stroke();
+      } else if (lemming.state === "blocker") {
+        ctx.strokeStyle = "#5ce2a7";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(-8, -9);
+        ctx.lineTo(8, -9);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    function drawExit() {
+      ctx.save();
+      ctx.translate(EXIT.x, EXIT.y);
+      ctx.fillStyle = "rgba(92, 226, 167, 0.18)";
+      ctx.beginPath();
+      ctx.arc(0, 0, 24, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "#5ce2a7";
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(0, 0, 16, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = "#c7fff0";
+      ctx.fillRect(-4, -18, 8, 36);
+      ctx.restore();
+    }
+
+    function drawHatch() {
+      ctx.fillStyle = "#c89f58";
+      ctx.fillRect(HATCH.x - 20, HATCH.y - 18, 40, 18);
+      ctx.fillStyle = "#53391b";
+      ctx.fillRect(HATCH.x - 22, HATCH.y - 22, 44, 6);
+    }
+
+    function drawParticles() {
+      state.particles.forEach((particle) => {
+        ctx.globalAlpha = Math.max(0, particle.life * 1.6);
+        ctx.fillStyle = particle.color;
+        ctx.fillRect(particle.x, particle.y, 4, 4);
+      });
+      ctx.globalAlpha = 1;
+    }
+
+    function render() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      const sky = ctx.createLinearGradient(0, 0, 0, canvas.height);
+      sky.addColorStop(0, "#31527f");
+      sky.addColorStop(0.5, "#223856");
+      sky.addColorStop(1, "#121820");
+      ctx.fillStyle = sky;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.fillStyle = "rgba(255,255,255,0.08)";
+      ctx.fillRect(0, 70, canvas.width, 2);
+      ctx.fillRect(0, 148, canvas.width, 1);
+
+      drawTerrain();
+      drawHatch();
+      drawExit();
+      state.lemmings.forEach(drawLemming);
+      drawParticles();
+    }
+
+    canvas.addEventListener("click", (event) => {
+      if (state.mode !== "playing") {
+        return;
+      }
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      const x = (event.clientX - rect.left) * scaleX;
+      const y = (event.clientY - rect.top) * scaleY;
+
+      const target = state.lemmings.find((lemming) => Math.abs(lemming.x - x) < 14 && Math.abs(lemming.y - y) < 18);
+      if (target) {
+        assignAbility(target);
+      }
+    });
+
+    window.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && state.mode !== "playing") {
+        resetGame();
+        return;
+      }
+      const match = state.abilities.find((ability) => ability.key === event.key && ability.remaining > 0);
+      if (match) {
+        state.selectedAbility = match.id;
+        renderAbilityButtons();
+        updateHud();
+      }
+    });
+
+    document.getElementById("startButton").addEventListener("click", resetGame);
+    document.getElementById("restartButton").addEventListener("click", resetGame);
+
+    goalCountEl.textContent = `${GOAL}`;
+    renderAbilityButtons();
+    render();
+    requestAnimationFrame(tick);
+  </script>
+</body>
+</html>

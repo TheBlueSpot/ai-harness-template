@@ -17,13 +17,20 @@ import {
 import { getDefaultExecutionModelId } from "./pi-planner";
 import { type AgentRuntimeRegistry } from "./agent-runtimes/runtime-registry";
 import { type PiAgentAdapter } from "./pi-agent-adapter";
-import { WorkspaceRepository } from "./workspace-repository";
+import { normalizeAssistantLearningSource, WorkspaceRepository } from "./workspace-repository";
 import { debugLog } from "./logging";
 import { assertAssistantRunnableForLaunch } from "./assistant-launch-gate";
+import { evaluateAssistantQuestionPolicy, type AssistantQuestionDecision } from "./assistant-question-policy";
 
 type AssistantManagerCallbacks = {
   onAssistantsUpdated: () => void;
   onAssistantChatDelta: (input: { assistantId: string; sessionId: string; delta: string }) => void;
+  onAssistantChatMessageAppended: (input: {
+    assistantId: string;
+    sessionId: string;
+    message: ChatMessage;
+    thread: AssistantThread;
+  }) => void;
   onAssistantChatComplete: (input: { assistantId: string; sessionId: string; assistantMessage: ChatMessage; thread: AssistantThread }) => void;
   onAssistantLogAppended: (entry: AssistantLogEntry) => void;
   onAssistantCreatedCard: (assistant: Assistant) => void;
@@ -50,6 +57,10 @@ type ReprioritizeProposal = {
     prompt: string;
     linkedTodoIds?: string[];
   };
+  questions?: Array<{
+    prompt: string;
+    linkedTodoIds?: string[];
+  }>;
 };
 
 type BootstrapProposal = {
@@ -75,6 +86,7 @@ type ReprioritizeState = {
 
 export class AssistantManager {
   private readonly reprioritizeStates = new Map<string, ReprioritizeState>();
+  private readonly bootstrapFlights = new Map<string, Promise<void>>();
 
   constructor(
     private readonly repository: WorkspaceRepository,
@@ -82,7 +94,60 @@ export class AssistantManager {
     private readonly callbacks: AssistantManagerCallbacks
   ) {}
 
-  async bootstrapAssistant(assistantId: string) {
+  bootstrapAssistant(assistantId: string, options: { force?: boolean } = {}) {
+    const existingFlight = this.bootstrapFlights.get(assistantId);
+    if (existingFlight && !options.force) {
+      return existingFlight;
+    }
+
+    const attemptId = crypto.randomUUID();
+    const flight = this.runBootstrapAssistant(assistantId, attemptId).finally(() => {
+      if (this.bootstrapFlights.get(assistantId) === flight) {
+        this.bootstrapFlights.delete(assistantId);
+      }
+    });
+    this.bootstrapFlights.set(assistantId, flight);
+    return flight;
+  }
+
+  recoverStaleBootstrapRuns(maxAgeMs: number = 30 * 60 * 1000) {
+    const now = Date.now();
+    for (const assistant of this.repository.loadAssistantsState().assistants) {
+      if (assistant.bootstrapState !== "running") {
+        continue;
+      }
+      const startedAt = assistant.bootstrapStartedAt ? Date.parse(assistant.bootstrapStartedAt) : Number.NaN;
+      if (Number.isFinite(startedAt) && now - startedAt < maxAgeMs) {
+        continue;
+      }
+      const finishedAt = new Date().toISOString();
+      this.repository.setAssistantBootstrapState(assistant.id, "failed", {
+        attemptId: assistant.bootstrapAttemptId,
+        finishedAt
+      });
+      this.appendLog({
+        assistantId: assistant.id,
+        level: "error",
+        summary: "Bootstrap stale",
+        detail: "Bootstrap was still running after reconnect and can be retried."
+      });
+      const pendingQuestion = this.repository
+        .getAssistantQuestions(assistant.id)
+        .find((entry) => entry.status === "pending" || entry.status === "deferred");
+      if (!pendingQuestion) {
+        this.repository.saveAssistantQuestion({
+          id: createAssistantQuestionId(),
+          assistantId: assistant.id,
+          prompt: "Assistant bootstrap was interrupted or stalled. Retry bootstrap when ready?",
+          status: this.repository.getGlobalExecutionPaused() ? "deferred" : "pending",
+          askedAt: finishedAt
+        });
+      }
+    }
+    this.callbacks.onAssistantsUpdated();
+  }
+
+  private async runBootstrapAssistant(assistantId: string, attemptId: string) {
     let assistant: Assistant;
     try {
       assistant = assertAssistantRunnableForLaunch(this.repository, assistantId, { allowGlobalPauseDeferral: true });
@@ -93,7 +158,11 @@ export class AssistantManager {
       return;
     }
 
-    this.repository.setAssistantBootstrapState(assistantId, "running");
+    this.repository.setAssistantBootstrapState(assistantId, "running", {
+      attemptId,
+      startedAt: new Date().toISOString(),
+      finishedAt: null
+    });
     this.appendLog({
       assistantId,
       level: "info",
@@ -109,6 +178,10 @@ export class AssistantManager {
         prompt: buildBootstrapPrompt(assistant),
         readOnly: true
       });
+
+      if (this.repository.getAssistant(assistantId)?.bootstrapAttemptId !== attemptId) {
+        return;
+      }
 
       if (proposal?.researchSummary) {
         this.repository.saveAssistantLearning({
@@ -147,7 +220,10 @@ export class AssistantManager {
         });
       });
 
-      this.repository.setAssistantBootstrapState(assistantId, "completed");
+      this.repository.setAssistantBootstrapState(assistantId, "completed", {
+        attemptId,
+        finishedAt: new Date().toISOString()
+      });
       this.appendLog({
         assistantId,
         level: "info",
@@ -161,7 +237,13 @@ export class AssistantManager {
       }
     } catch (error) {
       const message = normalizeErrorMessage(error);
-      this.repository.setAssistantBootstrapState(assistantId, "failed");
+      if (this.repository.getAssistant(assistantId)?.bootstrapAttemptId !== attemptId) {
+        return;
+      }
+      this.repository.setAssistantBootstrapState(assistantId, "failed", {
+        attemptId,
+        finishedAt: new Date().toISOString()
+      });
       this.appendLog({
         assistantId,
         level: "error",
@@ -178,6 +260,16 @@ export class AssistantManager {
     const assistant = assertAssistantRunnableForLaunch(this.repository, assistantId);
 
     const thread = this.repository.appendAssistantMessage(assistantId, "user", content.trim());
+    const userMessage = thread.messages[thread.messages.length - 1];
+    if (!userMessage) {
+      throw new Error("Assistant user message was not persisted");
+    }
+    this.callbacks.onAssistantChatMessageAppended({
+      assistantId,
+      sessionId: thread.sessionId,
+      message: userMessage,
+      thread
+    });
     const runtime = await this.resolveRuntime(assistant);
     const prompt = await this.buildAssistantChatPrompt(assistant);
     let deltaBuffer = "";
@@ -189,6 +281,7 @@ export class AssistantManager {
         modelId: runtime.modelId,
         prompt: `${prompt}\n\nLatest user message:\n${content.trim()}`,
         readOnly: runtime.readOnly,
+        fastMode: runtime.fastMode,
         onTextDelta: (delta) => {
           deltaBuffer += delta;
           this.callbacks.onAssistantChatDelta({
@@ -261,13 +354,22 @@ export class AssistantManager {
       summary: "Question answered",
       detail: summarize(content)
     });
+    this.repository.saveAssistantLearning({
+      id: createAssistantLearningId(),
+      assistantId,
+      summary: `User answered assistant question "${summarize(question.prompt, 120)}" with "${summarize(content, 120)}"; treat this as durable guidance and do not ask the same thing again unless context changes.`,
+      source: `question:${question.id}`,
+      confidence: "high",
+      createdAt: new Date().toISOString()
+    });
     this.callbacks.onAssistantsUpdated();
     this.scheduleReprioritize(assistantId, "question-answer");
     return question;
   }
 
   async retryBootstrap(assistantId: string) {
-    await this.bootstrapAssistant(assistantId);
+    const assistant = this.repository.getAssistant(assistantId);
+    await this.bootstrapAssistant(assistantId, { force: assistant?.bootstrapState !== "running" });
   }
 
   async recoverAssistant(assistantId: string) {
@@ -290,7 +392,7 @@ export class AssistantManager {
 
   async handleBackgroundJobRunOutcome(input: {
     assistantId: string;
-    status: "succeeded" | "failed" | "cancelled";
+    status: "succeeded" | "failed" | "cancelled" | "awaiting-user-input";
     summary?: string;
     failureMessage?: string;
   }) {
@@ -317,6 +419,20 @@ export class AssistantManager {
     }
 
     const message = input.failureMessage ?? input.summary ?? "Assistant job failed";
+    const questionPrompt = extractQuestionPrompt(message);
+    if (input.status === "awaiting-user-input" || questionPrompt) {
+      this.saveBlockingQuestion(input.assistantId, questionPrompt ?? message);
+      this.appendLog({
+        assistantId: input.assistantId,
+        level: "warning",
+        summary: "Assistant job waiting for input",
+        detail: questionPrompt ?? message
+      });
+      this.callbacks.onAssistantsUpdated();
+      this.scheduleReprioritize(input.assistantId, "job-question");
+      return;
+    }
+
     this.appendLog({
       assistantId: input.assistantId,
       level: input.status === "cancelled" ? "warning" : "error",
@@ -325,6 +441,7 @@ export class AssistantManager {
     });
     await this.recordFailure(input.assistantId, message, true);
     this.callbacks.onAssistantsUpdated();
+    this.scheduleReprioritize(input.assistantId, `job-${input.status}`);
   }
 
   scheduleReprioritize(assistantId: string, reason: string) {
@@ -368,6 +485,36 @@ export class AssistantManager {
     }
   }
 
+  cleanupStaleAssistantQuestions() {
+    let cleanedCount = 0;
+    for (const assistant of this.repository.loadAssistantsState().assistants) {
+      for (const question of this.repository
+        .getAssistantQuestions(assistant.id)
+        .filter((entry) => entry.status === "pending" || entry.status === "deferred")) {
+        const decision = evaluateAssistantQuestionPolicy({
+          prompt: question.prompt,
+          questions: this.repository.getAssistantQuestions(assistant.id).filter((entry) => entry.id !== question.id),
+          learnings: this.repository.getAssistantLearnings(assistant.id),
+          runtimeReadOnly: undefined
+        });
+        if (decision.kind === "ask") {
+          continue;
+        }
+        if (decision.kind === "auto-answer") {
+          this.repository.answerAssistantQuestion(assistant.id, question.id, decision.answerText);
+        } else {
+          this.repository.dismissAssistantQuestion(assistant.id, question.id);
+        }
+        this.applyQuestionPolicyDecision(assistant.id, question.prompt, decision);
+        cleanedCount += 1;
+      }
+    }
+    if (cleanedCount > 0) {
+      this.callbacks.onAssistantsUpdated();
+    }
+    return cleanedCount;
+  }
+
   private async runReprioritize(assistantId: string, reason: string) {
     const state = this.reprioritizeStates.get(assistantId) ?? {
       running: false,
@@ -392,7 +539,7 @@ export class AssistantManager {
       const proposal = await this.runJsonPrompt<ReprioritizeProposal>(runtime.adapter, {
         assistant,
         prompt: await this.buildReprioritizePrompt(assistant, reason),
-        readOnly: true
+        readOnly: runtime.readOnly
       });
 
       const todos = this.repository.getAssistantTodos(assistantId);
@@ -443,34 +590,72 @@ export class AssistantManager {
         }
       }
 
+      const existingLearningKeys = new Set(
+        this.repository
+          .getAssistantLearnings(assistantId)
+          .map((learning) => normalizeLearningKey(learning.summary, learning.source))
+      );
       for (const learning of proposal?.newLearnings ?? []) {
         if (!learning.summary.trim()) {
           continue;
         }
+        const learningSource = normalizeAssistantLearningSource(learning.source?.trim() || `reprioritize:${reason}`);
+        const learningKey = normalizeLearningKey(learning.summary, learningSource);
+        if (existingLearningKeys.has(learningKey)) {
+          continue;
+        }
+        existingLearningKeys.add(learningKey);
         this.repository.saveAssistantLearning({
           id: createAssistantLearningId(),
           assistantId,
           summary: learning.summary.trim(),
-          source: learning.source?.trim() || `reprioritize:${reason}`,
+          source: learningSource,
           confidence: learning.confidence ?? "medium",
           createdAt: new Date().toISOString()
         });
       }
 
-      if (proposal?.question?.prompt?.trim()) {
+      const proposedQuestions = [
+        ...(proposal?.questions ?? []),
+        ...(proposal?.question ? [proposal.question] : [])
+      ].filter((question) => question.prompt.trim());
+      if (proposedQuestions.length > 0) {
         const pendingQuestion = this.repository
           .getAssistantQuestions(assistantId)
           .find((entry) => entry.status === "pending" || entry.status === "deferred");
         if (!pendingQuestion) {
           const questionStatus = this.repository.getGlobalExecutionPaused() ? "deferred" : "pending";
-          this.repository.saveAssistantQuestion({
-            id: createAssistantQuestionId(),
-            assistantId,
-            prompt: proposal.question.prompt.trim(),
-            status: questionStatus,
-            linkedTodoIds: proposal.question.linkedTodoIds ?? [],
-            askedAt: new Date().toISOString()
-          });
+          let askedCount = 0;
+          for (const question of proposedQuestions) {
+            const decision = evaluateAssistantQuestionPolicy({
+              prompt: question.prompt,
+              questions: this.repository.getAssistantQuestions(assistantId),
+              learnings: this.repository.getAssistantLearnings(assistantId),
+              runtimeReadOnly: runtime.readOnly
+            });
+            if (decision.kind !== "ask") {
+              this.applyQuestionPolicyDecision(assistantId, question.prompt, decision);
+              continue;
+            }
+            if (askedCount >= 3) {
+              this.applyQuestionPolicyDecision(assistantId, question.prompt, {
+                kind: "note",
+                category: decision.category,
+                reason: "Assistant question batch already reached the maximum size.",
+                note: `Keep working without asking extra question: ${question.prompt.trim()}`
+              });
+              continue;
+            }
+            this.repository.saveAssistantQuestion({
+              id: createAssistantQuestionId(),
+              assistantId,
+              prompt: question.prompt.trim(),
+              status: questionStatus,
+              linkedTodoIds: question.linkedTodoIds ?? [],
+              askedAt: new Date().toISOString()
+            });
+            askedCount += 1;
+          }
         }
       }
 
@@ -525,7 +710,8 @@ export class AssistantManager {
       cwd: runtime.cwd,
       modelId: runtime.modelId,
       prompt: buildThreadSummaryPrompt(assistant, thread),
-      readOnly: true
+      readOnly: true,
+      fastMode: runtime.fastMode
     });
     this.repository.setAssistantThreadMemorySummary(assistant.id, result.text.trim());
     this.appendLog({
@@ -557,7 +743,8 @@ export class AssistantManager {
         ? `Relevant learnings:\n${state.learnings.map((learning) => `- ${learning.summary}`).join("\n")}`
         : "Relevant learnings: none",
       `Recent transcript:\n${renderMessages(state.recentMessages)}`,
-      "Reply directly to the user. Keep answer grounded in the assistant role and current priorities."
+      "Reply directly to the user. Keep answer grounded in the assistant role and current priorities.",
+      "Ask questions only when missing information blocks useful progress. If multiple questions are necessary, batch them in one response."
     ]
       .filter(Boolean)
       .join("\n\n");
@@ -578,6 +765,9 @@ export class AssistantManager {
       state.pendingQuestions.length > 0
         ? `Pending questions:\n${state.pendingQuestions.map((question) => `- id=${question.id} prompt=${question.prompt}`).join("\n")}`
         : undefined,
+      state.answeredQuestions.length > 0
+        ? `Recently answered questions. Treat these answers as durable guidance and do not ask equivalent questions again unless the user changes context:\n${state.answeredQuestions.map((question) => `- prompt=${question.prompt} answer=${question.answerText ?? ""}`).join("\n")}`
+        : undefined,
       state.learnings.length > 0
         ? `Relevant learnings:\n${state.learnings.map((learning) => `- ${learning.summary}`).join("\n")}`
         : undefined,
@@ -589,8 +779,9 @@ export class AssistantManager {
   "todoUpdates": [{"id":"todo-id","state":"pending|in-progress|blocked|completed|failed|cancelled","blockerReason":"optional"}],
   "newTodos": [{"title":"todo title","description":"optional"}],
   "newLearnings": [{"summary":"learning","source":"optional","confidence":"low|medium|high"}],
-  "question": {"prompt":"optional blocking question","linkedTodoIds":["todo-id"]}
+  "questions": [{"prompt":"optional blocking question","linkedTodoIds":["todo-id"]}]
 }`,
+      "Ask questions only when missing information blocks useful progress. If multiple questions are necessary, batch them in questions. Prefer no questions when a reasonable default exists.",
       "Do not include completed, failed, or cancelled todos unless you are explicitly changing a currently active todo into one of those states."
     ]
       .filter(Boolean)
@@ -602,7 +793,9 @@ export class AssistantManager {
     const todos = this.repository
       .getAssistantTodos(assistantId)
       .filter((todo) => ["pending", "in-progress", "blocked"].includes(todo.state));
-    const questions = this.repository.getAssistantQuestions(assistantId).filter((question) => question.status === "pending");
+    const allQuestions = this.repository.getAssistantQuestions(assistantId);
+    const questions = allQuestions.filter((question) => question.status === "pending");
+    const answeredQuestions = allQuestions.filter((question) => question.status === "answered").slice(0, 8);
     const learnings = this.repository.getAssistantLearnings(assistantId).slice(0, 12);
     const assetRefs = this.repository.getAssistantAssetRefs(assistantId).filter((assetRef) => assetRef.resolutionStatus === "resolved");
 
@@ -610,6 +803,7 @@ export class AssistantManager {
       summary: thread.memorySummary?.content,
       activeTodos: todos,
       pendingQuestions: questions,
+      answeredQuestions,
       learnings,
       assetRefs,
       recentMessages: thread.messages.slice(-16)
@@ -630,14 +824,15 @@ export class AssistantManager {
       cwd: runtime.cwd,
       modelId: runtime.modelId,
       prompt: input.prompt,
-      readOnly: input.readOnly
+      readOnly: input.readOnly,
+      fastMode: runtime.fastMode
     });
     return extractJsonPayload<T>(result.text);
   }
 
   private async resolveRuntime(assistant: Assistant) {
     this.repository.assertAssistantAssetRefsResolved(assistant.id);
-    const providerBrand = this.repository.getProviderBrand();
+    const providerBrand = assistant.providerBrand ?? this.repository.getProviderBrand();
     const runtime = this.runtimeRegistry.get(assistant.agentId);
     const capability = runtime.getCapability() ?? (await runtime.refreshCapability());
     if (!capability.installed) {
@@ -664,7 +859,8 @@ export class AssistantManager {
       adapter: runtime.getAdapter(),
       cwd,
       modelId,
-      readOnly
+      readOnly,
+      fastMode: assistant.fastMode
     };
   }
 
@@ -696,13 +892,8 @@ export class AssistantManager {
           .getAssistantQuestions(assistantId)
           .find((entry) => entry.status === "pending" || entry.status === "deferred");
         if (!pendingQuestion) {
-          const questionStatus = this.repository.getGlobalExecutionPaused() ? "deferred" : "pending";
-          this.repository.saveAssistantQuestion({
-            id: createAssistantQuestionId(),
-            assistantId,
-            prompt: `Assistant paused itself after repeated failures. How should it proceed? Latest error: ${message}`,
-            status: questionStatus,
-            askedAt: new Date().toISOString()
+          this.saveBlockingQuestion(assistantId, `Assistant paused itself after repeated failures. How should it proceed? Latest error: ${message}`, {
+            forceBlocking: true
           });
         }
       }
@@ -713,6 +904,65 @@ export class AssistantManager {
     this.repository.updateAssistantFailureState(assistantId, {
       failureStreakCount: nextFailureCount,
       circuitBreakerReason: message
+    });
+  }
+
+  private saveBlockingQuestion(assistantId: string, prompt: string, options: { forceBlocking?: boolean; runtimeReadOnly?: boolean } = {}) {
+    const pendingQuestion = this.repository
+      .getAssistantQuestions(assistantId)
+      .find((entry) => entry.status === "pending" || entry.status === "deferred");
+    if (pendingQuestion) {
+      return pendingQuestion;
+    }
+
+    const decision = evaluateAssistantQuestionPolicy({
+      prompt,
+      questions: this.repository.getAssistantQuestions(assistantId),
+      learnings: this.repository.getAssistantLearnings(assistantId),
+      runtimeReadOnly: options.runtimeReadOnly,
+      forceBlocking: options.forceBlocking
+    });
+    if (decision.kind !== "ask") {
+      this.applyQuestionPolicyDecision(assistantId, prompt, decision);
+      return undefined;
+    }
+
+    return this.repository.saveAssistantQuestion({
+      id: createAssistantQuestionId(),
+      assistantId,
+      prompt: prompt.trim(),
+      status: this.repository.getGlobalExecutionPaused() ? "deferred" : "pending",
+      askedAt: new Date().toISOString()
+    });
+  }
+
+  private applyQuestionPolicyDecision(assistantId: string, prompt: string, decision: AssistantQuestionDecision) {
+    if (decision.kind === "ask") {
+      return;
+    }
+    const source = `question-policy:${decision.category}`;
+    const summary =
+      decision.kind === "auto-answer"
+        ? `Auto-answered assistant question: ${summarize(prompt, 120)}`
+        : `Did not ask assistant question: ${summarize(prompt, 120)}`;
+    const detail = decision.kind === "auto-answer" ? decision.answerText : decision.note;
+    this.repository.saveAssistantLearning({
+      id: createAssistantLearningId(),
+      assistantId,
+      summary: `${summary}. ${detail}`,
+      source,
+      confidence: "high",
+      createdAt: new Date().toISOString()
+    });
+    this.appendLog({
+      assistantId,
+      level: "info",
+      summary: decision.kind === "auto-answer" ? "Question auto-answered" : "Question suppressed",
+      detail: decision.reason,
+      detailsJson: {
+        prompt,
+        decision
+      }
     });
   }
 
@@ -731,6 +981,26 @@ export class AssistantManager {
   }
 }
 
+function extractQuestionPrompt(message: string) {
+  const normalized = message.replace(/\s+/g, " ").trim();
+  if (!normalized || normalized.length > 1200 || !normalized.includes("?")) {
+    return undefined;
+  }
+
+  const directQuestion = normalized.match(
+    /\b(?:what|which|who|when|where|why|how|should|could|would|can|do|does|did|is|are|was|were)\b[^?]*\?/i
+  )?.[0];
+  if (!directQuestion) {
+    return undefined;
+  }
+
+  return directQuestion.trim();
+}
+
+function normalizeLearningKey(summary: string, source?: string) {
+  return `${source ?? ""}:${summary.replace(/\s+/g, " ").trim().toLowerCase()}`;
+}
+
 function buildBootstrapPrompt(assistant: Assistant) {
   return [
     "Return only JSON.",
@@ -744,7 +1014,8 @@ function buildBootstrapPrompt(assistant: Assistant) {
   "initialTodos": [{"title":"todo title","description":"optional"}],
   "remainIdle": true
 }`,
-    "Only create initialTodos when the job prompt implies proactive work, backlog maintenance, implementation, or recurring execution."
+    "Only create initialTodos when the job prompt implies proactive work, backlog maintenance, implementation, or recurring execution.",
+    "Do not ask questions during bootstrap unless role setup cannot proceed without user input; prefer durable assumptions and learnings."
   ].join("\n\n");
 }
 

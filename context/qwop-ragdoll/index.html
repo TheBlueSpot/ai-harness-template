@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>qwop-ragdoll</title>
+  <meta name="description" content="Direct-playable ragdoll runner with QWOP controls." />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <main class="shell" id="app-shell">
+    <header class="shell__banner" aria-label="Game controls">
+      <div class="shell__eyebrow">QWOP ragdoll</div>
+      <div class="shell__controls">
+        <span><strong>Q/W</strong> left leg</span>
+        <span><strong>O/P</strong> right leg</span>
+        <span><strong>Enter</strong> start</span>
+        <span><strong>R</strong> restart</span>
+      </div>
+    </header>
+    <canvas id="game-canvas" class="game-canvas" aria-label="qwop-ragdoll game view"></canvas>
+    <section id="menu-root" class="overlay overlay--menu" aria-live="polite"></section>
+    <section id="hud-root" class="overlay overlay--hud" aria-live="polite"></section>
+    <section id="status-root" class="overlay overlay--status" aria-live="assertive"></section>
+  </main>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

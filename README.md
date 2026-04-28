@@ -21,7 +21,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - Workspace-global pause and resume for execution starts, with deferred planner questions, assistant questions, and browser approvals released on resume
 - Local scheduled tasks and background jobs with durable SQLite history, startup catch-up, approval policy defaults, hidden automation threads, and a dedicated inbox surface
 - Header-level notification inbox for deferred planner questions, assistant questions, browser approvals, and passive background-run status updates
-- Local assistant operators with named personas, role prompts, project or global scope, pause and resume controls, chat, todo lists, learnings, open questions, clone-to-project flow, and high-level plus deep-debug logs
+- Local assistant operators with named personas, role prompts, project or global scope, synced routing defaults, pause and resume controls, chat, todo lists, learnings, open questions, clone-to-project flow, and high-level plus deep-debug logs
 - Product direction currently favors safe background execution, connector health visibility, explicit rule and memory control, preview-to-fix loops, durable review artifacts, budget-aware long runs, remote review from another device, and cleaner thread retrieval and cleanup over broader assistant surfaces
 - Built-in workflow modes for asking, planning, implementing, debugging, and review, plus local custom modes at workspace or project scope
 - Brand-aware defaults for GPT or Gemini execution
@@ -96,12 +96,12 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - `lucide-solid` icons across project actions and workspace controls
 - Tooltips render through a body-level portal so panel overflow does not clip them
 - Keyboard project open flow uses TanStack Hotkeys for `Cmd/Ctrl+K` as the reliable shortcut, plus best-effort `Cmd/Ctrl+Space` when the browser receives it
-- Center surface tabs keep `Project chat`, `Assistants`, and `Background jobs` above main panel shell so navigation stays tied to active work area
+- Left workspace tabs keep `Projects`, `Assistants`, and `Jobs` as the primary navigation, with the selected tab changing both the left list and center detail panel
 - Project chat keeps transcript first and exposes plan, run, memory, and events through a compact local pane strip instead of a larger cockpit card
 - Chat transcript auto-sticks only when already at bottom and exposes an explicit `Scroll to latest` affordance when the user scrolls away
 - Run cockpit now includes virtual-branch experiment review, promote, and discard actions plus a shared memory tab for local reusable learnings
-- Dedicated `Background jobs` surface keeps scheduled work, approval-needed runs, failures, and concise execution milestones out of normal project chat threads
-- Dedicated `Assistants` surface keeps assistant chat, todos, questions, learnings, logs, and assistant-owned jobs inspectable outside normal project chat
+- Jobs surface keeps scheduled work, approval-needed runs, failures, and concise execution milestones out of normal project chat threads
+- Assistants surface keeps assistant chat, todos, questions, learnings, logs, and assistant-owned jobs inspectable outside normal project chat
 - Header-level help opens guided walkthroughs instead of pushing setup into a separate onboarding funnel
 - Composer keeps mode, agent, provider, and model controls together in bottom row as compact popover-backed dropdowns with setting descriptions close at hand
 - Composer also exposes one effort and fast-mode dropdown, persists those selections in browser-local session state, and keeps unsupported choices explained instead of silently hiding them

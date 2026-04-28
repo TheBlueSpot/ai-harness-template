@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Contra Boss Engine</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #08111e;
+      --panel: rgba(9, 17, 31, 0.88);
+      --panel-strong: rgba(7, 13, 24, 0.96);
+      --line: #4bd4ff;
+      --accent: #ff7a18;
+      --warn: #ff5768;
+      --good: #7df1a6;
+      --text: #eff7ff;
+      --muted: #99a8bc;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(circle at top, rgba(75, 212, 255, 0.14), transparent 34%),
+        linear-gradient(180deg, #06101d 0%, #03070d 100%);
+      color: var(--text);
+      font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+    }
+
+    .shell {
+      width: min(960px, 100vw);
+      padding: 18px;
+    }
+
+    .frame {
+      position: relative;
+      border: 2px solid rgba(75, 212, 255, 0.35);
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+      background: linear-gradient(180deg, rgba(8, 17, 30, 0.95), rgba(4, 8, 16, 0.98));
+      overflow: hidden;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      aspect-ratio: 16 / 9;
+      background: #050b14;
+    }
+
+    .hud {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      padding: 12px;
+      background: var(--panel-strong);
+      border-top: 1px solid rgba(75, 212, 255, 0.24);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-size: 12px;
+    }
+
+    .hud strong {
+      display: block;
+      margin-top: 4px;
+      font-size: 16px;
+      letter-spacing: 0.04em;
+      color: var(--text);
+    }
+
+    .overlay {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 20px;
+      background: rgba(3, 8, 15, 0.72);
+    }
+
+    .overlay[hidden] {
+      display: none;
+    }
+
+    .panel {
+      width: min(560px, 100%);
+      padding: 24px;
+      border: 1px solid rgba(75, 212, 255, 0.4);
+      background: var(--panel);
+      box-shadow: 0 0 0 1px rgba(255, 122, 24, 0.18) inset;
+    }
+
+    h1, h2, p {
+      margin: 0;
+    }
+
+    .panel h1,
+    .panel h2 {
+      margin-bottom: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+    }
+
+    .panel p + p,
+    .panel ul {
+      margin-top: 10px;
+    }
+
+    .panel ul {
+      padding-left: 18px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .prompt {
+      margin-top: 16px;
+      color: var(--good);
+    }
+
+    @media (max-width: 720px) {
+      .shell {
+        padding: 8px;
+      }
+
+      .hud {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .panel {
+        padding: 18px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="frame">
+      <canvas id="game" width="960" height="540" aria-label="Contra Boss Engine"></canvas>
+      <div class="overlay" id="overlay">
+        <div class="panel">
+          <h1>Contra Boss Engine</h1>
+          <p>Fight through two short boss encounters built around part targeting, phase swaps, and 8-way aim pressure.</p>
+          <ul>
+            <li>Move with <strong>Arrow Keys</strong></li>
+            <li>Jump with <strong>Z</strong>, dodge with <strong>X</strong></li>
+            <li>Aim with <strong>WASD</strong> in 8 directions and fire with <strong>Space</strong></li>
+          </ul>
+          <p class="prompt" id="prompt">Press Enter to deploy.</p>
+        </div>
+      </div>
+      <div class="hud">
+        <div>Health<strong id="health">0</strong></div>
+        <div>Boss<strong id="boss">-</strong></div>
+        <div>Phase<strong id="phase">-</strong></div>
+        <div>Score<strong id="score">0</strong></div>
+      </div>
+    </div>
+  </div>
+  <script src="./game.js"></script>
+</body>
+</html>

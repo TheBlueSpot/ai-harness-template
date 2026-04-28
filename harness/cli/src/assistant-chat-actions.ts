@@ -99,7 +99,7 @@ export function resolveAssistantChatAction(input: ResolveAssistantChatActionInpu
 
 function parseAssistantAction(sourcePrompt: string): ParsedAction | undefined {
   const createIntent = detectAssistantChatIntent(sourcePrompt);
-  if (createIntent.kind === "create") {
+  if (createIntent.kind === "create-ready" || createIntent.kind === "create-needs-purpose") {
     return {
       actionKind: "create",
       sourcePrompt,

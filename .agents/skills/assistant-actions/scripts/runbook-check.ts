@@ -17,7 +17,8 @@ const REQUIRED_BRANCH_DOCS = [
   "jobs.md",
   "state-reporting.md",
   "recovery.md",
-  "clarification-policy.md"
+  "clarification-policy.md",
+  "operation-handoffs.md"
 ];
 
 const ASSISTANT_STORY_IDS = ["US-ASSISTANTS-001", "US-ASSISTANTS-002", "US-ASSISTANTS-003", "US-ASSISTANTS-004"];
@@ -78,7 +79,7 @@ export function validateRunbook(skillRoot = path.resolve(import.meta.dir, ".."))
     errors.push("Missing script: scripts/assistant-state.ts");
   }
 
-  const docsWithExamples = ["SKILL.md", "references/jobs.md", "references/state-reporting.md"];
+  const docsWithExamples = ["SKILL.md", "references/jobs.md", "references/state-reporting.md", "references/operation-handoffs.md"];
   for (const relativePath of docsWithExamples) {
     const text = readRequiredFile(path.join(skillRoot, relativePath), errors);
     if (!text.includes("bun.cmd .agents/skills/assistant-actions/scripts/assistant-state.ts")) {

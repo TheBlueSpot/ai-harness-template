@@ -1,6 +1,6 @@
-import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import { createMemo, createSignal, For, onCleanup, onMount, Show, type Component } from "solid-js";
 import { createHotkeys } from "@tanstack/solid-hotkeys";
-import { Bot, Clock3, Menu, MessageSquareMore, Pause, Play, PanelsTopLeft, Settings2, Workflow, CircleQuestionMark } from "lucide-solid";
+import { Bot, Clock3, FolderKanban, Menu, Pause, Play, PanelsTopLeft, Settings2, Workflow, CircleQuestionMark } from "lucide-solid";
 import { createRequestId } from "../../shared/protocol";
 import { AssistantEditorDialog } from "./components/assistant-editor-dialog";
 import { AssistantsPanel } from "./components/assistants-panel";
@@ -19,11 +19,10 @@ import { TracePanel } from "./components/trace-panel";
 import { getTutorialDefinition } from "./components/tutorial-definitions";
 import { TutorialOverlay } from "./components/tutorial-overlay";
 import { ActionButton } from "./components/action-button";
-import { buttonVariants } from "./components/primitives/button";
 import { SheetContent, SheetRoot, SheetTrigger } from "./components/primitives/sheet";
 import { Tooltip } from "./components/primitives/tooltip";
 import { connectHarnessWebSocket } from "./harness-websocket";
-import { getActiveProject, getCapabilityTags, harnessStore } from "./harness-store";
+import { harnessStore, type HarnessLeftTab } from "./harness-store";
 import { cn } from "./lib/utils";
 import { reportUiError } from "./toast-store";
 
@@ -54,6 +53,18 @@ export function App() {
           meta: {
             name: "Open or switch project",
             description: "Open the spotlight-style project switcher"
+          }
+        }
+      },
+      {
+        hotkey: "Mod+,",
+        callback: () => {
+          harnessStore.openPreferencesModal();
+        },
+        options: {
+          meta: {
+            name: "Open workspace preferences",
+            description: "Open workspace preferences"
           }
         }
       }
@@ -93,9 +104,7 @@ export function App() {
   });
 
   const state = harnessStore.state;
-  const activeSurface = createMemo(() => state.activeSurface);
-  const activeProject = () => getActiveProject(state);
-  const activeCapabilityTags = () => getCapabilityTags(state, activeProject()?.session.executionModelId);
+  const activeLeftTab = createMemo(() => state.activeLeftTab);
   const executionControlTooltip = () => {
     if (!state.executionControl.isPaused) {
       return "Pause new executions";
@@ -103,28 +112,6 @@ export function App() {
 
     return `Resume new executions | queued ${state.executionControl.deferredPlanningQuestionCount} planner, ${state.executionControl.deferredAssistantQuestionCount} assistant, ${state.executionControl.deferredBrowserApprovalCount} browser`;
   };
-  const activeThreadTitle = () =>
-    activeProject()?.threads.find((thread) => thread.id === activeProject()?.activeThreadId)?.title ?? activeProject()?.activeThreadId;
-  const surfaceTabs = [
-    {
-      id: "chat" as const,
-      label: "Project chat",
-      icon: <MessageSquareMore class="h-4 w-4" />,
-      tooltip: "Switch to project chat surface"
-    },
-    {
-      id: "assistants" as const,
-      label: "Assistants",
-      icon: <Bot class="h-4 w-4" />,
-      tooltip: "Switch to assistants surface"
-    },
-    {
-      id: "background-jobs" as const,
-      label: "Background jobs",
-      icon: <Clock3 class="h-4 w-4" />,
-      tooltip: "Switch to background jobs surface"
-    }
-  ];
   return (
     <main data-test-app-shell="" class="relative h-screen overflow-hidden px-[0.6rem] py-[0.6rem] md:px-4 md:py-4">
       <div class="app-background" />
@@ -141,8 +128,8 @@ export function App() {
                 >
                   <Menu class="h-4 w-4" />
                 </SheetTrigger>
-                <SheetContent open={sidebarOpen()} onClose={() => setSidebarOpen(false)} title="Projects">
-                  <ProjectSidebar compact onNavigate={() => setSidebarOpen(false)} />
+                <SheetContent open={sidebarOpen()} onClose={() => setSidebarOpen(false)} title="Workspace">
+                  <TabbedLeftPane compact onNavigate={() => setSidebarOpen(false)} />
                 </SheetContent>
               </div>
             </SheetRoot>
@@ -182,7 +169,7 @@ export function App() {
             >
             </ActionButton>
             <ActionButton
-              tooltip="Open workspace preferences"
+              tooltip="Open workspace preferences (Command+,)"
               icon={<Settings2 class="h-4 w-4" />}
               variant="secondary"
               size="icon"
@@ -208,45 +195,19 @@ export function App() {
         >
           <div class="hidden min-h-0 lg:block">
             <div data-tour-id="project-sidebar" class="h-full">
-              <ProjectSidebar />
+              <TabbedLeftPane />
             </div>
           </div>
-          <div class="flex min-h-0 flex-col">
-            <Show when={activeSurface()} keyed>
-              {(surface) => (
-                <>
-                  <nav data-test-center-surface-nav="" class="surface-tab-strip">
-                    <For each={surfaceTabs}>
-                      {(tab) => (
-                        <Tooltip content={tab.tooltip}>
-                          <button
-                            type="button"
-                            class={cn(buttonVariants({ variant: "ghost" }), "surface-tab")}
-                            aria-label={tab.label}
-                            attr:aria-pressed={surface === tab.id ? "true" : "false"}
-                            onClick={() => harnessStore.setActiveSurface(tab.id)}
-                          >
-                            {tab.icon}
-                            {tab.label}
-                          </button>
-                        </Tooltip>
-                      )}
-                    </For>
-                  </nav>
-                  <div class="min-h-0 flex-1 overflow-hidden">
-                    <Show
-                      when={surface === "background-jobs"}
-                      fallback={
-                        <Show when={surface === "assistants"} fallback={<ChatPanel />}>
-                          <AssistantsPanel />
-                        </Show>
-                      }
-                    >
-                      <BackgroundJobsPanel />
-                    </Show>
-                  </div>
-                </>
-              )}
+          <div class="min-h-0 overflow-hidden">
+            <Show
+              when={activeLeftTab() === "jobs"}
+              fallback={
+                <Show when={activeLeftTab() === "assistants"} fallback={<ChatPanel />}>
+                  <AssistantsPanel variant="detail" />
+                </Show>
+              }
+            >
+              <BackgroundJobsPanel variant="detail" />
             </Show>
           </div>
           <Show when={state.tracePanelOpen}>
@@ -289,6 +250,75 @@ export function App() {
       <ExecutionPlanDialog executionPlan={state.selectedExecutionPlan} />
       <Toaster />
     </main>
+  );
+}
+
+type LeftPaneTabDefinition = {
+  id: HarnessLeftTab;
+  label: string;
+  tooltip: string;
+  icon: Component<{ class?: string }>;
+};
+
+const leftPaneTabs: LeftPaneTabDefinition[] = [
+  {
+    id: "projects",
+    label: "Projects",
+    tooltip: "Show project roots and threads",
+    icon: FolderKanban
+  },
+  {
+    id: "assistants",
+    label: "Assistants",
+    tooltip: "Show assistant roster",
+    icon: Bot
+  },
+  {
+    id: "jobs",
+    label: "Jobs",
+    tooltip: "Show background jobs and inbox",
+    icon: Clock3
+  }
+];
+
+function TabbedLeftPane(props: { compact?: boolean; onNavigate?: () => void } = {}) {
+  const state = harnessStore.state;
+  return (
+    <div data-test-left-tabbed-pane="" class="flex h-full min-h-0 flex-col gap-0">
+      <nav data-test-left-tab-nav="" class="surface-tab-strip px-4 lg:px-5">
+        <For each={leftPaneTabs}>
+          {(tab) => {
+            const Icon = tab.icon;
+            return (
+              <Tooltip content={tab.tooltip}>
+                <button
+                  type="button"
+                  class={cn("surface-tab", state.activeLeftTab === tab.id ? "bg-white/80 text-(--foreground)" : "")}
+                  aria-label={tab.label}
+                  attr:aria-pressed={state.activeLeftTab === tab.id ? "true" : "false"}
+                  onClick={() => harnessStore.setActiveLeftTab(tab.id)}
+                >
+                  <Icon class="h-4 w-4" />
+                  {tab.label}
+                </button>
+              </Tooltip>
+            );
+          }}
+        </For>
+      </nav>
+      <div class="min-h-0 flex-1">
+        <Show
+          when={state.activeLeftTab === "jobs"}
+          fallback={
+            <Show when={state.activeLeftTab === "assistants"} fallback={<ProjectSidebar compact={props.compact} onNavigate={props.onNavigate} />}>
+              <AssistantsPanel variant="roster" />
+            </Show>
+          }
+        >
+          <BackgroundJobsPanel variant="left" />
+        </Show>
+      </div>
+    </div>
   );
 }
 

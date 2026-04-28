@@ -22,3 +22,7 @@ Ask when a mutation could hit the wrong assistant, wrong project, wrong schedule
 ## Answer Format
 
 Use one concise question. Include the resolved candidates and recommend the safest option.
+
+## Handoff Rule
+
+When clarification is answered, resume with the original intent and the exact handoff from [operation-handoffs.md](operation-handoffs.md). Do not reinterpret the task as normal chat if the stored intent is a mutation.

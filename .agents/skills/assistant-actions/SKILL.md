@@ -12,7 +12,8 @@ Use this skill as the entrypoint for assistant work that should be doable from p
 1. Read [action-index.md](references/action-index.md).
 2. Resolve the assistant target with [assistant-selection.md](references/assistant-selection.md).
 3. If the request asks for current state, run [assistant-state.ts](scripts/assistant-state.ts) before guessing.
-4. Load only the branch doc needed for the action.
+4. For any mutation, check [operation-handoffs.md](references/operation-handoffs.md) before acting.
+5. Load only the branch doc needed for the action.
 
 ## Branches
 
@@ -22,6 +23,7 @@ Use this skill as the entrypoint for assistant work that should be doable from p
 - Queued/open/learned/logged/status questions: [state-reporting.md](references/state-reporting.md)
 - Pause, resume, bootstrap retry, failures, or circuit breakers: [recovery.md](references/recovery.md)
 - Missing assistant, scope, project, schedule, or action target: [clarification-policy.md](references/clarification-policy.md)
+- Exact operation handoffs: [operation-handoffs.md](references/operation-handoffs.md)
 
 ## Script Rule
 

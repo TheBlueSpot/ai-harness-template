@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <title>F-Zero Mode-7 Velocity</title>
+    <meta
+      name="description"
+      content="A standalone pseudo-3D racer shell built around a modular Game API."
+    />
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <main id="app" class="game-shell" data-state="menu">
+      <canvas
+        id="game-canvas"
+        class="game-shell__canvas"
+        width="1280"
+        height="720"
+        aria-label="F-Zero Mode-7 Velocity race track"
+        role="img"
+      ></canvas>
+
+      <div class="game-shell__backdrop" aria-hidden="true"></div>
+
+      <section id="menu-screen" class="overlay overlay--menu" aria-labelledby="menu-title">
+        <div class="panel panel--hero">
+          <p class="eyebrow">mode-7 sprint</p>
+          <h1 id="menu-title">F-Zero Mode-7 Velocity</h1>
+          <p class="lede">
+            Blast through the ribbon track, ride the drift line, and keep your energy alive on recharge strips.
+          </p>
+          <div class="menu-actions">
+            <button id="start-button" class="button button--primary" type="button">Start Race</button>
+            <button id="menu-restart-button" class="button button--ghost" type="button">Restart</button>
+          </div>
+          <dl class="menu-stats" aria-label="Race summary">
+            <div>
+              <dt>Goal</dt>
+              <dd>Finish the lap without draining energy.</dd>
+            </div>
+            <div>
+              <dt>Driving</dt>
+              <dd>Arrow keys steer, brake, and accelerate.</dd>
+            </div>
+            <div>
+              <dt>Flow</dt>
+              <dd>Enter or Space starts, R restarts, Esc pauses.</dd>
+            </div>
+          </dl>
+        </div>
+      </section>
+
+      <section id="hud" class="overlay overlay--hud" aria-label="Race HUD">
+        <header class="hud-bar">
+          <div class="hud-brand">
+            <p class="eyebrow">velocity run</p>
+            <h2>Mode-7 charge</h2>
+          </div>
+          <div class="hud-stats">
+            <div class="hud-stat">
+              <span class="hud-stat__label">State</span>
+              <strong id="state-value" class="hud-stat__value">Menu</strong>
+            </div>
+            <div class="hud-stat">
+              <span class="hud-stat__label">Lap</span>
+              <strong id="lap-value" class="hud-stat__value">1 / 3</strong>
+            </div>
+            <div class="hud-stat">
+              <span class="hud-stat__label">Speed</span>
+              <strong id="speed-value" class="hud-stat__value">0</strong>
+            </div>
+            <div class="hud-stat">
+              <span class="hud-stat__label">Energy</span>
+              <strong id="energy-value" class="hud-stat__value">100%</strong>
+            </div>
+            <div class="hud-stat">
+              <span class="hud-stat__label">Place</span>
+              <strong id="place-value" class="hud-stat__value">1 / 4</strong>
+            </div>
+            <div class="hud-stat hud-stat--wide">
+              <span class="hud-stat__label">Last line</span>
+              <strong id="line-value" class="hud-stat__value">Ready</strong>
+            </div>
+          </div>
+        </header>
+      </section>
+
+      <section id="restart-screen" class="overlay overlay--restart" aria-labelledby="restart-title" aria-hidden="true">
+        <div class="panel panel--result">
+          <p class="eyebrow" id="restart-eyebrow">race result</p>
+          <h2 id="restart-title">Track complete.</h2>
+          <p id="restart-copy" class="lede">Press restart to run it back.</p>
+          <div class="menu-actions">
+            <button id="restart-button" class="button button--primary" type="button">Restart Race</button>
+          </div>
+        </section>
+    </main>
+
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

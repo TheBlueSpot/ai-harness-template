@@ -1,0 +1,43 @@
+export function createWeaponCatalog() {
+  return {
+    rifle: {
+      id: "rifle",
+      label: "Rifle",
+      fireRate: 0.11,
+      projectileSpeed: 860,
+      spread: 0.02,
+      burst: 1,
+      damage: 1,
+      terrainDamage: 1,
+      recoil: 95,
+      heat: 0.08,
+      color: "#ffd45b",
+    },
+    scatter: {
+      id: "scatter",
+      label: "Scatter",
+      fireRate: 0.34,
+      projectileSpeed: 760,
+      spread: 0.2,
+      burst: 5,
+      damage: 0.8,
+      terrainDamage: 1,
+      recoil: 150,
+      heat: 0.18,
+      color: "#ffb55b",
+    },
+    piercer: {
+      id: "piercer",
+      label: "Piercer",
+      fireRate: 0.52,
+      projectileSpeed: 1120,
+      spread: 0.008,
+      burst: 1,
+      damage: 3,
+      terrainDamage: 2,
+      recoil: 210,
+      heat: 0.24,
+      color: "#8df7ff",
+    },
+  };
+}

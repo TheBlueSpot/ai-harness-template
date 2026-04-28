@@ -77,16 +77,36 @@ export const COMPOSER_REASONING_STRENGTHS: ComposerReasoningStrength[] = ["low",
 const MAX_STREAMING_MESSAGE_HEARTBEATS = 2;
 
 export type HarnessActiveSurface = "chat" | "background-jobs" | "assistants";
+export type HarnessLeftTab = "projects" | "assistants" | "jobs";
+export type ChatPaneTab = "chat" | "plan" | "run" | "events" | "memory";
+export type AssistantDetailTab = "chat" | "todos" | "questions" | "jobs" | "log" | "config" | "learnings";
 export type AssistantScopeFilter = "global" | "project";
 export type ProjectSidebarProjectSort = "last-user-message" | "created-at" | "manual";
 export type ProjectSidebarThreadSort = "last-user-message" | "created-at";
 export type ProjectSidebarGrouping = "repository" | "repository-path" | "separate";
+export type JobsPaneSegment = "jobs" | "inbox";
+export type JobsPaneJobSort = "next-run" | "updated" | "created" | "status" | "risk";
+export type JobsRunFilter = "approval" | "queued" | "running" | "failed" | "done";
 
 export type ProjectSidebarPreferences = {
   projectSort: ProjectSidebarProjectSort;
   threadSort: ProjectSidebarThreadSort;
   grouping: ProjectSidebarGrouping;
   manualProjectOrder: string[];
+};
+
+export type JobsPanePreferences = {
+  segment: JobsPaneSegment;
+  search: string;
+  jobSort: JobsPaneJobSort;
+  projectId?: string;
+  assistantId?: string;
+  kind?: BackgroundJob["kind"];
+  status?: BackgroundJob["status"];
+  risk?: BackgroundJob["riskLevel"];
+  selectedJobId?: string;
+  selectedRunId?: string;
+  selectedNotificationId?: string;
 };
 
 export type BrowserUiSessionState = {
@@ -96,8 +116,19 @@ export type BrowserUiSessionState = {
   selectedReasoningStrength?: ComposerReasoningStrength;
   selectedFastMode?: boolean;
   tracePanelOpen?: boolean;
+  activeLeftTab?: HarnessLeftTab;
   lastActiveProjectId?: string;
   lastActiveThreadByProjectId?: Record<string, string>;
+  chatPaneTab?: ChatPaneTab;
+  assistantPane?: {
+    scopeFilter?: AssistantScopeFilter;
+    selectedAssistantId?: string;
+    selectedTab?: AssistantDetailTab;
+    selectedLogDetailsId?: string;
+  };
+  jobsPane?: Partial<JobsPanePreferences> & {
+    runFilter?: JobsRunFilter;
+  };
 };
 
 export type AssistantEditorDraft = {
@@ -110,8 +141,10 @@ export type AssistantEditorDraft = {
   personalityPrompt: string;
   jobPrompt: string;
   agentId: Assistant["agentId"];
+  providerBrand?: Assistant["providerBrand"];
   modeId?: string;
   executionModelId?: string;
+  fastMode?: boolean;
   runState: Assistant["runState"];
   bootstrapState: Assistant["bootstrapState"];
   assetRefsText: string;
@@ -194,6 +227,8 @@ export type ViewWorkspaceState = {
 
 export type ViewAssistantsState = AssistantsState & {
   selectedAssistantId?: string;
+  selectedTab: AssistantDetailTab;
+  selectedLogDetailsId?: string;
   scopeFilter: AssistantScopeFilter;
   streamingByAssistantId: Record<string, string>;
 };
@@ -206,7 +241,11 @@ export type HarnessViewState = {
   setup: SetupState;
   workspace: ViewWorkspaceState;
   activeSurface: HarnessActiveSurface;
+  activeLeftTab: HarnessLeftTab;
+  chatPaneTab: ChatPaneTab;
   projectSidebarPreferences: ProjectSidebarPreferences;
+  jobsPanePreferences: JobsPanePreferences;
+  jobsRunFilter: JobsRunFilter;
   assistants: ViewAssistantsState;
   backgroundJobs: BackgroundJobsState;
   notifications: NotificationInboxState;
@@ -345,6 +384,22 @@ export function createDefaultProjectSidebarPreferences(): ProjectSidebarPreferen
   };
 }
 
+export function createDefaultJobsPanePreferences(): JobsPanePreferences {
+  return {
+    segment: "inbox",
+    search: "",
+    jobSort: "next-run",
+    projectId: undefined,
+    assistantId: undefined,
+    kind: undefined,
+    status: undefined,
+    risk: undefined,
+    selectedJobId: undefined,
+    selectedRunId: undefined,
+    selectedNotificationId: undefined
+  };
+}
+
 export function createEmptyBackgroundJobsState(): BackgroundJobsState {
   return {
     jobs: [],
@@ -363,6 +418,8 @@ export function createEmptyAssistantsState(): ViewAssistantsState {
     logs: [],
     assetRefs: [],
     selectedAssistantId: undefined,
+    selectedTab: "chat",
+    selectedLogDetailsId: undefined,
     scopeFilter: "project",
     streamingByAssistantId: {}
   };
@@ -405,7 +462,11 @@ export function createInitialViewState(): HarnessViewState {
     setup: createInitialSetupState(),
     workspace: createInitialWorkspaceState(),
     activeSurface: "chat",
+    activeLeftTab: "projects",
+    chatPaneTab: "chat",
     projectSidebarPreferences: createDefaultProjectSidebarPreferences(),
+    jobsPanePreferences: createDefaultJobsPanePreferences(),
+    jobsRunFilter: "approval",
     assistants: createEmptyAssistantsState(),
     backgroundJobs: createEmptyBackgroundJobsState(),
     notifications: createEmptyNotificationInboxState(),
@@ -515,15 +576,19 @@ export function getSelectedAssistant(state: HarnessViewState) {
 
 export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): HarnessViewState {
   switch (event.type) {
-    case "connection.ready":
-      return {
+    case "connection.ready": {
+      const workspace = hydrateWorkspace(event.payload.workspace);
+      const assistants = hydrateAssistants(state.assistants, event.payload.assistants);
+      const backgroundJobs = event.payload.backgroundJobs;
+      const notifications = event.payload.notifications;
+      const readyState = {
         ...state,
         availableAgents: [...event.payload.agents],
         setup: event.payload.setup,
-        workspace: hydrateWorkspace(event.payload.workspace),
-        assistants: hydrateAssistants(state.assistants, event.payload.assistants),
-        backgroundJobs: event.payload.backgroundJobs,
-        notifications: event.payload.notifications,
+        workspace,
+        assistants,
+        backgroundJobs,
+        notifications,
         executionControl: event.payload.executionControl,
         projectPreflights: {},
         pendingPreflightCommands: {},
@@ -531,6 +596,11 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
         pendingPreflightRepairKind: undefined,
         ...applyReadyPreferencesState(state, event.payload.preferences)
       };
+      return {
+        ...readyState,
+        jobsPanePreferences: normalizeJobsPanePreferences(readyState.jobsPanePreferences, readyState, true)
+      };
+    }
     case "notifications.updated":
       return {
         ...state,
@@ -1073,6 +1143,14 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
           }
         }
       };
+    case "assistant.chat.message-appended":
+      return {
+        ...state,
+        assistants: {
+          ...state.assistants,
+          threads: upsertById(state.assistants.threads, event.payload.thread)
+        }
+      };
     case "assistant.chat.complete":
       return {
         ...state,
@@ -1260,6 +1338,22 @@ export function createHarnessStore() {
           hasGlobalSelectedReasoningStrength: browserUiSession.selectedReasoningStrength !== undefined,
           selectedFastMode: browserUiSession.selectedFastMode ?? state.selectedFastMode,
           hasGlobalSelectedFastMode: browserUiSession.selectedFastMode !== undefined,
+          activeLeftTab: normalizeLeftTab(browserUiSession.activeLeftTab),
+          activeSurface: leftTabToActiveSurface(normalizeLeftTab(browserUiSession.activeLeftTab)),
+          chatPaneTab: normalizeChatPaneTab(browserUiSession.chatPaneTab),
+          assistants: {
+            ...state.assistants,
+            scopeFilter: normalizeAssistantScopeFilter(browserUiSession.assistantPane?.scopeFilter ?? state.assistants.scopeFilter),
+            selectedAssistantId: normalizeOptionalStorageString(
+              browserUiSession.assistantPane?.selectedAssistantId ?? state.assistants.selectedAssistantId
+            ),
+            selectedTab: normalizeAssistantDetailTab(browserUiSession.assistantPane?.selectedTab ?? state.assistants.selectedTab),
+            selectedLogDetailsId: normalizeOptionalStorageString(
+              browserUiSession.assistantPane?.selectedLogDetailsId ?? state.assistants.selectedLogDetailsId
+            )
+          },
+          jobsPanePreferences: normalizeJobsPanePreferences(browserUiSession.jobsPane ?? state.jobsPanePreferences),
+          jobsRunFilter: normalizeJobsRunFilter(browserUiSession.jobsPane?.runFilter ?? state.jobsRunFilter),
           tracePanelOpen: browserUiSession.tracePanelOpen ?? state.tracePanelOpen,
           hasPersistedTracePanelOpen: browserUiSession.tracePanelOpen !== undefined,
           lastActiveProjectId: browserUiSession.lastActiveProjectId,
@@ -1319,7 +1413,43 @@ export function createHarnessStore() {
       });
     },
     setActiveSurface(activeSurface: HarnessActiveSurface) {
-      setState({ activeSurface });
+      const previousSnapshot = getBrowserUiSessionSnapshot(state);
+      const activeLeftTab = activeSurfaceToLeftTab(activeSurface);
+      const nextState = finalizeHarnessViewState({
+        ...state,
+        activeSurface,
+        activeLeftTab
+      });
+      setState(reconcile(nextState));
+      if (JSON.stringify(previousSnapshot) === JSON.stringify(getBrowserUiSessionSnapshot(nextState))) {
+        persistBrowserUiSession(getBrowserUiSessionSnapshot(nextState));
+      } else {
+        persistBrowserUiStateIfChanged(previousSnapshot, nextState);
+      }
+    },
+    setActiveLeftTab(activeLeftTab: HarnessLeftTab) {
+      const previousSnapshot = getBrowserUiSessionSnapshot(state);
+      const normalizedTab = normalizeLeftTab(activeLeftTab);
+      const nextState = finalizeHarnessViewState({
+        ...state,
+        activeLeftTab: normalizedTab,
+        activeSurface: leftTabToActiveSurface(normalizedTab)
+      });
+      setState(reconcile(nextState));
+      if (JSON.stringify(previousSnapshot) === JSON.stringify(getBrowserUiSessionSnapshot(nextState))) {
+        persistBrowserUiSession(getBrowserUiSessionSnapshot(nextState));
+      } else {
+        persistBrowserUiStateIfChanged(previousSnapshot, nextState);
+      }
+    },
+    setChatPaneTab(chatPaneTab: ChatPaneTab) {
+      const previousSnapshot = getBrowserUiSessionSnapshot(state);
+      const nextState = finalizeHarnessViewState({
+        ...state,
+        chatPaneTab: normalizeChatPaneTab(chatPaneTab)
+      });
+      setState(reconcile(nextState));
+      persistBrowserUiStateIfChanged(previousSnapshot, nextState);
     },
     setProjectSidebarPreferences(projectSidebarPreferences: Partial<ProjectSidebarPreferences>) {
       const nextPreferences = normalizeProjectSidebarPreferences(
@@ -1334,17 +1464,81 @@ export function createHarnessStore() {
       setState({ projectSidebarPreferences: nextPreferences });
       persistProjectSidebarPreferences(nextPreferences);
     },
+    setJobsPanePreferences(jobsPanePreferences: Partial<JobsPanePreferences>) {
+      const previousSnapshot = getBrowserUiSessionSnapshot(state);
+      const nextState = finalizeHarnessViewState({
+        ...state,
+        jobsPanePreferences: normalizeJobsPanePreferences({
+          ...state.jobsPanePreferences,
+          ...jobsPanePreferences
+        })
+      });
+      setState(reconcile(nextState));
+      persistBrowserUiStateIfChanged(previousSnapshot, nextState);
+    },
+    setJobsRunFilter(jobsRunFilter: JobsRunFilter) {
+      const previousSnapshot = getBrowserUiSessionSnapshot(state);
+      const nextState = finalizeHarnessViewState({
+        ...state,
+        jobsRunFilter: normalizeJobsRunFilter(jobsRunFilter)
+      });
+      setState(reconcile(nextState));
+      persistBrowserUiStateIfChanged(previousSnapshot, nextState);
+    },
     setAssistantScopeFilter(scopeFilter: AssistantScopeFilter) {
-      setState("assistants", "scopeFilter", scopeFilter);
+      const previousSnapshot = getBrowserUiSessionSnapshot(state);
+      const nextState = finalizeHarnessViewState({
+        ...state,
+        assistants: {
+          ...state.assistants,
+          scopeFilter: normalizeAssistantScopeFilter(scopeFilter)
+        }
+      });
+      setState(reconcile(nextState));
+      persistBrowserUiStateIfChanged(previousSnapshot, nextState);
+    },
+    setAssistantDetailTab(selectedTab: AssistantDetailTab) {
+      const previousSnapshot = getBrowserUiSessionSnapshot(state);
+      const nextState = finalizeHarnessViewState({
+        ...state,
+        assistants: {
+          ...state.assistants,
+          selectedTab: normalizeAssistantDetailTab(selectedTab)
+        }
+      });
+      setState(reconcile(nextState));
+      persistBrowserUiStateIfChanged(previousSnapshot, nextState);
+    },
+    setAssistantLogDetailsId(selectedLogDetailsId?: string) {
+      const previousSnapshot = getBrowserUiSessionSnapshot(state);
+      const nextState = finalizeHarnessViewState({
+        ...state,
+        assistants: {
+          ...state.assistants,
+          selectedLogDetailsId: normalizeOptionalStorageString(selectedLogDetailsId)
+        }
+      });
+      setState(reconcile(nextState));
+      persistBrowserUiStateIfChanged(previousSnapshot, nextState);
     },
     setSelectedAssistantId(assistantId?: string) {
-      setState("assistants", "selectedAssistantId", assistantId);
+      const previousSnapshot = getBrowserUiSessionSnapshot(state);
+      const nextState = finalizeHarnessViewState({
+        ...state,
+        assistants: {
+          ...state.assistants,
+          selectedAssistantId: normalizeOptionalStorageString(assistantId)
+        }
+      });
+      setState(reconcile(nextState));
+      persistBrowserUiStateIfChanged(previousSnapshot, nextState);
     },
     openAssistantEditor(assistantEditorDraft: AssistantEditorDraft) {
       setState({
         assistantEditorOpen: true,
         assistantEditorDraft,
-        activeSurface: "assistants"
+        activeSurface: "assistants",
+        activeLeftTab: "assistants"
       });
     },
     closeAssistantEditor() {
@@ -1357,7 +1551,8 @@ export function createHarnessStore() {
       setState({
         backgroundJobEditorOpen: true,
         backgroundJobEditorDraft,
-        activeSurface: "background-jobs"
+        activeSurface: "background-jobs",
+        activeLeftTab: "jobs"
       });
     },
     closeBackgroundJobEditor() {
@@ -1908,6 +2103,11 @@ function hydrateAssistants(existing: ViewAssistantsState, incoming: AssistantsSt
   return {
     ...incoming,
     selectedAssistantId: nextVisibleId,
+    selectedTab: existing.selectedTab,
+    selectedLogDetailsId:
+      existing.selectedLogDetailsId && incoming.logs.some((entry) => entry.id === existing.selectedLogDetailsId)
+        ? existing.selectedLogDetailsId
+        : undefined,
     scopeFilter: existing.scopeFilter,
     streamingByAssistantId: existing.streamingByAssistantId
   };
@@ -2578,7 +2778,7 @@ export function readBrowserUiSession(): BrowserUiSessionState {
       return {};
     }
 
-    const parsed = JSON.parse(raw) as BrowserUiSessionState;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
     const lastActiveThreadByProjectId =
       parsed.lastActiveThreadByProjectId && typeof parsed.lastActiveThreadByProjectId === "object"
         ? Object.fromEntries(
@@ -2588,22 +2788,52 @@ export function readBrowserUiSession(): BrowserUiSessionState {
           )
         : undefined;
 
-    return {
-      selectedModeId: typeof parsed.selectedModeId === "string" ? parsed.selectedModeId : undefined,
-      selectedAgentId:
-        parsed.selectedAgentId === "pi" || parsed.selectedAgentId === "copilot-cli" || parsed.selectedAgentId === "codex-cli"
-          ? parsed.selectedAgentId
-          : undefined,
-      selectedExecutionModelId:
-        typeof parsed.selectedExecutionModelId === "string" ? (parsed.selectedExecutionModelId as ExecutionModelId) : undefined,
-      selectedReasoningStrength: isComposerReasoningStrength(parsed.selectedReasoningStrength)
-        ? parsed.selectedReasoningStrength
-        : undefined,
-      selectedFastMode: typeof parsed.selectedFastMode === "boolean" ? parsed.selectedFastMode : undefined,
-      tracePanelOpen: typeof parsed.tracePanelOpen === "boolean" ? parsed.tracePanelOpen : undefined,
-      lastActiveProjectId: typeof parsed.lastActiveProjectId === "string" ? parsed.lastActiveProjectId : undefined,
-      lastActiveThreadByProjectId
-    };
+    const result: BrowserUiSessionState = {};
+    if (typeof parsed.selectedModeId === "string") {
+      result.selectedModeId = parsed.selectedModeId;
+    }
+    if (parsed.selectedAgentId === "pi" || parsed.selectedAgentId === "copilot-cli" || parsed.selectedAgentId === "codex-cli") {
+      result.selectedAgentId = parsed.selectedAgentId;
+    }
+    if (typeof parsed.selectedExecutionModelId === "string") {
+      result.selectedExecutionModelId = parsed.selectedExecutionModelId as ExecutionModelId;
+    }
+    if (isComposerReasoningStrength(parsed.selectedReasoningStrength)) {
+      result.selectedReasoningStrength = parsed.selectedReasoningStrength;
+    }
+    if (typeof parsed.selectedFastMode === "boolean") {
+      result.selectedFastMode = parsed.selectedFastMode;
+    }
+    if (typeof parsed.tracePanelOpen === "boolean") {
+      result.tracePanelOpen = parsed.tracePanelOpen;
+    }
+    if (typeof parsed.activeLeftTab === "string") {
+      result.activeLeftTab = normalizeLeftTab(parsed.activeLeftTab);
+    }
+    if (typeof parsed.chatPaneTab === "string") {
+      result.chatPaneTab = normalizeChatPaneTab(parsed.chatPaneTab);
+    }
+    if (isRecord(parsed.assistantPane)) {
+      result.assistantPane = {
+        scopeFilter: normalizeAssistantScopeFilter(parsed.assistantPane.scopeFilter),
+        selectedAssistantId: normalizeOptionalStorageString(parsed.assistantPane.selectedAssistantId),
+        selectedTab: normalizeAssistantDetailTab(parsed.assistantPane.selectedTab),
+        selectedLogDetailsId: normalizeOptionalStorageString(parsed.assistantPane.selectedLogDetailsId)
+      };
+    }
+    if (isRecord(parsed.jobsPane)) {
+      result.jobsPane = {
+        ...normalizeJobsPanePreferences(parsed.jobsPane),
+        runFilter: normalizeJobsRunFilter(parsed.jobsPane.runFilter)
+      };
+    }
+    if (typeof parsed.lastActiveProjectId === "string") {
+      result.lastActiveProjectId = parsed.lastActiveProjectId;
+    }
+    if (lastActiveThreadByProjectId) {
+      result.lastActiveThreadByProjectId = lastActiveThreadByProjectId;
+    }
+    return result;
   } catch {
     return {};
   }
@@ -2648,6 +2878,7 @@ export function persistBrowserUiSession(input: BrowserUiSessionState) {
     selectedReasoningStrength: input.selectedReasoningStrength,
     selectedFastMode: input.selectedFastMode,
     tracePanelOpen: input.tracePanelOpen,
+    activeLeftTab: input.activeLeftTab ? normalizeLeftTab(input.activeLeftTab) : undefined,
     lastActiveProjectId: input.lastActiveProjectId?.trim() || undefined,
     lastActiveThreadByProjectId: input.lastActiveThreadByProjectId
       ? Object.fromEntries(
@@ -2655,6 +2886,23 @@ export function persistBrowserUiSession(input: BrowserUiSessionState) {
             (entry): entry is [string, string] => Boolean(entry[0]?.trim()) && Boolean(entry[1]?.trim())
           )
         )
+      : undefined,
+    chatPaneTab: input.chatPaneTab ? normalizeChatPaneTab(input.chatPaneTab) : undefined,
+    assistantPane: input.assistantPane
+      ? {
+          scopeFilter: input.assistantPane.scopeFilter
+            ? normalizeAssistantScopeFilter(input.assistantPane.scopeFilter)
+            : undefined,
+          selectedAssistantId: normalizeOptionalStorageString(input.assistantPane.selectedAssistantId),
+          selectedTab: input.assistantPane.selectedTab ? normalizeAssistantDetailTab(input.assistantPane.selectedTab) : undefined,
+          selectedLogDetailsId: normalizeOptionalStorageString(input.assistantPane.selectedLogDetailsId)
+        }
+      : undefined,
+    jobsPane: input.jobsPane
+      ? {
+          ...normalizeJobsPanePreferences(input.jobsPane),
+          runFilter: input.jobsPane.runFilter ? normalizeJobsRunFilter(input.jobsPane.runFilter) : undefined
+        }
       : undefined
   };
 
@@ -2665,6 +2913,10 @@ export function persistBrowserUiSession(input: BrowserUiSessionState) {
     !normalizedInput.selectedReasoningStrength &&
     normalizedInput.selectedFastMode === undefined &&
     normalizedInput.tracePanelOpen === undefined &&
+    normalizedInput.activeLeftTab === undefined &&
+    normalizedInput.chatPaneTab === undefined &&
+    normalizedInput.assistantPane === undefined &&
+    normalizedInput.jobsPane === undefined &&
     !normalizedInput.lastActiveProjectId &&
     (!normalizedInput.lastActiveThreadByProjectId || Object.keys(normalizedInput.lastActiveThreadByProjectId).length === 0)
   ) {
@@ -2730,9 +2982,141 @@ function getBrowserUiSessionSnapshot(state: HarnessViewState): BrowserUiSessionS
     selectedReasoningStrength: state.hasGlobalSelectedReasoningStrength ? state.selectedReasoningStrength : undefined,
     selectedFastMode: state.hasGlobalSelectedFastMode ? state.selectedFastMode : undefined,
     tracePanelOpen: state.hasPersistedTracePanelOpen ? state.tracePanelOpen : undefined,
+    activeLeftTab: state.activeLeftTab,
+    chatPaneTab: state.chatPaneTab,
+    assistantPane: {
+      scopeFilter: state.assistants.scopeFilter,
+      selectedAssistantId: state.assistants.selectedAssistantId,
+      selectedTab: state.assistants.selectedTab,
+      selectedLogDetailsId: state.assistants.selectedLogDetailsId
+    },
+    jobsPane: {
+      ...state.jobsPanePreferences,
+      runFilter: state.jobsRunFilter
+    },
     lastActiveProjectId: state.lastActiveProjectId,
     lastActiveThreadByProjectId: state.lastActiveThreadByProjectId
   };
+}
+
+function activeSurfaceToLeftTab(activeSurface: HarnessActiveSurface): HarnessLeftTab {
+  switch (activeSurface) {
+    case "assistants":
+      return "assistants";
+    case "background-jobs":
+      return "jobs";
+    case "chat":
+      return "projects";
+  }
+}
+
+function leftTabToActiveSurface(activeLeftTab: HarnessLeftTab): HarnessActiveSurface {
+  switch (activeLeftTab) {
+    case "assistants":
+      return "assistants";
+    case "jobs":
+      return "background-jobs";
+    case "projects":
+      return "chat";
+  }
+}
+
+function normalizeLeftTab(input: unknown): HarnessLeftTab {
+  return input === "assistants" || input === "jobs" || input === "projects" ? input : "projects";
+}
+
+function normalizeChatPaneTab(input: unknown): ChatPaneTab {
+  return input === "chat" || input === "plan" || input === "run" || input === "events" || input === "memory" ? input : "chat";
+}
+
+function normalizeAssistantDetailTab(input: unknown): AssistantDetailTab {
+  return input === "chat" ||
+    input === "todos" ||
+    input === "questions" ||
+    input === "jobs" ||
+    input === "log" ||
+    input === "config" ||
+    input === "learnings"
+    ? input
+    : "chat";
+}
+
+function normalizeAssistantScopeFilter(input: unknown): AssistantScopeFilter {
+  return input === "global" || input === "project" ? input : "project";
+}
+
+function normalizeJobsPaneSegment(input: unknown): JobsPaneSegment {
+  return input === "jobs" || input === "inbox" ? input : "inbox";
+}
+
+function normalizeJobsPaneJobSort(input: unknown): JobsPaneJobSort {
+  return input === "next-run" || input === "updated" || input === "created" || input === "status" || input === "risk"
+    ? input
+    : "next-run";
+}
+
+function normalizeJobsRunFilter(input: unknown): JobsRunFilter {
+  return input === "approval" || input === "queued" || input === "running" || input === "failed" || input === "done" ? input : "approval";
+}
+
+function normalizeJobsPanePreferences(input: unknown, state?: HarnessViewState, clearMissingIds: boolean = false): JobsPanePreferences {
+  const source = isRecord(input) ? input : {};
+  const preferences: JobsPanePreferences = {
+    segment: normalizeJobsPaneSegment(source.segment),
+    search: typeof source.search === "string" ? source.search : "",
+    jobSort: normalizeJobsPaneJobSort(source.jobSort),
+    projectId: normalizeOptionalStorageString(source.projectId),
+    assistantId: normalizeOptionalStorageString(source.assistantId),
+    kind: source.kind === "ai-routine" || source.kind === "shell" ? source.kind : undefined,
+    status: source.status === "enabled" || source.status === "paused" || source.status === "disabled" ? source.status : undefined,
+    risk: source.risk === "safe" || source.risk === "slightly-unsafe" || source.risk === "unsafe" ? source.risk : undefined,
+    selectedJobId: normalizeOptionalStorageString(source.selectedJobId),
+    selectedRunId: normalizeOptionalStorageString(source.selectedRunId),
+    selectedNotificationId: normalizeOptionalStorageString(source.selectedNotificationId)
+  };
+
+  if (!state) {
+    return preferences;
+  }
+
+  const projectIds = new Set(state.workspace.projects.map((project) => project.id));
+  const assistantIds = new Set(state.assistants.assistants.map((assistant) => assistant.id));
+  const jobIds = new Set(state.backgroundJobs.jobs.map((job) => job.id));
+  const runIds = new Set(state.backgroundJobs.runs.map((run) => run.id));
+  const notificationIds = new Set(state.notifications.items.map((notification) => notification.id));
+
+  return {
+    ...preferences,
+    projectId:
+      preferences.projectId && (projectIds.has(preferences.projectId) || (!clearMissingIds && projectIds.size === 0))
+        ? preferences.projectId
+        : undefined,
+    assistantId:
+      preferences.assistantId && (assistantIds.has(preferences.assistantId) || (!clearMissingIds && assistantIds.size === 0))
+        ? preferences.assistantId
+        : undefined,
+    selectedJobId:
+      preferences.selectedJobId && (jobIds.has(preferences.selectedJobId) || (!clearMissingIds && jobIds.size === 0))
+        ? preferences.selectedJobId
+        : undefined,
+    selectedRunId:
+      preferences.selectedRunId && (runIds.has(preferences.selectedRunId) || (!clearMissingIds && runIds.size === 0))
+        ? preferences.selectedRunId
+        : undefined,
+    selectedNotificationId:
+      preferences.selectedNotificationId &&
+      (notificationIds.has(preferences.selectedNotificationId) || (!clearMissingIds && notificationIds.size === 0))
+        ? preferences.selectedNotificationId
+        : undefined
+  };
+}
+
+function normalizeOptionalStorageString(input: unknown) {
+  return typeof input === "string" && input.trim() ? input.trim() : undefined;
+}
+
+function isRecord(input: unknown): input is Record<string, unknown> {
+  return typeof input === "object" && input !== null;
 }
 
 function toRunSummary(run: AgentRunState): AgentRunSummary {
@@ -2751,6 +3135,32 @@ function toRunSummary(run: AgentRunState): AgentRunSummary {
 function upsertRunSummary(summaries: AgentRunSummary[], next: AgentRunSummary) {
   const existing = summaries.filter((summary) => summary.id !== next.id);
   return [next, ...existing].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+}
+
+function normalizeAssistantsViewState(state: HarnessViewState): ViewAssistantsState {
+  const scopeFilter = normalizeAssistantScopeFilter(state.assistants.scopeFilter);
+  const visibleAssistants = state.assistants.assistants.filter((assistant) =>
+    scopeFilter === "global"
+      ? assistant.scope === "global"
+      : assistant.scope === "project" && assistant.projectId === state.workspace.activeProjectId
+  );
+  const selectedAssistantId = normalizeOptionalStorageString(state.assistants.selectedAssistantId);
+  const selectedLogDetailsId = normalizeOptionalStorageString(state.assistants.selectedLogDetailsId);
+
+  return {
+    ...state.assistants,
+    scopeFilter,
+    selectedAssistantId:
+      selectedAssistantId &&
+      (visibleAssistants.some((assistant) => assistant.id === selectedAssistantId) || state.assistants.assistants.length === 0)
+        ? selectedAssistantId
+        : visibleAssistants[0]?.id,
+    selectedTab: normalizeAssistantDetailTab(state.assistants.selectedTab),
+    selectedLogDetailsId:
+      selectedLogDetailsId && (state.assistants.logs.some((entry) => entry.id === selectedLogDetailsId) || state.assistants.logs.length === 0)
+        ? selectedLogDetailsId
+        : undefined
+  };
 }
 
 function finalizeHarnessViewState(state: HarnessViewState): HarnessViewState {
@@ -2787,6 +3197,8 @@ function finalizeHarnessViewState(state: HarnessViewState): HarnessViewState {
     state.projectSidebarPreferences,
     state.workspace.projects.map((project) => project.id)
   );
+  const assistants = normalizeAssistantsViewState(state);
+  const jobsPanePreferences = normalizeJobsPanePreferences(state.jobsPanePreferences, state);
 
   return {
     ...state,
@@ -2794,7 +3206,11 @@ function finalizeHarnessViewState(state: HarnessViewState): HarnessViewState {
     selectedAgentId,
     selectedExecutionModelId,
     selectedReasoningStrength: composerControls.selectedReasoningStrength,
-    selectedFastMode: composerControls.selectedFastMode,
+    selectedFastMode: state.selectedFastMode,
+    chatPaneTab: normalizeChatPaneTab(state.chatPaneTab),
+    assistants,
+    jobsPanePreferences,
+    jobsRunFilter: normalizeJobsRunFilter(state.jobsRunFilter),
     projectSidebarPreferences,
     lastActiveProjectId: nextLastActiveProjectId,
     lastActiveThreadByProjectId,

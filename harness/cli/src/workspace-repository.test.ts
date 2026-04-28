@@ -412,6 +412,362 @@ describe("workspace repository", () => {
     expect(repository.getBackgroundJobRun(savedRun.id)).toBeUndefined();
   });
 
+  test("normalizes oversized assistant learning sources on save and load", () => {
+    const tempRoot = createTempDir();
+    const dbPath = path.join(tempRoot, `workspace-${crypto.randomUUID()}.sqlite`);
+    const repository = new WorkspaceRepository(dbPath, process.cwd(), { durability: "test-fast" });
+    const assistantId = createAssistantId();
+    const now = new Date().toISOString();
+    const oversizedSource = `reprioritize:${"x".repeat(400)}`;
+
+    repository.saveAssistant({
+      id: assistantId,
+      name: "Learning helper",
+      scope: "global",
+      personalityPrompt: "Remember useful facts.",
+      jobPrompt: "Track durable learnings.",
+      agentId: "pi",
+      runState: "active",
+      bootstrapState: "completed",
+      failureStreakCount: 0,
+      circuitBreakerState: "closed",
+      unreadQuestionCount: 0,
+      createdAt: now,
+      updatedAt: now
+    });
+
+    const saved = repository.saveAssistantLearning({
+      id: createAssistantLearningId(),
+      assistantId,
+      summary: "Keep learning sources protocol-safe.",
+      source: oversizedSource,
+      confidence: "medium",
+      createdAt: now
+    });
+    expect(saved.source).toHaveLength(256);
+
+    const legacyDb = new Database(dbPath, { strict: true });
+    legacyDb
+      .query(
+        `INSERT INTO assistant_learnings (id, assistant_id, summary, source, confidence, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)`
+      )
+      .run(
+        createAssistantLearningId(),
+        assistantId,
+        "Legacy oversized learning source still loads.",
+        oversizedSource,
+        "high",
+        now
+      );
+    legacyDb.close();
+
+    const learnings = repository.loadAssistantsState().learnings;
+    expect(learnings).toHaveLength(2);
+    expect(learnings.every((learning) => learning.source.length <= 256)).toBe(true);
+  });
+
+  test("repairs recoverable assistant persisted field violations during load", () => {
+    const tempRoot = createTempDir();
+    const dbPath = path.join(tempRoot, `workspace-${crypto.randomUUID()}.sqlite`);
+    const repository = new WorkspaceRepository(dbPath, process.cwd(), { durability: "test-fast" });
+    const assistantId = createAssistantId();
+    const now = new Date().toISOString();
+    const long = "x".repeat(40000);
+
+    repository.saveAssistant({
+      id: assistantId,
+      name: "State helper",
+      scope: "global",
+      personalityPrompt: "Keep state safe.",
+      jobPrompt: "Repair persisted rows.",
+      agentId: "pi",
+      runState: "active",
+      bootstrapState: "completed",
+      failureStreakCount: 0,
+      circuitBreakerState: "closed",
+      unreadQuestionCount: 0,
+      createdAt: now,
+      updatedAt: now
+    });
+    repository.saveAssistantTodo({
+      id: createAssistantTodoId(),
+      assistantId,
+      title: "Short todo",
+      state: "pending",
+      sortOrder: 0,
+      createdAt: now,
+      updatedAt: now
+    });
+    repository.saveAssistantQuestion({
+      id: createAssistantQuestionId(),
+      assistantId,
+      prompt: "Short question?",
+      status: "pending",
+      askedAt: now
+    });
+    repository.appendAssistantLogEntry({
+      id: createAssistantLogEntryId(),
+      assistantId,
+      level: "info",
+      summary: "Short log",
+      createdAt: now
+    });
+
+    const db = new Database(dbPath, { strict: true });
+    db.query(
+      `UPDATE assistants
+       SET name = ?1, description = ?1, personality_prompt = ?1, job_prompt = ?1, circuit_breaker_reason = ?1,
+           failure_streak_count = 2000
+       WHERE id = ?2`
+    ).run(long, assistantId);
+    db.query(
+      `UPDATE assistant_threads
+       SET memory_summary_content = ?1
+       WHERE assistant_id = ?2`
+    ).run(long, assistantId);
+    db.query(
+      `UPDATE assistant_todos
+       SET title = ?1, description = ?1, blocker_reason = ?1, sort_order = -10
+       WHERE assistant_id = ?2`
+    ).run(long, assistantId);
+    db.query(
+      `UPDATE assistant_questions
+       SET prompt = ?1, answer_text = ?1, linked_todo_ids_json = 'not-json'
+       WHERE assistant_id = ?2`
+    ).run(long, assistantId);
+    db.query(
+      `UPDATE assistant_log_entries
+       SET summary = ?1, detail = ?1, details_json = 'not-json'
+       WHERE assistant_id = ?2`
+    ).run(long, assistantId);
+    db.query(
+      `INSERT INTO assistant_asset_refs (
+        id, assistant_id, kind, label, value, canonical_value, scope, provenance, resolution_status, resolution_error, created_at
+      ) VALUES (?1, ?2, 'skill', ?3, ?3, ?3, 'workspace', 'repo-skill', 'missing', ?3, ?4)`
+    ).run(createAssistantAssetRefId(), assistantId, long, now);
+    db.close();
+
+    const state = repository.loadAssistantsState();
+
+    expect(state.assistants[0]?.name).toHaveLength(256);
+    expect(state.assistants[0]?.personalityPrompt).toHaveLength(8000);
+    expect(state.assistants[0]?.jobPrompt).toHaveLength(12000);
+    expect(state.assistants[0]?.failureStreakCount).toBe(1000);
+    expect(state.threads[0]?.memorySummary?.content).toHaveLength(32000);
+    expect(state.todos[0]?.title).toHaveLength(512);
+    expect(state.todos[0]?.description).toHaveLength(4000);
+    expect(state.todos[0]?.blockerReason).toHaveLength(4000);
+    expect(state.todos[0]?.sortOrder).toBe(0);
+    expect(state.questions[0]?.prompt).toHaveLength(8000);
+    expect(state.questions[0]?.answerText).toHaveLength(32000);
+    expect(state.questions[0]?.linkedTodoIds).toEqual([]);
+    expect(state.logs[0]?.summary).toHaveLength(1024);
+    expect(state.logs[0]?.detail).toHaveLength(4000);
+    expect(state.logs[0]?.detailsJson).toBeUndefined();
+    expect(state.assetRefs[0]?.label).toHaveLength(256);
+    expect(state.assetRefs[0]?.value).toHaveLength(4096);
+    expect(state.assetRefs[0]?.resolutionError).toHaveLength(1024);
+  });
+
+  test("repairs recoverable global persisted field violations during load", () => {
+    const tempRoot = createTempDir();
+    const dbPath = path.join(tempRoot, `workspace-${crypto.randomUUID()}.sqlite`);
+    const repository = new WorkspaceRepository(dbPath, process.cwd(), { durability: "test-fast" });
+    const project = addProject(repository);
+    const now = new Date().toISOString();
+    const long = "x".repeat(40000);
+
+    repository.appendMessage(project.id, "user", "hello", {
+      attachments: [
+        {
+          id: "attachment-1",
+          kind: "text",
+          name: "notes.txt",
+          mimeType: "text/plain",
+          sizeBytes: 12,
+          url: "https://example.com/file.txt",
+          key: "file-key",
+          uploadedAt: now
+        }
+      ]
+    });
+    const withRun = repository.createAgentRun(project.id, "needs work", "openai/gpt-5.4");
+    const runId = withRun.activeRun!.id;
+    repository.saveMemoryEntry({
+      id: createMemoryEntryId(),
+      projectId: project.id,
+      kind: "task-summary",
+      status: "active",
+      title: "Memory",
+      summary: "Remember this.",
+      tags: ["tag"],
+      pathGlobs: ["**/*"],
+      confidence: "medium",
+      freshness: "fresh",
+      pinned: false,
+      hitCount: 0,
+      createdAt: now,
+      updatedAt: now
+    });
+    repository.logMemoryRetrieval({
+      id: createMemoryRetrievalId(),
+      runId,
+      owner: "planner",
+      queryText: "memory query",
+      entryIds: [],
+      createdAt: now
+    });
+    const jobId = createBackgroundJobId();
+    repository.saveBackgroundJob({
+      id: jobId,
+      projectId: project.id,
+      automationThreadId: project.activeThreadId,
+      kind: "ai-routine",
+      name: "Routine",
+      status: "enabled",
+      riskLevel: "safe",
+      definition: {
+        kind: "ai-routine",
+        prompt: "Check status."
+      },
+      schedule: {
+        type: "interval",
+        intervalSeconds: 3600,
+        nextRunAt: now,
+        sourceText: "1h"
+      },
+      scheduleInput: "1h",
+      nextRunAt: now,
+      createdAt: now,
+      updatedAt: now
+    });
+    const jobRun = repository.createBackgroundJobRun({
+      jobId,
+      projectId: project.id,
+      automationThreadId: project.activeThreadId,
+      triggerSource: "manual",
+      status: "running",
+      riskLevel: "safe",
+      approvalStatus: "not-needed"
+    });
+    repository.saveNotification({
+      id: "notification-global-corrupt",
+      kind: "background-run-status",
+      interactive: false,
+      backgroundRunId: jobRun.id,
+      jobId,
+      projectId: project.id,
+      threadId: project.activeThreadId,
+      title: "Job update",
+      summary: "Running",
+      severity: "info",
+      createdAt: now
+    });
+
+    const db = new Database(dbPath, { strict: true });
+    db.query(`UPDATE thread_messages SET content = '', attachments_json = 'not-json', metadata_json = 'not-json'`).run();
+    db.query(
+      `UPDATE agent_runs
+       SET latest_user_prompt = '', difficulty_score = 999, plan_json = 'not-json',
+           correctness_review_json = 'not-json', browser_sessions_json = 'not-json', tool_activities_json = 'not-json'
+       WHERE id = ?1`
+    ).run(runId);
+    db.query(
+      `UPDATE background_jobs
+       SET name = ?1, description = ?1, definition_json = 'not-json', schedule_json = 'not-json', schedule_input = ?1
+       WHERE id = ?2`
+    ).run(long, jobId);
+    db.query(
+      `UPDATE background_job_runs
+       SET skipped_occurrence_count = -5, summary = ?1, failure_message = ?1
+       WHERE id = ?2`
+    ).run(long, jobRun.id);
+    db.query(
+      `UPDATE notifications
+       SET payload_json = ?1
+       WHERE id = 'notification-global-corrupt'`
+    ).run(JSON.stringify({ kind: "background-run-status", title: long, summary: long, severity: "info" }));
+    db.query(
+      `UPDATE memory_entries
+       SET title = ?1, summary = ?1, evidence = ?1, tags_json = 'not-json', path_globs_json = 'not-json',
+           hit_count = -10, source_commit_sha = ?1`
+    ).run(long);
+    db.query(`UPDATE memory_retrievals SET query_text = ?1, entry_ids_json = 'not-json'`).run(long);
+    db.close();
+
+    const workspace = repository.loadWorkspace();
+    const loadedRun = repository.getRun(project.id, runId);
+    const jobs = repository.loadBackgroundJobsState();
+    const notifications = repository.loadNotificationInboxState();
+    const memories = repository.listMemoryEntries(project.id);
+
+    expect(workspace.projects[0]?.session.messages[0]?.content).toBe("Recovered message");
+    expect(workspace.projects[0]?.session.messages[0]?.attachments).toBeUndefined();
+    expect(workspace.projects[0]?.session.messages[0]?.metadata).toBeUndefined();
+    expect(loadedRun?.latestUserPrompt).toBe("Recovered prompt");
+    expect(loadedRun?.difficultyScore).toBe(100);
+    expect(loadedRun?.plan).toBeUndefined();
+    expect(loadedRun?.correctnessReview).toBeUndefined();
+    expect(loadedRun?.memoryRetrievals?.[0]?.queryText).toHaveLength(32000);
+    expect(loadedRun?.memoryRetrievals?.[0]?.entryIds).toEqual([]);
+    expect(jobs.jobs[0]?.name).toHaveLength(256);
+    expect(jobs.jobs[0]?.description).toHaveLength(1024);
+    expect(jobs.jobs[0]?.scheduleInput).toHaveLength(512);
+    expect(jobs.runs[0]?.skippedOccurrenceCount).toBe(0);
+    expect(jobs.runs[0]?.summary).toHaveLength(4000);
+    expect(jobs.runs[0]?.failureMessage).toHaveLength(4000);
+    expect(notifications.items[0]?.kind).toBe("background-run-status");
+    expect(notifications.items[0]?.kind === "background-run-status" ? notifications.items[0].title.length : 0).toBe(256);
+    expect(notifications.items[0]?.kind === "background-run-status" ? notifications.items[0].summary.length : 0).toBe(4000);
+    expect(memories[0]?.title).toHaveLength(256);
+    expect(memories[0]?.summary).toHaveLength(4000);
+    expect(memories[0]?.evidence).toHaveLength(16000);
+    expect(memories[0]?.tags).toEqual([]);
+    expect(memories[0]?.pathGlobs).toEqual([]);
+    expect(memories[0]?.hitCount).toBe(0);
+    expect(memories[0]?.sourceCommitSha).toHaveLength(256);
+  });
+
+  test("preserves recurring job next run when only last run changes", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    const now = "2026-04-28T12:00:00.000Z";
+    const nextRunAt = "2026-04-28T13:00:00.000Z";
+    const jobId = createBackgroundJobId();
+    repository.saveBackgroundJob({
+      id: jobId,
+      projectId: project.id,
+      automationThreadId: project.activeThreadId,
+      kind: "ai-routine",
+      name: "Hourly review",
+      status: "enabled",
+      riskLevel: "safe",
+      definition: {
+        kind: "ai-routine",
+        prompt: "Review."
+      },
+      schedule: {
+        type: "interval",
+        intervalSeconds: 3600,
+        nextRunAt,
+        sourceText: "1h"
+      },
+      scheduleInput: "1h",
+      nextRunAt,
+      createdAt: now,
+      updatedAt: now
+    });
+
+    repository.updateBackgroundJobSchedule(jobId, {
+      lastRunAt: now
+    });
+
+    const updated = repository.getBackgroundJob(jobId);
+    expect(updated?.nextRunAt).toBe(nextRunAt);
+    expect(updated?.lastRunAt).toBe(now);
+  });
+
   test("recovers tripped assistant circuit breaker", () => {
     const repository = createRepository();
     const project = addProject(repository);
@@ -515,6 +871,41 @@ describe("workspace repository", () => {
     expect(restoredProject.activeRun?.subtasks.find((task) => task.id === "task-1")?.status).toBe("completed");
     expect(restoredProject.activeRun?.subtasks.find((task) => task.id === "task-2")?.status).toBe("failed");
     expect(restoredProject.activeRun?.resumable).toBe(true);
+  });
+
+  test("persists freeform planning questions without choices", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    const withRun = repository.createAgentRun(project.id, "create assistant", "openai/gpt-5.4");
+    const runId = withRun.activeRun?.id;
+    expect(runId).toBeDefined();
+
+    const withQuestion = repository.appendPlanningQuestion(project.id, runId!, {
+      id: "assistant-create-purpose",
+      prompt: "What should Kojima do for this project?",
+      placeholder: "Use Kojima to triage failed tests, maintain docs, and keep project todos current.",
+      responseKind: "freeform",
+      required: true,
+      intent: {
+        type: "assistant-create-intent",
+        projectId: project.id,
+        threadId: project.activeThreadId,
+        sourcePrompt: "create a new local project assistant kojima",
+        suggestedName: "kojima",
+        defaultScope: "project",
+        requiresPurpose: true
+      }
+    });
+
+    const stored = withQuestion.activeRun?.questions[0];
+    expect(stored?.responseKind).toBe("freeform");
+    expect(stored?.choices).toBeUndefined();
+
+    const reloadedRepository = new WorkspaceRepository((repository as any).dbPath, process.cwd());
+    const restored = reloadedRepository.getProject(project.id).activeRun?.questions[0];
+    expect(restored?.responseKind).toBe("freeform");
+    expect(restored?.choices).toBeUndefined();
+    expect(restored?.placeholder).toContain("Kojima");
   });
 
   test("persists planning question assistant intent metadata", () => {

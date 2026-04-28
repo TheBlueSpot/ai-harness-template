@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { AgentRuntimeCapability } from "../../../shared/protocol";
+import type { AgentRuntimeCapability, Assistant, BackgroundJob } from "../../../shared/protocol";
 import type { PiAgentAdapter, PiAgentExecutionController, PiAgentPromptRequest, PiAgentPromptResult } from "../pi-agent-adapter";
 import {
   createSampleDocxBuffer,
@@ -1840,6 +1840,7 @@ export function registerServerPreferencesAndModesTests() {
         const opened = await openProject(socket, projectRoot);
         const projectId = opened.payload.project.id;
         const threadId = opened.payload.project.activeThreadId;
+        repository.setProviderBrand("gemini");
         const assistantUpdatePromise = waitForEvent(
           socket,
           "assistants.updated",
@@ -1865,7 +1866,9 @@ export function registerServerPreferencesAndModesTests() {
               requestId: "req-create-assistant-chat",
               projectId,
               threadId,
-              content: "Create a project assistant named Catalog builder to execute todo-games.md"
+              content: "Create a project assistant named Catalog builder to execute todo-games.md",
+              executionModelId: "google/gemini-2.5-flash",
+              fastMode: true
             })
           )
         );
@@ -1876,6 +1879,10 @@ export function registerServerPreferencesAndModesTests() {
 
         expect(card.payload.assistant.scope).toBe("project");
         expect(card.payload.assistant.projectId).toBe(projectId);
+        expect(card.payload.assistant.agentId).toBe("pi");
+        expect(card.payload.assistant.providerBrand).toBe("gemini");
+        expect(card.payload.assistant.executionModelId).toBe("google/gemini-2.5-flash");
+        expect(card.payload.assistant.fastMode).toBe(true);
         expect(assistantUpdate.payload.assistants.assistants.some((assistant: { name: string }) => assistant.name === "Catalog builder")).toBe(true);
         expect(adapter.calls.some((call) => call.kind === "executor")).toBe(false);
 
@@ -1883,11 +1890,158 @@ export function registerServerPreferencesAndModesTests() {
         const reconnectReady = await waitForEvent(reconnectSocket, "connection.ready");
         expect(
           reconnectReady.payload.assistants.assistants.some(
-            (assistant: { name: string; scope: string; projectId?: string }) =>
-              assistant.name === "Catalog builder" && assistant.scope === "project" && assistant.projectId === projectId
+            (assistant: {
+              name: string;
+              scope: string;
+              projectId?: string;
+              providerBrand?: string;
+              executionModelId?: string;
+              fastMode?: boolean;
+            }) =>
+              assistant.name === "Catalog builder" &&
+              assistant.scope === "project" &&
+              assistant.projectId === projectId &&
+              assistant.providerBrand === "gemini" &&
+              assistant.executionModelId === "google/gemini-2.5-flash" &&
+              assistant.fastMode === true
           )
         ).toBe(true);
         reconnectSocket.close();
+        socket.close();
+      }, 60000);
+
+      test("chat.send asks for purpose before creating underspecified project assistants", async () => {
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot);
+        const projectId = opened.payload.project.id;
+        const threadId = opened.payload.project.activeThreadId;
+        const questionRunPromise = waitForEvent(
+          socket,
+          "run.updated",
+          (event) =>
+            event.payload.run.status === "awaiting-user-input" &&
+            event.payload.run.questions.some(
+              (question: { prompt: string; responseKind?: string }) =>
+                question.responseKind === "freeform" && question.prompt.includes("What should kojima do for this project?")
+            ),
+          10000
+        );
+        const questionMessagePromise = waitForEvent(
+          socket,
+          "thread.message-appended",
+          (event) => event.payload.message.role === "assistant" && event.payload.message.content.includes("What should kojima do"),
+          10000
+        );
+
+        socket.send(
+          JSON.stringify(
+            createChatSendCommand({
+              requestId: "req-create-assistant-needs-purpose",
+              projectId,
+              threadId,
+              content: "create a new local project assistant kojima"
+            })
+          )
+        );
+
+        const questionRun = await questionRunPromise;
+        await questionMessagePromise;
+        const question = questionRun.payload.run.questions[0];
+        expect(question.responseKind).toBe("freeform");
+        expect(question.choices).toBeUndefined();
+        expect(adapter.calls).toHaveLength(0);
+
+        const cardPromise = waitForEvent(
+          socket,
+          "assistant.created-card",
+          (event) => event.payload.assistant.name === "kojima",
+          10000
+        );
+        const actionMessagePromise = waitForEvent(
+          socket,
+          "thread.message-appended",
+          (event) => event.payload.message.metadata?.type === "assistant-action" && event.payload.message.metadata.actionKind === "create",
+          10000
+        );
+        const completedRunPromise = waitForEvent(
+          socket,
+          "run.updated",
+          (event) => event.payload.run.id === questionRun.payload.run.id && event.payload.run.status === "completed",
+          10000
+        );
+
+        socket.send(
+          JSON.stringify({
+            type: "planning.answer",
+            requestId: "req-create-assistant-purpose-answer",
+            payload: {
+              projectId,
+              threadId,
+              runId: questionRun.payload.run.id,
+              questionId: question.id,
+              content: "Maintain project docs and surface stale todos."
+            }
+          })
+        );
+
+        await cardPromise;
+        await actionMessagePromise;
+        await completedRunPromise;
+        const assistant = repository.loadAssistantsState().assistants.find((entry) => entry.name === "kojima");
+        expect(assistant?.jobPrompt).toContain("Maintain project docs and surface stale todos.");
+        socket.close();
+      }, 60000);
+
+      test("chat.send purpose question can cancel assistant creation", async () => {
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot);
+        const projectId = opened.payload.project.id;
+        const threadId = opened.payload.project.activeThreadId;
+        const questionRunPromise = waitForEvent(
+          socket,
+          "run.updated",
+          (event) => event.payload.run.status === "awaiting-user-input",
+          10000
+        );
+
+        socket.send(
+          JSON.stringify(
+            createChatSendCommand({
+              requestId: "req-create-assistant-cancel-start",
+              projectId,
+              threadId,
+              content: "create a new local project assistant cancelbot"
+            })
+          )
+        );
+
+        const questionRun = await questionRunPromise;
+        const question = questionRun.payload.run.questions[0];
+        const stoppedRunPromise = waitForEvent(
+          socket,
+          "run.updated",
+          (event) => event.payload.run.id === questionRun.payload.run.id && event.payload.run.status === "stopped",
+          10000
+        );
+
+        socket.send(
+          JSON.stringify({
+            type: "planning.answer",
+            requestId: "req-create-assistant-cancel-answer",
+            payload: {
+              projectId,
+              threadId,
+              runId: questionRun.payload.run.id,
+              questionId: question.id,
+              content: "cancel"
+            }
+          })
+        );
+
+        await stoppedRunPromise;
+        expect(repository.loadAssistantsState().assistants.some((assistant) => assistant.name === "cancelbot")).toBe(false);
         socket.close();
       }, 60000);
 
@@ -2096,6 +2250,149 @@ export function registerServerPreferencesAndModesTests() {
 
         await secondCardPromise;
         expect(repository.loadAssistantsState().assistants.filter((assistant) => assistant.name === "Catalog builder")).toHaveLength(1);
+        socket.close();
+      }, 60000);
+
+      test("assistant-owned background jobs use the assistant runtime", async () => {
+        server.stop(true);
+        const codexAdapter = new FakePiAgentAdapter();
+        ({ server, port } = await startServerForTest({
+          port,
+          adapter,
+          repository,
+          runtimeRegistry: new AgentRuntimeRegistry([new PiRuntime(adapter), new FakeCodexRuntime(codexAdapter)]),
+          serverOnly: true
+        }));
+
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot);
+        const projectId = opened.payload.project.id;
+        const now = new Date().toISOString();
+        const assistantId = crypto.randomUUID();
+        const jobId = crypto.randomUUID();
+        const assistant = repository.saveAssistant({
+          id: assistantId,
+          name: "Codex job helper",
+          scope: "project",
+          projectId,
+          personalityPrompt: "Run background work.",
+          jobPrompt: "Handle background job prompts.",
+          agentId: "codex-cli",
+          providerBrand: "gpt",
+          modeId: "implement",
+          runState: "active",
+          bootstrapState: "completed",
+          failureStreakCount: 0,
+          circuitBreakerState: "closed",
+          unreadQuestionCount: 0,
+          createdAt: now,
+          updatedAt: now
+        } satisfies Assistant);
+        repository.saveBackgroundJob({
+          id: jobId,
+          projectId,
+          assistantId: assistant.id,
+          automationThreadId: crypto.randomUUID(),
+          kind: "ai-routine",
+          name: "Codex assistant job",
+          status: "enabled",
+          riskLevel: "unsafe",
+          definition: {
+            kind: "ai-routine",
+            prompt: "single background task",
+            modeId: "implement"
+          },
+          schedule: {
+            type: "one-off",
+            runAt: now,
+            sourceText: "now"
+          },
+          scheduleInput: "now",
+          nextRunAt: now,
+          createdAt: now,
+          updatedAt: now
+        } satisfies BackgroundJob);
+
+        const codexPlannerPromise = codexAdapter.waitForCall("planner");
+        socket.send(
+          JSON.stringify({
+            type: "background-job.run-now",
+            requestId: "req-codex-assistant-job",
+            payload: {
+              projectId,
+              jobId
+            }
+          })
+        );
+
+        const plannerCall = await codexPlannerPromise;
+        expect(plannerCall.modelId).toBe("openai/gpt-5.4");
+        expect(adapter.calls).toHaveLength(0);
+        socket.close();
+      }, 60000);
+
+      test("background job run updates stream execution log events", async () => {
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot);
+        const projectId = opened.payload.project.id;
+        const now = new Date().toISOString();
+        const jobId = crypto.randomUUID();
+        repository.saveBackgroundJob({
+          id: jobId,
+          projectId,
+          automationThreadId: crypto.randomUUID(),
+          kind: "ai-routine",
+          name: "Streaming log job",
+          status: "enabled",
+          riskLevel: "safe",
+          definition: {
+            kind: "ai-routine",
+            prompt: "streaming refresh background job",
+            modeId: "implement",
+            subagentWorktreeStrategy: "separate-worktrees"
+          },
+          schedule: {
+            type: "one-off",
+            runAt: now,
+            sourceText: "now"
+          },
+          scheduleInput: "now",
+          nextRunAt: now,
+          createdAt: now,
+          updatedAt: now
+        } satisfies BackgroundJob);
+
+        const streamingLogPromise = waitForEvent(
+          socket,
+          "background-job-run.updated",
+          (event) =>
+            event.payload.run.jobId === jobId &&
+            event.payload.run.status === "running" &&
+            event.payload.run.events.some((entry: { stage: string }) => entry.stage === "input"),
+          10000
+        );
+        const completedPromise = waitForEvent(
+          socket,
+          "background-job-run.updated",
+          (event) => event.payload.run.jobId === jobId && event.payload.run.status === "succeeded",
+          10000
+        );
+        socket.send(
+          JSON.stringify({
+            type: "background-job.run-now",
+            requestId: "req-streaming-job-log",
+            payload: {
+              projectId,
+              jobId
+            }
+          })
+        );
+
+        const streamingLog = await streamingLogPromise;
+        expect(streamingLog.payload.run.events.some((entry: { message: string }) => entry.message === "Background AI prompt")).toBe(true);
+        await completedPromise;
         socket.close();
       }, 60000);
 
@@ -5218,6 +5515,7 @@ function createChatSendCommand(input: {
   threadId: string;
   content: string;
   agentId?: "pi" | "copilot-cli" | "codex-cli";
+  executionModelId?: string;
   reasoningStrength?: "low" | "medium" | "high" | "extra-high";
   fastMode?: boolean;
   modeId?: string;
@@ -5242,6 +5540,7 @@ function createChatSendCommand(input: {
       threadId: input.threadId,
       agentId: input.agentId ?? "pi",
       content: input.content,
+      executionModelId: input.executionModelId,
       reasoningStrength: input.reasoningStrength,
       fastMode: input.fastMode,
       modeId: input.modeId,

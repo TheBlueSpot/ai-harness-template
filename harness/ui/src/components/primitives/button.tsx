@@ -1,4 +1,4 @@
-import type { JSX } from "solid-js";
+import { splitProps, type JSX } from "solid-js";
 import { Dynamic } from "solid-js/web";
 import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "../../lib/utils";
@@ -37,18 +37,18 @@ type ButtonProps = {
   JSX.IntrinsicElements["button"];
 
 export function Button(props: ButtonProps) {
-  const component = () => props.as ?? "button";
-  const { class: className, as: _as, variant, size, children, ...rest } = props;
+  const [local, rest] = splitProps(props, ["class", "as", "variant", "size", "children"]);
+  const component = () => local.as ?? "button";
 
   return (
     <Dynamic
       component={component()}
       {...rest}
       data-test-button=""
-      class={cn(buttonVariants({ variant, size }), className)}
-      type={props.as === "span" ? undefined : props.type ?? "button"}
+      class={cn(buttonVariants({ variant: local.variant, size: local.size }), local.class)}
+      type={local.as === "span" ? undefined : props.type ?? "button"}
     >
-      {children}
+      {local.children}
     </Dynamic>
   );
 }

@@ -8,7 +8,9 @@ describe("server assistant chat action wiring", () => {
   test("chat.send resolves assistant actions before planner flow", () => {
     expect(serverSource).toContain("resolveAssistantChatAction({");
     expect(serverSource).toContain("executeAssistantChatAction({");
-    expect(serverSource.indexOf("resolveAssistantChatAction({")).toBeLessThan(serverSource.indexOf("repository.createAgentRun("));
+    const actionIndex = serverSource.indexOf("resolveAssistantChatAction({");
+    const plannerRunIndex = serverSource.indexOf("const runProject = repository.createAgentRun(", actionIndex);
+    expect(actionIndex).toBeLessThan(plannerRunIndex);
   });
 
   test("assistant action clarification persists typed planning intent", () => {
@@ -30,5 +32,13 @@ describe("server assistant chat action wiring", () => {
     const retryCase = serverSource.slice(retryCaseIndex, nextCaseIndex);
     expect(retryCase).toContain("assistantManager.recoverAssistant");
     expect(retryCase).not.toContain("assertAssistantRunnableForLaunch");
+  });
+
+  test("startup cleans stale assistant questions before syncing inbox notifications", () => {
+    expect(serverSource).toContain("cleanupStaleAssistantQuestions");
+    const cleanupIndex = serverSource.indexOf("assistantManager.cleanupStaleAssistantQuestions();");
+    const syncIndex = serverSource.indexOf("syncAssistantQuestionNotifications(repository);", cleanupIndex);
+    expect(cleanupIndex).toBeGreaterThan(-1);
+    expect(cleanupIndex).toBeLessThan(syncIndex);
   });
 });

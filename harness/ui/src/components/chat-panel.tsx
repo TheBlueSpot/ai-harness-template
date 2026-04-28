@@ -1,5 +1,4 @@
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js";
-import { createHotkeys } from "@tanstack/solid-hotkeys";
 import {
   createRequestId,
   type AssistantActionMessageMetadata,
@@ -32,15 +31,18 @@ import {
   persistMergedLocalPreferences,
   resolveUsablePiProviderBrand,
   shouldShowSetupChecklist,
+  type ChatPaneTab,
   type ViewProjectState
 } from "../harness-store";
 import { uploadFiles } from "../lib/uploadthing";
+import { formatShortTimestamp, resolveBrowserTimezone } from "../lib/time-format";
 import { pushToast } from "../toast-store";
 import { ActionButton } from "./action-button";
 import { CliSessionPanel } from "./cli-session-panel";
 import { MarkdownContent } from "./markdown-content";
 import { ModeEditorPanel } from "./mode-editor-panel";
 import { SetupChecklistCard } from "./setup-checklist-card";
+import { ChatComposer } from "./primitives/chat-composer";
 import { Dialog } from "./primitives/dialog";
 import { CopyTextButton } from "./primitives/copy-text-button";
 import { DropdownControl } from "./primitives/dropdown";
@@ -116,6 +118,17 @@ function getPlanFromMessage(message: ChatMessage) {
   return message.metadata?.type === "plan-summary" ? message.metadata.plan : undefined;
 }
 
+function renderMessageActionRow(timestamp: string | number | Date | undefined, copyButton: JSX.Element) {
+  return (
+    <div class="mt-3 flex items-center justify-between gap-3">
+      <div class="min-w-0 text-[0.575rem] uppercase tracking-[0.12em] text-(--muted)">
+        {formatShortTimestamp(timestamp)}
+      </div>
+      {copyButton}
+    </div>
+  );
+}
+
 type LiveHarnessMessage = {
   id: string;
   content: string;
@@ -141,8 +154,7 @@ export function ChatPanel() {
   const [countdownFrozenByExecutionPause, setCountdownFrozenByExecutionPause] = createSignal(false);
   const [elapsedNowMs, setElapsedNowMs] = createSignal(Date.now());
   const [autoExecutedRunId, setAutoExecutedRunId] = createSignal<string>();
-  const [activeTab, setActiveTab] = createSignal<"chat" | "plan" | "run" | "events" | "memory">("chat");
-  const currentTab = createMemo(activeTab);
+  const currentTab = createMemo(() => state.chatPaneTab);
   const [experimentDialogOpen, setExperimentDialogOpen] = createSignal(false);
   const [projectRulesDraft, setProjectRulesDraft] = createSignal("");
   const [threadMemoryDraft, setThreadMemoryDraft] = createSignal("");
@@ -258,17 +270,18 @@ export function ChatPanel() {
   const blockingSetupCheck = () => getBlockingSetupCheck(state);
   const visibleTabs = () =>
     [
-      { id: "chat" as const, label: "Chat", icon: <MessageSquareMore class="h-3.5 w-3.5" />, tooltip: "Open transcript and plan cards" },
-      { id: "plan" as const, label: "Plan", icon: <ClipboardList class="h-3.5 w-3.5" />, tooltip: "Open planning context and saved plan tools" },
-      { id: "run" as const, label: "Run", icon: <Play class="h-3.5 w-3.5" />, tooltip: "Open run status, subtasks, and experiment actions" },
-      { id: "memory" as const, label: "Memory", icon: <Brain class="h-3.5 w-3.5" />, tooltip: "Open shared memory entries" },
-      { id: "events" as const, label: "Events", icon: <Activity class="h-3.5 w-3.5" />, tooltip: "Open execution event history" }
-    ] as const;
+      { id: "chat", label: "Chat", icon: <MessageSquareMore class="h-3.5 w-3.5" />, tooltip: "Open transcript and plan cards" },
+      { id: "plan", label: "Plan", icon: <ClipboardList class="h-3.5 w-3.5" />, tooltip: "Open planning context and saved plan tools" },
+      { id: "run", label: "Run", icon: <Play class="h-3.5 w-3.5" />, tooltip: "Open run status, subtasks, and experiment actions" },
+      { id: "memory", label: "Memory", icon: <Brain class="h-3.5 w-3.5" />, tooltip: "Open shared memory entries" },
+      { id: "events", label: "Events", icon: <Activity class="h-3.5 w-3.5" />, tooltip: "Open execution event history" }
+    ] satisfies Array<{ id: ChatPaneTab; label: string; icon: JSX.Element; tooltip: string }>;
   const experimentRun = () => activeProject()?.activeRun?.experiment ?? activeProject()?.lastRun?.experiment;
   const liveHarnessMessages = () => {
     const project = activeProject();
     return project ? getStreamingLiveMessages(project) : [];
   };
+  const liveHarnessMessageTimestamp = () => activeProject()?.activeRun?.updatedAt ?? activeProject()?.activeRun?.createdAt;
   const visibleTranscriptMessages = createMemo(() => capLatest(activeProject()?.session.messages ?? [], CHAT_TRANSCRIPT_LIMIT, showAllTranscript()));
   const visibleRunSubtasks = createMemo(() =>
     capLatest(activeProject()?.activeRun?.subtasks ?? activeProject()?.lastRun?.subtasks ?? [], CHAT_RUN_SUBTASK_LIMIT, showAllRunSubtasks())
@@ -388,7 +401,6 @@ export function ChatPanel() {
 
     return { disabled: false, disabledReason: undefined, tooltip };
   });
-  const isComposerFocused = () => document.activeElement === composerTextarea;
   const renderModeControl = (size: "sm" | "md" = "sm", className?: string) => (
     <DropdownControl
       kind="select"
@@ -461,32 +473,6 @@ export function ChatPanel() {
         dataAttributes={{ "data-test-effort-trigger": "" }}
       />
     </Tooltip>
-  );
-
-  createHotkeys(
-    [
-      {
-        hotkey: "Enter",
-        callback: () => {
-          if (!isComposerFocused() || executionPaused()) {
-            return;
-          }
-
-          composerTextarea?.form?.requestSubmit();
-        },
-        options: {
-          preventDefault: true,
-          meta: {
-            name: "Send message",
-            description: "Submit the focused chat composer with Enter"
-          }
-        }
-      }
-    ],
-    () => ({
-      enabled: isComposerFocused(),
-      ignoreInputs: false
-    })
   );
 
   const scrollToBottom = (force: boolean = false) => {
@@ -1733,7 +1719,7 @@ export function ChatPanel() {
       name: suggestedName,
       description: "",
       scheduleInput: "",
-      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+      timezone: resolveBrowserTimezone(),
       aiPrompt: run.latestUserPrompt,
       aiModeId: activeMode()?.id,
       aiExecutionModelId: run.executionModelId ?? getEffectiveExecutionModelId(),
@@ -1757,6 +1743,21 @@ export function ChatPanel() {
     }
     if (actionKind === "open-jobs") {
       harnessStore.setActiveSurface("background-jobs");
+      return;
+    }
+    if (actionKind === "schedule-job") {
+      harnessStore.setSelectedAssistantId(metadata.assistantId);
+      harnessStore.setActiveSurface("background-jobs");
+      return;
+    }
+    if (actionKind === "retry-bootstrap") {
+      sendCommand({
+        type: "assistant.bootstrap.retry",
+        requestId: createRequestId(),
+        payload: {
+          assistantId: metadata.assistantId
+        }
+      });
       return;
     }
     if (actionKind === "pause" || actionKind === "resume") {
@@ -1830,11 +1831,13 @@ export function ChatPanel() {
                 icon={
                   action.kind === "open-jobs" || action.kind === "run-job" ? (
                     <Briefcase class="h-3.5 w-3.5" />
+                  ) : action.kind === "schedule-job" ? (
+                    <CalendarClock class="h-3.5 w-3.5" />
                   ) : action.kind === "pause" ? (
                     <Pause class="h-3.5 w-3.5" />
                   ) : action.kind === "resume" ? (
                     <Play class="h-3.5 w-3.5" />
-                  ) : action.kind === "recover" ? (
+                  ) : action.kind === "recover" || action.kind === "retry-bootstrap" ? (
                     <RefreshCcw class="h-3.5 w-3.5" />
                   ) : (
                     <Bot class="h-3.5 w-3.5" />
@@ -2060,7 +2063,7 @@ export function ChatPanel() {
                                 aria-label={`Open ${tab.label.toLowerCase()} pane`}
                                 attr:aria-pressed={pressed ? "true" : "false"}
                                 data-test-chat-pane-tab={tab.id}
-                                onClick={() => setActiveTab(tab.id)}
+                                onClick={() => harnessStore.setChatPaneTab(tab.id)}
                               >
                                 {tab.icon}
                                 <span>{tab.label}</span>
@@ -2142,7 +2145,8 @@ export function ChatPanel() {
                                   </For>
                                 </div>
                               </Show>
-                                <div class="flex justify-end">
+                                {renderMessageActionRow(
+                                  message.createdAt,
                                   <CopyTextButton
                                     value={getCopyableMessageText(message)}
                                     tooltip="Copy message"
@@ -2154,7 +2158,7 @@ export function ChatPanel() {
                                   >
                                     Copy
                                   </CopyTextButton>
-                                </div>
+                                )}
                                 </div>
                               </article>
                             }
@@ -2174,77 +2178,82 @@ export function ChatPanel() {
                                 <div>Isolation: {getPlanFromMessage(message)?.subagentWorktreeStrategy}</div>
                                 <div>Correctness: {getPlanFromMessage(message)?.correctnessPolicy}</div>
                               </div>
-                              <div class="flex flex-wrap gap-2">
-                                <ActionButton
-                                  tooltip="Open full execution plan"
-                                  icon={<Clipboard class="h-3.5 w-3.5" />}
-                                  size="sm"
-                                  variant="secondary"
-                                  onClick={() => {
-                                    const plan = getPlanFromMessage(message);
-                                    if (plan) {
-                                      harnessStore.openExecutionPlanDialog(plan);
-                                    }
-                                  }}
-                                >
-                                  Open plan
-                                </ActionButton>
-                                <ActionButton
-                                  tooltip="Promote this run into scheduled task"
-                                  icon={<CalendarClock class="h-3.5 w-3.5" />}
-                                  size="sm"
-                                  variant="secondary"
-                                  onClick={() => handlePromoteScheduledRun((message.metadata as { runId: string }).runId)}
-                                >
-                                  Schedule
-                                </ActionButton>
-                                {renderPlanRunAction((message.metadata as { runId: string }).runId)}
-                                <Show when={getPlanFromMessage(message)?.gating.mode === "approve"}>
+                              <div class="mt-3 flex items-center justify-between gap-3">
+                                <div class="min-w-0 text-[0.575rem] uppercase tracking-[0.12em] text-(--muted)">
+                                  {formatShortTimestamp(message.createdAt)}
+                                </div>
+                                <div class="flex flex-wrap justify-end gap-2">
                                   <ActionButton
-                                    tooltip="Run this plan in isolated virtual branch"
-                                    disabledReason={
-                                      getPlanRunAction((message.metadata as { runId: string }).runId).kind === "execute"
-                                        ? executionPauseReason()
-                                        : "This plan is not ready to build"
-                                    }
-                                    disabled={getPlanRunAction((message.metadata as { runId: string }).runId).kind !== "execute" || executionPaused()}
+                                    tooltip="Open full execution plan"
+                                    icon={<Clipboard class="h-3.5 w-3.5" />}
                                     size="sm"
                                     variant="secondary"
-                                    onClick={() => handleExecuteRunTarget((message.metadata as { runId: string }).runId, "ephemeral-experiment")}
+                                    onClick={() => {
+                                      const plan = getPlanFromMessage(message);
+                                      if (plan) {
+                                        harnessStore.openExecutionPlanDialog(plan);
+                                      }
+                                    }}
                                   >
-                                    Try experiment
+                                    Open plan
                                   </ActionButton>
-                                </Show>
-                                <Show when={getPlanFromMessage(message)?.gating.mode === "countdown" && readyRun()?.id === (message.metadata as { runId: string }).runId}>
                                   <ActionButton
-                                    tooltip={
-                                      executionPaused()
-                                        ? "Global pause freezes automatic execution countdown"
-                                        : countdownPaused()
-                                          ? "Resume automatic execution countdown"
-                                          : "Pause automatic execution countdown"
-                                    }
-                                    disabled={executionPaused()}
-                                    disabledReason={executionPauseReason()}
-                                    icon={countdownPaused() ? <Play class="h-3.5 w-3.5" /> : <Pause class="h-3.5 w-3.5" />}
+                                    tooltip="Promote this run into scheduled task"
+                                    icon={<CalendarClock class="h-3.5 w-3.5" />}
                                     size="sm"
                                     variant="secondary"
-                                    onClick={() => (countdownPaused() ? handleResumeAutoRun() : handlePauseAutoRun())}
+                                    onClick={() => handlePromoteScheduledRun((message.metadata as { runId: string }).runId)}
                                   >
-                                    {countdownPaused() ? "Resume auto-run" : "Pause auto-run"}
+                                    Schedule
                                   </ActionButton>
-                                </Show>
-                                <CopyTextButton
-                                  value={getCopyableMessageText(message)}
-                                  tooltip="Copy plan summary"
-                                  copiedTitle="Plan summary copied"
-                                  copiedDescription="Plan summary copied to clipboard."
-                                  size="sm"
-                                  variant="secondary"
-                                  ariaLabel="Copy plan summary"
-                                >
-                                  Copy
-                                </CopyTextButton>
+                                  {renderPlanRunAction((message.metadata as { runId: string }).runId)}
+                                  <Show when={getPlanFromMessage(message)?.gating.mode === "approve"}>
+                                    <ActionButton
+                                      tooltip="Run this plan in isolated virtual branch"
+                                      disabledReason={
+                                        getPlanRunAction((message.metadata as { runId: string }).runId).kind === "execute"
+                                          ? executionPauseReason()
+                                          : "This plan is not ready to build"
+                                      }
+                                      disabled={getPlanRunAction((message.metadata as { runId: string }).runId).kind !== "execute" || executionPaused()}
+                                      size="sm"
+                                      variant="secondary"
+                                      onClick={() => handleExecuteRunTarget((message.metadata as { runId: string }).runId, "ephemeral-experiment")}
+                                    >
+                                      Try experiment
+                                    </ActionButton>
+                                  </Show>
+                                  <Show when={getPlanFromMessage(message)?.gating.mode === "countdown" && readyRun()?.id === (message.metadata as { runId: string }).runId}>
+                                    <ActionButton
+                                      tooltip={
+                                        executionPaused()
+                                          ? "Global pause freezes automatic execution countdown"
+                                          : countdownPaused()
+                                            ? "Resume automatic execution countdown"
+                                            : "Pause automatic execution countdown"
+                                      }
+                                      disabled={executionPaused()}
+                                      disabledReason={executionPauseReason()}
+                                      icon={countdownPaused() ? <Play class="h-3.5 w-3.5" /> : <Pause class="h-3.5 w-3.5" />}
+                                      size="sm"
+                                      variant="secondary"
+                                      onClick={() => (countdownPaused() ? handleResumeAutoRun() : handlePauseAutoRun())}
+                                    >
+                                      {countdownPaused() ? "Resume auto-run" : "Pause auto-run"}
+                                    </ActionButton>
+                                  </Show>
+                                  <CopyTextButton
+                                    value={getCopyableMessageText(message)}
+                                    tooltip="Copy plan summary"
+                                    copiedTitle="Plan summary copied"
+                                    copiedDescription="Plan summary copied to clipboard."
+                                    size="sm"
+                                    variant="secondary"
+                                    ariaLabel="Copy plan summary"
+                                  >
+                                    Copy
+                                  </CopyTextButton>
+                                </div>
                               </div>
                             </article>
                           </Show>
@@ -2263,7 +2272,8 @@ export function ChatPanel() {
                               harness
                             </div>
                             <MarkdownContent content={() => message.content} size="compact" live={!message.locked && index() === liveHarnessMessages().length - 1} />
-                            <div class="flex justify-end">
+                            {renderMessageActionRow(
+                              liveHarnessMessageTimestamp(),
                               <CopyTextButton
                                 value={message.content}
                                 tooltip="Copy harness message"
@@ -2275,7 +2285,7 @@ export function ChatPanel() {
                               >
                                 Copy
                               </CopyTextButton>
-                            </div>
+                            )}
                           </article>
                         )}
                       </For>
@@ -2643,41 +2653,43 @@ export function ChatPanel() {
                   <div class="flex flex-col gap-3 rounded-3xl border border-amber-300/70 bg-amber-50/80 p-4 shadow-sm">
                     <div class="flex items-center gap-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-amber-800">
                       <MessageSquareMore class="h-3.5 w-3.5" />
-                      Planner question
+                      {question().intent?.type === "assistant-create-intent" && question().responseKind === "freeform" ? "Assistant setup" : "Planner question"}
                     </div>
                     <div class="text-[0.7875rem] leading-6 text-amber-950">{question().prompt}</div>
                     <Show when={question().placeholder}>
                       <div class="text-[0.675rem] text-amber-900/70">Example reply: {question().placeholder}</div>
                     </Show>
-                    <div class="grid gap-2 md:grid-cols-3">
-                      <For each={question().choices}>
-                        {(choice) => (
-                          <Tooltip content={executionPaused() ? executionPauseReason() : choice.description}>
-                            <span class="inline-flex">
-                              <button
-                                class={`cursor-pointer rounded-[1.1rem] border px-3 py-2 text-left text-[0.675rem] transition disabled:cursor-not-allowed ${choice.recommended
-                                  ? "border-amber-500 bg-white text-amber-950"
-                                  : "border-amber-200/80 bg-white/70 text-amber-900"
-                                  }`}
-                                type="button"
-                                disabled={executionPaused()}
-                                onClick={() => handleQuestionChoice(choice.answerText)}
-                              >
-                                <div class="flex items-center justify-between gap-2 font-semibold">
-                                  <span>{choice.label}</span>
-                                  <Show when={choice.recommended}>
-                                    <span class="rounded-full bg-amber-200 px-2 py-0.5 text-[0.55rem] uppercase tracking-[0.14em]">
-                                      Recommended
-                                    </span>
-                                  </Show>
-                                </div>
-                                <div class="text-[0.625rem] leading-5">{choice.description}</div>
-                              </button>
-                            </span>
-                          </Tooltip>
-                        )}
-                      </For>
-                    </div>
+                    <Show when={question().responseKind !== "freeform"}>
+                      <div class="grid gap-2 md:grid-cols-3">
+                        <For each={question().choices ?? []}>
+                          {(choice) => (
+                            <Tooltip content={executionPaused() ? executionPauseReason() : choice.description}>
+                              <span class="inline-flex">
+                                <button
+                                  class={`cursor-pointer rounded-[1.1rem] border px-3 py-2 text-left text-[0.675rem] transition disabled:cursor-not-allowed ${choice.recommended
+                                    ? "border-amber-500 bg-white text-amber-950"
+                                    : "border-amber-200/80 bg-white/70 text-amber-900"
+                                    }`}
+                                  type="button"
+                                  disabled={executionPaused()}
+                                  onClick={() => handleQuestionChoice(choice.answerText)}
+                                >
+                                  <div class="flex items-center justify-between gap-2 font-semibold">
+                                    <span>{choice.label}</span>
+                                    <Show when={choice.recommended}>
+                                      <span class="rounded-full bg-amber-200 px-2 py-0.5 text-[0.55rem] uppercase tracking-[0.14em]">
+                                        Recommended
+                                      </span>
+                                    </Show>
+                                  </div>
+                                  <div class="text-[0.625rem] leading-5">{choice.description}</div>
+                                </button>
+                              </span>
+                            </Tooltip>
+                          )}
+                        </For>
+                      </div>
+                    </Show>
                     <Show when={executionPaused()}>
                       <div class="text-[0.625rem] text-amber-900/75">
                         Global pause active. Send answer after resume.
@@ -2731,109 +2743,107 @@ export function ChatPanel() {
                 )}
               </Show>
 
-              <div class="relative" data-tour-id="chat-composer">
-                <Textarea
-                  ref={composerTextarea}
-                  rows="2"
-                  value={project().draft}
-                  placeholder={getComposerPlaceholder()}
-                  disabled={executionPaused()}
-                  class="w-full resize-none rounded-xl pb-12 pr-14"
-                  onKeyDown={(event) => {
-                    if (event.key !== "Enter" || event.shiftKey) {
-                      return;
-                    }
-
-                    event.preventDefault();
-                    composerTextarea?.form?.requestSubmit();
-                  }}
-                  onInput={(event: InputEvent & { currentTarget: HTMLTextAreaElement; target: Element }) => {
-                    harnessStore.setProjectDraft(project().id, event.currentTarget.value);
-                    resizeComposer();
-                  }}
-                />
-                <div class="pointer-events-none absolute bottom-2 right-2 flex items-center gap-1.5">
-                  <ActionButton
-                    tooltip="Attach screenshots, PDFs, or office docs"
-                    disabledReason={executionPaused() ? executionPauseReason() : attachmentButtonReason()}
-                    disabled={executionPaused() || attachmentButtonDisabled()}
-                    icon={<Paperclip class="h-4 w-4" />}
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    class="pointer-events-auto h-8 w-8 rounded-lg"
-                    onClick={() => attachmentInput?.click()}
-                  />
-                  <ActionButton
-                    tooltip={composerSubmitState().tooltip}
-                    disabledReason={composerSubmitState().disabledReason}
-                    disabled={composerSubmitState().disabled}
-                    icon={<SendHorizontal class="h-4 w-4" />}
-                    type="submit"
-                    variant="ghost"
-                    size="icon"
-                    class="pointer-events-auto h-8 w-8 rounded-lg"
-                    dataTourId="chat-send"
-                  />
-                </div>
-                <div class="absolute bottom-2 left-2">
-                  <div data-test-composer-control-row="" class="hidden flex-wrap items-center gap-1 lg:flex">
-                    {renderModeControl()}
-                    {renderAgentControl()}
-                    {renderProviderControl()}
-                    {renderModelControl()}
-                    <Popover
-                      open={desktopReasoningMenuOpen()}
-                      onClose={() => setDesktopReasoningMenuOpen(false)}
-                      align="start"
-                      side="top"
-                      contentClass="p-1.5"
-                      content={renderComposerControlMenu()}
-                    >
-                      {renderEffortControl(() => setDesktopReasoningMenuOpen((current) => !current))}
-                    </Popover>
-                  </div>
-                  <div class="flex items-center gap-2">
-                    <Popover
-                      open={mobileReasoningMenuOpen()}
-                      onClose={() => setMobileReasoningMenuOpen(false)}
-                      align="start"
-                      side="top"
-                      contentClass="p-1.5"
-                      content={renderComposerControlMenu()}
-                    >
-                      {renderEffortControl(() => setMobileReasoningMenuOpen((current) => !current), "lg:hidden")}
-                    </Popover>
-                    <div class="lg:hidden">
+              <ChatComposer
+                dataTourId="chat-composer"
+                textareaRef={(element) => {
+                  composerTextarea = element;
+                }}
+                rows="2"
+                value={project().draft}
+                placeholder={getComposerPlaceholder()}
+                disabled={executionPaused()}
+                disabledReason={executionPauseReason()}
+                onSubmit={() => composerTextarea?.form?.requestSubmit()}
+                onInput={(value) => {
+                  harnessStore.setProjectDraft(project().id, value);
+                  resizeComposer();
+                }}
+                rightActions={
+                  <>
+                    <ActionButton
+                      tooltip="Attach screenshots, PDFs, or office docs"
+                      disabledReason={executionPaused() ? executionPauseReason() : attachmentButtonReason()}
+                      disabled={executionPaused() || attachmentButtonDisabled()}
+                      icon={<Paperclip class="h-4 w-4" />}
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      class="pointer-events-auto h-8 w-8 rounded-lg"
+                      onClick={() => attachmentInput?.click()}
+                    />
+                    <ActionButton
+                      tooltip={composerSubmitState().tooltip}
+                      disabledReason={composerSubmitState().disabledReason}
+                      disabled={composerSubmitState().disabled}
+                      icon={<SendHorizontal class="h-4 w-4" />}
+                      type="submit"
+                      variant="ghost"
+                      size="icon"
+                      class="pointer-events-auto h-8 w-8 rounded-lg"
+                      dataTourId="chat-send"
+                    />
+                  </>
+                }
+                leftControls={
+                  <>
+                    <div data-test-composer-control-row="" class="hidden flex-wrap items-center gap-1 lg:flex">
+                      {renderModeControl()}
+                      {renderAgentControl()}
+                      {renderProviderControl()}
+                      {renderModelControl()}
                       <Popover
-                        open={composerSettingsOpen()}
-                        onClose={() => setComposerSettingsOpen(false)}
+                        open={desktopReasoningMenuOpen()}
+                        onClose={() => setDesktopReasoningMenuOpen(false)}
                         align="start"
                         side="top"
-                        contentClass="w-[min(18rem,calc(100vw-1.5rem))] p-2"
-                        content={
-                          <div class="flex flex-col gap-2">
-                            {renderModeControl("md", "w-full")}
-                            {renderAgentControl("md", "w-full")}
-                            {renderProviderControl("md", "w-full")}
-                            {renderModelControl("md", "w-full")}
-                          </div>
-                        }
+                        contentClass="p-1.5"
+                        content={renderComposerControlMenu()}
                       >
-                        <ActionButton
-                          tooltip="Open composer settings"
-                          icon={<Settings2 class="h-4 w-4" />}
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          class="h-7 w-7 rounded-lg"
-                          onClick={() => setComposerSettingsOpen((current) => !current)}
-                        />
+                        {renderEffortControl(() => setDesktopReasoningMenuOpen((current) => !current))}
                       </Popover>
                     </div>
-                  </div>
-                </div>
-              </div>
+                    <div class="flex items-center gap-2">
+                      <Popover
+                        open={mobileReasoningMenuOpen()}
+                        onClose={() => setMobileReasoningMenuOpen(false)}
+                        align="start"
+                        side="top"
+                        contentClass="p-1.5"
+                        content={renderComposerControlMenu()}
+                      >
+                        {renderEffortControl(() => setMobileReasoningMenuOpen((current) => !current), "lg:hidden")}
+                      </Popover>
+                      <div class="lg:hidden">
+                        <Popover
+                          open={composerSettingsOpen()}
+                          onClose={() => setComposerSettingsOpen(false)}
+                          align="start"
+                          side="top"
+                          contentClass="w-[min(18rem,calc(100vw-1.5rem))] p-2"
+                          content={
+                            <div class="flex flex-col gap-2">
+                              {renderModeControl("md", "w-full")}
+                              {renderAgentControl("md", "w-full")}
+                              {renderProviderControl("md", "w-full")}
+                              {renderModelControl("md", "w-full")}
+                            </div>
+                          }
+                        >
+                          <ActionButton
+                            tooltip="Open composer settings"
+                            icon={<Settings2 class="h-4 w-4" />}
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            class="h-7 w-7 rounded-lg"
+                            onClick={() => setComposerSettingsOpen((current) => !current)}
+                          />
+                        </Popover>
+                      </div>
+                    </div>
+                  </>
+                }
+              />
               <input
                 ref={attachmentInput}
                 class="hidden"
@@ -3104,10 +3114,6 @@ function formatElapsedDuration(elapsedMs: number) {
 }
 
 function formatResponseTime(timestampMs: number) {
-  return new Date(timestampMs).toLocaleTimeString(undefined, {
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit"
-  });
+  return formatShortTimestamp(timestampMs);
 }
 

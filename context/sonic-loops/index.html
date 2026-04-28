@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <title>Sonic Loop-the-Loop Physics</title>
+    <meta
+      name="description"
+      content="A standalone momentum platformer shell with loops, rings, hazards, and speed-first HUD feedback."
+    />
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <main id="app" class="shell" data-state="menu">
+      <canvas id="game-canvas" class="shell__canvas" width="1280" height="720" role="img" aria-label="Sonic loop-the-loop physics scene"></canvas>
+
+      <section id="menu-screen" class="overlay overlay--menu" aria-labelledby="menu-title">
+        <div class="panel panel--hero">
+          <p class="eyebrow">momentum platformer</p>
+          <h1 id="menu-title">Sonic Loop-the-Loop Physics</h1>
+          <p class="lede">
+            Build speed, hold the curve, and keep your rings through the loop line. The shell stays standalone and
+            browser-playable.
+          </p>
+          <div class="actions">
+            <button id="start-button" class="button button--primary" type="button">Start Run</button>
+            <button id="restart-button" class="button button--ghost" type="button">Restart</button>
+          </div>
+          <dl class="controls" aria-label="Controls">
+            <div><dt>Move</dt><dd>Arrow keys or WASD</dd></div>
+            <div><dt>Jump</dt><dd>Space or Up</dd></div>
+            <div><dt>Restart</dt><dd>R or button</dd></div>
+          </dl>
+        </div>
+      </section>
+
+      <section id="hud" class="overlay overlay--hud" aria-label="Run HUD">
+        <div class="hud">
+          <div class="hud__brand">
+            <p class="eyebrow">sonic loop drive</p>
+            <h2>Loop pressure</h2>
+          </div>
+          <div class="hud__stats">
+            <div class="stat"><span>State</span><strong id="state-value">Menu</strong></div>
+            <div class="stat"><span>Rings</span><strong id="rings-value">0 / 0</strong></div>
+            <div class="stat"><span>Speed</span><strong id="speed-value">0</strong></div>
+            <div class="stat"><span>Timer</span><strong id="timer-value">0.0s</strong></div>
+            <div class="stat"><span>Health</span><strong id="health-value">3</strong></div>
+            <div class="stat stat--wide"><span>Status</span><strong id="status-value">Ready</strong></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="result-screen" class="overlay overlay--result" aria-labelledby="result-title" aria-hidden="true">
+        <div class="panel panel--result">
+          <p id="result-eyebrow" class="eyebrow">run result</p>
+          <h2 id="result-title">Run complete.</h2>
+          <p id="result-copy" class="lede">Press restart to run it back.</p>
+          <div class="actions">
+            <button id="result-restart-button" class="button button--primary" type="button">Restart Run</button>
+          </div>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

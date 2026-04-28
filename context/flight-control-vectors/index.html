@@ -1,0 +1,640 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Flight Control Vector Stack</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0b1522;
+        --panel: rgba(9, 20, 33, 0.88);
+        --line: rgba(255, 255, 255, 0.1);
+        --text: #eff7ff;
+        --muted: #98aeca;
+        --cyan: #67e8f9;
+        --amber: #fbbf24;
+        --rose: #fb7185;
+        --mint: #86efac;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+        color: var(--text);
+        background:
+          radial-gradient(circle at top, rgba(103, 232, 249, 0.12), transparent 32%),
+          linear-gradient(180deg, #08111c 0%, #13253c 48%, #050b14 100%);
+        display: grid;
+        place-items: center;
+      }
+
+      main {
+        width: min(100vw, 980px);
+        padding: 16px;
+      }
+
+      .frame {
+        position: relative;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        overflow: hidden;
+        box-shadow: 0 24px 70px rgba(0, 0, 0, 0.45);
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0)),
+          #08131f;
+      }
+
+      canvas {
+        display: block;
+        width: 100%;
+        height: auto;
+        background:
+          radial-gradient(circle at 50% 25%, rgba(134, 239, 172, 0.07), transparent 35%),
+          linear-gradient(180deg, #153356 0%, #0d1f34 55%, #09131e 100%);
+      }
+
+      .hud {
+        position: absolute;
+        inset: 14px 14px auto 14px;
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        pointer-events: none;
+      }
+
+      .panel {
+        padding: 10px 14px;
+        border-radius: 14px;
+        border: 1px solid var(--line);
+        background: var(--panel);
+        backdrop-filter: blur(8px);
+      }
+
+      .panel strong {
+        display: block;
+        font-size: 12px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-bottom: 4px;
+      }
+
+      .panel span {
+        font-size: 22px;
+        font-weight: 700;
+      }
+
+      .legend {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+
+      .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 999px;
+        display: inline-block;
+        margin-right: 6px;
+      }
+
+      .banner {
+        position: absolute;
+        left: 14px;
+        right: 14px;
+        bottom: 14px;
+        padding: 12px 14px;
+        border-radius: 14px;
+        border: 1px solid var(--line);
+        background: rgba(7, 15, 24, 0.84);
+        font-size: 14px;
+        color: var(--muted);
+      }
+
+      .banner strong {
+        color: var(--text);
+        margin-right: 8px;
+      }
+
+      @media (max-width: 700px) {
+        .hud {
+          flex-direction: column;
+          align-items: stretch;
+        }
+
+        .panel span {
+          font-size: 18px;
+        }
+
+        .banner {
+          font-size: 13px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="frame">
+        <canvas id="game" width="960" height="640" aria-label="Flight Control Vector Stack"></canvas>
+        <div class="hud">
+          <div class="panel">
+            <strong>Traffic</strong>
+            <span id="traffic">0 score / 3 strikes</span>
+          </div>
+          <div class="panel legend">
+            <div><span class="dot" style="background:#67e8f9"></span>Cyan runway</div>
+            <div><span class="dot" style="background:#fbbf24"></span>Amber runway</div>
+            <div><span class="dot" style="background:#fb7185"></span>Rose runway</div>
+          </div>
+        </div>
+        <div class="banner"><strong>Draw paths.</strong>Select a plane, drag a route, and end on the runway that matches its color. Keep aircraft separated.</div>
+      </section>
+    </main>
+    <script type="module">
+      const canvas = document.getElementById("game");
+      const ctx = canvas.getContext("2d");
+      const trafficEl = document.getElementById("traffic");
+
+      const world = { width: canvas.width, height: canvas.height };
+      const colors = {
+        cyan: "#67e8f9",
+        amber: "#fbbf24",
+        rose: "#fb7185",
+        grid: "rgba(255,255,255,0.08)",
+        text: "#eff7ff",
+        muted: "#98aeca",
+      };
+
+      const runways = [
+        { x: 204, y: 506, angle: -0.48, color: "cyan", label: "C1" },
+        { x: 480, y: 336, angle: 0.1, color: "amber", label: "A2" },
+        { x: 770, y: 212, angle: 0.64, color: "rose", label: "R3" },
+      ];
+
+      const state = {
+        phase: "menu",
+        score: 0,
+        strikes: 0,
+        time: 0,
+        spawnClock: 0,
+        spawnDelay: 2.7,
+        activePlane: null,
+        drawing: false,
+        pointer: { x: 0, y: 0, down: false },
+        planes: [],
+        particles: [],
+        promptsSeen: {
+          select: false,
+          runway: false,
+          danger: false,
+        },
+      };
+
+      function resetGame() {
+        state.phase = "play";
+        state.score = 0;
+        state.strikes = 0;
+        state.time = 0;
+        state.spawnClock = 0;
+        state.spawnDelay = 2.7;
+        state.activePlane = null;
+        state.drawing = false;
+        state.planes = [];
+        state.particles = [];
+        state.promptsSeen = { select: false, runway: false, danger: false };
+        spawnPlane();
+        spawnPlane();
+      }
+
+      function rand(min, max) {
+        return min + Math.random() * (max - min);
+      }
+
+      function pick(list) {
+        return list[Math.floor(Math.random() * list.length)];
+      }
+
+      function spawnPlane() {
+        const side = Math.floor(Math.random() * 4);
+        const runway = pick(runways);
+        const speed = rand(48, 68) + state.score * 0.7;
+        let x = 0;
+        let y = 0;
+        let vx = 0;
+        let vy = 0;
+        if (side === 0) {
+          x = -40;
+          y = rand(80, world.height - 80);
+          vx = 1;
+          vy = rand(-0.4, 0.4);
+        } else if (side === 1) {
+          x = world.width + 40;
+          y = rand(80, world.height - 80);
+          vx = -1;
+          vy = rand(-0.4, 0.4);
+        } else if (side === 2) {
+          x = rand(80, world.width - 80);
+          y = -40;
+          vx = rand(-0.5, 0.5);
+          vy = 1;
+        } else {
+          x = rand(80, world.width - 80);
+          y = world.height + 40;
+          vx = rand(-0.5, 0.5);
+          vy = -1;
+        }
+        const mag = Math.hypot(vx, vy) || 1;
+        vx /= mag;
+        vy /= mag;
+
+        state.planes.push({
+          id: crypto.randomUUID(),
+          x,
+          y,
+          vx,
+          vy,
+          speed,
+          targetRunway: runway.color,
+          targetLabel: runway.label,
+          altitude: rand(2200, 4100),
+          selected: false,
+          path: [],
+          radius: 12,
+          warnTimer: 0,
+        });
+      }
+
+      function setPointer(event) {
+        const rect = canvas.getBoundingClientRect();
+        state.pointer.x = ((event.clientX - rect.left) / rect.width) * world.width;
+        state.pointer.y = ((event.clientY - rect.top) / rect.height) * world.height;
+      }
+
+      function planeAt(x, y) {
+        return state.planes.find((plane) => Math.hypot(plane.x - x, plane.y - y) <= plane.radius + 8);
+      }
+
+      function waypointFromPointer() {
+        return { x: state.pointer.x, y: state.pointer.y };
+      }
+
+      canvas.addEventListener("pointerdown", (event) => {
+        setPointer(event);
+        state.pointer.down = true;
+        if (state.phase !== "play") {
+          resetGame();
+          return;
+        }
+
+        const plane = planeAt(state.pointer.x, state.pointer.y);
+        state.planes.forEach((item) => {
+          item.selected = false;
+        });
+        state.activePlane = plane || null;
+        if (plane) {
+          plane.selected = true;
+          plane.path = [{ x: plane.x, y: plane.y }];
+          state.drawing = true;
+          state.promptsSeen.select = true;
+        }
+      });
+
+      canvas.addEventListener("pointermove", (event) => {
+        setPointer(event);
+        if (!state.drawing || !state.activePlane) return;
+        const path = state.activePlane.path;
+        const point = waypointFromPointer();
+        const last = path[path.length - 1];
+        if (!last || Math.hypot(last.x - point.x, last.y - point.y) > 18) {
+          path.push(point);
+        }
+      });
+
+      canvas.addEventListener("pointerup", (event) => {
+        setPointer(event);
+        state.pointer.down = false;
+        if (!state.drawing || !state.activePlane) return;
+        state.activePlane.path.push(waypointFromPointer());
+        state.drawing = false;
+      });
+
+      canvas.addEventListener("pointerleave", () => {
+        state.pointer.down = false;
+        state.drawing = false;
+      });
+
+      function update(dt) {
+        if (state.phase !== "play") return;
+
+        state.time += dt;
+        state.spawnClock += dt;
+        if (state.spawnClock >= state.spawnDelay) {
+          state.spawnClock = 0;
+          state.spawnDelay = Math.max(1.1, 2.7 - state.score * 0.03);
+          spawnPlane();
+        }
+
+        for (const plane of state.planes) {
+          plane.warnTimer = Math.max(0, plane.warnTimer - dt);
+
+          const waypoint = plane.path[0];
+          if (waypoint) {
+            const dx = waypoint.x - plane.x;
+            const dy = waypoint.y - plane.y;
+            const dist = Math.hypot(dx, dy);
+            if (dist < 14) {
+              plane.path.shift();
+            } else {
+              plane.vx = dx / dist;
+              plane.vy = dy / dist;
+            }
+          }
+
+          plane.x += plane.vx * plane.speed * dt;
+          plane.y += plane.vy * plane.speed * dt;
+          plane.altitude = Math.max(0, plane.altitude - dt * 180);
+
+          const runway = runways.find((item) => item.color === plane.targetRunway);
+          const runwayDistance = Math.hypot(plane.x - runway.x, plane.y - runway.y);
+          if (runwayDistance < 34 && plane.altitude < 550) {
+            if (plane.path.length > 0 || Math.abs(Math.atan2(plane.vy, plane.vx) - runway.angle) < 0.95) {
+              plane.landed = true;
+              state.score += 1;
+              burst(plane.x, plane.y, colors[plane.targetRunway]);
+              if (!state.promptsSeen.runway) state.promptsSeen.runway = true;
+            }
+          }
+
+          if (
+            plane.x < -120 ||
+            plane.x > world.width + 120 ||
+            plane.y < -120 ||
+            plane.y > world.height + 120
+          ) {
+            plane.missed = true;
+          }
+        }
+
+        for (let i = 0; i < state.planes.length; i += 1) {
+          const a = state.planes[i];
+          for (let j = i + 1; j < state.planes.length; j += 1) {
+            const b = state.planes[j];
+            const dist = Math.hypot(a.x - b.x, a.y - b.y);
+            if (dist < 74) {
+              a.warnTimer = 0.18;
+              b.warnTimer = 0.18;
+              if (!state.promptsSeen.danger) state.promptsSeen.danger = true;
+            }
+            if (dist < a.radius + b.radius + 4) {
+              a.crashed = true;
+              b.crashed = true;
+              crash(a, b);
+            }
+          }
+        }
+
+        const missedCount = state.planes.filter((plane) => plane.missed).length;
+        if (missedCount > 0) {
+          state.strikes += missedCount;
+        }
+
+        const before = state.planes.length;
+        state.planes = state.planes.filter((plane) => !plane.landed && !plane.crashed && !plane.missed);
+        const removed = before - state.planes.length;
+
+        for (let i = state.particles.length - 1; i >= 0; i -= 1) {
+          const particle = state.particles[i];
+          particle.life -= dt;
+          particle.x += particle.vx * dt;
+          particle.y += particle.vy * dt;
+          if (particle.life <= 0) state.particles.splice(i, 1);
+        }
+
+        if (removed > 0) {
+          if (state.activePlane && !state.planes.includes(state.activePlane)) {
+            state.activePlane = null;
+            state.drawing = false;
+          }
+          for (const plane of state.planes) {
+            plane.selected = plane === state.activePlane;
+          }
+        }
+
+        if (state.strikes >= 3) {
+          state.phase = "lose";
+        }
+
+        trafficEl.textContent = `${state.score} score / ${Math.max(0, 3 - state.strikes)} strikes left`;
+      }
+
+      function crash(a, b) {
+        burst((a.x + b.x) * 0.5, (a.y + b.y) * 0.5, "#ffffff");
+        state.strikes += 1;
+        if (a === state.activePlane || b === state.activePlane) {
+          state.activePlane = null;
+          state.drawing = false;
+        }
+      }
+
+      function burst(x, y, color) {
+        for (let i = 0; i < 18; i += 1) {
+          const angle = (Math.PI * 2 * i) / 18 + Math.random() * 0.3;
+          const speed = rand(25, 120);
+          state.particles.push({
+            x,
+            y,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            life: rand(0.25, 0.7),
+            color,
+          });
+        }
+      }
+
+      function drawGrid() {
+        ctx.save();
+        ctx.strokeStyle = colors.grid;
+        ctx.lineWidth = 1;
+        for (let x = 40; x < world.width; x += 40) {
+          ctx.beginPath();
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, world.height);
+          ctx.stroke();
+        }
+        for (let y = 40; y < world.height; y += 40) {
+          ctx.beginPath();
+          ctx.moveTo(0, y);
+          ctx.lineTo(world.width, y);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      function drawRunways() {
+        for (const runway of runways) {
+          ctx.save();
+          ctx.translate(runway.x, runway.y);
+          ctx.rotate(runway.angle);
+          ctx.fillStyle = "rgba(231,240,255,0.86)";
+          ctx.fillRect(-54, -10, 108, 20);
+          ctx.fillStyle = colors[runway.color];
+          ctx.fillRect(-54, -14, 108, 5);
+          ctx.fillStyle = "rgba(9,20,33,0.92)";
+          ctx.fillRect(-4, -10, 8, 20);
+          ctx.restore();
+
+          ctx.fillStyle = colors[runway.color];
+          ctx.font = "bold 15px Trebuchet MS";
+          ctx.fillText(runway.label, runway.x - 14, runway.y - 22);
+        }
+      }
+
+      function drawPath(plane) {
+        if (!plane.path.length) return;
+        ctx.save();
+        ctx.strokeStyle = colors[plane.targetRunway];
+        ctx.lineWidth = plane.selected ? 3 : 2;
+        ctx.setLineDash([8, 7]);
+        ctx.beginPath();
+        ctx.moveTo(plane.x, plane.y);
+        for (const point of plane.path) {
+          ctx.lineTo(point.x, point.y);
+        }
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      function drawPlane(plane) {
+        const angle = Math.atan2(plane.vy, plane.vx);
+        ctx.save();
+        ctx.translate(plane.x, plane.y);
+        ctx.rotate(angle);
+
+        if (plane.warnTimer > 0) {
+          ctx.fillStyle = "rgba(251, 113, 133, 0.2)";
+          ctx.beginPath();
+          ctx.arc(0, 0, 28, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        ctx.fillStyle = colors[plane.targetRunway];
+        ctx.beginPath();
+        ctx.moveTo(16, 0);
+        ctx.lineTo(-10, -8);
+        ctx.lineTo(-3, 0);
+        ctx.lineTo(-10, 8);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.strokeStyle = plane.selected ? "#ffffff" : "rgba(255,255,255,0.45)";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.restore();
+
+        ctx.fillStyle = "rgba(7,15,24,0.88)";
+        ctx.fillRect(plane.x - 18, plane.y + 14, 36, 18);
+        ctx.fillStyle = colors.text;
+        ctx.font = "12px Trebuchet MS";
+        ctx.fillText(plane.targetLabel, plane.x - 11, plane.y + 27);
+      }
+
+      function drawParticles() {
+        for (const particle of state.particles) {
+          ctx.globalAlpha = Math.max(0, particle.life / 0.7);
+          ctx.fillStyle = particle.color;
+          ctx.fillRect(particle.x, particle.y, 3, 3);
+        }
+        ctx.globalAlpha = 1;
+      }
+
+      function drawPrompts() {
+        const firstPlane = state.planes[0];
+        if (!state.promptsSeen.select && firstPlane) {
+          bubble(firstPlane.x + 24, firstPlane.y - 44, "Click a plane to start routing.");
+        }
+
+        const selected = state.activePlane;
+        if (selected && !state.promptsSeen.runway) {
+          const runway = runways.find((item) => item.color === selected.targetRunway);
+          bubble(runway.x + 36, runway.y - 44, "Finish the route on this matching runway.");
+        }
+
+        if (state.promptsSeen.danger) {
+          const danger = state.planes.find((plane) => plane.warnTimer > 0);
+          if (danger) bubble(danger.x + 28, danger.y - 36, "Tight spacing. Pull one route away now.");
+        }
+      }
+
+      function bubble(x, y, text) {
+        const padding = 10;
+        ctx.font = "14px Trebuchet MS";
+        const width = ctx.measureText(text).width + padding * 2;
+        ctx.fillStyle = "rgba(7,15,24,0.94)";
+        ctx.strokeStyle = "rgba(255,255,255,0.12)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.roundRect(x, y, width, 34, 10);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = colors.text;
+        ctx.fillText(text, x + padding, y + 22);
+      }
+
+      function drawOverlay() {
+        if (state.phase === "play") return;
+
+        ctx.fillStyle = "rgba(2, 6, 12, 0.56)";
+        ctx.fillRect(0, 0, world.width, world.height);
+
+        ctx.fillStyle = colors.text;
+        ctx.textAlign = "center";
+        ctx.font = "700 44px Trebuchet MS";
+        ctx.fillText(
+          state.phase === "menu" ? "Flight Control Vector Stack" : "Airspace Lost",
+          world.width / 2,
+          220
+        );
+
+        ctx.font = "20px Trebuchet MS";
+        if (state.phase === "menu") {
+          ctx.fillText("Draw safe approach paths and land matching aircraft.", world.width / 2, 272);
+          ctx.fillText("Press or tap anywhere to open the shift.", world.width / 2, 308);
+        } else {
+          ctx.fillText(`Final score: ${state.score}`, world.width / 2, 272);
+          ctx.fillText("Press or tap to run the next tower shift.", world.width / 2, 308);
+        }
+        ctx.textAlign = "left";
+      }
+
+      function render() {
+        ctx.clearRect(0, 0, world.width, world.height);
+        drawGrid();
+        drawRunways();
+        for (const plane of state.planes) drawPath(plane);
+        for (const plane of state.planes) drawPlane(plane);
+        drawParticles();
+        if (state.phase === "play") drawPrompts();
+        drawOverlay();
+      }
+
+      let last = performance.now();
+      function frame(now) {
+        const dt = Math.min(0.033, (now - last) / 1000);
+        last = now;
+        update(dt);
+        render();
+        requestAnimationFrame(frame);
+      }
+
+      trafficEl.textContent = "0 score / 3 strikes";
+      requestAnimationFrame(frame);
+    </script>
+  </body>
+</html>

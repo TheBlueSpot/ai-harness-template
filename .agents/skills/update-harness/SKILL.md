@@ -91,6 +91,7 @@ Apply when work touches harness behavior, defaults, protocol shape, runtime wiri
 - Icon-only list actions must use icons plus accessible labels.
 - Prefer `gap-*` for layout spacing. Margin utilities are only for small correctness offsets that cannot be expressed cleanly with container gap or padding.
 - Surface caught UI and command errors through toast notifications.
+- Textareas that submit user-authored chat or answers should use Enter to send and Shift+Enter to insert a newline, unless the local surface has a clearly documented conflicting convention.
 
 ## Testing Preferences
 

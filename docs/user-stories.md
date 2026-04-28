@@ -233,7 +233,7 @@ US-MODES-007: As a developer, I see the UI send typed project and chat commands 
 
 ### ASSISTANTS
 
-US-ASSISTANTS-001: As a user, I use local assistant operators with named personas, role prompts, project or global scope, chat-addressable actions from project chat, assistant-owned background job creation, pause and resume controls, chat, todo lists, learnings, open questions, clone-to-project flow, and high-level plus deep-debug logs. (README L24)
+US-ASSISTANTS-001: As a user, I use local assistant operators with named personas, role prompts, project or global scope, synced routing defaults, chat-addressable actions from project chat, assistant-owned background job creation, pause and resume controls, chat, todo lists, learnings, open questions, clone-to-project flow, and high-level plus deep-debug logs. (README L24)
 
 US-ASSISTANTS-002: As a user, I get a dedicated Assistants surface that keeps assistant chat, todos, questions, learnings, logs, and assistant-owned jobs inspectable outside normal project chat. (README L103)
 
@@ -241,11 +241,13 @@ US-ASSISTANTS-003: As a developer, I see assistant state persist locally in SQLi
 
 US-ASSISTANTS-004: As a user, I see assistant-owned jobs share the same scheduler path while assistant circuit breakers can auto-pause failing assistants and surface blocking questions for user intervention. (README L179)
 
+US-ASSISTANTS-005: As a user, assistant operators make reasonable assumptions, suppress duplicate or already-answered questions, and keep working on useful async tasks unless a high-confidence blocker truly needs my input.
+
 ### JOBS
 
 US-JOBS-001: As a user, I use local scheduled tasks and background jobs with durable SQLite history, startup catch-up, approval policy defaults, hidden automation threads, and a dedicated inbox surface. (README L22)
 
-US-JOBS-002: As a user, I open a dedicated Background jobs surface that keeps scheduled work, approval-needed runs, failures, and concise execution milestones out of normal project chat threads. (README L102)
+US-JOBS-002: As a user, I use the Jobs tab to inspect scheduled work, approval-needed runs, failures, and concise execution milestones outside normal project chat threads. (README L102)
 
 US-JOBS-003: As a user, I see background AI runs that need clarification pause in awaiting-user-input instead of failing and surface their prompts through the shared inbox flow. (README L177)
 
@@ -295,7 +297,7 @@ US-UI-004: As a user, I see lucide-solid icons across project actions and worksp
 
 US-UI-005: As a user, I see tooltips render through a body-level portal so that panel overflow does not clip them. (README L96)
 
-US-UI-006: As a user, I see center surface tabs keep Project chat, Assistants, and Background jobs above the main panel shell so that navigation stays tied to active work area. (README L98)
+US-UI-006: As a user, I use left workspace tabs for Projects, Assistants, and Jobs so the selected tab controls both left list content and center detail content. (README L98)
 
 US-UI-007: As a user, I see project chat keep transcript first and expose plan, run, memory, and events through a compact local pane strip instead of a larger cockpit card. (README L99)
 

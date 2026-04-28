@@ -1,6 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal, type JSX } from "solid-js";
 import {
   Bot,
+  Check,
   CircleAlert,
   CirclePause,
   CircleHelp,
@@ -26,8 +27,13 @@ import {
   type AssistantQuestion,
   type AssistantTodo
 } from "../../../shared/protocol";
+import { getAssistantQuestionDefaultChoices } from "../assistant-question-defaults";
+import { formatShortTimestamp, resolveBrowserTimezone } from "../lib/time-format";
+import { cn } from "../lib/utils";
+import { submitOnEnter } from "../textarea-submit";
 import {
   type AssistantEditorDraft,
+  type AssistantDetailTab,
   type BackgroundJobEditorDraft,
   getSelectedAssistant,
   getVisibleAssistants,
@@ -37,15 +43,14 @@ import { pushToast } from "../toast-store";
 import { ActionButton } from "./action-button";
 import { MarkdownContent } from "./markdown-content";
 import { buttonVariants } from "./primitives/button";
+import { ChatComposer } from "./primitives/chat-composer";
 import { CopyTextButton } from "./primitives/copy-text-button";
 import { Dialog } from "./primitives/dialog";
+import { ExecutionLog } from "./primitives/execution-log";
 import { DropdownControl } from "./primitives/dropdown";
 import { ScrollArea } from "./primitives/scroll-area";
 import { Textarea } from "./primitives/textarea";
 import { Tooltip } from "./primitives/tooltip";
-import { cn } from "../lib/utils";
-
-type AssistantTab = "chat" | "todos" | "questions" | "jobs" | "log" | "config" | "learnings";
 
 const assistantTodoStateOptions = [
   { value: "pending", label: "pending", description: "Queued but not started yet." },
@@ -56,17 +61,30 @@ const assistantTodoStateOptions = [
   { value: "cancelled", label: "cancelled", description: "Work was intentionally stopped." }
 ] satisfies Array<{ value: AssistantTodo["state"]; label: string; description: string }>;
 
+function renderMessageActionRow(timestamp: string | number | Date | undefined, copyButton: JSX.Element) {
+  return (
+    <div class="mt-3 flex items-center justify-between gap-3">
+      <div class="min-w-0 text-[0.575rem] uppercase tracking-[0.12em] text-(--muted)">
+        {formatShortTimestamp(timestamp)}
+      </div>
+      {copyButton}
+    </div>
+  );
+}
+
 type AssistantsPanelProps = {
   initialCircuitBreakerAssistantId?: string;
+  variant?: "full" | "roster" | "detail";
 };
 
 export function AssistantsPanel(props: AssistantsPanelProps = {}) {
+  let assistantChatTextarea: HTMLTextAreaElement | undefined;
   const state = harnessStore.state;
   const sendCommand = harnessStore.actions.sendCommand;
-  const [activeTab, setActiveTab] = createSignal<AssistantTab>("chat");
+  const activeTab = createMemo(() => state.assistants.selectedTab);
   const [chatDraft, setChatDraft] = createSignal("");
+  const [assistantStreamingStartedAtByAssistantId, setAssistantStreamingStartedAtByAssistantId] = createSignal<Record<string, string>>({});
   const [newTodoTitle, setNewTodoTitle] = createSignal("");
-  const [expandedLogId, setExpandedLogId] = createSignal<string>();
   const [selectedCircuitBreakerAssistantId, setSelectedCircuitBreakerAssistantId] = createSignal<string | undefined>(
     props.initialCircuitBreakerAssistantId
   );
@@ -95,6 +113,16 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
     [...state.assistants.logs]
       .filter((entry) => entry.assistantId === selectedAssistant()?.id)
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+  );
+  const selectedExecutionLogs = createMemo(() =>
+    selectedLogs().map((entry) => ({
+      id: entry.id,
+      message: entry.summary,
+      level: entry.level,
+      createdAt: entry.createdAt,
+      detail: entry.detail,
+      detailsJson: entry.detailsJson
+    }))
   );
   const selectedAssetRefs = createMemo(() =>
     state.assistants.assetRefs.filter((assetRef) => assetRef.assistantId === selectedAssistant()?.id)
@@ -133,6 +161,31 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
   const streamingText = createMemo(() => state.assistants.streamingByAssistantId[selectedAssistant()?.id ?? ""] ?? "");
   const executionPaused = createMemo(() => state.executionControl.isPaused);
   const executionPauseReason = "Global execution pause is active";
+  const variant = () => props.variant ?? "full";
+
+  createEffect(() => {
+    const assistantId = selectedAssistant()?.id;
+    if (!assistantId) {
+      return;
+    }
+    const streaming = streamingText().trim().length > 0;
+    if (streaming) {
+      setAssistantStreamingStartedAtByAssistantId((current) =>
+        current[assistantId] ? current : { ...current, [assistantId]: new Date().toISOString() }
+      );
+      return;
+    }
+    setAssistantStreamingStartedAtByAssistantId((current) => {
+      if (!current[assistantId]) {
+        return current;
+      }
+      const next = { ...current };
+      delete next[assistantId];
+      return next;
+    });
+  });
+  const showRoster = () => variant() !== "detail";
+  const showDetail = () => variant() !== "roster";
 
   createEffect(() => {
     const assistant = selectedAssistant();
@@ -154,9 +207,11 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
       description: "",
       personalityPrompt: "",
       jobPrompt: "",
-      agentId: state.availableAgents[0]?.id ?? "pi",
+      agentId: state.selectedAgentId,
+      providerBrand: state.providerBrand,
       modeId: "",
-      executionModelId: "",
+      executionModelId: state.selectedExecutionModelId,
+      fastMode: state.selectedFastMode,
       runState: "active",
       bootstrapState: "pending",
       assetRefsText: ""
@@ -179,8 +234,10 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
       personalityPrompt: assistant.personalityPrompt,
       jobPrompt: assistant.jobPrompt,
       agentId: assistant.agentId,
+      providerBrand: assistant.providerBrand,
       modeId: assistant.modeId,
       executionModelId: assistant.executionModelId,
+      fastMode: assistant.fastMode,
       runState: assistant.runState,
       bootstrapState: assistant.bootstrapState,
       assetRefsText
@@ -205,6 +262,9 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
       }
     });
     setChatDraft("");
+    if (assistantChatTextarea) {
+      assistantChatTextarea.value = "";
+    }
   }
 
   function handleAddTodo() {
@@ -251,11 +311,11 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
     });
   }
 
-  function answerQuestion(question: AssistantQuestion) {
+  function answerQuestion(question: AssistantQuestion, answerText?: string) {
     if (executionPaused()) {
       return;
     }
-    const answer = questionAnswers()[question.id]?.trim();
+    const answer = (answerText ?? questionAnswers()[question.id])?.trim();
     if (!answer) {
       pushToast("Answer required", "Write answer before sending.", "error");
       return;
@@ -291,7 +351,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
       name: `${assistant.name} routine`,
       description: "",
       scheduleInput: "",
-      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      timezone: resolveBrowserTimezone(),
       aiPrompt: assistant.jobPrompt,
       aiModeId: assistant.modeId,
       aiExecutionModelId: assistant.executionModelId,
@@ -414,7 +474,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                         <div class="rounded-xl border border-(--border) bg-white/70 p-2 text-[0.675rem] leading-5">
                           <div class="font-semibold text-(--foreground)">{entry.level} | {entry.summary}</div>
                           <div class="text-(--muted)">{entry.detail ?? "No detail."}</div>
-                          <div class="mt-1 text-[0.575rem] uppercase tracking-[0.12em] text-(--muted)">{entry.createdAt}</div>
+                          <div class="mt-1 text-[0.575rem] uppercase tracking-[0.12em] text-(--muted)">{formatShortTimestamp(entry.createdAt)}</div>
                         </div>
                       )}
                     </For>
@@ -430,7 +490,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                         <div class="rounded-xl border border-(--border) bg-white/70 p-2 text-[0.675rem] leading-5">
                           <div class="font-semibold text-(--foreground)">{run.status}</div>
                           <div class="text-(--muted)">{run.failureMessage ?? run.summary ?? run.id}</div>
-                          <div class="mt-1 text-[0.575rem] uppercase tracking-[0.12em] text-(--muted)">{run.updatedAt}</div>
+                          <div class="mt-1 text-[0.575rem] uppercase tracking-[0.12em] text-(--muted)">{formatShortTimestamp(run.updatedAt)}</div>
                         </div>
                       )}
                     </For>
@@ -456,6 +516,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
           </Show>
         </Dialog>
       </Show>
+      <Show when={showRoster()}>
       <div class="px-1 py-1">
         <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div class="flex items-center gap-2 text-[0.585rem] font-semibold tracking-[0.2em] text-(--muted)">
@@ -478,8 +539,10 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
           </div>
         </div>
       </div>
+      </Show>
 
-      <div class="grid min-h-0 flex-1 gap-4 xl:grid-cols-[minmax(18rem,22rem)_minmax(0,1fr)]">
+      <div class={showRoster() && showDetail() ? "grid min-h-0 flex-1 gap-4 xl:grid-cols-[minmax(18rem,22rem)_minmax(0,1fr)]" : "grid min-h-0 flex-1 gap-4"}>
+        <Show when={showRoster()}>
         <div class="flex min-h-0 flex-col gap-1">
           <nav class="surface-tab-strip" data-test-assistant-scope-nav="">
             <Tooltip content="Show global assistants">
@@ -548,7 +611,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                       </div>
                       <div class="mt-3 text-[0.675rem] leading-5 text-(--muted)">
                         <div>{assistant.description ?? summarizePrompt(assistant.jobPrompt)}</div>
-                        <div class="mt-1">{assistant.circuitBreakerState === "tripped" ? "Circuit breaker tripped" : `Updated ${assistant.updatedAt}`}</div>
+                        <div class="mt-1">{assistant.circuitBreakerState === "tripped" ? "Circuit breaker tripped" : `Updated ${formatShortTimestamp(assistant.updatedAt)}`}</div>
                       </div>
                     </button>
                   )}
@@ -558,7 +621,9 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
           </ScrollArea>
           </section>
         </div>
+        </Show>
 
+        <Show when={showDetail()}>
         <section class="flex min-h-0 flex-col rounded-[1.35rem] border border-(--border) bg-white/55 p-4">
           <Show
             when={selectedAssistant()}
@@ -659,13 +724,13 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                 </div>
 
                 <div class="flex flex-wrap gap-2">
-                  <TabButton icon={<MessageSquare class="h-4 w-4" />} label="Chat" active={activeTab() === "chat"} onClick={() => setActiveTab("chat")} />
-                  <TabButton icon={<ListChecks class="h-4 w-4" />} label="Todos" active={activeTab() === "todos"} onClick={() => setActiveTab("todos")} />
-                  <TabButton icon={<ClipboardList class="h-4 w-4" />} label="Questions" active={activeTab() === "questions"} onClick={() => setActiveTab("questions")} />
-                  <TabButton icon={<Bot class="h-4 w-4" />} label="Jobs" active={activeTab() === "jobs"} onClick={() => setActiveTab("jobs")} />
-                  <TabButton icon={<Logs class="h-4 w-4" />} label="Log" active={activeTab() === "log"} onClick={() => setActiveTab("log")} />
-                  <TabButton icon={<SquarePen class="h-4 w-4" />} label="Config" active={activeTab() === "config"} onClick={() => setActiveTab("config")} />
-                  <TabButton icon={<FlaskConical class="h-4 w-4" />} label="Learnings" active={activeTab() === "learnings"} onClick={() => setActiveTab("learnings")} />
+                  <TabButton icon={<MessageSquare class="h-4 w-4" />} label="Chat" active={activeTab() === "chat"} onClick={() => harnessStore.setAssistantDetailTab("chat")} />
+                  <TabButton icon={<ListChecks class="h-4 w-4" />} label="Todos" active={activeTab() === "todos"} onClick={() => harnessStore.setAssistantDetailTab("todos")} />
+                  <TabButton icon={<ClipboardList class="h-4 w-4" />} label="Questions" active={activeTab() === "questions"} onClick={() => harnessStore.setAssistantDetailTab("questions")} />
+                  <TabButton icon={<Bot class="h-4 w-4" />} label="Jobs" active={activeTab() === "jobs"} onClick={() => harnessStore.setAssistantDetailTab("jobs")} />
+                  <TabButton icon={<Logs class="h-4 w-4" />} label="Log" active={activeTab() === "log"} onClick={() => harnessStore.setAssistantDetailTab("log")} />
+                  <TabButton icon={<SquarePen class="h-4 w-4" />} label="Config" active={activeTab() === "config"} onClick={() => harnessStore.setAssistantDetailTab("config")} />
+                  <TabButton icon={<FlaskConical class="h-4 w-4" />} label="Learnings" active={activeTab() === "learnings"} onClick={() => harnessStore.setAssistantDetailTab("learnings")} />
                 </div>
 
                 <Show when={activeTab() === "chat"}>
@@ -679,7 +744,8 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                               <article class={`rounded-2xl border p-3 ${message.role === "user" ? "border-(--border) bg-white/75" : "border-teal-200 bg-teal-50/65"}`}>
                                 <div class="mb-2 text-[0.575rem] font-semibold uppercase tracking-[0.16em] text-(--muted)">{message.role}</div>
                                 <MarkdownContent content={message.content} />
-                                <div class="mt-3 flex justify-end">
+                                {renderMessageActionRow(
+                                  message.createdAt,
                                   <CopyTextButton
                                     value={message.content}
                                     tooltip="Copy message"
@@ -691,7 +757,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                                   >
                                     Copy
                                   </CopyTextButton>
-                                </div>
+                                )}
                               </article>
                             )}
                           </For>
@@ -699,7 +765,8 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                             <article class="rounded-2xl border border-teal-200 bg-teal-50/65 p-3">
                               <div class="mb-2 text-[0.575rem] font-semibold uppercase tracking-[0.16em] text-(--muted)">assistant</div>
                               <MarkdownContent content={streamingText()} />
-                              <div class="mt-3 flex justify-end">
+                              {renderMessageActionRow(
+                                assistantStreamingStartedAtByAssistantId()[assistant().id],
                                 <CopyTextButton
                                   value={streamingText()}
                                   tooltip="Copy streaming assistant message"
@@ -711,15 +778,37 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                                 >
                                   Copy
                                 </CopyTextButton>
-                              </div>
+                              )}
                             </article>
                           </Show>
                         </div>
                       </ScrollArea>
-                      <div class="mt-4 flex gap-2">
-                        <Textarea rows="3" disabled={executionPaused()} value={chatDraft()} onInput={(event) => setChatDraft(event.currentTarget.value)} placeholder={`Ask ${assistant().name} something.`} />
-                        <ActionButton tooltip="Send message to assistant" disabled={executionPaused()} disabledReason={executionPauseReason} icon={<MessageSquare class="h-4 w-4" />} onClick={handleSendChat}>Send</ActionButton>
-                      </div>
+                      <ChatComposer
+                        class="mt-4"
+                        textareaRef={(element) => {
+                          assistantChatTextarea = element;
+                        }}
+                        rows="3"
+                        value={chatDraft()}
+                        placeholder={`Ask ${assistant().name} something.`}
+                        disabled={executionPaused()}
+                        disabledReason={executionPauseReason}
+                        onInput={setChatDraft}
+                        onSubmit={handleSendChat}
+                        rightActions={
+                          <ActionButton
+                            tooltip="Send message to assistant"
+                            disabled={executionPaused()}
+                            disabledReason={executionPauseReason}
+                            icon={<MessageSquare class="h-4 w-4" />}
+                            variant="ghost"
+                            size="icon"
+                            class="pointer-events-auto h-8 w-8 rounded-lg"
+                            ariaLabel="Send message to assistant"
+                            onClick={handleSendChat}
+                          />
+                        }
+                      />
                     </section>
 
                     <section class="rounded-[1.2rem] border border-(--border) bg-white/70 p-4">
@@ -837,7 +926,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                                 </div>
                                 <div class="mt-2 text-[0.675rem] leading-5 text-(--muted)">
                                   <div>{run.failureMessage ?? `Triggered by ${run.triggerSource}`}</div>
-                                  <div class="mt-1">Updated {run.updatedAt}</div>
+                                  <div class="mt-1">Updated {formatShortTimestamp(run.updatedAt)}</div>
                                 </div>
                               </article>
                             )}
@@ -851,29 +940,13 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                 <Show when={activeTab() === "log"}>
                   <section class="flex min-h-0 flex-1 flex-col rounded-[1.2rem] border border-(--border) bg-white/70 p-4">
                     <div class="mb-3 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Execution log</div>
-                    <ScrollArea class="min-h-0 flex-1 pr-2">
-                      <div class="space-y-3">
-                        <For each={selectedLogs()}>
-                          {(entry) => (
-                            <article class="rounded-2xl border border-(--border) bg-white/75 p-3">
-                              <div class="flex flex-wrap items-center justify-between gap-3">
-                                <div>
-                                  <div class="text-[0.75rem] font-semibold text-(--foreground)">{entry.summary}</div>
-                                  <div class="mt-1 text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">{entry.level} | {entry.createdAt}</div>
-                                </div>
-                                <ActionButton tooltip={expandedLogId() === entry.id ? "Hide raw log payload" : "Show raw log payload"} icon={<Logs class="h-4 w-4" />} variant="secondary" onClick={() => setExpandedLogId(expandedLogId() === entry.id ? undefined : entry.id)}>
-                                  {expandedLogId() === entry.id ? "Hide details" : "Show details"}
-                                </ActionButton>
-                              </div>
-                              <Show when={entry.detail}><div class="mt-2 text-[0.675rem] leading-5 text-(--muted)">{entry.detail}</div></Show>
-                              <Show when={expandedLogId() === entry.id && entry.detailsJson !== undefined}>
-                                <pre class="mt-3 overflow-auto rounded-[0.9rem] bg-slate-950/95 p-3 text-[0.625rem] leading-5 text-slate-100">{JSON.stringify(entry.detailsJson, null, 2)}</pre>
-                              </Show>
-                            </article>
-                          )}
-                        </For>
-                      </div>
-                    </ScrollArea>
+                    <ExecutionLog
+                      entries={selectedExecutionLogs()}
+                      emptyMessage="No execution log yet."
+                      detailEyebrow="Assistant log details"
+                      selectedEntryId={state.assistants.selectedLogDetailsId}
+                      onSelectedEntryIdChange={harnessStore.setAssistantLogDetailsId}
+                    />
                   </section>
                 </Show>
 
@@ -882,8 +955,10 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                     <ConfigCard title="Role">{assistant().description ?? "No description."}</ConfigCard>
                     <ConfigCard title="Routing">
                       <div>Agent: {assistant().agentId}</div>
+                      <div>Provider: {assistant().providerBrand ?? "current"}</div>
                       <div>Mode: {assistant().modeId ?? "default"}</div>
                       <div>Execution model: {assistant().executionModelId ?? "default"}</div>
+                      <div>Fast mode: {assistant().fastMode ? "on" : "off"}</div>
                       <div>Scope: {assistant().scope}</div>
                     </ConfigCard>
                     <ConfigCard title="Personality prompt"><div class="whitespace-pre-wrap">{assistant().personalityPrompt}</div></ConfigCard>
@@ -920,7 +995,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                               </div>
                               <div class="mt-2 text-[0.675rem] leading-5 text-(--muted)">
                                 <div>Source: {learning.source}</div>
-                                <div>{learning.createdAt}</div>
+                                <div>{formatShortTimestamp(learning.createdAt)}</div>
                               </div>
                             </article>
                           )}
@@ -933,12 +1008,13 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
             )}
           </Show>
         </section>
+        </Show>
       </div>
     </section>
   );
 }
 
-function TabButton(props: { icon: JSX.Element; label: string; active: boolean; onClick: () => void }) {
+function TabButton(props: { icon: JSX.Element; label: Capitalize<AssistantDetailTab>; active: boolean; onClick: () => void }) {
   return (
     <ActionButton tooltip={`Open ${props.label.toLowerCase()} tab`} icon={props.icon} variant={props.active ? "default" : "secondary"} onClick={props.onClick}>
       {props.label}
@@ -961,7 +1037,7 @@ function QuestionColumn(props: {
   disabledReason?: string;
   questionAnswers: Record<string, string>;
   onAnswerInput: (questionId: string, value: string) => void;
-  onAnswer: (question: AssistantQuestion) => void;
+  onAnswer: (question: AssistantQuestion, answerText?: string) => void;
 }) {
   return (
     <section class="flex min-h-0 flex-col rounded-[1.2rem] border border-(--border) bg-white/70 p-4">
@@ -972,10 +1048,27 @@ function QuestionColumn(props: {
             {(question) => (
               <article class="rounded-2xl border border-(--border) bg-white/75 p-3">
                 <div class="text-[0.75rem] font-semibold text-(--foreground)">{question.prompt}</div>
-                <div class="mt-1 text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">{question.status} | {question.askedAt}</div>
+                <div class="mt-1 text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">{question.status} | {formatShortTimestamp(question.askedAt)}</div>
                 <Show when={question.status === "pending"}>
                   <div class="mt-3 flex flex-col gap-2">
-                    <Textarea rows="3" disabled={props.disabled} value={props.questionAnswers[question.id] ?? ""} onInput={(event) => props.onAnswerInput(question.id, event.currentTarget.value)} placeholder="Answer this question." />
+                    <div class="grid gap-2">
+                      <For each={getAssistantQuestionDefaultChoices()}>
+                        {(choice) => (
+                          <ActionButton
+                            tooltip={choice.description}
+                            disabled={props.disabled}
+                            disabledReason={props.disabledReason}
+                            icon={choice.recommended ? <Check class="h-4 w-4" /> : undefined}
+                            variant={choice.recommended ? "default" : "secondary"}
+                            class="justify-start"
+                            onClick={() => props.onAnswer(question, choice.answerText)}
+                          >
+                            {choice.label}
+                          </ActionButton>
+                        )}
+                      </For>
+                    </div>
+                    <Textarea rows="3" disabled={props.disabled} value={props.questionAnswers[question.id] ?? ""} onKeyDown={submitOnEnter(() => props.onAnswer(question))} onInput={(event) => props.onAnswerInput(question.id, event.currentTarget.value)} placeholder="Answer this question." />
                     <ActionButton tooltip="Send answer to assistant" disabled={props.disabled} disabledReason={props.disabledReason} icon={<Save class="h-4 w-4" />} onClick={() => props.onAnswer(question)}>Answer</ActionButton>
                   </div>
                 </Show>

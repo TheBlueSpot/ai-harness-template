@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pac Ghost-Hunt AI</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <main class="shell" id="app" data-mode="menu">
+      <section class="hud" id="hud" aria-hidden="true">
+        <div class="hud__chip"><span>Score</span><strong id="score-value">0</strong></div>
+        <div class="hud__chip"><span>Lives</span><strong id="lives-value">3</strong></div>
+        <div class="hud__chip"><span>Level</span><strong id="level-value">1</strong></div>
+        <div class="hud__chip"><span>Mode</span><strong id="mode-value">Scatter</strong></div>
+      </section>
+
+      <div class="stage">
+        <canvas id="game" width="960" height="1080" aria-label="Pac Ghost-Hunt AI"></canvas>
+
+        <section class="overlay" id="overlay" aria-hidden="false">
+          <p class="overlay__eyebrow" id="overlay-eyebrow">maze pursuit</p>
+          <h1 id="overlay-title">Pac Ghost-Hunt AI</h1>
+          <p id="overlay-copy">
+            Read each ghost pattern, clear the maze, then flip the hunt when power pellets trigger frightened mode.
+          </p>
+          <button id="overlay-button" type="button">Start Run</button>
+          <p class="overlay__hint">Move with arrow keys or `WASD`. `Enter` starts. `R` restarts.</p>
+        </section>
+      </div>
+    </main>
+
+    <script src="./src/maze.js"></script>
+    <script src="./src/Game.js"></script>
+    <script src="./src/render.js"></script>
+    <script src="./src/main.js"></script>
+  </body>
+</html>

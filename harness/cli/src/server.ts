@@ -22,6 +22,7 @@ import {
   type Assistant,
   type AssistantActionMessageMetadata,
   type AssistantActionPlanningIntent,
+  type AssistantThread,
   type AssistantTodo,
   type BackgroundJob,
   type BackgroundJobRun,
@@ -42,11 +43,13 @@ import {
   parseClientCommand,
   type AgentRunState,
   type AssistantQuestion,
+  type AssistantQuestionBatchNotification,
   type AssistantQuestionNotification,
   type BackgroundRunStatusNotification,
   type BrowserApprovalNotification,
   type ClientCommand,
   type PlanningQuestion,
+  type PlanningQuestionBatchNotification,
   type PlanningQuestionNotification,
   type PlannerReadyTurn,
   type PreferencesState,
@@ -201,13 +204,13 @@ type HarnessWebSocketMessageHandler = NonNullable<HarnessWebSocketOptions["messa
 
 type UiServingState =
   | {
-      mode: "server-only";
-    }
+    mode: "server-only";
+  }
   | {
-      mode: "static-dist";
-      uiAssets: ReturnType<typeof createUiAssetManager>;
-      liveReload: "disabled" | "debounced-poll";
-    };
+    mode: "static-dist";
+    uiAssets: ReturnType<typeof createUiAssetManager>;
+    liveReload: "disabled" | "debounced-poll";
+  };
 
 type UiLiveReloadMode = Extract<UiServingState, { mode: "static-dist" }>["liveReload"];
 
@@ -545,8 +548,10 @@ async function initializeHarnessServerState(input: {
           runtime,
           launchMode: input.launchMode
         });
+        input.existingState.assistantManager.cleanupStaleAssistantQuestions();
         syncAssistantQuestionNotifications(repository);
         syncBrowserApprovalNotifications(repository);
+        input.existingState.assistantManager.recoverStaleBootstrapRuns();
         for (const run of repository.loadBackgroundJobsState().runs) {
           saveBackgroundRunStatusNotification(repository, run);
         }
@@ -583,6 +588,9 @@ async function initializeHarnessServerState(input: {
         onAssistantChatDelta(nextInput) {
           emitAssistantChatDeltaToAll(baseServices.connections, nextInput);
         },
+        onAssistantChatMessageAppended(nextInput) {
+          emitAssistantChatMessageAppendedToAll(baseServices.connections, nextInput);
+        },
         onAssistantChatComplete(nextInput) {
           emitAssistantChatCompleteToAll(baseServices.connections, nextInput);
         },
@@ -593,8 +601,10 @@ async function initializeHarnessServerState(input: {
           emitAssistantCreatedCardToAll(baseServices.connections, assistant);
         }
       });
+      assistantManager.cleanupStaleAssistantQuestions();
       syncAssistantQuestionNotifications(repository);
       syncBrowserApprovalNotifications(repository);
+      assistantManager.recoverStaleBootstrapRuns();
       for (const run of repository.loadBackgroundJobsState().runs) {
         saveBackgroundRunStatusNotification(repository, run);
       }
@@ -645,7 +655,7 @@ async function initializeHarnessServerState(input: {
             return launchBackgroundJobRun(
               baseServices.connections,
               repository,
-              baseServices.adapter,
+              baseServices.runtimeRegistry,
               runtime,
               baseServices.backgroundRunControllers,
               assistantManager,
@@ -1202,6 +1212,9 @@ async function handleCommand(
       return;
     }
     case "execution.pause-all": {
+      // Websocket commands are handled concurrently. Yield once so an immediately
+      // preceding start command can create its run before the global pause flips.
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
       repository.setGlobalExecutionPaused(true);
       emitExecutionControlUpdatedToAll(connections, command.requestId, repository.getExecutionControlState());
       return;
@@ -1214,6 +1227,7 @@ async function handleCommand(
         runtime,
         repository,
         adapter,
+        runtimeRegistry,
         assistantManager,
         connections,
         backgroundRunControllers,
@@ -1623,7 +1637,7 @@ async function handleCommand(
       emitMessageAppended(ws, command.requestId, runtime, repository, projectId, command.payload.threadId);
 
       const assistantIntent = detectAssistantChatIntent(command.payload.content);
-      if (assistantIntent.kind === "create") {
+      if (assistantIntent.kind === "create-ready") {
         const result = createAssistantFromThreadIntent({
           repository,
           runtime,
@@ -1632,9 +1646,12 @@ async function handleCommand(
           sourcePrompt: assistantIntent.sourcePrompt,
           name: assistantIntent.name,
           scope: assistantIntent.scope,
+          purpose: assistantIntent.purpose,
           agentId: agentRuntime.id,
+          providerBrand,
           modeId: effectiveModeId,
-          executionModelId: effectiveExecutionModelId
+          executionModelId: effectiveExecutionModelId,
+          fastMode: command.payload.fastMode
         });
         emitAssistantsUpdatedToAll(connections, repository.loadAssistantsState());
         emitAssistantCreatedCardToAll(connections, result.assistant);
@@ -1642,6 +1659,54 @@ async function handleCommand(
         if (result.created && result.assistant.bootstrapState === "pending") {
           void assistantManager.bootstrapAssistant(result.assistant.id);
         }
+        return;
+      }
+      if (assistantIntent.kind === "create-needs-purpose") {
+        const existing = findExistingAssistantForThreadIntent(repository, projectId, assistantIntent.name, assistantIntent.scope);
+        if (existing) {
+          appendAssistantCreationMessage(ws, command.requestId, runtime, repository, projectId, command.payload.threadId, {
+            assistant: existing,
+            created: false
+          });
+          emitAssistantCreatedCardToAll(connections, existing);
+          return;
+        }
+
+        const runProject = repository.createAgentRun(
+          projectId,
+          promptContent,
+          agentRuntime.getDefaultPlanningModelId(providerBrand),
+          command.payload.threadId
+        );
+        const createdRun = runProject.activeRun ?? repository.getLatestThreadRun(projectId, command.payload.threadId);
+        if (!createdRun) {
+          throw new Error("Run was not created");
+        }
+        runtime.upsertPersistedProject(runProject);
+        emitRunUpdatedById(ws, command.requestId, repository, projectId, createdRun.id);
+        const questionProject = repository.appendPlanningQuestion(
+          projectId,
+          createdRun.id,
+          createAssistantPurposeQuestion({
+            projectId,
+            threadId: command.payload.threadId,
+            sourcePrompt: assistantIntent.sourcePrompt,
+            suggestedName: assistantIntent.name,
+            defaultScope: assistantIntent.scope
+          })
+        );
+        runtime.upsertPersistedProject(questionProject);
+        emitRunUpdatedById(ws, command.requestId, repository, projectId, createdRun.id);
+        runtime.setProjectStreaming(projectId, false, command.payload.threadId);
+        runtime.clearStreaming(projectId, command.payload.threadId);
+        const promptProject = repository.appendMessage(
+          projectId,
+          "assistant",
+          `What should ${assistantIntent.name} do for this project?`,
+          command.payload.threadId
+        );
+        runtime.upsertPersistedProject(promptProject);
+        emitThreadMessageAppended(ws, command.requestId, runtime, repository, projectId, command.payload.threadId);
         return;
       }
 
@@ -1661,6 +1726,7 @@ async function handleCommand(
           repository,
           runtime,
           adapter,
+          runtimeRegistry,
           backgroundRunControllers,
           assistantManager,
           projectId,
@@ -1698,7 +1764,7 @@ async function handleCommand(
           projectId,
           "assistant",
           questionProject.activeRun?.questions.find((question) => question.intent?.type === "assistant-create-intent")?.prompt ??
-            `Do you want to create a project assistant named "${assistantIntent.suggestedName}", or run this once in project chat?`,
+          `Do you want to create a project assistant named "${assistantIntent.suggestedName}", or run this once in project chat?`,
           command.payload.threadId
         );
         runtime.upsertPersistedProject(promptProject);
@@ -1886,14 +1952,118 @@ async function handleCommand(
 
       return;
     }
+    case "planning.answer-batch": {
+      assertGlobalExecutionNotPaused(repository);
+      const projectId = command.payload.projectId;
+      const project = runtime.getProject(projectId);
+      const agentRuntime = resolveProjectAgentRuntime(runtimeRegistry, project);
+      const targetRun = requirePersistedThreadRun(repository, projectId, command.payload.threadId, command.payload.runId);
+      const answersById = new Map(command.payload.answers.map((answer) => [answer.questionId, answer.content]));
+      if (answersById.size !== command.payload.answers.length) {
+        throw new Error("Duplicate planning question answers are not allowed");
+      }
+      const pendingQuestions = command.payload.answers.map((answer) => {
+        const question = targetRun.questions.find(
+          (entry) => entry.id === answer.questionId && (entry.status === "pending" || entry.status === "deferred")
+        );
+        if (!question) {
+          throw new Error("Planning question is not answerable");
+        }
+        return question;
+      });
+
+      const providerBrand = repository.getProviderBrand();
+      const attachments = validatePromptAttachments(repository, projectId, command.payload.threadId, command.payload.attachments);
+      const capturedCliContext = runtime.consumeThreadCapturedCliContext(projectId, command.payload.threadId);
+      const combinedContent = pendingQuestions
+        .map((question) => `Q: ${question.prompt}\nA: ${answersById.get(question.id) ?? ""}`)
+        .join("\n\n");
+      const promptContent = appendCapturedCliContext(combinedContent, capturedCliContext);
+      const answerProject = repository.appendMessage(projectId, "user", combinedContent, {
+        threadId: command.payload.threadId,
+        attachments
+      });
+      runtime.upsertPersistedProject(answerProject);
+      emitMessageAppended(ws, command.requestId, runtime, repository, projectId, command.payload.threadId);
+
+      let answeredProject = answerProject;
+      for (const question of pendingQuestions) {
+        answeredProject = repository.answerPlanningQuestion(projectId, targetRun.id, question.id, answersById.get(question.id) ?? "");
+        archiveNotificationWithLegacyId(repository, ["planning-question", targetRun.id, question.id]);
+      }
+      repository.archiveNotification(createPlanningQuestionBatchNotificationId(targetRun.id, pendingQuestions.map((question) => question.id)));
+      runtime.upsertPersistedProject(answeredProject);
+      emitRunUpdatedById(ws, command.requestId, repository, projectId, targetRun.id);
+      emitNotificationsUpdatedToAll(connections, command.requestId, repository.loadNotificationInboxState());
+
+      const linkedBackgroundRun = repository.getBackgroundJobRunByLinkedAgentRunId(targetRun.id);
+      if (linkedBackgroundRun?.status === "awaiting-user-input") {
+        const resumedBackgroundRun = repository.setBackgroundJobRunStatus(linkedBackgroundRun.id, "running", {
+          summary: "Resuming after user input"
+        });
+        saveBackgroundRunStatusNotification(repository, resumedBackgroundRun);
+        await emitBackgroundJobRunUpdatedToAll(connections, resumedBackgroundRun);
+        emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
+      }
+
+      runtime.setProjectError(projectId, undefined, command.payload.threadId);
+      runtime.setProjectStreaming(projectId, true, command.payload.threadId);
+      runtime.clearStreaming(projectId, command.payload.threadId);
+
+      const abortController = new AbortController();
+      runtime.setAbortController(projectId, targetRun.id, abortController);
+
+      try {
+        await continueRunLifecycle(ws, command.requestId, runtime, repository, agentRuntime.getAdapter(), pendingBrowserApprovals, connections, {
+          projectId,
+          threadId: command.payload.threadId,
+          runId: targetRun.id,
+          agentId: agentRuntime.id,
+          providerBrand,
+          debugEnabled: repository.getDebugEnabledDefault(),
+          executionModelId: resolveExecutionModelIdForRuntime({
+            runtime: agentRuntime,
+            capability: agentRuntime.getCapability(),
+            providerBrand,
+            requestedModelId: targetRun.executionModelId ?? project.session.executionModelId
+          }).modelId,
+          reasoningStrength: command.payload.reasoningStrength,
+          fastMode: command.payload.fastMode,
+          abortSignal: abortController.signal,
+          derivedProgressHeartbeatMs
+        });
+      } catch (error) {
+        if (abortController.signal.aborted) {
+          return;
+        }
+
+        const message = error instanceof Error ? error.message : "Unknown agent error";
+        await handleRunFailure(
+          ws,
+          command.requestId,
+          runtime,
+          repository,
+          pendingBrowserApprovals,
+          connections,
+          projectId,
+          message,
+          targetRun.id
+        );
+      } finally {
+        runtime.setProjectStreaming(projectId, false, command.payload.threadId);
+        runtime.setAbortController(projectId, targetRun.id, undefined);
+      }
+
+      void promptContent;
+      return;
+    }
     case "planning.answer": {
       assertGlobalExecutionNotPaused(repository);
       const projectId = command.payload.projectId;
       const project = runtime.getProject(projectId);
       const agentRuntime = resolveProjectAgentRuntime(runtimeRegistry, project);
-      assertActiveThread(project, command.payload.threadId);
-      const activeRun = requireActiveRun(project, command.payload.runId);
-      const pendingQuestion = activeRun.questions.find(
+      const targetRun = requirePersistedThreadRun(repository, projectId, command.payload.threadId, command.payload.runId);
+      const pendingQuestion = targetRun.questions.find(
         (question) =>
           question.id === command.payload.questionId &&
           (question.status === "pending" || question.status === "deferred")
@@ -1915,17 +2085,28 @@ async function handleCommand(
 
       const answeredProject = repository.answerPlanningQuestion(
         projectId,
-        activeRun.id,
+        targetRun.id,
         command.payload.questionId,
         promptContent
       );
       runtime.upsertPersistedProject(answeredProject);
-      emitRunUpdated(ws, command.requestId, answeredProject);
-      archiveNotificationWithLegacyId(repository, ["planning-question", activeRun.id, command.payload.questionId]);
+      emitRunUpdatedById(ws, command.requestId, repository, projectId, targetRun.id);
+      archiveNotificationWithLegacyId(repository, ["planning-question", targetRun.id, command.payload.questionId]);
+      repository.archiveNotification(
+        createPlanningQuestionBatchNotificationId(
+          targetRun.id,
+          targetRun.questions
+            .filter((question) => question.status === "pending" || question.status === "deferred")
+            .map((question) => question.id)
+        )
+      );
       emitNotificationsUpdatedToAll(connections, command.requestId, repository.loadNotificationInboxState());
 
       if (pendingQuestion.intent?.type === "assistant-create-intent") {
-        const assistantAnswer = classifyAssistantIntentAnswer(pendingQuestion, command.payload.content);
+        const assistantAnswer =
+          pendingQuestion.responseKind === "freeform"
+            ? classifyAssistantPurposeAnswer(command.payload.content)
+            : classifyAssistantIntentAnswer(pendingQuestion, command.payload.content);
         if (assistantAnswer === "create") {
           const result = createAssistantFromThreadIntent({
             repository,
@@ -1935,13 +2116,16 @@ async function handleCommand(
             sourcePrompt: pendingQuestion.intent.sourcePrompt,
             name: pendingQuestion.intent.suggestedName,
             scope: pendingQuestion.intent.defaultScope,
+            purpose: pendingQuestion.intent.purpose ?? (pendingQuestion.responseKind === "freeform" ? command.payload.content.trim() : undefined),
             agentId: agentRuntime.id,
+            providerBrand,
             modeId: project.selectedModeId,
-            executionModelId: project.session.executionModelId
+            executionModelId: targetRun.executionModelId ?? project.session.executionModelId,
+            fastMode: command.payload.fastMode
           });
-          const completedProject = repository.setAgentRunStatus(projectId, activeRun.id, "completed");
+          const completedProject = repository.setAgentRunStatus(projectId, targetRun.id, "completed");
           runtime.upsertPersistedProject(completedProject);
-          emitRunUpdated(ws, command.requestId, completedProject);
+          emitRunUpdatedById(ws, command.requestId, repository, projectId, targetRun.id);
           emitAssistantsUpdatedToAll(connections, repository.loadAssistantsState());
           emitAssistantCreatedCardToAll(connections, result.assistant);
           appendAssistantCreationMessage(ws, command.requestId, runtime, repository, projectId, command.payload.threadId, result);
@@ -1954,9 +2138,9 @@ async function handleCommand(
         }
 
         if (assistantAnswer === "cancel") {
-          const stoppedProject = repository.setAgentRunStatus(projectId, activeRun.id, "stopped", "Assistant creation cancelled.");
+          const stoppedProject = repository.setAgentRunStatus(projectId, targetRun.id, "stopped", "Assistant creation cancelled.");
           runtime.upsertPersistedProject(stoppedProject);
-          emitRunUpdated(ws, command.requestId, stoppedProject);
+          emitRunUpdatedById(ws, command.requestId, repository, projectId, targetRun.id);
           const cancelProject = repository.appendMessage(projectId, "assistant", "Cancelled.", command.payload.threadId);
           runtime.upsertPersistedProject(cancelProject);
           emitThreadMessageAppended(ws, command.requestId, runtime, repository, projectId, command.payload.threadId);
@@ -1968,9 +2152,9 @@ async function handleCommand(
 
       if (pendingQuestion.intent?.type === "assistant-action-intent") {
         if (/^(cancel|never mind|stop)$/i.test(command.payload.content.trim())) {
-          const stoppedProject = repository.setAgentRunStatus(projectId, activeRun.id, "stopped", "Assistant action cancelled.");
+          const stoppedProject = repository.setAgentRunStatus(projectId, targetRun.id, "stopped", "Assistant action cancelled.");
           runtime.upsertPersistedProject(stoppedProject);
-          emitRunUpdated(ws, command.requestId, stoppedProject);
+          emitRunUpdatedById(ws, command.requestId, repository, projectId, targetRun.id);
           const cancelProject = repository.appendMessage(projectId, "assistant", "Cancelled.", command.payload.threadId);
           runtime.upsertPersistedProject(cancelProject);
           emitThreadMessageAppended(ws, command.requestId, runtime, repository, projectId, command.payload.threadId);
@@ -1995,23 +2179,24 @@ async function handleCommand(
             repository,
             runtime,
             adapter,
+            runtimeRegistry,
             backgroundRunControllers,
             assistantManager,
             projectId,
             threadId: command.payload.threadId,
             action: assistantAction.action
           });
-          const completedProject = repository.setAgentRunStatus(projectId, activeRun.id, "completed");
+          const completedProject = repository.setAgentRunStatus(projectId, targetRun.id, "completed");
           runtime.upsertPersistedProject(completedProject);
-          emitRunUpdated(ws, command.requestId, completedProject);
+          emitRunUpdatedById(ws, command.requestId, repository, projectId, targetRun.id);
           runtime.setProjectStreaming(projectId, false, command.payload.threadId);
           runtime.clearStreaming(projectId, command.payload.threadId);
           return;
         }
         if (assistantAction.kind === "clarify") {
-          const questionProject = repository.appendPlanningQuestion(projectId, activeRun.id, createAssistantActionIntentQuestion(assistantAction));
+          const questionProject = repository.appendPlanningQuestion(projectId, targetRun.id, createAssistantActionIntentQuestion(assistantAction));
           runtime.upsertPersistedProject(questionProject);
-          emitRunUpdatedById(ws, command.requestId, repository, projectId, activeRun.id);
+          emitRunUpdatedById(ws, command.requestId, repository, projectId, targetRun.id);
           const promptProject = repository.appendMessage(projectId, "assistant", assistantAction.prompt, command.payload.threadId);
           runtime.upsertPersistedProject(promptProject);
           emitThreadMessageAppended(ws, command.requestId, runtime, repository, projectId, command.payload.threadId);
@@ -2021,7 +2206,7 @@ async function handleCommand(
         }
       }
 
-      const linkedBackgroundRun = repository.getBackgroundJobRunByLinkedAgentRunId(activeRun.id);
+      const linkedBackgroundRun = repository.getBackgroundJobRunByLinkedAgentRunId(targetRun.id);
       if (linkedBackgroundRun?.status === "awaiting-user-input") {
         archiveNotificationWithLegacyId(repository, ["planning-question", linkedBackgroundRun.id, command.payload.questionId]);
         const resumedBackgroundRun = repository.setBackgroundJobRunStatus(linkedBackgroundRun.id, "running", {
@@ -2038,13 +2223,13 @@ async function handleCommand(
       runtime.clearStreaming(projectId, command.payload.threadId);
 
       const abortController = new AbortController();
-      runtime.setAbortController(projectId, activeRun.id, abortController);
+      runtime.setAbortController(projectId, targetRun.id, abortController);
 
       try {
         await continueRunLifecycle(ws, command.requestId, runtime, repository, agentRuntime.getAdapter(), pendingBrowserApprovals, connections, {
           projectId,
           threadId: command.payload.threadId,
-          runId: activeRun.id,
+          runId: targetRun.id,
           agentId: agentRuntime.id,
           providerBrand,
           debugEnabled: repository.getDebugEnabledDefault(),
@@ -2052,7 +2237,7 @@ async function handleCommand(
             runtime: agentRuntime,
             capability: agentRuntime.getCapability(),
             providerBrand,
-            requestedModelId: project.session.executionModelId
+            requestedModelId: targetRun.executionModelId ?? project.session.executionModelId
           }).modelId,
           reasoningStrength: command.payload.reasoningStrength,
           fastMode: command.payload.fastMode,
@@ -2074,11 +2259,11 @@ async function handleCommand(
           connections,
           projectId,
           message,
-          activeRun.id
+          targetRun.id
         );
       } finally {
         runtime.setProjectStreaming(projectId, false, command.payload.threadId);
-        runtime.setAbortController(projectId, activeRun.id, undefined);
+        runtime.setAbortController(projectId, targetRun.id, undefined);
       }
 
       return;
@@ -2311,18 +2496,18 @@ async function handleCommand(
           pendingBrowserApprovals,
           connections,
           {
-          projectId,
-          agentId: agentRuntime.id,
-          providerBrand,
-          debugEnabled: repository.getDebugEnabledDefault(),
-          runId: activeRun.id,
-          sourceRun: activeRun,
-          abortSignal: abortController.signal,
-          guidanceText: command.payload.guidanceText,
-          subagentIds: command.payload.subagentIds,
-          reasoningStrength: command.payload.reasoningStrength,
-          fastMode: command.payload.fastMode,
-          derivedProgressHeartbeatMs
+            projectId,
+            agentId: agentRuntime.id,
+            providerBrand,
+            debugEnabled: repository.getDebugEnabledDefault(),
+            runId: activeRun.id,
+            sourceRun: activeRun,
+            abortSignal: abortController.signal,
+            guidanceText: command.payload.guidanceText,
+            subagentIds: command.payload.subagentIds,
+            reasoningStrength: command.payload.reasoningStrength,
+            fastMode: command.payload.fastMode,
+            derivedProgressHeartbeatMs
           }
         );
       } catch (error) {
@@ -2599,7 +2784,7 @@ async function handleCommand(
       await launchBackgroundJobRun(
         connections,
         repository,
-        adapter,
+        runtimeRegistry,
         runtime,
         backgroundRunControllers,
         assistantManager,
@@ -2643,7 +2828,7 @@ async function handleCommand(
         await launchBackgroundJobRun(
           connections,
           repository,
-          adapter,
+          runtimeRegistry,
           runtime,
           backgroundRunControllers,
           assistantManager,
@@ -2666,7 +2851,7 @@ async function handleCommand(
       await launchBackgroundJobRun(
         connections,
         repository,
-        adapter,
+        runtimeRegistry,
         runtime,
         backgroundRunControllers,
         assistantManager,
@@ -2699,7 +2884,14 @@ async function handleCommand(
       return;
     }
     case "assistant.create": {
-      const savedAssistant = repository.saveAssistant(command.payload.assistant, command.payload.assetRefs ?? []);
+      const savedAssistant = repository.saveAssistant(
+        {
+          ...command.payload.assistant,
+          providerBrand: command.payload.assistant.providerBrand ?? repository.getProviderBrand(),
+          fastMode: command.payload.assistant.fastMode ?? false
+        },
+        command.payload.assetRefs ?? []
+      );
       emitAssistantsUpdatedToAll(connections, repository.loadAssistantsState());
       emitAssistantCreatedCardToAll(connections, savedAssistant);
       void assistantManager.bootstrapAssistant(savedAssistant.id);
@@ -2717,8 +2909,10 @@ async function handleCommand(
         name: command.payload.name ?? inferAssistantNameFromPrompt(command.payload.sourcePrompt),
         scope: command.payload.scope ?? "project",
         agentId: command.payload.agentId,
+        providerBrand: repository.getProviderBrand(),
         modeId: command.payload.modeId ?? project.selectedModeId,
-        executionModelId: command.payload.executionModelId ?? project.session.executionModelId
+        executionModelId: command.payload.executionModelId ?? project.session.executionModelId,
+        fastMode: command.payload.fastMode
       });
       emitAssistantsUpdatedToAll(connections, repository.loadAssistantsState());
       emitAssistantCreatedCardToAll(connections, result.assistant);
@@ -2819,6 +3013,45 @@ async function handleCommand(
         command.payload.assistantId,
         command.payload.questionId
       ]);
+      repository.archiveNotification(
+        createAssistantQuestionBatchNotificationId(
+          command.payload.assistantId,
+          repository
+            .getAssistantQuestions(command.payload.assistantId)
+            .filter((question) => question.status === "pending" || question.status === "deferred" || question.id === command.payload.questionId)
+            .map((question) => question.id)
+        )
+      );
+      emitAssistantsUpdatedToAll(connections, repository.loadAssistantsState());
+      emitNotificationsUpdatedToAll(connections, command.requestId, repository.loadNotificationInboxState());
+      return;
+    }
+    case "assistant.question.answer-batch": {
+      assertGlobalExecutionNotPaused(repository);
+      const answersById = new Map(command.payload.answers.map((answer) => [answer.questionId, answer.content]));
+      if (answersById.size !== command.payload.answers.length) {
+        throw new Error("Duplicate assistant question answers are not allowed");
+      }
+      const questions = repository.getAssistantQuestions(command.payload.assistantId);
+      for (const answer of command.payload.answers) {
+        const question = questions.find(
+          (entry) => entry.id === answer.questionId && (entry.status === "pending" || entry.status === "deferred")
+        );
+        if (!question) {
+          throw new Error("Assistant question is not answerable");
+        }
+      }
+      for (const answer of command.payload.answers) {
+        await assistantManager.answerQuestion(command.payload.assistantId, answer.questionId, answer.content);
+        archiveNotificationWithLegacyId(repository, [
+          "assistant-question",
+          command.payload.assistantId,
+          answer.questionId
+        ]);
+      }
+      repository.archiveNotification(
+        createAssistantQuestionBatchNotificationId(command.payload.assistantId, command.payload.answers.map((answer) => answer.questionId))
+      );
       emitAssistantsUpdatedToAll(connections, repository.loadAssistantsState());
       emitNotificationsUpdatedToAll(connections, command.requestId, repository.loadNotificationInboxState());
       return;
@@ -3003,8 +3236,8 @@ async function openHarnessBrowser(url: string) {
     process.platform === "win32"
       ? ["cmd", "/c", "start", "", url]
       : process.platform === "darwin"
-      ? ["open", url]
-      : ["xdg-open", url];
+        ? ["open", url]
+        : ["xdg-open", url];
 
   try {
     const browserProcess = Bun.spawn({
@@ -3070,12 +3303,12 @@ async function continueRunLifecycle(
   const memoryBank =
     repository.getMemoryBankEnabledDefault()
       ? retrieveMemorySummaries(repository, {
-          projectId: options.projectId,
-          threadId: options.threadId,
-          runId: activeRun.id,
-          owner: "planner",
-          queryText: activeRun.latestUserPrompt
-        })
+        projectId: options.projectId,
+        threadId: options.threadId,
+        runId: activeRun.id,
+        owner: "planner",
+        queryText: activeRun.latestUserPrompt
+      })
       : { memorySummaries: [] as MemorySummary[] };
   const plannerTurn = await runPlannerTurn(adapter, {
     cwd: project.rootPath,
@@ -3116,12 +3349,10 @@ async function continueRunLifecycle(
 
   if (plannerTurn.plannerResult.type === "question") {
     const questionStatus = repository.getGlobalExecutionPaused() ? "deferred" : "pending";
-    const questionProject = repository.appendPlanningQuestion(
-      options.projectId,
-      activeRun.id,
-      plannerTurn.plannerResult.question,
-      questionStatus
-    );
+    let questionProject = repository.getProject(options.projectId);
+    for (const question of plannerTurn.plannerResult.questions) {
+      questionProject = repository.appendPlanningQuestion(options.projectId, activeRun.id, question, questionStatus);
+    }
     runtime.upsertPersistedProject(questionProject);
     emitRunUpdatedById(ws, requestId, repository, options.projectId, activeRun.id);
 
@@ -3131,21 +3362,28 @@ async function continueRunLifecycle(
       const promptProject = repository.appendMessage(
         options.projectId,
         "assistant",
-        plannerTurn.plannerResult.question.prompt,
+        plannerTurn.plannerResult.questions.map((question) => question.prompt).join("\n\n"),
         activeRun.threadId
       );
       runtime.upsertPersistedProject(promptProject);
       emitThreadMessageAppended(ws, requestId, runtime, repository, options.projectId, activeRun.threadId);
     } else {
-      const deferredQuestion =
-        questionProject.activeRun?.questions.find((question) => question.status === "deferred") ??
-        questionProject.lastRun?.questions.find((question) => question.status === "deferred");
-      if (deferredQuestion) {
+      const deferredQuestions = [...new Map([
+        ...(questionProject.activeRun?.questions.filter((question) => question.status === "deferred") ?? []),
+        ...(questionProject.lastRun?.questions.filter((question) => question.status === "deferred") ?? [])
+      ].map((question) => [question.id, question])).values()];
+      if (deferredQuestions.length > 1) {
         repository.saveNotification(
-          createPlanningQuestionNotification(options.projectId, activeRun.threadId, activeRun.id, deferredQuestion)
+          createPlanningQuestionBatchNotification(options.projectId, activeRun.threadId, activeRun.id, deferredQuestions)
         );
-        emitNotificationsUpdatedToAll(connections, requestId, repository.loadNotificationInboxState());
+      } else {
+        for (const deferredQuestion of deferredQuestions) {
+          repository.saveNotification(
+            createPlanningQuestionNotification(options.projectId, activeRun.threadId, activeRun.id, deferredQuestion)
+          );
+        }
       }
+      emitNotificationsUpdatedToAll(connections, requestId, repository.loadNotificationInboxState());
       emitExecutionControlUpdatedToAll(connections, requestId, repository.getExecutionControlState());
     }
     return;
@@ -3238,12 +3476,12 @@ async function continueQuickTaskLifecycle(
   const memoryBank =
     repository.getMemoryBankEnabledDefault()
       ? retrieveMemorySummaries(repository, {
-          projectId,
-          threadId: options.threadId,
-          runId: activeRun.id,
-          owner: "planner",
-          queryText: options.latestUserPrompt
-        })
+        projectId,
+        threadId: options.threadId,
+        runId: activeRun.id,
+        owner: "planner",
+        queryText: options.latestUserPrompt
+      })
       : { memorySummaries: [] as MemorySummary[] };
   const normalizedLatestUserPrompt = normalizeWorkspaceRelativePaths(options.latestUserPrompt, project.rootPath);
   const plannerReadyTurn: PlannerReadyTurn = {
@@ -3443,12 +3681,12 @@ async function executeRunLifecycle(
   const retrievedMemory =
     repository.getMemoryBankEnabledDefault()
       ? retrieveMemorySummaries(repository, {
-          projectId: options.projectId,
-          threadId: activeRun.threadId,
-          runId: options.runId,
-          owner: "main",
-          queryText: [baseExecutionPlan.summary, baseExecutionPlan.finalExecutionBrief].filter(Boolean).join("\n")
-        })
+        projectId: options.projectId,
+        threadId: activeRun.threadId,
+        runId: options.runId,
+        owner: "main",
+        queryText: [baseExecutionPlan.summary, baseExecutionPlan.finalExecutionBrief].filter(Boolean).join("\n")
+      })
       : { memorySummaries: [] as MemorySummary[] };
   const status = options.readyPlan.usesSubagents ? "running-subagents" : "running-main";
   const hasPendingPrerequisites = baseExecutionPlan.prerequisites.some((prerequisite) => prerequisite.status !== "completed");
@@ -4073,24 +4311,24 @@ function createExecutionCallbacks(
       const nextProject =
         result.status === "completed"
           ? repository.markSubtaskCompleted(
-              projectId,
-              runId,
-              result.id,
-              result.output ?? "",
-              result.attemptCount,
-              result.commitSha,
-              result.worktreePath,
-              result.mountPath
-            )
+            projectId,
+            runId,
+            result.id,
+            result.output ?? "",
+            result.attemptCount,
+            result.commitSha,
+            result.worktreePath,
+            result.mountPath
+          )
           : repository.markSubtaskFailed(
-              projectId,
-              runId,
-              result.id,
-              result.errorMessage ?? "Unknown subagent failure",
-              result.attemptCount,
-              result.worktreePath,
-              result.mountPath
-            );
+            projectId,
+            runId,
+            result.id,
+            result.errorMessage ?? "Unknown subagent failure",
+            result.attemptCount,
+            result.worktreePath,
+            result.mountPath
+          );
       runtime.upsertPersistedProject(nextProject);
       emitRunUpdatedById(ws, requestId, repository, projectId, runId, connections);
       const nextRun = repository.getRun(projectId, runId);
@@ -4170,27 +4408,27 @@ function createExecutionCallbacks(
           break;
         case "tool-end":
           {
-          const event = input.event;
-          latestToolCallId = event.toolCallId;
-          nextToolActivities = recordToolEnd(nextToolActivities, {
-            runId,
-            owner: input.owner,
-            subagentId: input.subagentId,
-            event
-          });
-          nextSessions = recordBrowserToolEnd(nextSessions, {
-            runId,
-            owner: input.owner,
-            subagentId: input.subagentId,
-            toolCallId: event.toolCallId,
-            toolName: event.toolName,
-            result: event.result,
-            isError: event.isError
-          });
-          if (event.isError) {
-            logToolFailure(runId, input.owner, input.subagentId, event);
-          }
-          break;
+            const event = input.event;
+            latestToolCallId = event.toolCallId;
+            nextToolActivities = recordToolEnd(nextToolActivities, {
+              runId,
+              owner: input.owner,
+              subagentId: input.subagentId,
+              event
+            });
+            nextSessions = recordBrowserToolEnd(nextSessions, {
+              runId,
+              owner: input.owner,
+              subagentId: input.subagentId,
+              toolCallId: event.toolCallId,
+              toolName: event.toolName,
+              result: event.result,
+              isError: event.isError
+            });
+            if (event.isError) {
+              logToolFailure(runId, input.owner, input.subagentId, event);
+            }
+            break;
           }
         default:
           return;
@@ -4249,28 +4487,28 @@ function createExecutionCallbacks(
 
       const effectiveSessions: typeof nextSessions = repository.getGlobalExecutionPaused()
         ? nextSessions.map((sessionEntry) => {
-            if (sessionEntry.id !== session.id) {
-              return sessionEntry;
-            }
+          if (sessionEntry.id !== session.id) {
+            return sessionEntry;
+          }
 
-            const nextActivities = sessionEntry.activities.map((activity) =>
-              activity.toolCallId === input.toolCallId && activity.approval
-                ? {
-                    ...activity,
-                    approval: {
-                      ...activity.approval,
-                      status: "deferred" as const
-                    }
-                  }
-                : activity
-            );
-            return {
-              ...sessionEntry,
-              activities: nextActivities,
-              pendingApproval: undefined,
-              status: "running" as const
-            };
-          })
+          const nextActivities = sessionEntry.activities.map((activity) =>
+            activity.toolCallId === input.toolCallId && activity.approval
+              ? {
+                ...activity,
+                approval: {
+                  ...activity.approval,
+                  status: "deferred" as const
+                }
+              }
+              : activity
+          );
+          return {
+            ...sessionEntry,
+            activities: nextActivities,
+            pendingApproval: undefined,
+            status: "running" as const
+          };
+        })
         : nextSessions;
       const nextProject = repository.setAgentRunBrowserSessions(projectId, runId, effectiveSessions);
       runtime.upsertPersistedProject(nextProject);
@@ -4353,6 +4591,7 @@ async function releaseDeferredExecutionState(
   runtime: WorkspaceRuntimeStore,
   repository: WorkspaceRepository,
   adapter: PiAgentAdapter,
+  runtimeRegistry: AgentRuntimeRegistry,
   assistantManager: AssistantManager,
   connections: Set<Bun.ServerWebSocket<HarnessConnection>>,
   backgroundRunControllers: Map<string, BackgroundRunControl>,
@@ -4414,7 +4653,7 @@ async function releaseDeferredExecutionState(
     await launchBackgroundJobRun(
       connections,
       repository,
-      adapter,
+      runtimeRegistry,
       runtime,
       backgroundRunControllers,
       assistantManager,
@@ -5736,7 +5975,7 @@ async function enforceExecutionPreflight(
   }
 }
 
-class PreflightDecisionRequiredError extends Error {}
+class PreflightDecisionRequiredError extends Error { }
 
 function validatePromptAttachments(
   repository: WorkspaceRepository,
@@ -6081,6 +6320,21 @@ type AssistantCreationResult = {
   created: boolean;
 };
 
+function findExistingAssistantForThreadIntent(
+  repository: WorkspaceRepository,
+  projectId: ProjectId,
+  name: string,
+  scope: "project" | "global"
+) {
+  return repository.loadAssistantsState().assistants.find(
+    (assistant) =>
+      assistant.deletedAt === undefined &&
+      assistant.scope === scope &&
+      assistant.name.toLowerCase() === name.toLowerCase() &&
+      (scope === "global" || assistant.projectId === projectId)
+  );
+}
+
 function createAssistantFromThreadIntent(input: {
   repository: WorkspaceRepository;
   runtime: WorkspaceRuntimeStore;
@@ -6089,22 +6343,19 @@ function createAssistantFromThreadIntent(input: {
   sourcePrompt: string;
   name: string;
   scope: "project" | "global";
+  purpose?: string;
   agentId?: AgentId;
+  providerBrand?: "gpt" | "gemini";
   modeId?: string;
   executionModelId?: string;
+  fastMode?: boolean;
 }): AssistantCreationResult {
   const project = input.runtime.getProject(input.projectId);
   if (project.activeThreadId !== input.threadId && !project.threads.some((thread) => thread.id === input.threadId)) {
     throw new Error(`Unknown thread: ${input.threadId}`);
   }
 
-  const existing = input.repository.loadAssistantsState().assistants.find(
-    (assistant) =>
-      assistant.deletedAt === undefined &&
-      assistant.scope === input.scope &&
-      assistant.name.toLowerCase() === input.name.toLowerCase() &&
-      (input.scope === "global" || assistant.projectId === input.projectId)
-  );
+  const existing = findExistingAssistantForThreadIntent(input.repository, input.projectId, input.name, input.scope);
   if (existing) {
     return { assistant: existing, created: false };
   }
@@ -6123,15 +6374,21 @@ function createAssistantFromThreadIntent(input: {
       "You are a focused assistant operator. Be direct, pragmatic, and careful with existing project conventions. Keep the user informed with concise status and ask when intent is ambiguous.",
     jobPrompt: [
       `Original thread prompt: ${input.sourcePrompt}`,
+      input.purpose ? `Assistant purpose: ${input.purpose}` : undefined,
       `Project root: ${project.rootPath}`,
       "Maintain assistant-owned todos, questions, learnings, and logs for ongoing work.",
       "Do not pollute normal project chat with assistant-owned routine output unless the user explicitly asks to promote it."
-    ].join("\n"),
+    ].filter(Boolean).join("\n"),
     agentId: input.agentId ?? "pi",
+    providerBrand: input.providerBrand,
     modeId: input.modeId,
     executionModelId: input.executionModelId,
+    fastMode: input.fastMode,
     runState: "active",
     bootstrapState: "pending",
+    bootstrapAttemptId: undefined,
+    bootstrapStartedAt: undefined,
+    bootstrapFinishedAt: undefined,
     clonedFromAssistantId: undefined,
     failureStreakCount: 0,
     circuitBreakerState: "closed",
@@ -6162,7 +6419,21 @@ function appendAssistantCreationMessage(
   const content = result.created
     ? `Created ${scopeLabel} "${result.assistant.name}".`
     : `Assistant "${result.assistant.name}" already exists. Opened it in Assistants.`;
-  const messageProject = repository.appendMessage(projectId, "assistant", content, threadId);
+  const messageProject = repository.appendMessage(projectId, "assistant", content, {
+    threadId,
+    metadata: {
+      type: "assistant-action",
+      assistantId: result.assistant.id,
+      assistantName: result.assistant.name,
+      actionKind: "create",
+      summaryRows: [
+        { label: "Assistant", value: result.assistant.name },
+        { label: "Action", value: result.created ? "created" : "already existed" },
+        { label: "Scope", value: scopeLabel }
+      ],
+      actions: buildAssistantCreationCardActions(repository, result.assistant)
+    }
+  });
   runtime.upsertPersistedProject(messageProject);
   emitThreadMessageAppended(ws, requestId, runtime, repository, projectId, threadId);
 }
@@ -6174,6 +6445,7 @@ async function executeAssistantChatAction(input: {
   repository: WorkspaceRepository;
   runtime: WorkspaceRuntimeStore;
   adapter: PiAgentAdapter;
+  runtimeRegistry: AgentRuntimeRegistry;
   backgroundRunControllers: Map<string, BackgroundRunControl>;
   assistantManager: AssistantManager;
   projectId: ProjectId;
@@ -6245,7 +6517,8 @@ async function executeAssistantChatAction(input: {
           kind: "ai-routine",
           prompt: action.jobPrompt ?? action.sourcePrompt,
           modeId: assistant.modeId ?? project.selectedModeId,
-          executionModelId: assistant.executionModelId ?? project.session.executionModelId
+          executionModelId: assistant.executionModelId ?? project.session.executionModelId,
+          fastMode: assistant.fastMode
         },
         schedule: preview.schedule,
         scheduleInput: scheduleText,
@@ -6290,7 +6563,7 @@ async function executeAssistantChatAction(input: {
       await launchBackgroundJobRun(
         input.connections,
         repository,
-        input.adapter,
+        input.runtimeRegistry,
         input.runtime,
         input.backgroundRunControllers,
         input.assistantManager,
@@ -6452,6 +6725,20 @@ function buildAssistantActionCardActions(
   ];
 }
 
+function buildAssistantCreationCardActions(repository: WorkspaceRepository, assistant: Assistant): AssistantActionMessageMetadata["actions"] {
+  const retryDisabledReason =
+    repository.getGlobalExecutionPaused()
+      ? "Global execution is paused"
+      : assistant.circuitBreakerState === "tripped"
+        ? "Recover assistant first"
+        : undefined;
+  return [
+    { kind: "open-assistant", label: "Open assistant" },
+    { kind: "retry-bootstrap", label: "Retry bootstrap", disabled: Boolean(retryDisabledReason), disabledReason: retryDisabledReason },
+    { kind: "schedule-job", label: "Schedule job" }
+  ];
+}
+
 function summarizeAssistantActionText(value: string, maxLength: number) {
   const normalized = value.replace(/\s+/g, " ").trim();
   return normalized.length > maxLength ? `${normalized.slice(0, Math.max(0, maxLength - 3))}...` : normalized || "Assistant job";
@@ -6459,7 +6746,7 @@ function summarizeAssistantActionText(value: string, maxLength: number) {
 
 function inferAssistantNameFromPrompt(sourcePrompt: string) {
   const intent = detectAssistantChatIntent(sourcePrompt);
-  if (intent.kind === "create") {
+  if (intent.kind === "create-ready" || intent.kind === "create-needs-purpose") {
     return intent.name;
   }
   if (intent.kind === "ambiguous") {
@@ -6473,11 +6760,13 @@ function createAssistantIntentQuestion(input: {
   threadId: ThreadId;
   sourcePrompt: string;
   suggestedName: string;
-}): Pick<PlanningQuestion, "id" | "prompt" | "placeholder" | "choices" | "required" | "intent"> {
+  defaultScope?: "project" | "global";
+}): Pick<PlanningQuestion, "id" | "prompt" | "placeholder" | "responseKind" | "choices" | "required" | "intent"> {
   return {
     id: "assistant-create-intent" as QuestionId,
     prompt: `Do you want to create a project assistant named "${input.suggestedName}", or run this once in project chat?`,
     placeholder: "Choose assistant creation or one-off project execution.",
+    responseKind: "choice",
     choices: [
       {
         id: "assistant-create-intent:create",
@@ -6508,12 +6797,37 @@ function createAssistantIntentQuestion(input: {
       threadId: input.threadId,
       sourcePrompt: input.sourcePrompt,
       suggestedName: input.suggestedName,
-      defaultScope: "project"
+      defaultScope: input.defaultScope ?? "project"
     }
   };
 }
 
-function createAssistantActionIntentQuestion(input: Extract<AssistantChatActionResolution, { kind: "clarify" }>): Pick<PlanningQuestion, "id" | "prompt" | "placeholder" | "choices" | "required" | "intent"> {
+function createAssistantPurposeQuestion(input: {
+  projectId: ProjectId;
+  threadId: ThreadId;
+  sourcePrompt: string;
+  suggestedName: string;
+  defaultScope: "project" | "global";
+}): Pick<PlanningQuestion, "id" | "prompt" | "placeholder" | "responseKind" | "required" | "intent"> {
+  return {
+    id: "assistant-create-purpose" as QuestionId,
+    prompt: `What should ${input.suggestedName} do for this project?`,
+    placeholder: "Use Kojima to triage failed tests, maintain docs, and keep project todos current.",
+    responseKind: "freeform",
+    required: true,
+    intent: {
+      type: "assistant-create-intent",
+      projectId: input.projectId,
+      threadId: input.threadId,
+      sourcePrompt: input.sourcePrompt,
+      suggestedName: input.suggestedName,
+      defaultScope: input.defaultScope,
+      requiresPurpose: true
+    }
+  };
+}
+
+function createAssistantActionIntentQuestion(input: Extract<AssistantChatActionResolution, { kind: "clarify" }>): Pick<PlanningQuestion, "id" | "prompt" | "placeholder" | "responseKind" | "choices" | "required" | "intent"> {
   const intent: AssistantActionPlanningIntent = {
     type: "assistant-action-intent",
     actionKind: input.intent.actionKind,
@@ -6547,6 +6861,7 @@ function createAssistantActionIntentQuestion(input: Extract<AssistantChatActionR
     id: "assistant-action-intent" as QuestionId,
     prompt: input.prompt,
     placeholder: "Answer with assistant, schedule, job, question, or todo details.",
+    responseKind: "choice",
     choices: choices.slice(0, 3) as PlanningQuestion["choices"],
     required: true,
     intent
@@ -6555,13 +6870,17 @@ function createAssistantActionIntentQuestion(input: Extract<AssistantChatActionR
 
 function classifyAssistantIntentAnswer(question: PlanningQuestion, answerText: string) {
   const trimmed = answerText.trim();
-  if (trimmed === question.choices[0]?.answerText || /^create a project assistant\b/i.test(trimmed)) {
+  if (trimmed === question.choices?.[0]?.answerText || /^create a project assistant\b/i.test(trimmed)) {
     return "create";
   }
-  if (trimmed === question.choices[2]?.answerText || /^cancel\b/i.test(trimmed)) {
+  if (trimmed === question.choices?.[2]?.answerText || /^cancel\b/i.test(trimmed)) {
     return "cancel";
   }
   return "run-once";
+}
+
+function classifyAssistantPurposeAnswer(answerText: string) {
+  return /^cancel\b/i.test(answerText.trim()) ? "cancel" : "create";
 }
 
 function emitAssistantsUpdatedToAll(
@@ -6613,6 +6932,19 @@ function emitAssistantChatDeltaFrameToAll(
   for (const connection of connections) {
     sendEvent(connection, {
       type: "assistant.chat.delta",
+      requestId: `assistant:auto:${crypto.randomUUID()}`,
+      payload: input
+    });
+  }
+}
+
+function emitAssistantChatMessageAppendedToAll(
+  connections: Set<Bun.ServerWebSocket<HarnessConnection>>,
+  input: { assistantId: string; sessionId: string; message: ChatMessage; thread: AssistantThread }
+) {
+  for (const connection of connections) {
+    sendEvent(connection, {
+      type: "assistant.chat.message-appended",
       requestId: `assistant:auto:${crypto.randomUUID()}`,
       payload: input
     });
@@ -6718,18 +7050,30 @@ function emitNotificationsUpdatedToAll(
 function syncAssistantQuestionNotifications(repository: WorkspaceRepository) {
   const assistants = repository.loadAssistantsState();
   const activeIds = new Set<string>();
-  for (const question of assistants.questions) {
-    if (question.status !== "pending" && question.status !== "deferred") {
+  const questionsByAssistant = new Map<string, AssistantQuestion[]>();
+  for (const question of assistants.questions.filter((entry) => entry.status === "pending" || entry.status === "deferred")) {
+    questionsByAssistant.set(question.assistantId, [...(questionsByAssistant.get(question.assistantId) ?? []), question]);
+  }
+
+  for (const questions of questionsByAssistant.values()) {
+    if (questions.length > 1) {
+      const notification = createAssistantQuestionBatchNotification(questions);
+      activeIds.add(notification.id);
+      repository.saveNotification(notification);
+      for (const question of questions) {
+        repository.archiveNotification(createAssistantQuestionNotificationId(question.assistantId, question.id));
+      }
       continue;
     }
 
+    const question = questions[0]!;
     const notification = createAssistantQuestionNotification(question);
     activeIds.add(notification.id);
     repository.saveNotification(notification);
   }
 
   for (const item of repository.loadNotificationInboxState().items) {
-    if (item.kind !== "assistant-question") {
+    if (item.kind !== "assistant-question" && item.kind !== "assistant-question-batch") {
       continue;
     }
 
@@ -6824,12 +7168,41 @@ function createPlanningQuestionNotification(
     questionId: question.id,
     prompt: question.prompt,
     placeholder: question.placeholder,
+    responseKind: question.responseKind,
     choices: question.choices
+  };
+}
+
+function createPlanningQuestionBatchNotification(
+  projectId: string,
+  threadId: string,
+  runId: string,
+  questions: PlanningQuestion[]
+): PlanningQuestionBatchNotification {
+  return {
+    id: createPlanningQuestionBatchNotificationId(runId, questions.map((question) => question.id)),
+    kind: "planning-question-batch",
+    interactive: true,
+    createdAt: new Date().toISOString(),
+    projectId,
+    threadId,
+    runId,
+    questions: questions.slice(0, 5).map((question) => ({
+      questionId: question.id,
+      prompt: question.prompt,
+      placeholder: question.placeholder,
+      responseKind: question.responseKind,
+      choices: question.choices
+    }))
   };
 }
 
 function createPlanningQuestionNotificationId(runId: string, questionId: string) {
   return createStableBoundedId(["planning-question", runId, questionId]);
+}
+
+function createPlanningQuestionBatchNotificationId(runId: string, questionIds: string[]) {
+  return createStableBoundedId(["planning-question-batch", runId, ...questionIds]);
 }
 
 function createAssistantQuestionNotification(question: AssistantQuestion): AssistantQuestionNotification {
@@ -6845,8 +7218,28 @@ function createAssistantQuestionNotification(question: AssistantQuestion): Assis
   };
 }
 
+function createAssistantQuestionBatchNotification(questions: AssistantQuestion[]): AssistantQuestionBatchNotification {
+  const assistantId = questions[0]!.assistantId;
+  return {
+    id: createAssistantQuestionBatchNotificationId(assistantId, questions.map((question) => question.id)),
+    kind: "assistant-question-batch",
+    interactive: true,
+    createdAt: questions[0]!.askedAt,
+    assistantId,
+    questions: questions.slice(0, 5).map((question) => ({
+      questionId: question.id,
+      prompt: question.prompt,
+      answerText: question.answerText
+    }))
+  };
+}
+
 function createAssistantQuestionNotificationId(assistantId: string, questionId: string) {
   return createStableBoundedId(["assistant-question", assistantId, questionId]);
+}
+
+function createAssistantQuestionBatchNotificationId(assistantId: string, questionIds: string[]) {
+  return createStableBoundedId(["assistant-question-batch", assistantId, ...questionIds]);
 }
 
 function createBrowserApprovalNotification(
@@ -6924,7 +7317,7 @@ function backgroundRunNotificationMeta(
 async function launchBackgroundJobRun(
   connections: Set<Bun.ServerWebSocket<HarnessConnection>>,
   repository: WorkspaceRepository,
-  adapter: PiAgentAdapter,
+  runtimeRegistry: AgentRuntimeRegistry,
   runtime: WorkspaceRuntimeStore,
   backgroundRunControllers: Map<string, BackgroundRunControl>,
   assistantManager: AssistantManager,
@@ -6975,20 +7368,52 @@ async function launchBackgroundJobRun(
   try {
     const startedRun = repository.setBackgroundJobRunStatus(backgroundRunId, "running");
     saveBackgroundRunStatusNotification(repository, startedRun);
+    await emitBackgroundJobRunUpdatedToAll(connections, startedRun);
     emitNotificationsUpdatedToAll(connections, `bg:auto:${crypto.randomUUID()}`, repository.loadNotificationInboxState());
+    const assistant = job.assistantId ? repository.getAssistant(job.assistantId) : undefined;
+    const agentRuntime = assistant
+      ? runtimeRegistry.get(assistant.agentId)
+      : resolveProjectAgentRuntime(runtimeRegistry, repository.getProject(job.projectId));
+    const agentCapability = agentRuntime.getCapability() ?? (await agentRuntime.refreshCapability());
+    assertRuntimeAvailable(agentRuntime, agentCapability);
+    const providerBrand = assistant?.providerBrand ?? repository.getProviderBrand();
+    const project = repository.getProject(job.projectId);
+    const requestedModelId =
+      job.definition.kind === "ai-routine" ? job.definition.executionModelId ?? assistant?.executionModelId : undefined;
+    const resolvedExecutionModelId =
+      job.definition.kind === "ai-routine"
+        ? resolveExecutionModelIdForRuntime({
+          runtime: agentRuntime,
+          capability: agentCapability,
+          providerBrand,
+          requestedModelId,
+          persistedModelId: project.session.executionModelId
+        }).modelId
+        : agentRuntime.getDefaultExecutionModelId(providerBrand);
     const nextRun = await executeBackgroundJobRun({
       repository,
-      adapter,
+      adapter: agentRuntime.getAdapter(),
+      agentId: agentRuntime.id,
       job,
       run,
-      providerBrand: repository.getProviderBrand(),
+      providerBrand,
+      planningModelId: agentRuntime.getDefaultPlanningModelId(providerBrand),
+      executionModelId: resolvedExecutionModelId,
       debugEnabled: repository.getDebugEnabledDefault(),
-      abortSignal: abortController.signal
+      abortSignal: abortController.signal,
+      onRunUpdated(updatedRun) {
+        void emitBackgroundJobRunUpdatedToAll(connections, updatedRun);
+      }
     });
     if (job.assistantId) {
       await assistantManager.handleBackgroundJobRunOutcome({
         assistantId: job.assistantId,
-        status: nextRun.status === "succeeded" ? "succeeded" : "failed",
+        status:
+          nextRun.status === "succeeded"
+            ? "succeeded"
+            : nextRun.status === "awaiting-user-input"
+              ? "awaiting-user-input"
+              : "failed",
         summary: nextRun.summary,
         failureMessage: nextRun.failureMessage
       });
@@ -6999,6 +7424,22 @@ async function launchBackgroundJobRun(
     emitNotificationsUpdatedToAll(connections, `bg:auto:${crypto.randomUUID()}`, repository.loadNotificationInboxState());
   } catch (error) {
     const failureMessage = error instanceof Error ? error.message : "Unknown background job failure";
+    if (job.assistantId) {
+      const waitingRun = tryMarkAssistantQuestionRunWaiting(repository, backgroundRunId, failureMessage);
+      if (waitingRun) {
+        await assistantManager.handleBackgroundJobRunOutcome({
+          assistantId: job.assistantId,
+          status: "awaiting-user-input",
+          summary: failureMessage
+        });
+        saveBackgroundRunStatusNotification(repository, waitingRun);
+        emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
+        await emitBackgroundJobRunUpdatedToAll(connections, waitingRun);
+        emitNotificationsUpdatedToAll(connections, `bg:auto:${crypto.randomUUID()}`, repository.loadNotificationInboxState());
+        return;
+      }
+    }
+
     const failedRun = repository.setBackgroundJobRunStatus(backgroundRunId, "failed", {
       failureMessage
     });
@@ -7019,13 +7460,37 @@ async function launchBackgroundJobRun(
   }
 }
 
+function tryMarkAssistantQuestionRunWaiting(repository: WorkspaceRepository, backgroundRunId: string, message: string) {
+  const prompt = extractAssistantQuestionPrompt(message);
+  if (!prompt) {
+    return undefined;
+  }
+
+  repository.appendBackgroundJobRunEvent(backgroundRunId, "awaiting-user-input", "Waiting for user input", prompt);
+  return repository.setBackgroundJobRunStatus(backgroundRunId, "awaiting-user-input", {
+    summary: prompt
+  });
+}
+
+function extractAssistantQuestionPrompt(message: string) {
+  const normalized = message.replace(/\s+/g, " ").trim();
+  if (!normalized || normalized.length > 1200 || !normalized.includes("?")) {
+    return undefined;
+  }
+
+  const directQuestion = normalized.match(
+    /\b(?:what|which|who|when|where|why|how|should|could|would|can|do|does|did|is|are|was|were)\b[^?]*\?/i
+  )?.[0];
+  return directQuestion?.trim();
+}
+
 function isExecutionModelIdAvailableForRuntime(
   agentId: "pi" | "copilot-cli" | "codex-cli",
   capability:
     | {
-        discoveredModels: string[];
-        activeModel?: string;
-      }
+      discoveredModels: string[];
+      activeModel?: string;
+    }
     | undefined,
   modelId: string | undefined,
   providerBrand: "gpt" | "gemini"
@@ -7045,11 +7510,11 @@ function isExecutionModelIdAvailableForRuntime(
 function resolveExecutionModelIdForRuntime(input: {
   runtime: AgentRuntime;
   capability?:
-    | {
-        discoveredModels: string[];
-        activeModel?: string;
-      }
-    | undefined;
+  | {
+    discoveredModels: string[];
+    activeModel?: string;
+  }
+  | undefined;
   providerBrand: "gpt" | "gemini";
   requestedModelId?: string;
   persistedModelId?: string;

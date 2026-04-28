@@ -1,0 +1,12 @@
+export const GAME_WIDTH = 960;
+export const GAME_HEIGHT = 540;
+export const PLAYER_RADIUS = 14;
+export const PLAYER_SPEED = 420;
+export const PLAYER_FIRE_RATE = 0.14;
+export const OPTION_COUNT = 4;
+export const OPTION_TRAIL_SPACING = 0.085;
+export const POWER_BAR_SLOTS = 7;
+export const SHIELD_MAX = 100;
+export const HULL_MAX = 3;
+export const BOSS_SHIELD_MAX = 12;
+export const BOSS_CORE_MAX = 18;

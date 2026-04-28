@@ -1,0 +1,591 @@
+import { clamp, projectPoint } from "./math.js";
+import { BOSS_CORE, buildWaveState, createBossState, enemyProjectilePattern, enemySpeedForProgress, isBossCoreOpen } from "./enemies.js";
+import { computeRailOffset, getObstacleWindow, laneToX, progressToStage, RAIL_LENGTH } from "./rail.js";
+
+const PLAYER_FIRE_KEYS = ["Space", "KeyZ", "KeyX"];
+const PLAYER_MAX_HEALTH = 100;
+const PLAYER_BASE_SPEED = 88;
+const PLAYER_BOSS_HOLD = BOSS_CORE.entryAt + 80;
+const PLAYER_CLEAR_TARGET = RAIL_LENGTH;
+
+function isFireHeld(held) {
+  return PLAYER_FIRE_KEYS.some((key) => Boolean(held[key]));
+}
+
+function approach(current, target, delta) {
+  if (current < target) return Math.min(target, current + delta);
+  if (current > target) return Math.max(target, current - delta);
+  return target;
+}
+
+export class Game {
+  constructor(options = {}) {
+    this.options = options;
+    this.width = options.width ?? 1280;
+    this.height = options.height ?? 720;
+    this.dpr = options.dpr ?? 1;
+    this.starSeed = Array.from({ length: 96 }, (_, index) => ({
+      x: ((index * 97) % 1000) / 1000,
+      y: ((index * 57) % 1000) / 1000,
+      s: 1 + (index % 3),
+    }));
+    this.restart();
+  }
+
+  start() {
+    this.started = true;
+    if (this.mode === "menu") {
+      this.mode = "play";
+      this.alert = "Squadron inbound";
+    }
+  }
+
+  restart() {
+    this.started = false;
+    this.mode = "menu";
+    this.time = 0;
+    this.score = 0;
+    this.health = PLAYER_MAX_HEALTH;
+    this.progress = 0;
+    this.clearProgress = 0;
+    this.alert = "Mission ready";
+    this.bossAlert = "";
+    this.win = false;
+    this.lose = false;
+    this.player = {
+      lane: 2,
+      x: 0,
+      y: 0,
+      z: 0,
+      bank: 0,
+      fireCooldown: 0,
+      invuln: 0,
+    };
+    this.camera = { x: 0, y: 0, z: 0 };
+    this.enemies = [];
+    this.playerShots = [];
+    this.enemyShots = [];
+    this.effects = [];
+    this.boss = createBossState();
+    this.spawnedFormations = new Set();
+    this.completed = false;
+  }
+
+  resize(width, height) {
+    if (typeof width === "object" && width) {
+      this.width = width.width ?? this.width;
+      this.height = width.height ?? this.height;
+      this.dpr = width.dpr ?? this.dpr;
+      return;
+    }
+    this.width = width ?? this.width;
+    this.height = height ?? this.height;
+  }
+
+  update(dt, input = {}) {
+    const pressed = input.pressed || {};
+    const held = input.held || {};
+    this.time += dt;
+
+    if (this.mode === "menu") {
+      this.alert = "Press Start";
+      if (pressed.Enter || pressed.Space) this.start();
+      return;
+    }
+
+    if ((this.win || this.lose) && (pressed.Enter || pressed.Space)) {
+      this.restart();
+      this.start();
+      return;
+    }
+
+    if (this.win || this.lose) {
+      this.updateEffects(dt);
+      return;
+    }
+
+    this.updatePlayer(dt, held);
+    this.updateProgress(dt);
+    this.spawnEnemies();
+    this.updateEnemies(dt);
+    this.updateBoss(dt);
+    this.updateShots(dt, held);
+    this.resolveObstacles();
+    this.resolveCollisions();
+    this.updateEffects(dt);
+    this.syncAlerts();
+
+    if (this.health <= 0) {
+      this.health = 0;
+      this.lose = true;
+      this.mode = "lose";
+      this.alert = "Hull failed";
+    }
+
+    if (!this.completed && this.boss.hp <= 0) {
+      this.completed = true;
+      this.boss.phase = "down";
+      this.bossAlert = "Core broken";
+      this.alert = "Break formation";
+    }
+
+    if (this.completed) {
+      this.clearProgress = clamp(this.clearProgress + dt * 180, 0, PLAYER_CLEAR_TARGET - BOSS_CORE.entryAt);
+      this.progress = clamp(PLAYER_BOSS_HOLD + this.clearProgress, 0, PLAYER_CLEAR_TARGET);
+      if (this.progress >= PLAYER_CLEAR_TARGET) {
+        this.win = true;
+        this.mode = "win";
+      }
+    }
+  }
+
+  updatePlayer(dt, held) {
+    const laneIntent = (held.ArrowRight ? 1 : 0) - (held.ArrowLeft ? 1 : 0);
+    this.player.lane = clamp(this.player.lane + laneIntent * dt * 4.4, 0, 4);
+    const rail = computeRailOffset(this.progress);
+    const laneX = laneToX(this.player.lane, rail.sway * 0.6);
+    this.player.x = approach(this.player.x, laneX, dt * 360);
+    this.player.y = Math.sin(this.time * 4.2) * 7 + rail.sway * 28;
+    this.player.bank = approach(this.player.bank, laneIntent * 0.95, dt * 4.8);
+    this.player.z = this.progress + 90;
+    this.camera.x = this.player.x * 0.16;
+    this.camera.y = this.player.y * 0.14;
+    this.camera.z = this.progress - 40;
+    this.player.fireCooldown = Math.max(0, this.player.fireCooldown - dt);
+    this.player.invuln = Math.max(0, this.player.invuln - dt);
+  }
+
+  updateProgress(dt) {
+    if (this.completed) return;
+    if (this.progress < BOSS_CORE.entryAt - 160) {
+      const stageProgress = progressToStage(this.progress);
+      this.progress = clamp(this.progress + dt * (PLAYER_BASE_SPEED + stageProgress * 40), 0, BOSS_CORE.entryAt - 160);
+      return;
+    }
+    if (!this.boss.spawned) {
+      this.progress = clamp(this.progress + dt * 92, 0, PLAYER_BOSS_HOLD);
+    } else {
+      this.progress = approach(this.progress, PLAYER_BOSS_HOLD, dt * 120);
+    }
+  }
+
+  spawnEnemies() {
+    for (const formation of buildWaveState(this.progress)) {
+      if (this.spawnedFormations.has(formation.at) || this.progress < formation.at - 520) continue;
+      this.spawnedFormations.add(formation.at);
+      const laneCenter = formation.lanes.reduce((sum, lane) => sum + lane, 0) / formation.lanes.length;
+      formation.lanes.forEach((lane, index) => {
+        this.enemies.push({
+          id: `${formation.type}-${formation.at}-${index}`,
+          kind: formation.type,
+          lane,
+          x: laneToX(lane),
+          z: formation.at + 440 + index * 48,
+          y: (index - (formation.lanes.length - 1) * 0.5) * 18,
+          hp: formation.hp,
+          seed: formation.at * 0.01 + index,
+          age: 0,
+          score: formation.score,
+          aggression: formation.aggression,
+          laneCenter,
+        });
+      });
+    }
+
+    if (this.progress >= BOSS_CORE.entryAt - 100 && !this.boss.spawned) {
+      this.boss.spawned = true;
+      this.boss.phase = "shield";
+      this.alert = "Boss class target";
+    }
+  }
+
+  updateEnemies(dt) {
+    const stageProgress = progressToStage(this.progress);
+    for (const enemy of this.enemies) {
+      enemy.age += dt;
+      const drift = Math.sin(enemy.age * 3.8 + enemy.seed) * 0.85;
+      enemy.lane = clamp(enemy.lane + drift * dt * enemy.aggression, 0, 4);
+      enemy.x = laneToX(enemy.lane);
+      enemy.z -= enemySpeedForProgress(enemy.z, stageProgress) * dt;
+      enemy.y = Math.sin(enemy.age * 5 + enemy.seed) * 22 + (enemy.lane - enemy.laneCenter) * 6;
+      const shot = enemyProjectilePattern(enemy, enemy.age, stageProgress);
+      if (shot && enemy.z > this.progress + 120) {
+        this.enemyShots.push({
+          lane: enemy.lane,
+          x: enemy.x,
+          y: enemy.y,
+          z: enemy.z,
+          speed: shot.speed,
+          damage: shot.damage,
+          color: "#ff8e66",
+        });
+      }
+    }
+
+    this.enemies = this.enemies.filter((enemy) => enemy.z > this.progress - 120 && enemy.hp > 0);
+  }
+
+  updateBoss(dt) {
+    if (!this.boss.spawned || this.boss.hp <= 0) return;
+    const coreOpen = isBossCoreOpen(this.boss);
+    const coreWeakpoint = this.boss.weakpoints.find((weakpoint) => weakpoint.id === "core");
+    this.boss.phase = coreOpen ? "core" : "shield";
+
+    for (const weakpoint of this.boss.weakpoints) {
+      if (weakpoint.id === "core") {
+        weakpoint.open = coreOpen;
+      } else {
+        weakpoint.open = weakpoint.hp > 0;
+      }
+    }
+
+    if (coreWeakpoint && coreWeakpoint.hp <= 0) {
+      this.boss.hp = 0;
+      return;
+    }
+
+    const bossAge = this.time - 4;
+    if (bossAge > 0 && Math.floor(bossAge * (coreOpen ? 1.7 : 1.1)) !== Math.floor((bossAge - dt) * (coreOpen ? 1.7 : 1.1))) {
+      const liveCannons = this.boss.weakpoints.filter((weakpoint) => weakpoint.id !== "core" && weakpoint.hp > 0);
+      const firingPorts = liveCannons.length ? liveCannons : [this.boss.weakpoints.find((weakpoint) => weakpoint.id === "core")];
+      for (const weakpoint of firingPorts) {
+        this.enemyShots.push({
+          lane: weakpoint.lane,
+          x: laneToX(weakpoint.lane),
+          y: weakpoint.id === "core" ? 18 : weakpoint.lane === 1 ? -42 : 42,
+          z: this.progress + 320,
+          speed: coreOpen ? 410 : 320,
+          damage: coreOpen ? 10 : 7,
+          color: coreOpen ? "#ff5c94" : "#ffd768",
+        });
+      }
+    }
+  }
+
+  updateShots(dt, held) {
+    const fireHeld = isFireHeld(held);
+    if (fireHeld && this.player.fireCooldown <= 0) {
+      this.player.fireCooldown = this.completed ? 0.09 : this.boss.spawned ? 0.11 : 0.16;
+      this.playerShots.push({
+        lane: this.player.lane,
+        x: this.player.x,
+        y: this.player.y,
+        z: this.progress + 85,
+        speed: this.boss.spawned ? 980 : 860,
+        damage: this.boss.spawned ? 2 : 1,
+      });
+    }
+
+    for (const shot of this.playerShots) {
+      shot.z += shot.speed * dt;
+    }
+    this.playerShots = this.playerShots.filter((shot) => !shot.dead && shot.z < this.progress + 1200);
+
+    for (const shot of this.enemyShots) {
+      shot.z -= shot.speed * dt;
+    }
+    this.enemyShots = this.enemyShots.filter((shot) => !shot.dead && shot.z > this.progress - 120);
+  }
+
+  resolveObstacles() {
+    if (this.player.invuln > 0) return;
+    for (const obstacle of getObstacleWindow(this.progress, 70)) {
+      if (Math.abs(obstacle.lane - this.player.lane) > 0.55) continue;
+      if (obstacle.z > this.progress + 26) continue;
+      this.health -= obstacle.kind === "turret" ? 16 : 10;
+      this.player.invuln = 0.55;
+      this.effects.push({ text: obstacle.kind === "turret" ? "turret hit" : "scrape", ttl: 0.45 });
+      break;
+    }
+  }
+
+  resolveCollisions() {
+    for (const shot of this.playerShots) {
+      for (const enemy of this.enemies) {
+        if (Math.abs(shot.lane - enemy.lane) > 0.75) continue;
+        if (Math.abs(shot.z - enemy.z) > 60) continue;
+        enemy.hp -= shot.damage;
+        shot.dead = true;
+        if (enemy.hp <= 0) {
+          this.score += enemy.score;
+          this.effects.push({ text: `+${enemy.score}`, ttl: 0.5 });
+        }
+        break;
+      }
+      if (shot.dead || !this.boss.spawned || this.boss.hp <= 0) continue;
+      for (const weakpoint of this.boss.weakpoints) {
+        if (!weakpoint.open || weakpoint.hp <= 0) continue;
+        if (Math.abs(shot.lane - weakpoint.lane) > 0.85) continue;
+        if (Math.abs(shot.z - (this.progress + 320)) > 92) continue;
+        weakpoint.hp = Math.max(0, weakpoint.hp - shot.damage);
+        this.score += weakpoint.id === "core" ? 160 : 90;
+        if (weakpoint.id === "core") {
+          this.boss.hp = Math.max(0, this.boss.hp - shot.damage);
+        }
+        shot.dead = true;
+        this.effects.push({ text: weakpoint.id === "core" ? "core hit" : "armor crack", ttl: 0.42 });
+        break;
+      }
+    }
+    this.playerShots = this.playerShots.filter((shot) => !shot.dead);
+
+    if (this.player.invuln <= 0) {
+      for (const shot of this.enemyShots) {
+        if (Math.abs(shot.lane - this.player.lane) > 0.72) continue;
+        if (Math.abs(shot.z - this.progress) > 50) continue;
+        this.health -= shot.damage;
+        this.player.invuln = 0.55;
+        shot.dead = true;
+        this.effects.push({ text: "impact", ttl: 0.35 });
+        break;
+      }
+    }
+    this.enemyShots = this.enemyShots.filter((shot) => !shot.dead);
+
+    if (this.player.invuln <= 0) {
+      for (const enemy of this.enemies) {
+        if (Math.abs(enemy.lane - this.player.lane) > 0.7) continue;
+        if (Math.abs(enemy.z - this.progress) > 58) continue;
+        this.health -= 18;
+        this.player.invuln = 0.7;
+        enemy.hp = 0;
+        this.effects.push({ text: "collision", ttl: 0.4 });
+        break;
+      }
+      this.enemies = this.enemies.filter((enemy) => enemy.hp > 0);
+    }
+  }
+
+  updateEffects(dt) {
+    for (const effect of this.effects) effect.ttl -= dt;
+    this.effects = this.effects.filter((effect) => effect.ttl > 0);
+  }
+
+  syncAlerts() {
+    if (this.completed) {
+      this.alert = "Return vector";
+      this.bossAlert = "Core broken";
+      return;
+    }
+
+    if (this.boss.spawned) {
+      this.bossAlert = isBossCoreOpen(this.boss) ? "Core exposed" : "Break the side pods";
+      this.alert = this.boss.phase === "core" ? "Finish the carrier" : "Shielded target";
+      return;
+    }
+
+    const obstacles = getObstacleWindow(this.progress, 260);
+    this.bossAlert = "";
+    if (obstacles.length) {
+      this.alert = `Lane ${obstacles[0].lane + 1} blocked`;
+    } else if (this.enemies.length) {
+      this.alert = "Formation pressure";
+    } else {
+      this.alert = "Clear corridor";
+    }
+  }
+
+  render(ctx) {
+    const width = this.width;
+    const height = this.height;
+    ctx.clearRect(0, 0, width, height);
+
+    const sky = ctx.createLinearGradient(0, 0, 0, height);
+    sky.addColorStop(0, "#051322");
+    sky.addColorStop(0.62, "#081c32");
+    sky.addColorStop(1, "#02060b");
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, width, height);
+
+    this.renderStars(ctx, width, height);
+    this.renderRail(ctx, width, height);
+    this.renderObstacles(ctx, width, height);
+    this.renderEnemies(ctx, width, height);
+    this.renderBoss(ctx, width, height);
+    this.renderShots(ctx, width, height);
+    this.renderPlayer(ctx, width, height);
+    this.renderEffects(ctx, width, height);
+  }
+
+  renderStars(ctx, width, height) {
+    for (const star of this.starSeed) {
+      const shift = (this.time * 0.03 * star.s + star.x) % 1;
+      const x = (shift * width + this.player.bank * 26) % width;
+      const y = (star.y * height * 0.72 + this.time * 20 * star.s) % (height * 0.82);
+      ctx.fillStyle = `rgba(255,255,255,${0.35 + star.s * 0.14})`;
+      ctx.fillRect(x, y, star.s, star.s);
+    }
+  }
+
+  renderRail(ctx, width, height) {
+    const horizon = height * 0.32;
+    const floorTop = height * 0.45;
+    const railShift = this.player.bank * 32;
+    ctx.fillStyle = "rgba(9, 25, 40, 0.95)";
+    ctx.beginPath();
+    ctx.moveTo(width * 0.38 + railShift, floorTop);
+    ctx.lineTo(width * 0.62 + railShift, floorTop);
+    ctx.lineTo(width * 0.94, height);
+    ctx.lineTo(width * 0.06, height);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = "rgba(122, 228, 255, 0.12)";
+    ctx.fillRect(0, horizon, width, height - horizon);
+
+    ctx.strokeStyle = "rgba(122, 228, 255, 0.18)";
+    ctx.lineWidth = 2;
+    for (let lane = 0; lane <= 4; lane++) {
+      const t = lane / 4;
+      ctx.beginPath();
+      ctx.moveTo(width * (0.38 + t * 0.24) + railShift, floorTop);
+      ctx.lineTo(width * (0.06 + t * 0.88), height);
+      ctx.stroke();
+    }
+  }
+
+  renderObstacles(ctx, width, height) {
+    for (const obstacle of getObstacleWindow(this.progress, 900)) {
+      const point = projectPoint(
+        { x: laneToX(obstacle.lane), y: obstacle.kind === "turret" ? -8 : 20, z: obstacle.z },
+        this.camera,
+        width,
+        height,
+      );
+      if (point.depth <= 0 || point.depth > 8) continue;
+      const size = 90 * point.scale;
+      ctx.fillStyle = obstacle.kind === "turret" ? "#f97171" : obstacle.kind === "drone" ? "#ffd768" : "#4ac6ff";
+      ctx.fillRect(point.x - size * 0.5, point.y - size * 0.2, size, size * 0.35);
+    }
+  }
+
+  renderEnemies(ctx, width, height) {
+    for (const enemy of this.enemies) {
+      const point = projectPoint(enemy, this.camera, width, height);
+      if (point.depth <= 0 || point.depth > 8) continue;
+      const size = 88 * point.scale;
+      ctx.save();
+      ctx.translate(point.x, point.y);
+      ctx.fillStyle = "#ffd768";
+      ctx.beginPath();
+      ctx.moveTo(0, -size * 0.34);
+      ctx.lineTo(size * 0.45, size * 0.16);
+      ctx.lineTo(0, size * 0.28);
+      ctx.lineTo(-size * 0.45, size * 0.16);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = "rgba(6, 18, 37, 0.92)";
+      ctx.lineWidth = Math.max(1, 2 * point.scale);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  renderBoss(ctx, width, height) {
+    if (!this.boss.spawned || this.boss.hp <= 0) return;
+    const body = projectPoint({ x: 0, y: 0, z: this.progress + 320 }, this.camera, width, height);
+    const bodyWidth = 290 * body.scale;
+    const bodyHeight = 180 * body.scale;
+    ctx.fillStyle = "#334b63";
+    ctx.fillRect(body.x - bodyWidth * 0.5, body.y - bodyHeight * 0.4, bodyWidth, bodyHeight * 0.8);
+
+    for (const weakpoint of this.boss.weakpoints) {
+      const point = projectPoint(
+        { x: laneToX(weakpoint.lane), y: weakpoint.id === "core" ? 18 : weakpoint.lane === 1 ? -44 : 44, z: this.progress + 320 },
+        this.camera,
+        width,
+        height,
+      );
+      const size = weakpoint.id === "core" ? 72 * point.scale : 56 * point.scale;
+      ctx.fillStyle = weakpoint.id === "core" ? (weakpoint.open ? "#ff5c94" : "#4c5f74") : weakpoint.hp > 0 ? "#ffd768" : "#2a3644";
+      ctx.beginPath();
+      ctx.arc(point.x, point.y, size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  renderShots(ctx, width, height) {
+    for (const shot of this.playerShots) {
+      const point = projectPoint({ x: shot.x, y: shot.y, z: shot.z }, this.camera, width, height);
+      if (point.depth <= 0 || point.depth > 8) continue;
+      ctx.fillStyle = "#7ae4ff";
+      ctx.fillRect(point.x - 2, point.y - 8 * point.scale, 4, 16 * point.scale);
+    }
+
+    for (const shot of this.enemyShots) {
+      const point = projectPoint({ x: shot.x, y: shot.y, z: shot.z }, this.camera, width, height);
+      if (point.depth <= 0 || point.depth > 8) continue;
+      ctx.fillStyle = shot.color || "#ff8e66";
+      ctx.fillRect(point.x - 3, point.y - 7 * point.scale, 6, 14 * point.scale);
+    }
+  }
+
+  renderPlayer(ctx, width, height) {
+    const x = width * 0.5 + this.player.x * 0.55;
+    const y = height * 0.78 + this.player.y * 0.5;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(this.player.bank * 0.28);
+    ctx.fillStyle = this.player.invuln > 0 ? "rgba(122, 228, 255, 0.6)" : "#e8f4ff";
+    ctx.beginPath();
+    ctx.moveTo(0, -26);
+    ctx.lineTo(22, 10);
+    ctx.lineTo(0, 18);
+    ctx.lineTo(-22, 10);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = "#ff6d7a";
+    ctx.fillRect(-4, 8, 8, 20);
+    ctx.restore();
+  }
+
+  renderEffects(ctx, width, height) {
+    if (!this.effects.length) return;
+    ctx.save();
+    ctx.font = "600 18px Trebuchet MS";
+    ctx.textAlign = "center";
+    this.effects.forEach((effect, index) => {
+      const alpha = clamp(effect.ttl / 0.5, 0, 1);
+      ctx.fillStyle = `rgba(255, 206, 86, ${alpha})`;
+      ctx.fillText(effect.text.toUpperCase(), width * 0.5, height * (0.24 + index * 0.04));
+    });
+    ctx.restore();
+  }
+
+  getFrameState() {
+    const bossWeakpoints = this.boss.weakpoints.map((weakpoint) => ({
+      id: weakpoint.id,
+      hp: weakpoint.hp,
+      open: weakpoint.open,
+    }));
+
+    return {
+      mode: this.mode,
+      health: this.health,
+      score: this.score,
+      progress: progressToStage(this.progress) * 100,
+      alert: this.alert,
+      bossAlert: this.bossAlert,
+      bossStatus: {
+        hp: this.boss.hp,
+        open: isBossCoreOpen(this.boss),
+        phase: this.boss.phase,
+        weakpoints: bossWeakpoints,
+      },
+      overlayEyebrow: this.mode === "menu" ? "Mission" : this.win ? "Victory" : this.lose ? "Failure" : "Flight",
+      overlayTitle: this.win ? "Sector Cleared" : this.lose ? "Ship Down" : "Star Fox Polygon Strike",
+      overlayCopy:
+        this.mode === "menu"
+          ? "Arrow keys bank between lanes. Hold Space to fire."
+          : this.win
+            ? "Boss core broken. Press Start to run the route again."
+            : this.lose
+              ? "Hull failed. Press Start to retry."
+              : "",
+      overlayButton: this.mode === "menu" ? "Start" : this.win || this.lose ? "Restart" : "Hide",
+      showRestart: this.win || this.lose,
+      showWin: this.win,
+      showLose: this.lose,
+    };
+  }
+}

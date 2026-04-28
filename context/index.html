@@ -3,98 +3,676 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>velocity-grind</title>
+  <title>Game Catalog</title>
   <style>
     :root {
-      color-scheme: dark;
-      --bg-0: #05070c;
-      --bg-1: #08121f;
-      --bg-2: #10253a;
-      --panel: rgba(8, 12, 18, 0.72);
-      --panel-strong: rgba(10, 16, 24, 0.9);
-      --line: rgba(255, 255, 255, 0.1);
-      --text: #f6f2ea;
-      --muted: rgba(246, 242, 234, 0.72);
-      --accent: #ffb347;
-      --accent-2: #7ee081;
-      --danger: #ff6f7d;
-      --glow: rgba(255, 179, 71, 0.22);
-      font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+      color-scheme: light;
+      --bg: #f4efe6;
+      --panel: rgba(255, 250, 242, 0.84);
+      --panel-strong: #fff9f1;
+      --ink: #1f1a17;
+      --muted: #66584d;
+      --line: rgba(44, 30, 18, 0.12);
+      --accent: #c85c2d;
+      --accent-2: #2e8b7d;
+      --shadow: rgba(61, 34, 15, 0.12);
+      font-family: Georgia, "Times New Roman", serif;
     }
 
     * {
       box-sizing: border-box;
     }
 
-    html,
     body {
       margin: 0;
-      width: 100%;
-      height: 100%;
-      overflow: hidden;
+      min-height: 100vh;
+      color: var(--ink);
       background:
-        radial-gradient(circle at 50% 20%, rgba(255, 179, 71, 0.15), transparent 22%),
-        radial-gradient(circle at 20% 15%, rgba(126, 224, 129, 0.12), transparent 20%),
-        radial-gradient(circle at 80% 30%, rgba(118, 177, 255, 0.12), transparent 18%),
-        linear-gradient(180deg, var(--bg-2), var(--bg-1) 44%, var(--bg-0));
-      color: var(--text);
+        radial-gradient(circle at top left, rgba(200, 92, 45, 0.18), transparent 26%),
+        radial-gradient(circle at top right, rgba(46, 139, 125, 0.14), transparent 24%),
+        linear-gradient(180deg, #f7f2ea 0%, var(--bg) 100%);
     }
 
-    body {
-      display: grid;
-      place-items: center;
+    main {
+      width: min(1180px, calc(100vw - 32px));
+      margin: 0 auto;
+      padding: 48px 0 64px;
     }
 
-    .shell {
+    .hero {
       position: relative;
-      width: min(100vw, 1440px);
-      height: min(100vh, 900px);
-      padding: 16px;
-    }
-
-    canvas {
-      width: 100%;
-      height: 100%;
-      display: block;
-      border-radius: 28px;
+      overflow: hidden;
+      padding: 32px;
+      border: 1px solid var(--line);
+      border-radius: 32px;
       background:
-        linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent),
-        linear-gradient(180deg, rgba(10, 16, 24, 0.98), rgba(5, 8, 12, 0.98));
-      box-shadow:
-        0 30px 80px rgba(0, 0, 0, 0.45),
-        inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+        linear-gradient(135deg, rgba(255, 255, 255, 0.64), rgba(255, 247, 237, 0.92)),
+        linear-gradient(120deg, rgba(200, 92, 45, 0.12), rgba(46, 139, 125, 0.12));
+      box-shadow: 0 22px 48px var(--shadow);
     }
 
-    .chrome {
+    .hero::after {
+      content: "";
       position: absolute;
-      inset: 24px;
+      inset: auto -8% -35% auto;
+      width: 260px;
+      height: 260px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(200, 92, 45, 0.2), transparent 68%);
+      pointer-events: none;
+    }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      font-size: 0.78rem;
+      letter-spacing: 0.28em;
+      text-transform: uppercase;
+      color: var(--accent-2);
+    }
+
+    h1 {
+      margin: 0;
+      max-width: 10ch;
+      font-size: clamp(2.8rem, 7vw, 5.4rem);
+      line-height: 0.92;
+      letter-spacing: -0.06em;
+    }
+
+    .lede {
+      max-width: 58ch;
+      margin: 18px 0 0;
+      font-size: 1.05rem;
+      line-height: 1.7;
+      color: var(--muted);
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 24px;
+    }
+
+    .pill {
+      padding: 10px 14px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.6);
+      font-size: 0.92rem;
+    }
+
+    .section-head {
       display: flex;
       justify-content: space-between;
-      pointer-events: none;
-      text-transform: uppercase;
-      letter-spacing: 0.2em;
-      font-size: 11px;
-      color: rgba(246, 242, 234, 0.68);
+      align-items: baseline;
+      gap: 16px;
+      margin: 32px 0 18px;
     }
 
-    .chrome span {
-      padding: 10px 12px;
+    .section-head h2,
+    .section-head p {
+      margin: 0;
+    }
+
+    .section-head h2 {
+      font-size: 1.45rem;
+      letter-spacing: -0.04em;
+    }
+
+    .section-head p {
+      color: var(--muted);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+    }
+
+    .card {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      min-height: 212px;
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      background: var(--panel);
+      box-shadow: 0 12px 24px rgba(61, 34, 15, 0.06);
+    }
+
+    .card:hover,
+    .card:focus-within {
+      transform: translateY(-3px);
+      border-color: rgba(200, 92, 45, 0.32);
+      box-shadow: 0 18px 30px rgba(61, 34, 15, 0.1);
+    }
+
+    .card strong {
+      font-size: 1.18rem;
+      line-height: 1.2;
+      letter-spacing: -0.03em;
+    }
+
+    .card span {
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .card-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: auto;
+    }
+
+    .button,
+    .card-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 42px;
+      padding: 10px 14px;
+      border: 1px solid var(--line);
       border-radius: 999px;
-      background: rgba(7, 10, 16, 0.42);
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      backdrop-filter: blur(10px);
+      background: rgba(255, 255, 255, 0.72);
+      color: var(--ink);
+      font: inherit;
+      text-decoration: none;
+      cursor: pointer;
+      transition: border-color 160ms ease, transform 160ms ease, background 160ms ease;
+    }
+
+    .button:hover,
+    .button:focus-visible,
+    .card-link:hover,
+    .card-link:focus-visible {
+      border-color: rgba(200, 92, 45, 0.42);
+      background: rgba(255, 248, 241, 0.95);
+      outline: none;
+      transform: translateY(-1px);
+    }
+
+    .button-accent {
+      background: rgba(200, 92, 45, 0.12);
+      color: var(--accent);
+    }
+
+    .tag {
+      align-self: flex-start;
+      padding: 8px 10px;
+      border-radius: 999px;
+      background: rgba(46, 139, 125, 0.12);
+      color: var(--accent-2);
+      font-size: 0.78rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .empty,
+    .error {
+      padding: 24px;
+      border: 1px dashed var(--line);
+      border-radius: 24px;
+      background: rgba(255, 255, 255, 0.55);
+      color: var(--muted);
+    }
+
+    .error {
+      color: #8d2f2f;
+      background: rgba(255, 240, 238, 0.86);
+    }
+
+    .rating-preview {
+      font-size: 0.92rem;
+      color: var(--muted);
+    }
+
+    dialog {
+      width: min(680px, calc(100vw - 24px));
+      padding: 0;
+      border: 1px solid var(--line);
+      border-radius: 28px;
+      background: var(--panel-strong);
+      box-shadow: 0 28px 70px rgba(61, 34, 15, 0.3);
+    }
+
+    dialog::backdrop {
+      background: rgba(31, 26, 23, 0.38);
+      backdrop-filter: blur(6px);
+    }
+
+    .dialog-shell {
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      padding: 24px;
+    }
+
+    .dialog-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: flex-start;
+    }
+
+    .dialog-head h3,
+    .dialog-head p,
+    .field label,
+    .save-status {
+      margin: 0;
+    }
+
+    .dialog-head p,
+    .field p,
+    .save-status {
+      color: var(--muted);
+    }
+
+    .close-button {
+      min-width: 42px;
+      min-height: 42px;
+      padding: 0;
+      font-size: 1.2rem;
+      line-height: 1;
+    }
+
+    .stars {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .star-button {
+      min-width: 46px;
+      min-height: 46px;
+      padding: 0;
+      font-size: 1.15rem;
+      background: rgba(255, 255, 255, 0.8);
+    }
+
+    .star-button[data-active="true"] {
+      border-color: rgba(200, 92, 45, 0.52);
+      background: rgba(200, 92, 45, 0.18);
+      color: var(--accent);
+    }
+
+    .field {
+      display: grid;
+      gap: 8px;
+    }
+
+    .field textarea {
+      width: 100%;
+      min-height: 108px;
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.82);
+      color: var(--ink);
+      font: inherit;
+      resize: vertical;
+    }
+
+    .field textarea:focus-visible {
+      outline: 2px solid rgba(200, 92, 45, 0.22);
+      outline-offset: 1px;
+      border-color: rgba(200, 92, 45, 0.38);
+    }
+
+    @media (max-width: 720px) {
+      main {
+        width: min(100vw - 20px, 1180px);
+        padding: 20px 0 40px;
+      }
+
+      .hero {
+        padding: 24px;
+        border-radius: 26px;
+      }
+
+      .section-head {
+        flex-direction: column;
+      }
+
+      .dialog-head {
+        flex-direction: column;
+      }
     }
   </style>
 </head>
 <body>
-  <main class="shell">
-    <canvas id="game" width="1600" height="900" aria-label="velocity-grind"></canvas>
-    <div class="chrome">
-      <span>velocity-grind</span>
-      <span>canvas scaffold</span>
+  <main>
+    <section class="hero">
+      <p class="eyebrow">Local Catalog</p>
+      <h1>Play every top-level folder.</h1>
+      <p class="lede">
+        This landing page scans top-level game folders, skips hidden and repo support directories, and links each entry
+        straight to its own hosted path.
+      </p>
+      <div class="meta">
+        <div class="pill">Host: <strong>localhost:2999</strong></div>
+        <div class="pill">Direct route: <strong>/stick-empire-logic</strong></div>
+      </div>
+    </section>
+
+    <div class="section-head">
+      <h2>Catalog Entries</h2>
+      <p id="count">Scanning folders...</p>
     </div>
+
+    <section id="catalog" class="grid" aria-live="polite"></section>
   </main>
 
-  <script type="module" src="./velocity-grind/app.js"></script>
+  <dialog id="review-dialog">
+    <form method="dialog" class="dialog-shell">
+      <div class="dialog-head">
+        <div>
+          <p class="eyebrow" id="dialog-kicker">User Review</p>
+          <h3 id="dialog-title">Rate this game</h3>
+          <p id="dialog-path"></p>
+        </div>
+        <button type="button" class="button close-button" id="dialog-close" aria-label="Close review dialog">&times;</button>
+      </div>
+
+      <section class="field">
+        <label for="review-rating">Star Rating</label>
+        <div class="stars" id="review-rating" role="radiogroup" aria-label="Rate this game from one to five stars"></div>
+      </section>
+
+      <section class="field">
+        <label for="review-likes">Likes</label>
+        <p>What felt good or worth keeping.</p>
+        <textarea id="review-likes" name="likes" placeholder="Good mechanics, feel, clarity, delight..."></textarea>
+      </section>
+
+      <section class="field">
+        <label for="review-dislikes">Dislikes</label>
+        <p>What dragged, confused, or felt weak.</p>
+        <textarea id="review-dislikes" name="dislikes" placeholder="Pacing, friction, readability, HUD issues..."></textarea>
+      </section>
+
+      <section class="field">
+        <label for="review-broken">Broken</label>
+        <p>Anything bugged, misleading, or blocking play.</p>
+        <textarea id="review-broken" name="broken" placeholder="Crashes, dead controls, progression blockers..."></textarea>
+      </section>
+
+      <p class="save-status" id="save-status">Saved reviews write to <code>./user-reviews.json</code>.</p>
+    </form>
+  </dialog>
+
+  <script>
+    const catalogNode = document.getElementById("catalog");
+    const countNode = document.getElementById("count");
+    const reviewDialog = document.getElementById("review-dialog");
+    const reviewDialogShell = reviewDialog.querySelector(".dialog-shell");
+    const dialogTitle = document.getElementById("dialog-title");
+    const dialogPath = document.getElementById("dialog-path");
+    const dialogClose = document.getElementById("dialog-close");
+    const ratingNode = document.getElementById("review-rating");
+    const likesNode = document.getElementById("review-likes");
+    const dislikesNode = document.getElementById("review-dislikes");
+    const brokenNode = document.getElementById("review-broken");
+    const saveStatusNode = document.getElementById("save-status");
+    const reviewState = new Map();
+    const saveTimers = new Map();
+    let activeSlug = null;
+    let activeName = null;
+
+    function defaultReview() {
+      return {
+        rating: null,
+        likes: "",
+        dislikes: "",
+        broken: "",
+        updatedAt: null,
+      };
+    }
+
+    function debounceForSlug(slug, callback) {
+      const existing = saveTimers.get(slug);
+      if (existing) {
+        window.clearTimeout(existing);
+      }
+
+      const timer = window.setTimeout(() => {
+        saveTimers.delete(slug);
+        callback();
+      }, 250);
+
+      saveTimers.set(slug, timer);
+    }
+
+    async function loadReviews() {
+      const response = await fetch("/__user-reviews", { headers: { accept: "application/json" } });
+      if (!response.ok) {
+        throw new Error(`Review request failed with ${response.status}`);
+      }
+
+      const reviews = await response.json();
+      Object.entries(reviews).forEach(([slug, review]) => {
+        reviewState.set(slug, { ...defaultReview(), ...review });
+      });
+    }
+
+    function getReview(slug) {
+      if (!reviewState.has(slug)) {
+        reviewState.set(slug, defaultReview());
+      }
+
+      return reviewState.get(slug);
+    }
+
+    function ratingText(rating) {
+      return rating ? `${"\u2605".repeat(rating)}${"\u2606".repeat(5 - rating)} ${rating}/5` : "No rating yet";
+    }
+
+    function updateCardReviewState(slug) {
+      const review = getReview(slug);
+      const preview = document.querySelector(`[data-review-preview="${slug}"]`);
+      if (preview) {
+        preview.textContent = ratingText(review.rating);
+      }
+    }
+
+    async function persistReview(slug) {
+      const review = getReview(slug);
+      saveStatusNode.textContent = "Saving review...";
+
+      const response = await fetch(`/__user-reviews/${encodeURIComponent(slug)}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          accept: "application/json",
+        },
+        body: JSON.stringify({
+          rating: review.rating,
+          likes: review.likes,
+          dislikes: review.dislikes,
+          broken: review.broken,
+        }),
+      });
+
+      if (!response.ok) {
+        saveStatusNode.textContent = `Save failed with ${response.status}.`;
+        return;
+      }
+
+      const saved = await response.json();
+      reviewState.set(slug, saved);
+      updateCardReviewState(slug);
+      if (slug === activeSlug) {
+        saveStatusNode.textContent = saved.updatedAt
+          ? `Saved to ./user-reviews.json at ${new Date(saved.updatedAt).toLocaleTimeString()}.`
+          : "Saved to ./user-reviews.json.";
+      }
+    }
+
+    function queuePersist(slug) {
+      debounceForSlug(slug, () => {
+        persistReview(slug).catch((error) => {
+          saveStatusNode.textContent = error instanceof Error ? error.message : "Save failed.";
+        });
+      });
+    }
+
+    function renderStars() {
+      ratingNode.replaceChildren(
+        ...Array.from({ length: 5 }, (_, index) => {
+          const star = document.createElement("button");
+          star.type = "button";
+          star.className = "button star-button";
+          star.dataset.value = String(index + 1);
+          star.setAttribute("role", "radio");
+          star.setAttribute("aria-label", `${index + 1} star${index === 0 ? "" : "s"}`);
+          star.textContent = "\u2605";
+          star.addEventListener("click", () => {
+            if (!activeSlug) {
+              return;
+            }
+
+            const review = getReview(activeSlug);
+            review.rating = index + 1;
+            syncDialogReview();
+            updateCardReviewState(activeSlug);
+            queuePersist(activeSlug);
+          });
+          return star;
+        }),
+      );
+    }
+
+    function syncDialogReview() {
+      if (!activeSlug) {
+        return;
+      }
+
+      const review = getReview(activeSlug);
+      likesNode.value = review.likes;
+      dislikesNode.value = review.dislikes;
+      brokenNode.value = review.broken;
+
+      Array.from(ratingNode.children).forEach((node, index) => {
+        const active = review.rating !== null && index < review.rating;
+        node.dataset.active = active ? "true" : "false";
+        node.setAttribute("aria-checked", review.rating === index + 1 ? "true" : "false");
+      });
+
+      saveStatusNode.textContent = review.updatedAt
+        ? `Saved to ./user-reviews.json at ${new Date(review.updatedAt).toLocaleTimeString()}.`
+        : "Autosaves after 250ms of idle typing.";
+    }
+
+    function attachFieldAutosave(node, key) {
+      node.addEventListener("input", () => {
+        if (!activeSlug) {
+          return;
+        }
+
+        const review = getReview(activeSlug);
+        review[key] = node.value;
+        queuePersist(activeSlug);
+      });
+    }
+
+    function makeCard(entry) {
+      const slug = entry.href.replace(/^\/|\/$/g, "");
+      const review = getReview(slug);
+      const card = document.createElement("article");
+      card.className = "card";
+      const playLink = document.createElement("a");
+      playLink.className = "card-link";
+      playLink.href = entry.href;
+      playLink.textContent = "Play";
+
+      const reviewButton = document.createElement("button");
+      reviewButton.type = "button";
+      reviewButton.className = "button button-accent";
+      reviewButton.textContent = "Review";
+      reviewButton.addEventListener("click", () => openReview(entry, slug));
+
+      card.innerHTML = `
+        <div class="tag">Playable</div>
+        <strong>${entry.name}</strong>
+        <span>${entry.href}</span>
+        <div class="rating-preview" data-review-preview="${slug}">${ratingText(review.rating)}</div>
+      `;
+      const actions = document.createElement("div");
+      actions.className = "card-actions";
+      actions.append(playLink, reviewButton);
+      card.append(actions);
+      return card;
+    }
+
+    function showMessage(className, text) {
+      const box = document.createElement("div");
+      box.className = className;
+      box.textContent = text;
+      catalogNode.replaceChildren(box);
+    }
+
+    function openReview(entry, slug) {
+      activeSlug = slug;
+      activeName = entry.name;
+      dialogTitle.textContent = `Review ${activeName}`;
+      dialogPath.textContent = entry.href;
+      syncDialogReview();
+      reviewDialog.showModal();
+      likesNode.focus();
+    }
+
+    async function loadCatalog() {
+      try {
+        const [catalogResponse] = await Promise.all([
+          fetch("/__catalog.json", { headers: { accept: "application/json" } }),
+          loadReviews(),
+        ]);
+        if (!catalogResponse.ok) {
+          throw new Error(`Catalog request failed with ${catalogResponse.status}`);
+        }
+
+        const entries = await catalogResponse.json();
+        countNode.textContent = `${entries.length} folders ready`;
+
+        if (!entries.length) {
+          showMessage("empty", "No top-level playable folders found.");
+          return;
+        }
+
+        const cards = entries.map(makeCard);
+        catalogNode.replaceChildren(...cards);
+      } catch (error) {
+        countNode.textContent = "Catalog unavailable";
+        showMessage("error", error instanceof Error ? error.message : "Unknown catalog error.");
+      }
+    }
+
+    renderStars();
+    attachFieldAutosave(likesNode, "likes");
+    attachFieldAutosave(dislikesNode, "dislikes");
+    attachFieldAutosave(brokenNode, "broken");
+    dialogClose.addEventListener("click", () => reviewDialog.close());
+    reviewDialog.addEventListener("cancel", () => reviewDialog.close());
+    reviewDialog.addEventListener("click", (event) => {
+      const bounds = reviewDialogShell.getBoundingClientRect();
+      const clickedInsideShell =
+        event.clientX >= bounds.left &&
+        event.clientX <= bounds.right &&
+        event.clientY >= bounds.top &&
+        event.clientY <= bounds.bottom;
+
+      if (!clickedInsideShell) {
+        reviewDialog.close();
+      }
+    });
+    reviewDialog.addEventListener("close", () => {
+      activeSlug = null;
+      activeName = null;
+    });
+
+    loadCatalog();
+  </script>
 </body>
 </html>

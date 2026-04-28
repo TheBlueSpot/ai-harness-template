@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Fancy Pants Momentum Flow</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <main class="shell" id="app" data-state="menu">
+      <section class="hud" id="hud" aria-hidden="true">
+        <div class="hud__chip"><span>Zone</span><strong id="zone-value">Park</strong></div>
+        <div class="hud__chip"><span>Time</span><strong id="time-value">0.0s</strong></div>
+        <div class="hud__chip"><span>Flow</span><strong id="flow-value">0</strong></div>
+        <div class="hud__chip"><span>Speed</span><strong id="speed-value">0</strong></div>
+      </section>
+
+      <div class="stage">
+        <canvas id="game-canvas" width="1280" height="720" aria-label="Fancy Pants Momentum Flow"></canvas>
+
+        <section class="overlay overlay--menu" id="menu-screen" aria-hidden="false">
+          <p class="eyebrow">Sketchbook sprint</p>
+          <h1>Fancy Pants Momentum Flow</h1>
+          <p>
+            Ride hand-drawn hills, keep traction through the curves, and finish the notebook run before the ink dries.
+          </p>
+          <button id="start-button" type="button">Start Run</button>
+          <p class="hint">Move with `A/D` or arrows. `Space`, `W`, or `ArrowUp` jumps.</p>
+        </section>
+
+        <section class="overlay overlay--result" id="result-screen" aria-hidden="true">
+          <p class="eyebrow" id="result-eyebrow">run complete</p>
+          <h2 id="result-title">Notebook cleared.</h2>
+          <p id="result-copy">Press restart to run the course again.</p>
+          <button id="restart-button" type="button">Restart</button>
+        </section>
+      </div>
+    </main>
+
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

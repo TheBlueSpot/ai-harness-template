@@ -1,0 +1,746 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Worms Artillery Duel</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg-top: #18294a;
+      --bg-bottom: #08111d;
+      --panel: rgba(7, 12, 21, 0.82);
+      --line: rgba(255, 255, 255, 0.12);
+      --text: #f3eddc;
+      --muted: #b7bfd0;
+      --accent: #ffb347;
+      --accent-2: #78d7ff;
+      --good: #8df2a0;
+      --bad: #ff8181;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Trebuchet MS", Verdana, sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top, rgba(120, 215, 255, 0.14), transparent 32%),
+        linear-gradient(180deg, var(--bg-top), var(--bg-bottom));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+
+    .shell {
+      width: min(1100px, 100%);
+      display: grid;
+      grid-template-columns: minmax(0, 820px) minmax(240px, 1fr);
+      gap: 16px;
+    }
+
+    .frame,
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      background: var(--panel);
+      backdrop-filter: blur(10px);
+      box-shadow: 0 18px 42px rgba(0, 0, 0, 0.3);
+    }
+
+    .frame {
+      padding: 14px;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      border-radius: 18px;
+      background: linear-gradient(180deg, #294f85 0%, #10253d 58%, #0b1424 100%);
+    }
+
+    .panel {
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    h1,
+    h2,
+    p {
+      margin: 0;
+    }
+
+    h1 {
+      font-size: 1.5rem;
+      letter-spacing: 0.02em;
+    }
+
+    h2 {
+      font-size: 0.95rem;
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+      color: var(--accent-2);
+    }
+
+    .summary {
+      color: var(--muted);
+      line-height: 1.5;
+      font-size: 0.95rem;
+    }
+
+    .stats,
+    .controls {
+      display: grid;
+      gap: 10px;
+    }
+
+    .stat {
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .label {
+      display: block;
+      color: var(--muted);
+      font-size: 0.8rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+
+    .value {
+      font-size: 1.05rem;
+    }
+
+    .health {
+      height: 10px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.08);
+      overflow: hidden;
+      margin-top: 8px;
+    }
+
+    .health > span {
+      display: block;
+      height: 100%;
+      width: 100%;
+      background: linear-gradient(90deg, #ff7e6b, #ffd36b);
+    }
+
+    ul {
+      margin: 0;
+      padding-left: 18px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .footer {
+      color: var(--muted);
+      font-size: 0.85rem;
+      line-height: 1.5;
+      margin-top: auto;
+    }
+
+    @media (max-width: 940px) {
+      .shell {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="frame">
+      <canvas id="game" width="820" height="520" aria-label="Worms Artillery Duel"></canvas>
+    </section>
+    <aside class="panel">
+      <div>
+        <h1>Worms Artillery Duel</h1>
+        <p class="summary">
+          Trade arcing shells across breakable hills. Manage angle, power, and shifting wind while the rival worm inches
+          into better firing lines.
+        </p>
+      </div>
+
+      <div class="stats">
+        <div class="stat">
+          <span class="label">Turn</span>
+          <div class="value" id="turnLabel">Player</div>
+        </div>
+        <div class="stat">
+          <span class="label">Shot Setup</span>
+          <div class="value" id="shotLabel">Angle 45° · Power 60%</div>
+        </div>
+        <div class="stat">
+          <span class="label">Wind</span>
+          <div class="value" id="windLabel">0.0</div>
+        </div>
+        <div class="stat">
+          <span class="label">Message</span>
+          <div class="value" id="messageLabel">Line up the first shot.</div>
+        </div>
+        <div class="stat">
+          <span class="label">Player Hull</span>
+          <div class="value" id="playerHealthText">100 / 100</div>
+          <div class="health"><span id="playerHealthBar"></span></div>
+        </div>
+        <div class="stat">
+          <span class="label">Enemy Hull</span>
+          <div class="value" id="enemyHealthText">100 / 100</div>
+          <div class="health"><span id="enemyHealthBar"></span></div>
+        </div>
+      </div>
+
+      <div>
+        <h2>Controls</h2>
+        <div class="controls">
+          <ul>
+            <li><strong>A</strong> and <strong>D</strong> move during your turn</li>
+            <li><strong>Arrow Up</strong> and <strong>Arrow Down</strong> adjust angle</li>
+            <li><strong>Arrow Left</strong> and <strong>Arrow Right</strong> adjust power</li>
+            <li><strong>Space</strong> fires a shell</li>
+            <li><strong>R</strong> restarts after any round</li>
+          </ul>
+        </div>
+      </div>
+
+      <p class="footer">
+        First worm to reduce the other to zero wins. Splash damage and terrain collapse matter as much as direct hits.
+      </p>
+    </aside>
+  </main>
+
+  <script>
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+
+    const ui = {
+      turnLabel: document.getElementById("turnLabel"),
+      shotLabel: document.getElementById("shotLabel"),
+      windLabel: document.getElementById("windLabel"),
+      messageLabel: document.getElementById("messageLabel"),
+      playerHealthText: document.getElementById("playerHealthText"),
+      enemyHealthText: document.getElementById("enemyHealthText"),
+      playerHealthBar: document.getElementById("playerHealthBar"),
+      enemyHealthBar: document.getElementById("enemyHealthBar"),
+    };
+
+    const WORLD_WIDTH = canvas.width;
+    const WORLD_HEIGHT = canvas.height;
+    const GRAVITY = 165;
+    const MOVE_SPEED = 72;
+    const BLAST_RADIUS = 34;
+    const MAX_HEALTH = 100;
+    const TURN_DELAY = 1.35;
+    const keys = new Set();
+
+    let terrain = [];
+    let worms = [];
+    let projectile = null;
+    let particles = [];
+    let wind = 0;
+    let turn = "player";
+    let winner = null;
+    let turnCooldown = 0;
+    let aiState = null;
+    let message = "Line up the first shot.";
+    let lastTime = performance.now();
+
+    function noise(x) {
+      return Math.sin(x * 0.016) * 42 + Math.sin(x * 0.047 + 1.8) * 18 + Math.sin(x * 0.092 + 3.1) * 9;
+    }
+
+    function clamp(value, min, max) {
+      return Math.max(min, Math.min(max, value));
+    }
+
+    function randomRange(min, max) {
+      return min + Math.random() * (max - min);
+    }
+
+    function terrainHeightAt(x) {
+      const index = clamp(Math.round(x), 0, WORLD_WIDTH - 1);
+      return terrain[index];
+    }
+
+    function slopeAt(x) {
+      const left = terrainHeightAt(x - 3);
+      const right = terrainHeightAt(x + 3);
+      return Math.atan2(right - left, 6);
+    }
+
+    function spawnWorm(name, x, color) {
+      const y = terrainHeightAt(x);
+      return {
+        name,
+        x,
+        y,
+        color,
+        radius: 12,
+        health: MAX_HEALTH,
+        angle: name === "Player" ? -0.82 : -2.32,
+        power: 0.62,
+        aimJitter: 0,
+      };
+    }
+
+    function resetGame() {
+      terrain = new Array(WORLD_WIDTH);
+      for (let x = 0; x < WORLD_WIDTH; x += 1) {
+        const base = 326 + noise(x) + Math.sin(x * 0.006 + 0.8) * 58;
+        terrain[x] = clamp(base, 198, 436);
+      }
+      worms = [
+        spawnWorm("Player", 120, "#ffcf70"),
+        spawnWorm("Enemy", WORLD_WIDTH - 120, "#8fe8ff"),
+      ];
+      projectile = null;
+      particles = [];
+      wind = randomRange(-22, 22);
+      turn = "player";
+      winner = null;
+      turnCooldown = 0;
+      aiState = null;
+      message = "Line up the first shot.";
+      settleWorms();
+      updateUi();
+    }
+
+    function settleWorms() {
+      for (const worm of worms) {
+        worm.x = clamp(worm.x, worm.radius + 2, WORLD_WIDTH - worm.radius - 2);
+        worm.y = terrainHeightAt(worm.x);
+      }
+    }
+
+    function crater(cx, cy, radius) {
+      const start = clamp(Math.floor(cx - radius), 0, WORLD_WIDTH - 1);
+      const end = clamp(Math.ceil(cx + radius), 0, WORLD_WIDTH - 1);
+      for (let x = start; x <= end; x += 1) {
+        const dx = x - cx;
+        const reach = radius * radius - dx * dx;
+        if (reach <= 0) {
+          continue;
+        }
+        const depth = Math.sqrt(reach);
+        terrain[x] = clamp(Math.max(terrain[x], cy + depth), 0, WORLD_HEIGHT - 8);
+      }
+      settleWorms();
+    }
+
+    function explode(x, y) {
+      crater(x, y, BLAST_RADIUS);
+      for (let i = 0; i < 24; i += 1) {
+        particles.push({
+          x,
+          y,
+          vx: randomRange(-90, 90),
+          vy: randomRange(-120, -30),
+          life: randomRange(0.35, 0.8),
+          color: i % 3 === 0 ? "#ffd86e" : i % 3 === 1 ? "#ff886e" : "#dadfe8",
+        });
+      }
+
+      let directHit = false;
+      for (const worm of worms) {
+        const dx = worm.x - x;
+        const dy = worm.y - y;
+        const distance = Math.hypot(dx, dy);
+        if (distance < BLAST_RADIUS + worm.radius) {
+          const damage = Math.round(clamp(52 - distance * 1.1, 12, 52));
+          worm.health = clamp(worm.health - damage, 0, MAX_HEALTH);
+          directHit = true;
+        }
+      }
+
+      if (worms[0].health <= 0 || worms[1].health <= 0) {
+        winner = worms[0].health === worms[1].health ? "draw" : worms[0].health > worms[1].health ? "player" : "enemy";
+        message =
+          winner === "draw"
+            ? "Double knockout. Press R to rebuild the hill."
+            : winner === "player"
+              ? "Enemy worm down. Press R for another duel."
+              : "Your worm is out. Press R to try again.";
+      } else {
+        message = directHit ? "Solid impact. Wind will shift next turn." : "Near miss. Use the crater and adjust.";
+        beginTurn(turn === "player" ? "enemy" : "player");
+      }
+      updateUi();
+    }
+
+    function beginTurn(nextTurn) {
+      turn = nextTurn;
+      projectile = null;
+      turnCooldown = TURN_DELAY;
+      wind = randomRange(-22, 22);
+      aiState = null;
+    }
+
+    function fireCurrentWorm() {
+      if (projectile || winner || turnCooldown > 0) {
+        return;
+      }
+      const shooter = turn === "player" ? worms[0] : worms[1];
+      const speed = 250 + shooter.power * 220;
+      projectile = {
+        owner: turn,
+        x: shooter.x + Math.cos(shooter.angle) * 18,
+        y: shooter.y - 12 + Math.sin(shooter.angle) * 12,
+        vx: Math.cos(shooter.angle) * speed,
+        vy: Math.sin(shooter.angle) * speed,
+        trail: [],
+      };
+      message = turn === "player" ? "Shell away." : "Enemy fired.";
+      updateUi();
+    }
+
+    function updatePlayer(dt) {
+      const player = worms[0];
+      if (turn !== "player" || projectile || turnCooldown > 0 || winner) {
+        return;
+      }
+
+      const moveDir = (keys.has("KeyD") ? 1 : 0) - (keys.has("KeyA") ? 1 : 0);
+      if (moveDir !== 0) {
+        const nextX = clamp(player.x + moveDir * MOVE_SPEED * dt, player.radius + 2, WORLD_WIDTH - player.radius - 2);
+        const currentHeight = terrainHeightAt(player.x);
+        const nextHeight = terrainHeightAt(nextX);
+        if (Math.abs(nextHeight - currentHeight) < 18) {
+          player.x = nextX;
+          player.y = nextHeight;
+        }
+      }
+
+      if (keys.has("ArrowUp")) {
+        player.angle -= 1.4 * dt;
+      }
+      if (keys.has("ArrowDown")) {
+        player.angle += 1.4 * dt;
+      }
+      if (keys.has("ArrowLeft")) {
+        player.power -= 0.5 * dt;
+      }
+      if (keys.has("ArrowRight")) {
+        player.power += 0.5 * dt;
+      }
+
+      player.angle = clamp(player.angle, -2.8, -0.2);
+      player.power = clamp(player.power, 0.2, 1);
+    }
+
+    function planAiShot() {
+      const enemy = worms[1];
+      const player = worms[0];
+      const dx = player.x - enemy.x;
+      const distanceFactor = clamp(Math.abs(dx) / 520, 0.18, 1);
+      const power = clamp(0.45 + distanceFactor * 0.42 + randomRange(-0.08, 0.08), 0.28, 0.98);
+      const loft = clamp(1.04 + distanceFactor * 0.78 + randomRange(-0.18, 0.18), 0.92, 1.95);
+      const angle = -Math.PI + loft;
+      aiState = {
+        moveTarget: clamp(enemy.x + randomRange(-36, 36), WORLD_WIDTH * 0.58, WORLD_WIDTH - 38),
+        timer: randomRange(0.55, 1.0),
+        angle,
+        power,
+      };
+    }
+
+    function updateAi(dt) {
+      const enemy = worms[1];
+      if (turn !== "enemy" || projectile || winner) {
+        return;
+      }
+      if (turnCooldown > 0) {
+        return;
+      }
+      if (!aiState) {
+        planAiShot();
+      }
+
+      if (Math.abs(aiState.moveTarget - enemy.x) > 4) {
+        const dir = Math.sign(aiState.moveTarget - enemy.x);
+        const nextX = clamp(enemy.x + dir * MOVE_SPEED * 0.65 * dt, enemy.radius + 2, WORLD_WIDTH - enemy.radius - 2);
+        const currentHeight = terrainHeightAt(enemy.x);
+        const nextHeight = terrainHeightAt(nextX);
+        if (Math.abs(nextHeight - currentHeight) < 18) {
+          enemy.x = nextX;
+          enemy.y = nextHeight;
+        } else {
+          aiState.moveTarget = enemy.x;
+        }
+      } else {
+        enemy.angle += Math.sign(aiState.angle - enemy.angle) * Math.min(Math.abs(aiState.angle - enemy.angle), 1.6 * dt);
+        enemy.power += Math.sign(aiState.power - enemy.power) * Math.min(Math.abs(aiState.power - enemy.power), 0.45 * dt);
+        aiState.timer -= dt;
+        if (aiState.timer <= 0) {
+          fireCurrentWorm();
+        }
+      }
+
+      enemy.angle = clamp(enemy.angle, -2.95, -0.3);
+      enemy.power = clamp(enemy.power, 0.2, 1);
+    }
+
+    function updateProjectile(dt) {
+      if (!projectile) {
+        return;
+      }
+      projectile.trail.push({ x: projectile.x, y: projectile.y });
+      if (projectile.trail.length > 18) {
+        projectile.trail.shift();
+      }
+
+      projectile.vx += wind * dt;
+      projectile.vy += GRAVITY * dt;
+      projectile.x += projectile.vx * dt;
+      projectile.y += projectile.vy * dt;
+
+      if (projectile.x < 0 || projectile.x >= WORLD_WIDTH || projectile.y > WORLD_HEIGHT + 40) {
+        const x = clamp(projectile.x, 0, WORLD_WIDTH - 1);
+        const y = clamp(projectile.y, 0, WORLD_HEIGHT - 1);
+        explode(x, y);
+        projectile = null;
+        return;
+      }
+
+      const groundY = terrainHeightAt(projectile.x);
+      if (projectile.y >= groundY) {
+        explode(projectile.x, groundY);
+        projectile = null;
+        return;
+      }
+
+      for (const worm of worms) {
+        if (worm.health <= 0) {
+          continue;
+        }
+        if (Math.hypot(projectile.x - worm.x, projectile.y - (worm.y - 10)) < worm.radius + 4) {
+          explode(projectile.x, projectile.y);
+          projectile = null;
+          return;
+        }
+      }
+    }
+
+    function updateParticles(dt) {
+      particles = particles.filter((particle) => {
+        particle.life -= dt;
+        particle.vy += GRAVITY * 0.28 * dt;
+        particle.x += particle.vx * dt;
+        particle.y += particle.vy * dt;
+        return particle.life > 0;
+      });
+    }
+
+    function updateUi() {
+      const actor = turn === "player" ? worms[0] : worms[1];
+      ui.turnLabel.textContent = winner ? "Round Over" : turn === "player" ? "Player" : "Enemy";
+      ui.shotLabel.textContent = `Angle ${Math.round((Math.PI * 0.5 - actor.angle) * 57.2958)}° · Power ${Math.round(actor.power * 100)}%`;
+      ui.windLabel.textContent = `${wind >= 0 ? "+" : ""}${wind.toFixed(1)} drift`;
+      ui.messageLabel.textContent = message;
+      ui.playerHealthText.textContent = `${worms[0].health} / ${MAX_HEALTH}`;
+      ui.enemyHealthText.textContent = `${worms[1].health} / ${MAX_HEALTH}`;
+      ui.playerHealthBar.style.width = `${worms[0].health}%`;
+      ui.enemyHealthBar.style.width = `${worms[1].health}%`;
+    }
+
+    function drawSky() {
+      ctx.save();
+      for (let i = 0; i < 5; i += 1) {
+        const x = 120 + i * 150;
+        const y = 70 + (i % 2) * 32;
+        ctx.fillStyle = "rgba(255, 255, 255, 0.06)";
+        ctx.beginPath();
+        ctx.arc(x, y, 28, 0, Math.PI * 2);
+        ctx.arc(x + 24, y + 4, 22, 0, Math.PI * 2);
+        ctx.arc(x - 26, y + 8, 18, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    function drawTerrain() {
+      ctx.fillStyle = "#3d2b1f";
+      ctx.beginPath();
+      ctx.moveTo(0, WORLD_HEIGHT);
+      ctx.lineTo(0, terrain[0]);
+      for (let x = 1; x < WORLD_WIDTH; x += 1) {
+        ctx.lineTo(x, terrain[x]);
+      }
+      ctx.lineTo(WORLD_WIDTH, WORLD_HEIGHT);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.fillStyle = "#5e8d47";
+      ctx.beginPath();
+      ctx.moveTo(0, terrain[0] - 8);
+      for (let x = 0; x < WORLD_WIDTH; x += 1) {
+        ctx.lineTo(x, terrain[x] - 6);
+      }
+      for (let x = WORLD_WIDTH - 1; x >= 0; x -= 1) {
+        ctx.lineTo(x, terrain[x]);
+      }
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    function drawWorm(worm, isActive) {
+      if (worm.health <= 0) {
+        return;
+      }
+      const baseY = worm.y - 10;
+      ctx.save();
+      ctx.translate(worm.x, baseY);
+      ctx.rotate(slopeAt(worm.x) * 0.35);
+
+      ctx.fillStyle = worm.color;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 16, 12, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "#1a1d29";
+      ctx.beginPath();
+      ctx.arc(-4, -2, 2.4, 0, Math.PI * 2);
+      ctx.arc(5, -1, 2.4, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.strokeStyle = isActive ? "#fff4b6" : "rgba(255,255,255,0.22)";
+      ctx.lineWidth = isActive ? 3 : 2;
+      ctx.beginPath();
+      ctx.moveTo(0, -2);
+      ctx.lineTo(Math.cos(worm.angle) * 24, Math.sin(worm.angle) * 24);
+      ctx.stroke();
+
+      if (isActive && !winner && !projectile) {
+        ctx.strokeStyle = "rgba(255, 244, 182, 0.35)";
+        ctx.setLineDash([5, 5]);
+        ctx.beginPath();
+        ctx.moveTo(Math.cos(worm.angle) * 24, Math.sin(worm.angle) * 24);
+        ctx.lineTo(Math.cos(worm.angle) * 44, Math.sin(worm.angle) * 44);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    function drawProjectile() {
+      if (!projectile) {
+        return;
+      }
+      for (let i = 0; i < projectile.trail.length; i += 1) {
+        const point = projectile.trail[i];
+        const alpha = i / projectile.trail.length;
+        ctx.fillStyle = `rgba(255, 219, 120, ${alpha * 0.4})`;
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, 2 + alpha * 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.fillStyle = "#ffe28f";
+      ctx.beginPath();
+      ctx.arc(projectile.x, projectile.y, 5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    function drawParticles() {
+      for (const particle of particles) {
+        ctx.globalAlpha = clamp(particle.life * 1.8, 0, 1);
+        ctx.fillStyle = particle.color;
+        ctx.fillRect(particle.x, particle.y, 4, 4);
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    function drawHud() {
+      ctx.fillStyle = "rgba(5, 10, 18, 0.28)";
+      ctx.fillRect(16, 16, 214, 76);
+      ctx.strokeStyle = "rgba(255,255,255,0.12)";
+      ctx.strokeRect(16, 16, 214, 76);
+
+      ctx.fillStyle = "#f3eddc";
+      ctx.font = "16px Trebuchet MS";
+      ctx.fillText(`Wind ${wind >= 0 ? "+" : ""}${wind.toFixed(1)}`, 28, 40);
+      ctx.fillText(`Player ${worms[0].health}  Enemy ${worms[1].health}`, 28, 64);
+      ctx.fillStyle = "#b7bfd0";
+      ctx.fillText(message, 28, 86);
+
+      if (winner) {
+        ctx.fillStyle = "rgba(5, 10, 18, 0.68)";
+        ctx.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+        ctx.fillStyle = "#f3eddc";
+        ctx.font = "bold 38px Trebuchet MS";
+        const title =
+          winner === "draw" ? "Double Knockout" : winner === "player" ? "Player Wins" : "Enemy Wins";
+        ctx.fillText(title, WORLD_WIDTH / 2 - 130, WORLD_HEIGHT / 2 - 12);
+        ctx.font = "20px Trebuchet MS";
+        ctx.fillStyle = "#b7bfd0";
+        ctx.fillText("Press R to restart the duel.", WORLD_WIDTH / 2 - 122, WORLD_HEIGHT / 2 + 24);
+      }
+    }
+
+    function render() {
+      ctx.clearRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+      drawSky();
+      drawTerrain();
+      drawWorm(worms[0], turn === "player");
+      drawWorm(worms[1], turn === "enemy");
+      drawProjectile();
+      drawParticles();
+      drawHud();
+    }
+
+    function update(dt) {
+      if (turnCooldown > 0) {
+        turnCooldown = Math.max(0, turnCooldown - dt);
+        if (turnCooldown === 0 && !winner) {
+          message = turn === "player" ? "Your turn." : "Enemy is lining up a shot.";
+          updateUi();
+        }
+      }
+
+      updatePlayer(dt);
+      updateAi(dt);
+      updateProjectile(dt);
+      updateParticles(dt);
+      updateUi();
+    }
+
+    function loop(now) {
+      const dt = Math.min((now - lastTime) / 1000, 0.033);
+      lastTime = now;
+      update(dt);
+      render();
+      requestAnimationFrame(loop);
+    }
+
+    window.addEventListener("keydown", (event) => {
+      keys.add(event.code);
+      if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"].includes(event.code)) {
+        event.preventDefault();
+      }
+      if (event.code === "Space") {
+        fireCurrentWorm();
+      }
+      if (event.code === "KeyR") {
+        resetGame();
+      }
+    });
+
+    window.addEventListener("keyup", (event) => {
+      keys.delete(event.code);
+    });
+
+    resetGame();
+    render();
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>

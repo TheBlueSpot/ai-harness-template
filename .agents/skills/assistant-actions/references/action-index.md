@@ -14,7 +14,7 @@ Canonical map from assistant user stories to project-chat actions. Load a branch
 1. Classify the user request into one action.
 2. Resolve assistant target and project scope.
 3. For state questions, run the state script.
-4. For mutations, use typed harness actions or explain the exact next command path.
+4. For mutations, use [operation-handoffs.md](operation-handoffs.md) and name the exact project-chat shape or harness action.
 5. Ask clarification only when target, scope, schedule, or desired mutation is incomplete.
 
 ## Common Project-Chat Phrases

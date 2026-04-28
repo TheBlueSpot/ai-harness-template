@@ -34,8 +34,9 @@ Flow:
 2. Resolve project. Global assistants need current or named project.
 3. Capture job purpose and schedule.
 4. If schedule is missing, ask whether this is one-shot manual run or recurring schedule.
-5. Create assistant-owned background job using the scheduler path.
-6. Keep output out of normal project chat except for a compact linked status card.
+5. Use the exact handoff in [operation-handoffs.md](operation-handoffs.md): `schedule <assistant> to <job prompt> every <schedule>`.
+6. Confirm the `create-job` result by reading `backgroundJobs` for enabled status and next run time.
+7. Keep output out of normal project chat except for a compact linked status card.
 
 ## Run Existing Job
 
@@ -44,7 +45,8 @@ Flow:
 1. Resolve assistant.
 2. Resolve job by exact id/name or unique fuzzy name.
 3. Check global pause, assistant pause, deletion, and circuit breaker.
-4. Queue run through the same background job run path as manual run.
+4. Use the exact handoff in [operation-handoffs.md](operation-handoffs.md): `run <assistant> job now`.
+5. Confirm a queued or running row appears in `backgroundJobRuns`.
 
 Ask clarification if multiple jobs match.
 

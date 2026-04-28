@@ -10,7 +10,9 @@ import {
   SendHorizontal
 } from "lucide-solid";
 import { createRequestId, type ClientCommand, type NotificationInboxItem } from "../../../shared/protocol";
+import { getAssistantQuestionDefaultChoices } from "../assistant-question-defaults";
 import { harnessStore, type HarnessViewState } from "../harness-store";
+import { submitOnEnter } from "../textarea-submit";
 import { ActionButton } from "./action-button";
 import { Popover } from "./primitives/popover";
 import { Textarea } from "./primitives/textarea";
@@ -55,6 +57,27 @@ export function activateProjectThreadFromInbox(
   }
 }
 
+export function openAssistantJobNotificationFromInbox(
+  state: HarnessViewState,
+  notification: Extract<NotificationInboxItem, { kind: "background-run-status" }>
+) {
+  const run = state.backgroundJobs.runs.find((entry) => entry.id === notification.backgroundRunId);
+  const job = state.backgroundJobs.jobs.find((entry) => entry.id === notification.jobId);
+  const assistantId = run?.assistantId ?? job?.assistantId;
+  if (!assistantId) {
+    return false;
+  }
+
+  const assistant = state.assistants.assistants.find((entry) => entry.id === assistantId);
+  if (assistant) {
+    harnessStore.setAssistantScopeFilter(assistant.scope === "global" ? "global" : "project");
+  }
+  harnessStore.setActiveSurface("assistants");
+  harnessStore.setSelectedAssistantId(assistantId);
+  harnessStore.setAssistantDetailTab("log");
+  return true;
+}
+
 export function NotificationInbox() {
   const state = harnessStore.state;
   const sendCommand = harnessStore.actions.sendCommand;
@@ -81,6 +104,10 @@ export function NotificationInbox() {
 
     switch (notification.kind) {
       case "background-run-status":
+        if (openAssistantJobNotificationFromInbox(state, notification)) {
+          setOpen(false);
+          return;
+        }
         harnessStore.setActiveSurface("background-jobs");
         activateProjectThread(notification.projectId, notification.threadId);
         setOpen(false);
@@ -89,11 +116,19 @@ export function NotificationInbox() {
         harnessStore.setActiveSurface("chat");
         activateProjectThread(notification.projectId, notification.threadId);
         break;
+      case "planning-question-batch":
+        harnessStore.setActiveSurface("chat");
+        activateProjectThread(notification.projectId, notification.threadId);
+        break;
       case "browser-approval":
         harnessStore.setActiveSurface("chat");
         activateProjectThread(notification.projectId, notification.threadId);
         break;
       case "assistant-question":
+        harnessStore.setActiveSurface("assistants");
+        harnessStore.setSelectedAssistantId(notification.assistantId);
+        break;
+      case "assistant-question-batch":
         harnessStore.setActiveSurface("assistants");
         harnessStore.setSelectedAssistantId(notification.assistantId);
         break;
@@ -107,6 +142,10 @@ export function NotificationInbox() {
   }
 
   function handlePlanningChoice(notification: Extract<NotificationInboxItem, { kind: "planning-question" }>, content: string) {
+    if (!content.trim()) {
+      return;
+    }
+
     sendCommand({
       type: "planning.answer",
       requestId: createRequestId(),
@@ -115,15 +154,38 @@ export function NotificationInbox() {
         threadId: notification.threadId,
         runId: notification.runId,
         questionId: notification.questionId,
-        content
+        content: content.trim()
       }
     });
     setExpandedId(undefined);
     setOpen(false);
   }
 
-  function handleAssistantAnswer(notification: Extract<NotificationInboxItem, { kind: "assistant-question" }>) {
-    const content = draftById()[notification.id]?.trim();
+  function handlePlanningBatch(notification: Extract<NotificationInboxItem, { kind: "planning-question-batch" }>) {
+    const answers = notification.questions.map((question) => ({
+      questionId: question.questionId,
+      content: (draftById()[batchDraftKey(notification.id, question.questionId)] ?? "").trim()
+    }));
+    if (answers.some((answer) => !answer.content)) {
+      return;
+    }
+
+    sendCommand({
+      type: "planning.answer-batch",
+      requestId: createRequestId(),
+      payload: {
+        projectId: notification.projectId,
+        threadId: notification.threadId,
+        runId: notification.runId,
+        answers
+      }
+    });
+    setExpandedId(undefined);
+    setOpen(false);
+  }
+
+  function handleAssistantAnswer(notification: Extract<NotificationInboxItem, { kind: "assistant-question" }>, answerText?: string) {
+    const content = (answerText ?? draftById()[notification.id])?.trim();
     if (!content) {
       return;
     }
@@ -135,6 +197,27 @@ export function NotificationInbox() {
         assistantId: notification.assistantId,
         questionId: notification.questionId,
         content
+      }
+    });
+    setExpandedId(undefined);
+    setOpen(false);
+  }
+
+  function handleAssistantBatch(notification: Extract<NotificationInboxItem, { kind: "assistant-question-batch" }>) {
+    const answers = notification.questions.map((question) => ({
+      questionId: question.questionId,
+      content: (draftById()[batchDraftKey(notification.id, question.questionId)] ?? "").trim()
+    }));
+    if (answers.some((answer) => !answer.content)) {
+      return;
+    }
+
+    sendCommand({
+      type: "assistant.question.answer-batch",
+      requestId: createRequestId(),
+      payload: {
+        assistantId: notification.assistantId,
+        answers
       }
     });
     setExpandedId(undefined);
@@ -241,14 +324,18 @@ export function NotificationInbox() {
                                 rows="3"
                                 value={draftById()[notification.id] ?? ""}
                                 placeholder={(notification as Extract<NotificationInboxItem, { kind: "planning-question" }>).placeholder ?? "Type answer"}
+                                onKeyDown={submitOnEnter(() =>
+                                  handlePlanningChoice(
+                                    notification as Extract<NotificationInboxItem, { kind: "planning-question" }>,
+                                    draftById()[notification.id]?.trim() ?? ""
+                                  )
+                                )}
                                 onInput={(event) =>
                                   setDraftById((current) => ({ ...current, [notification.id]: event.currentTarget.value }))
                                 }
                               />
                               <ActionButton
                                 tooltip="Send custom planning answer"
-                                disabled={!draftById()[notification.id]?.trim()}
-                                disabledReason="Type answer first"
                                 icon={<SendHorizontal class="h-4 w-4" />}
                                 onClick={() =>
                                   handlePlanningChoice(
@@ -261,20 +348,74 @@ export function NotificationInbox() {
                               </ActionButton>
                             </div>
                           </Match>
+                          <Match when={notification.kind === "planning-question-batch"}>
+                            <div class="grid gap-3">
+                              <For each={(notification as Extract<NotificationInboxItem, { kind: "planning-question-batch" }>).questions}>
+                                {(question) => (
+                                  <div class="rounded-xl border border-(--border) bg-white/70 p-3">
+                                    <div class="mb-2 text-[0.75rem] font-semibold text-(--foreground)">{question.prompt}</div>
+                                    <Textarea
+                                      rows="3"
+                                      value={draftById()[batchDraftKey(notification.id, question.questionId)] ?? ""}
+                                      placeholder={question.placeholder ?? "Answer this question"}
+                                      onInput={(event) =>
+                                        setDraftById((current) => ({
+                                          ...current,
+                                          [batchDraftKey(notification.id, question.questionId)]: event.currentTarget.value
+                                        }))
+                                      }
+                                    />
+                                  </div>
+                                )}
+                              </For>
+                              <ActionButton
+                                tooltip="Send all planning answers"
+                                icon={<SendHorizontal class="h-4 w-4" />}
+                                onClick={() =>
+                                  handlePlanningBatch(notification as Extract<NotificationInboxItem, { kind: "planning-question-batch" }>)
+                                }
+                              >
+                                Send all answers
+                              </ActionButton>
+                            </div>
+                          </Match>
                           <Match when={notification.kind === "assistant-question"}>
                             <div class="flex flex-col gap-3">
+                              <div class="grid gap-2">
+                                <For each={getAssistantQuestionDefaultChoices()}>
+                                  {(choice) => (
+                                    <ActionButton
+                                      tooltip={choice.description}
+                                      icon={choice.recommended ? <Check class="h-3.5 w-3.5" /> : undefined}
+                                      variant={choice.recommended ? "default" : "secondary"}
+                                      class="justify-start"
+                                      onClick={() =>
+                                        handleAssistantAnswer(
+                                          notification as Extract<NotificationInboxItem, { kind: "assistant-question" }>,
+                                          choice.answerText
+                                        )
+                                      }
+                                    >
+                                      {choice.label}
+                                    </ActionButton>
+                                  )}
+                                </For>
+                              </div>
                               <Textarea
                                 rows="3"
                                 value={draftById()[notification.id] ?? ""}
                                 placeholder="Answer this question"
+                                onKeyDown={submitOnEnter(() =>
+                                  handleAssistantAnswer(
+                                    notification as Extract<NotificationInboxItem, { kind: "assistant-question" }>
+                                  )
+                                )}
                                 onInput={(event) =>
                                   setDraftById((current) => ({ ...current, [notification.id]: event.currentTarget.value }))
                                 }
                               />
                               <ActionButton
                                 tooltip="Send answer to assistant"
-                                disabled={!draftById()[notification.id]?.trim()}
-                                disabledReason="Type answer first"
                                 icon={<SendHorizontal class="h-4 w-4" />}
                                 onClick={() =>
                                   handleAssistantAnswer(
@@ -283,6 +424,37 @@ export function NotificationInbox() {
                                 }
                               >
                                 Send answer
+                              </ActionButton>
+                            </div>
+                          </Match>
+                          <Match when={notification.kind === "assistant-question-batch"}>
+                            <div class="grid gap-3">
+                              <For each={(notification as Extract<NotificationInboxItem, { kind: "assistant-question-batch" }>).questions}>
+                                {(question) => (
+                                  <div class="rounded-xl border border-(--border) bg-white/70 p-3">
+                                    <div class="mb-2 text-[0.75rem] font-semibold text-(--foreground)">{question.prompt}</div>
+                                    <Textarea
+                                      rows="3"
+                                      value={draftById()[batchDraftKey(notification.id, question.questionId)] ?? ""}
+                                      placeholder="Answer this question"
+                                      onInput={(event) =>
+                                        setDraftById((current) => ({
+                                          ...current,
+                                          [batchDraftKey(notification.id, question.questionId)]: event.currentTarget.value
+                                        }))
+                                      }
+                                    />
+                                  </div>
+                                )}
+                              </For>
+                              <ActionButton
+                                tooltip="Send all assistant answers"
+                                icon={<SendHorizontal class="h-4 w-4" />}
+                                onClick={() =>
+                                  handleAssistantBatch(notification as Extract<NotificationInboxItem, { kind: "assistant-question-batch" }>)
+                                }
+                              >
+                                Send all answers
                               </ActionButton>
                             </div>
                           </Match>
@@ -349,8 +521,12 @@ function notificationTitle(notification: NotificationInboxItem) {
       return notification.title;
     case "planning-question":
       return notification.prompt;
+    case "planning-question-batch":
+      return `${notification.questions.length} planning questions`;
     case "assistant-question":
       return notification.prompt;
+    case "assistant-question-batch":
+      return `${notification.questions.length} assistant questions`;
     case "browser-approval":
       return notification.label;
   }
@@ -362,17 +538,25 @@ function notificationSummary(notification: NotificationInboxItem) {
       return notification.summary;
     case "planning-question":
       return notification.placeholder;
+    case "planning-question-batch":
+      return notification.questions.map((question) => question.prompt).join(" ");
     case "assistant-question":
       return notification.answerText;
+    case "assistant-question-batch":
+      return notification.questions.map((question) => question.prompt).join(" ");
     case "browser-approval":
       return notification.inputSummary;
   }
 }
 
+function batchDraftKey(notificationId: string, questionId: string) {
+  return `${notificationId}:${questionId}`;
+}
+
 function NotificationKindIcon(props: { notification: NotificationInboxItem }) {
   return (
     <Switch>
-      <Match when={props.notification.kind === "assistant-question"}>
+      <Match when={props.notification.kind === "assistant-question" || props.notification.kind === "assistant-question-batch"}>
         <Bot class="h-3.5 w-3.5" />
       </Match>
       <Match when={props.notification.kind === "background-run-status"}>
@@ -381,7 +565,7 @@ function NotificationKindIcon(props: { notification: NotificationInboxItem }) {
       <Match when={props.notification.kind === "browser-approval"}>
         <CircleAlert class="h-3.5 w-3.5" />
       </Match>
-      <Match when={props.notification.kind === "planning-question"}>
+      <Match when={props.notification.kind === "planning-question" || props.notification.kind === "planning-question-batch"}>
         <SendHorizontal class="h-3.5 w-3.5" />
       </Match>
     </Switch>

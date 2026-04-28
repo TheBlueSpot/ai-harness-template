@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Motherload Core Breach</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <canvas id="game" aria-label="Motherload Core Breach" role="img"></canvas>
+      <aside class="banner">
+        <p>
+          <span class="eyebrow">Motherload Core Breach</span>
+          Dig volatile ore veins, fight cargo-heavy thrust, climb back to dock before gas, lava, and pressure crack hull.
+        </p>
+      </aside>
+      <section id="dock-panel" class="dock-panel" aria-live="polite"></section>
+      <div id="overlay-root" class="overlay-root" aria-live="polite"></div>
+    </main>
+    <script src="./game.js"></script>
+  </body>
+</html>

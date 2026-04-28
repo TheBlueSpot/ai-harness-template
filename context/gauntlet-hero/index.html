@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gauntlet Hero-Crawl</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <main class="shell" id="app" data-mode="menu">
+      <section class="hud" id="hud" aria-hidden="true">
+        <div class="hud__chip"><span>Hero</span><strong id="hero-value">Warrior</strong></div>
+        <div class="hud__chip"><span>HP</span><strong id="hp-value">0</strong></div>
+        <div class="hud__chip"><span>Floor</span><strong id="floor-value">1</strong></div>
+        <div class="hud__chip"><span>Score</span><strong id="score-value">0</strong></div>
+        <div class="hud__chip"><span>Generators</span><strong id="generator-value">0</strong></div>
+        <div class="hud__chip"><span>Door</span><strong id="door-value">Locked</strong></div>
+      </section>
+
+      <section class="stage">
+        <canvas id="game" width="1280" height="720" aria-label="Gauntlet Hero-Crawl"></canvas>
+
+        <section class="overlay overlay--menu" id="menu-screen" aria-hidden="false">
+          <p class="eyebrow">Top-down horde crawl</p>
+          <h1>Gauntlet Hero-Crawl</h1>
+          <p>
+            Pick hero, break ghost generators, grab dungeon key, and dive floor after floor until horde wins.
+          </p>
+          <div class="class-grid" id="class-grid"></div>
+          <button id="start-button" type="button">Start Crawl</button>
+          <p class="hint">Move with `WASD` or arrows. Aim with mouse. Hold click or `Space` to attack.</p>
+        </section>
+
+        <section class="overlay overlay--result" id="result-screen" aria-hidden="true">
+          <p class="eyebrow" id="result-eyebrow">run over</p>
+          <h2 id="result-title">Hero fallen.</h2>
+          <p id="result-copy">Restart and push deeper.</p>
+          <button id="restart-button" type="button">Run Again</button>
+        </section>
+      </section>
+    </main>
+
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

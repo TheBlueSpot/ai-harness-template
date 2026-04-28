@@ -3,7 +3,7 @@ import { beforeEach, expect, it, mock } from "bun:test";
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { createUiTest } from "./utils/tests/test-harness";
 import { clearBrowserStateForTests } from "./utils/tests/store-test-utils";
-import { harnessStore } from "./harness-store";
+import { harnessStore, readBrowserUiSession } from "./harness-store";
 
 const createHotkeysMock = mock(() => undefined);
 
@@ -27,7 +27,8 @@ function getCreateHotkeysCall() {
   const call = calls.find(([definitions]) => {
     return (
       definitions.some((definition) => definition.hotkey === "Mod+K") &&
-      definitions.some((definition) => definition.hotkey === "Mod+Space")
+      definitions.some((definition) => definition.hotkey === "Mod+Space") &&
+      definitions.some((definition) => definition.hotkey === "Mod+,")
     );
   });
   if (!call) {
@@ -47,18 +48,31 @@ createUiTest("App shortcuts", () => {
     createHotkeysMock.mockClear();
   });
 
-  it("registers project switcher shortcuts through TanStack Hotkeys", () => {
+  it("registers app shortcuts through TanStack Hotkeys", () => {
     render(() => <App />);
 
     expect(createHotkeysMock.mock.calls.length).toBeGreaterThanOrEqual(1);
 
     const [definitions, getOptions] = getCreateHotkeysCall();
 
-    expect(definitions.map((definition) => definition.hotkey)).toEqual(["Mod+K", "Mod+Space"]);
+    expect(definitions.map((definition) => definition.hotkey)).toEqual(["Mod+K", "Mod+Space", "Mod+,"]);
     expect(getOptions()).toEqual({
       enabled: true,
       ignoreInputs: false
     });
+  });
+
+  it("opens preferences from the shortcut callback", () => {
+    render(() => <App />);
+
+    const [definitions] = getCreateHotkeysCall();
+    const preferencesShortcut = definitions.find((definition) => definition.hotkey === "Mod+,");
+
+    expect(harnessStore.state.preferencesModalOpen).toBe(false);
+
+    preferencesShortcut?.callback();
+
+    expect(harnessStore.state.preferencesModalOpen).toBe(true);
   });
 
   it("disables the shortcut while the switcher is open or focused", () => {
@@ -78,21 +92,21 @@ createUiTest("App shortcuts", () => {
     expect(getOptions().enabled).toBe(false);
   });
 
-  it("renders surface tabs with active and inactive tab styling classes", () => {
-    const screen = render(() => <App />);
+  it("renders left tabs with active and inactive tab styling classes", () => {
+    render(() => <App />);
 
-    const nav = document.querySelector("[data-test-center-surface-nav]");
+    const nav = document.querySelector("[data-test-left-tab-nav]");
     const buttons = [...(nav?.querySelectorAll("button") ?? [])] as HTMLButtonElement[];
 
-    expect(buttons[0]?.getAttribute("aria-label")).toBe("Project chat");
+    expect(buttons[0]?.getAttribute("aria-label")).toBe("Projects");
     expect(buttons[1]?.getAttribute("aria-label")).toBe("Assistants");
     expect(buttons[0]?.getAttribute("aria-pressed")).toBe("true");
     expect(buttons[1]?.getAttribute("aria-pressed")).toBe("false");
   });
 
-  it("moves active tab styling when switching surfaces", async () => {
+  it("moves active tab styling when switching left tabs", async () => {
     render(() => <App />);
-    const nav = document.querySelector("[data-test-center-surface-nav]");
+    const nav = document.querySelector("[data-test-left-tab-nav]");
     const buttons = [...(nav?.querySelectorAll("button") ?? [])] as HTMLButtonElement[];
     const assistantsTab = buttons[1];
 
@@ -102,6 +116,8 @@ createUiTest("App shortcuts", () => {
       fireEvent.click(assistantsTab);
     }
 
+    expect(harnessStore.state.activeLeftTab).toBe("assistants");
     expect(harnessStore.state.activeSurface).toBe("assistants");
+    expect(readBrowserUiSession().activeLeftTab).toBe("assistants");
   });
 });

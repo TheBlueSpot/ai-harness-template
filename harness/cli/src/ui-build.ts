@@ -7,6 +7,7 @@ import tailwindPlugin from "bun-plugin-tailwind";
 const uiSourceDir = path.resolve(process.cwd(), "harness/ui");
 const uiOutDir = path.resolve(process.cwd(), "dist/ui");
 const uiEntryPoint = path.resolve(uiSourceDir, "src/main.tsx");
+const contextSourceDir = path.resolve(process.cwd(), "context");
 
 type UiBuildOptions = {
   minify?: boolean;
@@ -29,7 +30,7 @@ type CreateUiAssetManagerOptions = {
   buildUiBundle?: (options?: UiBuildOptions) => Promise<void>;
   watchSourceDir?: (
     sourceDir: string,
-    listener: () => void
+    listener: (changedPath?: string) => void
   ) => {
     close: () => void;
   };
@@ -112,7 +113,10 @@ export function createUiAssetManager(options: CreateUiAssetManagerOptions = {}) 
   const buildUi = options.buildUiBundle ?? buildUiBundle;
   const watchSourceDir =
     options.watchSourceDir ??
-    ((sourceDir: string, listener: () => void) => watch(sourceDir, { recursive: true }, listener));
+    ((sourceDir: string, listener: (changedPath?: string) => void) =>
+      watch(sourceDir, { recursive: true }, (_eventType, filename) => {
+        listener(resolveWatchEventPath(sourceDir, filename));
+      }));
   let buildInFlight: Promise<void> | undefined;
   let rebuildQueued = false;
   let watcher: FSWatcher | undefined;
@@ -182,7 +186,11 @@ export function createUiAssetManager(options: CreateUiAssetManagerOptions = {}) 
         return;
       }
 
-      watcher = watchSourceDir(uiSourceDir, () => {
+      watcher = watchSourceDir(uiSourceDir, (changedPath) => {
+        if (isContextWatchPath(changedPath)) {
+          return;
+        }
+
         void queueBuild();
       }) as FSWatcher;
     },
@@ -213,4 +221,26 @@ export function createUiAssetManager(options: CreateUiAssetManagerOptions = {}) 
       watcher = undefined;
     }
   };
+}
+
+function resolveWatchEventPath(sourceDir: string, filename: string | Buffer | null) {
+  if (!filename) {
+    return undefined;
+  }
+
+  const relativePath = typeof filename === "string" ? filename : filename.toString();
+  if (!relativePath) {
+    return undefined;
+  }
+
+  return path.resolve(sourceDir, relativePath);
+}
+
+function isContextWatchPath(changedPath: string | undefined) {
+  if (!changedPath) {
+    return false;
+  }
+
+  const relativePath = path.relative(contextSourceDir, path.resolve(changedPath));
+  return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
 }

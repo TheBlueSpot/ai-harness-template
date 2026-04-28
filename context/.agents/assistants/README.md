@@ -6,3 +6,4 @@ This directory contains configurations and documentation for various AI assistan
 
 *   **Alpha**: Orchestrator assistant for clarifying requests and delegating work.
 *   **Catalog Builder**: Queue-first game builder that pulls from `todo.md` and seeds new ideas from the catalog when needed.
+*   **Kojima**: Project-scoped catalog operator for focused implementation and curation work.

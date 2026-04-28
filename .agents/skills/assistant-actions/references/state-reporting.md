@@ -27,6 +27,16 @@ Prioritize:
 5. Recent learnings.
 6. Recent error or critical logs.
 
+## Handoff Checks
+
+After a mutation, verify the matching rows:
+
+- Assistant create/update/clone/pause/resume/recover: assistant row plus latest logs.
+- Chat: assistant messages and `assistant.chat.complete` event if visible.
+- Question answer: question status and linked todo/log changes.
+- Todo update: todo state and reprioritize log.
+- Job create/run/pause/resume: `backgroundJobs`, `backgroundJobRuns`, and next run time.
+
 ## Answer Style
 
 State what is known from persistence. If no rows exist, say no saved rows were found. Do not infer hidden work from prompts alone.

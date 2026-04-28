@@ -2,6 +2,9 @@
 import { beforeEach, expect, it } from "bun:test";
 import { render } from "@solidjs/testing-library";
 import type {
+  Assistant,
+  BackgroundJob,
+  BackgroundJobRun,
   BackgroundRunStatusNotification,
   ClientCommand,
   PlanningQuestionNotification
@@ -9,8 +12,9 @@ import type {
 import { createUiTest } from "../utils/tests/test-harness";
 import { clearBrowserStateForTests, seedHarnessStoreForTests } from "../utils/tests/store-test-utils";
 import { createHarnessStateFixture, createViewProjectFixture } from "../utils/tests/test-fixtures";
-import { harnessStore } from "../harness-store";
-import { NotificationInbox, activateProjectThreadFromInbox } from "./notification-inbox";
+import { createEmptyAssistantsState, createEmptyBackgroundJobsState, harnessStore } from "../harness-store";
+import { getAssistantQuestionDefaultChoices } from "../assistant-question-defaults";
+import { NotificationInbox, activateProjectThreadFromInbox, openAssistantJobNotificationFromInbox } from "./notification-inbox";
 
 function isoNow() {
   return new Date().toISOString();
@@ -107,6 +111,15 @@ createUiTest("NotificationInbox", () => {
     expect(harnessStore.state.notifications.unreadCount).toBe(0);
     render(() => <NotificationInbox />);
     expect(document.querySelector(".bg-rose-600")).toBeNull();
+  });
+
+  it("defines three assistant question default answers with one recommendation", () => {
+    const choices = getAssistantQuestionDefaultChoices();
+
+    expect(choices).toHaveLength(3);
+    expect(choices.filter((choice) => choice.recommended)).toHaveLength(1);
+    expect(choices.map((choice) => choice.label)).toEqual(["Use judgment", "Do other work", "Wait"]);
+    expect(choices.every((choice) => choice.answerText.trim().length > 0)).toBe(true);
   });
 });
 
@@ -224,5 +237,99 @@ createUiTest("activateProjectThreadFromInbox", () => {
       type: "thread.activate",
       payload: { projectId: "project-current", threadId: "thread-b" }
     });
+  });
+});
+
+createUiTest("openAssistantJobNotificationFromInbox", () => {
+  beforeEach(() => {
+    clearBrowserStateForTests();
+  });
+
+  it("opens assistant log tab for assistant-owned background notifications", () => {
+    const now = isoNow();
+    const assistant: Assistant = {
+      id: "assistant-1",
+      name: "Release watcher",
+      scope: "project",
+      projectId: "project-1",
+      description: "Watch releases",
+      personalityPrompt: "Be concise.",
+      jobPrompt: "Scan releases.",
+      agentId: "pi",
+      runState: "active",
+      bootstrapState: "completed",
+      failureStreakCount: 0,
+      circuitBreakerState: "closed",
+      latestActivityAt: now,
+      unreadQuestionCount: 0,
+      createdAt: now,
+      updatedAt: now
+    };
+    const job: BackgroundJob = {
+      id: "bg-job-1",
+      projectId: "project-1",
+      assistantId: "assistant-1",
+      automationThreadId: "thread-1",
+      kind: "ai-routine",
+      name: "Release scan",
+      status: "enabled",
+      riskLevel: "safe",
+      definition: {
+        kind: "ai-routine",
+        prompt: "Scan releases",
+        planExecutionMode: "immediate",
+        subagentWorktreeStrategy: "same-worktree"
+      },
+      schedule: { type: "one-off", runAt: now, sourceText: "manual" },
+      scheduleInput: "manual",
+      createdAt: now,
+      updatedAt: now
+    };
+    const run: BackgroundJobRun = {
+      id: "bg-run-1",
+      jobId: "bg-job-1",
+      projectId: "project-1",
+      assistantId: "assistant-1",
+      automationThreadId: "thread-1",
+      triggerSource: "manual",
+      status: "succeeded",
+      riskLevel: "safe",
+      approvalStatus: "not-needed",
+      skippedOccurrenceCount: 0,
+      summary: "Done",
+      queuedAt: now,
+      createdAt: now,
+      updatedAt: now,
+      events: []
+    };
+    const notification = backgroundRunStatusNotification();
+
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        assistants: {
+          ...createEmptyAssistantsState(),
+          assistants: [assistant]
+        },
+        backgroundJobs: {
+          ...createEmptyBackgroundJobsState(),
+          jobs: [job],
+          runs: [run]
+        }
+      })
+    );
+
+    expect(openAssistantJobNotificationFromInbox(harnessStore.state, notification)).toBe(true);
+    expect(harnessStore.state.activeSurface).toBe("assistants");
+    expect(harnessStore.state.assistants.selectedAssistantId).toBe("assistant-1");
+    expect(harnessStore.state.assistants.selectedTab).toBe("log");
+    expect(harnessStore.state.assistants.scopeFilter).toBe("project");
+  });
+
+  it("leaves generic background notifications on the jobs path", () => {
+    seedHarnessStoreForTests(createHarnessStateFixture());
+
+    expect(openAssistantJobNotificationFromInbox(harnessStore.state, backgroundRunStatusNotification())).toBe(false);
+    expect(harnessStore.state.activeSurface).toBe("chat");
+    expect(harnessStore.state.assistants.selectedTab).toBe("chat");
   });
 });

@@ -1,0 +1,23 @@
+{
+  "bloons-pop": {
+    "broken": "",
+    "dislikes": "Not enough content, more enemy types, tower upgrades, player progression",
+    "likes": "faithful recreation, clear gameplay that actually works",
+    "rating": 5,
+    "updatedAt": "2026-04-28T18:30:52.166Z"
+  },
+  "breakout": {
+    "broken": "",
+    "dislikes": "hud",
+    "likes": "it looks good and plays well",
+    "rating": 3,
+    "updatedAt": "2026-04-28T18:31:53.228Z"
+  },
+  "arkanoid-prism": {
+    "broken": "",
+    "dislikes": "too many powers ups, too easy, no progression, too short",
+    "likes": "Very responsive no glaring bugs",
+    "rating": 4,
+    "updatedAt": "2026-04-28T18:34:13.365Z"
+  }
+}

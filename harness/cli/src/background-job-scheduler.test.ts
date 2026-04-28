@@ -202,6 +202,28 @@ describe("background job scheduler", () => {
     expect(state.runs.some((run) => run.status === "queued" && run.approvalStatus === "approved")).toBe(true);
   });
 
+  test("does not queue another occurrence while a previous run is waiting for input", async () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    repository.setBackgroundJobApprovalPolicyDefault("allow-all");
+    const job = saveDueJob(repository, project.id);
+    repository.createBackgroundJobRun({
+      jobId: job.id,
+      projectId: job.projectId,
+      assistantId: job.assistantId,
+      automationThreadId: job.automationThreadId,
+      triggerSource: "schedule",
+      status: "awaiting-user-input",
+      riskLevel: job.riskLevel,
+      approvalStatus: "approved"
+    });
+
+    const scheduler = new BackgroundJobScheduler({ repository });
+    await scheduler.tick(false);
+
+    expect(repository.loadBackgroundJobsState().runs).toHaveLength(1);
+  });
+
   test("skips assistant-linked jobs when assistant is paused", async () => {
     const repository = createRepository();
     const project = addProject(repository);

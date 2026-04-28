@@ -9,6 +9,7 @@ import {
   type BackgroundJobSchedule
 } from "../../../shared/protocol";
 import { type BackgroundJobEditorDraft, harnessStore } from "../harness-store";
+import { formatShortTimestamp, resolveBrowserTimezone } from "../lib/time-format";
 import { pushToast } from "../toast-store";
 import { Button } from "./primitives/button";
 import { Dialog } from "./primitives/dialog";
@@ -490,10 +491,6 @@ function splitMultilineInput(value: string) {
   return entries.length > 0 ? entries : undefined;
 }
 
-function resolveBrowserTimezone() {
-  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-}
-
 function describeSchedulePreview(schedule: BackgroundJobSchedule | undefined) {
   if (!schedule) {
     return "Schedule preview waits for valid input.";
@@ -501,11 +498,11 @@ function describeSchedulePreview(schedule: BackgroundJobSchedule | undefined) {
 
   switch (schedule.type) {
     case "one-off":
-      return `One-off run at ${schedule.runAt}`;
+      return `One-off run at ${formatShortTimestamp(schedule.runAt)}`;
     case "interval":
-      return `Every ${schedule.intervalSeconds}s. Next run ${schedule.nextRunAt}`;
+      return `Every ${schedule.intervalSeconds}s. Next run ${formatShortTimestamp(schedule.nextRunAt)}`;
     case "cron":
-      return `Cron ${schedule.expression} in ${schedule.timezone}. Next run ${schedule.nextRunAt}`;
+      return `Cron ${schedule.expression} in ${schedule.timezone}. Next run ${formatShortTimestamp(schedule.nextRunAt)}`;
   }
 }
 

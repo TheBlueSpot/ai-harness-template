@@ -3,8 +3,9 @@ import { beforeEach, expect, it } from "bun:test";
 import { createUiTest } from "../utils/tests/test-harness";
 import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
 import { ChatPanel } from "./chat-panel";
-import { harnessStore } from "../harness-store";
+import { createInitialViewState, harnessStore, readBrowserUiSession } from "../harness-store";
 import { toastStore } from "../toast-store";
+import { formatShortTimestamp } from "../lib/time-format";
 import { captureDispatchedCommands, clearBrowserStateForTests, seedHarnessStoreForTests } from "../utils/tests/store-test-utils";
 import {
   createExecutionPlanFixture,
@@ -19,6 +20,41 @@ createUiTest("ChatPanel", () => {
   beforeEach(() => {
     clearBrowserStateForTests();
     toastStore.toasts.length = 0;
+  });
+
+  it("persists and restores active chat pane tab", () => {
+    const project = createViewProjectFixture({ id: "project-chat-pane" });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ChatPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "Open events pane" }));
+
+    expect(harnessStore.state.chatPaneTab).toBe("events");
+    expect(readBrowserUiSession().chatPaneTab).toBe("events");
+
+    cleanup();
+    harnessStore.replaceStateForTests(createInitialViewState());
+    harnessStore.actions.hydrateBrowserUiSession();
+
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        chatPaneTab: harnessStore.state.chatPaneTab,
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+    render(() => <ChatPanel />);
+
+    expect(screen.getByRole("button", { name: "Open events pane" }).getAttribute("aria-pressed")).toBe("true");
   });
 
   it("submits planner answers when a planning question is pending", () => {
@@ -77,6 +113,57 @@ createUiTest("ChatPanel", () => {
     render(() => <ChatPanel />);
     fireEvent.click(screen.getByRole("button", { name: "Send planner answer" }));
 
+    expect(commands.length).toBe(1);
+    expect((commands[0] as { type: string }).type).toBe("planning.answer");
+  });
+
+  it("renders assistant setup freeform questions without choice buttons", () => {
+    const commands: unknown[] = [];
+    const project = createViewProjectFixture({
+      id: "project-assistant-purpose",
+      draft: "Maintain docs and stale todos.",
+      activeRun: createRunFixture({
+        id: "run-assistant-purpose",
+        status: "awaiting-user-input",
+        questions: [
+          {
+            id: "assistant-create-purpose",
+            prompt: "What should Kojima do for this project?",
+            placeholder: "Use Kojima to triage failed tests, maintain docs, and keep project todos current.",
+            responseKind: "freeform",
+            required: true,
+            status: "pending",
+            askedAt: new Date().toISOString(),
+            intent: {
+              type: "assistant-create-intent",
+              projectId: "project-assistant-purpose",
+              threadId: "thread-assistant-purpose",
+              sourcePrompt: "create a new local project assistant kojima",
+              suggestedName: "Kojima",
+              defaultScope: "project",
+              requiresPurpose: true
+            }
+          }
+        ]
+      })
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    captureDispatchedCommands(commands as never[]);
+    render(() => <ChatPanel />);
+
+    expect(screen.getByText("Assistant setup")).toBeTruthy();
+    expect(screen.queryByText("Planner question")).toBeNull();
+    expect(screen.queryByText("Recommended")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Send planner answer" }));
     expect(commands.length).toBe(1);
     expect((commands[0] as { type: string }).type).toBe("planning.answer");
   });
@@ -1447,17 +1534,20 @@ it("updates composer effort label and sends reasoning plus fast mode", () => {
         delaySeconds: 0
       }
     });
+    const createdAt = new Date(2026, 3, 28, 10, 4).toISOString();
+    const userMessage = createChatMessage("user", "User prompt");
+    userMessage.createdAt = createdAt;
+    const assistantMessage = createChatMessage("assistant", "Assistant reply");
+    assistantMessage.createdAt = createdAt;
     const planMessage = createPlanSummaryMessage("run-copy", plan);
+    planMessage.createdAt = createdAt;
     const project = createViewProjectFixture({
       id: "project-copy",
       session: {
         ...createViewProjectFixture().session,
-        messages: [
-          createChatMessage("user", "User prompt"),
-          createChatMessage("assistant", "Assistant reply"),
-          planMessage
-        ]
+        messages: [userMessage, assistantMessage, planMessage]
       },
+      activeRun: createRunFixture({ id: "run-copy", createdAt, updatedAt: createdAt }),
       streamingAssistantText: "Streaming reply"
     });
     seedHarnessStoreForTests(
@@ -1474,6 +1564,7 @@ it("updates composer effort label and sends reasoning plus fast mode", () => {
     expect(screen.getByRole("button", { name: "Copy user message" })).not.toBeNull();
     expect(screen.getByRole("button", { name: "Copy plan summary" })).not.toBeNull();
     expect(screen.getAllByRole("button", { name: "Copy harness message" })).toHaveLength(2);
+    expect(screen.getAllByText(formatShortTimestamp(createdAt)).length).toBeGreaterThanOrEqual(4);
 
     fireEvent.click(screen.getByRole("button", { name: "Copy plan summary" }));
     await Promise.resolve();

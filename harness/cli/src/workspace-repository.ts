@@ -43,6 +43,7 @@ import {
   memoryRetrievalSchema,
   notificationInboxItemSchema,
   notificationInboxStateSchema,
+  planningChoiceSchema,
   planningQuestionIntentSchema,
   type Assistant,
   type AssistantAssetRef,
@@ -217,6 +218,7 @@ type AgentRunQuestionRow = {
   ordinal: number;
   prompt: string;
   placeholder: string | null;
+  response_kind: "choice" | "freeform";
   choices_json: string | null;
   intent_json: string | null;
   status: "pending" | "deferred" | "answered";
@@ -384,10 +386,15 @@ type AssistantRow = {
   personality_prompt: string;
   job_prompt: string;
   agent_id: AgentId;
+  provider_brand: ProviderBrand | null;
   mode_id: string | null;
   execution_model_id: string | null;
+  fast_mode: number | null;
   run_state: "active" | "paused";
   bootstrap_state: "pending" | "running" | "completed" | "failed";
+  bootstrap_attempt_id: string | null;
+  bootstrap_started_at: string | null;
+  bootstrap_finished_at: string | null;
   cloned_from_assistant_id: string | null;
   failure_streak_count: number;
   circuit_breaker_state: "closed" | "tripped";
@@ -443,6 +450,289 @@ type AssistantLearningRow = {
   confidence: "low" | "medium" | "high";
   created_at: string;
 };
+
+const ASSISTANT_LEARNING_SOURCE_MAX_LENGTH = 256;
+const ASSISTANT_LEARNING_SOURCE_FALLBACK = "unknown";
+
+export function normalizeAssistantLearningSource(source: string) {
+  return normalizeRequiredString(source, ASSISTANT_LEARNING_SOURCE_MAX_LENGTH, ASSISTANT_LEARNING_SOURCE_FALLBACK);
+}
+
+type PersistedSchema<T> = {
+  safeParse(input: unknown):
+    | { success: true; data: T }
+    | { success: false; error: { issues?: unknown[] } };
+};
+
+type PersistedValidationIssue = {
+  code: string;
+  path: Array<string | number>;
+  maximum?: number;
+  minimum?: number;
+  type?: string;
+  expected?: string;
+  received?: string;
+  message?: string;
+};
+
+type PersistedRecoveryContext = {
+  table: string;
+  rowId?: string;
+  field?: string;
+};
+
+type PersistedParseOptions = {
+  fallbacks?: Record<string, unknown>;
+  maxRepairAttempts?: number;
+};
+
+function normalizeRequiredString(value: unknown, max: number, fallback: string) {
+  const stringValue = typeof value === "string" ? value.trim() : "";
+  const normalized = stringValue || fallback;
+  return normalized.length > max ? normalized.slice(0, max) : normalized;
+}
+
+function normalizeOptionalString(value: unknown, max: number) {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  return trimmed.length > max ? trimmed.slice(0, max) : trimmed;
+}
+
+function normalizeRequiredTrimmedString(value: unknown, max: number, fallback: string) {
+  return normalizeRequiredString(value, max, fallback);
+}
+
+function normalizeInteger(value: unknown, min: number, max: number, fallback: number) {
+  const numeric = typeof value === "number" && Number.isFinite(value) ? Math.trunc(value) : fallback;
+  return Math.min(max, Math.max(min, numeric));
+}
+
+function normalizeOptionalInteger(value: unknown, min: number, max: number) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return undefined;
+  }
+  return normalizeInteger(value, min, max, min);
+}
+
+function normalizeBooleanNumber(value: unknown) {
+  return value === true || value === 1;
+}
+
+function normalizeArray<T>(value: T[], max: number) {
+  return value.slice(0, max);
+}
+
+function parseJsonObjectOrUndefined(input: string | null): Record<string, unknown> | undefined {
+  if (!input) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(input);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseJsonArrayOrEmpty(input: string | null): unknown[] {
+  if (!input) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(input);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function safeParsePersisted<T>(
+  schema: PersistedSchema<T>,
+  value: unknown,
+  context: PersistedRecoveryContext,
+  options: PersistedParseOptions = {}
+): T | undefined {
+  let candidate = clonePersistedValue(value);
+  const maxRepairAttempts = options.maxRepairAttempts ?? 6;
+
+  for (let attempt = 0; attempt <= maxRepairAttempts; attempt += 1) {
+    const parsed = schema.safeParse(candidate);
+    if (parsed.success) {
+      if (attempt > 0) {
+        recordPersistenceRecovery(context, "repaired");
+      }
+      return parsed.data;
+    }
+
+    const issues = normalizePersistedIssues(parsed.error.issues ?? []);
+    const repaired = issues.some((issue) => repairPersistedIssue(candidate, issue, context, options));
+    if (!repaired) {
+      recordPersistenceRecovery(context, issues.map((issue) => issue.message ?? issue.code).join("; ") || "invalid persisted row");
+      return undefined;
+    }
+  }
+
+  recordPersistenceRecovery(context, "max repair attempts reached");
+  return undefined;
+}
+
+function normalizePersistedIssues(issues: unknown[]): PersistedValidationIssue[] {
+  return issues.map((issue) => {
+    const record = issue && typeof issue === "object" ? (issue as Record<string, unknown>) : {};
+    return {
+      code: typeof record.code === "string" ? record.code : "invalid",
+      path: Array.isArray(record.path) ? record.path.filter((part): part is string | number => typeof part === "string" || typeof part === "number") : [],
+      maximum: typeof record.maximum === "number" ? record.maximum : undefined,
+      minimum: typeof record.minimum === "number" ? record.minimum : undefined,
+      type: typeof record.type === "string" ? record.type : undefined,
+      expected: typeof record.expected === "string" ? record.expected : undefined,
+      received: typeof record.received === "string" ? record.received : undefined,
+      message: typeof record.message === "string" ? record.message : undefined
+    };
+  });
+}
+
+function clonePersistedValue(value: unknown): unknown {
+  if (value === undefined || value === null) {
+    return value;
+  }
+  return JSON.parse(JSON.stringify(value));
+}
+
+function repairPersistedIssue(
+  root: unknown,
+  issue: PersistedValidationIssue,
+  context: PersistedRecoveryContext,
+  options: PersistedParseOptions
+) {
+  if (issue.path.length === 0 || isNonRecoverablePersistedIssue(issue)) {
+    return false;
+  }
+
+  const current = getPersistedPath(root, issue.path);
+  const pathKey = issue.path.join(".");
+  const fallback = options.fallbacks?.[pathKey] ?? inferPersistedFallback(issue.path, context);
+
+  if (issue.code === "too_big" && typeof issue.maximum === "number") {
+    if (typeof current === "string" && (issue.type === "string" || issue.type === undefined)) {
+      setPersistedPath(root, issue.path, current.slice(0, issue.maximum));
+      return true;
+    }
+    if (Array.isArray(current)) {
+      setPersistedPath(root, issue.path, current.slice(0, issue.maximum));
+      return true;
+    }
+    if (typeof current === "number") {
+      setPersistedPath(root, issue.path, issue.maximum);
+      return true;
+    }
+  }
+
+  if (issue.code === "too_small" && typeof issue.minimum === "number") {
+    if (typeof current === "string" && issue.minimum <= 1) {
+      setPersistedPath(root, issue.path, fallback);
+      return true;
+    }
+    if (typeof current === "number") {
+      setPersistedPath(root, issue.path, issue.minimum);
+      return true;
+    }
+  }
+
+  if (issue.code === "invalid_type") {
+    if (issue.expected === "boolean") {
+      setPersistedPath(root, issue.path, false);
+      return true;
+    }
+    if (issue.expected === "number") {
+      setPersistedPath(root, issue.path, typeof issue.minimum === "number" ? issue.minimum : 0);
+      return true;
+    }
+    if (issue.expected === "array") {
+      setPersistedPath(root, issue.path, []);
+      return true;
+    }
+    if (issue.expected === "string" || issue.received === "undefined" || issue.received === "null") {
+      setPersistedPath(root, issue.path, fallback);
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function isNonRecoverablePersistedIssue(issue: PersistedValidationIssue) {
+  if (issue.code === "invalid_enum_value" || issue.code === "invalid_union_discriminator" || issue.code === "invalid_literal") {
+    return true;
+  }
+  return issue.path.length === 1 && issue.path[0] === "id";
+}
+
+function getPersistedPath(root: unknown, pathParts: Array<string | number>) {
+  let current = root;
+  for (const part of pathParts) {
+    if (current === null || current === undefined || typeof current !== "object") {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[String(part)];
+  }
+  return current;
+}
+
+function setPersistedPath(root: unknown, pathParts: Array<string | number>, value: unknown) {
+  if (root === null || root === undefined || typeof root !== "object") {
+    return;
+  }
+
+  let current = root as Record<string, unknown>;
+  for (let index = 0; index < pathParts.length - 1; index += 1) {
+    const key = String(pathParts[index]);
+    if (current[key] === null || current[key] === undefined || typeof current[key] !== "object") {
+      current[key] = {};
+    }
+    current = current[key] as Record<string, unknown>;
+  }
+  current[String(pathParts[pathParts.length - 1])] = value;
+}
+
+function inferPersistedFallback(pathParts: Array<string | number>, context: PersistedRecoveryContext) {
+  const field = String(pathParts[pathParts.length - 1] ?? context.field ?? "value");
+  if (field === "content") {
+    return "Recovered content";
+  }
+  if (field === "title" || field === "name" || field === "label") {
+    return "Recovered";
+  }
+  if (field === "summary") {
+    return "Recovered summary";
+  }
+  if (field === "description" || field === "detail" || field === "inputSummary") {
+    return "Recovered detail";
+  }
+  if (field === "prompt" || field === "jobPrompt" || field === "personalityPrompt" || field === "latestUserPrompt") {
+    return "Recovered prompt";
+  }
+  if (field.endsWith("At") || field === "updatedAt" || field === "createdAt") {
+    return new Date().toISOString();
+  }
+  return "Recovered";
+}
+
+function recordPersistenceRecovery(context: PersistedRecoveryContext, reason: string) {
+  debugLog("workspace.persisted-state-recovery", {
+    table: context.table,
+    rowId: context.rowId,
+    field: context.field,
+    reason
+  });
+}
 
 type AssistantQuestionRow = {
   id: string;
@@ -811,11 +1101,20 @@ export class WorkspaceRepository {
       return undefined;
     }
 
+    const attachment = parseChatAttachment(row.attachment_json, {
+      table: "chat_attachment_uploads",
+      rowId: row.key,
+      field: "attachment_json"
+    });
+    if (!attachment) {
+      return undefined;
+    }
+
     return {
       key: row.key,
       projectId: row.project_id ?? undefined,
       threadId: row.thread_id ?? undefined,
-      attachment: chatAttachmentSchema.parse(JSON.parse(row.attachment_json)),
+      attachment,
       createdAt: row.created_at
     };
   }
@@ -887,7 +1186,8 @@ export class WorkspaceRepository {
   appendPlanningQuestion(
     projectId: ProjectId,
     runId: string,
-    question: Pick<PlanningQuestion, "id" | "prompt" | "placeholder" | "choices" | "required" | "intent">,
+    question: Pick<PlanningQuestion, "id" | "prompt" | "placeholder" | "choices" | "required" | "intent"> &
+      Partial<Pick<PlanningQuestion, "responseKind">>,
     status: Extract<PlanningQuestion["status"], "pending" | "deferred"> = "pending"
   ) {
     const now = new Date().toISOString();
@@ -907,13 +1207,14 @@ export class WorkspaceRepository {
             ordinal,
             prompt,
             placeholder,
+            response_kind,
             choices_json,
             intent_json,
             status,
             answer_text,
             asked_at,
             answered_at
-          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9, NULL)`
+          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, NULL)`
         )
         .run(
           questionId,
@@ -921,7 +1222,8 @@ export class WorkspaceRepository {
           ordinal,
           question.prompt,
           question.placeholder ?? null,
-          JSON.stringify(question.choices),
+          question.responseKind ?? "choice",
+          question.choices ? JSON.stringify(question.choices) : null,
           question.intent ? JSON.stringify(question.intent) : null,
           status,
           now
@@ -1455,6 +1757,7 @@ export class WorkspaceRepository {
 
     return rows
       .map((row) => this.hydrateMemoryEntry(row))
+      .filter((entry): entry is MemoryEntry => entry !== undefined)
       .filter((entry) => (projectId ? !entry.projectId || entry.projectId === projectId : true))
       .filter((entry) => (filters.kind ? entry.kind === filters.kind : true))
       .filter((entry) => (filters.status ? entry.status === filters.status : true))
@@ -1581,13 +1884,13 @@ export class WorkspaceRepository {
 
   loadAssistantsState(): AssistantsState {
     return assistantsStateSchema.parse({
-      assistants: this.readAssistants(),
-      threads: this.readAssistantThreads(),
-      todos: this.readAssistantTodos(),
-      learnings: this.readAssistantLearnings(),
-      questions: this.readAssistantQuestions(),
-      logs: this.readAssistantLogEntries(),
-      assetRefs: this.readAssistantAssetRefs()
+      assistants: this.readAssistants().slice(0, 512),
+      threads: this.readAssistantThreads().slice(0, 512),
+      todos: this.readAssistantTodos().slice(0, 8192),
+      learnings: this.readAssistantLearnings().slice(0, 8192),
+      questions: this.readAssistantQuestions().slice(0, 4096),
+      logs: this.readAssistantLogEntries().slice(0, 16384),
+      assetRefs: this.readAssistantAssetRefs().slice(0, 4096)
     });
   }
 
@@ -1596,7 +1899,8 @@ export class WorkspaceRepository {
       .query<AssistantRow, [string]>(
         `SELECT
           id, name, scope, project_id, description, personality_prompt, job_prompt, agent_id, mode_id,
-          execution_model_id, run_state, bootstrap_state, cloned_from_assistant_id, failure_streak_count,
+          provider_brand, execution_model_id, fast_mode, run_state, bootstrap_state,
+          bootstrap_attempt_id, bootstrap_started_at, bootstrap_finished_at, cloned_from_assistant_id, failure_streak_count,
           circuit_breaker_state, circuit_breaker_reason, pending_reprioritize_reason, pending_reprioritize_requested_at,
           deleted_at, latest_activity_at, created_at, updated_at
          FROM assistants
@@ -1633,10 +1937,11 @@ export class WorkspaceRepository {
         .query(
           `INSERT INTO assistants (
             id, name, scope, project_id, description, personality_prompt, job_prompt, agent_id, mode_id,
-            execution_model_id, run_state, bootstrap_state, cloned_from_assistant_id, failure_streak_count,
+            provider_brand, execution_model_id, fast_mode, run_state, bootstrap_state,
+            bootstrap_attempt_id, bootstrap_started_at, bootstrap_finished_at, cloned_from_assistant_id, failure_streak_count,
             circuit_breaker_state, circuit_breaker_reason, pending_reprioritize_reason, pending_reprioritize_requested_at,
             deleted_at, latest_activity_at, created_at, updated_at
-          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, NULL, NULL, ?17, ?18, ?19, ?20)
+          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, NULL, NULL, ?22, ?23, ?24, ?25)
           ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
             scope = excluded.scope,
@@ -1646,9 +1951,14 @@ export class WorkspaceRepository {
             job_prompt = excluded.job_prompt,
             agent_id = excluded.agent_id,
             mode_id = excluded.mode_id,
+            provider_brand = excluded.provider_brand,
             execution_model_id = excluded.execution_model_id,
+            fast_mode = excluded.fast_mode,
             run_state = excluded.run_state,
             bootstrap_state = excluded.bootstrap_state,
+            bootstrap_attempt_id = excluded.bootstrap_attempt_id,
+            bootstrap_started_at = excluded.bootstrap_started_at,
+            bootstrap_finished_at = excluded.bootstrap_finished_at,
             cloned_from_assistant_id = excluded.cloned_from_assistant_id,
             failure_streak_count = excluded.failure_streak_count,
             circuit_breaker_state = excluded.circuit_breaker_state,
@@ -1667,9 +1977,14 @@ export class WorkspaceRepository {
           assistant.jobPrompt,
           assistant.agentId,
           assistant.modeId ?? null,
+          assistant.providerBrand ?? null,
           assistant.executionModelId ?? null,
+          assistant.fastMode === undefined ? null : assistant.fastMode ? 1 : 0,
           assistant.runState,
           assistant.bootstrapState,
+          assistant.bootstrapAttemptId ?? null,
+          assistant.bootstrapStartedAt ?? null,
+          assistant.bootstrapFinishedAt ?? null,
           assistant.clonedFromAssistantId ?? null,
           assistant.failureStreakCount,
           assistant.circuitBreakerState,
@@ -1774,6 +2089,10 @@ export class WorkspaceRepository {
 
   saveAssistantLearning(learning: AssistantLearning) {
     this.assertAssistantExists(learning.assistantId);
+    const parsed = assistantLearningSchema.parse({
+      ...learning,
+      source: normalizeAssistantLearningSource(learning.source)
+    });
     this.db
       .query(
         `INSERT INTO assistant_learnings (id, assistant_id, summary, source, confidence, created_at)
@@ -1783,9 +2102,9 @@ export class WorkspaceRepository {
            source = excluded.source,
            confidence = excluded.confidence`
       )
-      .run(learning.id, learning.assistantId, learning.summary, learning.source, learning.confidence, learning.createdAt);
-    this.touchAssistant(learning.assistantId, learning.createdAt);
-    return this.getAssistantLearning(learning.id)!;
+      .run(parsed.id, parsed.assistantId, parsed.summary, parsed.source, parsed.confidence, parsed.createdAt);
+    this.touchAssistant(parsed.assistantId, parsed.createdAt);
+    return this.getAssistantLearning(parsed.id)!;
   }
 
   saveAssistantQuestion(question: AssistantQuestion) {
@@ -1827,6 +2146,23 @@ export class WorkspaceRepository {
       .run(questionId, assistantId, answerText.trim(), now);
     if (updated.changes === 0) {
       throw new Error("Unknown assistant question for assistant");
+    }
+    this.touchAssistant(assistantId, now);
+    return this.getAssistantQuestion(questionId)!;
+  }
+
+  dismissAssistantQuestion(assistantId: string, questionId: string) {
+    this.assertAssistantExists(assistantId);
+    const now = new Date().toISOString();
+    const updated = this.db
+      .query(
+        `UPDATE assistant_questions
+         SET status = 'dismissed', answered_at = COALESCE(answered_at, ?3)
+         WHERE id = ?1 AND assistant_id = ?2 AND status IN ('pending', 'deferred')`
+      )
+      .run(questionId, assistantId, now);
+    if (updated.changes === 0) {
+      throw new Error("Assistant question is not dismissable");
     }
     this.touchAssistant(assistantId, now);
     return this.getAssistantQuestion(questionId)!;
@@ -1895,10 +2231,14 @@ export class WorkspaceRepository {
     return this.getAssistantThread(assistantId)!;
   }
 
-  getAssistantThread(assistantId: string) {
+  getAssistantThread(assistantId: string): AssistantThread {
     this.assertAssistantExists(assistantId);
     const row = this.readAssistantThreadRowByAssistantId(assistantId);
-    return this.hydrateAssistantThread(row);
+    const thread = this.hydrateAssistantThread(row);
+    if (!thread) {
+      throw new Error(`Assistant ${assistantId} has no loadable thread`);
+    }
+    return thread;
   }
 
   getAssistantTodos(assistantId: string) {
@@ -2035,12 +2375,33 @@ export class WorkspaceRepository {
     return this.getAssistant(assistantId)!;
   }
 
-  setAssistantBootstrapState(assistantId: string, bootstrapState: Assistant["bootstrapState"]) {
+  setAssistantBootstrapState(
+    assistantId: string,
+    bootstrapState: Assistant["bootstrapState"],
+    input: { attemptId?: string; startedAt?: string; finishedAt?: string | null } = {}
+  ) {
     this.assertAssistantExists(assistantId);
     const now = new Date().toISOString();
     this.db
-      .query(`UPDATE assistants SET bootstrap_state = ?2, updated_at = ?3, latest_activity_at = ?3 WHERE id = ?1`)
-      .run(assistantId, bootstrapState, now);
+      .query(
+        `UPDATE assistants
+         SET bootstrap_state = ?2,
+             bootstrap_attempt_id = COALESCE(?3, bootstrap_attempt_id),
+             bootstrap_started_at = CASE WHEN ?4 IS NULL THEN bootstrap_started_at ELSE ?4 END,
+             bootstrap_finished_at = CASE WHEN ?5 = 1 THEN ?6 ELSE bootstrap_finished_at END,
+             updated_at = ?7,
+             latest_activity_at = ?7
+         WHERE id = ?1`
+      )
+      .run(
+        assistantId,
+        bootstrapState,
+        input.attemptId ?? null,
+        input.startedAt ?? null,
+        input.finishedAt === undefined ? 0 : 1,
+        input.finishedAt ?? null,
+        now
+      );
     return this.getAssistant(assistantId)!;
   }
 
@@ -2139,14 +2500,14 @@ export class WorkspaceRepository {
 
   loadBackgroundJobsState(): BackgroundJobsState {
     return backgroundJobsStateSchema.parse({
-      jobs: this.readBackgroundJobs(),
-      runs: this.readBackgroundJobRuns(),
-      templates: this.readBackgroundJobTemplates()
+      jobs: this.readBackgroundJobs().slice(0, 512),
+      runs: this.readBackgroundJobRuns().slice(0, 2048),
+      templates: this.readBackgroundJobTemplates().slice(0, 64)
     });
   }
 
   loadNotificationInboxState(): NotificationInboxState {
-    const items = this.readNotificationInboxItems();
+    const items = this.readNotificationInboxItems().slice(0, 4096);
     const unreadItems = items.filter((item) => !item.readAt && !item.archivedAt);
     return notificationInboxStateSchema.parse({
       items,
@@ -2502,16 +2863,17 @@ export class WorkspaceRepository {
   ) {
     const now = new Date().toISOString();
     const serializedSchedule = input.schedule ? JSON.stringify(input.schedule) : null;
+    const shouldUpdateNextRunAt = Object.hasOwn(input, "nextRunAt");
     this.db
       .query(
         `UPDATE background_jobs
          SET schedule_json = CASE WHEN ?2 IS NULL THEN schedule_json ELSE ?2 END,
-             next_run_at = ?3,
-             last_run_at = COALESCE(?4, last_run_at),
-             updated_at = ?5
+             next_run_at = CASE WHEN ?3 = 0 THEN next_run_at ELSE ?4 END,
+             last_run_at = COALESCE(?5, last_run_at),
+             updated_at = ?6
          WHERE id = ?1`
       )
-      .run(jobId, serializedSchedule, input.nextRunAt ?? null, input.lastRunAt ?? null, now);
+      .run(jobId, serializedSchedule, shouldUpdateNextRunAt ? 1 : 0, input.nextRunAt ?? null, input.lastRunAt ?? null, now);
     return this.getBackgroundJob(jobId)!;
   }
 
@@ -2965,6 +3327,7 @@ export class WorkspaceRepository {
         ordinal INTEGER NOT NULL,
         prompt TEXT NOT NULL,
         placeholder TEXT NULL,
+        response_kind TEXT NOT NULL DEFAULT 'choice' CHECK(response_kind IN ('choice', 'freeform')),
         choices_json TEXT NULL,
         intent_json TEXT NULL,
         status TEXT NOT NULL CHECK(status IN ('pending', 'deferred', 'answered')),
@@ -3158,7 +3521,7 @@ export class WorkspaceRepository {
 
       CREATE TABLE IF NOT EXISTS notifications (
         id TEXT PRIMARY KEY,
-        kind TEXT NOT NULL CHECK(kind IN ('planning-question', 'assistant-question', 'browser-approval', 'background-run-status')),
+        kind TEXT NOT NULL CHECK(kind IN ('planning-question', 'planning-question-batch', 'assistant-question', 'assistant-question-batch', 'browser-approval', 'background-run-status')),
         interactive INTEGER NOT NULL CHECK(interactive IN (0, 1)),
         project_id TEXT NULL,
         thread_id TEXT NULL,
@@ -3203,10 +3566,15 @@ export class WorkspaceRepository {
         personality_prompt TEXT NOT NULL,
         job_prompt TEXT NOT NULL,
         agent_id TEXT NOT NULL CHECK(agent_id IN ('pi', 'copilot-cli', 'codex-cli')),
+        provider_brand TEXT NULL CHECK(provider_brand IN ('gpt', 'gemini')),
         mode_id TEXT NULL,
         execution_model_id TEXT NULL,
+        fast_mode INTEGER NULL CHECK(fast_mode IN (0, 1)),
         run_state TEXT NOT NULL CHECK(run_state IN ('active', 'paused')),
         bootstrap_state TEXT NOT NULL CHECK(bootstrap_state IN ('pending', 'running', 'completed', 'failed')),
+        bootstrap_attempt_id TEXT NULL,
+        bootstrap_started_at TEXT NULL,
+        bootstrap_finished_at TEXT NULL,
         cloned_from_assistant_id TEXT NULL,
         failure_streak_count INTEGER NOT NULL DEFAULT 0,
         circuit_breaker_state TEXT NOT NULL DEFAULT 'closed' CHECK(circuit_breaker_state IN ('closed', 'tripped')),
@@ -3351,6 +3719,7 @@ export class WorkspaceRepository {
       "TEXT NULL CHECK(execution_access IN ('workspace-write', 'read-only'))"
     );
     this.addColumnIfMissing("agent_run_questions", "choices_json", "TEXT NULL");
+    this.addColumnIfMissing("agent_run_questions", "response_kind", "TEXT NOT NULL DEFAULT 'choice' CHECK(response_kind IN ('choice', 'freeform'))");
     this.addColumnIfMissing("agent_run_questions", "intent_json", "TEXT NULL");
     this.addColumnIfMissing("agent_run_subtasks", "commit_sha", "TEXT NULL");
     this.addColumnIfMissing("agent_run_subtasks", "worktree_path", "TEXT NULL");
@@ -3362,6 +3731,11 @@ export class WorkspaceRepository {
     this.addColumnIfMissing("agent_runs", "tool_activities_json", "TEXT NULL");
     this.addColumnIfMissing("background_jobs", "assistant_id", "TEXT NULL");
     this.addColumnIfMissing("background_job_runs", "assistant_id", "TEXT NULL");
+    this.addColumnIfMissing("assistants", "provider_brand", "TEXT NULL CHECK(provider_brand IN ('gpt', 'gemini'))");
+    this.addColumnIfMissing("assistants", "fast_mode", "INTEGER NULL CHECK(fast_mode IN (0, 1))");
+    this.addColumnIfMissing("assistants", "bootstrap_attempt_id", "TEXT NULL");
+    this.addColumnIfMissing("assistants", "bootstrap_started_at", "TEXT NULL");
+    this.addColumnIfMissing("assistants", "bootstrap_finished_at", "TEXT NULL");
     this.addColumnIfMissing("assistants", "pending_reprioritize_reason", "TEXT NULL");
     this.addColumnIfMissing("assistants", "pending_reprioritize_requested_at", "TEXT NULL");
     this.addColumnIfMissing("assistant_asset_refs", "canonical_value", "TEXT NULL");
@@ -3385,6 +3759,7 @@ export class WorkspaceRepository {
     this.rebuildThreadMessagesTableIfNeeded();
     this.rebuildAssistantQuestionsTableIfNeeded();
     this.rebuildBackgroundJobRunsTableIfNeeded();
+    this.rebuildNotificationsTableIfNeeded();
     this.repairBackgroundJobRunForeignKeysIfNeeded();
     this.backfillActiveThreadIds();
     this.backfillThreadMetadata();
@@ -3427,10 +3802,10 @@ export class WorkspaceRepository {
     try {
       return {
         id: project.id as ProjectId,
-        name: project.name,
-        rootPath: project.root_path as ProjectRootPath,
+        name: normalizeRequiredTrimmedString(project.name, 256, "Recovered project"),
+        rootPath: normalizeRequiredString(project.root_path, 4096, this.repoRoot) as ProjectRootPath,
         activeThreadId: activeThread.id as ThreadId,
-        selectedModeId: project.selected_mode_id ?? "implement",
+        selectedModeId: normalizeOptionalString(project.selected_mode_id, 128) ?? "implement",
         projectModes: this.readProjectModes(projectId),
         projectRuleSource: toProjectRuleSource(project),
         threadMemorySummary: toThreadMemorySummary(activeThread),
@@ -3486,16 +3861,25 @@ export class WorkspaceRepository {
       )
       .all(threadId)
       .map((message) =>
-        chatMessageSchema.parse({
+        safeParsePersisted(
+          chatMessageSchema,
+          {
           id: message.id,
           role: message.role,
           kind: message.kind ?? "plain",
-          content: message.content,
-          attachments: parseChatAttachments(message.attachments_json),
+          content: normalizeRequiredString(message.content, 1000000, "Recovered message"),
+          attachments: parseChatAttachments(message.attachments_json, {
+            table: "thread_messages",
+            rowId: message.id,
+            field: "attachments_json"
+          }),
           metadata: parseChatMessageMetadata(message.metadata_json),
-          createdAt: message.created_at
-        })
-      );
+          createdAt: normalizeRequiredString(message.created_at, 256, new Date().toISOString())
+          },
+          { table: "thread_messages", rowId: message.id }
+        )
+      )
+      .filter((message): message is ChatMessage => message !== undefined);
   }
 
   private readThreadSummaries(projectId: ProjectId): ProjectThreadSummary[] {
@@ -3553,14 +3937,14 @@ export class WorkspaceRepository {
         return createProjectThreadSummary({
           id: thread.id as ThreadId,
           kind: thread.kind,
-          title: thread.title,
+          title: normalizeRequiredTrimmedString(thread.title, 256, "Recovered thread"),
           titleSource: thread.title_source,
           badgeState: getThreadBadgeState(latestRun),
-          messageCount,
+          messageCount: normalizeInteger(messageCount, 0, 100000, 0),
           lastMessagePreview: preview ? summarizeMessagePreview(preview) : undefined,
-          createdAt: thread.created_at,
-          lastUserMessageAt,
-          updatedAt: thread.updated_at,
+          createdAt: normalizeOptionalString(thread.created_at, 256),
+          lastUserMessageAt: normalizeOptionalString(lastUserMessageAt, 256),
+          updatedAt: normalizeRequiredString(thread.updated_at, 256, new Date().toISOString()),
           forkedFromThreadId: (thread.forked_from_thread_id ?? undefined) as ThreadId | undefined
         });
       } catch (error) {
@@ -3606,8 +3990,8 @@ export class WorkspaceRepository {
       id: "workspace-rules",
       scope: "workspace",
       label: "Workspace rules",
-      content,
-      updatedAt: this.getWorkspaceMetaValue(WORKSPACE_RULES_UPDATED_AT_KEY) ?? "unknown"
+      content: normalizeRequiredString(content, 32000, "Recovered workspace rules"),
+      updatedAt: normalizeRequiredString(this.getWorkspaceMetaValue(WORKSPACE_RULES_UPDATED_AT_KEY), 256, "unknown")
     } satisfies WorkspaceRuleSource;
   }
 
@@ -3621,8 +4005,8 @@ export class WorkspaceRepository {
       id: "workspace-memory",
       scope: "workspace",
       label: "Workspace memory",
-      content,
-      updatedAt: this.getWorkspaceMetaValue(WORKSPACE_MEMORY_UPDATED_AT_KEY) ?? "unknown",
+      content: normalizeRequiredString(content, 32000, "Recovered workspace memory"),
+      updatedAt: normalizeRequiredString(this.getWorkspaceMetaValue(WORKSPACE_MEMORY_UPDATED_AT_KEY), 256, "unknown"),
       source: "user"
     } satisfies MemorySummary;
   }
@@ -3632,7 +4016,8 @@ export class WorkspaceRepository {
       .query<AssistantRow, []>(
         `SELECT
           id, name, scope, project_id, description, personality_prompt, job_prompt, agent_id, mode_id,
-          execution_model_id, run_state, bootstrap_state, cloned_from_assistant_id, failure_streak_count,
+          provider_brand, execution_model_id, fast_mode, run_state, bootstrap_state,
+          bootstrap_attempt_id, bootstrap_started_at, bootstrap_finished_at, cloned_from_assistant_id, failure_streak_count,
           circuit_breaker_state, circuit_breaker_reason, pending_reprioritize_reason, pending_reprioritize_requested_at,
           deleted_at, latest_activity_at, created_at, updated_at
          FROM assistants
@@ -3640,7 +4025,8 @@ export class WorkspaceRepository {
          ORDER BY updated_at DESC, created_at DESC`
       )
       .all()
-      .map((row) => this.hydrateAssistant(row));
+      .map((row) => this.hydrateAssistant(row))
+      .filter((assistant): assistant is Assistant => assistant !== undefined);
   }
 
   private readAssistantThreadRowByAssistantId(assistantId: string) {
@@ -3668,7 +4054,8 @@ export class WorkspaceRepository {
          ORDER BY updated_at DESC`
       )
       .all()
-      .map((row) => this.hydrateAssistantThread(row));
+      .map((row) => this.hydrateAssistantThread(row))
+      .filter((thread): thread is AssistantThread => thread !== undefined);
   }
 
   private readAssistantMessages(threadId: string) {
@@ -3681,15 +4068,20 @@ export class WorkspaceRepository {
       )
       .all(threadId)
       .map((message) =>
-        chatMessageSchema.parse({
-          id: message.id,
-          role: message.role,
-          kind: message.kind ?? "plain",
-          content: message.content,
-          metadata: parseChatMessageMetadata(message.metadata_json),
-          createdAt: message.created_at
-        })
-      );
+        safeParsePersisted(
+          chatMessageSchema,
+          {
+            id: message.id,
+            role: message.role,
+            kind: message.kind ?? "plain",
+            content: normalizeRequiredString(message.content, 1000000, "Recovered assistant message"),
+            metadata: parseChatMessageMetadata(message.metadata_json),
+            createdAt: normalizeRequiredString(message.created_at, 256, new Date().toISOString())
+          },
+          { table: "assistant_messages", rowId: message.id }
+        )
+      )
+      .filter((message): message is ChatMessage => message !== undefined);
   }
 
   private readAssistantTodos() {
@@ -3703,7 +4095,8 @@ export class WorkspaceRepository {
          ORDER BY sort_order ASC, updated_at DESC`
       )
       .all()
-      .map((row) => this.hydrateAssistantTodo(row));
+      .map((row) => this.hydrateAssistantTodo(row))
+      .filter((todo): todo is AssistantTodo => todo !== undefined);
   }
 
   private readAssistantLearnings() {
@@ -3715,7 +4108,8 @@ export class WorkspaceRepository {
          ORDER BY created_at DESC`
       )
       .all()
-      .map((row) => this.hydrateAssistantLearning(row));
+      .map((row) => this.hydrateAssistantLearning(row))
+      .filter((learning): learning is AssistantLearning => learning !== undefined);
   }
 
   private readAssistantLearningsByAssistantId(assistantId: string) {
@@ -3727,7 +4121,8 @@ export class WorkspaceRepository {
          ORDER BY created_at DESC`
       )
       .all(assistantId)
-      .map((row) => this.hydrateAssistantLearning(row));
+      .map((row) => this.hydrateAssistantLearning(row))
+      .filter((learning): learning is AssistantLearning => learning !== undefined);
   }
 
   private readAssistantQuestions() {
@@ -3739,7 +4134,8 @@ export class WorkspaceRepository {
          ORDER BY asked_at DESC`
       )
       .all()
-      .map((row) => this.hydrateAssistantQuestion(row));
+      .map((row) => this.hydrateAssistantQuestion(row))
+      .filter((question): question is AssistantQuestion => question !== undefined);
   }
 
   private readAssistantLogEntries() {
@@ -3751,7 +4147,8 @@ export class WorkspaceRepository {
          ORDER BY created_at DESC`
       )
       .all()
-      .map((row) => this.hydrateAssistantLogEntry(row));
+      .map((row) => this.hydrateAssistantLogEntry(row))
+      .filter((entry): entry is AssistantLogEntry => entry !== undefined);
   }
 
   private readAssistantAssetRefs() {
@@ -3765,7 +4162,8 @@ export class WorkspaceRepository {
          ORDER BY created_at ASC`
       )
       .all()
-      .map((row) => this.hydrateAssistantAssetRef(row));
+      .map((row) => this.hydrateAssistantAssetRef(row))
+      .filter((assetRef): assetRef is AssistantAssetRef => assetRef !== undefined);
   }
 
   private getAssistantTodo(todoId: string) {
@@ -3819,122 +4217,160 @@ export class WorkspaceRepository {
       this.db
         .query<{ count: number }, [string]>(`SELECT COUNT(*) AS count FROM assistant_questions WHERE assistant_id = ?1 AND status = 'pending'`)
         .get(row.id)?.count ?? 0;
-    return assistantSchema.parse({
+    return safeParsePersisted(
+      assistantSchema,
+      {
       id: row.id,
-      name: row.name,
+      name: normalizeRequiredTrimmedString(row.name, 256, "Recovered assistant"),
       scope: row.scope,
       projectId: row.project_id ?? undefined,
-      description: row.description ?? undefined,
-      personalityPrompt: row.personality_prompt,
-      jobPrompt: row.job_prompt,
+      description: normalizeOptionalString(row.description, 1024),
+      personalityPrompt: normalizeRequiredString(row.personality_prompt, 8000, "Recovered assistant personality."),
+      jobPrompt: normalizeRequiredString(row.job_prompt, 12000, "Recovered assistant job."),
       agentId: row.agent_id,
+      providerBrand: row.provider_brand ?? undefined,
       modeId: row.mode_id ?? undefined,
-      executionModelId: row.execution_model_id ?? undefined,
+      executionModelId: normalizeOptionalString(row.execution_model_id, 256),
+      fastMode: row.fast_mode === null ? undefined : normalizeBooleanNumber(row.fast_mode),
       runState: row.run_state,
       bootstrapState: row.bootstrap_state,
-      clonedFromAssistantId: row.cloned_from_assistant_id ?? undefined,
-      failureStreakCount: row.failure_streak_count,
+      bootstrapAttemptId: normalizeOptionalString(row.bootstrap_attempt_id, 128),
+      bootstrapStartedAt: normalizeOptionalString(row.bootstrap_started_at, 256),
+      bootstrapFinishedAt: normalizeOptionalString(row.bootstrap_finished_at, 256),
+      clonedFromAssistantId: normalizeOptionalString(row.cloned_from_assistant_id, 128),
+      failureStreakCount: normalizeInteger(row.failure_streak_count, 0, 1000, 0),
       circuitBreakerState: row.circuit_breaker_state,
-      circuitBreakerReason: row.circuit_breaker_reason ?? undefined,
-      deletedAt: row.deleted_at ?? undefined,
-      latestActivityAt: row.latest_activity_at ?? undefined,
-      unreadQuestionCount,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at
-    });
+      circuitBreakerReason: normalizeOptionalString(row.circuit_breaker_reason, 4000),
+      deletedAt: normalizeOptionalString(row.deleted_at, 256),
+      latestActivityAt: normalizeOptionalString(row.latest_activity_at, 256),
+      unreadQuestionCount: normalizeInteger(unreadQuestionCount, 0, 10000, 0),
+      createdAt: normalizeRequiredString(row.created_at, 256, new Date().toISOString()),
+      updatedAt: normalizeRequiredString(row.updated_at, 256, new Date().toISOString())
+      },
+      { table: "assistants", rowId: row.id }
+    );
   }
 
   private hydrateAssistantThread(row: AssistantThreadRow) {
-    return assistantThreadSchema.parse({
+    return safeParsePersisted(
+      assistantThreadSchema,
+      {
       id: row.id,
       assistantId: row.assistant_id,
       sessionId: row.session_id as SessionId,
       messageCount:
-        this.db
-          .query<{ count: number }, [string]>(`SELECT COUNT(*) AS count FROM assistant_messages WHERE assistant_thread_id = ?1`)
-          .get(row.id)?.count ?? 0,
-      memorySummary: row.memory_summary_content
+        normalizeInteger(
+          this.db
+            .query<{ count: number }, [string]>(`SELECT COUNT(*) AS count FROM assistant_messages WHERE assistant_thread_id = ?1`)
+            .get(row.id)?.count ?? 0,
+          0,
+          100000,
+          0
+        ),
+      memorySummary: normalizeOptionalString(row.memory_summary_content, 32000)
         ? {
             id: `${row.id}:memory`,
             scope: "thread",
             label: "Assistant memory",
-            content: row.memory_summary_content,
-            updatedAt: row.memory_summary_updated_at ?? row.updated_at,
+            content: normalizeRequiredString(row.memory_summary_content, 32000, "Recovered assistant memory"),
+            updatedAt: normalizeRequiredString(row.memory_summary_updated_at ?? row.updated_at, 256, new Date().toISOString()),
             source: "generated"
           }
         : undefined,
-      messages: this.readAssistantMessages(row.id),
-      updatedAt: row.updated_at
-    });
+      messages: this.readAssistantMessages(row.id).slice(0, 4096),
+      updatedAt: normalizeRequiredString(row.updated_at, 256, new Date().toISOString())
+      },
+      { table: "assistant_threads", rowId: row.id }
+    );
   }
 
   private hydrateAssistantTodo(row: AssistantTodoRow) {
-    return assistantTodoSchema.parse({
+    return safeParsePersisted(
+      assistantTodoSchema,
+      {
       id: row.id,
       assistantId: row.assistant_id,
-      title: row.title,
-      description: row.description ?? undefined,
+      title: normalizeRequiredTrimmedString(row.title, 512, "Recovered todo"),
+      description: normalizeOptionalString(row.description, 4000),
       state: row.state,
-      sortOrder: row.sort_order,
-      blockerReason: row.blocker_reason ?? undefined,
+      sortOrder: normalizeInteger(row.sort_order, 0, 1000000, 0),
+      blockerReason: normalizeOptionalString(row.blocker_reason, 4000),
       source: row.source ?? undefined,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      completedAt: row.completed_at ?? undefined,
-      cancelledAt: row.cancelled_at ?? undefined
-    });
+      createdAt: normalizeRequiredString(row.created_at, 256, new Date().toISOString()),
+      updatedAt: normalizeRequiredString(row.updated_at, 256, new Date().toISOString()),
+      completedAt: normalizeOptionalString(row.completed_at, 256),
+      cancelledAt: normalizeOptionalString(row.cancelled_at, 256)
+      },
+      { table: "assistant_todos", rowId: row.id }
+    );
   }
 
   private hydrateAssistantLearning(row: AssistantLearningRow) {
-    return assistantLearningSchema.parse({
+    return safeParsePersisted(
+      assistantLearningSchema,
+      {
       id: row.id,
       assistantId: row.assistant_id,
-      summary: row.summary,
-      source: row.source,
+      summary: normalizeRequiredString(row.summary, 4000, "Recovered learning"),
+      source: normalizeAssistantLearningSource(row.source),
       confidence: row.confidence,
-      createdAt: row.created_at
-    });
+      createdAt: normalizeRequiredString(row.created_at, 256, new Date().toISOString())
+      },
+      { table: "assistant_learnings", rowId: row.id }
+    );
   }
 
   private hydrateAssistantQuestion(row: AssistantQuestionRow) {
-    return assistantQuestionSchema.parse({
+    return safeParsePersisted(
+      assistantQuestionSchema,
+      {
       id: row.id,
       assistantId: row.assistant_id,
-      prompt: row.prompt,
+      prompt: normalizeRequiredString(row.prompt, 8000, "Recovered question"),
       status: row.status,
-      answerText: row.answer_text ?? undefined,
-      linkedTodoIds: parseAssistantTodoIds(row.linked_todo_ids_json),
-      askedAt: row.asked_at,
-      answeredAt: row.answered_at ?? undefined
-    });
+      answerText: normalizeOptionalString(row.answer_text, 32000),
+      linkedTodoIds: parseAssistantTodoIds(row.linked_todo_ids_json)?.slice(0, 32),
+      askedAt: normalizeRequiredString(row.asked_at, 256, new Date().toISOString()),
+      answeredAt: normalizeOptionalString(row.answered_at, 256)
+      },
+      { table: "assistant_questions", rowId: row.id }
+    );
   }
 
   private hydrateAssistantLogEntry(row: AssistantLogEntryRow) {
-    return assistantLogEntrySchema.parse({
+    return safeParsePersisted(
+      assistantLogEntrySchema,
+      {
       id: row.id,
       assistantId: row.assistant_id,
       level: row.level,
-      summary: row.summary,
-      detail: row.detail ?? undefined,
-      detailsJson: row.details_json ? JSON.parse(row.details_json) : undefined,
-      createdAt: row.created_at
-    });
+      summary: normalizeRequiredString(row.summary, 1024, "Recovered log entry"),
+      detail: normalizeOptionalString(row.detail, 4000),
+      detailsJson: parseJsonObjectOrUndefined(row.details_json),
+      createdAt: normalizeRequiredString(row.created_at, 256, new Date().toISOString())
+      },
+      { table: "assistant_log_entries", rowId: row.id }
+    );
   }
 
   private hydrateAssistantAssetRef(row: AssistantAssetRefRow) {
-    return assistantAssetRefSchema.parse({
+    return safeParsePersisted(
+      assistantAssetRefSchema,
+      {
       id: row.id,
       assistantId: row.assistant_id,
       kind: row.kind,
-      label: row.label,
-      value: row.value,
-      canonicalValue: row.canonical_value ?? undefined,
+      label: normalizeRequiredString(row.label, 256, "Recovered asset"),
+      value: normalizeRequiredString(row.value, 4096, "recovered"),
+      canonicalValue: normalizeOptionalString(row.canonical_value, 4096),
       scope: row.scope ?? undefined,
       provenance: row.provenance ?? undefined,
       resolutionStatus: row.resolution_status ?? "resolved",
-      resolutionError: row.resolution_error ?? undefined,
-      createdAt: row.created_at
-    });
+      resolutionError: normalizeOptionalString(row.resolution_error, 1024),
+      createdAt: normalizeRequiredString(row.created_at, 256, new Date().toISOString())
+      },
+      { table: "assistant_asset_refs", rowId: row.id }
+    );
   }
 
   private tryRecoverFromProjectLoadFailure(projectId: ProjectId, error: unknown) {
@@ -4052,7 +4488,9 @@ export class WorkspaceRepository {
          ORDER BY updated_at DESC`
       )
       .all(projectId, threadId)
-      .map((run) => toAgentRunSummary(this.hydrateRunState(run)));
+      .map((run) => this.hydrateRunState(run))
+      .filter((run): run is AgentRunState => run !== undefined)
+      .map((run) => toAgentRunSummary(run));
   }
 
   private readLatestRun(projectId: ProjectId, threadId: ThreadId): AgentRunState | undefined {
@@ -4073,10 +4511,10 @@ export class WorkspaceRepository {
     return run ? this.hydrateRunState(run) : undefined;
   }
 
-  private hydrateRunState(run: AgentRunRow): AgentRunState {
+  private hydrateRunState(run: AgentRunRow): AgentRunState | undefined {
     const questions = this.db
       .query<AgentRunQuestionRow, [string]>(
-        `SELECT id, run_id, ordinal, prompt, placeholder, choices_json, intent_json, status, answer_text, asked_at, answered_at
+        `SELECT id, run_id, ordinal, prompt, placeholder, response_kind, choices_json, intent_json, status, answer_text, asked_at, answered_at
          FROM agent_run_questions
          WHERE run_id = ?1
          ORDER BY ordinal ASC`
@@ -4084,15 +4522,16 @@ export class WorkspaceRepository {
       .all(run.id)
       .map((question) => ({
         id: question.id,
-        prompt: question.prompt,
-        placeholder: question.placeholder ?? undefined,
-        choices: parsePlanningChoices(question.choices_json),
+        prompt: normalizeRequiredString(question.prompt, 1000000, "Recovered planning question"),
+        placeholder: normalizeOptionalString(question.placeholder, 32000),
+        responseKind: question.response_kind,
+        choices: question.response_kind === "freeform" ? undefined : parsePlanningChoices(question.choices_json),
         required: true,
         status: question.status,
-        answerText: question.answer_text ?? undefined,
+        answerText: normalizeOptionalString(question.answer_text, 1000000),
         intent: parsePlanningQuestionIntent(question.intent_json),
-        askedAt: question.asked_at,
-        answeredAt: question.answered_at ?? undefined
+        askedAt: normalizeRequiredString(question.asked_at, 256, new Date().toISOString()),
+        answeredAt: normalizeOptionalString(question.answered_at, 256)
       }));
 
     const subtasks = this.db
@@ -4107,18 +4546,18 @@ export class WorkspaceRepository {
       .all(run.id)
       .map((task) => ({
         id: task.planner_task_id,
-        title: task.title,
-        instruction: task.instruction,
+        title: normalizeRequiredString(task.title, 1000000, "Recovered subtask"),
+        instruction: normalizeRequiredString(task.instruction, 1000000, "Recovered subtask instruction"),
         status: task.status,
-        attemptCount: task.attempt_count,
-        output: task.output ?? undefined,
-        errorMessage: task.error_message ?? undefined,
-        commitSha: task.commit_sha ?? undefined,
-        mountPath: (task as AgentRunSubtaskRow & { mount_path?: string | null }).mount_path ?? undefined,
-        worktreePath: task.worktree_path ?? undefined,
-        startedAt: task.started_at ?? undefined,
-        completedAt: task.completed_at ?? undefined,
-        updatedAt: task.updated_at
+        attemptCount: normalizeInteger(task.attempt_count, 0, Number.MAX_SAFE_INTEGER, 0),
+        output: normalizeOptionalString(task.output, 1000000),
+        errorMessage: normalizeOptionalString(task.error_message, 1000000),
+        commitSha: normalizeOptionalString(task.commit_sha, 256),
+        mountPath: normalizeOptionalString((task as AgentRunSubtaskRow & { mount_path?: string | null }).mount_path, 4096),
+        worktreePath: normalizeOptionalString(task.worktree_path, 4096),
+        startedAt: normalizeOptionalString(task.started_at, 256),
+        completedAt: normalizeOptionalString(task.completed_at, 256),
+        updatedAt: normalizeRequiredString(task.updated_at, 256, new Date().toISOString())
       }));
 
     const experiment = this.db
@@ -4153,21 +4592,24 @@ export class WorkspaceRepository {
          ORDER BY created_at ASC`
       )
       .all(run.id)
-      .map((row) => this.hydrateMemoryRetrieval(row));
+      .map((row) => this.hydrateMemoryRetrieval(row))
+      .filter((retrieval): retrieval is MemoryRetrieval => retrieval !== undefined);
 
     const hasExecutionState = subtasks.length > 0 || Boolean(run.final_execution_brief);
-    return agentRunStateSchema.parse({
+    return safeParsePersisted(
+      agentRunStateSchema,
+      {
       id: run.id,
       threadId: run.thread_id as ThreadId,
       status: run.status,
       executionTarget: run.execution_target ?? "current-project",
-      latestUserPrompt: run.latest_user_prompt,
-      planningModelId: run.planning_model_id ?? undefined,
-      executionModelId: run.execution_model_id ?? undefined,
-      difficultyScore: run.difficulty_score ?? undefined,
-      summary: run.summary ?? undefined,
-      finalExecutionBrief: run.final_execution_brief ?? undefined,
-      failureMessage: run.failure_message ?? undefined,
+      latestUserPrompt: normalizeRequiredString(run.latest_user_prompt, 1000000, "Recovered prompt"),
+      planningModelId: normalizeOptionalString(run.planning_model_id, 256),
+      executionModelId: normalizeOptionalString(run.execution_model_id, 256),
+      difficultyScore: normalizeOptionalInteger(run.difficulty_score, 0, 100),
+      summary: normalizeOptionalString(run.summary, 1000000),
+      finalExecutionBrief: normalizeOptionalString(run.final_execution_brief, 1000000),
+      failureMessage: normalizeOptionalString(run.failure_message, 1000000),
       plan: parseExecutionPlan(run.plan_json),
       correctnessReview: parseCorrectnessReview(run.correctness_review_json),
       questions,
@@ -4178,10 +4620,12 @@ export class WorkspaceRepository {
       toolActivities: parseToolActivities(run.tool_activities_json),
       resumable: isRunResumable(run.status, hasExecutionState),
       retryable: isRunRetryable(run.status, hasExecutionState),
-      createdAt: run.created_at,
-      updatedAt: run.updated_at,
-      completedAt: run.completed_at ?? undefined
-    });
+      createdAt: normalizeRequiredString(run.created_at, 256, new Date().toISOString()),
+      updatedAt: normalizeRequiredString(run.updated_at, 256, new Date().toISOString()),
+      completedAt: normalizeOptionalString(run.completed_at, 256)
+      },
+      { table: "agent_runs", rowId: run.id }
+    );
   }
 
   private getWorkspaceMetaValue(key: string) {
@@ -4404,13 +4848,13 @@ export class WorkspaceRepository {
 
   private backfillQuestionChoices() {
     const rows = this.db
-      .query<{ id: string; placeholder: string | null; choices_json: string | null }, []>(
-        `SELECT id, placeholder, choices_json FROM agent_run_questions`
+      .query<{ id: string; placeholder: string | null; response_kind: string; choices_json: string | null }, []>(
+        `SELECT id, placeholder, response_kind, choices_json FROM agent_run_questions`
       )
       .all();
 
     for (const row of rows) {
-      if (row.choices_json) {
+      if (row.choices_json || row.response_kind === "freeform") {
         continue;
       }
 
@@ -4434,6 +4878,7 @@ export class WorkspaceRepository {
         ordinal INTEGER NOT NULL,
         prompt TEXT NOT NULL,
         placeholder TEXT NULL,
+        response_kind TEXT NOT NULL DEFAULT 'choice' CHECK(response_kind IN ('choice', 'freeform')),
         choices_json TEXT NULL,
         intent_json TEXT NULL,
         status TEXT NOT NULL CHECK(status IN ('pending', 'deferred', 'answered')),
@@ -4443,10 +4888,10 @@ export class WorkspaceRepository {
         FOREIGN KEY(run_id) REFERENCES agent_runs(id) ON DELETE CASCADE
       );
       INSERT INTO agent_run_questions (
-        id, run_id, ordinal, prompt, placeholder, choices_json, intent_json, status, answer_text, asked_at, answered_at
+        id, run_id, ordinal, prompt, placeholder, response_kind, choices_json, intent_json, status, answer_text, asked_at, answered_at
       )
       SELECT
-        id, run_id, ordinal, prompt, placeholder, choices_json, NULL, status, answer_text, asked_at, answered_at
+        id, run_id, ordinal, prompt, placeholder, 'choice', choices_json, NULL, status, answer_text, asked_at, answered_at
       FROM agent_run_questions_legacy;
       DROP TABLE agent_run_questions_legacy;
       CREATE INDEX IF NOT EXISTS agent_run_questions_run_ordinal_idx
@@ -4573,6 +5018,15 @@ export class WorkspaceRepository {
     this.rebuildNotificationsTable();
   }
 
+  private rebuildNotificationsTableIfNeeded() {
+    const createSql = this.readTableCreateSql("notifications");
+    if (createSql.includes("'planning-question-batch'") && createSql.includes("'assistant-question-batch'")) {
+      return;
+    }
+
+    this.rebuildNotificationsTable();
+  }
+
   private rebuildBackgroundJobRunEventsTable() {
     this.db.exec(`
       ALTER TABLE background_job_run_events RENAME TO background_job_run_events_legacy;
@@ -4603,7 +5057,7 @@ export class WorkspaceRepository {
       ALTER TABLE notifications RENAME TO notifications_legacy;
       CREATE TABLE notifications (
         id TEXT PRIMARY KEY,
-        kind TEXT NOT NULL CHECK(kind IN ('planning-question', 'assistant-question', 'browser-approval', 'background-run-status')),
+        kind TEXT NOT NULL CHECK(kind IN ('planning-question', 'planning-question-batch', 'assistant-question', 'assistant-question-batch', 'browser-approval', 'background-run-status')),
         interactive INTEGER NOT NULL CHECK(interactive IN (0, 1)),
         project_id TEXT NULL,
         thread_id TEXT NULL,
@@ -4717,7 +5171,8 @@ export class WorkspaceRepository {
          ORDER BY updated_at DESC, created_at DESC`
       )
       .all()
-      .map((row) => this.hydrateBackgroundJob(row));
+      .map((row) => this.hydrateBackgroundJob(row))
+      .filter((job): job is BackgroundJob => job !== undefined);
   }
 
   private readBackgroundJobRuns() {
@@ -4732,7 +5187,8 @@ export class WorkspaceRepository {
          LIMIT 256`
       )
       .all()
-      .map((row) => this.hydrateBackgroundJobRun(row));
+      .map((row) => this.hydrateBackgroundJobRun(row))
+      .filter((run): run is BackgroundJobRun => run !== undefined);
   }
 
   private readBackgroundJobTemplates() {
@@ -4744,14 +5200,19 @@ export class WorkspaceRepository {
       )
       .all()
       .map((row) =>
-        backgroundJobTemplateSchema.parse({
-          id: row.id,
-          label: row.label,
-          description: row.description,
-          kind: row.kind,
-          definition: JSON.parse(row.definition_json)
-        })
-      );
+        safeParsePersisted(
+          backgroundJobTemplateSchema,
+          {
+            id: row.id,
+            label: normalizeRequiredString(row.label, 128, "Recovered template"),
+            description: normalizeRequiredString(row.description, 512, "Recovered template"),
+            kind: row.kind,
+            definition: parseBackgroundJobDefinition(row.kind, row.definition_json)
+          },
+          { table: "background_job_templates", rowId: row.id }
+        )
+      )
+      .filter((template): template is BackgroundJobTemplate => template !== undefined);
   }
 
   private readNotificationInboxItems() {
@@ -4765,32 +5226,37 @@ export class WorkspaceRepository {
          ORDER BY created_at DESC`
       )
       .all()
-      .map((row) => this.hydrateNotification(row));
+      .map((row) => this.hydrateNotification(row))
+      .filter((item): item is NotificationInboxItem => item !== undefined);
   }
 
   private hydrateBackgroundJob(row: BackgroundJobRow) {
-    return backgroundJobSchema.parse({
+    return safeParsePersisted(
+      backgroundJobSchema,
+      {
       id: row.id,
       projectId: row.project_id,
       assistantId: row.assistant_id ?? undefined,
       automationThreadId: row.automation_thread_id,
-      templateId: row.template_id ?? undefined,
-      createdFromRunId: row.created_from_run_id ?? undefined,
+      templateId: normalizeOptionalString(row.template_id, 128),
+      createdFromRunId: normalizeOptionalString(row.created_from_run_id, 128),
       kind: row.kind,
-      name: row.name,
-      description: row.description ?? undefined,
-      definition: JSON.parse(row.definition_json),
-      schedule: JSON.parse(row.schedule_json),
-      scheduleInput: row.schedule_input,
-      timezone: row.timezone ?? undefined,
+      name: normalizeRequiredString(row.name, 256, "Recovered background job"),
+      description: normalizeOptionalString(row.description, 1024),
+      definition: parseBackgroundJobDefinition(row.kind, row.definition_json),
+      schedule: parseBackgroundJobSchedule(row.schedule_json, row.next_run_at ?? row.updated_at),
+      scheduleInput: normalizeRequiredString(row.schedule_input, 512, "recovered"),
+      timezone: normalizeOptionalString(row.timezone, 128),
       status: row.status,
       riskLevel: row.risk_level,
-      nextRunAt: row.next_run_at ?? undefined,
-      lastRunAt: row.last_run_at ?? undefined,
-      lastEnqueuedAt: row.last_enqueued_at ?? undefined,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at
-    });
+      nextRunAt: normalizeOptionalString(row.next_run_at, 256),
+      lastRunAt: normalizeOptionalString(row.last_run_at, 256),
+      lastEnqueuedAt: normalizeOptionalString(row.last_enqueued_at, 256),
+      createdAt: normalizeRequiredString(row.created_at, 256, new Date().toISOString()),
+      updatedAt: normalizeRequiredString(row.updated_at, 256, new Date().toISOString())
+      },
+      { table: "background_jobs", rowId: row.id }
+    );
   }
 
   private hydrateBackgroundJobRun(row: BackgroundJobRunRow) {
@@ -4804,13 +5270,16 @@ export class WorkspaceRepository {
       .all(row.id)
       .map((event) => ({
         id: event.id,
-        stage: event.stage,
-        message: event.message,
-        detail: event.detail_json ?? undefined,
-        createdAt: event.created_at
-      }));
+        stage: normalizeRequiredString(event.stage, 64, "recovered"),
+        message: normalizeRequiredString(event.message, 4000, "Recovered job event"),
+        detail: normalizeOptionalString(event.detail_json, 16000),
+        createdAt: normalizeRequiredString(event.created_at, 256, new Date().toISOString())
+      }))
+      .slice(0, 512);
 
-    return backgroundJobRunSchema.parse({
+    return safeParsePersisted(
+      backgroundJobRunSchema,
+      {
       id: row.id,
       jobId: row.job_id,
       projectId: row.project_id,
@@ -4820,87 +5289,120 @@ export class WorkspaceRepository {
       status: row.status,
       riskLevel: row.risk_level,
       approvalStatus: row.approval_status,
-      skippedOccurrenceCount: row.skipped_occurrence_count,
-      linkedAgentRunId: row.linked_agent_run_id ?? undefined,
-      summary: row.summary ?? undefined,
-      failureMessage: row.failure_message ?? undefined,
-      queuedAt: row.queued_at,
-      startedAt: row.started_at ?? undefined,
-      completedAt: row.completed_at ?? undefined,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
+      skippedOccurrenceCount: normalizeInteger(row.skipped_occurrence_count, 0, 100000, 0),
+      linkedAgentRunId: normalizeOptionalString(row.linked_agent_run_id, 128),
+      summary: normalizeOptionalString(row.summary, 4000),
+      failureMessage: normalizeOptionalString(row.failure_message, 4000),
+      queuedAt: normalizeRequiredString(row.queued_at, 256, new Date().toISOString()),
+      startedAt: normalizeOptionalString(row.started_at, 256),
+      completedAt: normalizeOptionalString(row.completed_at, 256),
+      createdAt: normalizeRequiredString(row.created_at, 256, new Date().toISOString()),
+      updatedAt: normalizeRequiredString(row.updated_at, 256, new Date().toISOString()),
       events
-    });
+      },
+      { table: "background_job_runs", rowId: row.id }
+    );
   }
 
   private hydrateNotification(row: NotificationRow) {
-    const payload = JSON.parse(row.payload_json) as NotificationInboxItem;
-    return notificationInboxItemSchema.parse({
+    const payload = parseJsonObjectOrUndefined(row.payload_json);
+    if (!payload) {
+      recordPersistenceRecovery({ table: "notifications", rowId: row.id, field: "payload_json" }, "invalid notification payload");
+      return undefined;
+    }
+
+    return safeParsePersisted(
+      notificationInboxItemSchema,
+      {
       ...payload,
       id: row.id,
-      interactive: Boolean(row.interactive),
-      createdAt: row.created_at,
-      readAt: row.read_at ?? undefined,
-      archivedAt: row.archived_at ?? undefined
-    });
+      kind: row.kind,
+      interactive: row.kind === "background-run-status" ? false : true,
+      projectId: row.project_id ?? payload.projectId,
+      threadId: row.thread_id ?? payload.threadId,
+      runId: row.run_id ?? payload.runId,
+      assistantId: row.assistant_id ?? payload.assistantId,
+      questionId: row.question_id ?? payload.questionId,
+      sessionId: row.session_id ?? payload.sessionId,
+      toolCallId: row.tool_call_id ?? payload.toolCallId,
+      backgroundRunId: row.background_run_id ?? payload.backgroundRunId,
+      jobId: row.job_id ?? payload.jobId,
+      createdAt: normalizeRequiredString(row.created_at, 256, new Date().toISOString()),
+      readAt: normalizeOptionalString(row.read_at, 256),
+      archivedAt: normalizeOptionalString(row.archived_at, 256)
+      },
+      { table: "notifications", rowId: row.id }
+    );
   }
 
   private hydrateExperimentRun(row: AgentRunExperimentRow) {
-    return experimentRunSchema.parse({
+    return safeParsePersisted(
+      experimentRunSchema,
+      {
       id: row.id,
       runId: row.run_id,
       status: row.status,
-      virtualBranchName: row.virtual_branch_name,
-      repoMountPath: row.repo_mount_path,
-      projectMountPath: row.project_mount_path,
-      baseCommitSha: row.base_commit_sha ?? undefined,
-      baseBranchName: row.base_branch_name ?? undefined,
-      baseDirtyFingerprint: row.base_dirty_fingerprint,
-      headCommitSha: row.head_commit_sha ?? undefined,
-      filesChanged: row.files_changed,
-      insertions: row.insertions,
-      deletions: row.deletions,
-      promotedAt: row.promoted_at ?? undefined,
-      discardedAt: row.discarded_at ?? undefined,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at
-    });
+      virtualBranchName: normalizeRequiredString(row.virtual_branch_name, 256, "recovered-branch"),
+      repoMountPath: normalizeRequiredString(row.repo_mount_path, 4096, this.repoRoot),
+      projectMountPath: normalizeRequiredString(row.project_mount_path, 4096, this.repoRoot),
+      baseCommitSha: normalizeOptionalString(row.base_commit_sha, 256),
+      baseBranchName: normalizeOptionalString(row.base_branch_name, 256),
+      baseDirtyFingerprint: normalizeRequiredString(row.base_dirty_fingerprint, 256, "unknown"),
+      headCommitSha: normalizeOptionalString(row.head_commit_sha, 256),
+      filesChanged: normalizeInteger(row.files_changed, 0, Number.MAX_SAFE_INTEGER, 0),
+      insertions: normalizeInteger(row.insertions, 0, Number.MAX_SAFE_INTEGER, 0),
+      deletions: normalizeInteger(row.deletions, 0, Number.MAX_SAFE_INTEGER, 0),
+      promotedAt: normalizeOptionalString(row.promoted_at, 256),
+      discardedAt: normalizeOptionalString(row.discarded_at, 256),
+      createdAt: normalizeRequiredString(row.created_at, 256, new Date().toISOString()),
+      updatedAt: normalizeRequiredString(row.updated_at, 256, new Date().toISOString())
+      },
+      { table: "agent_run_experiments", rowId: row.id }
+    );
   }
 
   private hydrateMemoryEntry(row: MemoryEntryRow) {
-    return memoryEntrySchema.parse({
+    return safeParsePersisted(
+      memoryEntrySchema,
+      {
       id: row.id,
       projectId: row.project_id ?? undefined,
       threadId: row.thread_id ?? undefined,
       runId: row.run_id ?? undefined,
       kind: row.kind,
       status: row.status,
-      title: row.title,
-      summary: row.summary,
-      evidence: row.evidence ?? undefined,
-      tags: parseStringArray(row.tags_json),
-      pathGlobs: parseStringArray(row.path_globs_json),
+      title: normalizeRequiredString(row.title, 256, "Recovered memory"),
+      summary: normalizeRequiredString(row.summary, 4000, "Recovered memory summary"),
+      evidence: normalizeOptionalString(row.evidence, 16000),
+      tags: parseStringArray(row.tags_json, 32, 128),
+      pathGlobs: parseStringArray(row.path_globs_json, 64, 512),
       confidence: row.confidence,
       freshness: deriveMemoryFreshness(row),
-      pinned: row.pinned > 0,
-      hitCount: row.hit_count,
-      lastHitAt: row.last_hit_at ?? undefined,
-      sourceCommitSha: row.source_commit_sha ?? undefined,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at
-    });
+      pinned: normalizeBooleanNumber(row.pinned),
+      hitCount: normalizeInteger(row.hit_count, 0, Number.MAX_SAFE_INTEGER, 0),
+      lastHitAt: normalizeOptionalString(row.last_hit_at, 256),
+      sourceCommitSha: normalizeOptionalString(row.source_commit_sha, 256),
+      createdAt: normalizeRequiredString(row.created_at, 256, new Date().toISOString()),
+      updatedAt: normalizeRequiredString(row.updated_at, 256, new Date().toISOString())
+      },
+      { table: "memory_entries", rowId: row.id }
+    );
   }
 
   private hydrateMemoryRetrieval(row: MemoryRetrievalRow) {
-    return memoryRetrievalSchema.parse({
+    return safeParsePersisted(
+      memoryRetrievalSchema,
+      {
       id: row.id,
       runId: row.run_id,
       owner: row.owner,
-      subagentId: row.subagent_id ?? undefined,
-      queryText: row.query_text,
-      entryIds: parseStringArray(row.entry_ids_json),
-      createdAt: row.created_at
-    });
+      subagentId: normalizeOptionalString(row.subagent_id, 128),
+      queryText: normalizeRequiredString(row.query_text, 32000, "Recovered memory query"),
+      entryIds: parseStringArray(row.entry_ids_json, 16, 128),
+      createdAt: normalizeRequiredString(row.created_at, 256, new Date().toISOString())
+      },
+      { table: "memory_retrievals", rowId: row.id }
+    );
   }
 
   private seedBackgroundJobTemplates() {
@@ -4958,10 +5460,10 @@ function toModeDefinition(row: WorkspaceModeRow | ProjectModeRow, scope: "worksp
   return {
     id: row.id,
     scope,
-    label: row.label,
-    description: row.description,
-    plannerPrompt: row.planner_prompt,
-    executionPrompt: row.execution_prompt,
+    label: normalizeRequiredString(row.label, 64, "Recovered mode"),
+    description: normalizeRequiredString(row.description, 256, "Recovered mode description"),
+    plannerPrompt: normalizeRequiredString(row.planner_prompt, 4000, "Plan the task."),
+    executionPrompt: normalizeRequiredString(row.execution_prompt, 4000, "Execute the task."),
     toolPolicy: row.tool_policy,
     executionAccess: resolveModeExecutionAccess({
       toolPolicy: row.tool_policy,
@@ -4970,7 +5472,7 @@ function toModeDefinition(row: WorkspaceModeRow | ProjectModeRow, scope: "worksp
     planExecutionModeDefault: row.plan_execution_mode_default ?? undefined,
     subagentWorktreeStrategyDefault: row.subagent_worktree_strategy_default ?? undefined,
     correctnessIterationModeDefault: row.correctness_iteration_mode_default ?? undefined,
-    updatedAt: row.updated_at
+    updatedAt: normalizeRequiredString(row.updated_at, 256, new Date().toISOString())
   };
 }
 
@@ -4982,9 +5484,9 @@ function toProjectRuleSource(project: ProjectRow): WorkspaceRuleSource | undefin
   return {
     id: `${project.id}:rules`,
     scope: "project",
-    label: `${project.name} rules`,
-    content: project.rules_content,
-    updatedAt: project.rules_updated_at ?? "unknown"
+    label: normalizeRequiredString(`${project.name} rules`, 128, "Project rules"),
+    content: normalizeRequiredString(project.rules_content, 32000, "Recovered rules"),
+    updatedAt: normalizeRequiredString(project.rules_updated_at, 256, "unknown")
   };
 }
 
@@ -4997,8 +5499,8 @@ function toThreadMemorySummary(thread: ThreadRow): MemorySummary | undefined {
     id: `${thread.id}:memory`,
     scope: "thread",
     label: "Thread memory",
-    content: thread.memory_summary_content,
-    updatedAt: thread.memory_summary_updated_at ?? "unknown",
+    content: normalizeRequiredString(thread.memory_summary_content, 32000, "Recovered memory"),
+    updatedAt: normalizeRequiredString(thread.memory_summary_updated_at, 256, "unknown"),
     source: "user"
   };
 }
@@ -5011,7 +5513,25 @@ function parsePlanningChoices(input: string | null): PlanningChoice[] {
   try {
     const parsed = JSON.parse(input);
     if (Array.isArray(parsed) && parsed.length === 3) {
-      return parsed as PlanningChoice[];
+      const choices = parsed.map((choice, index) =>
+        safeParsePersisted(
+          planningChoiceSchema,
+          choice,
+          { table: "agent_run_questions", field: `choices_json[${index}]` },
+          {
+            fallbacks: {
+              id: `choice-${index + 1}`,
+              label: `Choice ${index + 1}`,
+              description: "Recovered choice.",
+              answerText: "Recovered answer."
+            }
+          }
+        )
+      );
+      if (choices.every((choice): choice is PlanningChoice => choice !== undefined)) {
+        const recommendedIndex = choices.findIndex((choice) => choice.recommended);
+        return choices.map((choice, index) => ({ ...choice, recommended: recommendedIndex === -1 ? index === 0 : index === recommendedIndex }));
+      }
     }
   } catch {
     return createFallbackPlanningChoices("Provide answer");
@@ -5025,7 +5545,14 @@ function parsePlanningQuestionIntent(input: string | null): PlanningQuestion["in
     return undefined;
   }
 
-  return planningQuestionIntentSchema.parse(JSON.parse(input));
+  try {
+    return safeParsePersisted(planningQuestionIntentSchema, JSON.parse(input), {
+      table: "agent_run_questions",
+      field: "intent_json"
+    });
+  } catch {
+    return undefined;
+  }
 }
 
 function parseChatMessageMetadata(input: string | null): ChatMessageMetadata | undefined {
@@ -5034,22 +5561,68 @@ function parseChatMessageMetadata(input: string | null): ChatMessageMetadata | u
   }
 
   try {
-    return chatMessageMetadataSchema.parse(JSON.parse(input));
+    return safeParsePersisted(chatMessageMetadataSchema, JSON.parse(input), {
+      table: "thread_messages",
+      field: "metadata_json"
+    });
   } catch {
     return undefined;
   }
 }
 
-function parseChatAttachments(input: string | null): ChatAttachment[] | undefined {
+function parseChatAttachment(input: string | null, context: PersistedRecoveryContext): ChatAttachment | undefined {
+  const parsed = parseJsonObjectOrUndefined(input);
+  if (!parsed) {
+    return undefined;
+  }
+
+  return safeParsePersisted(
+    chatAttachmentSchema,
+    {
+      ...parsed,
+      name: normalizeRequiredString(parsed.name, 256, "Recovered attachment"),
+      mimeType: normalizeRequiredString(parsed.mimeType, 256, "application/octet-stream"),
+      sizeBytes: normalizeInteger(parsed.sizeBytes, 1, 16 * 1024 * 1024, 1),
+      key: normalizeRequiredString(parsed.key, 512, "recovered"),
+      uploadedAt: normalizeRequiredString(parsed.uploadedAt, 256, new Date().toISOString())
+    },
+    context
+  );
+}
+
+function parseChatAttachments(input: string | null, context: PersistedRecoveryContext): ChatAttachment[] | undefined {
   if (!input) {
     return undefined;
   }
 
-  try {
-    return chatAttachmentSchema.array().parse(JSON.parse(input));
-  } catch {
+  const parsed = parseJsonArrayOrEmpty(input);
+  const attachments = parsed
+    .map((attachment, index) => {
+      if (!attachment || typeof attachment !== "object" || Array.isArray(attachment)) {
+        recordPersistenceRecovery(context, `invalid attachment at index ${index}`);
+        return undefined;
+      }
+      const record = attachment as Record<string, unknown>;
+      return safeParsePersisted(
+        chatAttachmentSchema,
+        {
+          ...record,
+          name: normalizeRequiredString(record.name, 256, "Recovered attachment"),
+          mimeType: normalizeRequiredString(record.mimeType, 256, "application/octet-stream"),
+          sizeBytes: normalizeInteger(record.sizeBytes, 1, 16 * 1024 * 1024, 1),
+          key: normalizeRequiredString(record.key, 512, "recovered"),
+          uploadedAt: normalizeRequiredString(record.uploadedAt, 256, new Date().toISOString())
+        },
+        { ...context, field: `${context.field ?? "attachments"}[${index}]` }
+      );
+    })
+    .filter((attachment): attachment is ChatAttachment => attachment !== undefined)
+    .slice(0, 8);
+
+  if (attachments.length === 0) {
     return undefined;
   }
+  return attachments;
 }
 
 function parseAssistantTodoIds(input: string | null): string[] | undefined {
@@ -5059,9 +5632,9 @@ function parseAssistantTodoIds(input: string | null): string[] | undefined {
 
   try {
     const parsed = JSON.parse(input);
-    return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : undefined;
+    return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string").slice(0, 32) : [];
   } catch {
-    return undefined;
+    return [];
   }
 }
 
@@ -5094,11 +5667,19 @@ function parseBrowserSessions(input: string | null): BrowserSession[] | undefine
     return undefined;
   }
 
-  try {
-    return browserSessionSchema.array().parse(JSON.parse(input));
-  } catch {
+  const sessions = parseJsonArrayOrEmpty(input)
+    .map((session, index) =>
+      safeParsePersisted(browserSessionSchema, session, {
+        table: "agent_runs",
+        field: `browser_sessions_json[${index}]`
+      })
+    )
+    .filter((session): session is BrowserSession => session !== undefined)
+    .slice(0, 32);
+  if (sessions.length === 0) {
     return undefined;
   }
+  return sessions;
 }
 
 function parseToolActivities(input: string | null): ExecutionToolActivity[] | undefined {
@@ -5106,25 +5687,101 @@ function parseToolActivities(input: string | null): ExecutionToolActivity[] | un
     return undefined;
   }
 
-  try {
-    const activities = executionToolActivitySchema.array().parse(JSON.parse(input));
-    return activities.length > 0 ? activities.slice(-512) : undefined;
-  } catch {
+  const activities = parseJsonArrayOrEmpty(input)
+    .map((activity, index) =>
+      safeParsePersisted(executionToolActivitySchema, activity, {
+        table: "agent_runs",
+        field: `tool_activities_json[${index}]`
+      })
+    )
+    .filter((activity): activity is ExecutionToolActivity => activity !== undefined)
+    .slice(-512);
+  if (activities.length === 0) {
     return undefined;
   }
+  return activities;
 }
 
-function parseStringArray(input: string | null) {
+function parseBackgroundJobDefinition(kind: BackgroundJob["kind"], input: string | null) {
+  const parsed = parseJsonObjectOrUndefined(input);
+  const fallback =
+    kind === "shell"
+      ? {
+          kind: "shell",
+          executable: "echo",
+          args: ["Recovered background job definition"],
+          timeoutSeconds: 60
+        }
+      : {
+          kind: "ai-routine",
+          prompt: "Recovered background job prompt."
+        };
+  const value: Record<string, unknown> = parsed ?? fallback;
+  if (value.kind !== kind) {
+    value.kind = kind;
+  }
+  if (kind === "shell") {
+    value.executable = normalizeRequiredString(value.executable, 1024, "echo");
+    value.args = parseUnknownStringArray(value.args, 64, 4096);
+    value.cwd = normalizeOptionalString(value.cwd, 4096);
+    value.envRefs = parseUnknownStringArray(value.envRefs, 32, 128);
+    value.timeoutSeconds = normalizeInteger(value.timeoutSeconds, 1, 24 * 60 * 60, 60);
+  } else {
+    value.prompt = normalizeRequiredString(value.prompt, 32000, "Recovered background job prompt.");
+    value.modeId = normalizeOptionalString(value.modeId, 128);
+    value.executionModelId = normalizeOptionalString(value.executionModelId, 256);
+  }
+  return value;
+}
+
+function parseBackgroundJobSchedule(input: string | null, fallbackDate: string) {
+  const parsed = parseJsonObjectOrUndefined(input);
+  const value = parsed ?? {
+    type: "interval",
+    intervalSeconds: 60,
+    nextRunAt: fallbackDate,
+    sourceText: "recovered"
+  };
+  if (value.type === "one-off") {
+    value.runAt = normalizeRequiredString(value.runAt, 256, fallbackDate);
+    value.consumedAt = normalizeOptionalString(value.consumedAt, 256);
+    value.sourceText = normalizeRequiredString(value.sourceText, 512, "recovered");
+    return value;
+  }
+  if (value.type === "cron") {
+    value.expression = normalizeRequiredString(value.expression, 256, "* * * * *");
+    value.timezone = normalizeRequiredString(value.timezone, 128, "UTC");
+    value.nextRunAt = normalizeRequiredString(value.nextRunAt, 256, fallbackDate);
+    value.sourceText = normalizeRequiredString(value.sourceText, 512, "recovered");
+    return value;
+  }
+  value.type = "interval";
+  value.intervalSeconds = normalizeInteger(value.intervalSeconds, 60, 365 * 24 * 60 * 60, 60);
+  value.nextRunAt = normalizeRequiredString(value.nextRunAt, 256, fallbackDate);
+  value.sourceText = normalizeRequiredString(value.sourceText, 512, "recovered");
+  return value;
+}
+
+function parseStringArray(input: string | null, maxItems: number = Number.MAX_SAFE_INTEGER, maxItemLength: number = Number.MAX_SAFE_INTEGER) {
   if (!input) {
     return [];
   }
 
   try {
     const parsed = JSON.parse(input);
-    return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : [];
+    return parseUnknownStringArray(parsed, maxItems, maxItemLength);
   } catch {
     return [];
   }
+}
+
+function parseUnknownStringArray(input: unknown, maxItems: number, maxItemLength: number) {
+  return Array.isArray(input)
+    ? input
+        .filter((value): value is string => typeof value === "string")
+        .map((value) => normalizeRequiredString(value, maxItemLength, "Recovered"))
+        .slice(0, maxItems)
+    : [];
 }
 
 function deriveMemoryFreshness(row: Pick<MemoryEntryRow, "updated_at" | "last_hit_at">): MemoryEntry["freshness"] {

@@ -30,8 +30,16 @@ body,
 body {
   margin: 0;
   background:
-    radial-gradient(circle at top left, rgba(15, 118, 110, 0.16), transparent 24%),
-    radial-gradient(circle at bottom right, rgba(191, 143, 68, 0.18), transparent 28%),
+    radial-gradient(
+      circle at top left,
+      rgba(15, 118, 110, 0.16),
+      transparent 24%
+    ),
+    radial-gradient(
+      circle at bottom right,
+      rgba(191, 143, 68, 0.18),
+      transparent 28%
+    ),
     linear-gradient(160deg, #f4ead7 0%, #efe3d2 45%, #e7dccd 100%);
   color: var(--foreground);
 }
@@ -91,6 +99,10 @@ textarea {
   border-bottom-left-radius: 0 !important;
   border-bottom-right-radius: 0 !important;
   box-shadow: none !important;
+  display: flex;
+  align-items: center;
+  font-size: 0.66rem;
+  cursor: pointer;
 }
 
 .surface-tab::after {
@@ -129,13 +141,21 @@ textarea {
 }
 
 .execution-control-pill-running {
-  background: linear-gradient(180deg, rgba(233, 180, 91, 0.16), rgba(223, 161, 58, 0.2));
+  background: linear-gradient(
+    180deg,
+    rgba(233, 180, 91, 0.16),
+    rgba(223, 161, 58, 0.2)
+  );
   border-color: rgba(189, 138, 57, 0.28);
   color: #6d4814;
 }
 
 .execution-control-pill-running:hover {
-  background: linear-gradient(180deg, rgba(233, 180, 91, 0.22), rgba(223, 161, 58, 0.28));
+  background: linear-gradient(
+    180deg,
+    rgba(233, 180, 91, 0.22),
+    rgba(223, 161, 58, 0.28)
+  );
 }
 
 .agent-waiting-dots {
@@ -180,13 +200,21 @@ textarea {
 }
 
 .execution-control-pill-paused {
-  background: linear-gradient(180deg, rgba(15, 118, 110, 0.12), rgba(15, 118, 110, 0.18));
+  background: linear-gradient(
+    180deg,
+    rgba(15, 118, 110, 0.12),
+    rgba(15, 118, 110, 0.18)
+  );
   border-color: rgba(15, 118, 110, 0.2);
   color: var(--accent-strong);
 }
 
 .execution-control-pill-paused:hover {
-  background: linear-gradient(180deg, rgba(15, 118, 110, 0.16), rgba(15, 118, 110, 0.24));
+  background: linear-gradient(
+    180deg,
+    rgba(15, 118, 110, 0.16),
+    rgba(15, 118, 110, 0.24)
+  );
 }
 
 .markdown-content {

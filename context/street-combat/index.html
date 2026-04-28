@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <title>Street Combat Frame Arena</title>
+    <meta
+      name="description"
+      content="A standalone fighting game prototype centered on frame data, cancel windows, combat feedback, and decision-tree AI."
+    />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23080b15'/%3E%3Cpath d='M16 42l12-20 9 9 11-13' stroke='%2335f2ff' stroke-width='6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='46' cy='18' r='6' fill='%23ff7a66'/%3E%3C/svg%3E"
+    />
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <main id="app" class="shell" data-state="menu">
+      <canvas
+        id="game-canvas"
+        class="shell__canvas"
+        width="1280"
+        height="720"
+        aria-label="Street Combat Frame Arena match"
+        role="img"
+      ></canvas>
+
+      <section id="menu-screen" class="overlay overlay--menu" aria-labelledby="menu-title">
+        <div class="panel panel--hero">
+          <p class="eyebrow">frame arena</p>
+          <h1 id="menu-title">Street Combat</h1>
+          <p class="lede">
+            Walk into range, buffer normals during recovery, confirm into cancels, and read the AI's spacing rules before it reads yours.
+          </p>
+          <div class="controls" aria-label="Controls">
+            <div><span>Move</span><strong>A / D</strong></div>
+            <div><span>Jump / crouch</span><strong>W / S</strong></div>
+            <div><span>Attacks</span><strong>J / K / L</strong></div>
+            <div><span>Block</span><strong>Hold away</strong></div>
+            <div><span>Debug</span><strong>H</strong></div>
+            <div><span>Start / restart</span><strong>Enter / R</strong></div>
+          </div>
+          <div class="actions">
+            <button id="start-button" class="button button--primary" type="button">Start Match</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="hud" class="overlay overlay--hud" aria-label="Fight HUD" aria-hidden="true">
+        <div class="hud__top">
+          <div class="health-panel">
+            <p class="eyebrow">player</p>
+            <div class="meter">
+              <div id="player-health-bar" class="meter__fill"></div>
+            </div>
+            <div class="meter meter--guard">
+              <div id="player-guard-bar" class="meter__fill meter__fill--guard"></div>
+            </div>
+          </div>
+          <div class="round-panel">
+            <p id="phase-value" class="eyebrow">round 1</p>
+            <strong id="timer-value" class="timer">60</strong>
+            <p id="message-value" class="message">Read the spacing.</p>
+          </div>
+          <div class="health-panel health-panel--enemy">
+            <p class="eyebrow">ai rival</p>
+            <div class="meter">
+              <div id="enemy-health-bar" class="meter__fill meter__fill--enemy"></div>
+            </div>
+            <div class="meter meter--guard">
+              <div id="enemy-guard-bar" class="meter__fill meter__fill--enemy-guard"></div>
+            </div>
+          </div>
+        </div>
+        <div class="hud__bottom">
+          <div class="stat">
+            <span>Rounds</span>
+            <strong id="round-score-value">0 - 0</strong>
+          </div>
+          <div class="stat">
+            <span>Player state</span>
+            <strong id="player-state-value">Idle</strong>
+          </div>
+          <div class="stat">
+            <span>AI state</span>
+            <strong id="enemy-state-value">Idle</strong>
+          </div>
+          <div class="stat stat--wide">
+            <span>Frame readout</span>
+            <strong id="frame-advantage-value">Neutral</strong>
+          </div>
+        </div>
+      </section>
+
+      <section id="result-screen" class="overlay overlay--result" aria-hidden="true" aria-labelledby="result-title">
+        <div class="panel panel--result">
+          <p id="result-eyebrow" class="eyebrow">set over</p>
+          <h2 id="result-title">Match finished.</h2>
+          <p id="result-copy" class="lede">Press restart to run it back.</p>
+          <div class="actions">
+            <button id="restart-button" class="button button--primary" type="button">Restart Match</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

@@ -51,14 +51,15 @@ export async function planTask(
     "You are the planning stage for a local coding harness.",
     "Return JSON only. Do not wrap it in markdown fences.",
     "Schema:",
-    `{"type":"question","summary":"","question":{"id":"question-1","prompt":"","placeholder":"","choices":[{"id":"choice-1","label":"","description":"","answerText":"","recommended":true},{"id":"choice-2","label":"","description":"","answerText":"","recommended":false},{"id":"choice-3","label":"","description":"","answerText":"","recommended":false}],"required":true}}`,
+    `{"type":"question","summary":"","questions":[{"id":"question-1","prompt":"","placeholder":"","choices":[{"id":"choice-1","label":"","description":"","answerText":"","recommended":true},{"id":"choice-2","label":"","description":"","answerText":"","recommended":false},{"id":"choice-3","label":"","description":"","answerText":"","recommended":false}],"required":true}]}`,
     `{"type":"ready","difficultyScore":0,"summary":"","executionModelId":"${requestedExecutionModelId}","usesSubagents":false,"subtasks":[{"id":"task-1","title":"","instruction":""}],"finalExecutionBrief":"","prerequisites":[{"id":"setup-1","title":"","instruction":"","reason":"","requiredForTaskIds":["task-1"],"owner":"main","status":"pending"}],"contracts":[{"taskId":"task-1","title":"","instruction":"","effortPoints":3,"ownedPaths":["src/example.ts"],"dependsOnPrerequisiteIds":[],"deliverables":[""],"integrationPoints":[""],"verificationScope":"owned-files-only","verificationCommands":["bun run typecheck"],"mergeNotes":""}]}`,
     "",
     "Rules:",
-    "- You may ask at most one blocking question per turn.",
-    "- Return type=question only when missing information would materially change the plan or execution target.",
+    "- Ask only when missing information would materially change the plan or execution target.",
+    "- If multiple blockers exist, batch all related blocking questions in one type=question response instead of asking turn-by-turn.",
     "- question.required must always be true.",
-    "- question.choices must contain exactly three options.",
+    "- questions must contain 1 to 5 items.",
+    "- Each question.choices must contain exactly three options.",
     "- Exactly one question choice must set recommended=true.",
     "- Each choice must include concrete answerText that can be sent back verbatim.",
     "- difficultyScore must be an integer from 0 to 100.",
@@ -350,6 +351,23 @@ export const testExports = {
 
 function normalizePlannerPayload(input: unknown) {
   const normalized = normalizePlannerPrerequisites(normalizePlannerVerificationScopes(input));
+  if (normalized && typeof normalized === "object" && !Array.isArray(normalized)) {
+    const payload = normalized as Record<string, unknown>;
+    if (payload.type === "question") {
+      const questions = Array.isArray(payload.questions)
+        ? payload.questions
+        : payload.question
+          ? [payload.question]
+          : [];
+      if (questions.length > 0) {
+        return {
+          ...payload,
+          question: payload.question ?? questions[0],
+          questions
+        };
+      }
+    }
+  }
   if (
     normalized &&
     typeof normalized === "object" &&

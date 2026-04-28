@@ -1,0 +1,8 @@
+{
+  "name": "game-catalog-host",
+  "private": true,
+  "scripts": {
+    "dev": "bun --watch catalog-server.ts",
+    "start": "bun run catalog-server.ts"
+  }
+}

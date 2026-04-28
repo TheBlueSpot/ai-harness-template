@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <title>FF Turn Engine</title>
+    <meta
+      name="description"
+      content="A standalone active-time turn battle shell with menu commands, enemy AI, and restart flow."
+    />
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <main id="app" class="shell" data-state="boot">
+      <canvas id="battle-canvas" class="shell__canvas" width="1280" height="720" aria-label="Battle scene" role="img"></canvas>
+      <div class="shell__veil" aria-hidden="true"></div>
+
+      <section id="menu" class="overlay overlay--menu" aria-labelledby="title">
+        <div class="panel panel--hero">
+          <p class="eyebrow">active time battle</p>
+          <h1 id="title">FF Turn Engine</h1>
+          <p class="lede">
+            Pick a command, wait on the gauge, and finish the fight before the party drops.
+          </p>
+          <div class="actions">
+            <button id="start-button" class="button button--primary" type="button">Start Battle</button>
+            <button id="restart-button" class="button button--ghost" type="button">Restart</button>
+          </div>
+          <dl class="facts" aria-label="Battle notes">
+            <div>
+              <dt>Loop</dt>
+              <dd>Queue commands, resolve turns, react to enemy AI.</dd>
+            </div>
+            <div>
+              <dt>Controls</dt>
+              <dd>Arrows move, Enter confirms, Escape cancels.</dd>
+            </div>
+            <div>
+              <dt>Flow</dt>
+              <dd>Win, lose, or restart without leaving the page.</dd>
+            </div>
+          </dl>
+        </div>
+      </section>
+
+      <section id="hud" class="overlay overlay--hud" aria-label="Battle HUD">
+        <header class="hud">
+          <div class="hud__brand">
+            <p class="eyebrow">battle line</p>
+            <h2>Turn Engine</h2>
+          </div>
+          <div class="hud__grid">
+            <div class="stat">
+              <span class="stat__label">State</span>
+              <strong id="state-value" class="stat__value">Menu</strong>
+            </div>
+            <div class="stat">
+              <span class="stat__label">ATB</span>
+              <strong id="atb-value" class="stat__value">0%</strong>
+            </div>
+            <div class="stat">
+              <span class="stat__label">Party</span>
+              <strong id="party-value" class="stat__value">3 / 3</strong>
+            </div>
+            <div class="stat">
+              <span class="stat__label">Enemy</span>
+              <strong id="enemy-value" class="stat__value">3 / 3</strong>
+            </div>
+            <div class="stat stat--wide">
+              <span class="stat__label">Command</span>
+              <strong id="command-value" class="stat__value">Ready</strong>
+            </div>
+            <div class="stat stat--wide">
+              <span class="stat__label">Log</span>
+              <strong id="log-value" class="stat__value">Press Start Battle</strong>
+            </div>
+          </div>
+        </header>
+      </section>
+
+      <section id="result" class="overlay overlay--result" aria-labelledby="result-title" aria-hidden="true">
+        <div class="panel panel--result">
+          <p id="result-eyebrow" class="eyebrow">battle result</p>
+          <h2 id="result-title">Ready.</h2>
+          <p id="result-copy" class="lede">Press restart to try again.</p>
+          <div class="actions">
+            <button id="result-restart-button" class="button button--primary" type="button">Restart Battle</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

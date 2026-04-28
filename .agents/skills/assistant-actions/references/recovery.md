@@ -7,9 +7,10 @@ Use for paused assistants, bootstrap failures, repeated job failures, and circui
 Flow:
 
 1. Resolve assistant.
-2. Pause or resume only the matched assistant.
-3. On resume, release pending reprioritize work unless global execution remains paused.
-4. Report pending questions or failed jobs that still need attention.
+2. Use `assistant.pause` / `assistant.resume` or `pause <assistant>` / `resume <assistant>`.
+3. Pause or resume only the matched assistant.
+4. On resume, release pending reprioritize work unless global execution remains paused.
+5. Verify run state and report pending questions or failed jobs that still need attention.
 
 ## Bootstrap Retry
 
@@ -18,8 +19,9 @@ Flow:
 1. Resolve assistant.
 2. Check global execution pause.
 3. Reject if assistant is deleted or circuit-tripped unless user explicitly asks to recover.
-4. Retry bootstrap as a single-flight operation.
-5. Report success, failure, and created initial todos.
+4. Use `assistant.bootstrap.retry`.
+5. Retry bootstrap as a single-flight operation.
+6. Verify bootstrap state, latest bootstrap log, and created initial todos.
 
 ## Circuit Breaker
 

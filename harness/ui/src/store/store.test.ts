@@ -148,6 +148,159 @@ describe("harness store reducer", () => {
     expect(readBrowserUiSession().selectedModeId).toBe("implement");
   });
 
+  test("hydrates browser ui session with full latest view", () => {
+    clearBrowserUiSessionStorage();
+    globalThis.localStorage?.setItem(
+      BROWSER_UI_SESSION_STORAGE_KEY,
+      JSON.stringify({
+        activeLeftTab: "assistants",
+        chatPaneTab: "events",
+        assistantPane: {
+          selectedAssistantId: "assistant-1",
+          selectedTab: "learnings",
+          scopeFilter: "project"
+        },
+        jobsPane: {
+          segment: "jobs",
+          runFilter: "failed",
+          selectedJobId: "job-1",
+          selectedRunId: "run-1"
+        }
+      })
+    );
+
+    const store = createHarnessStore();
+    store.actions.hydrateBrowserUiSession();
+
+    expect(store.state.activeLeftTab).toBe("assistants");
+    expect(store.state.activeSurface).toBe("assistants");
+    expect(store.state.chatPaneTab).toBe("events");
+    expect(store.state.assistants.selectedTab).toBe("learnings");
+    expect(store.state.assistants.scopeFilter).toBe("project");
+    expect(store.state.assistants.selectedAssistantId).toBe("assistant-1");
+    expect(store.state.jobsPanePreferences.segment).toBe("jobs");
+    expect(store.state.jobsPanePreferences.selectedJobId).toBe("job-1");
+    expect(store.state.jobsPanePreferences.selectedRunId).toBe("run-1");
+    expect(store.state.jobsRunFilter).toBe("failed");
+  });
+
+  test("repairs invalid browser ui session view values", () => {
+    clearBrowserUiSessionStorage();
+    globalThis.localStorage?.setItem(
+      BROWSER_UI_SESSION_STORAGE_KEY,
+      JSON.stringify({
+        activeLeftTab: "missing",
+        chatPaneTab: "diff",
+        assistantPane: {
+          selectedTab: "metrics",
+          scopeFilter: "team"
+        },
+        jobsPane: {
+          segment: "archive",
+          jobSort: "owner",
+          runFilter: "blocked"
+        }
+      })
+    );
+
+    const store = createHarnessStore();
+    store.actions.hydrateBrowserUiSession();
+    const repaired = readBrowserUiSession();
+
+    expect(store.state.activeLeftTab).toBe("projects");
+    expect(store.state.chatPaneTab).toBe("chat");
+    expect(store.state.assistants.selectedTab).toBe("chat");
+    expect(store.state.jobsPanePreferences.segment).toBe("inbox");
+    expect(store.state.jobsRunFilter).toBe("approval");
+    expect(repaired.activeLeftTab).toBe("projects");
+    expect(repaired.chatPaneTab).toBe("chat");
+    expect(repaired.assistantPane?.selectedTab).toBe("chat");
+    expect(repaired.jobsPane?.segment).toBe("inbox");
+    expect(repaired.jobsPane?.runFilter).toBe("approval");
+  });
+
+  test("persists assistant learnings tab across refresh", () => {
+    clearBrowserUiSessionStorage();
+    const store = createHarnessStore();
+
+    store.setActiveLeftTab("assistants");
+    store.setAssistantDetailTab("learnings");
+
+    expect(readBrowserUiSession()).toMatchObject({
+      activeLeftTab: "assistants",
+      assistantPane: {
+        selectedTab: "learnings"
+      }
+    });
+
+    const restoredStore = createHarnessStore();
+    restoredStore.actions.hydrateBrowserUiSession();
+
+    expect(restoredStore.state.activeLeftTab).toBe("assistants");
+    expect(restoredStore.state.assistants.selectedTab).toBe("learnings");
+  });
+
+  test("clears stale selected ids but keeps latest tab choices", () => {
+    clearBrowserUiSessionStorage();
+    globalThis.localStorage?.setItem(
+      BROWSER_UI_SESSION_STORAGE_KEY,
+      JSON.stringify({
+        activeLeftTab: "jobs",
+        assistantPane: {
+          selectedAssistantId: "missing-assistant",
+          selectedTab: "learnings",
+          selectedLogDetailsId: "missing-log"
+        },
+        jobsPane: {
+          segment: "jobs",
+          selectedJobId: "missing-job",
+          selectedRunId: "missing-run"
+        }
+      })
+    );
+    const store = createHarnessStore();
+
+    store.actions.hydrateBrowserUiSession();
+    store.applyServerEvent({
+      type: "connection.ready",
+      payload: {
+        agents: [{ id: "pi", label: "Pi" }],
+        workspace: {
+          projects: [],
+          activeProjectId: undefined
+        },
+        preferences: defaultPreferences,
+        setup: defaultSetup,
+        backgroundJobs: createEmptyBackgroundJobsState(),
+        assistants: createEmptyAssistantsState(),
+        notifications: defaultNotifications,
+        executionControl: defaultExecutionControl
+      }
+    });
+
+    expect(store.state.activeLeftTab).toBe("jobs");
+    expect(store.state.assistants.selectedTab).toBe("learnings");
+    expect(store.state.assistants.selectedAssistantId).toBeUndefined();
+    expect(store.state.assistants.selectedLogDetailsId).toBeUndefined();
+    expect(store.state.jobsPanePreferences.segment).toBe("jobs");
+    expect(store.state.jobsPanePreferences.selectedJobId).toBeUndefined();
+    expect(store.state.jobsPanePreferences.selectedRunId).toBeUndefined();
+  });
+
+  test("stores projects tab explicitly", () => {
+    clearBrowserUiSessionStorage();
+    const store = createHarnessStore();
+
+    store.setActiveLeftTab("projects");
+
+    expect(readBrowserUiSession().activeLeftTab).toBe("projects");
+
+    const restoredStore = createHarnessStore();
+    restoredStore.actions.hydrateBrowserUiSession();
+
+    expect(restoredStore.state.activeLeftTab).toBe("projects");
+  });
+
   test("repairs and persists project sidebar preferences", () => {
     clearBrowserUiSessionStorage();
     globalThis.localStorage?.setItem(
@@ -248,7 +401,7 @@ describe("harness store reducer", () => {
     });
 
     expect(getActiveMode(store.state)?.id).toBe("plan");
-    expect(readBrowserUiSession()).toEqual({
+    expect(readBrowserUiSession()).toMatchObject({
       selectedModeId: "plan",
       lastActiveProjectId: project.id,
       lastActiveThreadByProjectId: {
@@ -405,12 +558,77 @@ describe("harness store reducer", () => {
     store.setSelectedFastMode(true);
 
     expect(store.state.selectedReasoningStrength).toBe("high");
-    expect(store.state.selectedFastMode).toBe(false);
+    expect(store.state.selectedFastMode).toBe(true);
     expect(getComposerControlState(store.state, "pi", "google/gemini-2.5-flash")).toEqual({
       availableStrengths: ["low", "medium", "high"],
       supportsFastMode: false,
       selectedReasoningStrength: "high",
       selectedFastMode: false
+    });
+  });
+
+  test("keeps saved fast mode preference when switching through unsupported models", () => {
+    clearBrowserUiSessionStorage();
+    const store = createHarnessStore();
+    const project = createProject();
+
+    store.applyServerEvent({
+      type: "connection.ready",
+      payload: {
+        agents: [{ id: "pi", label: "Pi" }],
+        workspace: {
+          projects: [project],
+          activeProjectId: project.id
+        },
+        preferences: {
+          ...defaultPreferences,
+          agentRuntimes: [
+            {
+              agentId: "pi",
+              label: "Pi",
+              runtimeKind: "sdk",
+              installed: true,
+              authenticated: true,
+              interactivePipeCompatible: false,
+              supportsInteractive: false,
+              supportsProgrammatic: true,
+              supportsPlanning: true,
+              supportsReview: true,
+              supportsReasoningStrengthControl: true,
+              supportsFastModeControl: true,
+              discoveredModels: [],
+              modelDiscoveryConfidence: "unknown"
+            }
+          ]
+        },
+        setup: defaultSetup,
+        backgroundJobs: createEmptyBackgroundJobsState(),
+        assistants: createEmptyAssistantsState(),
+        notifications: defaultNotifications,
+        executionControl: defaultExecutionControl
+      }
+    });
+
+    store.setSelectedAgentId("pi");
+    store.setSelectedExecutionModelId("openai/gpt-5.4");
+    store.setSelectedFastMode(true);
+    store.setProviderBrand("gemini");
+    store.setSelectedExecutionModelId("google/gemini-2.5-flash");
+
+    expect(store.state.selectedFastMode).toBe(true);
+    expect(readLocalPreferences()).toMatchObject({ selectedFastMode: true });
+    expect(readBrowserUiSession()).toMatchObject({ selectedFastMode: true });
+    expect(getComposerControlState(store.state, "pi", "google/gemini-2.5-flash")).toMatchObject({
+      supportsFastMode: false,
+      selectedFastMode: false
+    });
+
+    store.setProviderBrand("gpt");
+    store.setSelectedExecutionModelId("openai/gpt-5.4");
+
+    expect(getComposerControlState(store.state, "pi", "openai/gpt-5.4")).toMatchObject({
+      supportsFastMode: true,
+      selectedFastMode: true
     });
   });
 
@@ -466,7 +684,7 @@ describe("harness store reducer", () => {
       }
     });
 
-    expect(readBrowserUiSession()).toEqual({
+    expect(readBrowserUiSession()).toMatchObject({
       lastActiveProjectId: project.id,
       lastActiveThreadByProjectId: {
         [project.id]: "thread-2"
@@ -784,9 +1002,41 @@ describe("harness store reducer", () => {
         delta: "wax on"
       }
     });
-    const withQuestion = reduceServerEvent(withDelta, {
-      type: "assistant.question.updated",
+    const messageCreatedAt = new Date().toISOString();
+    const withAppendedMessage = reduceServerEvent(withDelta, {
+      type: "assistant.chat.message-appended",
       requestId: "assistant-4",
+      payload: {
+        assistantId,
+        sessionId: "session-1",
+        message: {
+          id: "message-1",
+          role: "user",
+          kind: "plain",
+          content: "Need balance help",
+          createdAt: messageCreatedAt
+        },
+        thread: {
+          id: "assistant-thread-1",
+          assistantId,
+          sessionId: "session-1",
+          messageCount: 1,
+          messages: [
+            {
+              id: "message-1",
+              role: "user",
+              kind: "plain",
+              content: "Need balance help",
+              createdAt: messageCreatedAt
+            }
+          ],
+          updatedAt: messageCreatedAt
+        }
+      }
+    });
+    const withQuestion = reduceServerEvent(withAppendedMessage, {
+      type: "assistant.question.updated",
+      requestId: "assistant-5",
       payload: {
         question: {
           id: "question-1",
@@ -804,6 +1054,8 @@ describe("harness store reducer", () => {
     expect(withCreatedCard.assistants.scopeFilter).toBe("project");
     expect(getVisibleAssistants(withCreatedCard)[0]?.id).toBe(assistantId);
     expect(withDelta.assistants.streamingByAssistantId[assistantId]).toBe("wax on");
+    expect(withAppendedMessage.assistants.threads[0]?.messages[0]?.content).toBe("Need balance help");
+    expect(withAppendedMessage.assistants.streamingByAssistantId[assistantId]).toBe("wax on");
     expect(withQuestion.assistants.questions[0]?.prompt).toContain("Kata");
   });
 

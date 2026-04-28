@@ -3,6 +3,7 @@
   "tailwindCSS.validate": true,
   "tailwindCSS.lint.suggestCanonicalClasses": "error",
   "cSpell.words": [
-    "uploadthing"
+    "uploadthing",
+    "worktree"
   ]
 }

@@ -175,7 +175,7 @@ export async function runPlannerTurn(
     emitTrace(options.callbacks, {
       sessionId: options.sessionId,
       stage: "planning-question",
-      message: plannerResult.question.prompt,
+      message: plannerResult.questions.map((question) => question.prompt).join("\n\n"),
       detail: plannerResult.summary,
       modelId: planningModelId,
       durationMs: Date.now() - planningStartedAt

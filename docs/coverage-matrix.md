@@ -152,13 +152,14 @@ New `US-*` stories start as `GAP-HIGH` here until at least one colocated or inte
 | US-ASSISTANTS-002 | harness/cli/src/server.preferences-and-modes.test.ts, harness/ui/src/components/assistants-panel.test.tsx, harness/ui/src/store/store.test.ts | unit+integration | GAP-MED |
 | US-ASSISTANTS-003 | harness/cli/src/workspace-repository.test.ts | integration | OK |
 | US-ASSISTANTS-004 | harness/cli/src/workspace-repository.test.ts, harness/cli/src/server.assistant-chat-actions.test.ts, harness/ui/src/components/assistants-panel.test.tsx | unit+integration | GAP-MED |
+| US-ASSISTANTS-005 | harness/cli/src/assistant-question-policy.test.ts, harness/cli/src/assistant-manager.test.ts, harness/cli/src/server.assistant-chat-actions.test.ts | unit+integration | OK |
 
 ## JOBS
 
 | Story ID | Covered by | Depth | Gap |
 |----------|-----------|-------|-----|
 | US-JOBS-001 | harness/cli/src/background-job-schedule.test.ts, harness/cli/src/background-job-scheduler.test.ts, harness/cli/src/background-job-command-guards.test.ts | unit+integration | OK |
-| US-JOBS-002 | — | none | GAP-HIGH |
+| US-JOBS-002 | harness/ui/src/app.test.tsx, harness/cli/src/background-job-executor.test.ts | unit | GAP-MED |
 | US-JOBS-003 | harness/cli/src/background-job-scheduler.test.ts, harness/cli/src/background-job-command-guards.test.ts, harness/cli/src/server.projects-and-history.test.ts | integration | OK |
 | US-JOBS-004 | harness/cli/src/background-job-schedule.test.ts, harness/cli/src/background-job-scheduler.test.ts, harness/cli/src/background-job-command-guards.test.ts, harness/cli/src/background-job-executor.test.ts, harness/cli/src/bounded-output-buffer.test.ts | unit+integration | OK |
 
@@ -296,7 +297,6 @@ New `US-*` stories start as `GAP-HIGH` here until at least one colocated or inte
 ### GAP-HIGH (close first)
 
 - **US-ASSISTANTS-002 / -004** — assistants UX (dedicated surface polish, pause/resume, clone, circuit breaker)
-- **US-JOBS-002** — dedicated Background jobs surface
 - **US-NOTIFICATIONS-003** — popover primitive behavior
 - **US-UI-002** — popover and toaster primitives
 - **US-ACTIVATION-001** — portable launcher packaging integration

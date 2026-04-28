@@ -349,7 +349,7 @@ export const assistantActionMessageMetadataSchema = z.object({
     value: z.string().min(1).max(512)
   })).max(12),
   actions: z.array(z.object({
-    kind: z.enum(["open-assistant", "open-jobs", "run-job", "pause", "resume", "answer-question", "recover"]),
+    kind: z.enum(["open-assistant", "open-jobs", "schedule-job", "run-job", "pause", "resume", "answer-question", "recover", "retry-bootstrap"]),
     label: z.string().min(1).max(64),
     disabled: z.boolean().optional(),
     disabledReason: z.string().min(1).max(256).optional()
@@ -504,6 +504,7 @@ export const backgroundJobAiRoutineDefinitionSchema = z.object({
   prompt: z.string().min(1).max(32000),
   modeId: modeIdSchema.optional(),
   executionModelId: executionModelIdSchema.optional(),
+  fastMode: z.boolean().optional(),
   planExecutionMode: planExecutionModeSchema.optional(),
   subagentWorktreeStrategy: subagentWorktreeStrategySchema.optional()
 });
@@ -617,7 +618,23 @@ export const planningQuestionNotificationSchema = notificationInboxItemBaseSchem
   questionId: questionIdSchema,
   prompt: z.string().min(1),
   placeholder: z.string().min(1).optional(),
-  choices: z.array(z.lazy(() => planningChoiceSchema)).length(3)
+  responseKind: z.enum(["choice", "freeform"]).optional(),
+  choices: z.array(z.lazy(() => planningChoiceSchema)).length(3).optional()
+});
+
+export const planningQuestionBatchNotificationSchema = notificationInboxItemBaseSchema.extend({
+  kind: z.literal("planning-question-batch"),
+  interactive: z.literal(true),
+  projectId: projectIdSchema,
+  threadId: threadIdSchema,
+  runId: runIdSchema,
+  questions: z.array(z.object({
+    questionId: questionIdSchema,
+    prompt: z.string().min(1),
+    placeholder: z.string().min(1).optional(),
+    responseKind: z.enum(["choice", "freeform"]).optional(),
+    choices: z.array(z.lazy(() => planningChoiceSchema)).length(3).optional()
+  })).min(2).max(5)
 });
 
 export const assistantQuestionNotificationSchema = notificationInboxItemBaseSchema.extend({
@@ -627,6 +644,17 @@ export const assistantQuestionNotificationSchema = notificationInboxItemBaseSche
   questionId: assistantQuestionIdSchema,
   prompt: z.string().min(1).max(8000),
   answerText: z.string().min(1).max(32000).optional()
+});
+
+export const assistantQuestionBatchNotificationSchema = notificationInboxItemBaseSchema.extend({
+  kind: z.literal("assistant-question-batch"),
+  interactive: z.literal(true),
+  assistantId: assistantIdSchema,
+  questions: z.array(z.object({
+    questionId: assistantQuestionIdSchema,
+    prompt: z.string().min(1).max(8000),
+    answerText: z.string().min(1).max(32000).optional()
+  })).min(2).max(5)
 });
 
 export const browserApprovalNotificationSchema = notificationInboxItemBaseSchema.extend({
@@ -655,7 +683,9 @@ export const backgroundRunStatusNotificationSchema = notificationInboxItemBaseSc
 
 export const notificationInboxItemSchema = z.discriminatedUnion("kind", [
   planningQuestionNotificationSchema,
+  planningQuestionBatchNotificationSchema,
   assistantQuestionNotificationSchema,
+  assistantQuestionBatchNotificationSchema,
   browserApprovalNotificationSchema,
   backgroundRunStatusNotificationSchema
 ]);
@@ -676,10 +706,15 @@ export const assistantSchema = z.object({
   personalityPrompt: z.string().min(1).max(8000),
   jobPrompt: z.string().min(1).max(12000),
   agentId: agentIdSchema,
+  providerBrand: providerBrandSchema.optional(),
   modeId: modeIdSchema.optional(),
   executionModelId: executionModelIdSchema.optional(),
+  fastMode: z.boolean().optional(),
   runState: assistantRunStateSchema,
   bootstrapState: assistantBootstrapStateSchema,
+  bootstrapAttemptId: z.string().min(1).max(128).optional(),
+  bootstrapStartedAt: z.string().datetime().or(z.string().min(1)).optional(),
+  bootstrapFinishedAt: z.string().datetime().or(z.string().min(1)).optional(),
   clonedFromAssistantId: assistantIdSchema.optional(),
   failureStreakCount: z.number().int().min(0).max(1000),
   circuitBreakerState: assistantCircuitBreakerStateSchema,
@@ -1001,7 +1036,9 @@ export const planningQuestionIntentSchema = z.discriminatedUnion("type", [
     threadId: threadIdSchema,
     sourcePrompt: z.string().min(1).max(32000),
     suggestedName: z.string().min(1).max(256),
-    defaultScope: z.literal("project")
+    defaultScope: assistantScopeSchema,
+    purpose: z.string().min(1).max(12000).optional(),
+    requiresPurpose: z.boolean().optional()
   }),
   assistantActionPlanningIntentSchema
 ]);
@@ -1021,22 +1058,43 @@ export const agentRunStatusSchema = z.enum([
 
 export const planningQuestionStatusSchema = z.enum(["pending", "deferred", "answered"]);
 
+const planningChoicesSchema = z
+  .array(planningChoiceSchema)
+  .length(3)
+  .refine((choices) => choices.filter((choice) => choice.recommended).length === 1, {
+    message: "Planning questions must include exactly one recommended choice"
+  });
+
 export const planningQuestionSchema = z.object({
   id: questionIdSchema,
   prompt: z.string().min(1),
   placeholder: z.string().min(1).optional(),
-  choices: z
-    .array(planningChoiceSchema)
-    .length(3)
-    .refine((choices) => choices.filter((choice) => choice.recommended).length === 1, {
-      message: "Planning questions must include exactly one recommended choice"
-    }),
+  responseKind: z.enum(["choice", "freeform"]).optional(),
+  choices: planningChoicesSchema.optional(),
   required: z.boolean(),
   status: planningQuestionStatusSchema,
   answerText: z.string().min(1).optional(),
   intent: planningQuestionIntentSchema.optional(),
   askedAt: z.string().datetime().or(z.string().min(1)),
   answeredAt: z.string().datetime().or(z.string().min(1)).optional()
+}).superRefine((question, ctx) => {
+  if (question.responseKind === "freeform") {
+    if (!question.placeholder) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["placeholder"],
+        message: "Freeform planning questions require a placeholder"
+      });
+    }
+    return;
+  }
+  if (!question.choices) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["choices"],
+      message: "Choice planning questions require choices"
+    });
+  }
 });
 
 export const subagentTaskStatusSchema = z.enum(["pending", "running", "completed", "failed"]);
@@ -1095,21 +1153,24 @@ export const agentRunSummarySchema = z.object({
   completedAt: z.string().datetime().or(z.string().min(1)).optional()
 });
 
+const plannerQuestionDraftSchema = z.object({
+  id: questionIdSchema,
+  prompt: z.string().min(1),
+  placeholder: z.string().min(1).optional(),
+  choices: z
+    .array(planningChoiceSchema)
+    .length(3)
+    .refine((choices) => choices.filter((choice) => choice.recommended).length === 1, {
+      message: "Planner questions must include exactly one recommended choice"
+    }),
+  required: z.literal(true)
+});
+
 export const plannerQuestionTurnSchema = z.object({
   type: z.literal("question"),
   summary: z.string().min(1),
-  question: z.object({
-    id: questionIdSchema,
-    prompt: z.string().min(1),
-    placeholder: z.string().min(1).optional(),
-    choices: z
-      .array(planningChoiceSchema)
-      .length(3)
-      .refine((choices) => choices.filter((choice) => choice.recommended).length === 1, {
-        message: "Planner questions must include exactly one recommended choice"
-      }),
-    required: z.literal(true)
-  })
+  question: plannerQuestionDraftSchema,
+  questions: z.array(plannerQuestionDraftSchema).max(5).optional().default([])
 });
 
 export const plannerReadyTurnSchema = z.object({
@@ -1419,6 +1480,22 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     })
   }),
   z.object({
+    type: z.literal("planning.answer-batch"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      threadId: threadIdSchema,
+      runId: runIdSchema,
+      answers: z.array(z.object({
+        questionId: questionIdSchema,
+        content: z.string().trim().min(1).max(32000)
+      })).min(1).max(5),
+      attachments: z.array(chatAttachmentSchema).max(8).optional(),
+      reasoningStrength: composerReasoningStrengthSchema.optional(),
+      fastMode: z.boolean().optional()
+    })
+  }),
+  z.object({
     type: z.literal("planning.refine"),
     requestId: requestIdSchema,
     payload: z.object({
@@ -1633,6 +1710,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       scope: assistantScopeSchema.optional(),
       modeId: modeIdSchema.optional(),
       executionModelId: executionModelIdSchema.optional(),
+      fastMode: z.boolean().optional(),
       agentId: agentIdSchema.optional()
     })
   }),
@@ -1709,6 +1787,17 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       assistantId: assistantIdSchema,
       questionId: assistantQuestionIdSchema,
       content: z.string().trim().min(1).max(32000)
+    })
+  }),
+  z.object({
+    type: z.literal("assistant.question.answer-batch"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      assistantId: assistantIdSchema,
+      answers: z.array(z.object({
+        questionId: assistantQuestionIdSchema,
+        content: z.string().trim().min(1).max(32000)
+      })).min(1).max(5)
     })
   }),
   z.object({
@@ -2210,6 +2299,16 @@ export const serverEventSchema = z.discriminatedUnion("type", [
     })
   }),
   z.object({
+    type: z.literal("assistant.chat.message-appended"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      assistantId: assistantIdSchema,
+      sessionId: sessionIdSchema,
+      message: chatMessageSchema,
+      thread: assistantThreadSchema
+    })
+  }),
+  z.object({
     type: z.literal("assistant.chat.complete"),
     requestId: requestIdSchema,
     payload: z.object({
@@ -2456,7 +2555,9 @@ export type BackgroundJobTemplate = z.infer<typeof backgroundJobTemplateSchema>;
 export type BackgroundJobSchedulePreview = z.infer<typeof backgroundJobSchedulePreviewSchema>;
 export type BackgroundJobsState = z.infer<typeof backgroundJobsStateSchema>;
 export type PlanningQuestionNotification = z.infer<typeof planningQuestionNotificationSchema>;
+export type PlanningQuestionBatchNotification = z.infer<typeof planningQuestionBatchNotificationSchema>;
 export type AssistantQuestionNotification = z.infer<typeof assistantQuestionNotificationSchema>;
+export type AssistantQuestionBatchNotification = z.infer<typeof assistantQuestionBatchNotificationSchema>;
 export type BrowserApprovalNotification = z.infer<typeof browserApprovalNotificationSchema>;
 export type BackgroundRunStatusNotification = z.infer<typeof backgroundRunStatusNotificationSchema>;
 export type NotificationInboxItem = z.infer<typeof notificationInboxItemSchema>;

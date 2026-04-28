@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Star Fox Polygon Strike</title>
+    <meta
+      name="description"
+      content="Stand-alone rail shooter entry with a canvas playfield, HUD, and restart overlays."
+    />
+    <link rel="stylesheet" href="./src/styles.css" />
+    <script type="module" src="./src/main.js"></script>
+  </head>
+  <body>
+    <main class="shell">
+      <section class="frame" aria-label="Star Fox Polygon Strike">
+        <canvas id="gameCanvas" class="game-canvas" aria-label="Game view"></canvas>
+
+        <div id="hud" class="hud" aria-live="polite">
+          <div class="hud__row">
+            <span class="hud__label">Score</span>
+            <span id="hudScore" class="hud__value">0</span>
+          </div>
+          <div class="hud__row">
+            <span class="hud__label">Health</span>
+            <span id="hudHealth" class="hud__value">0%</span>
+          </div>
+          <div class="hud__row">
+            <span class="hud__label">Progress</span>
+            <span id="hudProgress" class="hud__value">0%</span>
+          </div>
+          <div id="hudAlert" class="hud__alert" hidden></div>
+        </div>
+
+        <section id="overlay" class="overlay" hidden>
+          <p id="overlayEyebrow" class="overlay__eyebrow">Mission</p>
+          <h1 id="overlayTitle" class="overlay__title">Star Fox Polygon Strike</h1>
+          <p id="overlayCopy" class="overlay__copy"></p>
+          <button id="overlayButton" class="overlay__button" type="button">Start</button>
+        </section>
+      </section>
+    </main>
+  </body>
+</html>
