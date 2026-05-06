@@ -1,5 +1,5 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
-import { createRequestId, type BackgroundJob, type BackgroundJobRun, type RunDiagnosticsWindowDays } from "../../../shared/protocol";
+import { createRequestId, type AgentRunState, type BackgroundJob, type BackgroundJobRun, type RunDiagnosticsWindowDays } from "../../../shared/protocol";
 import { type BackgroundJobEditorDraft, type JobsRunFilter, type RunDiagnosticsViewState, harnessStore, persistMergedLocalPreferences } from "../harness-store";
 import { formatShortTimestamp, resolveBrowserTimezone } from "../lib/time-format";
 import { pushToast } from "../toast-store";
@@ -77,6 +77,19 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
       .filter((run) => matchesRunFilter(run, runFilter()))
       .filter((run) => fuzzyMatches(runSearchHaystack(run, state), jobsPane().runSearch ?? ""))
       .sort(compareRunsByUrgency)
+  );
+  const activeProjectChatRuns = createMemo(() =>
+    state.workspace.projects
+      .flatMap((project) => {
+        const activeRuns = collectActiveProjectRuns(project);
+        return activeRuns.map((run) => ({
+          project,
+          thread: project.threads.find((entry) => entry.id === run.threadId),
+          run
+        }));
+      })
+      .filter((entry) => fuzzyMatches(projectChatRunSearchHaystack(entry), jobsPane().runSearch ?? ""))
+      .sort((left, right) => right.run.updatedAt.localeCompare(left.run.updatedAt))
   );
   const selectedRun = createMemo(() => {
     const explicitRunId = selectedRunId();
@@ -299,6 +312,27 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
   function openRunDetails(run: BackgroundJobRun) {
     harnessStore.closeBackgroundJobDetailsDialog();
     harnessStore.setJobsPanePreferences({ segment: "inbox", selectedRunId: run.id, selectedJobId: run.jobId, selectedNotificationId: undefined });
+  }
+
+  function openProjectChatRun(projectId: string, threadId: string) {
+    if (state.workspace.activeProjectId !== projectId) {
+      sendCommand({
+        type: "project.activate",
+        requestId: createRequestId(),
+        payload: { projectId }
+      });
+    }
+
+    const project = state.workspace.projects.find((entry) => entry.id === projectId);
+    if (state.workspace.activeProjectId !== projectId || project?.activeThreadId !== threadId) {
+      sendCommand({
+        type: "thread.activate",
+        requestId: createRequestId(),
+        payload: { projectId, threadId }
+      });
+    }
+
+    harnessStore.setActiveLeftTab("projects");
   }
 
   async function handleToggleNotifications() {
@@ -549,6 +583,31 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                     </For>
                   </div>
                 </div>
+                <Show when={activeProjectChatRuns().length > 0}>
+                  <div class="mb-4 flex flex-col gap-2">
+                    <div class="text-[0.585rem] font-semibold uppercase tracking-[0.16em] text-(--muted)">Project chats</div>
+                    <For each={activeProjectChatRuns()}>
+                      {(entry) => (
+                        <button
+                          class="min-w-0 rounded-[1rem] border border-(--accent) bg-[linear-gradient(135deg,rgba(15,118,110,0.12),rgba(255,255,255,0.92))] p-3 text-left transition hover:border-(--accent-strong)"
+                          type="button"
+                          onClick={() => openProjectChatRun(entry.project.id, entry.run.threadId)}
+                        >
+                          <div class="flex min-w-0 items-center justify-between gap-3">
+                            <div class="min-w-0 break-words text-[0.725rem] font-semibold text-(--foreground) [overflow-wrap:anywhere]">
+                              {entry.project.name} / {entry.thread?.title ?? entry.run.threadId}
+                            </div>
+                            <div class="shrink-0 text-[0.575rem] uppercase tracking-[0.16em] text-(--accent-strong)">{entry.run.status}</div>
+                          </div>
+                          <div class="mt-2 break-words text-[0.675rem] leading-5 text-(--muted) [overflow-wrap:anywhere]">
+                            <div>{entry.run.latestUserPrompt}</div>
+                            <div class="mt-1">Updated: {formatShortTimestamp(entry.run.updatedAt)}</div>
+                          </div>
+                        </button>
+                      )}
+                    </For>
+                  </div>
+                </Show>
                 <VirtualList
                   class="min-h-0 flex-1 pr-2"
                   contentClass="w-full"
@@ -1137,6 +1196,20 @@ function isActiveBackgroundRunStatus(status: BackgroundJobRun["status"]) {
   return status === "queued" || status === "awaiting-approval" || status === "awaiting-user-input" || status === "running";
 }
 
+function collectActiveProjectRuns(project: typeof harnessStore.state.workspace.projects[number]) {
+  const runsById = new Map<string, AgentRunState>();
+  for (const run of [project.activeRun, ...Object.values(project.threadLiveTranscriptById).map((entry) => entry.activeRun)]) {
+    if (run && isActiveProjectRunStatus(run.status)) {
+      runsById.set(run.id, run);
+    }
+  }
+  return [...runsById.values()];
+}
+
+function isActiveProjectRunStatus(status: AgentRunState["status"]) {
+  return status !== "completed";
+}
+
 function fuzzyMatches(haystack: string, query: string) {
   const tokens = query
     .toLowerCase()
@@ -1194,6 +1267,16 @@ function runSearchHaystack(run: BackgroundJobRun, state: typeof harnessStore.sta
     run.failureMessage,
     ...run.events.flatMap((event) => [event.stage, event.message, event.detail])
   ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function projectChatRunSearchHaystack(entry: {
+  project: typeof harnessStore.state.workspace.projects[number];
+  thread: typeof harnessStore.state.workspace.projects[number]["threads"][number] | undefined;
+  run: AgentRunState;
+}) {
+  return [entry.project.name, entry.project.rootPath, entry.thread?.title, entry.run.status, entry.run.latestUserPrompt, entry.run.summary]
     .filter(Boolean)
     .join(" ");
 }

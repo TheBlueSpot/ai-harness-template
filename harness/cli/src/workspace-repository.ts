@@ -1179,6 +1179,73 @@ export class WorkspaceRepository {
     return this.readProjectSnapshot(projectId);
   }
 
+  cleanupArchiveThreads(input: { projectIds?: ProjectId[]; cutoffIso: string; nowIso?: string }) {
+    const now = input.nowIso ?? new Date().toISOString();
+    const projectIds =
+      input.projectIds && input.projectIds.length > 0
+        ? [...new Set(input.projectIds)]
+        : this.db
+            .query<{ id: string }, []>(`SELECT id FROM projects ORDER BY last_opened_at DESC, updated_at DESC, created_at DESC`)
+            .all()
+            .map((project) => project.id as ProjectId);
+    const projects: Array<{
+      projectId: ProjectId;
+      archivedThreadIds: ThreadId[];
+      skippedThreadIds: ThreadId[];
+      project: WorkspaceProjectState;
+    }> = [];
+    let archivedCount = 0;
+    let skippedCount = 0;
+
+    for (const projectId of projectIds) {
+      const project = this.getProject(projectId);
+      const activeUserThreads = project.threads.filter((thread) => thread.kind === "user" && thread.status === "active");
+      const capacity = Math.max(0, activeUserThreads.length - 1);
+      const eligible = activeUserThreads
+        .filter((thread) => thread.id !== project.activeThreadId)
+        .filter((thread) => thread.badgeState !== "planning" && thread.badgeState !== "executing" && thread.badgeState !== "needs-input")
+        .filter((thread) => {
+          const activityAt = thread.lastUserMessageAt ?? thread.updatedAt ?? thread.createdAt;
+          return activityAt ? Date.parse(activityAt) < Date.parse(input.cutoffIso) : false;
+        })
+        .sort((left, right) => {
+          const leftAt = Date.parse(left.lastUserMessageAt ?? left.updatedAt ?? left.createdAt ?? "");
+          const rightAt = Date.parse(right.lastUserMessageAt ?? right.updatedAt ?? right.createdAt ?? "");
+          return leftAt - rightAt;
+        });
+      const archiveTargets = eligible.slice(0, capacity);
+      const skippedThreadIds = eligible.slice(capacity).map((thread) => thread.id as ThreadId);
+      const archivedThreadIds = archiveTargets.map((thread) => thread.id as ThreadId);
+
+      if (archivedThreadIds.length > 0) {
+        const tx = this.db.transaction(() => {
+          for (const threadId of archivedThreadIds) {
+            this.db
+              .query(
+                `UPDATE project_threads
+                 SET status = 'archived', archived_at = COALESCE(archived_at, ?3), updated_at = ?3
+                 WHERE id = ?1 AND project_id = ?2 AND kind = 'user' AND status = 'active'`
+              )
+              .run(threadId, projectId, now);
+          }
+          this.touchProject(projectId, now);
+        });
+        tx();
+      }
+
+      archivedCount += archivedThreadIds.length;
+      skippedCount += skippedThreadIds.length;
+      projects.push({
+        projectId,
+        archivedThreadIds,
+        skippedThreadIds,
+        project: this.readProjectSnapshot(projectId)
+      });
+    }
+
+    return { archivedCount, skippedCount, projects };
+  }
+
   restoreThread(projectId: ProjectId, threadId: ThreadId) {
     const thread = this.readThreadRow(projectId, threadId);
     if (thread.kind !== "user") {

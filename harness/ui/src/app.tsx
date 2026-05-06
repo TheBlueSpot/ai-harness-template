@@ -351,7 +351,7 @@ const leftPaneTabs: LeftPaneTabDefinition[] = [
   {
     id: "runs",
     label: "Runs",
-    tooltip: "Show background run inbox",
+    tooltip: "Show active run info",
     icon: Clock3
   }
 ];

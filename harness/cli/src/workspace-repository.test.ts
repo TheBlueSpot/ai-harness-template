@@ -76,6 +76,44 @@ describe("workspace repository", () => {
     expect(repository.loadWorkspace().projects[0]?.session.messages[0]?.content).toBe("hello memory");
   });
 
+  test("bulk archives old inactive threads while keeping active and final threads", () => {
+    const repository = createRepository();
+    const firstProject = addProject(repository);
+    const oldThreadProject = repository.createThread(firstProject.id);
+    const oldThreadId = oldThreadProject.activeThreadId;
+    const recentThreadProject = repository.createThread(firstProject.id);
+    const recentThreadId = recentThreadProject.activeThreadId;
+    repository.activateThread(firstProject.id, firstProject.activeThreadId);
+    const secondProject = addProject(repository);
+    const secondOldProject = repository.createThread(secondProject.id);
+    const secondOldThreadId = secondOldProject.activeThreadId;
+    repository.activateThread(secondProject.id, secondProject.activeThreadId);
+    const old = "2026-01-01T00:00:00.000Z";
+    const recent = "2026-04-20T00:00:00.000Z";
+    const db = (repository as unknown as { db: Database }).db;
+    db.query(`UPDATE project_threads SET created_at = ?2, updated_at = ?2 WHERE id = ?1`).run(oldThreadId, old);
+    db.query(`UPDATE project_threads SET created_at = ?2, updated_at = ?2 WHERE id = ?1`).run(recentThreadId, recent);
+    db.query(`UPDATE project_threads SET created_at = ?2, updated_at = ?2 WHERE id = ?1`).run(secondOldThreadId, old);
+    db.query(`INSERT INTO thread_messages (id, thread_id, role, kind, content, attachments_json, metadata_json, created_at)
+      VALUES (?1, ?2, 'user', 'plain', 'old', NULL, NULL, ?3)`).run(crypto.randomUUID(), oldThreadId, old);
+    db.query(`INSERT INTO thread_messages (id, thread_id, role, kind, content, attachments_json, metadata_json, created_at)
+      VALUES (?1, ?2, 'user', 'plain', 'recent', NULL, NULL, ?3)`).run(crypto.randomUUID(), recentThreadId, recent);
+    db.query(`INSERT INTO thread_messages (id, thread_id, role, kind, content, attachments_json, metadata_json, created_at)
+      VALUES (?1, ?2, 'user', 'plain', 'old second', NULL, NULL, ?3)`).run(crypto.randomUUID(), secondOldThreadId, old);
+
+    const result = repository.cleanupArchiveThreads({
+      cutoffIso: "2026-03-01T00:00:00.000Z",
+      nowIso: "2026-05-01T00:00:00.000Z"
+    });
+
+    expect(result.archivedCount).toBe(2);
+    expect(result.projects.flatMap((project) => project.archivedThreadIds).sort()).toEqual([oldThreadId, secondOldThreadId].sort());
+    const nextFirstProject = repository.getProject(firstProject.id);
+    expect(nextFirstProject.threads.find((thread) => thread.id === oldThreadId)?.status).toBe("archived");
+    expect(nextFirstProject.threads.find((thread) => thread.id === recentThreadId)?.status).toBe("active");
+    expect(nextFirstProject.threads.find((thread) => thread.id === firstProject.activeThreadId)?.status).toBe("active");
+  });
+
   test("persists and hydrates agent run runtime budgets", () => {
     const repository = createRepository();
     const project = addProject(repository);

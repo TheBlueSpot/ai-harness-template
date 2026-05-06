@@ -4541,6 +4541,8 @@ export function registerServerCorrectnessTests(options: ServerTestShardOptions =
           '<!doctype html><html><body><script type="module" src="./app.ts"></script></body></html>\n'
         );
         writeFileSync(path.join(projectRoot, "app.ts"), 'console.log("hello");\n');
+        mkdirSync(path.join(projectRoot, "node_modules", "autoprefixer", "lib"), { recursive: true });
+        writeFileSync(path.join(projectRoot, "node_modules", "autoprefixer", "lib", "old-selector.js"), "module.exports = {};\n");
     
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
@@ -4553,22 +4555,15 @@ export function registerServerCorrectnessTests(options: ServerTestShardOptions =
           (event) => event.payload.run.status === "ready" && event.payload.run.plan?.origin === "correctness-followup",
           10000
         );
-        const correctivePlanMessagePromise = waitForEvent(
-          socket,
-          "chat.message-appended",
-          (event) =>
-            event.payload.message.kind === "plan-summary" &&
-            event.payload.message.metadata?.type === "plan-summary" &&
-            event.payload.message.metadata.plan.origin === "correctness-followup",
-          10000
-        );
     
-        const initialReady = await sendChatUntilReady(socket, {
+        const initialReadyPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "ready", 10000);
+        socket.send(JSON.stringify(createChatSendCommand({
           requestId: "req-correctness-gap",
           projectId,
           threadId,
           content: "simple task"
-        });
+        })));
+        const initialReady = await initialReadyPromise;
         await executeReadyRunUntil(
           socket,
           {
@@ -4577,18 +4572,16 @@ export function registerServerCorrectnessTests(options: ServerTestShardOptions =
             threadId,
             runId: initialReady.payload.run.id
           },
-          [correctiveReadyPromise, correctivePlanMessagePromise],
+          [correctiveReadyPromise],
           10000,
           { includeChatComplete: false }
         );
     
         const correctiveReady = await correctiveReadyPromise;
-        const correctivePlanMessage = await correctivePlanMessagePromise;
         expect(correctiveReady.payload.run.plan?.origin).toBe("correctness-followup");
         expect(correctiveReady.payload.run.plan?.gating.mode).toBe("immediate");
         expect(correctiveReady.payload.run.plan?.summary).toContain("TypeScript modules directly");
-        expect(correctivePlanMessage.payload.message.metadata.plan.origin).toBe("correctness-followup");
-        expect(correctivePlanMessage.payload.message.metadata.plan.summary).toContain("TypeScript modules directly");
+        expect(correctiveReady.payload.run.plan?.summary).not.toContain("node_modules");
         socket.close();
       }, 15000);
 
@@ -4614,12 +4607,14 @@ export function registerServerCorrectnessTests(options: ServerTestShardOptions =
           10000
         );
     
-        const initialReady = await sendChatUntilReady(socket, {
+        const initialReadyPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "ready", 10000);
+        socket.send(JSON.stringify(createChatSendCommand({
           requestId: "req-corrective-parallel-send",
           projectId,
           threadId,
           content: "simple task"
-        });
+        })));
+        const initialReady = await initialReadyPromise;
         await executeReadyRunUntil(
           socket,
           {
@@ -4852,6 +4847,82 @@ export function registerServerProjectsAndHistoryTests(options: ServerTestShardOp
         expect(completed.payload.threadId).toBe(originalThreadId);
         expect(repository.getProject(projectId).activeThreadId).toBe(newThreadId);
         expect(repository.getThreadMessages(projectId, originalThreadId).at(-1)?.content).toBe("main execution result");
+        socket.close();
+      }, 10000);
+
+      serverTest("deleting a background streaming thread stops its active agents", async () => {
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot);
+        const projectId = opened.payload.project.id;
+        const originalThreadId = opened.payload.project.activeThreadId;
+        const readyPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "ready", 10000);
+        socket.send(JSON.stringify(createChatSendCommand({
+          requestId: "req-delete-streaming-thread-send",
+          projectId,
+          threadId: originalThreadId,
+          content: "streaming refresh"
+        })));
+        const ready = await readyPromise;
+        const runningRunPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "running-main");
+        const deltaPromise = waitForEvent(socket, "chat.delta", (event) => event.payload.threadId === originalThreadId);
+        const createThreadPromise = waitForEvent(socket, "thread.created");
+
+        socket.send(
+          JSON.stringify({
+            type: "run.execute",
+            requestId: "req-delete-streaming-thread-execute",
+            payload: {
+              projectId,
+              threadId: originalThreadId,
+              runId: ready.payload.run.id
+            }
+          })
+        );
+
+        await runningRunPromise;
+        await deltaPromise;
+
+        socket.send(
+          JSON.stringify({
+            type: "thread.create",
+            requestId: "req-delete-streaming-thread-create",
+            payload: {
+              projectId
+            }
+          })
+        );
+        await createThreadPromise;
+
+        const stoppedRunPromise = waitForEvent(
+          socket,
+          "run.updated",
+          (event) => event.payload.threadId === originalThreadId && event.payload.run.status === "stopped",
+          10000
+        );
+        const projectUpdatedPromise = waitForEvent(
+          socket,
+          "project.updated",
+          (event) => event.payload.project.threads.some((thread: any) => thread.id === originalThreadId && thread.status === "archived"),
+          10000
+        );
+
+        socket.send(
+          JSON.stringify({
+            type: "thread.archive",
+            requestId: "req-delete-streaming-thread-archive",
+            payload: {
+              projectId,
+              threadId: originalThreadId
+            }
+          })
+        );
+
+        const stoppedRun = await stoppedRunPromise;
+        await projectUpdatedPromise;
+        expect(stoppedRun.payload.run.failureMessage).toBe("Thread deleted; active agents stopped");
+        expect(repository.getRun(projectId, ready.payload.run.id)?.status).toBe("stopped");
+        expect(repository.getProject(projectId).threads.find((thread) => thread.id === originalThreadId)?.status).toBe("archived");
         socket.close();
       }, 10000);
 

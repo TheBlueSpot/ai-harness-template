@@ -1560,6 +1560,15 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     })
   }),
   z.object({
+    type: z.literal("thread.cleanupArchive"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectIds: z.array(projectIdSchema).max(512).optional(),
+      olderThanMs: z.number().int().positive(),
+      ageBasis: z.literal("last-user-message")
+    })
+  }),
+  z.object({
     type: z.literal("thread.restore"),
     requestId: requestIdSchema,
     payload: z.object({
@@ -2301,6 +2310,22 @@ export const serverEventSchema = z.discriminatedUnion("type", [
     payload: z.object({
       projectId: projectIdSchema,
       thread: projectThreadSummarySchema
+    })
+  }),
+  z.object({
+    type: z.literal("thread.cleanupArchived"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      archivedCount: z.number().int().min(0),
+      skippedCount: z.number().int().min(0),
+      projects: z.array(
+        z.object({
+          projectId: projectIdSchema,
+          archivedThreadIds: z.array(threadIdSchema).max(512),
+          skippedThreadIds: z.array(threadIdSchema).max(512),
+          project: workspaceProjectStateSchema
+        })
+      )
     })
   }),
   z.object({

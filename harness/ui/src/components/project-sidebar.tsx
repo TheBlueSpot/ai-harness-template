@@ -24,8 +24,9 @@ import { Button } from "./primitives/button";
 import { Popover } from "./primitives/popover";
 import { Separator } from "./primitives/separator";
 import { Tooltip } from "./primitives/tooltip";
+import { ThreadCleanupDialog } from "./thread-cleanup-dialog";
 import { VirtualList, type VirtualListHandle } from "./primitives/virtual-list";
-import { ArrowDown, ArrowUp, ArrowUpDown, Check, CircleHelp, Edit3, Folder, GripVertical, GitFork, Plus, Trash2 } from "lucide-solid";
+import { Archive, ArrowDown, ArrowUp, ArrowUpDown, Check, CircleHelp, Edit3, Folder, GripVertical, GitFork, Plus, Trash2 } from "lucide-solid";
 
 type ProjectSidebarProps = {
   compact?: boolean;
@@ -80,6 +81,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
   const [editingThreadId, setEditingThreadId] = createSignal<string>();
   const [threadTitleDraft, setThreadTitleDraft] = createSignal("");
   const [lastScrolledActiveKey, setLastScrolledActiveKey] = createSignal<string>();
+  const [cleanupDialogOpen, setCleanupDialogOpen] = createSignal(false);
   let sidebarList: VirtualListHandle | undefined;
 
   function handleActivateProject(projectId: string) {
@@ -508,6 +510,17 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
                 </Button>
               </Tooltip>
             </Popover>
+            <Tooltip content="Clean up old threads">
+              <Button
+                aria-label="Clean up old threads"
+                variant="ghost"
+                size="icon"
+                onMouseDown={() => setCleanupDialogOpen(true)}
+                onClick={() => setCleanupDialogOpen(true)}
+              >
+                <Archive class="h-3.5 w-3.5" />
+              </Button>
+            </Tooltip>
             <ActionButton
               tooltip={`Open project switcher (${formatForDisplay("Mod+Space")} or ${formatForDisplay("Mod+K")})`}
               icon={<Plus class="h-3.5 w-3.5" />}
@@ -580,6 +593,25 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
             </Tooltip>
           </div>
         )}
+      </Show>
+      <Show when={cleanupDialogOpen()}>
+        <ThreadCleanupDialog
+          open
+          projects={state.workspace.projects}
+          activeProjectId={state.workspace.activeProjectId}
+          onClose={() => setCleanupDialogOpen(false)}
+          onSubmit={(input) =>
+            sendCommand({
+              type: "thread.cleanupArchive",
+              requestId: createRequestId(),
+              payload: {
+                projectIds: input.projectIds,
+                olderThanMs: input.olderThanMs,
+                ageBasis: "last-user-message"
+              }
+            })
+          }
+        />
       </Show>
     </div>
   );

@@ -749,6 +749,24 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
           )
         }
       };
+    case "thread.cleanupArchived": {
+      if (event.payload.archivedCount > 0) {
+        pushToast("Threads archived", `Archived ${event.payload.archivedCount} old thread${event.payload.archivedCount === 1 ? "" : "s"}.`);
+      } else {
+        pushToast("No old threads matched", "No old threads matched this cleanup.", "info");
+      }
+      const incomingById = new Map(event.payload.projects.map((project) => [project.projectId, toViewProject(project.project)]));
+      return {
+        ...state,
+        workspace: {
+          ...state.workspace,
+          projects: state.workspace.projects.map((project) => {
+            const incoming = incomingById.get(project.id);
+            return incoming ? mergeIncomingProject(project, incoming) : project;
+          })
+        }
+      };
+    }
     case "thread.created":
     case "thread.activated":
       return {

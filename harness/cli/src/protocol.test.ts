@@ -75,6 +75,47 @@ describe("client command validation", () => {
     ).toBe("project.search");
   });
 
+  test("accepts thread cleanup archive payloads", () => {
+    const command = parseClientCommand({
+      type: "thread.cleanupArchive",
+      requestId: "req-cleanup",
+      payload: {
+        projectIds: ["project-1", "project-2"],
+        olderThanMs: 30 * 24 * 60 * 60 * 1000,
+        ageBasis: "last-user-message"
+      }
+    });
+
+    expect(command.type).toBe("thread.cleanupArchive");
+  });
+
+  test("accepts thread cleanup archive payloads for all projects", () => {
+    const command = parseClientCommand({
+      type: "thread.cleanupArchive",
+      requestId: "req-cleanup-all",
+      payload: {
+        olderThanMs: 7 * 24 * 60 * 60 * 1000,
+        ageBasis: "last-user-message"
+      }
+    });
+
+    expect(command.type).toBe("thread.cleanupArchive");
+  });
+
+  test("rejects malformed thread cleanup archive payloads", () => {
+    expect(() =>
+      parseClientCommand({
+        type: "thread.cleanupArchive",
+        requestId: "req-cleanup-bad",
+        payload: {
+          projectIds: [""],
+          olderThanMs: 0,
+          ageBasis: "updated-at"
+        }
+      })
+    ).toThrow();
+  });
+
   test("rejects malformed preferences.save payloads", () => {
     expect(() =>
       parseClientCommand({

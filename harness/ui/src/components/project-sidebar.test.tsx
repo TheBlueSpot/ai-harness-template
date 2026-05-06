@@ -273,6 +273,42 @@ createUiTest("ProjectSidebar", () => {
     });
   });
 
+  it("renders cleanup button in the project toolbar", () => {
+    const activeThreadAt = "2026-04-25T00:00:00.000Z";
+    const oldThreadAt = "2026-01-01T00:00:00.000Z";
+    const project = createViewProjectFixture({
+      id: "project-cleanup",
+      activeThreadId: "thread-active",
+      threads: [
+        createProjectThreadSummary({
+          id: "thread-active",
+          title: "Active thread",
+          titleSource: "generated",
+          updatedAt: activeThreadAt,
+          lastUserMessageAt: activeThreadAt
+        }),
+        createProjectThreadSummary({
+          id: "thread-old",
+          title: "Old thread",
+          titleSource: "generated",
+          updatedAt: oldThreadAt,
+          lastUserMessageAt: oldThreadAt
+        })
+      ]
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+    render(() => <ProjectSidebar />);
+
+    expect(screen.getByRole("button", { name: "Clean up old threads" })).not.toBeNull();
+  });
+
   it("resets the pending delete state after two seconds", async () => {
     const now = new Date().toISOString();
     const project = createViewProjectFixture({

@@ -1717,9 +1717,36 @@ async function handleCommand(
       return;
     }
     case "thread.archive": {
-      const nextProject = repository.archiveThread(command.payload.projectId, command.payload.threadId);
+      const archivedProject = repository.archiveThread(command.payload.projectId, command.payload.threadId);
+      runtime.upsertPersistedProject(archivedProject);
+      await stopThreadActivityBeforeArchive({
+        ws,
+        requestId: command.requestId,
+        repository,
+        runtime,
+        cliSessionManager,
+        pendingBrowserApprovals,
+        projectId: command.payload.projectId,
+        threadId: command.payload.threadId
+      });
+      const nextProject = repository.getProject(command.payload.projectId);
       runtime.upsertPersistedProject(nextProject);
       emitProjectUpdated(ws, command.requestId, command.payload.projectId, nextProject);
+      return;
+    }
+    case "thread.cleanupArchive": {
+      const result = repository.cleanupArchiveThreads({
+        projectIds: command.payload.projectIds?.length ? command.payload.projectIds : undefined,
+        cutoffIso: new Date(Date.now() - command.payload.olderThanMs).toISOString()
+      });
+      for (const project of result.projects) {
+        runtime.upsertPersistedProject(project.project);
+      }
+      sendEvent(ws, {
+        type: "thread.cleanupArchived",
+        requestId: command.requestId,
+        payload: result
+      });
       return;
     }
     case "thread.restore": {
@@ -4139,6 +4166,19 @@ async function executeRunLifecycle(
   emitRunUpdatedById(ws, requestId, repository, options.projectId, options.runId, connections);
 
   if (correctnessReview.status === "needs-iteration" && correctnessReview.recommendedPlan) {
+    if (
+      correctnessReview.recommendedPlan.difficultyScore < PLANNER_DIFFICULTY_THRESHOLD &&
+      correctnessReview.recommendedPlan.iteration < 5
+    ) {
+      await executeRunLifecycle(ws, requestId, runtime, repository, adapter, pendingBrowserApprovals, connections, osAdapters, {
+        ...options,
+        readyPlan: buildReadyPlanFromExecutionPlan(correctnessReview.recommendedPlan),
+        executionPlan: correctnessReview.recommendedPlan,
+        executionTarget
+      });
+      return;
+    }
+
     emitProjectTrace(ws, requestId, runtime, options.projectId, activeRun.threadId, {
       sessionId: effectiveProject.session.sessionId,
       stage: "correctness-gap",
@@ -5909,8 +5949,18 @@ async function runCorrectnessReview(
 }
 
 async function findSuspiciousQualityFiles(rootPath: string) {
+  const changedFiles = await findChangedWorkspaceFiles(rootPath);
+  if (changedFiles) {
+    return changedFiles.filter(isSuspiciousQualityFile).slice(0, 8);
+  }
+
   const proc = Bun.spawn({
-    cmd: ["powershell", "-NoProfile", "-Command", "Get-ChildItem -Recurse -File | Select-Object -ExpandProperty FullName"],
+    cmd: [
+      "powershell",
+      "-NoProfile",
+      "-Command",
+      "Get-ChildItem -Recurse -File | Where-Object { $_.FullName -notmatch '\\\\(node_modules|dist|\\.git|\\.bun|vendor|coverage)\\\\' } | Select-Object -ExpandProperty FullName"
+    ],
     cwd: rootPath,
     stdout: "pipe",
     stderr: "pipe"
@@ -5921,8 +5971,43 @@ async function findSuspiciousQualityFiles(rootPath: string) {
     .map((value) => value.trim())
     .filter(Boolean)
     .map((value) => path.relative(rootPath, value).replace(/\\/g, "/"))
-    .filter((value) => /(?:^|\/)(?:copy|old|backup|tmp|temp)[^/]*\.(?:ts|tsx|js|jsx)$/.test(value))
+    .filter(isWorkspaceReviewPath)
+    .filter(isSuspiciousQualityFile)
     .slice(0, 8);
+}
+
+async function findChangedWorkspaceFiles(rootPath: string) {
+  const proc = Bun.spawn({
+    cmd: ["git", "status", "--porcelain", "-z", "--untracked-files=all", "--", "."],
+    cwd: rootPath,
+    stdout: "pipe",
+    stderr: "ignore"
+  });
+  const [stdout, exitCode] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+  if (exitCode !== 0) {
+    return undefined;
+  }
+  return stdout
+    .split("\0")
+    .filter(Boolean)
+    .map((entry) => parseGitStatusPath(entry))
+    .filter((value): value is string => Boolean(value))
+    .map((value) => value.replace(/\\/g, "/"))
+    .filter(isWorkspaceReviewPath);
+}
+
+function parseGitStatusPath(entry: string) {
+  const value = entry.length >= 4 ? entry.slice(3).trim() : entry.trim();
+  const renameSeparator = " -> ";
+  return value.includes(renameSeparator) ? value.slice(value.lastIndexOf(renameSeparator) + renameSeparator.length) : value;
+}
+
+function isWorkspaceReviewPath(value: string) {
+  return !/^(?:node_modules|dist|\.git|\.bun|vendor|coverage)(?:\/|$)/.test(value);
+}
+
+function isSuspiciousQualityFile(value: string) {
+  return /(?:^|\/)(?:copy|old|backup|tmp|temp)[^/]*\.(?:ts|tsx|js|jsx)$/.test(value);
 }
 
 function buildCorrectiveExecutionPlan(
@@ -5933,10 +6018,12 @@ function buildCorrectiveExecutionPlan(
   const usesParallelCorrectiveWork = gaps.some((gap) => gap.canParallelize) && gaps.length > 1;
   const actualSubagentCount = usesParallelCorrectiveWork ? Math.min(10, gaps.length) : 0;
   const targetSubagentCount = gaps.some((gap) => gap.canParallelize) ? Math.min(10, Math.max(2, gaps.length)) : 0;
+  const difficultyScore = estimateCorrectiveDifficulty(gaps, actualSubagentCount);
   return {
     ...basePlan,
     origin: "correctness-followup",
     iteration: basePlan.iteration + 1,
+    difficultyScore,
     summary: gaps.map((gap) => gap.description).join(" "),
     finalExecutionBrief: [
       "Fix correctness gaps from prior implementation.",
@@ -5967,6 +6054,12 @@ function buildCorrectiveExecutionPlan(
       mergeNotes: `Resolve correctness gap: ${gap.description}`
     }))
   };
+}
+
+function estimateCorrectiveDifficulty(gaps: CorrectnessGap[], actualSubagentCount: number) {
+  const severityScore = gaps.reduce((score, gap) => score + (gap.severity === "high" ? 42 : gap.severity === "medium" ? 18 : 8), 0);
+  const parallelScore = actualSubagentCount > 0 ? 18 : 0;
+  return Math.max(1, Math.min(100, severityScore + parallelScore));
 }
 
 async function presentCorrectivePlan(
@@ -6234,6 +6327,48 @@ function findProjectRunWithStatuses(
 function isActiveThreadStreaming(runtime: WorkspaceRuntimeStore, projectId: ProjectId, threadId: ThreadId) {
   const project = runtime.getProject(projectId);
   return project.activeThreadId === threadId && project.session.isStreaming;
+}
+
+async function stopThreadActivityBeforeArchive(input: {
+  ws: Bun.ServerWebSocket<HarnessConnection>;
+  requestId: string;
+  repository: WorkspaceRepository;
+  runtime: WorkspaceRuntimeStore;
+  cliSessionManager: CliSessionManager;
+  pendingBrowserApprovals: Map<string, PendingBrowserApproval>;
+  projectId: ProjectId;
+  threadId: ThreadId;
+}) {
+  const { ws, requestId, repository, runtime, cliSessionManager, pendingBrowserApprovals, projectId, threadId } = input;
+  const project = runtime.getProject(projectId);
+  const activeSessions = (project.cliSessions ?? []).filter(
+    (session) => session.threadId === threadId && !["stopped", "exited", "failed"].includes(session.status)
+  );
+  for (const session of activeSessions) {
+    await cliSessionManager.stopSession({
+      projectId,
+      threadId,
+      sessionId: session.id
+    });
+  }
+
+  const run = repository.getLatestThreadRun(projectId, threadId);
+  if (run && !isTerminalThreadArchiveRunStatus(run.status)) {
+    runtime.getAbortController(projectId, run.id)?.abort();
+    runtime.setProjectStreaming(projectId, false, threadId);
+    runtime.clearStreaming(projectId, threadId);
+    runtime.setProjectError(projectId, "Thread deleted; active agents stopped", threadId);
+    rejectPendingBrowserApprovalsForRun(pendingBrowserApprovals, projectId, run.id, "Thread deleted");
+    const stoppedProject = repository.setAgentRunStatus(projectId, run.id, "stopped", "Thread deleted; active agents stopped");
+    runtime.upsertPersistedProject(stoppedProject);
+    emitRunUpdatedById(ws, requestId, repository, projectId, run.id);
+  }
+
+  runtime.clearProjectTransients(projectId, threadId);
+}
+
+function isTerminalThreadArchiveRunStatus(status: AgentRunState["status"]) {
+  return status === "completed" || status === "partial-complete" || status === "stopped" || status === "failed";
 }
 
 function requirePersistedThreadRun(repository: WorkspaceRepository, projectId: ProjectId, threadId: ThreadId, runId: string) {

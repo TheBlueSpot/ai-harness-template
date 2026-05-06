@@ -1,11 +1,11 @@
 /** @jsxImportSource solid-js */
 import { beforeEach, expect, it } from "bun:test";
 import { cleanup, fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
-import type { BackgroundJob, BackgroundJobRun, RunDiagnosticsReport } from "../../../shared/protocol";
+import { createProjectThreadSummary, type BackgroundJob, type BackgroundJobRun, type RunDiagnosticsReport } from "../../../shared/protocol";
 import { createInitialViewState, harnessStore, readBrowserUiSession } from "../harness-store";
 import { createUiTest } from "../utils/tests/test-harness";
 import { captureDispatchedCommands, clearBrowserStateForTests, seedHarnessStoreForTests } from "../utils/tests/store-test-utils";
-import { createHarnessStateFixture, createViewProjectFixture } from "../utils/tests/test-fixtures";
+import { createHarnessStateFixture, createRunFixture, createViewProjectFixture } from "../utils/tests/test-fixtures";
 import { BackgroundJobsPanel } from "./background-jobs-panel";
 
 function defineScrollMetrics(scrollHeight: number, clientHeight: number) {
@@ -727,6 +727,66 @@ createUiTest("BackgroundJobsPanel", () => {
     expect(screen.getAllByText("Overloaded: scheduled work overlaps recent assistant runtime").length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Last progress:/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Stale: scheduler has not checked since/).length).toBeGreaterThan(0);
+  });
+
+  it("shows active project chat runs in the runs view and opens their chat", () => {
+    const commands: unknown[] = [];
+    const activeRun = createRunFixture({
+      id: "run-project-chat",
+      threadId: "thread-active",
+      status: "running-main",
+      latestUserPrompt: "Implement active run visibility",
+      updatedAt: "2026-05-06T12:00:00.000Z"
+    });
+    const project = createViewProjectFixture({
+      id: "project-active-chat",
+      name: "Harness",
+      activeThreadId: "thread-active",
+      activeRun,
+      threads: [
+        createProjectThreadSummary({
+          id: "thread-active",
+          title: "Active chat",
+          titleSource: "generated",
+          updatedAt: "2026-05-06T12:00:00.000Z"
+        })
+      ]
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        activeLeftTab: "runs",
+        workspace: {
+          activeProjectId: "other-project",
+          projects: [project]
+        },
+        jobsPanePreferences: {
+          segment: "inbox",
+          search: "",
+          jobSort: "updated"
+        }
+      })
+    );
+    captureDispatchedCommands(commands);
+
+    render(() => <BackgroundJobsPanel variant="left" segment="runs" />);
+
+    expect(screen.getByText("Project chats")).toBeTruthy();
+    expect(screen.getByText("Harness / Active chat")).toBeTruthy();
+    expect(screen.getByText("Implement active run visibility")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /Harness \/ Active chat/ }));
+
+    expect(commands).toMatchObject([
+      {
+        type: "project.activate",
+        payload: { projectId: project.id }
+      },
+      {
+        type: "thread.activate",
+        payload: { projectId: project.id, threadId: "thread-active" }
+      }
+    ]);
+    expect(harnessStore.state.activeLeftTab).toBe("projects");
   });
 
   it("shows failure tracking and prompt stats for jobs and runs", () => {
