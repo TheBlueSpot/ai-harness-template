@@ -7,3 +7,4 @@ harness/ui/dist
 .DS_Store
 .env
 release
+.local*

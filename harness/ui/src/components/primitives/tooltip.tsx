@@ -1,5 +1,5 @@
 import { createEffect, createSignal, onCleanup, Show, type JSX } from "solid-js";
-import { Portal } from "solid-js/web";
+import { PrimitivePortal } from "./primitive-portal";
 
 type TooltipProps = {
   content?: string;
@@ -115,6 +115,22 @@ export function Tooltip(props: TooltipProps) {
     window.removeEventListener("resize", onViewportChange);
   });
 
+  const content = () => (
+    <Show when={props.content && open()}>
+      <span
+        ref={tooltipRef}
+        data-test-tooltip-content=""
+        class="app-zoom-portal-content pointer-events-none fixed z-[160] max-w-xs whitespace-pre-line rounded-lg border border-(--border) bg-(--foreground) px-3 py-1.5 text-center text-xs text-(--surface-foreground) shadow-xl"
+        style={{
+          top: `${position().top}px`,
+          left: `${position().left}px`
+        }}
+      >
+        {props.content}
+      </span>
+    </Show>
+  );
+
   return (
     <span
       ref={triggerRef}
@@ -126,21 +142,9 @@ export function Tooltip(props: TooltipProps) {
       onFocusOut={handleHide}
     >
       {props.children}
-      <Portal>
-        <Show when={props.content && open()}>
-          <span
-            ref={tooltipRef}
-            data-test-tooltip-content=""
-            class="pointer-events-none fixed z-[160] max-w-xs whitespace-pre-line rounded-lg border border-(--border) bg-(--foreground) px-3 py-1.5 text-center text-xs text-(--surface-foreground) shadow-xl"
-            style={{
-              top: `${position().top}px`,
-              left: `${position().left}px`
-            }}
-          >
-            {props.content}
-          </span>
-        </Show>
-      </Portal>
+      <PrimitivePortal active={Boolean(props.content && open())} layer="tooltip">
+        {content()}
+      </PrimitivePortal>
     </span>
   );
 }

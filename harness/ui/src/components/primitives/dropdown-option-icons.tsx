@@ -1,7 +1,9 @@
-import { Bot, Brain, Clipboard, ClipboardList, Cpu, Play, RefreshCcw, Split, MessageSquareMore } from "lucide-solid";
+import { Bot, Brain, Clipboard, ClipboardList, Cpu, Radar, Play, RefreshCcw, Split, MessageSquareMore } from "lucide-solid";
 
 export function getModeDropdownIcon(modeId: string) {
   switch (modeId) {
+    case "auto":
+      return <Radar class="h-3 w-3" />;
     case "ask":
       return <MessageSquareMore class="h-3 w-3" />;
     case "plan":

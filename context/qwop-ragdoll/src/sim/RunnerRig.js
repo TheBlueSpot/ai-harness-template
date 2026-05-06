@@ -44,6 +44,10 @@ export function createRunnerRig(options = {}) {
     gaitPhase: 0,
     stability: 1,
     lastDrive: 0,
+    lastStrideSide: null,
+    lastStrideTime: -Infinity,
+    strideChain: 0,
+    cadenceMeter: 0,
     failReason: null,
     resetSeed: options.seed ?? 0,
   };
@@ -85,6 +89,10 @@ export function resetRunnerRig(rig) {
   rig.gaitPhase = 0;
   rig.stability = 1;
   rig.lastDrive = 0;
+  rig.lastStrideSide = null;
+  rig.lastStrideTime = -Infinity;
+  rig.strideChain = 0;
+  rig.cadenceMeter = 0;
   rig.failReason = null;
   return rig;
 }
@@ -96,14 +104,59 @@ function applyControls(rig, controls) {
   const rightPulse = Math.max(0, rightDrive);
   const reverse = Math.max(0, -leftDrive) + Math.max(0, -rightDrive);
   const drive = leftPulse + rightPulse;
+  const activeSide = leftPulse > rightPulse ? "left" : rightPulse > leftPulse ? "right" : null;
+  const gap = rig.time - rig.lastStrideTime;
+  let cadenceBurst = 0;
   rig.lastDrive = drive;
   rig.gaitPhase = (rig.gaitPhase + (0.7 + drive * 0.4) * 0.016) % 1;
   rig.supportPhase = leftPulse >= rightPulse ? 0 : 0.5;
 
+  if (activeSide) {
+    const swappedSide = rig.lastStrideSide && rig.lastStrideSide !== activeSide;
+    const onBeat = swappedSide && gap >= 0.12 && gap <= 0.4;
+    if (swappedSide) {
+      rig.strideChain = onBeat ? Math.min(6, rig.strideChain + 1) : 1;
+      cadenceBurst = onBeat ? 160 + rig.strideChain * 18 : 72;
+      rig.cadenceMeter = onBeat ? 1 : 0.45;
+    } else if (!rig.lastStrideSide) {
+      rig.strideChain = 1;
+      cadenceBurst = 42;
+      rig.cadenceMeter = 0.3;
+    } else {
+      rig.strideChain = Math.max(0, rig.strideChain - 0.03);
+      rig.cadenceMeter = Math.max(0.1, rig.cadenceMeter * 0.985);
+    }
+    if (swappedSide || !rig.lastStrideSide) {
+      rig.lastStrideSide = activeSide;
+      rig.lastStrideTime = rig.time;
+    }
+  } else {
+    rig.cadenceMeter *= 0.95;
+    rig.strideChain = Math.max(0, rig.strideChain - 0.05);
+  }
+
   const alternating = leftPulse - rightPulse;
-  const forwardKick = 120 + drive * 80 - reverse * 140;
+  const forwardKick = cadenceBurst + drive * 18 - reverse * 120;
   const leanKick = alternating * 0.9;
   const lift = Math.sin(rig.gaitPhase * Math.PI * 2) * 0.5 + drive * 0.12;
+  const rootX = (rig.torso.x + rig.pelvis.x) * 0.5;
+  const idleDrift = Math.max(0, rootX - 220);
+
+  if (drive === 0 && reverse === 0 && idleDrift > 0) {
+    const correction = Math.min(48, idleDrift * 0.5);
+    applyImpulse(rig.torso, -correction, 0);
+    applyImpulse(rig.pelvis, -correction * 0.95, 0);
+    applyImpulse(rig.leftFoot, Math.max(-10, (202 - rig.leftFoot.x) * 0.25), 0);
+    applyImpulse(rig.rightFoot, Math.min(10, (238 - rig.rightFoot.x) * 0.25), 0);
+    rig.torso.x += (220 - rig.torso.x) * 0.035;
+    rig.pelvis.x += (220 - rig.pelvis.x) * 0.045;
+    rig.leftFoot.x += (202 - rig.leftFoot.x) * 0.08;
+    rig.rightFoot.x += (238 - rig.rightFoot.x) * 0.08;
+    dampVelocity(rig.torso, 0.82);
+    dampVelocity(rig.pelvis, 0.82);
+    dampVelocity(rig.leftFoot, 0.84);
+    dampVelocity(rig.rightFoot, 0.84);
+  }
 
   applyImpulse(rig.torso, forwardKick * 0.18, -Math.abs(leanKick) * 10);
   applyImpulse(rig.pelvis, forwardKick * 0.14, -lift * 5);
@@ -157,8 +210,8 @@ export function stepRunnerRig(rig, controls = {}, dt = 1 / 60, world = {}) {
   const rightGround = rig.rightFoot.grounded;
   rig.grounded = leftGround || rightGround;
 
-  const forward = Math.max(rig.torso.x, rig.pelvis.x, rig.leftFoot.x, rig.rightFoot.x);
-  rig.distance = Math.max(rig.distance, forward - 220);
+  const forward = (rig.torso.x + rig.pelvis.x) * 0.5;
+  rig.distance = Math.max(rig.distance, Math.max(0, forward - 220));
   rig.progress = getTerrainProgress(terrain, forward);
   rig.finish = terrain.reachedFinish(forward);
   if (rig.fallen && rig.grounded && rig.stability > 0.75 && Math.abs(lean) < 0.38 && rig.lastDrive > 0.45) {
@@ -194,6 +247,9 @@ export function stepRunnerRig(rig, controls = {}, dt = 1 / 60, world = {}) {
       rightFoot: bodySnapshot(rig.rightFoot),
       supportPhase: rig.supportPhase,
       gaitPhase: rig.gaitPhase,
+      cadenceMeter: rig.cadenceMeter,
+      strideChain: rig.strideChain,
+      strideSide: rig.lastStrideSide,
     },
     world: {
       groundY: terrain.groundY,

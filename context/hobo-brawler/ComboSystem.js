@@ -36,7 +36,7 @@ function normalizeDirectionalToken(token, facing = 1) {
   return normalized;
 }
 
-export class ComboBuffer {
+class ComboBuffer {
   constructor({ windowMs = DEFAULT_BUFFER_WINDOW } = {}) {
     this.windowMs = windowMs;
     this.entries = [];
@@ -70,7 +70,7 @@ export class ComboBuffer {
   }
 }
 
-export class SpecialMove {
+class SpecialMove {
   constructor({
     id,
     name,
@@ -120,7 +120,7 @@ export class SpecialMove {
   }
 }
 
-export class ComboSystem {
+class ComboSystem {
   constructor({
     bufferWindowMs = DEFAULT_BUFFER_WINDOW,
     comboTimeoutMs = DEFAULT_COMBO_TIMEOUT,
@@ -291,4 +291,6 @@ export class ComboSystem {
   }
 }
 
-export default ComboSystem;
+window.ComboBuffer = ComboBuffer;
+window.SpecialMove = SpecialMove;
+window.ComboSystem = ComboSystem;

@@ -10,20 +10,29 @@ import type {
   WorkspaceState
 } from "../../shared/protocol";
 import { buildToolchainPath, resolveBundledRipgrepPath } from "./agent-runtimes/toolchain";
+import type { BrowserToolHealth } from "./browser-tool-health";
+import { probeBrowserToolHealth } from "./browser-tool-health";
 import { probeGitAvailable, probeInsideWorktree } from "./git-project";
 
 type SetupHealthInput = {
   workspace: WorkspaceState;
   preferences: PreferencesState;
   launchMode?: SetupLaunchMode;
+  probes?: {
+    hasGit?: boolean;
+    insideWorktree?: boolean;
+    ripgrep?: Awaited<ReturnType<typeof probeRipgrep>>;
+    browserTools?: BrowserToolHealth;
+  };
 };
 
 export async function buildSetupState(input: SetupHealthInput): Promise<SetupState> {
   const updatedAt = new Date().toISOString();
   const checks: SetupCheck[] = [];
   const activeProject = input.workspace.projects.find((project) => project.id === input.workspace.activeProjectId);
-  const hasGit = await probeGitAvailable();
-  const ripgrep = await probeRipgrep();
+  const hasGit = input.probes?.hasGit ?? (await probeGitAvailable());
+  const ripgrep = input.probes?.ripgrep ?? (await probeRipgrep());
+  const browserTools = input.probes?.browserTools ?? (await probeBrowserToolHealth());
   const piHasProvider = hasAnyPiProvider(input.preferences);
   const usableCliRuntimes = input.preferences.agentRuntimes.filter(isUsableCliRuntime);
   const hasUsableAgent = piHasProvider || usableCliRuntimes.length > 0;
@@ -88,7 +97,12 @@ export async function buildSetupState(input: SetupHealthInput): Promise<SetupSta
   checks.push(buildRuntimeCheck("codex-cli", input.preferences.agentRuntimes.find((runtime) => runtime.agentId === "codex-cli"), updatedAt));
   checks.push(buildRuntimeCheck("copilot-cli", input.preferences.agentRuntimes.find((runtime) => runtime.agentId === "copilot-cli"), updatedAt));
 
-  if (activeProject && input.preferences.blockChatOnDirtyGitDefault && hasGit && !(await probeInsideWorktree(activeProject.rootPath))) {
+  const insideWorktree =
+    activeProject && hasGit
+      ? input.probes?.insideWorktree ?? (await probeInsideWorktree(activeProject.rootPath))
+      : undefined;
+
+  if (activeProject && input.preferences.blockChatOnDirtyGitDefault && hasGit && insideWorktree === false) {
     checks.push({
       id: "project-git-status",
       title: "Project is not a git repo",
@@ -161,15 +175,7 @@ export async function buildSetupState(input: SetupHealthInput): Promise<SetupSta
         }
   );
 
-  checks.push({
-    id: "browser-tools",
-    title: "Browser tools",
-    summary: "Typed browser setup and repair flow is not shipped yet.",
-    detail: "This slice shows browser capability honestly instead of pretending the tool is ready.",
-    status: "unsupported",
-    requiredForFirstTask: false,
-    updatedAt
-  });
+  checks.push(buildBrowserToolsCheck(browserTools, updatedAt));
   checks.push({
     id: "mcp-servers",
     title: "MCP servers",
@@ -236,7 +242,7 @@ function buildPiProviderCheck(hasProvider: boolean, updatedAt: string): SetupChe
     : {
         id: "provider-auth",
         title: "Pi provider missing",
-        summary: "Add an OpenAI or Google API key to enable Pi.",
+        summary: "Add an OpenAI, Google, or Anthropic API key to enable Pi.",
         detail: "Codex CLI or Copilot CLI can still be enough for first-run readiness.",
         status: "action-required",
         requiredForFirstTask: false,
@@ -345,6 +351,62 @@ function buildRuntimeCheck(agentId: AgentId, runtime: AgentRuntimeCapability | u
     status: "ready",
     requiredForFirstTask: false,
     updatedAt
+    };
+}
+
+function buildBrowserToolsCheck(browserTools: BrowserToolHealth, updatedAt: string): SetupCheck {
+  if (browserTools.ready) {
+    return {
+      id: "browser-tools",
+      title: "Browser tools ready",
+      summary: "Playwright and Chromium are ready for browser sessions and screenshot repair flows.",
+      detail: browserTools.cachePath ? `Chromium cache: ${browserTools.cachePath}` : undefined,
+      status: "ready",
+      requiredForFirstTask: false,
+      updatedAt
+    };
+  }
+
+  if (!browserTools.playwrightPackageInstalled) {
+    return {
+      id: "browser-tools",
+      title: "Install browser tool dependencies",
+      summary: "Install Playwright dependencies before using screenshot or browser-evidence flows.",
+      detail: "The harness can show browser repair steps only after the Playwright package is available locally.",
+      status: "warning",
+      requiredForFirstTask: false,
+      updatedAt,
+      primaryAction: {
+        kind: "copy-command",
+        label: "Copy install command",
+        value: browserTools.installDependenciesCommand
+      },
+      secondaryAction: {
+        kind: "refresh-runtime-health",
+        label: "Refresh setup health"
+      }
+    };
+  }
+
+  return {
+    id: "browser-tools",
+    title: "Install browser Chromium",
+    summary: "Browser-capable flows need a local Chromium install before they can capture proof or replay UI fixes.",
+    detail: browserTools.cachePath
+      ? `Expected Playwright browser cache under ${browserTools.cachePath}.`
+      : "Playwright browser cache path could not be resolved on this machine.",
+    status: "warning",
+    requiredForFirstTask: false,
+    updatedAt,
+    primaryAction: {
+      kind: "copy-command",
+      label: "Copy Chromium install",
+      value: browserTools.installChromiumCommand
+    },
+    secondaryAction: {
+      kind: "refresh-runtime-health",
+      label: "Refresh setup health"
+    }
   };
 }
 
@@ -355,7 +417,9 @@ function hasAnyPiProvider(preferences: PreferencesState) {
       preferences.hasUsableOpenAiApiKey ||
       preferences.hasStoredOpenAiApiKey ||
       preferences.hasUsableGoogleApiKey ||
-      preferences.hasStoredGoogleApiKey
+      preferences.hasStoredGoogleApiKey ||
+      preferences.hasUsableAnthropicApiKey ||
+      preferences.hasStoredAnthropicApiKey
   );
 }
 

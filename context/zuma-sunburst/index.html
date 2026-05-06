@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Zuma Sunburst</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <canvas id="game" width="1280" height="720" aria-label="Zuma Sunburst"></canvas>
+      <div class="hud">
+        <div class="hud__left">
+          <span id="score">Score 0</span>
+          <span id="chain">Chain 0</span>
+        </div>
+        <div class="hud__right">
+          <span id="shots">Shots 0</span>
+          <span id="danger">Danger 0%</span>
+        </div>
+      </div>
+      <div id="overlay" class="overlay">
+        <div class="panel">
+          <p id="eyebrow" class="eyebrow">Marble-chain pressure</p>
+          <h1 id="title">Zuma Sunburst</h1>
+          <p id="message">
+            Aim with the mouse. Click or press Space to fire. Press Shift or right click to swap colors.
+          </p>
+          <button id="action" type="button">Start Run</button>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

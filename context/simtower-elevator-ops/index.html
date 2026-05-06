@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SimTower Elevator Ops</title>
+    <meta
+      name="description"
+      content="Browser-playable tower management loop about keeping elevators moving, queues short, and surges contained."
+    />
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <canvas id="game" aria-label="SimTower Elevator Ops playfield"></canvas>
+      <div class="hud">
+        <div id="status-pill" class="pill">Booting</div>
+        <div id="hint-pill" class="pill hint">Controls available in the lower-right panel.</div>
+      </div>
+      <aside class="panel" id="info-panel" aria-live="polite">
+        <div class="panel__title">SimTower Elevator Ops</div>
+        <div class="panel__body" id="hud-body"></div>
+        <div class="panel__section">
+          <div class="panel__label">Objective</div>
+          <div class="panel__value" id="goal-body"></div>
+        </div>
+        <div class="panel__section">
+          <div class="panel__label">Next Dispatch</div>
+          <div class="panel__value" id="dispatch-body"></div>
+        </div>
+      </aside>
+      <button id="help-toggle" class="help-toggle" type="button" aria-expanded="false" aria-controls="help-panel">
+        Help
+      </button>
+      <section id="help-panel" class="help-panel" hidden>
+        <h1>Controls</h1>
+        <p>Arrow keys or WASD move the selection. Enter or Space confirms. R restarts after failure.</p>
+        <p>Keep queues short, route service to the active surge, and watch the warning strip on the right edge.</p>
+      </section>
+    </div>
+    <script src="./game.js"></script>
+  </body>
+ </html>

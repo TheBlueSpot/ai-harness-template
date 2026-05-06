@@ -7,6 +7,7 @@ import {
   HEIGHT,
   HERO_CLASSES,
   PLAYER_RADIUS,
+  RELIC_DEFS,
   ROOM_HEIGHT,
   ROOM_WIDTH,
   VIEW_MARGIN,
@@ -38,6 +39,10 @@ function makeParticle(x, y, color, size, life, vx = 0, vy = 0) {
   return { id: makeId("p"), x, y, color, size, life, maxLife: life, vx, vy };
 }
 
+function panFromX(x) {
+  return clamp((x / ROOM_WIDTH) * 1.6 - 0.8, -0.8, 0.8);
+}
+
 function getHero(classId) {
   return HERO_CLASSES.find((hero) => hero.id === classId) ?? HERO_CLASSES[0];
 }
@@ -63,6 +68,94 @@ function pickSpawn(points, minDistance, margin = 120) {
   return randomRoomPoint(margin);
 }
 
+function pickRelicOptions(takenRelics, floorNumber) {
+  const unlocked = RELIC_DEFS.filter((relic) => !takenRelics.some((taken) => taken.id === relic.id));
+  const pool = unlocked.length >= 3 ? unlocked : RELIC_DEFS;
+  return [...pool]
+    .sort(() => Math.random() - 0.5)
+    .slice(0, 3)
+    .map((relic, index) => ({
+      ...relic,
+      previewFloor: floorNumber,
+      slot: index,
+    }));
+}
+
+function formatCooldown(value) {
+  return `${value.toFixed(2)}s`;
+}
+
+function formatScoreMultiplier(value) {
+  return `x${value.toFixed(2)}`;
+}
+
+function getHeroStatSummary(hero) {
+  const parts = [`DMG ${hero.damage}`, `SPD ${hero.speed}`, `CD ${formatCooldown(hero.cooldown)}`];
+  if (hero.projectile) {
+    parts.push(`PCE ${hero.pierce}`);
+  } else {
+    parts.push(`RNG ${hero.range}`);
+  }
+  return parts.join(" | ");
+}
+
+function getHeroStatGuide(hero) {
+  const attackGuide = hero.projectile
+    ? "Damage breaks ghosts and generators faster. Pierce carries shots through packed lanes."
+    : "Damage breaks ghosts and generators faster. Range widens safe melee checks.";
+  return `${attackGuide} Speed helps kiting. Cooldown lowers time between attacks.`;
+}
+
+function getRelicPreviewSummary(relic, hero, game) {
+  switch (relic.id) {
+    case "iron-bastion":
+      return `HP ${hero.maxHp} -> ${hero.maxHp + 40} | heal +40 now`;
+    case "ember-core":
+      return hero.projectile
+        ? `DMG ${hero.damage} -> ${hero.damage + 7} | shot size +3`
+        : `DMG ${hero.damage} -> ${hero.damage + 7}`;
+    case "wind-sandals":
+      return `SPD ${hero.speed} -> ${hero.speed + 26} | CD ${formatCooldown(hero.cooldown)} -> ${formatCooldown(
+        Math.max(0.06, hero.cooldown * 0.9)
+      )}`;
+    case "moon-quiver":
+      return hero.projectile
+        ? `PCE ${hero.pierce} -> ${hero.pierce + 1}`
+        : `RNG ${hero.range} -> ${hero.range + 18}`;
+    case "grave-spice":
+      return `DMG ${hero.damage} -> ${hero.damage + 3} | gen break heal ${game.generatorBreakHeal} -> ${
+        game.generatorBreakHeal + 18
+      }`;
+    case "oracle-map":
+      return `Score ${formatScoreMultiplier(game.scoreMultiplier)} -> ${formatScoreMultiplier(game.scoreMultiplier + 0.18)} | next floor heal +24`;
+    default:
+      return relic.effectText;
+  }
+}
+
+function getRelicPickReason(relic, hero) {
+  switch (relic.id) {
+    case "iron-bastion":
+      return "Pick if swarms keep touching you and you need a larger mistake buffer right now.";
+    case "ember-core":
+      return hero.projectile
+        ? "Pick if you want fewer shots per ghost pack and chunkier generator breaks from a safer lane."
+        : "Pick if your current melee route feels slow and you want cleaner generator and ghost deletes.";
+    case "wind-sandals":
+      return "Pick if you want faster kiting, tighter doorway escapes, and more attacks during a chase.";
+    case "moon-quiver":
+      return hero.projectile
+        ? "Pick if ghost packs are stacking and you want one shot to solve a whole lane."
+        : "Pick if you want safer melee tags before a swarm can touch you.";
+    case "grave-spice":
+      return "Pick if generator dives are costing health and you want those commits to pay you back.";
+    case "oracle-map":
+      return "Pick if the run feels stable and you want score plus a safer next-floor handoff.";
+    default:
+      return "Pick for the floor plan that matches your current pressure.";
+  }
+}
+
 export class Game {
   constructor() {
     this.restart();
@@ -74,8 +167,26 @@ export class Game {
     this.totalTime = 0;
     this.floorNumber = 1;
     this.score = 0;
+    this.scoreMultiplier = 1;
     this.kills = 0;
     this.generatorsCleared = 0;
+    this.activeRelics = [];
+    this.currentRelic = null;
+    this.chapterTitle = "";
+    this.chapterLore = "";
+    this.floorOmen = "";
+    this.intermission = null;
+    this.generatorBreakHeal = 0;
+    this.projectileSizeBonus = 0;
+    this.nextFloorHeal = 0;
+    this.events = [];
+    this.screenFx = {
+      flash: 0,
+      flashColor: "#ffffff",
+      shake: 0,
+      pulse: 0,
+      driftPhase: Math.random() * Math.PI * 2,
+    };
     this.statusText = "Pick hero. Clear generators. Find key.";
     this.input = {
       moveX: 0,
@@ -123,12 +234,38 @@ export class Game {
     }
   }
 
+  emit(type, extra = {}) {
+    this.events.push({ type, ...extra });
+  }
+
+  consumeEvents() {
+    const events = this.events;
+    this.events = [];
+    return events;
+  }
+
+  flash(color, amount = 0.2) {
+    this.screenFx.flash = Math.max(this.screenFx.flash, amount);
+    this.screenFx.flashColor = color;
+  }
+
+  shake(amount = 1) {
+    this.screenFx.shake = Math.max(this.screenFx.shake, amount);
+  }
+
   start() {
     this.floorNumber = 1;
     this.score = 0;
+    this.scoreMultiplier = 1;
     this.kills = 0;
     this.generatorsCleared = 0;
     this.totalTime = 0;
+    this.activeRelics = [];
+    this.currentRelic = null;
+    this.intermission = null;
+    this.generatorBreakHeal = 0;
+    this.projectileSizeBonus = 0;
+    this.nextFloorHeal = 0;
     this.result = null;
     this.mode = "playing";
     this.resetRunState();
@@ -138,8 +275,36 @@ export class Game {
   restartRun() {
     this.mode = "menu";
     this.result = null;
+    this.scoreMultiplier = 1;
+    this.activeRelics = [];
+    this.currentRelic = null;
+    this.intermission = null;
+    this.generatorBreakHeal = 0;
+    this.projectileSizeBonus = 0;
+    this.nextFloorHeal = 0;
     this.statusText = "Pick hero. Push deeper.";
     this.resetRunState();
+  }
+
+  chooseRelic(relicId) {
+    if (this.mode !== "intermission" || !this.intermission) {
+      return;
+    }
+    const relic = this.intermission.options.find((option) => option.id === relicId);
+    if (!relic) {
+      return;
+    }
+
+    this.applyRelic(relic);
+    this.activeRelics.push(relic);
+    this.currentRelic = relic;
+    this.floorNumber = this.intermission.nextFloorNumber;
+    this.mode = "playing";
+    this.intermission = null;
+    this.flash(this.floorTheme?.accent ?? "#6be0ff", 0.16);
+    this.emit("relic-pick", { pan: 0, relicId: relic.id });
+    this.spawnFloor(this.floorNumber);
+    this.statusText = `${this.chapterTitle}. ${this.floorOmen}`;
   }
 
   setMove(x, y) {
@@ -162,6 +327,7 @@ export class Game {
 
   spawnFloor(floorNumber) {
     const palette = FLOOR_PALETTES[(floorNumber - 1) % FLOOR_PALETTES.length];
+    const modifier = palette.modifier ?? {};
     const difficulty = floorNumber - 1;
     const playerSpawn = { x: ROOM_WIDTH * 0.5, y: ROOM_HEIGHT - 140 };
     this.hero.x = playerSpawn.x;
@@ -176,7 +342,10 @@ export class Game {
       { x: ROOM_WIDTH * 0.5, y: 90 },
       { x: ROOM_WIDTH * 0.5, y: ROOM_HEIGHT * 0.5 },
     ];
-    const generatorCount = Math.min(3 + Math.floor(difficulty / 2), 6);
+    const generatorCount = Math.min(3 + Math.floor(difficulty / 2) + (modifier.extraGenerators ?? 0), 7);
+    this.chapterTitle = `${palette.name} - Floor ${floorNumber}`;
+    this.chapterLore = palette.lore;
+    this.floorOmen = palette.omen;
 
     this.generators = [];
     for (let i = 0; i < generatorCount; i += 1) {
@@ -194,7 +363,7 @@ export class Game {
     }
 
     this.enemies = [];
-    const startingGhosts = 4 + difficulty * 2;
+    const startingGhosts = 4 + difficulty * 2 + (modifier.startingGhostBonus ?? 0);
     for (let i = 0; i < startingGhosts; i += 1) {
       this.spawnEnemy();
     }
@@ -212,10 +381,15 @@ export class Game {
     };
     this.floorTheme = palette;
     this.floorClearAnnounced = false;
+    if (this.nextFloorHeal > 0) {
+      this.hero.hp = Math.min(this.hero.maxHp, this.hero.hp + this.nextFloorHeal);
+      this.nextFloorHeal = 0;
+    }
   }
 
   spawnEnemy(source = null) {
     const difficulty = this.floorNumber - 1;
+    const modifier = this.floorTheme?.modifier ?? {};
     const ghostCount = this.enemies.length;
     const maxGhosts = 18 + difficulty * 3;
     if (ghostCount >= maxGhosts) {
@@ -247,10 +421,10 @@ export class Game {
       id: makeId("ghost"),
       x: point.x,
       y: point.y,
-      hp: 24 + difficulty * 7,
-      maxHp: 24 + difficulty * 7,
-      speed: 84 + difficulty * 8 + Math.random() * 18,
-      damage: 8 + Math.floor(difficulty * 1.2),
+      hp: (24 + difficulty * 7) * (modifier.enemyHpMultiplier ?? 1),
+      maxHp: (24 + difficulty * 7) * (modifier.enemyHpMultiplier ?? 1),
+      speed: (84 + difficulty * 8 + Math.random() * 18) * (modifier.enemySpeedMultiplier ?? 1),
+      damage: 8 + Math.floor(difficulty * 1.2) + (modifier.enemyDamageBonus ?? 0),
       touchCooldown: 0,
       phase: Math.random() * Math.PI * 2,
       drift: 0.5 + Math.random() * 1.2,
@@ -261,6 +435,7 @@ export class Game {
   update(dt) {
     const step = Math.min(dt, 0.033);
     this.tickParticles(step);
+    this.tickEffects(step);
 
     if (this.mode !== "playing") {
       return;
@@ -305,6 +480,7 @@ export class Game {
   performAttack() {
     const hero = this.hero;
     if (hero.projectile) {
+      this.emit("attack-shot", { pan: panFromX(hero.x), heroId: hero.id });
       this.projectiles.push({
         id: makeId("shot"),
         x: hero.x + hero.aimX * 26,
@@ -312,16 +488,18 @@ export class Game {
         vx: hero.aimX * hero.projectileSpeed,
         vy: hero.aimY * hero.projectileSpeed,
         damage: hero.damage,
-        radius: hero.projectileRadius,
+        radius: hero.projectileRadius + this.projectileSizeBonus,
         life: 1.6,
         pierce: hero.pierce,
         color: hero.color,
       });
       this.particles.push(makeParticle(hero.x + hero.aimX * 20, hero.y + hero.aimY * 20, hero.color, 14, 0.12));
+      this.particles.push(makeParticle(hero.x + hero.aimX * 28, hero.y + hero.aimY * 28, "#ffffff", 8, 0.08, hero.aimX * 60, hero.aimY * 60));
       return;
     }
 
     let hitSomething = false;
+    this.emit("attack-swing", { pan: panFromX(hero.x), heroId: hero.id });
     for (const enemy of this.enemies) {
       const dx = enemy.x - hero.x;
       const dy = enemy.y - hero.y;
@@ -336,6 +514,7 @@ export class Game {
       enemy.phase += 0.8;
       hitSomething = true;
       this.particles.push(makeParticle(enemy.x, enemy.y, "#f5f0d8", 18, 0.15, dx * 0.2, dy * 0.2));
+      this.particles.push(makeParticle(enemy.x, enemy.y, hero.color, 10, 0.12, dx * 0.12, dy * 0.12));
     }
 
     for (const generator of this.generators) {
@@ -351,10 +530,14 @@ export class Game {
       generator.hp -= hero.damage;
       hitSomething = true;
       this.particles.push(makeParticle(generator.x, generator.y, hero.color, 20, 0.18, dx * 0.04, dy * 0.04));
+      this.particles.push(makeParticle(generator.x, generator.y, "#ffffff", 10, 0.12, dx * 0.08, dy * 0.08));
     }
 
     if (!hitSomething) {
       this.particles.push(makeParticle(hero.x + hero.aimX * hero.range * 0.7, hero.y + hero.aimY * hero.range * 0.7, hero.color, 10, 0.08));
+    } else {
+      this.screenFx.pulse = Math.max(this.screenFx.pulse, 0.3);
+      this.emit("attack-hit", { pan: panFromX(hero.x), heroId: hero.id });
     }
   }
 
@@ -365,8 +548,12 @@ export class Game {
       generator.spawnTimer -= dt;
       if (generator.spawnTimer <= 0) {
         this.spawnEnemy(generator);
-        generator.spawnTimer = Math.max(0.55, 2.4 - difficulty * 0.08 + Math.random() * 1.1);
+        generator.spawnTimer = Math.max(
+          0.55,
+          (2.4 - difficulty * 0.08 + Math.random() * 1.1) / (this.floorTheme?.modifier?.generatorSpeedMultiplier ?? 1)
+        );
         this.particles.push(makeParticle(generator.x, generator.y, "#9be7ff", 22, 0.25));
+        this.emit("generator-pulse", { pan: panFromX(generator.x) });
       }
     }
 
@@ -377,7 +564,14 @@ export class Game {
         continue;
       }
       this.generatorsCleared += 1;
-      this.score += 140;
+      this.score += Math.round(140 * this.scoreMultiplier);
+      if (this.generatorBreakHeal > 0) {
+        this.hero.hp = Math.min(this.hero.maxHp, this.hero.hp + this.generatorBreakHeal);
+      }
+      this.flash("#8ef3ff", 0.18);
+      this.shake(0.5);
+      this.screenFx.pulse = 0.9;
+      this.emit("generator-break", { pan: panFromX(generator.x) });
       this.particles.push(makeParticle(generator.x, generator.y, "#ffffff", 34, 0.45));
       for (let i = 0; i < 6; i += 1) {
         const angle = (Math.PI * 2 * i) / 6;
@@ -421,6 +615,9 @@ export class Game {
           this.hero.hp -= enemy.damage;
           this.hero.hurtCooldown = 0.4;
           this.statusText = "Ghosts swarming. Keep moving.";
+          this.flash("#ff8f8f", 0.22);
+          this.shake(0.85);
+          this.emit("hero-hurt", { pan: panFromX(this.hero.x) });
           this.particles.push(makeParticle(this.hero.x, this.hero.y, "#ff8f8f", 24, 0.2, -dirX * 80, -dirY * 80));
         }
       }
@@ -429,13 +626,18 @@ export class Game {
         survivors.push(enemy);
       } else {
         this.kills += 1;
-        this.score += 35;
+        this.score += Math.round(35 * this.scoreMultiplier);
+        this.screenFx.pulse = Math.max(this.screenFx.pulse, 0.42);
+        this.emit("enemy-down", { pan: panFromX(enemy.x) });
         this.particles.push(makeParticle(enemy.x, enemy.y, "#d8fbff", 20, 0.18, dirX * 60, dirY * 60));
       }
     }
     this.enemies = survivors;
 
     if (this.hero.hp <= 0) {
+      this.flash("#fff4f2", 0.32);
+      this.shake(1.1);
+      this.emit("hero-down", { pan: panFromX(this.hero.x) });
       this.mode = "result";
       this.result = {
         floor: this.floorNumber,
@@ -473,6 +675,7 @@ export class Game {
         if (dist <= projectile.radius + enemy.radius) {
           enemy.hp -= projectile.damage;
           projectile.pierce -= 1;
+          this.emit("projectile-hit", { pan: panFromX(enemy.x), heroId: this.hero.id });
           this.particles.push(makeParticle(enemy.x, enemy.y, projectile.color, 12, 0.12));
           if (projectile.pierce <= 0) {
             spent = true;
@@ -484,6 +687,7 @@ export class Game {
         const dist = Math.hypot(projectile.x - generator.x, projectile.y - generator.y);
         if (dist <= projectile.radius + GENERATOR_RADIUS) {
           generator.hp -= projectile.damage;
+          this.emit("projectile-hit", { pan: panFromX(generator.x), heroId: this.hero.id });
           this.particles.push(makeParticle(generator.x, generator.y, projectile.color, 14, 0.14));
           spent = true;
           break;
@@ -503,8 +707,11 @@ export class Game {
       if (Math.hypot(this.hero.x - this.key.x, this.hero.y - this.key.y) <= PLAYER_RADIUS + this.key.radius) {
         this.key.collected = true;
         this.door.locked = false;
-        this.score += 120;
+        this.score += Math.round(120 * this.scoreMultiplier);
         this.statusText = "Key taken. Reach exit door.";
+        this.flash("#ffe77a", 0.18);
+        this.emit("key-grab", { pan: panFromX(this.key.x) });
+        this.emit("door-open", { pan: panFromX(this.door.x) });
         this.particles.push(makeParticle(this.key.x, this.key.y, "#ffe77a", 28, 0.25));
       }
     }
@@ -513,10 +720,8 @@ export class Game {
       Math.abs(this.hero.x - this.door.x) <= this.door.width * 0.5 &&
       Math.abs(this.hero.y - this.door.y) <= this.door.threshold;
     if (!this.door.locked && insideDoor) {
-      this.floorNumber += 1;
-      this.score += 250;
-      this.statusText = `Floor ${this.floorNumber}. Generators active.`;
-      this.spawnFloor(this.floorNumber);
+      this.score += Math.round(250 * this.scoreMultiplier);
+      this.beginIntermission();
     }
   }
 
@@ -527,11 +732,64 @@ export class Game {
 
   resolveFloorState() {
     if (this.generators.length > 0) {
-      this.statusText = `Floor ${this.floorNumber}. ${this.generators.length} generators left.`;
+      this.statusText = `${this.chapterTitle}. ${this.generators.length} generators left.`;
     } else if (this.key && !this.key.collected) {
       this.statusText = "Floor clear. Grab key.";
     } else if (!this.door.locked) {
       this.statusText = "Door open. Move through top gate.";
+    }
+  }
+
+  beginIntermission() {
+    const nextFloorNumber = this.floorNumber + 1;
+    const nextPalette = FLOOR_PALETTES[(nextFloorNumber - 1) % FLOOR_PALETTES.length];
+    this.mode = "intermission";
+    this.intermission = {
+      nextFloorNumber,
+      chapterTitle: `${nextPalette.name} - Floor ${nextFloorNumber}`,
+      lore: nextPalette.lore,
+      omen: nextPalette.omen,
+      options: pickRelicOptions(this.activeRelics, nextFloorNumber).map((relic) => ({
+        ...relic,
+        pickReason: getRelicPickReason(relic, this.hero),
+        previewText: getRelicPreviewSummary(relic, this.hero, this),
+      })),
+    };
+    this.flash(this.floorTheme?.accent ?? "#6be0ff", 0.2);
+    this.emit("floor-clear", { pan: panFromX(this.door.x), floor: this.floorNumber });
+  }
+
+  applyRelic(relic) {
+    switch (relic.id) {
+      case "iron-bastion":
+        this.hero.maxHp += 40;
+        this.hero.hp = Math.min(this.hero.maxHp, this.hero.hp + 40);
+        break;
+      case "ember-core":
+        this.hero.damage += 7;
+        this.projectileSizeBonus += 3;
+        break;
+      case "wind-sandals":
+        this.hero.speed += 26;
+        this.hero.cooldown = Math.max(0.06, this.hero.cooldown * 0.9);
+        break;
+      case "moon-quiver":
+        if (this.hero.projectile) {
+          this.hero.pierce += 1;
+        } else {
+          this.hero.range += 18;
+        }
+        break;
+      case "grave-spice":
+        this.generatorBreakHeal += 18;
+        this.hero.damage += 3;
+        break;
+      case "oracle-map":
+        this.scoreMultiplier += 0.18;
+        this.nextFloorHeal += 24;
+        break;
+      default:
+        break;
     }
   }
 
@@ -548,6 +806,13 @@ export class Game {
       }
     }
     this.particles = alive;
+  }
+
+  tickEffects(dt) {
+    this.screenFx.flash = Math.max(0, this.screenFx.flash - dt * 1.8);
+    this.screenFx.shake = Math.max(0, this.screenFx.shake - dt * 2.6);
+    this.screenFx.pulse = Math.max(0, this.screenFx.pulse - dt * 1.5);
+    this.screenFx.driftPhase += dt * (0.8 + this.screenFx.shake * 3.2);
   }
 
   getOverlay() {
@@ -571,10 +836,25 @@ export class Game {
       };
     }
 
+    if (this.mode === "intermission" && this.intermission) {
+      return {
+        type: "intermission",
+        eyebrow: "camp between floors",
+        title: this.intermission.chapterTitle,
+        copy: `${this.intermission.lore} ${this.intermission.omen}`,
+        relicOptions: this.intermission.options,
+      };
+    }
+
     return null;
   }
 
   getFrameState() {
+    const dangerLevel = clamp(
+      this.enemies.length / 18 + (1 - this.hero.hp / Math.max(1, this.hero.maxHp)) * 0.75 + (this.door.locked ? 0.12 : 0),
+      0,
+      1
+    );
     return {
       mode: this.mode,
       heroId: this.selectedHeroId,
@@ -582,6 +862,11 @@ export class Game {
       heroDescription: this.hero.description,
       heroHp: this.hero.hp,
       heroMaxHp: this.hero.maxHp,
+      heroDamage: this.hero.damage,
+      heroSpeed: this.hero.speed,
+      heroCooldown: this.hero.cooldown,
+      heroStatSummary: getHeroStatSummary(this.hero),
+      heroStatGuide: getHeroStatGuide(this.hero),
       heroX: this.hero.x,
       heroY: this.hero.y,
       heroRadius: PLAYER_RADIUS,
@@ -590,10 +875,25 @@ export class Game {
       heroHurt: this.hero.hurtCooldown > 0,
       floorNumber: this.floorNumber,
       score: this.score,
+      scoreMultiplier: this.scoreMultiplier,
       kills: this.kills,
       generatorsLeft: this.generators.length,
       doorLocked: this.door.locked,
       statusText: this.statusText,
+      chapterTitle: this.chapterTitle,
+      chapterLore: this.chapterLore,
+      floorOmen: this.floorOmen,
+      currentRelic: this.currentRelic
+        ? {
+            name: this.currentRelic.name,
+            effectText: this.currentRelic.effectText,
+          }
+        : null,
+      activeRelics: this.activeRelics.map((relic) => ({
+        id: relic.id,
+        name: relic.name,
+        effectText: relic.effectText,
+      })),
       totalTime: this.totalTime,
       roomWidth: ROOM_WIDTH,
       roomHeight: ROOM_HEIGHT,
@@ -638,6 +938,14 @@ export class Game {
         color: particle.color,
         alpha: particle.life / particle.maxLife,
       })),
+      dangerLevel,
+      screenFx: {
+        flash: this.screenFx.flash,
+        flashColor: this.screenFx.flashColor,
+        shake: this.screenFx.shake,
+        pulse: this.screenFx.pulse,
+        driftPhase: this.screenFx.driftPhase,
+      },
       overlay: this.getOverlay(),
     };
   }

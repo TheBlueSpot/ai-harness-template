@@ -30,8 +30,13 @@ const ACTIONS = Object.freeze({
     label: "Swing",
     staminaCost: 12,
     baseDamage: 16,
+    offenseStat: "strength",
+    responseStat: "defense",
     attackWeight: 1.1,
+    defenseWeight: 0.85,
+    defenseMitigation: 0.35,
     critChance: 0.12,
+    critScale: 0.01,
     favorGain: 2,
   },
   jab: {
@@ -39,8 +44,13 @@ const ACTIONS = Object.freeze({
     label: "Jab",
     staminaCost: 8,
     baseDamage: 10,
-    attackWeight: 1.3,
+    offenseStat: "agility",
+    responseStat: "agility",
+    attackWeight: 1.05,
+    defenseWeight: 0.8,
+    defenseMitigation: 0.18,
     critChance: 0.22,
+    critScale: 0.015,
     favorGain: 1.5,
   },
   block: {
@@ -62,8 +72,13 @@ const ACTIONS = Object.freeze({
     label: "Power Attack",
     staminaCost: 18,
     baseDamage: 23,
+    offenseStat: "strength",
+    responseStat: "defense",
     attackWeight: 0.95,
+    defenseWeight: 0.9,
+    defenseMitigation: 0.42,
     critChance: 0.18,
+    critScale: 0.012,
     favorGain: 3,
   },
 });
@@ -122,6 +137,10 @@ function passiveFavorGain(fighter) {
   return round(bonus * 0.4, 1);
 }
 
+function readCombatStat(fighter, stat, fallback = 0) {
+  return Number(fighter?.[stat]) || fallback;
+}
+
 function consumeTiredTurn(fighter, entries) {
   if ((fighter.tiredTurns ?? 0) <= 0) return false;
   fighter.tiredTurns -= 1;
@@ -133,7 +152,8 @@ function consumeTiredTurn(fighter, entries) {
 function applyGuardReduction(target, incomingDamage, entries) {
   if ((target.guardHits ?? 0) <= 0) return incomingDamage;
   target.guardHits -= 1;
-  const reduced = Math.max(1, Math.round(incomingDamage * 0.45));
+  const guardMultiplier = clamp(0.5 - readCombatStat(target, "defense") * 0.02, 0.2, 0.42);
+  const reduced = Math.max(1, Math.round(incomingDamage * guardMultiplier));
   entries.push({ text: `${target.name} blocks and trims the blow to ${reduced}.` });
   return reduced;
 }
@@ -237,15 +257,20 @@ export function resolveAction(action, actor, target, context = {}) {
     return result;
   }
 
-  const pressure = WeightedAttribute(actorState.strength, targetState.agility, {
+  const offenseStat = readCombatStat(actorState, spec.offenseStat ?? "strength");
+  const responseStat = readCombatStat(targetState, spec.responseStat ?? "agility");
+  const pressure = WeightedAttribute(offenseStat, responseStat, {
     attackWeight: spec.attackWeight,
-    defenseWeight: 0.9,
+    defenseWeight: spec.defenseWeight ?? 0.9,
     offset: (actorState.level ?? 1) - (targetState.level ?? 1),
   });
   const critRoll = random();
-  const critChance = clamp(spec.critChance + pressure * 0.01, 0.05, 0.45);
+  const critChance = clamp(spec.critChance + pressure * (spec.critScale ?? 0.01), 0.05, 0.45);
   const critical = critRoll <= critChance;
-  const rawDamage = Math.max(2, Math.round(spec.baseDamage + pressure - targetState.defense * 0.35));
+  const rawDamage = Math.max(
+    2,
+    Math.round(spec.baseDamage + pressure - readCombatStat(targetState, "defense") * (spec.defenseMitigation ?? 0.35)),
+  );
   let finalDamage = Math.round(rawDamage * damageMultiplier(actorState));
 
   if (critical) {

@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bionic Grapple Breakout</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <div class="hud" id="hud">
+        <span id="health">HP 5</span>
+        <span id="batteries">Batteries 0/0</span>
+        <span id="stage">Stage 1/5</span>
+        <span id="checkpoint">Checkpoint 1</span>
+        <span id="assist" class="hud-chip">Hold mouse or E to grapple. R retries.</span>
+        <span id="status">Latch to anchors. Clear the wall line.</span>
+      </div>
+      <canvas id="game" width="1280" height="720" aria-label="Bionic Grapple Breakout"></canvas>
+      <div class="overlay" id="overlay">
+        <div class="panel">
+          <h1 id="overlay-title">Bionic Grapple Breakout</h1>
+          <p id="overlay-body">Swing through the prison wall line, pump with movement, dodge telegraphed turret fire, and hit checkpoints for instant retries.</p>
+          <p class="controls">Move `A/D` or arrows to pump swings, jump `Space`, hold mouse or `E` to grapple, restart `R`.</p>
+          <button id="start-button" type="button">Start Run</button>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

@@ -10,7 +10,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - Multiple agent runtimes: `pi`, `GitHub Copilot CLI`, and `Codex CLI`
 - Spotlight-style project switcher for recent roots, local folder search, and fast project activation from one shared flow
 - Bootstrap-first startup path for source users, plus portable Bun launcher packaging for release users
-- Runtime health visibility so install, auth, and degraded interactive support show before a run starts
+- Runtime health visibility so install, auth, browser-tool repair, and degraded interactive support show before a run starts
 - Shared activation checklist that keeps first-run setup inside the main chat cockpit instead of a blocking wizard
 - Guided help tutorials with spotlight overlays for opening a project, connecting provider/runtime, sending the first task, and reviewing plans
 - `UploadThing`-backed attachments for screenshots, PDFs, and text or office-doc specs, persisted with chat history and routed into prompts
@@ -19,9 +19,9 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - Codex CLI noninteractive runs use bundled official Codex SDK and CLI, enable Codex live web search plus writable shell network access, keep review mode prompt-driven inside the harness instead of special native review routing, and on Windows writable runs auto-use full access because bundled Codex currently downgrades `workspace-write` to read-only there while read-only tasks stay sandboxed
 - Typed browser session tracking with explicit per-step approval gates when browser-capable tools are active
 - Workspace-global pause and resume for execution starts, with deferred planner questions, assistant questions, and browser approvals released on resume
-- Local scheduled tasks and background jobs with durable SQLite history, startup catch-up, approval policy defaults, hidden automation threads, and a dedicated inbox surface
+- Local scheduled tasks and background jobs with durable SQLite history, startup catch-up, approval policy defaults, hidden automation threads, concurrent launch, timeout/progress visibility, overload warnings, and a dedicated inbox surface
 - Header-level notification inbox for deferred planner questions, assistant questions, browser approvals, and passive background-run status updates
-- Local assistant operators with named personas, role prompts, project or global scope, synced routing defaults, pause and resume controls, chat, todo lists, learnings, open questions, clone-to-project flow, and high-level plus deep-debug logs
+- Local assistant operators with named personas, role prompts, project or global scope, synced routing defaults, pause and resume controls, chat, todo lists, deduped and compacted learnings, open questions, clone-to-project flow, and high-level plus deep-debug logs
 - Product direction currently favors safe background execution, connector health visibility, explicit rule and memory control, preview-to-fix loops, durable review artifacts, budget-aware long runs, remote review from another device, and cleaner thread retrieval and cleanup over broader assistant surfaces
 - Built-in workflow modes for asking, planning, implementing, debugging, and review, plus local custom modes at workspace or project scope
 - Brand-aware defaults for GPT or Gemini execution
@@ -63,6 +63,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - Thread titles auto-generate from first user message until user renames them
 - Active chat header uses thread title, supports inline rename, and exposes copyable thread id
 - Browser session remembers last active project and each project's last active thread, then restores that context on reopen when targets still exist
+- Thread archive and restore controls keep stale threads out of the active surface without losing history, with optional auto-archive preferences for the cases the user wants handled automatically
 - Thread badges summarize status: purple `User Input`, orange `Planning`, yellow `Executing`, red `Error`, green `Done`
 - High-signal run milestones stream through one live tail message while work is in flight, then persist as compact phase rows before the final assistant answer; raw tool activity stays in the Run pane
 - Shell tool activity persists with each run so the Run pane can show command status, concise output previews, and copyable failure detail while chat stays compact
@@ -85,7 +86,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 
 - SolidJS app shell
 - Task-first empty-state onboarding with import path before provider setup and a sample-task starting point
-- Activation center stays in chat and exposes repair actions for missing project, provider, runtime, and git requirements
+- Activation center stays in chat and exposes repair actions for missing project, provider, runtime, git, and browser requirements
 - Shared project switcher dialog replaces duplicated add-path inputs across sidebar and first-run onboarding
 - Header inbox popover keeps recent background prompts and status notices reachable without leaving current surface
 - Bun runtime serves explicit built UI assets; the Solid transform runs through one shared build path
@@ -96,11 +97,11 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - `lucide-solid` icons across project actions and workspace controls
 - Tooltips render through a body-level portal so panel overflow does not clip them
 - Keyboard project open flow uses TanStack Hotkeys for `Cmd/Ctrl+K` as the reliable shortcut, plus best-effort `Cmd/Ctrl+Space` when the browser receives it
-- Left workspace tabs keep `Projects`, `Assistants`, and `Jobs` as the primary navigation, with the selected tab changing both the left list and center detail panel
+- Left workspace tabs keep `Projects`, `Assistants`, `Jobs`, and `Runs` as the primary navigation, with scheduled work separated from run history
 - Project chat keeps transcript first and exposes plan, run, memory, and events through a compact local pane strip instead of a larger cockpit card
 - Chat transcript auto-sticks only when already at bottom and exposes an explicit `Scroll to latest` affordance when the user scrolls away
 - Run cockpit now includes virtual-branch experiment review, promote, and discard actions plus a shared memory tab for local reusable learnings
-- Jobs surface keeps scheduled work, approval-needed runs, failures, and concise execution milestones out of normal project chat threads
+- Jobs and Runs surfaces keep scheduled work, approval-needed runs, failures, and concise execution milestones out of normal project chat threads
 - Assistants surface keeps assistant chat, todos, questions, learnings, logs, and assistant-owned jobs inspectable outside normal project chat
 - Header-level help opens guided walkthroughs instead of pushing setup into a separate onboarding funnel
 - Composer keeps mode, agent, provider, and model controls together in bottom row as compact popover-backed dropdowns with setting descriptions close at hand
@@ -126,7 +127,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - Development UI builds emit external source maps for browser debugging
 - `bun run test` runs Bun test suite in parallel, capped at 12 workers by default and overridable with `HARNESS_TEST_WORKERS`
 - `bun run typecheck` validates TypeScript contracts
-- Development startup auto-purges broken local SQLite artifacts, retries delete on transient Windows file locks, then retries boot once if legacy migration drift makes the dev DB unloadable
+- Development startup backs up then purges broken local SQLite artifacts, retries delete on transient Windows file locks, then retries boot once if legacy migration drift makes the dev DB unloadable
 - Development DB recovery now logs the triggering startup error first and only auto-purges on concrete corruption or schema-drift signatures instead of generic SQLite failures
 - Background job run schema repair now also rebuilds dependent notification and event tables when an older migration left them pointing at legacy table names
 - If corrupted local SQLite artifacts stay locked during dev recovery, startup falls back to a fresh sibling DB path instead of failing on the busy file
@@ -147,7 +148,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - The backend validates every websocket payload before processing it
 - SQLite persistence stays local-first and single-machine
 - Setup health is server-derived per machine, while tutorial progress and dismissal state stay local to the current browser profile
-- Assistant state persists locally in SQLite, including canonical thread memory summaries, active todo list, learnings, pending questions, structured logs, and assistant-linked background jobs
+- Assistant state persists locally in SQLite, including canonical thread memory summaries, active todo list, deduped learnings with AI-assisted compaction, pending questions, structured logs, and assistant-linked background jobs
 - Browser localStorage mirrors API key presence and global workspace defaults for the current browser profile
 - Browser localStorage also mirrors execution gate, isolation strategy, countdown, and correctness iteration defaults for the current browser profile
 - Browser localStorage also mirrors background-job approval defaults and local notification opt-in for the current browser profile

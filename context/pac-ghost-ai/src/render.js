@@ -63,6 +63,13 @@ function drawPlayer(ctx, player, tile) {
   };
   const heading = angleMap[player.direction] ?? 0;
 
+  ctx.save();
+  ctx.fillStyle = "rgba(255, 217, 59, 0.18)";
+  ctx.beginPath();
+  ctx.arc(player.x, player.y, tile * 0.57, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
   ctx.fillStyle = PLAYER_COLOR;
   ctx.beginPath();
   ctx.moveTo(player.x, player.y);

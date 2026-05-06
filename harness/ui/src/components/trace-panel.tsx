@@ -2,11 +2,22 @@ import { createMemo, createSignal, For, Show } from "solid-js";
 import { createRequestId, type ExecutionToolActivity } from "../../../shared/protocol";
 import { getActiveProject, harnessStore } from "../harness-store";
 import { getLatestTaskStatusText, getRunRefreshState, getVisibleProjectTraces, isRunWorking } from "../lib/run-status";
+import { formatShortTimestamp } from "../lib/time-format";
+import {
+  getAssistantTracePanelSnapshot,
+  getJobTracePanelSnapshot,
+  getThreadTracePanelSnapshot,
+  getTracePanelExecutionLogEntries,
+  getTracePanelRunningCounts,
+  getTracePanelTitle,
+  resolveTracePanelEntity
+} from "../lib/trace-panel-model";
 import { ActionButton } from "./action-button";
 import { CopyTextButton } from "./primitives/copy-text-button";
+import { ExecutionLog } from "./primitives/execution-log";
 import { MarkdownContent } from "./markdown-content";
-import { ScrollArea } from "./primitives/scroll-area";
 import { Tooltip } from "./primitives/tooltip";
+import { VirtualList } from "./primitives/virtual-list";
 import {
   CheckCircle2,
   ChevronDown,
@@ -25,28 +36,41 @@ import {
 export function TracePanel() {
   const state = harnessStore.state;
   const sendCommand = harnessStore.actions.sendCommand;
-  const activeProject = () => getActiveProject(state);
+  const traceEntity = createMemo(() => resolveTracePanelEntity(state));
+  const traceTitle = createMemo(() => getTracePanelTitle(state, traceEntity()));
+  const threadSnapshot = createMemo(() => {
+    const entity = traceEntity();
+    return entity?.type === "thread" ? getThreadTracePanelSnapshot(state, entity) : undefined;
+  });
+  const assistantSnapshot = createMemo(() => {
+    const entity = traceEntity();
+    return entity?.type === "assistant" ? getAssistantTracePanelSnapshot(state, entity) : undefined;
+  });
+  const jobSnapshot = createMemo(() => {
+    const entity = traceEntity();
+    return entity?.type === "job" ? getJobTracePanelSnapshot(state, entity) : undefined;
+  });
+  const executionLogEntries = createMemo(() => getTracePanelExecutionLogEntries(state, traceEntity()));
+  const runningCounts = createMemo(() => getTracePanelRunningCounts(state, traceEntity()));
+  const activeProject = () => threadSnapshot()?.project ?? getActiveProject(state);
+  const threadProject = () => threadSnapshot()?.project;
   const executionPaused = () => state.executionControl.isPaused;
   const executionPauseReason = "Global execution pause is active";
-  const runToShow = () => activeProject()?.activeRun ?? activeProject()?.lastRun;
+  const runToShow = () => threadSnapshot()?.runToShow;
   const deferredBrowserApprovalCount = () => state.executionControl.deferredBrowserApprovalCount;
   const canRetryRun = () => Boolean(activeProject()?.lastRun?.retryable);
-  const visibleTraces = () => getVisibleProjectTraces(activeProject()?.traces ?? []);
+  const visibleTraces = () => threadSnapshot()?.visibleTraces ?? getVisibleProjectTraces(activeProject()?.traces ?? []);
   const refreshState = () => {
     const project = activeProject();
     return project ? getRunRefreshState(project, runToShow()) : { disabled: true, disabledReason: "No run available", refreshing: false };
   };
   const [expandedToolActivityId, setExpandedToolActivityId] = createSignal<string>();
-  const [showAllSubtasks, setShowAllSubtasks] = createSignal(false);
-  const [showAllToolActivities, setShowAllToolActivities] = createSignal(false);
-  const [showAllBrowserSessions, setShowAllBrowserSessions] = createSignal(false);
-  const [showAllTraces, setShowAllTraces] = createSignal(false);
   const planRun = () => runToShow();
   const hasPlanDetails = () => Boolean(activeProject()?.latestPlan?.executionPlan);
-  const visibleSubtasks = createMemo(() => capLatest(runToShow()?.subtasks ?? [], TRACE_SUBTASK_LIMIT, showAllSubtasks()));
-  const visibleToolActivities = createMemo(() => capLatest(runToShow()?.toolActivities ?? [], TRACE_TOOL_ACTIVITY_LIMIT, showAllToolActivities()));
-  const visibleBrowserSessions = createMemo(() => capLatest(runToShow()?.browserSessions ?? [], TRACE_BROWSER_SESSION_LIMIT, showAllBrowserSessions()));
-  const visibleTraceRows = createMemo(() => capLatest(visibleTraces(), TRACE_EVENT_LIMIT, showAllTraces()));
+  const visibleSubtasks = createMemo(() => runToShow()?.subtasks ?? []);
+  const visibleToolActivities = createMemo(() => runToShow()?.toolActivities ?? []);
+  const visibleBrowserSessions = createMemo(() => runToShow()?.browserSessions ?? []);
+  const visibleTraceRows = createMemo(() => visibleTraces());
 
   function handleRetryRun() {
     const project = activeProject();
@@ -128,22 +152,6 @@ export function TracePanel() {
     });
   }
 
-  function handleShowAllSubtasks() {
-    setShowAllSubtasks(true);
-  }
-
-  function handleShowAllToolActivities() {
-    setShowAllToolActivities(true);
-  }
-
-  function handleShowAllBrowserSessions() {
-    setShowAllBrowserSessions(true);
-  }
-
-  function handleShowAllTraces() {
-    setShowAllTraces(true);
-  }
-
   function handleResolveBrowserApproval(sessionId: string, toolCallId: string, approved: boolean) {
     const project = activeProject();
     const run = project?.activeRun ?? project?.lastRun;
@@ -165,12 +173,34 @@ export function TracePanel() {
     });
   }
 
+  function openAssistantJob(jobId: string) {
+    harnessStore.setActiveLeftTab("jobs");
+    harnessStore.setJobsPanePreferences({
+      segment: "jobs",
+      selectedJobId: jobId,
+      selectedRunId: undefined,
+      selectedNotificationId: undefined,
+      jobSearch: "",
+      kind: undefined,
+      status: undefined,
+      risk: undefined
+    });
+  }
+
+  function handleAssistantJobKeyDown(event: KeyboardEvent, jobId: string) {
+    if (event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+    event.preventDefault();
+    openAssistantJob(jobId);
+  }
+
   return (
     <aside data-test-trace-panel="" class="panel-shell flex h-full min-h-0 flex-col gap-4 rounded-2xl border-t-0 p-[0.8rem]">
       <div>
         <div class="flex items-center gap-2 text-[0.585rem] font-semibold tracking-[0.2em] text-(--muted)">
           <span>Developer trace</span>
-          <Tooltip content="Project-scoped plan and trace events stay here, separate from user-visible chat history.">
+          <Tooltip content="Selected thread, assistant, or job traces stay here, separate from user-visible chat history.">
             <span class="inline-flex">
               <CircleHelp class="h-3.5 w-3.5 text-(--muted)" aria-label="Projects trace help" />
             </span>
@@ -178,14 +208,113 @@ export function TracePanel() {
         </div>
       </div>
 
+      <div class="rounded-3xl border border-(--border) bg-white/55 p-3">
+        <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">{traceTitle().eyebrow}</div>
+        <div class="mt-1 truncate text-[0.8rem] font-semibold text-(--foreground)">{traceTitle().title}</div>
+        <div class="mt-1 text-[0.625rem] text-(--muted)">Source: {traceTitle().source}</div>
+      </div>
+
       <Show
-        when={activeProject()}
+        when={threadProject()}
         fallback={
-          <div class="flex">
-            <div class="w-full rounded-3xl border border-dashed border-(--border) bg-white/40 p-5 text-[0.675rem] leading-5 text-(--muted)">
-              Open project root to inspect plans, retries, and trace events.
-            </div>
-          </div>
+          <>
+            <Show when={assistantSnapshot()}>
+              {(snapshot) => (
+                <div class="flex min-h-0 flex-1 flex-col gap-4">
+                  <div class="rounded-3xl border border-(--border) bg-white/55 p-3">
+                    <div class="mb-3 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Assistant status</div>
+                    <div class="space-y-1 text-[0.675rem] text-(--muted)">
+                      <div>Name: {snapshot().assistant.name}</div>
+                      <div>State: {snapshot().assistant.runState}</div>
+                      <div>Bootstrap: {snapshot().assistant.bootstrapState}</div>
+                      <div>Jobs: {snapshot().jobs.length}</div>
+                      <div>Runs: {snapshot().runs.length}</div>
+                    </div>
+                  </div>
+                  <div class="rounded-3xl border border-(--border) bg-white/55 p-3">
+                    <div class="mb-3 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Assistant jobs</div>
+                    <Show
+                      when={snapshot().jobs.length > 0}
+                      fallback={<div class="rounded-2xl border border-dashed border-(--border) bg-white/45 p-3 text-[0.675rem] text-(--muted)">No assistant-owned jobs.</div>}
+                    >
+                      <div class="space-y-2">
+                        <For each={snapshot().jobs.slice(0, 6)}>
+                          {(job) => {
+                            const statusView = () => getAssistantJobStatusView(job.id, snapshot().runs);
+                            return (
+                            <div
+                              class={`cursor-pointer rounded-2xl border bg-white/70 p-3 text-[0.675rem] ${statusView().borderClass}`}
+                              role="button"
+                              tabIndex={0}
+                              onClick={() => openAssistantJob(job.id)}
+                              onKeyDown={(event) => handleAssistantJobKeyDown(event, job.id)}
+                            >
+                              <div class={`flex min-w-0 items-center gap-2 font-semibold ${statusView().textClass}`}>
+                                <AssistantJobStatusIcon state={statusView().state} />
+                                <span class="truncate">{job.name}</span>
+                              </div>
+                              <div class="mt-1 text-(--muted)">{getAssistantJobStatusText(job, statusView().state)}</div>
+                            </div>
+                            );
+                          }}
+                        </For>
+                      </div>
+                    </Show>
+                  </div>
+                  <section class="flex min-h-0 flex-1 flex-col rounded-3xl border border-(--border) bg-white/55 p-3">
+                    <div class="mb-3 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Execution log</div>
+                    <ExecutionLog entries={executionLogEntries()} emptyMessage="No execution log yet." />
+                  </section>
+                </div>
+              )}
+            </Show>
+            <Show when={jobSnapshot()}>
+              {(snapshot) => (
+                <div class="flex min-h-0 flex-1 flex-col gap-4">
+                  <div class="rounded-3xl border border-(--border) bg-white/55 p-3">
+                    <div class="mb-3 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Job status</div>
+                    <div class="space-y-1 text-[0.675rem] text-(--muted)">
+                      <div>Name: {snapshot().job.name}</div>
+                      <div>Kind: {snapshot().job.kind}</div>
+                      <div>Status: {snapshot().job.status}</div>
+                      <div>Risk: {snapshot().job.riskLevel}</div>
+                      <div>Runs: {snapshot().runs.length}</div>
+                    </div>
+                  </div>
+                  <div class="rounded-3xl border border-(--border) bg-white/55 p-3">
+                    <div class="mb-3 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Run</div>
+                    <Show
+                      when={snapshot().run}
+                      fallback={<div class="rounded-2xl border border-dashed border-(--border) bg-white/45 p-3 text-[0.675rem] text-(--muted)">No run yet.</div>}
+                    >
+                      {(run) => (
+                        <div class="space-y-1 text-[0.675rem] text-(--muted)">
+                          <div>Status: {run().status}</div>
+                          <div>Trigger: {run().triggerSource}</div>
+                          <div>Approval: {run().approvalStatus}</div>
+                          <div>Summary: {run().summary ?? "n/a"}</div>
+                          <Show when={run().failureMessage}>
+                            <div>Failure: {run().failureMessage}</div>
+                          </Show>
+                        </div>
+                      )}
+                    </Show>
+                  </div>
+                  <section class="flex min-h-0 flex-1 flex-col rounded-3xl border border-(--border) bg-white/55 p-3">
+                    <div class="mb-3 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Execution log</div>
+                    <ExecutionLog entries={executionLogEntries()} emptyMessage="No execution log yet." />
+                  </section>
+                </div>
+              )}
+            </Show>
+            <Show when={!assistantSnapshot() && !jobSnapshot()}>
+              <div class="flex">
+                <div class="w-full rounded-3xl border border-dashed border-(--border) bg-white/40 p-5 text-[0.675rem] leading-5 text-(--muted)">
+                  Open project root, assistant, or job to inspect execution.
+                </div>
+              </div>
+            </Show>
+          </>
         }
       >
         {(project) => (
@@ -276,15 +405,17 @@ export function TracePanel() {
                       <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--muted)">
                         Subtasks
                       </div>
-                      <Show when={(runToShow()?.subtasks.length ?? 0) > TRACE_SUBTASK_LIMIT && !showAllSubtasks()}>
-                        <ActionButton tooltip="Show every subtask row" size="sm" variant="ghost" onClick={handleShowAllSubtasks}>
-                          Show all {runToShow()?.subtasks.length}
-                        </ActionButton>
-                      </Show>
                     </div>
-                    <div class="space-y-2">
-                      <For each={visibleSubtasks()}>
-                        {(task) => (
+                    <VirtualList
+                      class="max-h-80 pr-2"
+                      contentClass="w-full"
+                      itemClass="pb-2"
+                      items={visibleSubtasks()}
+                      getKey={(task) => task.id}
+                      estimateSize={132}
+                      pagination={{ kind: "forward", initialCount: TRACE_SUBTASK_LIMIT, batchSize: TRACE_SUBTASK_LIMIT }}
+                    >
+                      {(task) => (
                           <div class="rounded-2xl border border-(--border) bg-white/70 p-3 text-[0.675rem]">
                             <div class="flex min-w-0 items-center justify-between gap-3 text-(--foreground)">
                               <span class="flex min-w-0 flex-1 items-center gap-2 font-semibold">
@@ -331,9 +462,8 @@ export function TracePanel() {
                               <MarkdownContent content={() => task.errorMessage ?? ""} class="mt-1" size="compact" tone="danger" />
                             </Show>
                           </div>
-                        )}
-                      </For>
-                    </div>
+                      )}
+                    </VirtualList>
                   </div>
                 </Show>
               </div>
@@ -346,15 +476,17 @@ export function TracePanel() {
                     <Terminal class="h-3.5 w-3.5" />
                     Tool activity
                   </div>
-                  <Show when={(runToShow()?.toolActivities?.length ?? 0) > TRACE_TOOL_ACTIVITY_LIMIT && !showAllToolActivities()}>
-                    <ActionButton tooltip="Show every tool activity row" size="sm" variant="ghost" onClick={handleShowAllToolActivities}>
-                      Show all {runToShow()?.toolActivities?.length}
-                    </ActionButton>
-                  </Show>
                 </div>
-                <div class="space-y-2">
-                  <For each={visibleToolActivities()}>
-                    {(activity) => (
+                <VirtualList
+                  class="max-h-96 pr-2"
+                  contentClass="w-full"
+                  itemClass="pb-2"
+                  items={visibleToolActivities()}
+                  getKey={(activity) => activity.id}
+                  estimateSize={150}
+                  pagination={{ kind: "forward", initialCount: TRACE_TOOL_ACTIVITY_LIMIT, batchSize: TRACE_TOOL_ACTIVITY_LIMIT }}
+                >
+                  {(activity) => (
                       <article class="rounded-2xl border border-(--border) bg-white/70 p-3 text-[0.675rem]">
                         <div class="flex min-w-0 items-center justify-between gap-3 text-(--foreground)">
                           <div class="flex min-w-0 items-center gap-2 font-semibold">
@@ -411,9 +543,8 @@ export function TracePanel() {
                           </CopyTextButton>
                         </div>
                       </article>
-                    )}
-                  </For>
-                </div>
+                  )}
+                </VirtualList>
               </div>
             </Show>
 
@@ -427,16 +558,16 @@ export function TracePanel() {
                     {deferredBrowserApprovalCount()} browser approvals queued until resume.
                   </div>
                 </Show>
-                <div class="mb-3 flex justify-end">
-                  <Show when={(runToShow()?.browserSessions?.length ?? 0) > TRACE_BROWSER_SESSION_LIMIT && !showAllBrowserSessions()}>
-                    <ActionButton tooltip="Show every browser session row" size="sm" variant="ghost" onClick={handleShowAllBrowserSessions}>
-                      Show all {runToShow()?.browserSessions?.length}
-                    </ActionButton>
-                  </Show>
-                </div>
-                <div class="space-y-3">
-                  <For each={visibleBrowserSessions()}>
-                    {(session) => (
+                <VirtualList
+                  class="max-h-96 pr-2"
+                  contentClass="w-full"
+                  itemClass="pb-3"
+                  items={visibleBrowserSessions()}
+                  getKey={(session) => session.id}
+                  estimateSize={240}
+                  pagination={{ kind: "forward", initialCount: TRACE_BROWSER_SESSION_LIMIT, batchSize: TRACE_BROWSER_SESSION_LIMIT }}
+                >
+                  {(session) => (
                       <article class="rounded-2xl border border-(--border) bg-white/70 p-3 text-[0.675rem]">
                         <div class="flex items-center justify-between gap-3 text-(--foreground)">
                           <div class="font-semibold">
@@ -479,7 +610,7 @@ export function TracePanel() {
                         </Show>
 
                         <div class="mt-3 space-y-2">
-                          <For each={capLatest(session.activities, TRACE_BROWSER_ACTIVITY_LIMIT, showAllBrowserSessions())}>
+                          <For each={session.activities.slice(-TRACE_BROWSER_ACTIVITY_LIMIT)}>
                             {(activity) => (
                               <Show when={activity.approval?.status !== "deferred"}>
                                 <div class="rounded-xl border border-(--border) bg-white/80 p-3">
@@ -511,51 +642,46 @@ export function TracePanel() {
                           </For>
                         </div>
                       </article>
-                    )}
-                  </For>
-                </div>
+                  )}
+                </VirtualList>
               </div>
             </Show>
 
-            <ScrollArea class="flex-1 min-h-0 space-y-3 pr-2">
-              <Show
-                when={visibleTraces().length > 0}
-                fallback={
-                  <div class="rounded-3xl border border-dashed border-(--border) bg-white/40 p-5 text-[0.675rem] text-(--muted)">
-                    No trace events yet.
+            <section class="flex min-h-0 max-h-72 flex-col rounded-3xl border border-(--border) bg-white/55 p-3">
+              <div class="mb-3 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Execution log</div>
+              <ExecutionLog entries={executionLogEntries()} emptyMessage="No execution log yet." />
+            </section>
+
+            <VirtualList
+              class="flex-1 min-h-0 pr-2"
+              contentClass="w-full"
+              itemClass="pb-3"
+              items={visibleTraceRows()}
+              getKey={(trace, index) => `${trace.stage}-${index}`}
+              estimateSize={140}
+              pagination={{ kind: "reverse", initialCount: TRACE_EVENT_LIMIT, batchSize: TRACE_EVENT_LIMIT }}
+              empty={<div class="rounded-3xl border border-dashed border-(--border) bg-white/40 p-5 text-[0.675rem] text-(--muted)">No trace events yet.</div>}
+            >
+              {(trace) => (
+                <article class="rounded-3xl border border-(--border) bg-white/55 p-3">
+                  <div class="mb-2 flex items-center justify-between gap-3 text-[0.585rem] font-semibold uppercase tracking-[0.16em] text-(--accent-strong)">
+                    <span>{trace.stage}</span>
+                    <span>{trace.modelId ?? "n/a"}</span>
                   </div>
-                }
-              >
-                <div class="space-y-3">
-                  <Show when={visibleTraces().length > TRACE_EVENT_LIMIT && !showAllTraces()}>
-                    <div class="flex items-center justify-between gap-3 rounded-2xl border border-(--border) bg-white/55 p-3 text-[0.675rem] text-(--muted)">
-                      <span>Showing latest {TRACE_EVENT_LIMIT} of {visibleTraces().length} trace events.</span>
-                      <ActionButton tooltip="Show every trace event" size="sm" variant="ghost" onClick={handleShowAllTraces}>
-                        Show all
-                      </ActionButton>
-                    </div>
+                  <MarkdownContent content={() => trace.message} size="compact" />
+                  <Show when={trace.detail}>
+                    <MarkdownContent content={() => trace.detail ?? ""} class="mt-2" size="compact" tone="muted" />
                   </Show>
-                  <For each={visibleTraceRows()}>
-                    {(trace) => (
-                      <article class="rounded-3xl border border-(--border) bg-white/55 p-3">
-                        <div class="mb-2 flex items-center justify-between gap-3 text-[0.585rem] font-semibold uppercase tracking-[0.16em] text-(--accent-strong)">
-                          <span>{trace.stage}</span>
-                          <span>{trace.modelId ?? "n/a"}</span>
-                        </div>
-                        <MarkdownContent content={() => trace.message} size="compact" />
-                        <Show when={trace.detail}>
-                          <MarkdownContent content={() => trace.detail ?? ""} class="mt-2" size="compact" tone="muted" />
-                        </Show>
-                      </article>
-                    )}
-                  </For>
-                </div>
-              </Show>
-            </ScrollArea>
+                </article>
+              )}
+            </VirtualList>
           </>
         )}
       </Show>
 
+      <div class="shrink-0 rounded-2xl border border-(--border) bg-white/75 px-3 py-2 text-[0.625rem] font-semibold text-(--foreground)">
+        Running agents: {runningCounts().current} current / {runningCounts().total} total
+      </div>
     </aside>
   );
 }
@@ -566,8 +692,50 @@ const TRACE_BROWSER_SESSION_LIMIT = 10;
 const TRACE_BROWSER_ACTIVITY_LIMIT = 25;
 const TRACE_EVENT_LIMIT = 80;
 
-function capLatest<T>(items: readonly T[], limit: number, showAll: boolean) {
-  return showAll || items.length <= limit ? items : items.slice(-limit);
+type AssistantJobStatusState = "running" | "successful" | "error" | "idle";
+
+function getAssistantJobStatusView(jobId: string, runs: { jobId: string; status: string; updatedAt: string }[]) {
+  const run = runs.filter((entry) => entry.jobId === jobId).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
+  const state = getAssistantJobStatusState(run?.status);
+  const classes: Record<AssistantJobStatusState, { borderClass: string; textClass: string }> = {
+    running: { borderClass: "border-amber-300", textClass: "text-amber-700" },
+    successful: { borderClass: "border-emerald-300", textClass: "text-emerald-700" },
+    error: { borderClass: "border-rose-300", textClass: "text-rose-700" },
+    idle: { borderClass: "border-(--border)", textClass: "text-(--foreground)" }
+  };
+  return { state, ...classes[state] };
+}
+
+function getAssistantJobStatusState(status: string | undefined): AssistantJobStatusState {
+  if (status === "queued" || status === "awaiting-approval" || status === "awaiting-user-input" || status === "running") {
+    return "running";
+  }
+  if (status === "succeeded") {
+    return "successful";
+  }
+  if (status === "failed" || status === "cancelled") {
+    return "error";
+  }
+  return "idle";
+}
+
+function getAssistantJobStatusText(job: { kind: string; status: string; riskLevel: string; nextRunAt?: string }, statusState: AssistantJobStatusState) {
+  return [job.kind, job.status, job.riskLevel, job.nextRunAt && statusState !== "running" ? `next ${formatShortTimestamp(job.nextRunAt)}` : undefined]
+    .filter(Boolean)
+    .join(" | ");
+}
+
+function AssistantJobStatusIcon(props: { state: AssistantJobStatusState }) {
+  switch (props.state) {
+    case "running":
+      return <LoaderCircle class="h-3.5 w-3.5 shrink-0 animate-spin" aria-label="Assistant job running" />;
+    case "successful":
+      return <CheckCircle2 class="h-3.5 w-3.5 shrink-0" aria-label="Assistant job successful" />;
+    case "error":
+      return <CircleAlert class="h-3.5 w-3.5 shrink-0" aria-label="Assistant job error" />;
+    default:
+      return <Circle class="h-3.5 w-3.5 shrink-0" aria-label="Assistant job idle" />;
+  }
 }
 
 function TaskStatusIcon(props: { status: "pending" | "running" | "completed" | "failed" }) {

@@ -1,6 +1,8 @@
 # F-Zero Mode-7 Velocity
 
-F-Zero Mode-7 Velocity is a standalone race entry built as a shell around a modular `Game` API. The page presents the race, forwards input and resize data into the simulation, and reflects the game snapshot back into the menu, HUD, and restart flow.
+F-Zero Mode-7 Velocity is a standalone browser race built for speed, drift, and fast retries.
+
+Open [index.html](./index.html) in a browser to play.
 
 ## Concept
 
@@ -19,15 +21,7 @@ F-Zero Mode-7 Velocity is a standalone race entry built as a shell around a modu
 - `R` restart
 - `Esc` pause or resume if supported by the game module
 
-## Structure
-
-- `index.html` hosts the standalone canvas entry and overlay shell
-- `src/main.js` owns boot, input wiring, resize handling, animation, and `Game` integration
-- `src/styles.css` provides the arcade presentation and responsive layout
-- `src/Game.js` is the simulation module the shell expects to drive
-
 ## Notes
 
-- The shell is designed to work as a direct folder entry in the catalog
-- HUD text and overlay visibility are driven by `Game.getFrameState()` snapshots
-- The README stays at the concept level so game implementation details remain in the source files
+- The shell stays direct-launch friendly.
+- HUD and restart flow keep the race readable without leaving the folder.

@@ -25,6 +25,8 @@ const game = new Game();
 const input = {
   held: Object.create(null),
   pressed: Object.create(null),
+  pointerLane: null,
+  lastSource: "keyboard",
 };
 
 function resizeCanvas() {
@@ -47,10 +49,13 @@ function queuePressed(code) {
 
 window.addEventListener("keydown", (event) => {
   input.held[event.code] = true;
+  if (event.code === "ArrowLeft" || event.code === "ArrowRight" || event.code === "KeyA" || event.code === "KeyD") {
+    input.lastSource = "keyboard";
+  }
   if (!event.repeat) {
     queuePressed(event.code);
   }
-  if (event.code === "Space" || event.code === "ArrowUp") {
+  if (event.code === "Space" || event.code === "ArrowUp" || event.code === "ArrowLeft" || event.code === "ArrowRight") {
     event.preventDefault();
   }
 });
@@ -62,10 +67,45 @@ window.addEventListener("keyup", (event) => {
 window.addEventListener("blur", () => {
   input.held = Object.create(null);
   input.pressed = Object.create(null);
+  input.pointerLane = null;
+  input.lastSource = "keyboard";
 });
 
 overlayButton.addEventListener("click", () => {
   queuePressed("Enter");
+});
+
+function queuePointerStart(event) {
+  if (event.cancelable) {
+    event.preventDefault();
+  }
+  input.lastSource = "pointer";
+  queuePressed("Enter");
+}
+
+overlay.addEventListener("pointerdown", queuePointerStart);
+canvas.addEventListener("pointerdown", (event) => {
+  const rect = canvas.getBoundingClientRect();
+  const relativeX = (event.clientX - rect.left) / Math.max(1, rect.width);
+  const clampedX = Math.max(0, Math.min(1, relativeX));
+  input.pointerLane = Math.round(clampedX * 4);
+  input.lastSource = "pointer";
+  if (!overlay.hidden) {
+    queuePointerStart(event);
+  }
+});
+
+canvas.addEventListener("mousemove", (event) => {
+  const rect = canvas.getBoundingClientRect();
+  const relativeX = (event.clientX - rect.left) / Math.max(1, rect.width);
+  const clampedX = Math.max(0, Math.min(1, relativeX));
+  input.pointerLane = Math.round(clampedX * 4);
+  input.lastSource = "pointer";
+});
+
+canvas.addEventListener("mouseleave", () => {
+  input.pointerLane = null;
+  input.lastSource = "keyboard";
 });
 
 function syncUi(frameState) {
@@ -90,8 +130,8 @@ function syncUi(frameState) {
       (shellMode === "win"
         ? "Mission complete. Press Start to run it again."
         : shellMode === "lose"
-          ? "Team down. Press Start to retry."
-          : "Press Start to launch the run.");
+          ? "Team down. Tap anywhere or press Start to retry."
+          : "Tap anywhere or press Start to launch the run.");
     overlayButton.textContent = frameState.overlayButton ?? "Start";
   }
 }

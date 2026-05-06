@@ -1,3 +1,4 @@
+(() => {
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
 const ZOMBIE_TYPES = [
@@ -59,7 +60,7 @@ function segmentCenter(segment) {
   };
 }
 
-export class ZombieLogic {
+class ZombieLogic {
   constructor(options = {}) {
     this.options = {
       separationRadius: options.separationRadius ?? 92,
@@ -444,3 +445,7 @@ export class ZombieLogic {
     }
   }
 }
+
+window.StandBreach = window.StandBreach || {};
+window.StandBreach.ZombieLogic = ZombieLogic;
+})();

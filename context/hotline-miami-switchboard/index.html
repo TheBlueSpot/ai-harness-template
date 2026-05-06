@@ -1,0 +1,1543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hotline Miami Switchboard</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #090811;
+      --panel: rgba(8, 10, 24, 0.88);
+      --pink: #ff4f9a;
+      --cyan: #66f7ff;
+      --gold: #ffd166;
+      --lime: #c5ff6d;
+      --danger: #ff6b57;
+      --ink: #0f1321;
+      --grid: rgba(121, 251, 255, 0.08);
+      --wall: #192239;
+      --cover: #263659;
+      font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(circle at top, rgba(255, 79, 154, 0.15), transparent 35%),
+        radial-gradient(circle at bottom, rgba(102, 247, 255, 0.12), transparent 45%),
+        linear-gradient(180deg, #0c0a16, #04050a 65%);
+      color: #f6f4ff;
+    }
+
+    .shell {
+      width: min(100vw, 1080px);
+      padding: 18px;
+    }
+
+    .frame {
+      position: relative;
+      border: 2px solid rgba(102, 247, 255, 0.28);
+      border-radius: 22px;
+      padding: 14px;
+      background: linear-gradient(180deg, rgba(12, 14, 29, 0.96), rgba(5, 7, 16, 0.96));
+      box-shadow: 0 18px 60px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 79, 154, 0.12) inset;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      border-radius: 16px;
+      background:
+        linear-gradient(180deg, rgba(255, 79, 154, 0.06), transparent 24%),
+        linear-gradient(90deg, rgba(102, 247, 255, 0.05), transparent 34%),
+        var(--bg);
+    }
+
+    .hud {
+      position: absolute;
+      inset: 24px 28px auto;
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      pointer-events: none;
+      font-size: 13px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: var(--panel);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      box-shadow: 0 6px 16px rgba(0, 0, 0, 0.28);
+      color: #d8e7ff;
+    }
+
+    .pill strong {
+      color: white;
+      font-size: 14px;
+    }
+
+    .legend {
+      position: absolute;
+      inset: auto 28px 24px auto;
+      max-width: 280px;
+      padding: 10px 14px;
+      border-radius: 14px;
+      background: rgba(6, 9, 19, 0.78);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      font-size: 12px;
+      line-height: 1.45;
+      color: #d2ddf6;
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="frame">
+      <canvas id="game" width="960" height="540" aria-label="Hotline Miami Switchboard"></canvas>
+      <div class="hud">
+        <div class="pill"><span>Room</span><strong id="roomLabel">1 / 4</strong></div>
+        <div class="pill"><span>Weapon</span><strong id="weaponLabel">Pistol 6</strong></div>
+      </div>
+      <div class="legend">
+        WASD move. Mouse aims. Click fires. E swaps to the highlighted dropped weapon.
+        Shoot neon switches to open flank routes. Clear each room, then cross the glowing door.
+        One hit kills everyone, including you.
+      </div>
+    </div>
+  </div>
+  <script>
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+    const roomLabel = document.getElementById("roomLabel");
+    const weaponLabel = document.getElementById("weaponLabel");
+
+    const W = canvas.width;
+    const H = canvas.height;
+    const DT_CAP = 1 / 30;
+    const keys = new Set();
+    const mouse = { x: W * 0.5, y: H * 0.5, down: false };
+
+    const weapons = {
+      pistol: { name: "Pistol", color: "#66f7ff", speed: 760, cooldown: 0.27, spread: 0.03, bullets: 1, ammo: 6 },
+      smg: { name: "SMG", color: "#c5ff6d", speed: 880, cooldown: 0.1, spread: 0.08, bullets: 1, ammo: 12 },
+      shotgun: { name: "Shotgun", color: "#ffd166", speed: 700, cooldown: 0.55, spread: 0.22, bullets: 5, ammo: 4 }
+    };
+
+    const roomTemplates = [
+      {
+        title: "Reception",
+        entryText: "Door breach. Three operators waking up.",
+        brief: "Reception teaches the baseline crossfire. Stay off the center line and peel the flank first.",
+        exitText: "Switchboard line open.",
+        obstacles: [
+          { x: 255, y: 200, w: 90, h: 32, kind: "low" },
+          { x: 480, y: 128, w: 58, h: 118, kind: "full" },
+          { x: 630, y: 312, w: 130, h: 34, kind: "low" }
+        ],
+        enemies: [
+          { x: 624, y: 154, weapon: "pistol", anchorId: "north-post", role: "holder" },
+          { x: 756, y: 174, weapon: "smg", anchorId: "east-post", role: "flanker" },
+          { x: 680, y: 370, weapon: "shotgun", anchorId: "south-post", role: "pusher" }
+        ],
+        anchors: [
+          { id: "north-post", x: 608, y: 150, tags: ["hold"] },
+          { id: "east-post", x: 788, y: 180, tags: ["flank"] },
+          { id: "south-post", x: 686, y: 390, tags: ["hold"] },
+          { id: "center-push", x: 568, y: 262, tags: ["push"] },
+          { id: "breach-flank", x: 436, y: 300, tags: ["flank"] }
+        ]
+      },
+      {
+        title: "Tape Archive",
+        entryText: "New room. Hit the archive switch to cut a new flank.",
+        brief: "Archive lane button opens the sealed lower route. Use it to break the east hold before they settle.",
+        exitText: "Archive purged.",
+        obstacles: [
+          { x: 220, y: 138, w: 160, h: 24, kind: "low" },
+          { x: 220, y: 220, w: 160, h: 24, kind: "low" },
+          { x: 220, y: 302, w: 160, h: 24, kind: "low" },
+          { x: 545, y: 178, w: 82, h: 134, kind: "full" },
+          { x: 698, y: 112, w: 70, h: 186, kind: "full" },
+          { x: 620, y: 330, w: 92, h: 18, kind: "gate", opensWith: "archive-lane" }
+        ],
+        enemies: [
+          { x: 470, y: 128, weapon: "shotgun", anchorId: "archive-top", role: "holder" },
+          { x: 464, y: 332, weapon: "smg", anchorId: "archive-bottom", role: "flanker" },
+          { x: 820, y: 156, weapon: "pistol", anchorId: "archive-east-top", role: "holder" },
+          { x: 816, y: 368, weapon: "smg", anchorId: "archive-east-bottom", role: "flanker" }
+        ],
+        switches: [
+          { id: "archive-lane", x: 654, y: 372, w: 18, h: 18, label: "Archive lane open" }
+        ],
+        routeCues: [
+          { x: 608, y: 332, w: 120, h: 24, switchId: "archive-lane", inactiveLabel: "LOCKED FLANK", activeLabel: "FLANK OPEN" },
+          { x: 744, y: 326, w: 122, h: 32, label: "CUT EAST HOLD", lineToX: 810, lineToY: 264, accent: "danger" }
+        ],
+        anchors: [
+          { id: "archive-top", x: 466, y: 130, tags: ["hold"] },
+          { id: "archive-bottom", x: 466, y: 332, tags: ["hold"] },
+          { id: "archive-east-top", x: 828, y: 156, tags: ["hold"] },
+          { id: "archive-east-bottom", x: 826, y: 368, tags: ["hold"] },
+          { id: "archive-lane-open", x: 662, y: 370, switchId: "archive-lane", tags: ["push"] },
+          { id: "archive-lane-angle", x: 730, y: 342, switchId: "archive-lane", tags: ["flank"] },
+          { id: "archive-center-wrap", x: 598, y: 126, tags: ["flank"] }
+        ]
+      },
+      {
+        title: "Relay Hall",
+        entryText: "Door breach. Relay guards rotate between lane posts now.",
+        brief: "Relay catwalks give perch shots over low cover. The marked lanes show where that angle matters.",
+        exitText: "Relay disconnected.",
+        obstacles: [
+          { x: 258, y: 102, w: 32, h: 96, kind: "full" },
+          { x: 258, y: 250, w: 32, h: 188, kind: "full" },
+          { x: 460, y: 170, w: 48, h: 190, kind: "full" },
+          { x: 624, y: 112, w: 160, h: 28, kind: "low" },
+          { x: 624, y: 316, w: 160, h: 28, kind: "low" }
+        ],
+        highGroundZones: [
+          { x: 604, y: 74, w: 204, h: 66, label: "North catwalk" },
+          { x: 604, y: 316, w: 204, h: 66, label: "South catwalk" }
+        ],
+        routeCues: [
+          { x: 620, y: 146, w: 164, h: 24, label: "CATWALK OVERWATCH", lineToX: 704, lineToY: 232, accent: "highGround" },
+          { x: 620, y: 286, w: 164, h: 24, label: "LOW COVER EXPOSED", lineToX: 704, lineToY: 232, accent: "danger" }
+        ],
+        enemies: [
+          { x: 390, y: 162, weapon: "smg", anchorId: "relay-top-left", role: "flanker" },
+          { x: 390, y: 354, weapon: "shotgun", anchorId: "relay-bottom-left", role: "pusher" },
+          { x: 586, y: 264, weapon: "pistol", anchorId: "relay-mid", role: "holder" },
+          { x: 842, y: 170, weapon: "smg", anchorId: "relay-top-catwalk", role: "perch" },
+          { x: 840, y: 370, weapon: "pistol", anchorId: "relay-bottom-catwalk", role: "perch" }
+        ],
+        anchors: [
+          { id: "relay-top-left", x: 392, y: 154, tags: ["flank"] },
+          { id: "relay-bottom-left", x: 392, y: 366, tags: ["push"] },
+          { id: "relay-mid", x: 584, y: 264, tags: ["hold"] },
+          { id: "relay-top-catwalk", x: 760, y: 118, highGround: true, tags: ["perch", "hold"] },
+          { id: "relay-top-center", x: 670, y: 146, tags: ["flank"] },
+          { id: "relay-bottom-catwalk", x: 758, y: 344, highGround: true, tags: ["perch", "hold"] },
+          { id: "relay-bottom-center", x: 670, y: 314, tags: ["push"] }
+        ]
+      },
+      {
+        title: "Core Switchboard",
+        entryText: "Final breach. Shoot the bypass switch to crack the center lane.",
+        brief: "Final room stacks both reads: bypass switch opens center pressure while the control deck watches over low cover.",
+        exitText: "Switchboard severed.",
+        obstacles: [
+          { x: 290, y: 158, w: 138, h: 24, kind: "low" },
+          { x: 290, y: 360, w: 138, h: 24, kind: "low" },
+          { x: 506, y: 154, w: 24, h: 232, kind: "full" },
+          { x: 646, y: 158, w: 120, h: 24, kind: "low" },
+          { x: 646, y: 360, w: 120, h: 24, kind: "low" },
+          { x: 560, y: 246, w: 72, h: 18, kind: "gate", opensWith: "core-bypass" }
+        ],
+        highGroundZones: [
+          { x: 452, y: 94, w: 132, h: 58, label: "Control deck" }
+        ],
+        enemies: [
+          { x: 514, y: 112, weapon: "shotgun", anchorId: "core-deck", role: "perch" },
+          { x: 514, y: 428, weapon: "shotgun", anchorId: "core-bottom-push", role: "pusher" },
+          { x: 826, y: 146, weapon: "smg", anchorId: "core-east-top", role: "holder" },
+          { x: 826, y: 270, weapon: "pistol", anchorId: "core-east-mid", role: "flanker" },
+          { x: 826, y: 394, weapon: "smg", anchorId: "core-east-bottom", role: "holder" }
+        ],
+        switches: [
+          { id: "core-bypass", x: 592, y: 272, w: 18, h: 18, label: "Core bypass open" }
+        ],
+        routeCues: [
+          { x: 548, y: 238, w: 112, h: 24, switchId: "core-bypass", inactiveLabel: "BYPASS LOCKED", activeLabel: "CENTER OPEN" },
+          { x: 446, y: 104, w: 144, h: 24, label: "CONTROL DECK", lineToX: 584, lineToY: 270, accent: "highGround" }
+        ],
+        anchors: [
+          { id: "core-deck", x: 516, y: 122, highGround: true, tags: ["perch", "hold"] },
+          { id: "core-mid-bypass", x: 600, y: 256, switchId: "core-bypass", tags: ["push"] },
+          { id: "core-bottom-push", x: 508, y: 420, tags: ["push"] },
+          { id: "core-east-top", x: 816, y: 146, tags: ["hold"] },
+          { id: "core-east-mid", x: 792, y: 270, tags: ["flank"] },
+          { id: "core-east-bottom", x: 818, y: 394, tags: ["hold"] },
+          { id: "core-west-cut", x: 420, y: 270, tags: ["flank"] }
+        ]
+      }
+    ];
+
+    const state = {
+      scene: "menu",
+      roomIndex: 0,
+      roomEnteredAt: 0,
+      flash: 0,
+      shake: 0,
+      shakeKick: 0,
+      message: "",
+      messageTimer: 0,
+      prompt: "",
+      roomBrief: "",
+      roomBriefTimer: 0,
+      player: null,
+      enemies: [],
+      bullets: [],
+      drops: [],
+      particles: [],
+      roomState: null,
+      musicClock: 0,
+      lastTime: 0
+    };
+
+    let audioContext = null;
+    let audioUnlocked = false;
+
+    function ensureAudio() {
+      if (audioContext) return audioContext;
+      const AudioCtor = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtor) return null;
+      audioContext = new AudioCtor();
+      return audioContext;
+    }
+
+    function unlockAudio() {
+      const audio = ensureAudio();
+      if (!audio) return;
+      if (audio.state === "suspended") {
+        audio.resume();
+      }
+      audioUnlocked = audio.state === "running" || audio.state === "suspended";
+    }
+
+    function playTone({ type = "sine", frequency = 440, duration = 0.08, volume = 0.04, when = 0, detune = 0, endFrequency = null }) {
+      const audio = ensureAudio();
+      if (!audio || !audioUnlocked) return;
+      const start = audio.currentTime + when;
+      const gain = audio.createGain();
+      const oscillator = audio.createOscillator();
+      oscillator.type = type;
+      oscillator.frequency.setValueAtTime(frequency, start);
+      oscillator.detune.setValueAtTime(detune, start);
+      if (typeof endFrequency === "number") {
+        oscillator.frequency.exponentialRampToValueAtTime(Math.max(40, endFrequency), start + duration);
+      }
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(volume, start + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+      oscillator.connect(gain);
+      gain.connect(audio.destination);
+      oscillator.start(start);
+      oscillator.stop(start + duration + 0.02);
+    }
+
+    function playNoise({ duration = 0.06, volume = 0.03, when = 0, highpass = 420 }) {
+      const audio = ensureAudio();
+      if (!audio || !audioUnlocked) return;
+      const start = audio.currentTime + when;
+      const frames = Math.max(1, Math.ceil(audio.sampleRate * duration));
+      const buffer = audio.createBuffer(1, frames, audio.sampleRate);
+      const channel = buffer.getChannelData(0);
+      for (let i = 0; i < frames; i += 1) {
+        channel[i] = (Math.random() * 2 - 1) * (1 - i / frames);
+      }
+      const source = audio.createBufferSource();
+      source.buffer = buffer;
+      const filter = audio.createBiquadFilter();
+      filter.type = "highpass";
+      filter.frequency.setValueAtTime(highpass, start);
+      const gain = audio.createGain();
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(volume, start + 0.008);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+      source.connect(filter);
+      filter.connect(gain);
+      gain.connect(audio.destination);
+      source.start(start);
+    }
+
+    function triggerShake(amount) {
+      state.shake = Math.max(state.shake, amount);
+      state.shakeKick = Math.max(state.shakeKick, amount);
+    }
+
+    function emitBurst(x, y, color, count, options = {}) {
+      const {
+        speedMin = 40,
+        speedMax = 180,
+        lifeMin = 0.3,
+        lifeMax = 0.6,
+        sizeMin = 2,
+        sizeMax = 4,
+        glow = 0,
+      } = options;
+      for (let i = 0; i < count; i += 1) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = speedMin + Math.random() * (speedMax - speedMin);
+        state.particles.push({
+          x,
+          y,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed,
+          life: lifeMin + Math.random() * (lifeMax - lifeMin),
+          maxLife: lifeMax,
+          color,
+          size: sizeMin + Math.random() * (sizeMax - sizeMin),
+          glow
+        });
+      }
+    }
+
+    function emitImpact(x, y, color) {
+      emitBurst(x, y, color, 8, { speedMin: 60, speedMax: 220, lifeMin: 0.12, lifeMax: 0.28, sizeMin: 1.5, sizeMax: 3.2, glow: 8 });
+    }
+
+    function playShotSound(type, friendly) {
+      if (type === "shotgun") {
+        playTone({ type: "square", frequency: friendly ? 140 : 120, endFrequency: 72, duration: 0.16, volume: friendly ? 0.055 : 0.04 });
+        playNoise({ duration: 0.08, volume: friendly ? 0.038 : 0.028, highpass: 280 });
+        return;
+      }
+      if (type === "smg") {
+        playTone({ type: "sawtooth", frequency: friendly ? 320 : 250, endFrequency: 180, duration: 0.08, volume: friendly ? 0.035 : 0.026 });
+        playNoise({ duration: 0.04, volume: friendly ? 0.018 : 0.014, highpass: 580 });
+        return;
+      }
+      playTone({ type: "triangle", frequency: friendly ? 260 : 220, endFrequency: 170, duration: 0.09, volume: friendly ? 0.032 : 0.022 });
+    }
+
+    function playUiSound(kind) {
+      if (kind === "dry") {
+        playTone({ type: "square", frequency: 180, endFrequency: 130, duration: 0.05, volume: 0.018 });
+      } else if (kind === "switch") {
+        playTone({ type: "triangle", frequency: 360, endFrequency: 620, duration: 0.14, volume: 0.03 });
+      } else if (kind === "pickup") {
+        playTone({ type: "triangle", frequency: 420, endFrequency: 680, duration: 0.12, volume: 0.026 });
+      } else if (kind === "clear") {
+        playTone({ type: "triangle", frequency: 360, duration: 0.12, volume: 0.024 });
+        playTone({ type: "triangle", frequency: 520, duration: 0.18, volume: 0.028, when: 0.08 });
+      } else if (kind === "death") {
+        playTone({ type: "sawtooth", frequency: 260, endFrequency: 68, duration: 0.28, volume: 0.06 });
+        playNoise({ duration: 0.12, volume: 0.04, highpass: 180 });
+      } else if (kind === "hit") {
+        playTone({ type: "square", frequency: 520, endFrequency: 220, duration: 0.08, volume: 0.02 });
+      }
+    }
+
+    const inputVector = () => {
+      let x = 0;
+      let y = 0;
+      if (keys.has("KeyA")) x -= 1;
+      if (keys.has("KeyD")) x += 1;
+      if (keys.has("KeyW")) y -= 1;
+      if (keys.has("KeyS")) y += 1;
+      const len = Math.hypot(x, y) || 1;
+      return { x: x / len, y: y / len, active: x !== 0 || y !== 0 };
+    };
+
+    const cloneWeapon = (type, ammo = null) => {
+      const base = weapons[type];
+      return { type, ammo: ammo ?? base.ammo };
+    };
+
+    const setMessage = (text, timer = 2.5) => {
+      state.message = text;
+      state.messageTimer = timer;
+    };
+
+    const setRoomBrief = (text, timer = 2.9) => {
+      state.roomBrief = text;
+      state.roomBriefTimer = timer;
+    };
+
+    function resetGame() {
+      state.scene = "playing";
+      state.roomIndex = 0;
+      state.bullets = [];
+      state.drops = [];
+      state.particles = [];
+      state.flash = 0;
+      state.player = {
+        x: 110,
+        y: H / 2,
+        radius: 12,
+        speed: 220,
+        angle: 0,
+        weapon: cloneWeapon("pistol"),
+        cooldown: 0,
+        dryCooldown: 0,
+        alive: true
+      };
+      loadRoom(0);
+      setMessage("Click to breach. Stay behind cover until the telegraphs finish.");
+    }
+
+    function loadRoom(index) {
+      state.roomIndex = index;
+      state.bullets.length = 0;
+      state.drops.length = 0;
+      state.particles.length = 0;
+      const room = roomTemplates[index];
+      state.roomEnteredAt = performance.now() * 0.001;
+      state.roomState = {
+        switches: Object.fromEntries((room.switches ?? []).map((toggle) => [toggle.id, false]))
+      };
+      state.enemies = room.enemies.map((enemy) => ({
+        x: enemy.x,
+        y: enemy.y,
+        radius: 12,
+        weapon: cloneWeapon(enemy.weapon),
+        cooldown: 1.15 + Math.random() * 0.4,
+        strafe: Math.random() > 0.5 ? 1 : -1,
+        telegraph: 1.05 + Math.random() * 0.22,
+        anchorId: enemy.anchorId ?? null,
+        role: enemy.role ?? "holder",
+        goalAnchorId: enemy.anchorId ?? null,
+        planTimer: 0.3 + Math.random() * 0.45,
+        holdTimer: 0.25 + Math.random() * 0.4,
+        pathBias: Math.random() > 0.5 ? 1 : -1,
+        stuckTimer: 0,
+        recentAnchorId: null,
+        alive: true
+      }));
+      state.player.x = 110;
+      state.player.y = H / 2;
+      state.player.cooldown = 0.45;
+      setMessage(room.entryText, 2.1);
+      setRoomBrief(room.brief ?? "", 3);
+    }
+
+    function room() {
+      return roomTemplates[state.roomIndex];
+    }
+
+    function getRoomState() {
+      return state.roomState ?? { switches: {} };
+    }
+
+    function isSwitchOn(id) {
+      return Boolean(getRoomState().switches[id]);
+    }
+
+    function cueVisuals(cue) {
+      const active = cue.switchId ? isSwitchOn(cue.switchId) : false;
+      if (cue.switchId) {
+        return active
+          ? {
+              active,
+              fill: "rgba(197, 255, 109, 0.12)",
+              stroke: "rgba(197, 255, 109, 0.5)",
+              text: "#c5ff6d",
+              line: "rgba(197, 255, 109, 0.34)"
+            }
+          : {
+              active,
+              fill: "rgba(255, 79, 154, 0.08)",
+              stroke: "rgba(255, 79, 154, 0.42)",
+              text: "#ff8db7",
+              line: "rgba(255, 79, 154, 0.3)"
+            };
+      }
+
+      if (cue.accent === "danger") {
+        return {
+          active,
+          fill: "rgba(255, 107, 87, 0.08)",
+          stroke: "rgba(255, 107, 87, 0.34)",
+          text: "#ff9c8f",
+          line: "rgba(255, 107, 87, 0.26)"
+        };
+      }
+
+      return {
+        active,
+        fill: "rgba(102, 247, 255, 0.08)",
+        stroke: "rgba(102, 247, 255, 0.34)",
+        text: "#66f7ff",
+        line: "rgba(102, 247, 255, 0.24)"
+      };
+    }
+
+    function isObstacleActive(obstacle) {
+      if (!obstacle.opensWith) return true;
+      return !isSwitchOn(obstacle.opensWith);
+    }
+
+    function activeObstacles() {
+      return room().obstacles.filter(isObstacleActive);
+    }
+
+    function pointInRect(x, y, rect) {
+      return x >= rect.x && x <= rect.x + rect.w && y >= rect.y && y <= rect.y + rect.h;
+    }
+
+    function isEntityElevated(entity) {
+      return Boolean(room().highGroundZones?.some((zone) => pointInRect(entity.x, entity.y, zone)));
+    }
+
+    function obstacleHitCircle(cx, cy, radius, obstacle) {
+      const nx = Math.max(obstacle.x, Math.min(cx, obstacle.x + obstacle.w));
+      const ny = Math.max(obstacle.y, Math.min(cy, obstacle.y + obstacle.h));
+      return Math.hypot(cx - nx, cy - ny) < radius;
+    }
+
+    function canOccupy(entity, x, y) {
+      if (x - entity.radius < 42 || x + entity.radius > W - 42 || y - entity.radius < 42 || y + entity.radius > H - 42) {
+        return false;
+      }
+      return !activeObstacles().some((obstacle) => obstacleHitCircle(x, y, entity.radius, obstacle));
+    }
+
+    function moveWithCollision(entity, dx, dy) {
+      let moved = false;
+      const trialX = entity.x + dx;
+      const trialY = entity.y + dy;
+
+      if (canOccupy(entity, trialX, entity.y)) {
+        entity.x = trialX;
+        moved = true;
+      }
+      if (canOccupy(entity, entity.x, trialY)) {
+        entity.y = trialY;
+        moved = true;
+      }
+      return moved;
+    }
+
+    function steerEnemyToward(enemy, targetX, targetY, speed, dt) {
+      const step = speed * dt;
+      const baseAngle = Math.atan2(targetY - enemy.y, targetX - enemy.x);
+      const offsets = [0, Math.PI / 6, -Math.PI / 6, Math.PI / 3, -Math.PI / 3, Math.PI / 2, -Math.PI / 2];
+      let best = null;
+
+      for (const offset of offsets) {
+        const signedOffset = offset === 0 ? 0 : Math.abs(offset) * (Math.sign(offset) || enemy.pathBias);
+        const angle = baseAngle + signedOffset;
+        const dx = Math.cos(angle) * step;
+        const dy = Math.sin(angle) * step;
+        const trialX = enemy.x + dx;
+        const trialY = enemy.y + dy;
+        if (!canOccupy(enemy, trialX, trialY)) continue;
+        const score = Math.hypot(targetX - trialX, targetY - trialY) + Math.abs(signedOffset) * 18;
+        if (!best || score < best.score) {
+          best = { dx, dy, score, turn: signedOffset };
+        }
+      }
+
+      if (!best) return false;
+      const moved = moveWithCollision(enemy, best.dx, best.dy);
+      if (moved && best.turn !== 0) {
+        enemy.pathBias = Math.sign(best.turn) || enemy.pathBias;
+      }
+      return moved;
+    }
+
+    function traceBlocks(x1, y1, x2, y2, options = {}) {
+      const ignoreLowCover = Boolean(options.ignoreLowCover);
+      const steps = Math.ceil(Math.hypot(x2 - x1, y2 - y1) / 8);
+      const obstacles = activeObstacles();
+      for (let i = 0; i <= steps; i += 1) {
+        const t = steps === 0 ? 0 : i / steps;
+        const x = x1 + (x2 - x1) * t;
+        const y = y1 + (y2 - y1) * t;
+        if (x < 44 || x > W - 44 || y < 44 || y > H - 44) return true;
+        for (const obstacle of obstacles) {
+          if (ignoreLowCover && obstacle.kind === "low") continue;
+          if (x > obstacle.x && x < obstacle.x + obstacle.w && y > obstacle.y && y < obstacle.y + obstacle.h) {
+            return true;
+          }
+        }
+      }
+      return false;
+    }
+
+    function toggleSwitch(id) {
+      const current = isSwitchOn(id);
+      getRoomState().switches[id] = !current;
+      const toggle = room().switches?.find((entry) => entry.id === id);
+      if (toggle) {
+        setMessage(toggle.label, 1.2);
+        emitBurst(toggle.x + toggle.w * 0.5, toggle.y + toggle.h * 0.5, current ? "#ff4f9a" : "#c5ff6d", 14, {
+          speedMin: 70,
+          speedMax: 220,
+          lifeMin: 0.18,
+          lifeMax: 0.42,
+          sizeMin: 2,
+          sizeMax: 4,
+          glow: 12
+        });
+        playUiSound("switch");
+        triggerShake(4);
+      }
+      for (const enemy of state.enemies) {
+        if (!enemy.alive) continue;
+        enemy.goalAnchorId = null;
+        enemy.planTimer = 0;
+        enemy.holdTimer = 0;
+        enemy.stuckTimer = 0;
+        enemy.telegraph = Math.min(enemy.telegraph, 0.28);
+      }
+    }
+
+    function handleBulletSwitchHit(bullet) {
+      if (!bullet.friendly || !room().switches?.length) return false;
+      for (const toggle of room().switches) {
+        if (pointInRect(bullet.x, bullet.y, toggle)) {
+          toggleSwitch(toggle.id);
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function getNearbySwitch() {
+      if (!room().switches?.length || !state.player?.alive) return null;
+      let nearest = null;
+      let nearestDist = 40;
+      for (const toggle of room().switches) {
+        const cx = toggle.x + toggle.w * 0.5;
+        const cy = toggle.y + toggle.h * 0.5;
+        const dist = Math.hypot(cx - state.player.x, cy - state.player.y);
+        if (dist < nearestDist) {
+          nearest = toggle;
+          nearestDist = dist;
+        }
+      }
+      return nearest;
+    }
+
+    function tryUseSwitch() {
+      const toggle = getNearbySwitch();
+      if (!toggle) return false;
+      toggleSwitch(toggle.id);
+      return true;
+    }
+
+    function getAnchorById(id) {
+      return room().anchors?.find((anchor) => anchor.id === id) ?? null;
+    }
+
+    function isAnchorAvailable(anchor) {
+      return !anchor.switchId || isSwitchOn(anchor.switchId);
+    }
+
+    function roleTagMatches(enemy, anchor) {
+      const tags = anchor.tags ?? [];
+      if (enemy.role === "perch") return tags.includes("perch");
+      if (enemy.role === "flanker") return tags.includes("flank");
+      if (enemy.role === "pusher") return tags.includes("push");
+      return tags.includes("hold");
+    }
+
+    function countEnemiesTargetingAnchor(anchorId, enemy) {
+      return state.enemies.filter((entry) => entry !== enemy && entry.alive && entry.goalAnchorId === anchorId).length;
+    }
+
+    function scoreAnchorCrowding(anchor, enemy) {
+      let penalty = 0;
+      for (const ally of state.enemies) {
+        if (ally === enemy || !ally.alive) continue;
+        const liveDistance = Math.hypot(anchor.x - ally.x, anchor.y - ally.y);
+        if (liveDistance < 96) {
+          penalty += (96 - liveDistance) * 0.95;
+        }
+        const allyGoal = getAnchorById(ally.goalAnchorId);
+        if (!allyGoal) continue;
+        const goalDistance = Math.hypot(anchor.x - allyGoal.x, anchor.y - allyGoal.y);
+        if (goalDistance < 132) {
+          penalty += (132 - goalDistance) * 0.62;
+        }
+      }
+      return penalty;
+    }
+
+    function getRolePreferredDistance(role) {
+      if (role === "pusher") return 156;
+      if (role === "flanker") return 214;
+      if (role === "perch") return 276;
+      return 238;
+    }
+
+    function getEnemySeparationVector(enemy) {
+      let pushX = 0;
+      let pushY = 0;
+      for (const ally of state.enemies) {
+        if (ally === enemy || !ally.alive) continue;
+        const dx = enemy.x - ally.x;
+        const dy = enemy.y - ally.y;
+        const distance = Math.hypot(dx, dy);
+      if (distance === 0 || distance > 88) continue;
+      const strength = (88 - distance) / 88;
+      pushX += (dx / distance) * strength;
+      pushY += (dy / distance) * strength;
+      }
+      return { x: pushX, y: pushY };
+    }
+
+    function scoreAnchor(enemy, anchor) {
+      if (!isAnchorAvailable(anchor)) return -Infinity;
+      const distance = Math.hypot(anchor.x - enemy.x, anchor.y - enemy.y);
+      const playerDistance = Math.hypot(anchor.x - state.player.x, anchor.y - state.player.y);
+      const clearShot = !traceBlocks(anchor.x, anchor.y, state.player.x, state.player.y, { ignoreLowCover: Boolean(anchor.highGround) });
+      const occupancy = countEnemiesTargetingAnchor(anchor.id, enemy);
+      const crowdPenalty = scoreAnchorCrowding(anchor, enemy);
+      const roleMatch = roleTagMatches(enemy, anchor);
+      const isCurrentGoal = enemy.goalAnchorId === anchor.id;
+      const preferredDistance = getRolePreferredDistance(enemy.role);
+      let score = clearShot ? 120 : 0;
+      score -= distance * 0.18;
+      score -= Math.abs(playerDistance - preferredDistance) * 0.1;
+      score -= occupancy * 30;
+      score -= crowdPenalty;
+      if (anchor.highGround) score += enemy.role === "perch" ? 28 : 10;
+      if (roleMatch) score += 34;
+      if (!roleMatch) score -= 44;
+      if (anchor.id === enemy.anchorId) score += 8;
+      if (isCurrentGoal) score += 12;
+      if (enemy.recentAnchorId === anchor.id) score -= 18;
+      if (enemy.role === "pusher") score += clearShot ? 20 : 8;
+      if (enemy.role === "flanker" && !clearShot) score += 18;
+      if (enemy.role === "holder" && clearShot) score += 16;
+      return score;
+    }
+
+    function chooseAnchor(enemy) {
+      const anchors = room().anchors ?? [];
+      if (!anchors.length) return null;
+      let best = getAnchorById(enemy.anchorId);
+      let bestScore = best ? scoreAnchor(enemy, best) : -Infinity;
+      for (const anchor of anchors) {
+        const score = scoreAnchor(enemy, anchor);
+        if (score > bestScore) {
+          best = anchor;
+          bestScore = score;
+        }
+      }
+      return best;
+    }
+
+    function updateEnemyPlan(enemy, clearShot, dist, dt) {
+      enemy.planTimer -= dt;
+      if (enemy.planTimer > 0 && enemy.goalAnchorId) return;
+      const shouldReplan = !enemy.goalAnchorId || !clearShot || dist > 250 || dist < 120 || Math.random() < 0.18;
+      if (!shouldReplan) {
+        enemy.planTimer = 0.28 + Math.random() * 0.35;
+        return;
+      }
+      const nextAnchor = chooseAnchor(enemy);
+      if (nextAnchor) {
+        if (enemy.goalAnchorId && enemy.goalAnchorId !== nextAnchor.id) {
+          enemy.recentAnchorId = enemy.goalAnchorId;
+        }
+        enemy.goalAnchorId = nextAnchor.id;
+      }
+      enemy.planTimer = 0.5 + Math.random() * 0.45;
+    }
+
+    function moveEnemyTowardAnchor(enemy, anchor, dt) {
+      if (!anchor) return;
+      const speed = anchor.highGround ? 108 : 96;
+      const distance = Math.hypot(anchor.x - enemy.x, anchor.y - enemy.y);
+      if (distance < 12) {
+        enemy.stuckTimer = 0;
+        enemy.holdTimer -= dt;
+        if (enemy.holdTimer <= 0) {
+          enemy.planTimer = 0;
+          enemy.holdTimer = 0.22 + Math.random() * 0.45;
+        }
+        return;
+      }
+      const separation = getEnemySeparationVector(enemy);
+      const targetX = anchor.x + separation.x * 44;
+      const targetY = anchor.y + separation.y * 44;
+      const moved = steerEnemyToward(enemy, targetX, targetY, speed, dt);
+      if (moved) {
+        enemy.stuckTimer = 0;
+        return;
+      }
+      enemy.stuckTimer += dt;
+      enemy.pathBias *= -1;
+      if (enemy.stuckTimer > 0.2) {
+        enemy.recentAnchorId = enemy.goalAnchorId;
+        enemy.goalAnchorId = null;
+        enemy.planTimer = 0;
+        enemy.stuckTimer = 0;
+      }
+    }
+
+    function fireWeapon(owner, targetX, targetY, friendly) {
+      const spec = weapons[owner.weapon.type];
+      if (owner.cooldown > 0) return;
+      if (owner.weapon.ammo <= 0) {
+        if (friendly && owner.dryCooldown <= 0) {
+          playUiSound("dry");
+          emitBurst(owner.x + Math.cos(owner.angle) * 18, owner.y + Math.sin(owner.angle) * 18, "#ffd166", 4, {
+            speedMin: 20,
+            speedMax: 70,
+            lifeMin: 0.08,
+            lifeMax: 0.14,
+            sizeMin: 1,
+            sizeMax: 2.2
+          });
+          owner.dryCooldown = 0.18;
+        }
+        return;
+      }
+      owner.cooldown = spec.cooldown;
+      owner.weapon.ammo -= 1;
+      const baseAngle = Math.atan2(targetY - owner.y, targetX - owner.x);
+      owner.angle = baseAngle;
+      for (let i = 0; i < spec.bullets; i += 1) {
+        const offset = spec.bullets === 1 ? 0 : (i / (spec.bullets - 1) - 0.5) * spec.spread;
+        const angle = baseAngle + offset + (Math.random() - 0.5) * spec.spread * 0.2;
+        state.bullets.push({
+          x: owner.x + Math.cos(angle) * (owner.radius + 8),
+          y: owner.y + Math.sin(angle) * (owner.radius + 8),
+          vx: Math.cos(angle) * spec.speed,
+          vy: Math.sin(angle) * spec.speed,
+          radius: spec.bullets > 1 ? 3 : 4,
+          friendly,
+          life: 0.8,
+          prevX: owner.x,
+          prevY: owner.y,
+          color: spec.color
+        });
+      }
+      emitBurst(owner.x + Math.cos(baseAngle) * 18, owner.y + Math.sin(baseAngle) * 18, spec.color, spec.bullets > 1 ? 10 : 6, {
+        speedMin: 40,
+        speedMax: spec.bullets > 1 ? 180 : 120,
+        lifeMin: 0.06,
+        lifeMax: 0.16,
+        sizeMin: 1,
+        sizeMax: spec.bullets > 1 ? 3 : 2.2,
+        glow: 10
+      });
+      playShotSound(owner.weapon.type, friendly);
+      triggerShake(friendly ? (owner.weapon.type === "shotgun" ? 6 : 3) : 2);
+      state.flash = 0.07;
+      if (owner.weapon.ammo === 0) {
+        state.drops.push({
+          x: owner.x + Math.cos(baseAngle) * 10,
+          y: owner.y + Math.sin(baseAngle) * 10,
+          weapon: cloneWeapon(owner.weapon.type, weapons[owner.weapon.type].ammo)
+        });
+      }
+    }
+
+    function killPlayer() {
+      if (!state.player.alive) return;
+      state.player.alive = false;
+      state.scene = "dead";
+      setMessage("You got dropped. Tap R or click to restart.", 999);
+      emitBurst(state.player.x, state.player.y, "#ff6b57", 30, {
+        speedMin: 50,
+        speedMax: 260,
+        lifeMin: 0.24,
+        lifeMax: 0.62,
+        sizeMin: 2,
+        sizeMax: 5,
+        glow: 14
+      });
+      playUiSound("death");
+      triggerShake(14);
+    }
+
+    function killEnemy(enemy) {
+      enemy.alive = false;
+      state.drops.push({
+        x: enemy.x,
+        y: enemy.y,
+        weapon: cloneWeapon(enemy.weapon.type, Math.max(weapons[enemy.weapon.type].ammo - 1, 2))
+      });
+      emitBurst(enemy.x, enemy.y, "#ff6b57", 18, {
+        speedMin: 50,
+        speedMax: 210,
+        lifeMin: 0.16,
+        lifeMax: 0.38,
+        sizeMin: 1.5,
+        sizeMax: 4,
+        glow: 10
+      });
+      emitBurst(enemy.x, enemy.y, "#ffd166", 8, {
+        speedMin: 40,
+        speedMax: 160,
+        lifeMin: 0.1,
+        lifeMax: 0.24,
+        sizeMin: 1,
+        sizeMax: 2.5,
+        glow: 8
+      });
+      playUiSound("hit");
+      triggerShake(5);
+      if (state.enemies.every((entry) => !entry.alive)) {
+        const lastRoom = state.roomIndex === roomTemplates.length - 1;
+        setMessage(lastRoom ? "All lines cut. Reach the exit light." : room().exitText, 2.2);
+        playUiSound("clear");
+      }
+    }
+
+    function burst(x, y, color, count) {
+      emitBurst(x, y, color, count);
+    }
+
+    function tryPickup() {
+      let nearest = null;
+      let nearestDist = 38;
+      for (const drop of state.drops) {
+        const dist = Math.hypot(drop.x - state.player.x, drop.y - state.player.y);
+        if (dist < nearestDist) {
+          nearest = drop;
+          nearestDist = dist;
+        }
+      }
+      if (!nearest) return false;
+      state.drops = state.drops.filter((drop) => drop !== nearest);
+      state.drops.push({
+        x: state.player.x + 18,
+        y: state.player.y,
+        weapon: cloneWeapon(state.player.weapon.type, Math.max(state.player.weapon.ammo, 1))
+      });
+      state.player.weapon = cloneWeapon(nearest.weapon.type, nearest.weapon.ammo);
+      setMessage(weapons[state.player.weapon.type].name + " grabbed.", 1.1);
+      playUiSound("pickup");
+      return true;
+    }
+
+    function update(dt) {
+      if (state.messageTimer > 0) state.messageTimer -= dt;
+      if (state.roomBriefTimer > 0) state.roomBriefTimer -= dt;
+      if (state.flash > 0) state.flash -= dt;
+      if (state.scene === "menu") return;
+
+      if (state.scene === "victory") return;
+
+      if (state.player.cooldown > 0) state.player.cooldown -= dt;
+      if (state.player.dryCooldown > 0) state.player.dryCooldown -= dt;
+      if (state.shake > 0) state.shake = Math.max(0, state.shake - dt * 26);
+      state.musicClock += dt;
+
+      if (state.scene === "dead") {
+        updateParticles(dt);
+        return;
+      }
+
+      const move = inputVector();
+      if (move.active) {
+        moveWithCollision(state.player, move.x * state.player.speed * dt, move.y * state.player.speed * dt);
+      }
+
+      state.player.angle = Math.atan2(mouse.y - state.player.y, mouse.x - state.player.x);
+
+      if (mouse.down) {
+        fireWeapon(state.player, mouse.x, mouse.y, true);
+      }
+
+      if (state.player.weapon.ammo <= 0 && tryPickup()) {
+        state.player.cooldown = 0.12;
+      }
+
+      for (const enemy of state.enemies) {
+        if (!enemy.alive) continue;
+        enemy.cooldown -= dt;
+        enemy.telegraph -= dt;
+        const toPlayer = Math.atan2(state.player.y - enemy.y, state.player.x - enemy.x);
+        const dist = Math.hypot(state.player.x - enemy.x, state.player.y - enemy.y);
+        const elevated = isEntityElevated(enemy);
+        const clearShot = !traceBlocks(enemy.x, enemy.y, state.player.x, state.player.y, { ignoreLowCover: elevated });
+        updateEnemyPlan(enemy, clearShot, dist, dt);
+        const anchor = getAnchorById(enemy.goalAnchorId) ?? chooseAnchor(enemy);
+        if (enemy.telegraph <= 0) {
+          if (!clearShot || dist > 260 || dist < 132) {
+            moveEnemyTowardAnchor(enemy, anchor, dt);
+          } else {
+            const separation = getEnemySeparationVector(enemy);
+            moveWithCollision(
+              enemy,
+              Math.cos(toPlayer + Math.PI / 2) * enemy.strafe * 50 * dt + separation.x * 26 * dt,
+              Math.sin(toPlayer + Math.PI / 2) * enemy.strafe * 50 * dt + separation.y * 26 * dt,
+            );
+          }
+          if (enemy.cooldown <= 0 && clearShot) {
+            fireWeapon(enemy, state.player.x, state.player.y, false);
+            enemy.cooldown = weapons[enemy.weapon.type].cooldown + 0.35 + Math.random() * 0.4;
+            enemy.telegraph = 0.4 + Math.random() * 0.3;
+          }
+        }
+      }
+
+      const aliveEnemies = [];
+      for (const bullet of state.bullets) {
+        bullet.prevX = bullet.x;
+        bullet.prevY = bullet.y;
+        bullet.x += bullet.vx * dt;
+        bullet.y += bullet.vy * dt;
+        bullet.life -= dt;
+        let remove = bullet.life <= 0 || handleBulletSwitchHit(bullet) || traceBlocks(bullet.x, bullet.y, bullet.x, bullet.y);
+        if (remove) {
+          emitImpact(bullet.x, bullet.y, bullet.color);
+        }
+        if (!remove && bullet.friendly) {
+          for (const enemy of state.enemies) {
+            if (!enemy.alive) continue;
+            if (Math.hypot(bullet.x - enemy.x, bullet.y - enemy.y) <= enemy.radius + bullet.radius) {
+              killEnemy(enemy);
+              emitImpact(bullet.x, bullet.y, "#ffd166");
+              remove = true;
+              break;
+            }
+          }
+        }
+        if (!remove && !bullet.friendly && state.player.alive && Math.hypot(bullet.x - state.player.x, bullet.y - state.player.y) <= state.player.radius + bullet.radius) {
+          killPlayer();
+          emitImpact(bullet.x, bullet.y, "#ff6b57");
+          remove = true;
+        }
+        if (!remove) aliveEnemies.push(bullet);
+      }
+      state.bullets = aliveEnemies;
+
+      state.drops = state.drops.filter((drop) => {
+        const keep = drop.weapon && drop.weapon.ammo > 0;
+        return keep;
+      });
+
+      if (state.enemies.every((enemy) => !enemy.alive)) {
+        const atExit = state.player.x > W - 96;
+        if (atExit) {
+          if (state.roomIndex === roomTemplates.length - 1) {
+            state.scene = "victory";
+            setMessage("Switchboard dead. Click or press R to run it again.", 999);
+            playUiSound("clear");
+          } else {
+            loadRoom(state.roomIndex + 1);
+          }
+        }
+      }
+
+      updateMusic();
+      updateParticles(dt);
+    }
+
+    function updateParticles(dt) {
+      state.particles = state.particles.filter((particle) => {
+        particle.x += particle.vx * dt;
+        particle.y += particle.vy * dt;
+        particle.vx *= 0.96;
+        particle.vy *= 0.96;
+        particle.life -= dt;
+        return particle.life > 0;
+      });
+    }
+
+    function updateMusic() {
+      if (!audioUnlocked || state.scene !== "playing") return;
+      const beat = 60 / 110;
+      if (state.musicClock < beat) return;
+      state.musicClock -= beat;
+      const pulse = [92, 110, 138, 123][state.roomIndex % 4];
+      playTone({ type: "triangle", frequency: pulse, duration: 0.18, volume: 0.018 });
+      playTone({ type: "sine", frequency: pulse * 2, duration: 0.12, volume: 0.01, when: 0.06 });
+    }
+
+    function drawArena() {
+      ctx.save();
+      ctx.fillStyle = "#090811";
+      ctx.fillRect(0, 0, W, H);
+
+      ctx.strokeStyle = "rgba(102, 247, 255, 0.08)";
+      ctx.lineWidth = 1;
+      for (let x = 0; x < W; x += 40) {
+        ctx.beginPath();
+        ctx.moveTo(x + 0.5, 0);
+        ctx.lineTo(x + 0.5, H);
+        ctx.stroke();
+      }
+      for (let y = 0; y < H; y += 40) {
+        ctx.beginPath();
+        ctx.moveTo(0, y + 0.5);
+        ctx.lineTo(W, y + 0.5);
+        ctx.stroke();
+      }
+
+      ctx.strokeStyle = "rgba(255, 79, 154, 0.65)";
+      ctx.lineWidth = 3;
+      ctx.strokeRect(42, 42, W - 84, H - 84);
+
+      for (const zone of room().highGroundZones ?? []) {
+        ctx.fillStyle = "rgba(102, 247, 255, 0.08)";
+        ctx.fillRect(zone.x, zone.y, zone.w, zone.h);
+        ctx.strokeStyle = "rgba(102, 247, 255, 0.36)";
+        ctx.strokeRect(zone.x, zone.y, zone.w, zone.h);
+      }
+
+      ctx.fillStyle = "#192239";
+      for (const obstacle of room().obstacles) {
+        ctx.fillRect(obstacle.x, obstacle.y, obstacle.w, obstacle.h);
+        ctx.strokeStyle = "rgba(102, 247, 255, 0.18)";
+        ctx.strokeRect(obstacle.x, obstacle.y, obstacle.w, obstacle.h);
+      }
+
+      for (const toggle of room().switches ?? []) {
+        const linkedObstacles = room().obstacles.filter((obstacle) => obstacle.opensWith === toggle.id);
+        for (const obstacle of linkedObstacles) {
+          ctx.save();
+          ctx.strokeStyle = isSwitchOn(toggle.id) ? "rgba(197, 255, 109, 0.34)" : "rgba(255, 79, 154, 0.32)";
+          ctx.setLineDash([8, 8]);
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(toggle.x + toggle.w * 0.5, toggle.y + toggle.h * 0.5);
+          ctx.lineTo(obstacle.x + obstacle.w * 0.5, obstacle.y + obstacle.h * 0.5);
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+
+      for (const toggle of room().switches ?? []) {
+        const active = isSwitchOn(toggle.id);
+        ctx.fillStyle = active ? "rgba(197, 255, 109, 0.92)" : "rgba(255, 79, 154, 0.88)";
+        ctx.fillRect(toggle.x, toggle.y, toggle.w, toggle.h);
+        ctx.strokeStyle = active ? "rgba(197, 255, 109, 0.45)" : "rgba(255, 79, 154, 0.45)";
+        ctx.strokeRect(toggle.x - 4, toggle.y - 4, toggle.w + 8, toggle.h + 8);
+        ctx.beginPath();
+        ctx.strokeStyle = active ? "rgba(197, 255, 109, 0.2)" : "rgba(255, 79, 154, 0.2)";
+        ctx.arc(toggle.x + toggle.w * 0.5, toggle.y + toggle.h * 0.5, 26, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      for (const cue of room().routeCues ?? []) {
+        const visuals = cueVisuals(cue);
+        ctx.fillStyle = visuals.fill;
+        ctx.fillRect(cue.x, cue.y, cue.w, cue.h);
+        ctx.strokeStyle = visuals.stroke;
+        ctx.strokeRect(cue.x, cue.y, cue.w, cue.h);
+        if (cue.lineToX !== undefined && cue.lineToY !== undefined) {
+          ctx.save();
+          ctx.strokeStyle = visuals.line;
+          ctx.setLineDash([6, 8]);
+          ctx.beginPath();
+          ctx.moveTo(cue.x + cue.w * 0.5, cue.y + cue.h * 0.5);
+          ctx.lineTo(cue.lineToX, cue.lineToY);
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+
+      const exitOpen = state.enemies.every((enemy) => !enemy.alive);
+      ctx.fillStyle = exitOpen ? "rgba(197, 255, 109, 0.28)" : "rgba(255, 79, 154, 0.16)";
+      ctx.fillRect(W - 52, H / 2 - 54, 10, 108);
+      ctx.shadowBlur = exitOpen ? 24 : 10;
+      ctx.shadowColor = exitOpen ? "#c5ff6d" : "#ff4f9a";
+      ctx.fillRect(W - 52, H / 2 - 54, 10, 108);
+      ctx.shadowBlur = 0;
+
+      ctx.fillStyle = "rgba(102, 247, 255, 0.12)";
+      ctx.fillRect(58, H / 2 - 46, 8, 92);
+      const vignette = ctx.createRadialGradient(W * 0.5, H * 0.5, 120, W * 0.5, H * 0.5, 540);
+      vignette.addColorStop(0, "rgba(0, 0, 0, 0)");
+      vignette.addColorStop(1, "rgba(0, 0, 0, 0.42)");
+      ctx.fillStyle = vignette;
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = "rgba(255, 255, 255, 0.03)";
+      for (let y = 0; y < H; y += 6) {
+        ctx.fillRect(0, y, W, 1);
+      }
+      ctx.restore();
+    }
+
+    function drawActor(entity, color, angle) {
+      ctx.save();
+      ctx.translate(entity.x, entity.y);
+      ctx.rotate(angle);
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(0, 0, entity.radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#09111d";
+      ctx.fillRect(4, -3, 12, 6);
+      ctx.restore();
+    }
+
+    function drawDrops() {
+      for (const drop of state.drops) {
+        ctx.save();
+        ctx.translate(drop.x, drop.y);
+        ctx.strokeStyle = weapons[drop.weapon.type].color;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(-10, -4, 20, 8);
+        ctx.beginPath();
+        ctx.moveTo(-4, 0);
+        ctx.lineTo(10, 0);
+        ctx.stroke();
+        ctx.restore();
+      }
+      const nearbyWeapon = state.drops.find((drop) => Math.hypot(drop.x - state.player.x, drop.y - state.player.y) < 38);
+      const nearbySwitch = getNearbySwitch();
+      if (nearbyWeapon && nearbySwitch) {
+        state.prompt = "E swap to " + weapons[nearbyWeapon.weapon.type].name + "   |   F toggle switch";
+      } else if (nearbyWeapon) {
+        state.prompt = "Press E to swap to " + weapons[nearbyWeapon.weapon.type].name;
+      } else if (nearbySwitch) {
+        state.prompt = "Press F or shoot to toggle switch";
+      } else {
+        state.prompt = "";
+      }
+    }
+
+    function drawBullets() {
+      for (const bullet of state.bullets) {
+        ctx.strokeStyle = bullet.friendly ? "rgba(255, 255, 255, 0.28)" : "rgba(255, 107, 87, 0.24)";
+        ctx.lineWidth = bullet.radius * 1.2;
+        ctx.beginPath();
+        ctx.moveTo(bullet.prevX, bullet.prevY);
+        ctx.lineTo(bullet.x, bullet.y);
+        ctx.stroke();
+        ctx.fillStyle = bullet.color;
+        ctx.beginPath();
+        ctx.arc(bullet.x, bullet.y, bullet.radius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    function drawEnemies() {
+      for (const enemy of state.enemies) {
+        if (!enemy.alive) continue;
+        const angle = Math.atan2(state.player.y - enemy.y, state.player.x - enemy.x);
+        if (enemy.telegraph > 0) {
+          const width = 42 + enemy.telegraph * 90;
+          ctx.strokeStyle = "rgba(255, 107, 87, 0.88)";
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(enemy.x, enemy.y);
+          ctx.lineTo(enemy.x + Math.cos(angle) * width, enemy.y + Math.sin(angle) * width);
+          ctx.stroke();
+          ctx.fillStyle = "rgba(255, 107, 87, 0.18)";
+          ctx.beginPath();
+          ctx.arc(enemy.x, enemy.y, 14 + enemy.telegraph * 18, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        drawActor(enemy, "#ff6b57", angle);
+      }
+    }
+
+    function drawParticles() {
+      for (const particle of state.particles) {
+        ctx.globalAlpha = Math.max(0, particle.life / particle.maxLife);
+        if (particle.glow) {
+          ctx.shadowBlur = particle.glow;
+          ctx.shadowColor = particle.color;
+        }
+        ctx.fillStyle = particle.color;
+        const size = particle.size ?? 3;
+        ctx.fillRect(particle.x - size * 0.5, particle.y - size * 0.5, size, size);
+      }
+      ctx.shadowBlur = 0;
+      ctx.globalAlpha = 1;
+    }
+
+    function drawWrappedText(text, x, y, maxWidth, lineHeight) {
+      const words = text.split(" ");
+      let line = "";
+      let lineIndex = 0;
+      for (const word of words) {
+        const candidate = line ? line + " " + word : word;
+        if (ctx.measureText(candidate).width > maxWidth && line) {
+          ctx.fillText(line, x, y + lineIndex * lineHeight);
+          line = word;
+          lineIndex += 1;
+        } else {
+          line = candidate;
+        }
+      }
+      if (line) {
+        ctx.fillText(line, x, y + lineIndex * lineHeight);
+      }
+    }
+
+    function drawOverlay() {
+      const centerX = W / 2;
+      const centerY = H / 2;
+      if (state.scene === "menu") {
+        ctx.fillStyle = "rgba(3, 5, 12, 0.82)";
+        ctx.fillRect(0, 0, W, H);
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "700 44px Trebuchet MS";
+        ctx.textAlign = "center";
+        ctx.fillText("HOTLINE MIAMI", centerX, centerY - 54);
+        ctx.fillStyle = "#66f7ff";
+        ctx.fillText("SWITCHBOARD", centerX, centerY - 8);
+        ctx.font = "16px Trebuchet MS";
+        ctx.fillStyle = "#d9e6ff";
+        ctx.fillText("Breach four rooms. Everyone dies in one hit. Pick up whatever is still loaded.", centerX, centerY + 40);
+        ctx.fillStyle = "#ffd166";
+        ctx.fillText("Click to start", centerX, centerY + 88);
+      }
+
+      if (state.scene === "dead" || state.scene === "victory") {
+        ctx.fillStyle = "rgba(3, 5, 12, 0.56)";
+        ctx.fillRect(0, 0, W, H);
+        ctx.textAlign = "center";
+        ctx.fillStyle = state.scene === "victory" ? "#c5ff6d" : "#ff6b57";
+        ctx.font = "700 42px Trebuchet MS";
+        ctx.fillText(state.scene === "victory" ? "LINE CUT" : "YOU DROPPED", centerX, centerY - 8);
+        ctx.font = "16px Trebuchet MS";
+        ctx.fillStyle = "#f1f6ff";
+        ctx.fillText("Click or press R to restart", centerX, centerY + 38);
+      }
+
+      if (state.messageTimer > 0 && state.message) {
+        ctx.textAlign = "center";
+        ctx.fillStyle = "rgba(6, 9, 19, 0.78)";
+        ctx.fillRect(centerX - 220, 76, 440, 42);
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.08)";
+        ctx.strokeRect(centerX - 220, 76, 440, 42);
+        ctx.font = "14px Trebuchet MS";
+        ctx.fillStyle = "#f0f4ff";
+        ctx.fillText(state.message, centerX, 102);
+      }
+
+      if (state.roomBriefTimer > 0 && state.roomBrief) {
+        ctx.textAlign = "left";
+        ctx.fillStyle = "rgba(6, 9, 19, 0.84)";
+        ctx.fillRect(62, H - 122, 360, 56);
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.08)";
+        ctx.strokeRect(62, H - 122, 360, 56);
+        ctx.font = "11px Trebuchet MS";
+        ctx.fillStyle = "#66f7ff";
+        ctx.fillText("TACTICAL READ", 78, H - 98);
+        ctx.font = "12px Trebuchet MS";
+        ctx.fillStyle = "#f0f4ff";
+        drawWrappedText(state.roomBrief, 78, H - 78, 326, 16);
+      }
+
+      if (state.prompt) {
+        ctx.textAlign = "center";
+        ctx.fillStyle = "rgba(6, 9, 19, 0.84)";
+        ctx.fillRect(centerX - 180, H - 84, 360, 34);
+        ctx.font = "13px Trebuchet MS";
+        ctx.fillStyle = "#ffd166";
+        ctx.fillText(state.prompt, centerX, H - 62);
+      }
+    }
+
+    function draw() {
+      const shakeX = state.shake > 0 ? (Math.random() - 0.5) * state.shakeKick : 0;
+      const shakeY = state.shake > 0 ? (Math.random() - 0.5) * state.shakeKick : 0;
+      ctx.save();
+      ctx.translate(shakeX, shakeY);
+      drawArena();
+      if (state.scene !== "menu") {
+        drawDrops();
+        drawBullets();
+        drawEnemies();
+        if (state.player.alive) {
+          drawActor(state.player, "#66f7ff", state.player.angle);
+        }
+        drawParticles();
+      }
+
+      if (state.flash > 0) {
+        ctx.fillStyle = "rgba(255, 255, 255, 0.1)";
+        ctx.fillRect(0, 0, W, H);
+      }
+
+      for (const toggle of room().switches ?? []) {
+        ctx.textAlign = "center";
+        ctx.fillStyle = isSwitchOn(toggle.id) ? "#c5ff6d" : "#ff4f9a";
+        ctx.font = "11px Trebuchet MS";
+        ctx.fillText("SW", toggle.x + toggle.w * 0.5, toggle.y - 8);
+        if (getNearbySwitch() === toggle) {
+          ctx.fillStyle = "#ffd166";
+          ctx.font = "10px Trebuchet MS";
+          ctx.fillText("F / SHOOT", toggle.x + toggle.w * 0.5, toggle.y + toggle.h + 18);
+        }
+      }
+
+      for (const zone of room().highGroundZones ?? []) {
+        ctx.textAlign = "center";
+        ctx.fillStyle = "rgba(102, 247, 255, 0.72)";
+        ctx.font = "11px Trebuchet MS";
+        ctx.fillText("CATWALK", zone.x + zone.w * 0.5, zone.y + 18);
+      }
+
+      for (const cue of room().routeCues ?? []) {
+        const visuals = cueVisuals(cue);
+        const label = cue.switchId ? (visuals.active ? cue.activeLabel : cue.inactiveLabel) : cue.label;
+        if (!label) continue;
+        ctx.textAlign = "center";
+        ctx.fillStyle = visuals.text;
+        ctx.font = "11px Trebuchet MS";
+        ctx.fillText(label, cue.x + cue.w * 0.5, cue.y + cue.h * 0.64);
+      }
+
+      roomLabel.textContent = (state.roomIndex + 1) + " / " + roomTemplates.length;
+      weaponLabel.textContent = weapons[state.player?.weapon?.type ?? "pistol"].name + " " + (state.player?.weapon?.ammo ?? 0);
+
+      ctx.fillStyle = "rgba(255,255,255,0.8)";
+      ctx.font = "12px Trebuchet MS";
+      ctx.textAlign = "left";
+      ctx.fillText(room().title, 60, 72);
+      ctx.restore();
+      drawOverlay();
+    }
+
+    function frame(time) {
+      const dt = Math.min(DT_CAP, (time - state.lastTime) / 1000 || 0);
+      state.lastTime = time;
+      update(dt);
+      draw();
+      requestAnimationFrame(frame);
+    }
+
+    window.addEventListener("keydown", (event) => {
+      unlockAudio();
+      if (event.code === "KeyE") {
+        tryPickup();
+      }
+      if (event.code === "KeyF") {
+        tryUseSwitch();
+      }
+      if (event.code === "KeyR" && state.scene !== "playing") {
+        resetGame();
+      }
+      keys.add(event.code);
+    });
+
+    window.addEventListener("keyup", (event) => {
+      keys.delete(event.code);
+    });
+
+    canvas.addEventListener("mousemove", (event) => {
+      const rect = canvas.getBoundingClientRect();
+      mouse.x = ((event.clientX - rect.left) / rect.width) * W;
+      mouse.y = ((event.clientY - rect.top) / rect.height) * H;
+    });
+
+    canvas.addEventListener("mousedown", () => {
+      unlockAudio();
+      mouse.down = true;
+      if (state.scene !== "playing") {
+        resetGame();
+      }
+    });
+
+    window.addEventListener("mouseup", () => {
+      mouse.down = false;
+    });
+
+    canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+
+    resetGame();
+    state.scene = "menu";
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>

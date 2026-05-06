@@ -41,6 +41,11 @@ body {
   box-shadow: 0 8px 0 rgba(29, 28, 38, 0.18);
 }
 
+.hud__chip--wide {
+  min-width: 240px;
+  flex: 1 1 240px;
+}
+
 .hud__chip span,
 .hud__chip strong {
   display: block;
@@ -55,6 +60,7 @@ body {
 .hud__chip strong {
   font-size: 1.15rem;
   margin-top: 2px;
+  line-height: 1.2;
 }
 
 .stage {

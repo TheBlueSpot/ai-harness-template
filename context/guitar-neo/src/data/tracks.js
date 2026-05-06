@@ -1,4 +1,4 @@
-const localAudioPath = (fileName) => new URL(`../../assets/audio/${fileName}`, import.meta.url).href;
+const localAudioPath = (fileName) => new URL(`./assets/audio/${fileName}`, document.baseURI).href;
 
 function createChartNotes(trackId, { bpm, measures = 16, lanePattern = [0, 2, 1, 3, 0, 4, 2, 3], accentEvery = 6 } = {}) {
   const notes = [];

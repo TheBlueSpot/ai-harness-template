@@ -9,6 +9,7 @@ import { buildSetupState, detectSetupLaunchMode, formatSetupDoctorReport } from 
 import { createStartupTelemetrySession } from "./startup-telemetry";
 import { WorkspaceRepository } from "./workspace-repository";
 import { CliUsageError, parseCliOptions } from "./cli-options";
+import { ensureDependencyHealth } from "./dependency-health";
 
 const CLI_HELP = `Usage: pi-harness [--server-only] [--open|--no-open] [--doctor [--json]] [--help]
 
@@ -81,11 +82,16 @@ export async function main() {
 }
 
 async function runDoctor(options: { json?: boolean } = {}) {
+  await ensureDependencyHealth({
+    log: (message) => (options.json ? console.error(message) : console.log(message))
+  });
+
   const launchMode = detectSetupLaunchMode();
   const repository = new WorkspaceRepository(Bun.env.HARNESS_DB_PATH);
   const adapter = new PiSdkAgentAdapter();
   const storedOpenAiApiKey = repository.getStoredOpenAiApiKey();
   const storedGoogleApiKey = repository.getStoredGoogleApiKey();
+  const storedAnthropicApiKey = repository.getStoredAnthropicApiKey();
 
   if (storedOpenAiApiKey) {
     adapter.setApiKey("openai", storedOpenAiApiKey);
@@ -93,6 +99,10 @@ async function runDoctor(options: { json?: boolean } = {}) {
 
   if (storedGoogleApiKey) {
     adapter.setApiKey("google", storedGoogleApiKey);
+  }
+
+  if (storedAnthropicApiKey) {
+    adapter.setApiKey("anthropic", storedAnthropicApiKey);
   }
 
   const runtimeRegistry = new AgentRuntimeRegistry([
@@ -105,12 +115,14 @@ async function runDoctor(options: { json?: boolean } = {}) {
   const setup = await buildSetupState({
     workspace: repository.loadWorkspace(),
     preferences: {
-      hasUsableApiKey: adapter.hasApiKey("openai") || adapter.hasApiKey("google"),
-      hasStoredApiKey: Boolean(storedOpenAiApiKey || storedGoogleApiKey),
+      hasUsableApiKey: adapter.hasApiKey("openai") || adapter.hasApiKey("google") || adapter.hasApiKey("anthropic"),
+      hasStoredApiKey: Boolean(storedOpenAiApiKey || storedGoogleApiKey || storedAnthropicApiKey),
       hasUsableOpenAiApiKey: adapter.hasApiKey("openai"),
       hasStoredOpenAiApiKey: Boolean(storedOpenAiApiKey),
       hasUsableGoogleApiKey: adapter.hasApiKey("google"),
       hasStoredGoogleApiKey: Boolean(storedGoogleApiKey),
+      hasUsableAnthropicApiKey: adapter.hasApiKey("anthropic"),
+      hasStoredAnthropicApiKey: Boolean(storedAnthropicApiKey),
       providerBrand: repository.getProviderBrand(),
       debugEnabledDefault: repository.getDebugEnabledDefault(),
       tracePanelDefaultOpen: repository.getTracePanelDefaultOpen(),

@@ -2,6 +2,10 @@ import { ScoreEngine } from "./ScoreEngine.js";
 import { HyperSpeedController } from "./HyperSpeedController.js";
 import { FretBoardRenderer } from "./FretBoardRenderer.js";
 import { InputController } from "./InputController.js";
+import { NoteSequencer } from "../audio/NoteSequencer.js";
+import { AudioBufferHandler } from "../audio/AudioBufferHandler.js";
+import { VFXManager } from "../vfx/VFXManager.js";
+import { tracks as trackList } from "../data/tracks.js";
 
 const laneMap = new Map([
   ["KeyD", 0],
@@ -15,24 +19,12 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-async function loadTracksModule() {
-  return loadService("../data/tracks.js", { tracks: [] });
-}
-
 function resolveTrackFromList(trackInput, tracks) {
   if (typeof trackInput === "string") {
     return tracks.find((item) => item.id === trackInput) ?? tracks[0] ?? { id: trackInput, bpm: 120 };
   }
   if (trackInput && typeof trackInput === "object") return trackInput;
   return tracks[0] ?? { id: "track", bpm: 120 };
-}
-
-async function loadService(path, fallback) {
-  try {
-    return await import(path);
-  } catch {
-    return fallback;
-  }
 }
 
 export class GameEngine {
@@ -62,10 +54,33 @@ export class GameEngine {
     this.startMicros = 0;
     this.pauseMicros = 0;
     this.paused = false;
+    this.lastJudgementFeedback = this.createJudgementFeedback();
     this.frameHandle = 0;
     this.lastNow = 0;
     this.sequencer = null;
     this.emitSnapshot();
+  }
+
+  createJudgementFeedback({ judgement = "Ready", timing = "Center", offsetMs = null } = {}) {
+    return {
+      judgement,
+      timing: typeof offsetMs === "number" ? `${timing} ${offsetMs}ms` : timing,
+    };
+  }
+
+  updateJudgementFeedback(result, deltaMicros = null) {
+    const absOffsetMs = typeof deltaMicros === "number" ? Math.round(Math.abs(deltaMicros) / 1000) : null;
+    let timing = "Center";
+    if (result.judgement === "Miss") {
+      timing = result.late ? "Late" : "Miss";
+    } else if (absOffsetMs != null && absOffsetMs > 10) {
+      timing = result.late ? "Late" : "Early";
+    }
+    this.lastJudgementFeedback = this.createJudgementFeedback({
+      judgement: result.judgement,
+      timing,
+      offsetMs: absOffsetMs,
+    });
   }
 
   async loadTrack(trackInput) {
@@ -74,16 +89,11 @@ export class GameEngine {
     this.snapshot = this.createSnapshot();
     this.emitSnapshot();
 
-    const tracksModule = await loadTracksModule();
-    const tracks = tracksModule.tracks ?? tracksModule.default ?? [];
-    const track = resolveTrackFromList(trackInput, tracks);
+    const track = resolveTrackFromList(trackInput, trackList);
     this.track = track;
-    const sequencerModule = await loadService("../audio/NoteSequencer.js", {});
-    const audioModule = await loadService("../audio/AudioBufferHandler.js", {});
-    const vfxModule = await loadService("../vfx/VFXManager.js", {});
-    this.audio = audioModule.AudioBufferHandler ? new audioModule.AudioBufferHandler() : null;
-    this.sequencer = sequencerModule.NoteSequencer ? new sequencerModule.NoteSequencer() : null;
-    this.vfx = vfxModule.VFXManager ? new vfxModule.VFXManager() : null;
+    this.audio = new AudioBufferHandler();
+    this.sequencer = new NoteSequencer();
+    this.vfx = new VFXManager();
     if (!this.audio) throw new Error("Audio service unavailable");
     await this.audio.loadTrack(this.track);
     const chart = this.normalizeChart(this.track);
@@ -96,6 +106,10 @@ export class GameEngine {
     this.hyper.reset(this.track.bpm ?? 120);
     this.state = "ready";
     this.paused = false;
+    this.lastJudgementFeedback = this.createJudgementFeedback({
+      judgement: "Ready",
+      timing: "Hit the line",
+    });
     this.lastNow = 0;
     this.snapshot = this.createSnapshot();
     this.emitSnapshot();
@@ -198,6 +212,7 @@ export class GameEngine {
     this.startMicros = 0;
     this.pauseMicros = 0;
     this.lastNow = 0;
+    this.lastJudgementFeedback = this.createJudgementFeedback();
     this.pendingNotes = [];
     this.activeNotes = [];
     this.snapshot = this.createSnapshot();
@@ -227,6 +242,7 @@ export class GameEngine {
       intensity: clamp(dt / 16000, 0, 1),
       hyperState,
       analyserBins: this.audio?.getFrequencyData?.() ?? [],
+      activeLanes: [...this.input.held].map((code) => laneMap.get(code)).filter((lane) => lane != null),
     });
     this.emitSnapshot(nowMicros, hyperState);
     if (!this.pendingNotes.some((note) => !note.hit)) {
@@ -242,9 +258,11 @@ export class GameEngine {
       if (lane == null) continue;
       const target = this.pendingNotes.find((note) => !note.hit && note.lane === lane);
       if (!target) continue;
-      const result = this.scoreEngine.judge(nowMicros - target.hitTimeMicros, target);
+      const deltaMicros = nowMicros - target.hitTimeMicros;
+      const result = this.scoreEngine.judge(deltaMicros, target);
       target.hit = result.hit || result.judgement === "Poor";
       this.hyper.recordJudgement(result.judgement);
+      this.updateJudgementFeedback(result, deltaMicros);
       changed = true;
       if (result.hit && this.vfx?.burst) this.vfx.burst(lane, result.judgement);
     }
@@ -258,6 +276,7 @@ export class GameEngine {
         note.hit = true;
         const result = this.scoreEngine.missNote();
         this.hyper.recordJudgement(result.judgement);
+        this.updateJudgementFeedback({ ...result, late: true }, nowMicros - note.hitTimeMicros);
       }
     }
   }
@@ -278,23 +297,26 @@ export class GameEngine {
     return {
       score: this.scoreEngine.score,
       combo: this.scoreEngine.combo,
-      judgement: this.getJudgement(hyperState),
+      judgement: this.getJudgement(hyperState).judgement,
+      timing: this.getJudgement(hyperState).timing,
       hyperSpeed: `${hyperState.multiplier.toFixed(2)}x`,
       intensity: clamp(hyperState.multiplier / 2, 0.1, 1),
       frequencyBins: this.audio?.getFrequencyData?.() ?? [],
       hyperState,
       timeMicros: nowMicros,
       noteCount: chartNotes.length,
+      activeLanes: [...this.input.held].map((code) => laneMap.get(code)).filter((lane) => lane != null),
       results,
       state: this.state,
     };
   }
 
   getJudgement(hyperState = this.hyper.getState()) {
-    if (this.state === "paused") return "Paused";
-    if (this.state === "loading") return "Loading";
-    if (this.state === "ended") return "Complete";
-    return hyperState.rollingAccuracy > 0.9 ? "Perfect" : "Ready";
+    if (this.state === "paused") return this.createJudgementFeedback({ judgement: "Paused", timing: "Resume tab" });
+    if (this.state === "loading") return this.createJudgementFeedback({ judgement: "Loading", timing: "Track boot" });
+    if (this.state === "ended") return this.createJudgementFeedback({ judgement: "Complete", timing: "Run clear" });
+    if (this.state === "ready") return this.createJudgementFeedback({ judgement: "Ready", timing: "Hit the line" });
+    return this.lastJudgementFeedback ?? this.createJudgementFeedback();
   }
 
   getSnapshot(nowMicros = 0, hyperState = this.hyper.getState()) {

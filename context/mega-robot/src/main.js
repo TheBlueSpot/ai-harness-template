@@ -29,6 +29,9 @@ function frame(now) {
 
 window.addEventListener("resize", resize);
 window.addEventListener("keydown", (event) => {
+  if (["Enter", "Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "KeyJ", "KeyR", "ControlLeft", "ControlRight", "KeyA", "KeyD", "KeyW"].includes(event.code)) {
+    event.preventDefault();
+  }
   if (event.key === "Enter" && game.getFrameState().mode !== "play") {
     if (game.getFrameState().mode === "menu") {
       game.start();

@@ -1,0 +1,132 @@
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: radial-gradient(circle at top, #15274d 0%, #060913 48%, #020308 100%);
+  color: #eef4ff;
+  font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+}
+
+body {
+  display: flex;
+  justify-content: center;
+}
+
+.shell {
+  width: min(100vw, 1400px);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.hud {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+  padding: 14px;
+  background: rgba(4, 8, 18, 0.86);
+  border-bottom: 1px solid rgba(161, 202, 255, 0.18);
+}
+
+.hud__item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  background: rgba(123, 180, 255, 0.08);
+  border: 1px solid rgba(144, 192, 255, 0.18);
+  border-radius: 10px;
+  min-width: 0;
+}
+
+.label,
+.eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  font-size: 11px;
+  color: #89a9d8;
+}
+
+.stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+canvas {
+  display: block;
+  width: 100%;
+  height: calc(100vh - 96px);
+  min-height: 420px;
+  background: linear-gradient(180deg, rgba(35, 61, 118, 0.55) 0%, rgba(8, 9, 20, 0.45) 48%, #03040a 100%);
+}
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(2, 4, 10, 0.58);
+}
+
+.overlay.hidden {
+  display: none;
+}
+
+.panel {
+  width: min(520px, 100%);
+  padding: 28px;
+  border-radius: 18px;
+  background: rgba(5, 12, 26, 0.92);
+  border: 1px solid rgba(142, 191, 255, 0.24);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.36);
+}
+
+.panel h1 {
+  margin: 8px 0 14px;
+  font-size: clamp(28px, 4vw, 44px);
+}
+
+.panel p {
+  margin: 0 0 20px;
+  color: #d7e6ff;
+  line-height: 1.55;
+}
+
+button {
+  border: 0;
+  border-radius: 999px;
+  padding: 12px 20px;
+  font: inherit;
+  font-weight: 700;
+  color: #04111d;
+  background: linear-gradient(135deg, #b9f3ff, #76b0ff);
+  cursor: pointer;
+}
+
+button:hover,
+button:focus-visible {
+  filter: brightness(1.08);
+}
+
+@media (max-width: 900px) {
+  .hud {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  canvas {
+    height: calc(100vh - 188px);
+  }
+}
+
+@media (max-width: 560px) {
+  .hud {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .panel {
+    padding: 22px;
+  }
+}

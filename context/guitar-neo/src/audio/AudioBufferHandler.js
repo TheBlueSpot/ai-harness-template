@@ -62,8 +62,13 @@ export class AudioBufferHandler {
   }
 
   async loadTrack(trackMeta) {
-    if (!this.audioContext) throw new Error("AudioContext unavailable");
     this.currentTrack = trackMeta ?? null;
+    if (!this.audioContext) {
+      this.currentBuffer = {
+        duration: Math.max(8, trackMeta?.durationSeconds ?? 32),
+      };
+      return this.currentBuffer;
+    }
     if (this.sourceNode) {
       this.sourceNode.disconnect();
       this.sourceNode = null;
@@ -80,15 +85,19 @@ export class AudioBufferHandler {
       }
     } else if (typeof source === "string" && source) {
       const resolvedUrl = resolveLocalUrl(source);
-      const response = await fetch(resolvedUrl, { cache: "force-cache" });
-      if (!response.ok) {
-        throw new Error(`Unable to fetch audio asset for track ${trackMeta?.id ?? "unknown"}: ${response.status} ${response.statusText}`);
-      }
-      const bytes = await response.arrayBuffer();
+      if (resolvedUrl?.startsWith("file:")) {
+        buffer = createProceduralBuffer(this.audioContext, trackMeta ?? {});
+      } else {
       try {
+        const response = await fetch(resolvedUrl, { cache: "force-cache" });
+        if (!response.ok) {
+          throw new Error(`Unable to fetch audio asset for track ${trackMeta?.id ?? "unknown"}: ${response.status} ${response.statusText}`);
+        }
+        const bytes = await response.arrayBuffer();
         buffer = await this.audioContext.decodeAudioData(bytes);
       } catch (error) {
-        throw new Error(`Unable to decode audio asset for track ${trackMeta?.id ?? "unknown"}: ${error?.message ?? error}`);
+        buffer = createProceduralBuffer(this.audioContext, trackMeta ?? {});
+      }
       }
     } else {
       buffer = createProceduralBuffer(this.audioContext, trackMeta ?? {});
@@ -108,7 +117,12 @@ export class AudioBufferHandler {
   }
 
   async play(offsetSeconds = 0) {
-    if (!this.audioContext) throw new Error("AudioContext unavailable");
+    if (!this.audioContext) {
+      this.playbackOffsetSeconds = Math.max(0, offsetSeconds);
+      this.playbackStartedAt = Date.now() / 1000 - this.playbackOffsetSeconds;
+      this.isPlaying = true;
+      return;
+    }
     if (this.audioContext.state !== "running") await this.audioContext.resume();
     if (!this.currentBuffer) this.currentBuffer = createSilentBuffer(this.audioContext);
     if (this.sourceNode) {
@@ -149,7 +163,11 @@ export class AudioBufferHandler {
   }
 
   getCurrentTimeMicroseconds() {
-    if (!this.audioContext) return 0;
+    if (!this.audioContext) {
+      if (!this.isPlaying) return Math.round(this.pausedOffsetSeconds * MICROSECONDS_PER_SECOND);
+      const seconds = Math.max(0, Date.now() / 1000 - this.playbackStartedAt);
+      return Math.round(seconds * MICROSECONDS_PER_SECOND);
+    }
     if (!this.isPlaying) return Math.round(this.pausedOffsetSeconds * MICROSECONDS_PER_SECOND);
     const seconds = Math.max(0, this.audioContext.currentTime - this.playbackStartedAt);
     return Math.round(seconds * MICROSECONDS_PER_SECOND);

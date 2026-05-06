@@ -210,6 +210,17 @@
       text-transform: uppercase;
     }
 
+    .card-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .tag-review {
+      background: rgba(200, 92, 45, 0.14);
+      color: var(--accent);
+    }
+
     .empty,
     .error {
       padding: 24px;
@@ -399,7 +410,7 @@
         <textarea id="review-broken" name="broken" placeholder="Crashes, dead controls, progression blockers..."></textarea>
       </section>
 
-      <p class="save-status" id="save-status">Saved reviews write to <code>./user-reviews.json</code>.</p>
+      <p class="save-status" id="save-status">Saved reviews write to <code>./user-reviews.sqlite</code>.</p>
     </form>
   </dialog>
 
@@ -417,6 +428,8 @@
     const brokenNode = document.getElementById("review-broken");
     const saveStatusNode = document.getElementById("save-status");
     const reviewState = new Map();
+    const pendingPatches = new Map();
+    const saveChains = new Map();
     const saveTimers = new Map();
     let activeSlug = null;
     let activeName = null;
@@ -427,6 +440,7 @@
         likes: "",
         dislikes: "",
         broken: "",
+        needsAdditionalFeedback: false,
         updatedAt: null,
       };
     }
@@ -472,28 +486,51 @@
     function updateCardReviewState(slug) {
       const review = getReview(slug);
       const preview = document.querySelector(`[data-review-preview="${slug}"]`);
+      const tags = document.querySelector(`[data-review-tags="${slug}"]`);
       if (preview) {
         preview.textContent = ratingText(review.rating);
       }
+      if (tags) {
+        tags.hidden = !review.needsAdditionalFeedback;
+        tags.innerHTML = review.needsAdditionalFeedback ? '<div class="tag tag-review">Needs Re-Review</div>' : "";
+      }
     }
 
-    async function persistReview(slug) {
+    function mergeSavedReview(slug, saved) {
+      const pendingPatch = pendingPatches.get(slug) || {};
+      const merged = { ...defaultReview(), ...saved, ...pendingPatch };
+      reviewState.set(slug, merged);
+      return merged;
+    }
+
+    async function persistReviewPatch(slug, patch) {
       const review = getReview(slug);
       saveStatusNode.textContent = "Saving review...";
 
       const response = await fetch(`/__user-reviews/${encodeURIComponent(slug)}`, {
-        method: "PUT",
+        method: "PATCH",
         headers: {
           "Content-Type": "application/json",
           accept: "application/json",
         },
         body: JSON.stringify({
-          rating: review.rating,
-          likes: review.likes,
-          dislikes: review.dislikes,
-          broken: review.broken,
+          ...patch,
+          baseUpdatedAt: review.updatedAt,
         }),
       });
+
+      if (response.status === 409) {
+        const conflict = await response.json().catch(() => null);
+        if (conflict && conflict.review) {
+          mergeSavedReview(slug, conflict.review);
+          updateCardReviewState(slug);
+          if (slug === activeSlug) {
+            syncDialogReview();
+          }
+        }
+        saveStatusNode.textContent = "Save conflict. Reloaded latest review.";
+        return;
+      }
 
       if (!response.ok) {
         saveStatusNode.textContent = `Save failed with ${response.status}.`;
@@ -501,18 +538,34 @@
       }
 
       const saved = await response.json();
-      reviewState.set(slug, saved);
+      mergeSavedReview(slug, saved);
       updateCardReviewState(slug);
       if (slug === activeSlug) {
         saveStatusNode.textContent = saved.updatedAt
-          ? `Saved to ./user-reviews.json at ${new Date(saved.updatedAt).toLocaleTimeString()}.`
-          : "Saved to ./user-reviews.json.";
+          ? `Saved to ./user-reviews.sqlite at ${new Date(saved.updatedAt).toLocaleTimeString()}.`
+          : "Saved to ./user-reviews.sqlite.";
       }
     }
 
-    function queuePersist(slug) {
+    function queuePersist(slug, patch) {
+      pendingPatches.set(slug, { ...(pendingPatches.get(slug) || {}), ...patch });
       debounceForSlug(slug, () => {
-        persistReview(slug).catch((error) => {
+        const patchToSave = pendingPatches.get(slug);
+        pendingPatches.delete(slug);
+        const priorSave = saveChains.get(slug) || Promise.resolve();
+        const nextSave = priorSave
+          .catch(() => undefined)
+          .then(() => persistReviewPatch(slug, patchToSave))
+          .catch((error) => {
+            saveStatusNode.textContent = error instanceof Error ? error.message : "Save failed.";
+          })
+          .finally(() => {
+            if (saveChains.get(slug) === nextSave) {
+              saveChains.delete(slug);
+            }
+          });
+        saveChains.set(slug, nextSave);
+        nextSave.catch((error) => {
           saveStatusNode.textContent = error instanceof Error ? error.message : "Save failed.";
         });
       });
@@ -537,7 +590,7 @@
             review.rating = index + 1;
             syncDialogReview();
             updateCardReviewState(activeSlug);
-            queuePersist(activeSlug);
+            queuePersist(activeSlug, { rating: review.rating });
           });
           return star;
         }),
@@ -561,7 +614,7 @@
       });
 
       saveStatusNode.textContent = review.updatedAt
-        ? `Saved to ./user-reviews.json at ${new Date(review.updatedAt).toLocaleTimeString()}.`
+        ? `Saved to ./user-reviews.sqlite at ${new Date(review.updatedAt).toLocaleTimeString()}.`
         : "Autosaves after 250ms of idle typing.";
     }
 
@@ -573,7 +626,7 @@
 
         const review = getReview(activeSlug);
         review[key] = node.value;
-        queuePersist(activeSlug);
+        queuePersist(activeSlug, { [key]: node.value });
       });
     }
 
@@ -594,7 +647,7 @@
       reviewButton.addEventListener("click", () => openReview(entry, slug));
 
       card.innerHTML = `
-        <div class="tag">Playable</div>
+        <div class="card-tags" data-review-tags="${slug}" ${review.needsAdditionalFeedback ? "" : "hidden"}>${review.needsAdditionalFeedback ? '<div class="tag tag-review">Needs Re-Review</div>' : ""}</div>
         <strong>${entry.name}</strong>
         <span>${entry.href}</span>
         <div class="rating-preview" data-review-preview="${slug}">${ratingText(review.rating)}</div>

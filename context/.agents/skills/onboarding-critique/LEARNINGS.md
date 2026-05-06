@@ -1,0 +1,14 @@
+# Durable Learnings
+
+- skill-cadence-check: blocker-first onboarding reporting matters for this catalog because sticky arcade loops die early when verb timing, teaching-load bloat, reminder access, objective recall, or return-after-break recovery break; this pass logged 1 blocker(s) and 3 major finding(s) with explicit evidence scope instead of flat tutorial notes.
+- skill-smoke: blocker-first onboarding reporting matters for this catalog because sticky arcade loops die early when verb timing, teaching-load bloat, reminder access, objective recall, or return-after-break recovery break; this pass logged 4 blocker(s) and 0 major finding(s) with explicit evidence scope instead of flat tutorial notes.
+- Shared playtest evidence becomes more reusable when onboarding review accepts `firstContact`, `resumeProbes`, and `ephemeralMoments` directly; that catches return-after-break and vanishing-prompt failures without retyping the same session facts.
+- sample-arcade: blocker-first onboarding reporting matters for this catalog because sticky arcade loops die early when verb timing, teaching-load bloat, reminder access, or objective recall break; this pass logged 2 blocker(s) and 0 major finding(s) with explicit evidence scope instead of flat tutorial notes.
+- Turn-based tactics entries onboard better when the first live turn starts with one unit already selected and one safe legal move already framed on the board; that converts abstract verbs into immediate action without adding a heavier tutorial layer.
+- For simple or discoverable loops, front-loaded onboarding becomes a real blocker when forced tutorial steps delay first meaningful input and the player has no cheap on-demand help path afterward.
+- Simple loops should earn every onboarding prompt. Heavy front-loaded teaching can add friction without helping retention when the core action is discoverable through safe play.
+- Onboarding is a catalog-level skill gap when reviews stay vague. Blocker-first output makes different first-run audits comparable instead of taste-heavy.
+- Current accessibility guidance reinforces that objective recall and on-demand interactive tutorials are part of usable gameplay, not optional help text.
+- Sticky arcade entries often lose players before the core loop has a chance to stack depth. Catching late prompts, missing practice beats, and costly reminder paths early preserves mechanic learning without changing the game fantasy.
+- In small grid tactics games, next-step copy alone is not enough onboarding; first-turn guidance should also mark the opening unit and route on the board so players can resolve what matters before reading the whole ruleset.
+- Small-grid tactics onboarding gets clearer when the live coach shows only one `now` step and one `next` step; stacking a full checklist beside other status panels overwhelms the board before the player has acted.

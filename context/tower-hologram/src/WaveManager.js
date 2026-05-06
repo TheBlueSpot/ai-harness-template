@@ -54,6 +54,10 @@ function deriveShield(kind, data, traits = {}) {
     return 28;
   }
 
+  if (traits.shielded) {
+    return 36;
+  }
+
   if (kind === "shell") {
     return 22;
   }
@@ -74,6 +78,10 @@ function deriveShield(kind, data, traits = {}) {
     return 88;
   }
 
+  if (kind === "mirror_archon") {
+    return 64;
+  }
+
   return 0;
 }
 
@@ -91,6 +99,12 @@ function deriveTraits(data) {
   }
   if (traits.carrier) {
     list.push("carrier");
+  }
+  if (traits.phaseShift) {
+    list.push("phase");
+  }
+  if (traits.mirrorCaster) {
+    list.push("mirror");
   }
   if (traits.shieldProjector) {
     list.push("projector");
@@ -118,6 +132,14 @@ function getSpawnAnchor(pathfinder) {
   };
 }
 
+function distanceBetween(a, b) {
+  if (!a || !b) {
+    return 0;
+  }
+
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
 function resolveSpawnPoint(pathfinder, spawnPointName) {
   const layout = getSpawnAnchor(pathfinder);
   const padX = Math.max(24, layout.width * 0.06);
@@ -128,8 +150,14 @@ function resolveSpawnPoint(pathfinder, spawnPointName) {
   const upperY = layout.originY + layout.height * 0.24;
   const midY = layout.originY + layout.height * 0.5;
   const lowerY = layout.originY + layout.height * 0.76;
+  const laneOffsetY = layout.height * 0.18;
   const topY = layout.originY + padY;
   const bottomY = layout.originY + layout.height - padY;
+  const goal = pathfinder?.goalPoint ?? { x: rightX, y: midY };
+  const minGoalDistance = Math.min(
+    Math.max(750, layout.width * 0.68),
+    Math.max(750, layout.width - padX * 2),
+  );
 
   const presets = {
     "left-upper": { x: leftX, y: upperY },
@@ -138,13 +166,65 @@ function resolveSpawnPoint(pathfinder, spawnPointName) {
     "right-upper": { x: rightX, y: upperY },
     "right-mid": { x: rightX, y: midY },
     "right-lower": { x: rightX, y: lowerY },
-    "center-left": { x: centerX - layout.width * 0.18, y: midY - layout.height * 0.1 },
-    "center-right": { x: centerX + layout.width * 0.18, y: midY + layout.height * 0.1 },
+    "center-left": { x: leftX, y: Math.max(topY, midY - laneOffsetY) },
+    "center-right": { x: rightX, y: Math.min(bottomY, midY + laneOffsetY) },
     "top-mid": { x: centerX, y: topY },
     "bottom-mid": { x: centerX, y: bottomY },
   };
 
-  return presets[spawnPointName] ?? null;
+  const fallbackAliases = {
+    "right-upper": "left-upper",
+    "right-mid": "left-mid",
+    "right-lower": "left-lower",
+    "center-right": "center-left",
+    "top-mid": "left-upper",
+    "bottom-mid": "left-lower",
+  };
+
+  const spawn = presets[spawnPointName] ?? null;
+  if (!spawn) {
+    return null;
+  }
+
+  if (distanceBetween(spawn, goal) >= minGoalDistance) {
+    return spawn;
+  }
+
+  const fallbackName = fallbackAliases[spawnPointName] ?? "left-mid";
+  return presets[fallbackName] ?? presets["left-mid"];
+}
+
+function collectWaveSpawnPoints(actions = []) {
+  const points = [];
+  for (const action of actions) {
+    if (!action || action.type === "wait") {
+      continue;
+    }
+
+    if (action.type === "mix") {
+      const basePoint = action.spawnPoint ?? "left-mid";
+      for (const group of action.groups ?? []) {
+        points.push(group.spawnPoint ?? basePoint);
+      }
+      continue;
+    }
+
+    points.push(action.spawnPoint ?? "left-mid");
+  }
+
+  return [...new Set(points.filter(Boolean))];
+}
+
+function isBossKind(kind) {
+  return Boolean(kind && ENEMY_TYPES[kind]?.boss);
+}
+
+function findWaveBossAction(wave) {
+  if (!wave) {
+    return null;
+  }
+
+  return (wave.actions ?? []).find((action) => isBossKind(action.kind)) ?? null;
 }
 
 function buildBossFields(pathfinder, source, boss, waveTimer) {
@@ -490,7 +570,7 @@ export class WaveManager {
     this.waveTimer += dt;
     const bossEnemy = this.enemies.find((enemy) => !enemy.dead && enemy.isBoss) ?? null;
     const currentWave = this.waves[this.waveIndex] ?? null;
-    const disruptionSource = bossEnemy?.disruption ?? (currentWave?.boss ? (currentWave.actions ?? []).find((action) => action.kind === "lattice_overseer" || action.kind === "overseer")?.disruption ?? null : null);
+    const disruptionSource = bossEnemy?.disruption ?? findWaveBossAction(currentWave)?.disruption ?? null;
     const bossFields = buildBossFields(pathfinder, disruptionSource, bossEnemy, this.waveTimer);
     if (pathfinder?.setTransientFields) {
       pathfinder.setTransientFields(bossFields);
@@ -705,6 +785,28 @@ export class WaveManager {
         ctx.stroke();
       }
 
+      if (enemy.traits?.phaseShift) {
+        ctx.strokeStyle = "rgba(156, 230, 255, 0.72)";
+        ctx.lineWidth = enemy.isBoss ? 2.4 : 1.5;
+        ctx.setLineDash(enemy.isBoss ? [12, 8] : [8, 6]);
+        ctx.beginPath();
+        ctx.arc(0, 0, enemy.radius + (enemy.isBoss ? 20 : 11), 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      if (enemy.traits?.mirrorCaster) {
+        ctx.strokeStyle = "rgba(215, 247, 255, 0.56)";
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(0, -enemy.radius - 7);
+        ctx.lineTo(enemy.radius + 7, 0);
+        ctx.lineTo(0, enemy.radius + 7);
+        ctx.lineTo(-enemy.radius - 7, 0);
+        ctx.closePath();
+        ctx.stroke();
+      }
+
       if (assets?.hologramCore) {
         ctx.globalAlpha = 0.95;
         ctx.drawImage(assets.hologramCore, -size * 0.45, -size * 0.45, size * 0.9, size * 0.9);
@@ -812,9 +914,27 @@ export class WaveManager {
       waveState: this.waveState,
       countdown: this.waveState === "countdown" ? this.waveCountdown : 0,
       bossActive,
-      bossWave: Boolean(currentWave?.boss || currentWave?.actions?.some((action) => action.kind === "lattice_overseer" || action.kind === "overseer")),
+      bossWave: Boolean(currentWave?.boss || (currentWave?.actions ?? []).some((action) => isBossKind(action.kind))),
+      briefing: currentWave?.briefing ?? null,
+      nextBriefing: nextWave?.briefing ?? null,
       enemyTraits,
+      spawnPoints: collectWaveSpawnPoints(previewWave?.actions ?? []),
       waveClearBonus: this.waveClearBonus,
     };
+  }
+
+  getPreviewPaths(pathfinder) {
+    const previewWave = this.waveState === "countdown"
+      ? this.waves[this.pendingWaveIndex ?? this.waveIndex + 1] ?? null
+      : this.waves[this.waveIndex] ?? null;
+
+    return collectWaveSpawnPoints(previewWave?.actions ?? []).map((spawnPoint) => {
+      const entry = pathPointAtSpawn(pathfinder, spawnPoint);
+      return {
+        spawnPoint,
+        spawn: entry.spawn,
+        path: pathfinder.findPath(entry.spawn, entry.goal),
+      };
+    }).filter((entry) => entry.path.length > 0);
   }
 }

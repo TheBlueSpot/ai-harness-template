@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Oregon Trail Crossing</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hud-card intro-card">
+        <p class="eyebrow">Overland Survival Run</p>
+        <h1>Oregon Trail Crossing</h1>
+        <p class="summary">
+          Push the wagon to the valley before your crew runs out of food. Travel for miles, stop to
+          hunt, and survive timed river crossings without losing the run.
+        </p>
+        <div class="controls-row">
+          <span>`Travel` advances the trail.</span>
+          <span>`Hunt` trades ammo for food.</span>
+          <span>Rivers auto-start. Click the playfield or press `Space` inside the safe band.</span>
+        </div>
+      </section>
+
+      <section class="play-layout">
+        <div class="stage-card">
+          <canvas id="game" width="960" height="540" aria-label="Oregon Trail Crossing playfield"></canvas>
+          <div class="stage-banner" id="stage-banner"></div>
+        </div>
+
+        <aside class="side-rail">
+          <section class="hud-card">
+            <div class="stat-grid">
+              <div><span class="stat-label">Day</span><strong id="day"></strong></div>
+              <div><span class="stat-label">Miles</span><strong id="miles"></strong></div>
+              <div><span class="stat-label">Food</span><strong id="food"></strong></div>
+              <div><span class="stat-label">Ammo</span><strong id="ammo"></strong></div>
+              <div><span class="stat-label">Health</span><strong id="health"></strong></div>
+              <div><span class="stat-label">Morale</span><strong id="morale"></strong></div>
+            </div>
+          </section>
+
+          <section class="hud-card">
+            <div class="meta-row">
+              <span>Weather</span>
+              <strong id="weather"></strong>
+            </div>
+            <div class="meta-row">
+              <span>Pace</span>
+              <strong id="pace"></strong>
+            </div>
+            <div class="meta-row">
+              <span>Rations</span>
+              <strong id="rations"></strong>
+            </div>
+            <div class="meta-row">
+              <span>Next river</span>
+              <strong id="river"></strong>
+            </div>
+          </section>
+
+          <section class="hud-card action-card">
+            <button id="travel-btn" type="button">Travel</button>
+            <button id="hunt-btn" type="button">Hunt</button>
+            <button id="rest-btn" type="button">Rest</button>
+            <button id="pace-btn" type="button">Change Pace</button>
+            <button id="rations-btn" type="button">Change Rations</button>
+            <button id="restart-btn" type="button">Restart</button>
+            <div class="action-hint-card">
+              <span class="action-hint-label">Current action</span>
+              <p id="action-hint" class="action-hint"></p>
+            </div>
+          </section>
+
+          <section class="hud-card log-card">
+            <div class="log-header">
+              <h2>Trail Notes</h2>
+              <span id="goal"></span>
+            </div>
+            <ul id="log"></ul>
+          </section>
+        </aside>
+      </section>
+    </main>
+
+    <script src="./src/main.js" defer></script>
+  </body>
+</html>

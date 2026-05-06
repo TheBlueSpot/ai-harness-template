@@ -67,8 +67,11 @@ export async function launchHarnessServerWithRecovery<TServer = StartHarnessServ
         attemptedDbRecovery = true;
         const dbPath = resolveHarnessDbPath();
         logger.warn(`[dev-db-recovery] startup failed with recoverable workspace db error: ${describeLaunchError(error)}`);
-        logger.warn(`[dev-db-recovery] purging corrupted local workspace db at ${dbPath}`);
+        logger.warn(`[dev-db-recovery] backing up and purging corrupted local workspace db at ${dbPath}`);
         const purgeResult = await purgeDatabase(dbPath);
+        if (purgeResult.backupPath) {
+          logger.warn(`[dev-db-recovery] backed up local workspace db artifacts to ${purgeResult.backupPath}`);
+        }
         if (purgeResult.fallbackDbPath) {
           logger.warn(
             `[dev-db-recovery] db remained locked; starting with fresh fallback db at ${purgeResult.fallbackDbPath}`
@@ -78,6 +81,7 @@ export async function launchHarnessServerWithRecovery<TServer = StartHarnessServ
           repositoryOverride = new WorkspaceRepository(dbPath, process.cwd());
         }
         startupTelemetry?.retry("recoverable workspace db error, purging local db and retrying startup", {
+          backupPath: purgeResult.backupPath,
           dbPath,
           fallbackDbPath: purgeResult.fallbackDbPath,
           purgeAction: "purge-corrupted-workspace-db",

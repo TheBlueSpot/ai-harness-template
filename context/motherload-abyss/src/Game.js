@@ -1,6 +1,6 @@
 import { GridManager } from "./gridmanager.js";
-import { DrillPhysics } from "./drillphysics.js";
-import { ResourceHUD, formatRunTime } from "./resourcehud.js";
+import { DrillPhysics } from "./DrillPhysics.js";
+import { ResourceHUD, formatRunTime } from "./ResourceHUD.js";
 import { assets } from "./assets.js";
 import { SFX } from "./sfx.js";
 
@@ -298,7 +298,6 @@ export class Game {
     this.drawBackground();
     this.grid.draw(this.ctx, this.assets, this.cameraY, this.viewHeight);
     this.drawDrill(snapshot);
-    this.drawHud(snapshot);
   }
 
   drawOverlayBackdrop() {

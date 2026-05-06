@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Katamari Clump Rollup</title>
+    <meta
+      name="description"
+      content="Browser-playable size-growth rolling game with absorb thresholds, hazard avoidance, and district progression."
+    />
+    <link rel="stylesheet" href="./src/styles.css" />
+    <script type="module" src="./src/main.js"></script>
+  </head>
+  <body>
+    <main class="shell">
+      <section class="game-shell" aria-label="Katamari Clump Rollup">
+        <canvas id="gameCanvas" class="game-canvas" aria-label="Game view"></canvas>
+
+        <section id="hud" class="hud" aria-live="polite">
+          <div class="hud__row"><span class="hud__label">Mass</span><span id="hudMass" class="hud__value">0.0</span></div>
+          <div class="hud__row"><span class="hud__label">District</span><span id="hudDistrict" class="hud__value">1 / 3</span></div>
+          <div class="hud__row"><span class="hud__label">Target</span><span id="hudTarget" class="hud__value">0.0</span></div>
+          <div class="hud__row"><span class="hud__label">Threat</span><span id="hudThreat" class="hud__value">Clear</span></div>
+          <div id="hudHint" class="hud__hint">Reach the next district gate.</div>
+        </section>
+
+        <section id="overlay" class="overlay" hidden>
+          <p id="overlayEyebrow" class="overlay__eyebrow">Mission</p>
+          <h1 id="overlayTitle" class="overlay__title">Katamari Clump Rollup</h1>
+          <p id="overlayCopy" class="overlay__copy"></p>
+          <button id="overlayButton" class="overlay__button" type="button">Start</button>
+        </section>
+      </section>
+    </main>
+  </body>
+</html>

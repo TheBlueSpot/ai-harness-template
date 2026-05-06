@@ -6,6 +6,7 @@ import {
   type AgentRunSummary,
   type ChatAttachment,
   type ChatMessage,
+  type ProviderBrand,
   type SetupAction
 } from "../../../shared/protocol";
 import {
@@ -52,6 +53,7 @@ import { Popover } from "./primitives/popover";
 import { ScrollArea } from "./primitives/scroll-area";
 import { Textarea } from "./primitives/textarea";
 import { Tooltip } from "./primitives/tooltip";
+import { VirtualList } from "./primitives/virtual-list";
 import { buttonVariants } from "./primitives/button";
 import {
   Activity,
@@ -76,7 +78,7 @@ import {
   ArrowDown,
   Check,
   SendHorizontal,
-  Settings2,
+  Settings,
   X,
   Split,
   Briefcase
@@ -118,6 +120,26 @@ function getPlanFromMessage(message: ChatMessage) {
   return message.metadata?.type === "plan-summary" ? message.metadata.plan : undefined;
 }
 
+function getProviderBrandLabel(providerBrand: ProviderBrand) {
+  if (providerBrand === "gemini") {
+    return "Gemini";
+  }
+  if (providerBrand === "claude") {
+    return "Claude";
+  }
+  return "GPT";
+}
+
+function getProviderBrandDescription(providerBrand: ProviderBrand) {
+  if (providerBrand === "gemini") {
+    return "Google-hosted model family.";
+  }
+  if (providerBrand === "claude") {
+    return "Anthropic-hosted model family.";
+  }
+  return "OpenAI-hosted model family.";
+}
+
 function renderMessageActionRow(timestamp: string | number | Date | undefined, copyButton: JSX.Element) {
   return (
     <div class="mt-3 flex items-center justify-between gap-3">
@@ -136,8 +158,13 @@ type LiveHarnessMessage = {
   kind: "status" | "assistant";
 };
 
+type ProjectTranscriptRow =
+  | { kind: "persisted"; message: ChatMessage }
+  | { kind: "live"; message: LiveHarnessMessage; liveIndex: number };
+
 export function ChatPanel() {
   let messageViewport: HTMLDivElement | undefined;
+  let projectSearchInput: HTMLInputElement | undefined;
   let attachmentInput: HTMLInputElement | undefined;
   let composerTextarea: HTMLTextAreaElement | undefined;
   let countdownTimer: number | undefined;
@@ -163,10 +190,8 @@ export function ChatPanel() {
   const [composerSettingsOpen, setComposerSettingsOpen] = createSignal(false);
   const [desktopReasoningMenuOpen, setDesktopReasoningMenuOpen] = createSignal(false);
   const [mobileReasoningMenuOpen, setMobileReasoningMenuOpen] = createSignal(false);
-  const [showAllTranscript, setShowAllTranscript] = createSignal(false);
-  const [showAllRunSubtasks, setShowAllRunSubtasks] = createSignal(false);
-  const [showAllEventRows, setShowAllEventRows] = createSignal(false);
-  const [showAllMemoryRows, setShowAllMemoryRows] = createSignal(false);
+  const [projectChatSearch, setProjectChatSearch] = createSignal("");
+  const [projectChatSearchIndex, setProjectChatSearchIndex] = createSignal(0);
   const pendingQuestion = () => activeProject()?.activeRun?.questions.find((question) => question.status === "pending");
   const resumableRun = () => (activeProject()?.activeRun?.resumable ? activeProject()?.activeRun : undefined);
   const retryableRun = () => (activeProject()?.lastRun?.retryable ? activeProject()?.lastRun : undefined);
@@ -176,6 +201,7 @@ export function ChatPanel() {
   const currentExecutionPlan = () => activeProject()?.latestPlan?.executionPlan ?? readyRun()?.plan;
   const resolvedModes = () => getResolvedModes(state, activeProject());
   const activeMode = () => getActiveMode(state, activeProject());
+  const isAutoModeSelected = () => harnessStore.state.hasGlobalSelectedModeId && harnessStore.state.selectedModeId === "auto";
   const capabilityTags = () => getCapabilityTags(state, getEffectiveExecutionModelId());
   const selectedAgentId = () => state.selectedAgentId;
   const selectedProviderBrand = () => getEffectiveProviderBrandForAgent(selectedAgentId(), state.providerBrand);
@@ -215,12 +241,20 @@ export function ChatPanel() {
     };
   };
   const modeDropdownOptions = () =>
-    resolvedModes().map((mode) => ({
-      value: mode.id,
-      label: mode.label,
-      description: mode.description,
-      icon: getModeDropdownIcon(mode.id)
-    }));
+    [
+      {
+        value: "auto",
+        label: "Auto",
+        description: "Interpret each prompt and choose the best implementation mode.",
+        icon: getModeDropdownIcon("auto")
+      },
+      ...resolvedModes().map((mode) => ({
+        value: mode.id,
+        label: mode.label,
+        description: mode.description,
+        icon: getModeDropdownIcon(mode.id)
+      }))
+    ];
   const agentDropdownOptions = () =>
     state.availableAgents.map((agent) => ({
       value: agent.id,
@@ -232,7 +266,8 @@ export function ChatPanel() {
     if (selectedAgentId() === "pi") {
       return [
         { value: "gpt", label: "GPT", description: "OpenAI-hosted model family." },
-        { value: "gemini", label: "Gemini", description: "Google-hosted model family." }
+        { value: "gemini", label: "Gemini", description: "Google-hosted model family." },
+        { value: "claude", label: "Claude", description: "Anthropic-hosted model family." }
       ];
     }
 
@@ -241,8 +276,8 @@ export function ChatPanel() {
       ? [
           {
             value: providerBrand,
-            label: providerBrand === "gpt" ? "GPT" : "Gemini",
-            description: providerBrand === "gpt" ? "OpenAI-hosted model family." : "Google-hosted model family."
+            label: getProviderBrandLabel(providerBrand),
+            description: getProviderBrandDescription(providerBrand)
           }
         ]
       : [];
@@ -281,13 +316,13 @@ export function ChatPanel() {
     const project = activeProject();
     return project ? getStreamingLiveMessages(project) : [];
   };
+  const transcriptRows = createMemo<ProjectTranscriptRow[]>(() => [
+    ...(activeProject()?.session.messages ?? []).map((message) => ({ kind: "persisted" as const, message })),
+    ...liveHarnessMessages().map((message, liveIndex) => ({ kind: "live" as const, message, liveIndex }))
+  ]);
   const liveHarnessMessageTimestamp = () => activeProject()?.activeRun?.updatedAt ?? activeProject()?.activeRun?.createdAt;
-  const visibleTranscriptMessages = createMemo(() => capLatest(activeProject()?.session.messages ?? [], CHAT_TRANSCRIPT_LIMIT, showAllTranscript()));
-  const visibleRunSubtasks = createMemo(() =>
-    capLatest(activeProject()?.activeRun?.subtasks ?? activeProject()?.lastRun?.subtasks ?? [], CHAT_RUN_SUBTASK_LIMIT, showAllRunSubtasks())
-  );
-  const visibleEventRows = createMemo(() => capLatest(activeProject()?.traces ?? [], CHAT_EVENT_LIMIT, showAllEventRows()));
-  const visibleMemoryRows = createMemo(() => capLatest(activeProject()?.memoryEntries ?? [], CHAT_MEMORY_LIMIT, showAllMemoryRows()));
+  const runSubtasks = createMemo(() => activeProject()?.activeRun?.subtasks ?? activeProject()?.lastRun?.subtasks ?? []);
+  const projectChatSearchResults = createMemo(() => buildProjectChatSearchResults(state.workspace.projects, projectChatSearch()));
   const liveHarnessMessageKey = () =>
     liveHarnessMessages()
       .map((message) => `${message.id}:${message.locked ? "locked" : "live"}:${message.content}`)
@@ -408,7 +443,7 @@ export function ChatPanel() {
       icon={<Split class="h-3.5 w-3.5" />}
       size={size}
       class={className}
-      value={activeMode()?.id ?? "implement"}
+      value={isAutoModeSelected() ? "auto" : activeMode()?.id ?? "implement"}
       options={modeDropdownOptions()}
       hideWhenSingleOption
       onChange={handleModeSelect}
@@ -440,7 +475,7 @@ export function ChatPanel() {
       options={providerDropdownOptions()}
       disabled={selectedAgentId() === "codex-cli"}
       hideWhenSingleOption
-      onChange={(value) => handleProviderBrandSelect(value as "gpt" | "gemini")}
+      onChange={(value) => handleProviderBrandSelect(value as ProviderBrand)}
       dataAttributes={{ "data-test-provider-select": "" }}
     />
   );
@@ -500,22 +535,6 @@ export function ChatPanel() {
     setStickToBottom(distanceFromBottom <= 32);
   };
 
-  function handleShowAllTranscript() {
-    setShowAllTranscript(true);
-  }
-
-  function handleShowAllRunSubtasks() {
-    setShowAllRunSubtasks(true);
-  }
-
-  function handleShowAllEventRows() {
-    setShowAllEventRows(true);
-  }
-
-  function handleShowAllMemoryRows() {
-    setShowAllMemoryRows(true);
-  }
-
   onMount(() => {
     scrollToBottom(true);
     waitingTimer = window.setInterval(() => setElapsedNowMs(Date.now()), 1000);
@@ -534,6 +553,24 @@ export function ChatPanel() {
     scrollToBottom(true);
   });
 
+  onMount(() => {
+    const handleSearchShortcut = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const isTyping = target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        projectSearchInput?.focus();
+        return;
+      }
+      if (!isTyping && event.key === "/") {
+        event.preventDefault();
+        projectSearchInput?.focus();
+      }
+    };
+    window.addEventListener("keydown", handleSearchShortcut);
+    onCleanup(() => window.removeEventListener("keydown", handleSearchShortcut));
+  });
+
   createEffect(() => {
     activeProject()?.session.messages.length;
     liveHarnessMessageKey();
@@ -548,10 +585,6 @@ export function ChatPanel() {
     setThreadMemoryDraft(activeProject()?.threadMemorySummary?.content ?? "");
     setDraftAttachments([]);
     setUploadingAttachments(false);
-    setShowAllTranscript(false);
-    setShowAllRunSubtasks(false);
-    setShowAllEventRows(false);
-    setShowAllMemoryRows(false);
   });
 
   createEffect(() => {
@@ -928,8 +961,8 @@ export function ChatPanel() {
         persistProviderPreferences(fallbackProviderBrand);
       } else {
         pushToast(
-          `${state.providerBrand === "gemini" ? "Gemini" : "GPT"} API key required`,
-          "Open preferences and add an OpenAI or Google key before sending chat.",
+          `${getProviderBrandLabel(state.providerBrand)} API key required`,
+          "Open preferences and add an OpenAI, Google, or Anthropic key before sending chat.",
           "error"
         );
         harnessStore.openPreferencesModal();
@@ -946,6 +979,7 @@ export function ChatPanel() {
     }
 
     const executionModelId = getEffectiveExecutionModelId();
+    const selectedModeId = isAutoModeSelected() ? "auto" : activeMode()?.id;
 
     sendCommand({
       type: "chat.send",
@@ -956,8 +990,8 @@ export function ChatPanel() {
         agentId: selectedAgentId(),
         content,
         attachments: draftAttachments(),
-        modeId: activeMode()?.id,
-        modeLocked: state.hasGlobalSelectedModeId,
+        modeId: selectedModeId,
+        modeLocked: state.hasGlobalSelectedModeId && selectedModeId !== "auto",
         executionModelId,
         ...getComposerControlPayload(),
         debug: state.debugEnabled
@@ -1226,6 +1260,194 @@ export function ChatPanel() {
     );
   }
 
+  function renderTranscriptRow(row: ProjectTranscriptRow, index: number, project: ViewProjectState) {
+    if (row.kind === "live") {
+      return (
+        <article class={`flex flex-col gap-2 rounded-3xl border border-(--border) p-3 shadow-sm ${row.message.kind === "status" ? "bg-white/70" : "bg-teal-950/5"}`}>
+          <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--accent-strong)">harness</div>
+          <MarkdownContent content={() => row.message.content} size="compact" live={!row.message.locked && row.liveIndex === liveHarnessMessages().length - 1} />
+          {renderMessageActionRow(
+            liveHarnessMessageTimestamp(),
+            <CopyTextButton
+              value={row.message.content}
+              tooltip="Copy harness message"
+              copiedTitle="Message copied"
+              copiedDescription="Message copied to clipboard."
+              size="sm"
+              variant="ghost"
+              ariaLabel="Copy harness message"
+            >
+              Copy
+            </CopyTextButton>
+          )}
+        </article>
+      );
+    }
+
+    const message = row.message;
+    if (shouldHidePersistedStreamingAssistantMessage(project, message, index)) {
+      return null;
+    }
+
+    return (
+      <Show
+        when={message.kind === "plan-summary" && message.metadata?.type === "plan-summary"}
+        fallback={
+          <article
+            class={`border border-(--border) p-3 shadow-sm ${
+              isHarnessTranscriptMessage(message)
+                ? message.kind === "run-milestones" && message.metadata?.type === "run-milestones" && message.metadata.status === "open"
+                  ? "rounded-3xl bg-teal-950/10 ring-1 ring-teal-700/20"
+                  : "rounded-3xl bg-teal-950/5"
+                : "rounded-3xl bg-white/60"
+            }`}
+          >
+            <div class="flex flex-col gap-3">
+              <div class="flex items-center gap-2">
+                <div class={`text-[0.585rem] font-semibold uppercase tracking-[0.2em] ${isHarnessTranscriptMessage(message) ? "text-(--accent-strong)" : "text-(--muted)"}`}>
+                  {getTranscriptRoleLabel(message.role)}
+                </div>
+                <Show when={message.kind === "run-milestones" && message.metadata?.type === "run-milestones" && message.metadata.status === "open"}>
+                  <span class="rounded-full border border-teal-700/25 bg-white/70 px-2 py-0.5 text-[0.55rem] font-semibold uppercase tracking-[0.12em] text-(--accent-strong)">
+                    In progress
+                  </span>
+                </Show>
+              </div>
+              <MarkdownContent content={() => message.content} size="compact" />
+              <Show when={message.metadata?.type === "assistant-action"}>
+                {renderAssistantActionCard(message.metadata as AssistantActionMessageMetadata)}
+              </Show>
+              <Show when={message.attachments?.length}>
+                <div class="flex flex-wrap gap-2">
+                  <For each={message.attachments}>
+                    {(attachment) => (
+                      <a
+                        class="rounded-full border border-(--border) bg-white/75 px-2.5 py-1 text-[0.55rem] font-semibold uppercase tracking-[0.12em] text-(--muted) hover:text-(--foreground)"
+                        href={attachment.url}
+                        rel="noreferrer"
+                        target="_blank"
+                      >
+                        {attachment.kind} | {attachment.name}
+                      </a>
+                    )}
+                  </For>
+                </div>
+              </Show>
+              {renderMessageActionRow(
+                message.createdAt,
+                <CopyTextButton
+                  value={getCopyableMessageText(message)}
+                  tooltip="Copy message"
+                  copiedTitle="Message copied"
+                  copiedDescription="Message copied to clipboard."
+                  size="sm"
+                  variant="ghost"
+                  ariaLabel={getCopyAriaLabel(message)}
+                >
+                  Copy
+                </CopyTextButton>
+              )}
+            </div>
+          </article>
+        }
+      >
+        <article class="flex flex-col gap-3 rounded-3xl border border-(--border) bg-[linear-gradient(135deg,rgba(15,118,110,0.12),rgba(255,255,255,0.92))] p-4 shadow-sm">
+          <div class="flex items-center gap-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--accent-strong)">
+            <Clipboard class="h-3.5 w-3.5" />
+            Plan summary
+          </div>
+          <MarkdownContent content={() => getPlanFromMessage(message)?.summary ?? ""} />
+          <div class="grid gap-2 text-[0.675rem] text-(--muted) md:grid-cols-2">
+            <div>Route: {getPlanFromMessage(message)?.route}</div>
+            <div>Difficulty: {getPlanFromMessage(message)?.difficultyScore}%</div>
+            <div>Parallel slots: {getPlanFromMessage(message)?.actualSubagentCount}</div>
+            <div>Prereqs: {getPlanFromMessage(message)?.prerequisites.length}</div>
+            <div>Contracts: {getPlanFromMessage(message)?.contracts.length}</div>
+            <div>Isolation: {getPlanFromMessage(message)?.subagentWorktreeStrategy}</div>
+            <div>Correctness: {getPlanFromMessage(message)?.correctnessPolicy}</div>
+          </div>
+          <div class="mt-3 flex items-center justify-between gap-3">
+            <div class="min-w-0 text-[0.575rem] uppercase tracking-[0.12em] text-(--muted)">
+              {formatShortTimestamp(message.createdAt)}
+            </div>
+            <div class="flex flex-wrap justify-end gap-2">
+              <ActionButton
+                tooltip="Open full execution plan"
+                icon={<Clipboard class="h-3.5 w-3.5" />}
+                size="sm"
+                variant="secondary"
+                onClick={() => {
+                  const plan = getPlanFromMessage(message);
+                  if (plan) {
+                    harnessStore.openExecutionPlanDialog(plan);
+                  }
+                }}
+              >
+                Open plan
+              </ActionButton>
+              <ActionButton
+                tooltip="Promote this run into scheduled task"
+                icon={<CalendarClock class="h-3.5 w-3.5" />}
+                size="sm"
+                variant="secondary"
+                onClick={() => handlePromoteScheduledRun((message.metadata as { runId: string }).runId)}
+              >
+                Schedule
+              </ActionButton>
+              {renderPlanRunAction((message.metadata as { runId: string }).runId)}
+              <Show when={getPlanFromMessage(message)?.gating.mode === "approve"}>
+                <ActionButton
+                  tooltip="Run this plan in isolated virtual branch"
+                  disabledReason={
+                    getPlanRunAction((message.metadata as { runId: string }).runId).kind === "execute"
+                      ? executionPauseReason()
+                      : "This plan is not ready to build"
+                  }
+                  disabled={getPlanRunAction((message.metadata as { runId: string }).runId).kind !== "execute" || executionPaused()}
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => handleExecuteRunTarget((message.metadata as { runId: string }).runId, "ephemeral-experiment")}
+                >
+                  Try experiment
+                </ActionButton>
+              </Show>
+              <Show when={getPlanFromMessage(message)?.gating.mode === "countdown" && readyRun()?.id === (message.metadata as { runId: string }).runId}>
+                <ActionButton
+                  tooltip={
+                    executionPaused()
+                      ? "Global pause freezes automatic execution countdown"
+                      : countdownPaused()
+                        ? "Resume automatic execution countdown"
+                        : "Pause automatic execution countdown"
+                  }
+                  disabled={executionPaused()}
+                  disabledReason={executionPauseReason()}
+                  icon={countdownPaused() ? <Play class="h-3.5 w-3.5" /> : <Pause class="h-3.5 w-3.5" />}
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => (countdownPaused() ? handleResumeAutoRun() : handlePauseAutoRun())}
+                >
+                  {countdownPaused() ? "Resume auto-run" : "Pause auto-run"}
+                </ActionButton>
+              </Show>
+              <CopyTextButton
+                value={getCopyableMessageText(message)}
+                tooltip="Copy plan summary"
+                copiedTitle="Plan summary copied"
+                copiedDescription="Plan summary copied to clipboard."
+                size="sm"
+                variant="secondary"
+                ariaLabel="Copy plan summary"
+              >
+                Copy
+              </CopyTextButton>
+            </div>
+          </div>
+        </article>
+      </Show>
+    );
+  }
+
   function handleInspectExperiment() {
     const project = activeProject();
     const run = activeProject()?.activeRun ?? activeProject()?.lastRun;
@@ -1489,14 +1711,52 @@ export function ChatPanel() {
     }
 
     const summary = `${Math.round(usage.usagePercent ?? 0)}% · ${formatTokenCount(usage.tokens)} / ${formatTokenCount(usage.contextWindow)} context used`;
+    const cacheHitPercent = getCacheHitPercent(usage);
+    const cacheLine =
+      cacheHitPercent === undefined
+        ? undefined
+        : `Cache hit: ${cacheHitPercent}% (${formatTokenCount(usage.cachedInputTokens)} tokens)`;
     const totalProcessedLine =
       usage.totalProcessedTokens === undefined ? undefined : `Total processed: ${formatTokenCount(usage.totalProcessedTokens)} tokens`;
-    return [summary, totalProcessedLine, "Automatically compacts its context when needed."].filter(Boolean).join("\n");
+    return [summary, cacheLine, totalProcessedLine, "Automatically compacts its context when needed."].filter(Boolean).join("\n");
   }
 
-  function handleProviderBrandSelect(providerBrand: "gpt" | "gemini") {
+  function openProjectChatSearchResult(result: ProjectChatSearchResult) {
+    if (state.workspace.activeProjectId !== result.projectId) {
+      sendCommand({
+        type: "project.activate",
+        requestId: createRequestId(),
+        payload: {
+          projectId: result.projectId
+        }
+      });
+    }
+    if (result.threadId) {
+      sendCommand({
+        type: "thread.activate",
+        requestId: createRequestId(),
+        payload: {
+          projectId: result.projectId,
+          threadId: result.threadId
+        }
+      });
+    }
+    harnessStore.setChatPaneTab("chat");
+  }
+
+  function getCacheHitPercent(usage: { tokens?: number; cachedInputTokens?: number }) {
+    const cachedInputTokens = usage.cachedInputTokens ?? 0;
+    const totalInputTokens = (usage.tokens ?? 0) + cachedInputTokens;
+    if (cachedInputTokens <= 0 || totalInputTokens <= 0) {
+      return undefined;
+    }
+
+    return Math.round((cachedInputTokens / totalInputTokens) * 100);
+  }
+
+  function handleProviderBrandSelect(providerBrand: ProviderBrand) {
     if (!canSelectProviderBrand(state, providerBrand)) {
-      pushToast("Provider key required", `Saved ${providerBrand === "gemini" ? "Gemini" : "GPT"} key required.`, "error");
+      pushToast("Provider key required", `Saved ${getProviderBrandLabel(providerBrand)} key required.`, "error");
       return;
     }
 
@@ -1504,16 +1764,17 @@ export function ChatPanel() {
     persistProviderPreferences(providerBrand);
   }
 
-  function persistProviderPreferences(providerBrand: "gpt" | "gemini") {
+  function persistProviderPreferences(providerBrand: ProviderBrand) {
     savePreferences({ providerBrand });
   }
 
-  function savePreferences(overrides: { providerBrand?: "gpt" | "gemini"; blockChatOnDirtyGitDefault?: boolean } = {}) {
+  function savePreferences(overrides: { providerBrand?: ProviderBrand; blockChatOnDirtyGitDefault?: boolean } = {}) {
     const providerBrand = overrides.providerBrand ?? state.providerBrand;
     const blockChatOnDirtyGitDefault = overrides.blockChatOnDirtyGitDefault ?? state.blockChatOnDirtyGitDefault;
     persistMergedLocalPreferences({
       openAiApiKey: state.openAiApiKeyDraft.trim() || undefined,
       googleApiKey: state.googleApiKeyDraft.trim() || undefined,
+      anthropicApiKey: state.anthropicApiKeyDraft.trim() || undefined,
       providerBrand,
       debugEnabled: state.debugEnabled,
       tracePanelDefaultOpen: state.tracePanelDefaultOpen,
@@ -1535,6 +1796,7 @@ export function ChatPanel() {
       payload: {
         openAiApiKey: state.openAiApiKeyDraft.trim() || undefined,
         googleApiKey: state.googleApiKeyDraft.trim() || undefined,
+        anthropicApiKey: state.anthropicApiKeyDraft.trim() || undefined,
         providerBrand,
         debugEnabled: state.debugEnabled,
         tracePanelDefaultOpen: state.tracePanelDefaultOpen,
@@ -2045,6 +2307,67 @@ export function ChatPanel() {
               </div>
             </div>
 
+            <div class="rounded-[1.2rem] border border-(--border) bg-white/55 p-2">
+              <Input
+                type="search"
+                ref={(element) => {
+                  projectSearchInput = element;
+                }}
+                value={projectChatSearch()}
+                placeholder="Search projects and active threads"
+                onInput={(event) => {
+                  setProjectChatSearch((event.target as HTMLInputElement).value);
+                  setProjectChatSearchIndex(0);
+                }}
+                onKeyDown={(event) => {
+                  if (!projectChatSearch()) {
+                    return;
+                  }
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    setProjectChatSearch("");
+                  }
+                  if (event.key === "ArrowDown") {
+                    event.preventDefault();
+                    setProjectChatSearchIndex((index) => Math.min(index + 1, Math.max(0, projectChatSearchResults().length - 1)));
+                  }
+                  if (event.key === "ArrowUp") {
+                    event.preventDefault();
+                    setProjectChatSearchIndex((index) => Math.max(0, index - 1));
+                  }
+                  if (event.key === "Enter") {
+                    const result = projectChatSearchResults()[projectChatSearchIndex()];
+                    if (result) {
+                      event.preventDefault();
+                      openProjectChatSearchResult(result);
+                    }
+                  }
+                }}
+              />
+              <Show when={projectChatSearch()}>
+                <div class="mt-2 max-h-52 overflow-auto rounded-lg border border-(--border) bg-white/85">
+                  <Show
+                    when={projectChatSearchResults().length > 0}
+                    fallback={<div class="p-3 text-[0.675rem] text-(--muted)">No project or active-thread hits.</div>}
+                  >
+                    <For each={projectChatSearchResults()}>
+                      {(result, index) => (
+                        <button
+                          type="button"
+                          class={`flex w-full flex-col gap-1 px-3 py-2 text-left text-[0.675rem] ${projectChatSearchIndex() === index() ? "bg-teal-50 text-(--foreground)" : "text-(--muted)"}`}
+                          onMouseEnter={() => setProjectChatSearchIndex(index())}
+                          onClick={() => openProjectChatSearchResult(result)}
+                        >
+                          <span class="font-semibold text-(--foreground)">{result.title}</span>
+                          <span class="truncate">{result.preview}</span>
+                        </button>
+                      )}
+                    </For>
+                  </Show>
+                </div>
+              </Show>
+            </div>
+
             <div class="min-h-0 flex-1 overflow-hidden">
             <Show when={currentTab()} keyed>
               {(selectedTab) => (
@@ -2078,220 +2401,28 @@ export function ChatPanel() {
                   <Switch>
                     <Match when={selectedTab === "chat"}>
                       <div class="relative flex min-h-0 flex-1 flex-col">
-                        <ScrollArea ref={messageViewport} class="flex-1 min-h-0 pr-2" onScroll={updateScrollLock}>
-                          <Show
-                            when={project().session.messages.length > 0 || liveHarnessMessages().length > 0}
-                            fallback={
-                              <div class="flex min-h-56 items-center justify-center rounded-3xl border border-dashed border-(--border) bg-white/40 p-8 text-center text-[0.675rem] text-(--muted)">
-                                Choose project, then send task. Each project keeps its own persisted thread history.
-                              </div>
-                            }
-                          >
-                            <div class="flex flex-col gap-3">
-                      <Show when={project().session.messages.length > CHAT_TRANSCRIPT_LIMIT && !showAllTranscript()}>
-                        <div class="flex items-center justify-between gap-3 rounded-3xl border border-(--border) bg-white/55 p-3 text-[0.675rem] text-(--muted)">
-                          <span>Showing latest {CHAT_TRANSCRIPT_LIMIT} of {project().session.messages.length} transcript rows.</span>
-                          <ActionButton tooltip="Show every transcript row" size="sm" variant="ghost" onClick={handleShowAllTranscript}>
-                            Show all
-                          </ActionButton>
-                        </div>
-                      </Show>
-                      <For each={visibleTranscriptMessages()}>
-                        {(message, index) => (
-                          <Show when={!shouldHidePersistedStreamingAssistantMessage(project(), message, index())}>
-                          <Show
-                            when={message.kind === "plan-summary" && message.metadata?.type === "plan-summary"}
-                            fallback={
-                              <article
-                                class={`border border-(--border) p-3 shadow-sm ${isHarnessTranscriptMessage(message)
-                                  ? message.kind === "run-milestones" && message.metadata?.type === "run-milestones" && message.metadata.status === "open"
-                                    ? "rounded-3xl bg-teal-950/10 ring-1 ring-teal-700/20"
-                                    : "rounded-3xl bg-teal-950/5"
-                                  : "rounded-3xl bg-white/60"
-                                  }`}
-                              >
-                                <div class="flex flex-col gap-3">
-                                <div class="flex items-center gap-2">
-                                  <div
-                                    class={`text-[0.585rem] font-semibold uppercase tracking-[0.2em] ${
-                                      isHarnessTranscriptMessage(message) ? "text-(--accent-strong)" : "text-(--muted)"
-                                      }`}
-                                  >
-                                    {getTranscriptRoleLabel(message.role)}
-                                  </div>
-                                  <Show when={message.kind === "run-milestones" && message.metadata?.type === "run-milestones" && message.metadata.status === "open"}>
-                                    <span class="rounded-full border border-teal-700/25 bg-white/70 px-2 py-0.5 text-[0.55rem] font-semibold uppercase tracking-[0.12em] text-(--accent-strong)">
-                                      In progress
-                                    </span>
-                                  </Show>
-                                </div>
-                                <MarkdownContent content={() => message.content} size="compact" />
-                                <Show when={message.metadata?.type === "assistant-action"}>
-                                  {renderAssistantActionCard(message.metadata as AssistantActionMessageMetadata)}
-                                </Show>
-                                <Show when={message.attachments?.length}>
-                                  <div class="flex flex-wrap gap-2">
-                                    <For each={message.attachments}>
-                                      {(attachment) => (
-                                        <a
-                                          class="rounded-full border border-(--border) bg-white/75 px-2.5 py-1 text-[0.55rem] font-semibold uppercase tracking-[0.12em] text-(--muted) hover:text-(--foreground)"
-                                          href={attachment.url}
-                                          rel="noreferrer"
-                                          target="_blank"
-                                        >
-                                          {attachment.kind} | {attachment.name}
-                                        </a>
-                                    )}
-                                  </For>
-                                </div>
-                              </Show>
-                                {renderMessageActionRow(
-                                  message.createdAt,
-                                  <CopyTextButton
-                                    value={getCopyableMessageText(message)}
-                                    tooltip="Copy message"
-                                    copiedTitle="Message copied"
-                                    copiedDescription="Message copied to clipboard."
-                                    size="sm"
-                                    variant="ghost"
-                                    ariaLabel={getCopyAriaLabel(message)}
-                                  >
-                                    Copy
-                                  </CopyTextButton>
-                                )}
-                                </div>
-                              </article>
-                            }
-                          >
-                            <article class="flex flex-col gap-3 rounded-3xl border border-(--border) bg-[linear-gradient(135deg,rgba(15,118,110,0.12),rgba(255,255,255,0.92))] p-4 shadow-sm">
-                              <div class="flex items-center gap-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--accent-strong)">
-                                <Clipboard class="h-3.5 w-3.5" />
-                                Plan summary
-                              </div>
-                              <MarkdownContent content={() => getPlanFromMessage(message)?.summary ?? ""} />
-                              <div class="grid gap-2 text-[0.675rem] text-(--muted) md:grid-cols-2">
-                                <div>Route: {getPlanFromMessage(message)?.route}</div>
-                                <div>Difficulty: {getPlanFromMessage(message)?.difficultyScore}%</div>
-                                <div>Parallel slots: {getPlanFromMessage(message)?.actualSubagentCount}</div>
-                                <div>Prereqs: {getPlanFromMessage(message)?.prerequisites.length}</div>
-                                <div>Contracts: {getPlanFromMessage(message)?.contracts.length}</div>
-                                <div>Isolation: {getPlanFromMessage(message)?.subagentWorktreeStrategy}</div>
-                                <div>Correctness: {getPlanFromMessage(message)?.correctnessPolicy}</div>
-                              </div>
-                              <div class="mt-3 flex items-center justify-between gap-3">
-                                <div class="min-w-0 text-[0.575rem] uppercase tracking-[0.12em] text-(--muted)">
-                                  {formatShortTimestamp(message.createdAt)}
-                                </div>
-                                <div class="flex flex-wrap justify-end gap-2">
-                                  <ActionButton
-                                    tooltip="Open full execution plan"
-                                    icon={<Clipboard class="h-3.5 w-3.5" />}
-                                    size="sm"
-                                    variant="secondary"
-                                    onClick={() => {
-                                      const plan = getPlanFromMessage(message);
-                                      if (plan) {
-                                        harnessStore.openExecutionPlanDialog(plan);
-                                      }
-                                    }}
-                                  >
-                                    Open plan
-                                  </ActionButton>
-                                  <ActionButton
-                                    tooltip="Promote this run into scheduled task"
-                                    icon={<CalendarClock class="h-3.5 w-3.5" />}
-                                    size="sm"
-                                    variant="secondary"
-                                    onClick={() => handlePromoteScheduledRun((message.metadata as { runId: string }).runId)}
-                                  >
-                                    Schedule
-                                  </ActionButton>
-                                  {renderPlanRunAction((message.metadata as { runId: string }).runId)}
-                                  <Show when={getPlanFromMessage(message)?.gating.mode === "approve"}>
-                                    <ActionButton
-                                      tooltip="Run this plan in isolated virtual branch"
-                                      disabledReason={
-                                        getPlanRunAction((message.metadata as { runId: string }).runId).kind === "execute"
-                                          ? executionPauseReason()
-                                          : "This plan is not ready to build"
-                                      }
-                                      disabled={getPlanRunAction((message.metadata as { runId: string }).runId).kind !== "execute" || executionPaused()}
-                                      size="sm"
-                                      variant="secondary"
-                                      onClick={() => handleExecuteRunTarget((message.metadata as { runId: string }).runId, "ephemeral-experiment")}
-                                    >
-                                      Try experiment
-                                    </ActionButton>
-                                  </Show>
-                                  <Show when={getPlanFromMessage(message)?.gating.mode === "countdown" && readyRun()?.id === (message.metadata as { runId: string }).runId}>
-                                    <ActionButton
-                                      tooltip={
-                                        executionPaused()
-                                          ? "Global pause freezes automatic execution countdown"
-                                          : countdownPaused()
-                                            ? "Resume automatic execution countdown"
-                                            : "Pause automatic execution countdown"
-                                      }
-                                      disabled={executionPaused()}
-                                      disabledReason={executionPauseReason()}
-                                      icon={countdownPaused() ? <Play class="h-3.5 w-3.5" /> : <Pause class="h-3.5 w-3.5" />}
-                                      size="sm"
-                                      variant="secondary"
-                                      onClick={() => (countdownPaused() ? handleResumeAutoRun() : handlePauseAutoRun())}
-                                    >
-                                      {countdownPaused() ? "Resume auto-run" : "Pause auto-run"}
-                                    </ActionButton>
-                                  </Show>
-                                  <CopyTextButton
-                                    value={getCopyableMessageText(message)}
-                                    tooltip="Copy plan summary"
-                                    copiedTitle="Plan summary copied"
-                                    copiedDescription="Plan summary copied to clipboard."
-                                    size="sm"
-                                    variant="secondary"
-                                    ariaLabel="Copy plan summary"
-                                  >
-                                    Copy
-                                  </CopyTextButton>
-                                </div>
-                              </div>
-                            </article>
-                          </Show>
-                          </Show>
-                        )}
-                      </For>
-
-                      <For each={liveHarnessMessages()}>
-                        {(message, index) => (
-                          <article
-                            class={`flex flex-col gap-2 rounded-3xl border border-(--border) p-3 shadow-sm ${
-                              message.kind === "status" ? "bg-white/70" : "bg-teal-950/5"
-                            }`}
-                          >
-                            <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--accent-strong)">
-                              harness
+                        <VirtualList
+                          viewportRef={(element) => {
+                            messageViewport = element;
+                          }}
+                          class="flex-1 min-h-0 pr-2"
+                          contentClass="w-full"
+                          itemClass="pb-3"
+                          items={transcriptRows()}
+                          getKey={(row, index) => row.kind === "persisted" ? row.message.id : `live-${row.message.id}-${index}`}
+                          estimateSize={(row) => row.kind === "persisted" && row.message.kind === "plan-summary" ? 260 : 180}
+                          pagination={{ kind: "reverse", initialCount: CHAT_TRANSCRIPT_LIMIT, batchSize: CHAT_TRANSCRIPT_LIMIT }}
+                          overscan={6}
+                          stickToEnd
+                          onScroll={updateScrollLock}
+                          empty={
+                            <div class="flex min-h-56 items-center justify-center rounded-3xl border border-dashed border-(--border) bg-white/40 p-8 text-center text-[0.675rem] text-(--muted)">
+                              Choose project, then send task. Each project keeps its own persisted thread history.
                             </div>
-                            <MarkdownContent content={() => message.content} size="compact" live={!message.locked && index() === liveHarnessMessages().length - 1} />
-                            {renderMessageActionRow(
-                              liveHarnessMessageTimestamp(),
-                              <CopyTextButton
-                                value={message.content}
-                                tooltip="Copy harness message"
-                                copiedTitle="Message copied"
-                                copiedDescription="Message copied to clipboard."
-                                size="sm"
-                                variant="ghost"
-                                ariaLabel="Copy harness message"
-                              >
-                                Copy
-                              </CopyTextButton>
-                            )}
-                          </article>
-                        )}
-                      </For>
-                            </div>
-                          </Show>
-                        </ScrollArea>
+                          }
+                        >
+                          {(row, index) => renderTranscriptRow(row, index, project())}
+                        </VirtualList>
                         <Show when={!stickToBottom()}>
                           <div class="pointer-events-none absolute inset-x-0 bottom-3 flex justify-center">
                             <div class="pointer-events-auto">
@@ -2321,13 +2452,15 @@ export function ChatPanel() {
                             icon={<Split class="h-3.5 w-3.5" />}
                             size="md"
                             class="w-full"
-                            value={activeMode()?.id ?? "implement"}
+                            value={isAutoModeSelected() ? "auto" : activeMode()?.id ?? "implement"}
                             options={modeDropdownOptions()}
                             onChange={handleModeSelect}
                           />
                         </label>
                         <div class="rounded-2xl border border-(--border) bg-white/70 p-3 text-[0.675rem] leading-5 text-(--muted)">
-                          {activeMode()?.description ?? "Default implementation mode."}
+                          {isAutoModeSelected()
+                            ? "Interpret each prompt and choose the best implementation mode."
+                            : activeMode()?.description ?? "Default implementation mode."}
                         </div>
                       </div>
                     </div>
@@ -2456,15 +2589,16 @@ export function ChatPanel() {
                         </div>
                       </Show>
                     </div>
-                    <Show when={(project().activeRun?.subtasks ?? project().lastRun?.subtasks ?? []).length > CHAT_RUN_SUBTASK_LIMIT && !showAllRunSubtasks()}>
-                      <div class="flex items-center justify-between gap-3 rounded-[1.2rem] border border-(--border) bg-white/55 p-3 text-[0.675rem] text-(--muted)">
-                        <span>Showing latest {CHAT_RUN_SUBTASK_LIMIT} of {(project().activeRun?.subtasks ?? project().lastRun?.subtasks ?? []).length} subtasks.</span>
-                        <ActionButton tooltip="Show every subtask row" size="sm" variant="ghost" onClick={handleShowAllRunSubtasks}>
-                          Show all
-                        </ActionButton>
-                      </div>
-                    </Show>
-                    <For each={visibleRunSubtasks()}>
+                    <VirtualList
+                      class="min-h-80 pr-2"
+                      contentClass="w-full"
+                      itemClass="pb-3"
+                      items={runSubtasks()}
+                      getKey={(task, index) => `${task.id ?? task.title}-${index}`}
+                      estimateSize={150}
+                      pagination={{ kind: "reverse", initialCount: CHAT_RUN_SUBTASK_LIMIT, batchSize: CHAT_RUN_SUBTASK_LIMIT }}
+                      empty={<div class="rounded-[1.2rem] border border-dashed border-(--border) bg-white/55 p-4 text-[0.675rem] text-(--muted)">No subtasks yet.</div>}
+                    >
                       {(task) => (
                         <div class="rounded-[1.2rem] border border-(--border) bg-white/60 p-4 text-[0.675rem] leading-6 text-(--foreground)">
                           <div class="font-semibold">{task.title}</div>
@@ -2481,121 +2615,92 @@ export function ChatPanel() {
                           </Show>
                         </div>
                       )}
-                    </For>
+                    </VirtualList>
                   </div>
                 </ScrollArea>
                     </Match>
                     <Match when={selectedTab === "events"}>
-                <ScrollArea class="flex-1 min-h-0 pr-2">
-                  <Show
-                    when={project().traces.length > 0}
-                    fallback={
-                      <div class="flex min-h-56 items-center justify-center rounded-3xl border border-dashed border-(--border) bg-white/40 p-8 text-center text-[0.675rem] text-(--muted)">
-                        No execution events yet.
+                <VirtualList
+                  class="flex-1 min-h-0 pr-2"
+                  contentClass="w-full"
+                  itemClass="pb-3"
+                  items={project().traces}
+                  getKey={(trace, index) => `${trace.stage}-${index}`}
+                  estimateSize={145}
+                  pagination={{ kind: "reverse", initialCount: CHAT_EVENT_LIMIT, batchSize: CHAT_EVENT_LIMIT }}
+                  empty={
+                    <div class="flex min-h-56 items-center justify-center rounded-3xl border border-dashed border-(--border) bg-white/40 p-8 text-center text-[0.675rem] text-(--muted)">
+                      No execution events yet.
+                    </div>
+                  }
+                >
+                  {(trace) => (
+                    <article class="rounded-[1.35rem] border border-(--border) bg-white/55 p-4">
+                      <div class="flex items-center justify-between gap-3 text-[0.585rem] font-semibold uppercase tracking-[0.16em] text-(--accent-strong)">
+                        <span>{trace.stage}</span>
+                        <span>{trace.modelId ?? "n/a"}</span>
                       </div>
-                    }
-                  >
-                    <div class="flex flex-col gap-3">
-                      <Show when={project().traces.length > CHAT_EVENT_LIMIT && !showAllEventRows()}>
-                        <div class="flex items-center justify-between gap-3 rounded-[1.35rem] border border-(--border) bg-white/55 p-3 text-[0.675rem] text-(--muted)">
-                          <span>Showing latest {CHAT_EVENT_LIMIT} of {project().traces.length} events.</span>
-                          <ActionButton tooltip="Show every event row" size="sm" variant="ghost" onClick={handleShowAllEventRows}>
-                            Show all
-                          </ActionButton>
+                      <MarkdownContent content={() => trace.message} size="compact" />
+                      <Show when={trace.detail}>
+                        <div class="pt-2">
+                          <MarkdownContent content={() => trace.detail ?? ""} size="compact" tone="muted" />
                         </div>
                       </Show>
-                      <For each={visibleEventRows()}>
-                        {(trace) => (
-                          <article class="rounded-[1.35rem] border border-(--border) bg-white/55 p-4">
-                            <div class="flex items-center justify-between gap-3 text-[0.585rem] font-semibold uppercase tracking-[0.16em] text-(--accent-strong)">
-                              <span>{trace.stage}</span>
-                              <span>{trace.modelId ?? "n/a"}</span>
-                            </div>
-                            <MarkdownContent content={() => trace.message} size="compact" />
-                            <Show when={trace.detail}>
-                              <div class="pt-2">
-                                <MarkdownContent content={() => trace.detail ?? ""} size="compact" tone="muted" />
-                              </div>
-                            </Show>
-                          </article>
-                        )}
-                      </For>
-                    </div>
-                  </Show>
-                </ScrollArea>
+                    </article>
+                  )}
+                </VirtualList>
                     </Match>
                     <Match when={selectedTab === "memory"}>
-                <ScrollArea class="flex-1 min-h-0 pr-2">
-                  <Show
-                    when={project().memoryEntries.length > 0}
-                    fallback={
-                      <div class="flex min-h-56 items-center justify-center rounded-3xl border border-dashed border-(--border) bg-white/40 p-8 text-center text-[0.675rem] text-(--muted)">
-                        No shared memory yet.
-                      </div>
-                    }
-                  >
-                    <div class="flex flex-col gap-3">
-                      <Show when={project().memoryEntries.length > CHAT_MEMORY_LIMIT && !showAllMemoryRows()}>
-                        <div class="flex items-center justify-between gap-3 rounded-[1.35rem] border border-(--border) bg-white/55 p-3 text-[0.675rem] text-(--muted)">
-                          <span>Showing latest {CHAT_MEMORY_LIMIT} of {project().memoryEntries.length} memory entries.</span>
-                          <ActionButton tooltip="Show every memory row" size="sm" variant="ghost" onClick={handleShowAllMemoryRows}>
-                            Show all
+                <VirtualList
+                  class="flex-1 min-h-0 pr-2"
+                  contentClass="w-full"
+                  itemClass="pb-3"
+                  items={project().memoryEntries}
+                  getKey={(entry) => entry.id}
+                  estimateSize={190}
+                  pagination={{ kind: "reverse", initialCount: CHAT_MEMORY_LIMIT, batchSize: CHAT_MEMORY_LIMIT }}
+                  empty={
+                    <div class="flex min-h-56 items-center justify-center rounded-3xl border border-dashed border-(--border) bg-white/40 p-8 text-center text-[0.675rem] text-(--muted)">
+                      No shared memory yet.
+                    </div>
+                  }
+                >
+                  {(entry) => (
+                    <article class="rounded-[1.35rem] border border-(--border) bg-white/55 p-4">
+                      <div class="flex items-center justify-between gap-3">
+                        <div>
+                          <div class="text-[0.585rem] font-semibold uppercase tracking-[0.16em] text-(--accent-strong)">{entry.kind}</div>
+                          <div class="font-semibold">{entry.title}</div>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-2">
+                          <ActionButton tooltip={entry.pinned ? "Unpin memory entry" : "Pin memory entry"} size="sm" variant="secondary" onClick={() => handleUpdateMemory(entry.id, { pinned: !entry.pinned })}>
+                            {entry.pinned ? "Unpin" : "Pin"}
+                          </ActionButton>
+                          <ActionButton
+                            tooltip={entry.status === "active" ? "Archive memory entry" : "Restore memory entry"}
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => handleUpdateMemory(entry.id, { status: entry.status === "active" ? "archived" : "active" })}
+                          >
+                            {entry.status === "active" ? "Archive" : "Restore"}
+                          </ActionButton>
+                          <ActionButton tooltip="Delete memory entry" size="sm" variant="secondary" onClick={() => handleDeleteMemory(entry.id)}>
+                            Delete
                           </ActionButton>
                         </div>
+                      </div>
+                      <div class="pt-2 text-(--muted)">{entry.confidence} | {entry.freshness} | hits {entry.hitCount}</div>
+                      <div class="pt-2">
+                        <MarkdownContent content={() => entry.summary} size="compact" />
+                      </div>
+                      <Show when={entry.evidence}>
+                        <div class="pt-2">
+                          <MarkdownContent content={() => entry.evidence ?? ""} size="compact" tone="muted" />
+                        </div>
                       </Show>
-                      <For each={visibleMemoryRows()}>
-                        {(entry) => (
-                          <article class="rounded-[1.35rem] border border-(--border) bg-white/55 p-4">
-                            <div class="flex items-center justify-between gap-3">
-                              <div>
-                                <div class="text-[0.585rem] font-semibold uppercase tracking-[0.16em] text-(--accent-strong)">
-                                  {entry.kind}
-                                </div>
-                                <div class="font-semibold">{entry.title}</div>
-                              </div>
-                              <div class="flex flex-wrap items-center gap-2">
-                                <ActionButton
-                                  tooltip={entry.pinned ? "Unpin memory entry" : "Pin memory entry"}
-                                  size="sm"
-                                  variant="secondary"
-                                  onClick={() => handleUpdateMemory(entry.id, { pinned: !entry.pinned })}
-                                >
-                                  {entry.pinned ? "Unpin" : "Pin"}
-                                </ActionButton>
-                                <ActionButton
-                                  tooltip={entry.status === "active" ? "Archive memory entry" : "Restore memory entry"}
-                                  size="sm"
-                                  variant="secondary"
-                                  onClick={() =>
-                                    handleUpdateMemory(entry.id, {
-                                      status: entry.status === "active" ? "archived" : "active"
-                                    })
-                                  }
-                                >
-                                  {entry.status === "active" ? "Archive" : "Restore"}
-                                </ActionButton>
-                                <ActionButton tooltip="Delete memory entry" size="sm" variant="secondary" onClick={() => handleDeleteMemory(entry.id)}>
-                                  Delete
-                                </ActionButton>
-                              </div>
-                            </div>
-                            <div class="pt-2 text-(--muted)">
-                              {entry.confidence} | {entry.freshness} | hits {entry.hitCount}
-                            </div>
-                            <div class="pt-2">
-                              <MarkdownContent content={() => entry.summary} size="compact" />
-                            </div>
-                            <Show when={entry.evidence}>
-                              <div class="pt-2">
-                                <MarkdownContent content={() => entry.evidence ?? ""} size="compact" tone="muted" />
-                              </div>
-                            </Show>
-                          </article>
-                        )}
-                      </For>
-                    </div>
-                  </Show>
-                </ScrollArea>
+                    </article>
+                  )}
+                </VirtualList>
                     </Match>
                   </Switch>
                 </div>
@@ -2831,7 +2936,7 @@ export function ChatPanel() {
                         >
                           <ActionButton
                             tooltip="Open composer settings"
-                            icon={<Settings2 class="h-4 w-4" />}
+                            icon={<Settings class="h-4 w-4" />}
                             type="button"
                             variant="ghost"
                             size="icon"
@@ -2911,6 +3016,13 @@ export function ChatPanel() {
                           <span>{`${Math.round(usage().usagePercent ?? 0)}% · ${formatTokenCount(usage().tokens)}/${formatTokenCount(
                             usage().contextWindow
                           )} context used`}</span>
+                          <Show when={getCacheHitPercent(usage())}>
+                            {(cacheHitPercent) => (
+                              <span class="inline-flex items-center rounded-full border border-emerald-500/30 bg-emerald-50 px-2 py-0.5 text-[0.55rem] font-semibold uppercase tracking-[0.12em] text-emerald-700">
+                                ⚡ Cache Hit {cacheHitPercent()}%
+                              </span>
+                            )}
+                          </Show>
                         </span>
                       </Tooltip>
                     )}
@@ -3018,8 +3130,50 @@ const CHAT_RUN_SUBTASK_LIMIT = 24;
 const CHAT_EVENT_LIMIT = 80;
 const CHAT_MEMORY_LIMIT = 80;
 
-function capLatest<T>(items: readonly T[], limit: number, showAll: boolean) {
-  return showAll || items.length <= limit ? items : items.slice(-limit);
+type ProjectChatSearchResult = {
+  id: string;
+  projectId: string;
+  threadId?: string;
+  title: string;
+  preview: string;
+};
+
+export function buildProjectChatSearchResults(projects: ViewProjectState[], query: string): ProjectChatSearchResult[] {
+  const tokens = tokenizeSearch(query);
+  if (tokens.length === 0) {
+    return [];
+  }
+  const projectHits = projects
+    .filter((project) => tokens.every((token) => project.name.toLowerCase().includes(token) || project.rootPath.toLowerCase().includes(token)))
+    .map((project) => ({
+      id: `project:${project.id}`,
+      projectId: project.id,
+      title: project.name,
+      preview: project.rootPath
+    }));
+  const transcriptHits = projects.flatMap((project) => {
+    const activeThread = project.threads.find((thread) => thread.id === project.activeThreadId);
+    return project.session.messages
+      .filter((message) => tokens.every((token) => `${message.role} ${message.content}`.toLowerCase().includes(token)))
+      .slice(-8)
+      .reverse()
+      .map((message, index) => ({
+        id: `message:${project.id}:${activeThread?.id ?? project.activeThreadId}:${message.id ?? index}`,
+        projectId: project.id,
+        threadId: activeThread?.id ?? project.activeThreadId,
+        title: `${project.name} / ${activeThread?.title ?? "Active thread"}`,
+        preview: `${message.role}: ${message.content.replace(/\s+/g, " ").slice(0, 180)}`
+      }));
+  });
+  return [...projectHits, ...transcriptHits].slice(0, 24);
+}
+
+function tokenizeSearch(query: string) {
+  return query
+    .toLowerCase()
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
 }
 
 function getStreamingLiveMessages(project: ViewProjectState): LiveHarnessMessage[] {

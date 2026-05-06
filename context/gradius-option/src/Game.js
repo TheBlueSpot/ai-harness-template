@@ -1,10 +1,35 @@
-import { BOSS_CORE_MAX, BOSS_SHIELD_MAX, GAME_HEIGHT, GAME_WIDTH, OPTION_COUNT, PLAYER_FIRE_RATE, PLAYER_SPEED, SHIELD_MAX } from "./constants.js";
+import {
+  BOSS_CORE_MAX,
+  BOSS_SHIELD_MAX,
+  DOUBLE_SHOT_HEIGHT,
+  DOUBLE_SHOT_WIDTH,
+  ENEMY_BULLET_SPEED_CORE,
+  ENEMY_BULLET_SPEED_SHIELD,
+  ENEMY_SHOT_SIZE,
+  ENEMY_WAVE_INTERVAL,
+  GAME_HEIGHT,
+  GAME_WIDTH,
+  LASER_SHOT_HEIGHT,
+  LASER_SHOT_WIDTH,
+  MISSILE_SHOT_HEIGHT,
+  MISSILE_SHOT_WIDTH,
+  OPTION_COUNT,
+  PLAYER_FIRE_RATE,
+  PLAYER_SHOT_HEIGHT,
+  PLAYER_SHOT_WIDTH,
+  PLAYER_SPEED,
+  SHIELD_MAX,
+} from "./constants.js";
 import { buildStarfield, buildWave } from "./patterns.js";
 import { clampPowerSlot, createInitialState, makeBoss, makePlayer } from "./state.js";
 import { isBossEnemy } from "./enemies.js";
 
 const POWER_LABELS = ["SPEED", "MISSILE", "DOUBLE", "LASER", "OPTION", "SHIELD", "BARRIER"];
 const WEAPON_LABELS = ["NORMAL", "MISSILE", "DOUBLE", "LASER"];
+
+function getPowerLabel(index) {
+  return POWER_LABELS[Math.max(0, Math.min(POWER_LABELS.length - 1, index))] ?? POWER_LABELS[0];
+}
 
 export class Game {
   constructor() {
@@ -104,18 +129,19 @@ export class Game {
 
   updatePowerBar(dt, activatePressed) {
     this.state.powerBarFlash = Math.max(0, this.state.powerBarFlash - dt * 4);
-    if (activatePressed && this.state.powerBarIndex > 0) {
+    if (activatePressed && this.state.powerBarIndex >= 0) {
       this.applyPowerup();
       this.state.powerBarFlash = 1;
-      this.state.powerBarIndex = 0;
-      this.state.powerBarLabel = POWER_LABELS[0];
+      this.state.powerBarIndex = -1;
+      this.state.powerBarLabel = "NEXT SPEED";
       this.state.powerBarReady = false;
+      this.state.powerTutorialComplete = true;
     }
   }
 
   applyPowerup() {
     const player = this.state.player;
-    switch (this.state.powerBarLabel) {
+    switch (getPowerLabel(this.state.powerBarIndex)) {
       case "SPEED":
         player.speedLevel = Math.min(4, player.speedLevel + 1);
         break;
@@ -158,15 +184,15 @@ export class Game {
     });
     for (const _pickup of collected) {
       this.state.powerBarIndex = clampPowerSlot(this.state.powerBarIndex + 1);
-      this.state.powerBarLabel = POWER_LABELS[this.state.powerBarIndex] ?? "SPEED";
-      this.state.powerBarReady = this.state.powerBarIndex > 0;
-      this.state.alert = `${this.state.powerBarLabel} primed`;
+      this.state.powerBarLabel = getPowerLabel(this.state.powerBarIndex);
+      this.state.powerBarReady = this.state.powerBarIndex >= 0;
+      this.state.alert = `${this.state.powerBarLabel} primed. Press Shift or X.`;
     }
   }
 
   updateEnemies(dt, fireHeld) {
     this.spawnClock += dt;
-    if (this.spawnClock > 1.9) {
+    if (this.spawnClock > ENEMY_WAVE_INTERVAL) {
       this.spawnClock = 0;
       this.state.enemies.push(...buildWave(this.state.time, this.state.view.width, this.state.view.height));
     }
@@ -203,15 +229,15 @@ export class Game {
     boss.coreOpen = boss.phase === "core";
     boss.attackTimer -= dt;
     if (boss.attackTimer <= 0) {
-      boss.attackTimer = boss.phase === "shield" ? 1.1 : 0.55;
+      boss.attackTimer = boss.phase === "shield" ? 1.28 : 0.68;
       this.state.projectiles.push({
         owner: "enemy",
         x: boss.x - boss.w * 0.4,
         y: boss.y + (boss.phase === "shield" ? 0 : (Math.sin(this.state.time * 6) * 26)),
-        vx: -280,
+        vx: boss.phase === "shield" ? -ENEMY_BULLET_SPEED_SHIELD : -ENEMY_BULLET_SPEED_CORE,
         vy: boss.phase === "shield" ? 0 : Math.sin(this.state.time * 3) * 30,
-        w: 10,
-        h: 10,
+        w: ENEMY_SHOT_SIZE,
+        h: ENEMY_SHOT_SIZE,
         damage: boss.phase === "shield" ? 1 : 2,
       });
     }
@@ -221,11 +247,28 @@ export class Game {
 
   updateHud() {
     const boss = this.state.boss;
+    const primedLabel = this.state.powerBarIndex >= 0 ? getPowerLabel(this.state.powerBarIndex) : null;
     this.state.bossState = boss.active ? boss.phase : "idle";
     this.state.weaponState = WEAPON_LABELS[this.state.player.weapon] ?? "NORMAL";
+    this.state.powerBarLabel = primedLabel ?? "NEXT SPEED";
+    this.state.powerBarHintText = primedLabel
+      ? "Shift / X to spend"
+      : this.state.powerTutorialComplete
+        ? "Collect another capsule"
+        : "Shoot drones, grab a capsule";
+    this.state.powerPromptText = primedLabel
+      ? `${primedLabel} ARMED. PRESS SHIFT OR X.`
+      : this.state.powerTutorialComplete
+        ? ""
+        : "FIRST CAPSULE ARMS SPEED";
     this.state.overlayEyebrow = this.state.mode === "clear" ? "Victory" : "Mission";
     this.state.overlayTitle = this.state.mode === "clear" ? "Boss Down" : "Gradius Option-Drive";
-    this.state.overlayCopy = this.state.mode === "clear" ? "Press Start to run again." : "Press Start to launch.";
+    this.state.overlayCopy =
+      this.state.mode === "clear"
+        ? "Boss down. Press Start to run again."
+        : this.state.mode === "gameover"
+          ? "Ship lost. Press Start to relaunch."
+          : "Hold Space to fire. First capsule arms SPEED, then spend it with Shift or X.";
     this.state.overlayButton = "Start";
     if (this.state.mode === "play") {
       const bossAlert = this.state.boss.active
@@ -233,7 +276,11 @@ export class Game {
           ? "Break shield with steady fire"
           : "Core exposed"
         : "";
-      const powerAlert = this.state.powerBarReady ? `${this.state.powerBarLabel} ready` : "";
+      const powerAlert = primedLabel
+        ? `${primedLabel} armed. Shift or X to spend.`
+        : this.state.powerTutorialComplete
+          ? ""
+          : "Shoot a drone and grab the capsule for SPEED.";
       this.state.alert = [bossAlert, powerAlert].filter(Boolean).join(" | ");
     }
     this.state.overlay.show = this.state.mode !== "play";
@@ -303,11 +350,38 @@ export class Game {
   spawnPlayerVolley(x, y, scale = 1) {
     const weapon = this.state.player.weapon;
     const baseDamage = weapon === 3 ? 2 : 1;
-    this.state.projectiles.push({ owner: "player", x, y, vx: weapon === 3 ? 760 : 620, vy: 0, w: weapon === 3 ? 20 : 12, h: 4, damage: baseDamage * scale });
+    this.state.projectiles.push({
+      owner: "player",
+      x,
+      y,
+      vx: weapon === 3 ? 720 : 580,
+      vy: 0,
+      w: weapon === 3 ? LASER_SHOT_WIDTH : PLAYER_SHOT_WIDTH,
+      h: weapon === 3 ? LASER_SHOT_HEIGHT : PLAYER_SHOT_HEIGHT,
+      damage: baseDamage * scale,
+    });
     if (weapon === 1) {
-      this.state.projectiles.push({ owner: "player", x: x - 8, y: y + 12, vx: 500, vy: 140, w: 10, h: 6, damage: scale });
+      this.state.projectiles.push({
+        owner: "player",
+        x: x - 8,
+        y: y + 12,
+        vx: 470,
+        vy: 130,
+        w: MISSILE_SHOT_WIDTH,
+        h: MISSILE_SHOT_HEIGHT,
+        damage: scale,
+      });
     } else if (weapon === 2) {
-      this.state.projectiles.push({ owner: "player", x: x - 2, y: y - 16, vx: 560, vy: -70, w: 12, h: 4, damage: scale });
+      this.state.projectiles.push({
+        owner: "player",
+        x: x - 2,
+        y: y - 16,
+        vx: 530,
+        vy: -64,
+        w: DOUBLE_SHOT_WIDTH,
+        h: DOUBLE_SHOT_HEIGHT,
+        damage: scale,
+      });
     }
   }
 

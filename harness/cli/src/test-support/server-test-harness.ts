@@ -1,9 +1,9 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test as bunTest } from "bun:test";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { AgentRuntimeCapability, Assistant, BackgroundJob } from "../../../shared/protocol";
-import type { PiAgentAdapter, PiAgentExecutionController, PiAgentPromptRequest, PiAgentPromptResult } from "../pi-agent-adapter";
+import type { AgentRuntimeCapability, Assistant, BackgroundJob, ProviderBrand } from "../../../shared/protocol";
+import type { PiAgentAdapter, PiAgentExecutionController, PiAgentPromptRequest, PiAgentPromptResult, PiApiKeyProvider } from "../pi-agent-adapter";
 import {
   createSampleDocxBuffer,
   createSampleOdtBuffer,
@@ -12,7 +12,7 @@ import {
   createSampleXlsxBuffer
 } from "../document-extractors/test-fixtures";
 import { clearDevHarnessServerSingleton, getDevHarnessServerSingleton } from "../dev-server-singleton";
-import { startHarnessServer } from "../server";
+import { startHarnessServer, type HarnessServerOsAdapters } from "../server";
 import { createStartupTelemetrySession, type StartupPhaseId, type StartupTelemetrySink } from "../startup-telemetry";
 import { WorkspaceRepository } from "../workspace-repository";
 import type { AgentRuntime } from "../agent-runtimes/agent-runtime";
@@ -20,8 +20,28 @@ import { buildCliCapability } from "../agent-runtimes/cli-health";
 import { PiRuntime } from "../agent-runtimes/pi-runtime";
 import { AgentRuntimeRegistry } from "../agent-runtimes/runtime-registry";
 import { useGitProjectFixture } from "./git-project-fixture";
+import { createFastHarnessServerOsAdapters } from "./fast-os-adapters";
 
 const EXPECT_ATTACHMENTS_ENABLED = Boolean(Bun.env.UPLOADTHING_TOKEN?.trim());
+
+type ServerTestShardOptions = {
+  shardIndex?: number;
+  shardCount?: number;
+};
+
+function createServerTestRegistrar(options: ServerTestShardOptions = {}) {
+  const shardCount = Math.max(1, Math.floor(options.shardCount ?? 1));
+  const shardIndex = Math.min(shardCount - 1, Math.max(0, Math.floor(options.shardIndex ?? 0)));
+  let testIndex = 0;
+  return ((name: string, testFn: () => void | Promise<unknown>, timeout?: number) => {
+    const currentIndex = testIndex;
+    testIndex += 1;
+    if (currentIndex % shardCount !== shardIndex) {
+      return;
+    }
+    return bunTest(name, testFn, timeout);
+  }) as typeof bunTest;
+}
 
 export class FakePiAgentAdapter implements PiAgentAdapter {
   readonly calls: PiAgentPromptRequest[] = [];
@@ -36,16 +56,17 @@ export class FakePiAgentAdapter implements PiAgentAdapter {
   private readonly deferredAggregatorReleases: Array<() => void> = [];
   private readonly retryTracker = new Set<string>();
   private readonly subagentCallCounts = new Map<string, number>();
-  private readonly apiKeys: Record<"openai" | "google", string | undefined> = {
+  private readonly apiKeys: Record<PiApiKeyProvider, string | undefined> = {
     openai: undefined,
-    google: undefined
+    google: undefined,
+    anthropic: undefined
   };
 
-  setApiKey(provider: "openai" | "google", apiKey: string | undefined) {
+  setApiKey(provider: PiApiKeyProvider, apiKey: string | undefined) {
     this.apiKeys[provider] = apiKey;
   }
 
-  hasApiKey(provider: "openai" | "google") {
+  hasApiKey(provider: PiApiKeyProvider) {
     return Boolean(this.apiKeys[provider]);
   }
 
@@ -124,6 +145,8 @@ export class FakePiAgentAdapter implements PiAgentAdapter {
     this.recordCall(request);
     const defaultExecutionModelId = request.modelId.startsWith("google/")
       ? "google/gemini-2.5-flash"
+      : request.modelId.startsWith("anthropic/")
+        ? "anthropic/claude-sonnet-4-6"
       : "openai/gpt-5.4";
     const withUsage = (text: string): PiAgentPromptResult => ({
       text,
@@ -782,7 +805,7 @@ class FakeCodexRuntime implements AgentRuntime {
     return "openai/gpt-5.4";
   }
 
-  getDefaultSubagentModelId(_providerBrand?: "gpt" | "gemini", executionModelId?: string) {
+  getDefaultSubagentModelId(_providerBrand?: ProviderBrand, executionModelId?: string) {
     return executionModelId === "openai/gpt-5.4" ? "openai/gpt-5.4-mini" : "openai/gpt-5.4";
   }
 }
@@ -893,18 +916,43 @@ function createFakeStartupTelemetry(): StartupTelemetrySink & { events: FakeStar
 }
 
 
-export async function startServerForTest(input: Parameters<typeof startHarnessServer>[0]) {
+type StartServerForTestInput = Parameters<typeof startHarnessServer>[0] & {
+  useFastOsAdapters?: boolean;
+};
+
+export async function stopServerForTest(server: Awaited<ReturnType<typeof startHarnessServer>> | undefined) {
+  if (!server) {
+    return;
+  }
+  await Promise.resolve(server.stop(true));
+}
+
+export async function startServerForTest(input: StartServerForTestInput) {
   const runtimeRegistry = input.runtimeRegistry ?? (input.adapter ? createFastTestRuntimeRegistry(input.adapter) : undefined);
+  const osAdapters = resolveTestOsAdapters(input);
   const server = await startHarnessServer({
     ...input,
     port: input.port ?? 0,
     hostname: input.hostname ?? "127.0.0.1",
-    runtimeRegistry
+    runtimeRegistry,
+    osAdapters
   });
   if (server.port === undefined) {
     throw new Error("Harness server did not report a bound port");
   }
   return { server, port: server.port };
+}
+
+function resolveTestOsAdapters(input: StartServerForTestInput): Partial<HarnessServerOsAdapters> | undefined {
+  if (input.useFastOsAdapters === false) {
+    return input.osAdapters;
+  }
+
+  const fastAdapters = createFastHarnessServerOsAdapters();
+  return {
+    ...fastAdapters,
+    ...input.osAdapters
+  };
 }
 
 export function createFastTestRuntimeRegistry(adapter: PiAgentAdapter) {
@@ -958,8 +1006,9 @@ export async function executeReadyRunUntil(
   return outcome.event;
 }
 
-export function registerServerStartupTests() {
+export function registerServerStartupTests(options: ServerTestShardOptions = {}) {
   describe("harness server startup", () => {
+    const serverTest = createServerTestRegistrar(options);
     const fixture = useGitProjectFixture({
       fixtureName: "server-startup",
       packageName: "test-project",
@@ -983,7 +1032,7 @@ export function registerServerStartupTests() {
       adapter = new FakePiAgentAdapter();
       repository = new WorkspaceRepository(dbPath, projectRoot, { durability: "test-fast" });
       ({ server, port } = await startServerForTest({
-        port,
+        port: 0,
         adapter,
         repository,
         pickFolder: async () => extraProjectRoot,
@@ -991,14 +1040,13 @@ export function registerServerStartupTests() {
       }));
     });
 
-    afterEach(() => {
-      server?.stop(true);
-      clearDevHarnessServerSingleton();
+    afterEach(async () => {
+      await stopServerForTest(server);
     });
 
 
     
-      test("accepts websocket commands and rejects malformed payloads", async () => {
+      serverTest("accepts websocket commands and rejects malformed payloads", async () => {
         const socket = createSocket(port);
     
         await new Promise<void>((resolve, reject) => {
@@ -1022,7 +1070,7 @@ export function registerServerStartupTests() {
 
 
     
-      test("returns ready state and persisted workspace on connect", async () => {
+      serverTest("returns ready state and persisted workspace on connect", async () => {
         const socket = createSocket(port);
         const ready = await waitForEvent(socket, "connection.ready");
     
@@ -1050,12 +1098,12 @@ export function registerServerStartupTests() {
       });
 
 
-      test("serverOnly startup phase order is bootstrap, workspace, runtimes, setup, serve, complete", async () => {
-        server.stop(true);
+      serverTest("serverOnly startup phase order is bootstrap, workspace, runtimes, setup, serve, complete", async () => {
+        await stopServerForTest(server);
         const telemetry = createFakeStartupTelemetry();
 
         server = await startHarnessServer({
-          port,
+          port: 0,
           adapter,
           repository,
           runtimeRegistry: createFastTestRuntimeRegistry(adapter),
@@ -1075,13 +1123,13 @@ export function registerServerStartupTests() {
       });
 
 
-      test("non-server-only startup includes ui-assets once with injected ui asset manager", async () => {
-        server.stop(true);
+      serverTest("non-server-only startup includes ui-assets once with injected ui asset manager", async () => {
+        await stopServerForTest(server);
         const telemetry = createFakeStartupTelemetry();
         const uiAssetCalls: string[] = [];
 
         server = await startHarnessServer({
-          port,
+          port: 0,
           adapter,
           repository,
           runtimeRegistry: createFastTestRuntimeRegistry(adapter),
@@ -1120,13 +1168,12 @@ export function registerServerStartupTests() {
       });
 
 
-      test("hot dev mode reuses one server instance and opens browser once", async () => {
-        server.stop(true);
-        clearDevHarnessServerSingleton();
+      serverTest("hot dev mode reuses one server instance and opens browser once", async () => {
+        await stopServerForTest(server);
         const openCalls: string[] = [];
 
         server = await startHarnessServer({
-          port,
+          port: 0,
           adapter,
           repository,
           runtimeRegistry: createFastTestRuntimeRegistry(adapter),
@@ -1140,7 +1187,7 @@ export function registerServerStartupTests() {
         });
 
         const reloadedServer = await startHarnessServer({
-          port,
+          port: 0,
           adapter,
           repository,
           runtimeRegistry: createFastTestRuntimeRegistry(adapter),
@@ -1157,16 +1204,96 @@ export function registerServerStartupTests() {
         expect(openCalls).toHaveLength(1);
       });
 
+      serverTest("hot dev mode replaces stale scheduler state and queues due jobs after reload", async () => {
+        await stopServerForTest(server);
 
-      test("hot dev mode uses debounced static ui assets with live reload polling", async () => {
-        server.stop(true);
-        clearDevHarnessServerSingleton();
+        server = await startHarnessServer({
+          port: 0,
+          adapter,
+          repository,
+          runtimeRegistry: createFastTestRuntimeRegistry(adapter),
+          pickFolder: async () => extraProjectRoot,
+          serverOnly: true,
+          devHotMode: true,
+          hotReloadDebounceMs: 0
+        });
+
+        const singletonBefore = getDevHarnessServerSingleton<
+          { scheduler: { stop(): void; start(): void } },
+          unknown,
+          unknown,
+          unknown
+        >();
+        expect(singletonBefore).toBeDefined();
+        const firstScheduler = singletonBefore!.state.scheduler;
+        firstScheduler.stop();
+        Object.defineProperty(firstScheduler, "timer", {
+          value: setTimeout(() => {}, 60_000),
+          configurable: true,
+          writable: true
+        });
+
+        const project = repository.addProject(projectRoot);
+        const now = Date.now();
+        const jobId = crypto.randomUUID();
+        repository.saveBackgroundJob({
+          id: jobId,
+          projectId: project.id,
+          automationThreadId: crypto.randomUUID(),
+          kind: "ai-routine",
+          name: "Hot reload due job",
+          status: "enabled",
+          riskLevel: "unsafe",
+          definition: {
+            kind: "ai-routine",
+            prompt: "Review repo.",
+            modeId: "implement"
+          },
+          schedule: {
+            type: "interval",
+            intervalSeconds: 600,
+            nextRunAt: new Date(now - 60_000).toISOString(),
+            sourceText: "10m"
+          },
+          scheduleInput: "10m",
+          nextRunAt: new Date(now - 60_000).toISOString(),
+          createdAt: new Date(now).toISOString(),
+          updatedAt: new Date(now).toISOString()
+        } satisfies BackgroundJob);
+
+        const reloadedServer = await startHarnessServer({
+          port: 0,
+          adapter,
+          repository,
+          runtimeRegistry: createFastTestRuntimeRegistry(adapter),
+          pickFolder: async () => extraProjectRoot,
+          serverOnly: true,
+          devHotMode: true,
+          hotReloadDebounceMs: 0
+        });
+
+        await waitForCondition(() => repository.getActiveBackgroundJobRuns(jobId).length === 1);
+        const singletonAfter = getDevHarnessServerSingleton<
+          { scheduler: { stop(): void; start(): void } },
+          unknown,
+          unknown,
+          unknown
+        >();
+        const activeRun = repository.getActiveBackgroundJobRuns(jobId)[0];
+        expect(reloadedServer).toBe(server);
+        expect(singletonAfter?.state.scheduler).not.toBe(firstScheduler);
+        expect(activeRun?.status).toBe("awaiting-approval");
+      });
+
+
+      serverTest("hot dev mode uses debounced static ui assets with live reload polling", async () => {
+        await stopServerForTest(server);
         const telemetry = createFakeStartupTelemetry();
         const uiAssetCalls: string[] = [];
         let receivedDebounceMs = -1;
 
         server = await startHarnessServer({
-          port,
+          port: 0,
           adapter,
           repository,
           runtimeRegistry: createFastTestRuntimeRegistry(adapter),
@@ -1208,15 +1335,14 @@ export function registerServerStartupTests() {
       });
 
 
-      test("hot dev mode delays backend handler apply until debounce window ends", async () => {
-        server.stop(true);
-        clearDevHarnessServerSingleton();
+      serverTest("hot dev mode delays backend handler apply until debounce window ends", async () => {
+        await stopServerForTest(server);
         const clock = new FakeClock();
         const firstRoot = fixture.createTempDir(`first-hot-root-${crypto.randomUUID()}`);
         const secondRoot = fixture.createTempDir(`second-hot-root-${crypto.randomUUID()}`);
 
         server = await startHarnessServer({
-          port,
+          port: 0,
           adapter,
           repository,
           runtimeRegistry: createFastTestRuntimeRegistry(adapter),
@@ -1234,7 +1360,7 @@ export function registerServerStartupTests() {
         expect(await singletonBeforeReload?.state.pickFolder()).toBe(firstRoot);
 
         await startHarnessServer({
-          port,
+          port: 0,
           adapter,
           repository,
           runtimeRegistry: createFastTestRuntimeRegistry(adapter),
@@ -1261,12 +1387,11 @@ export function registerServerStartupTests() {
       });
 
 
-      test("hot singleton version mismatch forces one controlled restart", async () => {
-        server.stop(true);
-        clearDevHarnessServerSingleton();
+      serverTest("hot singleton version mismatch forces one controlled restart", async () => {
+        await stopServerForTest(server);
 
         server = await startHarnessServer({
-          port,
+          port: 0,
           adapter,
           repository,
           runtimeRegistry: createFastTestRuntimeRegistry(adapter),
@@ -1278,7 +1403,7 @@ export function registerServerStartupTests() {
         const firstServer = server;
 
         const restartedServer = await startHarnessServer({
-          port,
+          port: 0,
           adapter,
           repository,
           runtimeRegistry: createFastTestRuntimeRegistry(adapter),
@@ -1293,12 +1418,12 @@ export function registerServerStartupTests() {
       });
 
 
-      test("startup completion fires when server url is available, before any websocket client connects", async () => {
-        server.stop(true);
+      serverTest("startup completion fires when server url is available, before any websocket client connects", async () => {
+        await stopServerForTest(server);
         const telemetry = createFakeStartupTelemetry();
 
         server = await startHarnessServer({
-          port,
+          port: 0,
           adapter,
           repository,
           runtimeRegistry: createFastTestRuntimeRegistry(adapter),
@@ -1313,8 +1438,8 @@ export function registerServerStartupTests() {
       });
 
 
-      test("slow ui-assets phase emits targeted hint without aborting startup", async () => {
-        server.stop(true);
+      serverTest("slow ui-assets phase emits targeted hint without aborting startup", async () => {
+        await stopServerForTest(server);
         const clock = new FakeClock();
         const startupLines: string[] = [];
         const resolveQueue: Array<() => void> = [];
@@ -1329,7 +1454,7 @@ export function registerServerStartupTests() {
         });
 
         const startPromise = startHarnessServer({
-          port,
+          port: 0,
           adapter,
           repository,
           runtimeRegistry: createFastTestRuntimeRegistry(adapter),
@@ -1369,7 +1494,7 @@ export function registerServerStartupTests() {
       });
 
 
-      test("emits setup.updated on explicit setup refresh and project activation changes", async () => {
+      serverTest("emits setup.updated on explicit setup refresh and project activation changes", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const activatedSetupPromise = waitForEvent(
@@ -1402,8 +1527,9 @@ export function registerServerStartupTests() {
   });
 }
 
-export function registerServerPreferencesAndModesTests() {
+export function registerServerPreferencesAndModesTests(options: ServerTestShardOptions = {}) {
   describe("harness server preferences and modes", () => {
+    const serverTest = createServerTestRegistrar(options);
     const fixture = useGitProjectFixture({
       fixtureName: "server-preferences",
       packageName: "test-project",
@@ -1427,7 +1553,7 @@ export function registerServerPreferencesAndModesTests() {
       adapter = new FakePiAgentAdapter();
       repository = new WorkspaceRepository(dbPath, projectRoot, { durability: "test-fast" });
       ({ server, port } = await startServerForTest({
-        port,
+        port: 0,
         adapter,
         repository,
         pickFolder: async () => extraProjectRoot,
@@ -1435,13 +1561,13 @@ export function registerServerPreferencesAndModesTests() {
       }));
     });
 
-    afterEach(() => {
-      server?.stop(true);
+    afterEach(async () => {
+      await stopServerForTest(server);
     });
 
 
     
-      test("saves preferences and persists API key", async () => {
+      serverTest("saves preferences and persists API key", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const savedPromise = waitForEvent(socket, "preferences.saved");
@@ -1494,10 +1620,10 @@ export function registerServerPreferencesAndModesTests() {
 
 
     
-      test("marks setup ready when a CLI runtime works without Pi API keys", async () => {
-        server.stop(true);
+      serverTest("marks setup ready when a CLI runtime works without Pi API keys", async () => {
+        await stopServerForTest(server);
         ({ server, port } = await startServerForTest({
-          port,
+          port: 0,
           adapter,
           repository,
           runtimeRegistry: new AgentRuntimeRegistry([new PiRuntime(adapter), new FakeCodexRuntime(adapter)]),
@@ -1515,7 +1641,7 @@ export function registerServerPreferencesAndModesTests() {
 
 
     
-      test("clears persisted API key", async () => {
+      serverTest("clears persisted API key", async () => {
         repository.setStoredOpenAiApiKey("sk-clear-123");
         repository.setStoredGoogleApiKey("AIza-clear-456");
         adapter.setApiKey("openai", "sk-clear-123");
@@ -1543,7 +1669,7 @@ export function registerServerPreferencesAndModesTests() {
 
 
     
-      test("uses gemini planning and subagent defaults when provider brand is gemini", async () => {
+      serverTest("uses gemini planning and subagent defaults when provider brand is gemini", async () => {
         repository.setStoredGoogleApiKey("AIza-gemini-123");
         repository.setProviderBrand("gemini");
         repository.setSubagentWorktreeStrategyDefault("separate-worktrees");
@@ -1583,11 +1709,11 @@ export function registerServerPreferencesAndModesTests() {
       }, 60000);
 
 
-      test("uses codex planning default even when provider brand is gemini", async () => {
-        server.stop(true);
+      serverTest("uses codex planning default even when provider brand is gemini", async () => {
+        await stopServerForTest(server);
         repository.setProviderBrand("gemini");
         ({ server, port } = await startServerForTest({
-          port,
+          port: 0,
           adapter,
           repository,
           runtimeRegistry: new AgentRuntimeRegistry([new PiRuntime(adapter), new FakeCodexRuntime(adapter)]),
@@ -1607,7 +1733,8 @@ export function registerServerPreferencesAndModesTests() {
             projectId,
             threadId,
             agentId: "codex-cli",
-            content: "complex task"
+            content:
+              "Implement a protocol migration with database persistence, concurrency handling, integration tests, and end to end verification."
           },
           30000
         );
@@ -1619,12 +1746,12 @@ export function registerServerPreferencesAndModesTests() {
       }, 60000);
 
 
-      test("uses same-family codex subagent defaults with low reasoning", async () => {
-        server.stop(true);
+      serverTest("uses same-family codex subagent defaults with low reasoning", async () => {
+        await stopServerForTest(server);
         repository.setProviderBrand("gemini");
         repository.setSubagentWorktreeStrategyDefault("separate-worktrees");
         ({ server, port } = await startServerForTest({
-          port,
+          port: 0,
           adapter,
           repository,
           runtimeRegistry: new AgentRuntimeRegistry([new PiRuntime(adapter), new FakeCodexRuntime(adapter)]),
@@ -1673,12 +1800,12 @@ export function registerServerPreferencesAndModesTests() {
       }, 60000);
 
 
-      test("passes fast mode and low reasoning to same-worktree subagents", async () => {
-        server.stop(true);
+      serverTest("passes fast mode and low reasoning to same-worktree subagents", async () => {
+        await stopServerForTest(server);
         repository.setProviderBrand("gemini");
         repository.setSubagentWorktreeStrategyDefault("same-worktree");
         ({ server, port } = await startServerForTest({
-          port,
+          port: 0,
           adapter,
           repository,
           runtimeRegistry: new AgentRuntimeRegistry([new PiRuntime(adapter), new FakeCodexRuntime(adapter)]),
@@ -1730,7 +1857,7 @@ export function registerServerPreferencesAndModesTests() {
       }, 60000);
 
 
-      test("emits an initial fast mode status message when enabled", async () => {
+      serverTest("emits an initial fast mode status message when enabled", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot);
@@ -1761,7 +1888,7 @@ export function registerServerPreferencesAndModesTests() {
         socket.close();
       }, 60000);
 
-      test("chat.send message append includes refreshed generated thread title", async () => {
+      serverTest("chat.send message append includes refreshed generated thread title", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot);
@@ -1795,7 +1922,7 @@ export function registerServerPreferencesAndModesTests() {
 
 
     
-      test("chat.send presents a ready plan before execution", async () => {
+      serverTest("chat.send presents a ready plan before execution", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot);
@@ -1834,7 +1961,7 @@ export function registerServerPreferencesAndModesTests() {
         socket.close();
       });
 
-      test("chat.send creates explicit project assistants without running project planner", async () => {
+      serverTest("chat.send creates explicit project assistants without running project planner", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot);
@@ -1910,7 +2037,7 @@ export function registerServerPreferencesAndModesTests() {
         socket.close();
       }, 60000);
 
-      test("chat.send asks for purpose before creating underspecified project assistants", async () => {
+      serverTest("chat.send asks for purpose before creating underspecified project assistants", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot);
@@ -1993,7 +2120,7 @@ export function registerServerPreferencesAndModesTests() {
         socket.close();
       }, 60000);
 
-      test("chat.send purpose question can cancel assistant creation", async () => {
+      serverTest("chat.send purpose question can cancel assistant creation", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot);
@@ -2045,7 +2172,7 @@ export function registerServerPreferencesAndModesTests() {
         socket.close();
       }, 60000);
 
-      test("chat.send asks before converting ambiguous assistant-like prompts", async () => {
+      serverTest("chat.send asks before converting ambiguous assistant-like prompts", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot);
@@ -2089,7 +2216,7 @@ export function registerServerPreferencesAndModesTests() {
         socket.close();
       }, 60000);
 
-      test("ambiguous assistant question answer can create assistant", async () => {
+      serverTest("ambiguous assistant question answer can create assistant", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot);
@@ -2149,7 +2276,7 @@ export function registerServerPreferencesAndModesTests() {
         socket.close();
       }, 60000);
 
-      test("ambiguous assistant question answer can run once", async () => {
+      serverTest("ambiguous assistant question answer can run once", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot);
@@ -2202,7 +2329,7 @@ export function registerServerPreferencesAndModesTests() {
         socket.close();
       }, 60000);
 
-      test("assistant.create-from-thread creates and dedupes project assistants", async () => {
+      serverTest("assistant.create-from-thread creates and dedupes project assistants", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot);
@@ -2253,11 +2380,11 @@ export function registerServerPreferencesAndModesTests() {
         socket.close();
       }, 60000);
 
-      test("assistant-owned background jobs use the assistant runtime", async () => {
-        server.stop(true);
+      serverTest("assistant-owned background jobs use the assistant runtime", async () => {
+        await stopServerForTest(server);
         const codexAdapter = new FakePiAgentAdapter();
         ({ server, port } = await startServerForTest({
-          port,
+          port: 0,
           adapter,
           repository,
           runtimeRegistry: new AgentRuntimeRegistry([new PiRuntime(adapter), new FakeCodexRuntime(codexAdapter)]),
@@ -2332,7 +2459,7 @@ export function registerServerPreferencesAndModesTests() {
         socket.close();
       }, 60000);
 
-      test("background job run updates stream execution log events", async () => {
+      serverTest("background job run updates stream execution log events", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot);
@@ -2396,16 +2523,286 @@ export function registerServerPreferencesAndModesTests() {
         socket.close();
       }, 60000);
 
+      serverTest("background job run-now repairs policy-suppressed planning questions before queuing", async () => {
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot);
+        const projectId = opened.payload.project.id;
+        const now = new Date().toISOString();
+        const assistantId = crypto.randomUUID();
+        const automationThreadId = crypto.randomUUID();
+        const jobId = crypto.randomUUID();
+        repository.saveAssistant({
+          id: assistantId,
+          name: "Kojima helper",
+          scope: "project",
+          projectId,
+          personalityPrompt: "Run browser game sweeps.",
+          jobPrompt: "Use durable guidance without asking repeat target-selection questions.",
+          agentId: "pi",
+          runState: "active",
+          bootstrapState: "completed",
+          failureStreakCount: 0,
+          circuitBreakerState: "closed",
+          unreadQuestionCount: 0,
+          createdAt: now,
+          updatedAt: now
+        } satisfies Assistant);
+        repository.saveAssistantLearning({
+          id: crypto.randomUUID(),
+          assistantId,
+          summary: "For sweep passes, pick a random browser-playable game unless told otherwise.",
+          source: "test",
+          confidence: "high",
+          createdAt: now
+        });
+        repository.saveBackgroundJob({
+          id: jobId,
+          projectId,
+          assistantId,
+          automationThreadId,
+          kind: "ai-routine",
+          name: "Kojima patrol",
+          status: "enabled",
+          riskLevel: "safe",
+          definition: {
+            kind: "ai-routine",
+            prompt: "Run browser game sweep",
+            modeId: "implement"
+          },
+          schedule: {
+            type: "interval",
+            intervalSeconds: 600,
+            nextRunAt: now,
+            sourceText: "10m"
+          },
+          scheduleInput: "10m",
+          nextRunAt: now,
+          createdAt: now,
+          updatedAt: now
+        } satisfies BackgroundJob);
+        repository.createAgentRun(projectId, "Run browser game sweep", "openai/gpt-5.4", automationThreadId);
+        const linkedRun = repository.getLatestThreadRun(projectId, automationThreadId);
+        if (!linkedRun) {
+          throw new Error("Expected linked run");
+        }
+        repository.appendPlanningQuestion(
+          projectId,
+          linkedRun.id,
+          {
+            id: "target-selection",
+            prompt: "What should I use as the concrete sweep input for this pass?",
+            choices: [
+              {
+                id: "choice-1",
+                label: "Guidance",
+                description: "Use durable guidance.",
+                answerText: "Use durable target guidance.",
+                recommended: true
+              },
+              {
+                id: "choice-2",
+                label: "Current context",
+                description: "Use current context.",
+                answerText: "Use current context.",
+                recommended: false
+              },
+              {
+                id: "choice-3",
+                label: "Ask",
+                description: "Ask the user.",
+                answerText: "Ask the user.",
+                recommended: false
+              }
+            ],
+            required: true
+          },
+          "deferred"
+        );
+        const staleRun = repository.createBackgroundJobRun({
+          jobId,
+          projectId,
+          assistantId,
+          automationThreadId,
+          triggerSource: "schedule",
+          status: "awaiting-user-input",
+          riskLevel: "safe",
+          approvalStatus: "not-needed"
+        });
+        repository.setBackgroundJobRunStatus(staleRun.id, "awaiting-user-input", { linkedAgentRunId: linkedRun.id });
+
+        const completedPromise = waitForEvent(
+          socket,
+          "background-job-run.updated",
+          (event) => event.payload.run.jobId === jobId && event.payload.run.id !== staleRun.id && event.payload.run.status === "succeeded",
+          10000
+        );
+        socket.send(
+          JSON.stringify({
+            type: "background-job.run-now",
+            requestId: "req-repair-question-job",
+            payload: {
+              projectId,
+              jobId
+            }
+          })
+        );
+
+        await completedPromise;
+        const repairedRun = repository.getBackgroundJobRun(staleRun.id);
+        expect(repairedRun?.status).toBe("skipped");
+        expect(repairedRun?.summary).toBe("Planning question auto-resolved; run will retry on next cadence");
+        expect(repository.getActiveBackgroundJobRuns(jobId)).toHaveLength(0);
+        socket.close();
+      }, 60000);
+
+      serverTest("background job run-now refuses true active blockers with status detail", async () => {
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot);
+        const projectId = opened.payload.project.id;
+        const now = new Date().toISOString();
+        const automationThreadId = crypto.randomUUID();
+        const jobId = crypto.randomUUID();
+        repository.saveBackgroundJob({
+          id: jobId,
+          projectId,
+          automationThreadId,
+          kind: "ai-routine",
+          name: "Active blocker job",
+          status: "enabled",
+          riskLevel: "safe",
+          definition: {
+            kind: "ai-routine",
+            prompt: "active blocker test",
+            modeId: "implement"
+          },
+          schedule: {
+            type: "interval",
+            intervalSeconds: 600,
+            nextRunAt: now,
+            sourceText: "10m"
+          },
+          scheduleInput: "10m",
+          nextRunAt: now,
+          createdAt: now,
+          updatedAt: now
+        } satisfies BackgroundJob);
+        const activeRun = repository.createBackgroundJobRun({
+          jobId,
+          projectId,
+          automationThreadId,
+          triggerSource: "schedule",
+          status: "running",
+          riskLevel: "safe",
+          approvalStatus: "not-needed"
+        });
+        repository.setBackgroundJobRunStatus(activeRun.id, "running", { summary: "Still executing" });
+
+        const rejectedPromise = waitForEvent(socket, "command.rejected", (event) => event.requestId === "req-active-blocker-job");
+        socket.send(
+          JSON.stringify({
+            type: "background-job.run-now",
+            requestId: "req-active-blocker-job",
+            payload: {
+              projectId,
+              jobId
+            }
+          })
+        );
+
+        const rejected = await rejectedPromise;
+        expect(rejected.payload.detail).toContain(`Background job already has active run ${activeRun.id} in status running`);
+        expect(rejected.payload.detail).toContain("Still executing");
+        expect(repository.getActiveBackgroundJobRuns(jobId)).toHaveLength(1);
+        socket.close();
+      }, 60000);
+
+      serverTest("background job stop-run stops stale linked agent run", async () => {
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot);
+        const projectId = opened.payload.project.id;
+        const threadId = opened.payload.project.activeThreadId;
+        const now = new Date().toISOString();
+        const automationThreadId = crypto.randomUUID();
+        const jobId = crypto.randomUUID();
+        repository.saveBackgroundJob({
+          id: jobId,
+          projectId,
+          automationThreadId,
+          kind: "ai-routine",
+          name: "Stale linked run job",
+          status: "enabled",
+          riskLevel: "safe",
+          definition: {
+            kind: "ai-routine",
+            prompt: "stale linked run test",
+            modeId: "implement"
+          },
+          schedule: {
+            type: "interval",
+            intervalSeconds: 600,
+            nextRunAt: now,
+            sourceText: "10m"
+          },
+          scheduleInput: "10m",
+          nextRunAt: now,
+          createdAt: now,
+          updatedAt: now
+        } satisfies BackgroundJob);
+        repository.createAgentRun(projectId, "stale linked run", "openai/gpt-5.4", threadId);
+        const linkedRun = repository.getLatestThreadRun(projectId, threadId);
+        expect(linkedRun).toBeTruthy();
+        repository.setAgentRunStatus(projectId, linkedRun!.id, "running-main");
+        const activeRun = repository.createBackgroundJobRun({
+          jobId,
+          projectId,
+          automationThreadId,
+          triggerSource: "schedule",
+          status: "running",
+          riskLevel: "safe",
+          approvalStatus: "not-needed"
+        });
+        repository.setBackgroundJobRunStatus(activeRun.id, "running", { linkedAgentRunId: linkedRun!.id });
+
+        const stoppedBackgroundRunPromise = waitForEvent(
+          socket,
+          "background-job-run.updated",
+          (event) => event.payload.run.id === activeRun.id && event.payload.run.status === "cancelled"
+        );
+        const stoppedAgentRunPromise = waitForEvent(
+          socket,
+          "run.updated",
+          (event) => event.payload.run.id === linkedRun!.id && event.payload.run.status === "stopped"
+        );
+        socket.send(
+          JSON.stringify({
+            type: "background-job.stop-run",
+            requestId: "req-stop-stale-linked-run",
+            payload: {
+              projectId,
+              runId: activeRun.id
+            }
+          })
+        );
+
+        await stoppedBackgroundRunPromise;
+        await stoppedAgentRunPromise;
+        expect(repository.getBackgroundJobRun(activeRun.id)?.status).toBe("cancelled");
+        expect(repository.getRun(projectId, linkedRun!.id)?.status).toBe("stopped");
+        socket.close();
+      }, 60000);
+
 
     
-      test("ask mode auto-runs immediately without appending a plan summary message", async () => {
+      serverTest("ask mode auto-runs immediately without appending a plan summary message", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot, "req-ask-open");
         const projectId = opened.payload.project.id;
         const threadId = opened.payload.project.activeThreadId;
         const readyPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "ready");
-        const planPromise = waitForEvent(socket, "agent.plan");
         let planMessageSeen = false;
         socket.addEventListener("message", (event) => {
           const payload = JSON.parse(event.data as string);
@@ -2430,19 +2827,18 @@ export function registerServerPreferencesAndModesTests() {
         );
     
         const ready = await readyPromise;
-        const plan = await planPromise;
         await pingServer(socket, "req-ask-drain");
     
         expect(ready.payload.run.plan?.gating.mode).toBe("immediate");
-        expect(plan.payload.plan.executionPlan?.gating.mode).toBe("immediate");
         expect(planMessageSeen).toBe(false);
-        expect(adapter.calls.map((call) => call.kind)).toEqual(["planner"]);
+        expect(ready.payload.run.plan?.origin).toBe("quick-task");
+        expect(adapter.calls.map((call) => call.kind)).toEqual([]);
         socket.close();
       });
 
 
     
-      test("plan mode preserves approval-first gating", async () => {
+      serverTest("plan mode preserves approval-first gating", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot, "req-plan-mode-open");
@@ -2469,7 +2865,7 @@ export function registerServerPreferencesAndModesTests() {
 
 
     
-      test("implement mode uses immediate gating for main-route plans", async () => {
+      serverTest("implement mode uses immediate gating for main-route plans", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot, "req-impl-main-open");
@@ -2495,7 +2891,7 @@ export function registerServerPreferencesAndModesTests() {
 
 
     
-      test("implement mode upgrades multi-subagent plans to approval-first gating", async () => {
+      serverTest("implement mode upgrades multi-subagent plans to approval-first gating", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot, "req-impl-subagents-open");
@@ -2529,7 +2925,7 @@ export function registerServerPreferencesAndModesTests() {
 
 
     
-      test("debug and review modes default to immediate gating", async () => {
+      serverTest("debug and review modes default to immediate gating", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot, "req-debug-review-open");
@@ -2572,7 +2968,7 @@ export function registerServerPreferencesAndModesTests() {
 
 
     
-      test("chat.send auto-switches project mode when prompt intent strongly matches a builtin mode", async () => {
+      serverTest("chat.send auto-switches project mode when prompt intent strongly matches a builtin mode", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot, "req-auto-mode-open");
@@ -2604,7 +3000,7 @@ export function registerServerPreferencesAndModesTests() {
       });
 
 
-      test("chat.send honors explicitly locked mode over auto-detect", async () => {
+      serverTest("chat.send honors explicitly locked mode over auto-detect", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot, "req-mode-lock-open");
@@ -2635,7 +3031,38 @@ export function registerServerPreferencesAndModesTests() {
       });
 
 
-      test("chat.send correction follow-up overrides sticky ask mode for direct workspace actions", async () => {
+      serverTest("chat.send auto mode detects implementation and skips planner below difficulty threshold", async () => {
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot, "req-mode-auto-open");
+        const projectId = opened.payload.project.id;
+        const threadId = opened.payload.project.activeThreadId;
+        const readyPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "ready");
+
+        socket.send(
+          JSON.stringify({
+            type: "chat.send",
+            requestId: "req-mode-auto-send",
+            payload: {
+              projectId,
+              threadId,
+              agentId: "pi",
+              content: "Create readme.md",
+              modeId: "auto",
+              modeLocked: false
+            }
+          })
+        );
+
+        const ready = await readyPromise;
+        expect(ready.payload.run.plan?.mode?.id).toBe("implement");
+        expect(ready.payload.run.plan?.origin).toBe("quick-task");
+        expect(adapter.calls.map((call) => call.kind)).toEqual([]);
+        socket.close();
+      });
+
+
+      serverTest("chat.send correction follow-up overrides sticky ask mode for direct workspace actions", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot, "req-auto-followup-open");
@@ -2705,7 +3132,7 @@ export function registerServerPreferencesAndModesTests() {
       });
 
 
-      test("chat.send bypasses planner for direct workspace tasks even when review mode was selected", async () => {
+      serverTest("chat.send bypasses planner for direct workspace tasks even when review mode was selected", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot, "req-quick-task-open");
@@ -2735,20 +3162,26 @@ export function registerServerPreferencesAndModesTests() {
       });
 
 
-      test("review mode executes runs with read-only requests", async () => {
+      serverTest("review mode executes runs with read-only requests", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot, "req-review-open");
         const projectId = opened.payload.project.id;
         const threadId = opened.payload.project.activeThreadId;
 
-        const ready = await sendChatUntilReady(socket, {
-          requestId: "req-review-send",
-          projectId,
-          threadId,
-          content: "Review this repo for bugs and missing tests",
-          modeId: "review"
-        }, 10000);
+        const readyPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "ready", 10000);
+        socket.send(
+          JSON.stringify(
+            createChatSendCommand({
+              requestId: "req-review-send",
+              projectId,
+              threadId,
+              content: "Review this repo for bugs and missing tests",
+              modeId: "review"
+            })
+          )
+        );
+        const ready = await readyPromise;
 
         await executeReadyRun(
           socket,
@@ -2768,8 +3201,9 @@ export function registerServerPreferencesAndModesTests() {
   });
 }
 
-export function registerServerExecutionMainTests() {
+export function registerServerExecutionMainTests(options: ServerTestShardOptions = {}) {
   describe("harness server execution main", () => {
+    const serverTest = createServerTestRegistrar(options);
     const fixture = useGitProjectFixture({
       fixtureName: "server-execution-main",
       packageName: "test-project",
@@ -2793,7 +3227,7 @@ export function registerServerExecutionMainTests() {
       adapter = new FakePiAgentAdapter();
       repository = new WorkspaceRepository(dbPath, projectRoot, { durability: "test-fast" });
       ({ server, port } = await startServerForTest({
-        port,
+        port: 0,
         adapter,
         repository,
         pickFolder: async () => extraProjectRoot,
@@ -2801,13 +3235,13 @@ export function registerServerExecutionMainTests() {
       }));
     });
 
-    afterEach(() => {
-      server?.stop(true);
+    afterEach(async () => {
+      await stopServerForTest(server);
     });
 
 
     
-      test("pauses globally, persists state, and rejects new execution starts until resume", async () => {
+      serverTest("pauses globally, persists state, and rejects new execution starts until resume", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const secondSocket = createSocket(port);
@@ -2871,7 +3305,7 @@ export function registerServerExecutionMainTests() {
 
 
     
-      test("defers planner questions raised during pause and surfaces them on resume", async () => {
+      serverTest("defers planner questions raised during pause and surfaces them on resume", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot, "req-deferred-question-open");
@@ -2948,7 +3382,7 @@ export function registerServerExecutionMainTests() {
       });
 
     
-      test("runs low difficulty tasks on the main executor only", async () => {
+      serverTest("runs low difficulty tasks on the main executor only", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot);
@@ -2967,7 +3401,7 @@ export function registerServerExecutionMainTests() {
       });
 
     
-      test("asks planner question before execution and resumes after answer", async () => {
+      serverTest("asks planner question before execution and resumes after answer", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot);
@@ -3014,10 +3448,10 @@ export function registerServerExecutionMainTests() {
         socket.close();
       });
 
-      test("emits planner heartbeat milestones while a slow planner turn is still running", async () => {
-        server.stop(true);
+      serverTest("emits planner heartbeat milestones while a slow planner turn is still running", async () => {
+        await stopServerForTest(server);
         ({ server, port } = await startServerForTest({
-          port,
+          port: 0,
           adapter,
           repository,
           pickFolder: async () => extraProjectRoot,
@@ -3070,7 +3504,7 @@ export function registerServerExecutionMainTests() {
 
 
     
-      test("same thread can receive repeated planner questions across separate runs", async () => {
+      serverTest("same thread can receive repeated planner questions across separate runs", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot);
@@ -3141,7 +3575,7 @@ export function registerServerExecutionMainTests() {
         socket.close();
       });
 
-      test("same run can receive repeated planner question ids after an answer", async () => {
+      serverTest("same run can receive repeated planner question ids after an answer", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot);
@@ -3197,7 +3631,8 @@ export function registerServerExecutionMainTests() {
           10000
         );
         expect(secondRun.payload.run.questions[0].id).not.toBe(secondRun.payload.run.questions[1].id);
-        expect(secondRun.payload.run.questions[1].id).toContain(":question-1:2");
+        expect(secondRun.payload.run.questions[0].logicalQuestionId).toBe("question-1");
+        expect(secondRun.payload.run.questions[1].logicalQuestionId).toBe("question-1");
 
         const complete = await answerPlanningQuestionAndExecute(
           socket,
@@ -3219,7 +3654,7 @@ export function registerServerExecutionMainTests() {
 
 
     
-      test("chat.stop aborts running work", async () => {
+      serverTest("chat.stop aborts running work", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot);
@@ -3264,8 +3699,9 @@ export function registerServerExecutionMainTests() {
   });
 }
 
-export function registerServerSubagentTests() {
+export function registerServerSubagentTests(options: ServerTestShardOptions = {}) {
   describe("harness server subagents", () => {
+    const serverTest = createServerTestRegistrar(options);
     const fixture = useGitProjectFixture({
       fixtureName: "server-subagents",
       packageName: "test-project",
@@ -3309,7 +3745,7 @@ export function registerServerSubagentTests() {
       adapter = new FakePiAgentAdapter();
       repository = new WorkspaceRepository(dbPath, projectRoot, { durability: "test-fast" });
       ({ server, port } = await startServerForTest({
-        port,
+        port: 0,
         adapter,
         repository,
         pickFolder: async () => extraProjectRoot,
@@ -3317,14 +3753,27 @@ export function registerServerSubagentTests() {
       }));
     });
 
-    afterEach(() => {
+    afterEach(async () => {
       globalThis.fetch = originalFetch;
-      server?.stop(true);
+      await stopServerForTest(server);
     });
+
+    async function restartWithRealOsAdapters() {
+      await stopServerForTest(server);
+      ({ server, port } = await startServerForTest({
+        port: 0,
+        adapter,
+        repository,
+        pickFolder: async () => extraProjectRoot,
+        serverOnly: true,
+        useFastOsAdapters: false
+      }));
+    }
 
 
     
-      test("runs experiments in virtual branch mode and exposes shared memory entries", async () => {
+      serverTest("runs experiments in virtual branch mode and exposes shared memory entries", async () => {
+        await restartWithRealOsAdapters();
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot, "req-experiment-open");
@@ -3397,7 +3846,7 @@ export function registerServerSubagentTests() {
       });
 
 
-      test("chat.send forwards attachment context into planner prompts", async () => {
+      serverTest("chat.send forwards attachment context into planner prompts", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot, "req-attach-open");
@@ -3464,7 +3913,7 @@ export function registerServerSubagentTests() {
 
 
     
-      test("chat.send forwards extracted office document context into planner prompts", async () => {
+      serverTest("chat.send forwards extracted office document context into planner prompts", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot, "req-doc-open");
@@ -3569,7 +4018,7 @@ export function registerServerSubagentTests() {
 
 
     
-      test("chat.send keeps malformed document attachments explicit without crashing planning", async () => {
+      serverTest("chat.send keeps malformed document attachments explicit without crashing planning", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot, "req-bad-doc-open");
@@ -3615,7 +4064,7 @@ export function registerServerSubagentTests() {
 
 
     
-      test("runs high difficulty tasks with subagents and aggregation", async () => {
+      serverTest("runs high difficulty tasks with subagents and aggregation", async () => {
         repository.setSubagentWorktreeStrategyDefault("separate-worktrees");
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
@@ -3656,7 +4105,7 @@ export function registerServerSubagentTests() {
         socket.close();
       }, 60000);
 
-      test("runs prerequisites before subagent fan-out and persists completion", async () => {
+      serverTest("runs prerequisites before subagent fan-out and persists completion", async () => {
         repository.setSubagentWorktreeStrategyDefault("separate-worktrees");
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
@@ -3700,7 +4149,7 @@ export function registerServerSubagentTests() {
         socket.close();
       }, 60000);
 
-      test("normalizes planner prerequisite owner aliases before persisting and executing", async () => {
+      serverTest("normalizes planner prerequisite owner aliases before persisting and executing", async () => {
         repository.setSubagentWorktreeStrategyDefault("separate-worktrees");
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
@@ -3747,7 +4196,7 @@ export function registerServerSubagentTests() {
         socket.close();
       }, 60000);
 
-      test("fails run when prerequisite execution fails before subagents start", async () => {
+      serverTest("fails run when prerequisite execution fails before subagents start", async () => {
         repository.setSubagentWorktreeStrategyDefault("separate-worktrees");
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
@@ -3788,7 +4237,8 @@ export function registerServerSubagentTests() {
       }, 60000);
 
 
-      test("emits live Harness milestone windows and hides aggregation noise", async () => {
+      serverTest("emits live Harness milestone windows and hides aggregation noise", async () => {
+        await restartWithRealOsAdapters();
         repository.setSubagentWorktreeStrategyDefault("same-worktree");
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
@@ -3886,7 +4336,7 @@ export function registerServerSubagentTests() {
       }, 60000);
 
 
-      test("aggregates repeated subagent shell failure milestones", async () => {
+      serverTest("aggregates repeated subagent shell failure milestones", async () => {
         repository.setSubagentWorktreeStrategyDefault("same-worktree");
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
@@ -3923,7 +4373,7 @@ export function registerServerSubagentTests() {
       }, 60000);
 
 
-      test("reports subagent failures before slower siblings finish", async () => {
+      serverTest("reports subagent failures before slower siblings finish", async () => {
         repository.setSubagentWorktreeStrategyDefault("same-worktree");
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
@@ -3974,7 +4424,7 @@ export function registerServerSubagentTests() {
       }, 60000);
 
 
-      test("surfaces aggregating run status before final completion", async () => {
+      serverTest("surfaces aggregating run status before final completion", async () => {
         repository.setSubagentWorktreeStrategyDefault("same-worktree");
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
@@ -4012,7 +4462,7 @@ export function registerServerSubagentTests() {
       }, 60000);
 
 
-      test("does not append harness connect or tool lifecycle noise to chat", async () => {
+      serverTest("does not append harness connect or tool lifecycle noise to chat", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot);
@@ -4044,8 +4494,9 @@ export function registerServerSubagentTests() {
   });
 }
 
-export function registerServerCorrectnessTests() {
+export function registerServerCorrectnessTests(options: ServerTestShardOptions = {}) {
   describe("harness server correctness", () => {
+    const serverTest = createServerTestRegistrar(options);
     const fixture = useGitProjectFixture({
       fixtureName: "server-correctness",
       packageName: "test-project",
@@ -4069,21 +4520,22 @@ export function registerServerCorrectnessTests() {
       adapter = new FakePiAgentAdapter();
       repository = new WorkspaceRepository(dbPath, projectRoot, { durability: "test-fast" });
       ({ server, port } = await startServerForTest({
-        port,
+        port: 0,
         adapter,
         repository,
         pickFolder: async () => extraProjectRoot,
-        serverOnly: true
+        serverOnly: true,
+        useFastOsAdapters: false
       }));
     });
 
-    afterEach(() => {
-      server?.stop(true);
+    afterEach(async () => {
+      await stopServerForTest(server);
     });
 
 
     
-      test("presents a corrective plan when correctness review finds a runnable gap", async () => {
+      serverTest("presents a corrective plan when correctness review finds a runnable gap", async () => {
         writeFileSync(
           path.join(projectRoot, "index.html"),
           '<!doctype html><html><body><script type="module" src="./app.ts"></script></body></html>\n'
@@ -4142,7 +4594,7 @@ export function registerServerCorrectnessTests() {
 
 
     
-      test("corrective follow-up upgrades implement mode to approval when gaps can parallelize", async () => {
+      serverTest("corrective follow-up upgrades implement mode to approval when gaps can parallelize", async () => {
         writeFileSync(
           path.join(projectRoot, "index.html"),
           '<!doctype html><html><body><script type="module" src="./app.ts"></script></body></html>\n'
@@ -4191,8 +4643,9 @@ export function registerServerCorrectnessTests() {
   });
 }
 
-export function registerServerProjectsAndHistoryTests() {
+export function registerServerProjectsAndHistoryTests(options: ServerTestShardOptions = {}) {
   describe("harness server projects and history", () => {
+    const serverTest = createServerTestRegistrar(options);
     const fixture = useGitProjectFixture({
       fixtureName: "server-projects-history",
       packageName: "test-project",
@@ -4216,7 +4669,7 @@ export function registerServerProjectsAndHistoryTests() {
       adapter = new FakePiAgentAdapter();
       repository = new WorkspaceRepository(dbPath, projectRoot, { durability: "test-fast" });
       ({ server, port } = await startServerForTest({
-        port,
+        port: 0,
         adapter,
         repository,
         pickFolder: async () => extraProjectRoot,
@@ -4224,13 +4677,25 @@ export function registerServerProjectsAndHistoryTests() {
       }));
     });
 
-    afterEach(() => {
-      server?.stop(true);
+    afterEach(async () => {
+      await stopServerForTest(server);
     });
+
+    async function restartWithRealOsAdapters() {
+      await stopServerForTest(server);
+      ({ server, port } = await startServerForTest({
+        port: 0,
+        adapter,
+        repository,
+        pickFolder: async () => extraProjectRoot,
+        serverOnly: true,
+        useFastOsAdapters: false
+      }));
+    }
 
 
     
-      test("defers run.refresh while active main execution is streaming", async () => {
+      serverTest("defers run.refresh while active main execution is streaming", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot);
@@ -4284,7 +4749,7 @@ export function registerServerProjectsAndHistoryTests() {
         socket.close();
       }, 10000);
 
-      test("restores persisted in-flight assistant text after reconnect during streaming", async () => {
+      serverTest("restores persisted in-flight assistant text after reconnect during streaming", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot);
@@ -4332,7 +4797,7 @@ export function registerServerProjectsAndHistoryTests() {
       }, 10000);
 
 
-      test("creates a new thread while another thread is still streaming", async () => {
+      serverTest("creates a new thread while another thread is still streaming", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot);
@@ -4390,7 +4855,7 @@ export function registerServerProjectsAndHistoryTests() {
         socket.close();
       }, 10000);
 
-      test("planner question from background thread stays on owning thread after focus changes", async () => {
+      serverTest("planner question from background thread stays on owning thread after focus changes", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot);
@@ -4446,7 +4911,7 @@ export function registerServerProjectsAndHistoryTests() {
         socket.close();
       }, 10000);
 
-      test("renames a thread while it is streaming", async () => {
+      serverTest("renames a thread while it is streaming", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot);
@@ -4506,7 +4971,7 @@ export function registerServerProjectsAndHistoryTests() {
         socket.close();
       }, 10000);
 
-      test("starts a second thread run while another thread is still working", async () => {
+      serverTest("starts a second thread run while another thread is still working", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot);
@@ -4578,7 +5043,7 @@ export function registerServerProjectsAndHistoryTests() {
         socket.close();
       }, 10000);
 
-      test("stops a background-thread run by run id after switching threads", async () => {
+      serverTest("stops a background-thread run by run id after switching threads", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot);
@@ -4649,7 +5114,7 @@ export function registerServerProjectsAndHistoryTests() {
         socket.close();
       }, 10000);
 
-      test("refreshes and removal-checks the original run after switching threads", async () => {
+      serverTest("refreshes and removal-checks the original run after switching threads", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot);
@@ -4760,7 +5225,7 @@ export function registerServerProjectsAndHistoryTests() {
       }, 10000);
 
 
-      test("rejects run.refresh for completed runs", async () => {
+      serverTest("rejects run.refresh for completed runs", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot);
@@ -4800,7 +5265,7 @@ export function registerServerProjectsAndHistoryTests() {
       });
 
 
-      test("rejects stale completed plan execution by persisted run status", async () => {
+      serverTest("rejects stale completed plan execution by persisted run status", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot);
@@ -4842,7 +5307,7 @@ export function registerServerProjectsAndHistoryTests() {
 
 
     
-      test("opens project through typed folder browse command", async () => {
+      serverTest("opens project through typed folder browse command", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const addedPromise = waitForEvent(socket, "project.opened");
@@ -4863,7 +5328,7 @@ export function registerServerProjectsAndHistoryTests() {
 
 
     
-      test("creates a missing folder through typed project.create command", async () => {
+      serverTest("creates a missing folder through typed project.create command", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const createdRoot = path.join(fixture.createTempDir(`new-parent-${crypto.randomUUID()}`), "created-project");
@@ -4888,7 +5353,7 @@ export function registerServerProjectsAndHistoryTests() {
 
 
     
-      test("initializes git with a baseline commit for non-git projects", async () => {
+      serverTest("initializes git with a baseline commit for non-git projects", async () => {
         const nonGitRoot = fixture.createTempDir(`non-git-${crypto.randomUUID()}`);
         writeFileSync(path.join(nonGitRoot, "notes.md"), "baseline\n");
         const socket = createSocket(port);
@@ -4916,11 +5381,11 @@ export function registerServerProjectsAndHistoryTests() {
 
 
     
-      test("returns ranked filesystem suggestions through project.search", async () => {
+      serverTest("returns ranked filesystem suggestions through project.search", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         await openProject(socket, projectRoot, "req-project-search-open");
-        const searchPromise = waitForEvent(socket, "project.search.results");
+        const searchPromise = waitForEvent(socket, "project.search.results", undefined, 15000);
     
         socket.send(
           JSON.stringify({
@@ -4938,11 +5403,11 @@ export function registerServerProjectsAndHistoryTests() {
         expect(searchResults.payload.results[0]?.repoKind).toBe("git-repo");
         expect(typeof searchResults.payload.results[0]?.rootPath).toBe("string");
         socket.close();
-      });
+      }, 15000);
 
 
     
-      test("reopens existing project by creating a new thread", async () => {
+      serverTest("reopens existing project by creating a new thread", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const firstOpened = await openProject(socket, projectRoot, "req-open-existing-1");
@@ -4956,7 +5421,7 @@ export function registerServerProjectsAndHistoryTests() {
         socket.close();
       });
 
-      test("restores pending planner question when switching back to its thread", async () => {
+      serverTest("restores pending planner question when switching back to its thread", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot, "req-thread-question-open");
@@ -5055,7 +5520,7 @@ export function registerServerProjectsAndHistoryTests() {
 
 
     
-      test("removes final project and returns to empty workspace", async () => {
+      serverTest("removes final project and returns to empty workspace", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot, "req-remove-open");
@@ -5086,7 +5551,7 @@ export function registerServerProjectsAndHistoryTests() {
 
 
     
-      test("restores persisted chat history after restart", async () => {
+      serverTest("restores persisted chat history after restart", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot);
@@ -5099,10 +5564,10 @@ export function registerServerProjectsAndHistoryTests() {
           content: "simple task"
         });
         socket.close();
-        server.stop(true);
+        await stopServerForTest(server);
     
         ({ server, port } = await startServerForTest({
-          port,
+          port: 0,
           adapter,
           repository: new WorkspaceRepository(dbPath, projectRoot, { durability: "test-fast" }),
           serverOnly: true
@@ -5123,7 +5588,7 @@ export function registerServerProjectsAndHistoryTests() {
 
 
     
-      test("allows chat runs in non-git folders when dirty git restriction is disabled", async () => {
+      serverTest("allows chat runs in non-git folders when dirty git restriction is disabled", async () => {
         repository.setBlockChatOnDirtyGitDefault(false);
         const nonGitRoot = createStandaloneTempDir(`non-git-disabled-${crypto.randomUUID()}`);
         const socket = createSocket(port);
@@ -5150,7 +5615,8 @@ export function registerServerProjectsAndHistoryTests() {
 
 
     
-      test("emits blocking preflight for non-git folders when dirty git restriction is enabled", async () => {
+      serverTest("emits blocking preflight for non-git folders when dirty git restriction is enabled", async () => {
+        await restartWithRealOsAdapters();
         const nonGitRoot = createStandaloneTempDir(`non-git-enabled-${crypto.randomUUID()}`);
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
@@ -5180,7 +5646,8 @@ export function registerServerProjectsAndHistoryTests() {
 
 
     
-      test("emits dirty git warning and still runs when change count is within threshold", async () => {
+      serverTest("emits dirty git warning and still runs when change count is within threshold", async () => {
+        await restartWithRealOsAdapters();
         writeFileSync(path.join(projectRoot, "dirty-warning.txt"), "warn\n");
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
@@ -5210,7 +5677,8 @@ export function registerServerProjectsAndHistoryTests() {
 
 
     
-      test("rejects chat.send and run.retry when git is too dirty", async () => {
+      serverTest("rejects chat.send and run.retry when git is too dirty", async () => {
+        await restartWithRealOsAdapters();
         for (let index = 0; index < 21; index += 1) {
           writeFileSync(path.join(projectRoot, `dirty-${index}.txt`), `${index}\n`);
         }
@@ -5242,7 +5710,8 @@ export function registerServerProjectsAndHistoryTests() {
 
 
     
-      test("honors custom dirty git change limit", async () => {
+      serverTest("honors custom dirty git change limit", async () => {
+        await restartWithRealOsAdapters();
         repository.setDirtyGitChangeLimitDefault(1);
         writeFileSync(path.join(projectRoot, "dirty-limit-1.txt"), "1\n");
         writeFileSync(path.join(projectRoot, "dirty-limit-2.txt"), "2\n");
@@ -5274,7 +5743,7 @@ export function registerServerProjectsAndHistoryTests() {
 
 
     
-      test("allows chat runs on dirty repos when dirty git restriction is disabled", async () => {
+      serverTest("allows chat runs on dirty repos when dirty git restriction is disabled", async () => {
         repository.setBlockChatOnDirtyGitDefault(false);
         for (let index = 0; index < 21; index += 1) {
           writeFileSync(path.join(projectRoot, `dirty-disabled-${index}.txt`), `${index}\n`);
@@ -5304,7 +5773,7 @@ export function registerServerProjectsAndHistoryTests() {
 
 
     
-      test("retries completed main run with a fresh planner + executor pass", async () => {
+      serverTest("retries completed main run with a fresh planner + executor pass", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot);
@@ -5351,7 +5820,7 @@ export function registerServerProjectsAndHistoryTests() {
 
 
     
-      test("planning.refine replaces the ready plan with a fresh run", async () => {
+      serverTest("planning.refine replaces the ready plan with a fresh run", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot);
@@ -5415,7 +5884,7 @@ export function registerServerProjectsAndHistoryTests() {
 
 
     
-      test("allows a second top-level send after a completed run in the same thread", async () => {
+      serverTest("allows a second top-level send after a completed run in the same thread", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot);
@@ -5451,7 +5920,7 @@ export function registerServerProjectsAndHistoryTests() {
 
 
     
-      test("emits project context usage updates for planner and executor", async () => {
+      serverTest("emits project context usage updates for planner and executor", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot);
@@ -5486,6 +5955,141 @@ export function registerServerProjectsAndHistoryTests() {
         expect(contextEvents.every((event) => typeof event.payload.contextUsage.modelId === "string")).toBe(true);
         socket.close();
       });
+  });
+}
+
+export function registerServerRuntimeBudgetTests(options: ServerTestShardOptions = {}) {
+  describe("harness server runtime budget", () => {
+    const serverTest = createServerTestRegistrar(options);
+    const fixture = useGitProjectFixture({
+      fixtureName: "server-runtime-budget",
+      packageName: "runtime-budget-test",
+      readmeTitle: "# Runtime Budget Test\n",
+      gitIgnore: ".local\nnode_modules\ndist\n"
+    });
+
+    let adapter: FakePiAgentAdapter;
+    let repository: WorkspaceRepository;
+
+    beforeEach(() => {
+      adapter = new FakePiAgentAdapter();
+      repository = new WorkspaceRepository(":memory:", process.cwd(), { durability: "test-fast" });
+    });
+
+    serverTest("budgeted run fails with turn-budget-exhausted before next model call", async () => {
+      const projectRoot = await fixture.createRepoClone("budget-exhausted");
+      const { server, port } = await startServerForTest({ port: 0, adapter, repository });
+      const socket = createSocket(port);
+      await waitForEvent(socket, "connection.ready");
+      const opened = await openProject(socket, projectRoot, "req-budget-open");
+
+      const readyPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "ready");
+      socket.send(
+        JSON.stringify({
+          type: "chat.send",
+          requestId: "req-budget-send",
+          payload: {
+            projectId: opened.payload.project.id,
+            threadId: opened.payload.project.activeThreadId,
+            agentId: "pi",
+            content: "Do budgeted work",
+            runtimeBudget: { maxTurns: 1 }
+          }
+        })
+      );
+      const ready = await readyPromise;
+      expect(adapter.calls).toHaveLength(1);
+      expect(adapter.calls[0]?.prompt).toContain("Remaining turns after this: 0");
+
+      const failedPromise = waitForEvent(
+        socket,
+        "run.updated",
+        (event) => event.payload.run.id === ready.payload.run.id && event.payload.run.status === "failed"
+      );
+      const errorPromise = waitForEvent(socket, "chat.error", (event) => event.payload.detail.includes("turn-budget-exhausted"));
+      socket.send(
+        JSON.stringify({
+          type: "run.execute",
+          requestId: "req-budget-execute",
+          payload: {
+            projectId: opened.payload.project.id,
+            threadId: opened.payload.project.activeThreadId,
+            runId: ready.payload.run.id
+          }
+        })
+      );
+
+      const failed = await failedPromise;
+      await errorPromise;
+      expect(failed.payload.run.failureCategory).toBe("turn-budget-exhausted");
+      expect(adapter.calls).toHaveLength(1);
+      socket.close();
+      await stopServerForTest(server);
+    });
+
+    serverTest("run.complete emits run.updated and chat.complete then rejects terminal repeat", async () => {
+      const projectRoot = await fixture.createRepoClone("run-complete");
+      const { server, port } = await startServerForTest({ port: 0, adapter, repository });
+      const socket = createSocket(port);
+      await waitForEvent(socket, "connection.ready");
+      const opened = await openProject(socket, projectRoot, "req-complete-open");
+
+      const readyPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "ready");
+      socket.send(
+        JSON.stringify({
+          type: "chat.send",
+          requestId: "req-complete-send",
+          payload: {
+            projectId: opened.payload.project.id,
+            threadId: opened.payload.project.activeThreadId,
+            agentId: "pi",
+            content: "Prepare completion"
+          }
+        })
+      );
+      const ready = await readyPromise;
+
+      const completedPromise = waitForEvent(
+        socket,
+        "run.updated",
+        (event) => event.payload.run.id === ready.payload.run.id && event.payload.run.status === "completed"
+      );
+      const chatCompletePromise = waitForEvent(socket, "chat.complete");
+      socket.send(
+        JSON.stringify({
+          type: "run.complete",
+          requestId: "req-complete-command",
+          payload: {
+            projectId: opened.payload.project.id,
+            threadId: opened.payload.project.activeThreadId,
+            runId: ready.payload.run.id,
+            assistantMessageContent: "Completed by lifecycle command."
+          }
+        })
+      );
+
+      await completedPromise;
+      const complete = await chatCompletePromise;
+      expect(complete.payload.assistantMessage.content).toBe("Completed by lifecycle command.");
+
+      const rejectedPromise = waitForEvent(socket, "command.rejected", (event) => event.requestId === "req-complete-repeat");
+      socket.send(
+        JSON.stringify({
+          type: "run.complete",
+          requestId: "req-complete-repeat",
+          payload: {
+            projectId: opened.payload.project.id,
+            threadId: opened.payload.project.activeThreadId,
+            runId: ready.payload.run.id,
+            assistantMessageContent: "repeat"
+          }
+        })
+      );
+      const rejected = await rejectedPromise;
+      expect(rejected.payload.detail).toContain("already terminal");
+      socket.close();
+      await stopServerForTest(server);
+    });
   });
 }
 

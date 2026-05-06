@@ -15,6 +15,7 @@ type HarnessSocket = {
 };
 
 const ptySockets = new Map<string, WebSocket>();
+const notifiedBackgroundRunStatuses = new Map<string, string>();
 const CONTROL_HEARTBEAT_INTERVAL_MS = 15_000;
 const CONTROL_MISSED_PONG_LIMIT = 2;
 const PTY_HEARTBEAT = 0x00;
@@ -91,7 +92,8 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
         const localPreferences = readLocalPreferences();
         const needsProviderSync =
           (localPreferences.openAiApiKey && !parsed.payload.preferences.hasStoredOpenAiApiKey) ||
-          (localPreferences.googleApiKey && !parsed.payload.preferences.hasStoredGoogleApiKey);
+          (localPreferences.googleApiKey && !parsed.payload.preferences.hasStoredGoogleApiKey) ||
+          (localPreferences.anthropicApiKey && !parsed.payload.preferences.hasStoredAnthropicApiKey);
         const restoreCommands = getBrowserUiSessionRestoreCommands(harnessStore.state, browserUiSession);
 
         if (needsProviderSync) {
@@ -102,6 +104,7 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
               payload: {
                 openAiApiKey: localPreferences.openAiApiKey,
                 googleApiKey: localPreferences.googleApiKey,
+                anthropicApiKey: localPreferences.anthropicApiKey,
                 providerBrand: harnessStore.state.providerBrand,
                 debugEnabled: harnessStore.state.debugEnabled,
                 tracePanelDefaultOpen: harnessStore.state.tracePanelDefaultOpen,
@@ -118,11 +121,16 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
             } satisfies ClientCommand)
           );
         } else if (!canSelectProviderBrand(harnessStore.state, harnessStore.state.providerBrand)) {
-          const fallbackProviderBrand = canSelectProviderBrand(harnessStore.state, "gpt") ? "gpt" : "gemini";
+          const fallbackProviderBrand = canSelectProviderBrand(harnessStore.state, "gpt")
+            ? "gpt"
+            : canSelectProviderBrand(harnessStore.state, "gemini")
+              ? "gemini"
+              : "claude";
           harnessStore.setProviderBrand(fallbackProviderBrand);
           persistMergedLocalPreferences({
             openAiApiKey: harnessStore.state.openAiApiKeyDraft.trim() || undefined,
             googleApiKey: harnessStore.state.googleApiKeyDraft.trim() || undefined,
+            anthropicApiKey: harnessStore.state.anthropicApiKeyDraft.trim() || undefined,
             providerBrand: fallbackProviderBrand,
             debugEnabled: harnessStore.state.debugEnabled,
             tracePanelDefaultOpen: harnessStore.state.tracePanelDefaultOpen,
@@ -150,6 +158,8 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
             parsed.type === "preferences.apiKeyCleared" ? undefined : harnessStore.state.openAiApiKeyDraft.trim() || undefined,
           googleApiKey:
             parsed.type === "preferences.apiKeyCleared" ? undefined : harnessStore.state.googleApiKeyDraft.trim() || undefined,
+          anthropicApiKey:
+            parsed.type === "preferences.apiKeyCleared" ? undefined : harnessStore.state.anthropicApiKeyDraft.trim() || undefined,
           providerBrand: harnessStore.state.providerBrand,
           debugEnabled: harnessStore.state.debugEnabled,
           tracePanelDefaultOpen: harnessStore.state.tracePanelDefaultOpen,
@@ -318,8 +328,15 @@ function notifyBackgroundRun(runId: string) {
   }
 
   if (run.status !== "succeeded" && run.status !== "failed" && run.status !== "awaiting-approval") {
+    notifiedBackgroundRunStatuses.delete(run.id);
     return;
   }
+
+  const previousNotifiedStatus = notifiedBackgroundRunStatuses.get(run.id);
+  if (previousNotifiedStatus === run.status) {
+    return;
+  }
+  notifiedBackgroundRunStatuses.set(run.id, run.status);
 
   const jobName = state.backgroundJobs.jobs.find((job) => job.id === run.jobId)?.name ?? run.jobId;
   const title =

@@ -2,7 +2,8 @@ import type {
   PiAgentAdapter,
   PiAgentExecutionController,
   PiAgentPromptRequest,
-  PiAgentPromptResult
+  PiAgentPromptResult,
+  PiApiKeyProvider
 } from "../pi-agent-adapter";
 import { debugLog } from "../logging";
 import { CliProcessManager } from "./cli-process-manager";
@@ -35,9 +36,9 @@ export class CliAgentAdapter implements PiAgentAdapter {
 
   constructor(private readonly options: CliAgentAdapterOptions) {}
 
-  setApiKey(_provider: "openai" | "google", _apiKey: string | undefined) {}
+  setApiKey(_provider: PiApiKeyProvider, _apiKey: string | undefined) {}
 
-  hasApiKey(_provider: "openai" | "google") {
+  hasApiKey(_provider: PiApiKeyProvider) {
     return false;
   }
 

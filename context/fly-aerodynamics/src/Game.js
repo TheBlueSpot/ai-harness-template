@@ -70,6 +70,7 @@ export class Game {
     this.progress = selectUpgrade(this.progress, upgradeId);
     this.loadout = deriveLoadout(this.progress);
     this.shop = getShopInventory(this.progress);
+    saveProgress(this.progress);
   }
 
   purchaseUpgrade(upgradeId) {

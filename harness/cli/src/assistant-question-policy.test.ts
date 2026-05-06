@@ -64,6 +64,33 @@ describe("assistant question policy", () => {
     }
   });
 
+  test("auto-answers concrete sweep input from durable target guidance", () => {
+    const decision = evaluateAssistantQuestionPolicy({
+      prompt: "What should I use as the concrete sweep input for this pass?",
+      questions: [
+        question({
+          prompt: "Which game folder should this patrol inspect?",
+          answerText: "Pick a random browser-playable game unless told otherwise, use current context, and do not ask again.",
+          status: "answered"
+        })
+      ]
+    });
+
+    expect(decision.kind).toBe("auto-answer");
+    expect(decision.category).toBe("target-selection");
+  });
+
+  test("treats missing issue output text block as nonblocking target selection when learnings define target behavior", () => {
+    const decision = evaluateAssistantQuestionPolicy({
+      prompt: "Missing the issue output text block. What should I use as input?",
+      questions: [],
+      learnings: [learning("For sweep passes, pick a random browser-playable game unless told otherwise.")]
+    });
+
+    expect(decision.kind).toBe("auto-answer");
+    expect(decision.category).toBe("target-selection");
+  });
+
   test("suppresses read-only access asks when runtime is writable", () => {
     const decision = evaluateAssistantQuestionPolicy({
       prompt: "Workspace is read-only. Should I wait for write access?",

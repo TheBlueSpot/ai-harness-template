@@ -142,6 +142,66 @@ describe("client command validation", () => {
     ).toBe("planning.answer");
   });
 
+  test("accepts runtime budget launch payloads", () => {
+    expect(
+      parseClientCommand({
+        type: "chat.send",
+        requestId: "req-budget-chat",
+        payload: {
+          projectId: "project-1",
+          threadId: "thread-1",
+          agentId: "pi",
+          content: "ship it",
+          runtimeBudget: { maxTurns: 3 }
+        }
+      }).type
+    ).toBe("chat.send");
+
+    expect(
+      parseClientCommand({
+        type: "run.execute",
+        requestId: "req-budget-run",
+        payload: {
+          projectId: "project-1",
+          threadId: "thread-1",
+          runId: "run-1",
+          runtimeBudget: { maxTurns: 2 }
+        }
+      }).type
+    ).toBe("run.execute");
+  });
+
+  test("rejects invalid runtime budget values", () => {
+    expect(() =>
+      parseClientCommand({
+        type: "run.execute",
+        requestId: "req-budget-bad",
+        payload: {
+          projectId: "project-1",
+          threadId: "thread-1",
+          runId: "run-1",
+          runtimeBudget: { maxTurns: 0 }
+        }
+      })
+    ).toThrow();
+  });
+
+  test("accepts run.complete payloads", () => {
+    expect(
+      parseClientCommand({
+        type: "run.complete",
+        requestId: "req-complete",
+        payload: {
+          projectId: "project-1",
+          threadId: "thread-1",
+          runId: "run-1",
+          assistantMessageContent: "Done.",
+          partialReason: "Some optional checks skipped."
+        }
+      }).type
+    ).toBe("run.complete");
+  });
+
   test("accepts planning.answer-batch payloads", () => {
     expect(
       parseClientCommand({
@@ -472,6 +532,28 @@ describe("client command validation", () => {
       }).type
     ).toBe("execution.resume-all");
   });
+
+  test("accepts run diagnostics inspect payloads for 1, 7, and 30 days only", () => {
+    expect(
+      parseClientCommand({
+        type: "run-diagnostics.inspect",
+        requestId: "req-diag-7",
+        payload: {
+          windowDays: 7
+        }
+      }).type
+    ).toBe("run-diagnostics.inspect");
+
+    expect(() =>
+      parseClientCommand({
+        type: "run-diagnostics.inspect",
+        requestId: "req-diag-invalid",
+        payload: {
+          windowDays: 2
+        }
+      })
+    ).toThrow();
+  });
 });
 
 describe("planner result validation", () => {
@@ -509,6 +591,7 @@ describe("planner result validation", () => {
                     kind: "user",
                     title: "Thread 1",
                     titleSource: "generated",
+                    status: "active",
                     badgeState: "idle",
                     messageCount: 0,
                     updatedAt: new Date().toISOString()
@@ -815,6 +898,7 @@ describe("planner result validation", () => {
                 kind: "user",
                 title: "Thread 1",
                 titleSource: "generated",
+                status: "active",
                 badgeState: "idle",
                 messageCount: 0,
                 updatedAt: new Date().toISOString()
@@ -824,6 +908,7 @@ describe("planner result validation", () => {
                 kind: "user",
                 title: "Thread 2",
                 titleSource: "generated",
+                status: "active",
                 badgeState: "idle",
                 messageCount: 0,
                 updatedAt: new Date().toISOString()
@@ -1194,6 +1279,7 @@ describe("planner result validation", () => {
           threadId: "thread-1",
           runId: "run-1",
           status: "completed",
+          failureCategory: "empty-response",
           resumable: false,
           retryable: true,
           updatedAt: now,
@@ -1201,5 +1287,79 @@ describe("planner result validation", () => {
         }
       }).type
     ).toBe("run.status-patched");
+  });
+
+  test("accepts run diagnostics inspected payload", () => {
+    const now = new Date().toISOString();
+    expect(
+      parseServerEvent({
+        type: "run-diagnostics.inspected",
+        requestId: "req-diag-report",
+        payload: {
+          report: {
+            windowDays: 7,
+            generatedAt: now,
+            summary: {
+              activeBackoffJobs: 1,
+              questionPersistConflictCount: 0,
+              agentEmptyResponseCount: 2,
+              backgroundFailureCount: 4,
+              lifecycleFailureCount: 1,
+              lifecycleFailureShare: 0.25,
+              dominantBackgroundFailureCategory: "controller-lost"
+            },
+            topPromptHashes: [
+              {
+                sourceType: "background-job-run",
+                promptHash: "prompt-hash-1",
+                assistantId: "assistant-1",
+                jobId: "job-1",
+                runCount: 2,
+                averagePromptChars: 2048,
+                latestSeenAt: now
+              }
+            ],
+            promptSizeByOwner: [
+              {
+                assistantId: "assistant-1",
+                jobId: "job-1",
+                runCount: 2,
+                averagePromptChars: 2048,
+                latestSeenAt: now
+              }
+            ],
+            failureBreakdown: [
+              {
+                sourceType: "background-job-run",
+                failureCategory: "controller-lost",
+                count: 2,
+                share: 0.5,
+                assistantId: "assistant-1",
+                jobId: "job-1"
+              }
+            ],
+            dailyFailureSeries: [
+              {
+                day: now.slice(0, 10),
+                sourceType: "background-job-run",
+                failureCategory: "controller-lost",
+                count: 2,
+                jobId: "job-1"
+              }
+            ],
+            activeBackoffJobRows: [
+              {
+                jobId: "job-1",
+                jobName: "Nightly review",
+                assistantId: "assistant-1",
+                consecutiveFailureCount: 3,
+                backoffUntil: now,
+                lastFailureCategory: "controller-lost"
+              }
+            ]
+          }
+        }
+      }).type
+    ).toBe("run-diagnostics.inspected");
   });
 });

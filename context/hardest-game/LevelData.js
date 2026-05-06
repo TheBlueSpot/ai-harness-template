@@ -81,7 +81,7 @@ const LEVELS = Object.freeze([
   level({
     id: 1,
     name: 'Level 1',
-    hint: 'Single lane. Wait for gap, then move.',
+    hint: 'Two lane checks. Wait for the rhythm, then move.',
     start: { x: 92, y: 438, size: 24 },
     goal: { x: 1452, y: 438, w: 42, h: 42 },
     walls: [],
@@ -89,7 +89,13 @@ const LEVELS = Object.freeze([
       obstacle(
         'l1-a',
         pathFromFrames(repeatedFrames(430, loop72), laneY),
-        { w: 34, h: 34 },
+        { w: 40, h: 40 },
+        loop72
+      ),
+      obstacle(
+        'l1-b',
+        pathFromFrames(repeatedFrames(820, loop72), offsetFrames(laneY, 28)),
+        { w: 40, h: 40 },
         loop72
       )
     ]
@@ -97,7 +103,7 @@ const LEVELS = Object.freeze([
   level({
     id: 2,
     name: 'Level 2',
-    hint: 'Two movers, shared timer.',
+    hint: 'Three movers, shared timer.',
     start: { x: 92, y: 438, size: 24 },
     goal: { x: 1452, y: 438, w: 42, h: 42 },
     walls: [
@@ -108,13 +114,19 @@ const LEVELS = Object.freeze([
       obstacle(
         'l2-a',
         pathFromFrames(repeatedFrames(560, loop72), laneY),
-        { w: 32, h: 32 },
+        { w: 38, h: 38 },
         loop72
       ),
       obstacle(
         'l2-b',
         pathFromFrames(repeatedFrames(900, loop72), offsetFrames(laneY, 30)),
-        { w: 32, h: 32 },
+        { w: 38, h: 38 },
+        loop72
+      ),
+      obstacle(
+        'l2-c',
+        pathFromFrames(repeatedFrames(730, loop72), offsetFrames(laneY, 12)),
+        { w: 38, h: 38 },
         loop72
       )
     ]
@@ -134,19 +146,25 @@ const LEVELS = Object.freeze([
       obstacle(
         'l3-a',
         pathFromFrames(laneXWide, repeatedFrames(190, loop48)),
-        { w: 34, h: 34 },
+        { w: 40, h: 40 },
         loop48
       ),
       obstacle(
         'l3-b',
         pathFromFrames(offsetFrames(laneXWide, 24), repeatedFrames(460, loop48)),
-        { w: 34, h: 34 },
+        { w: 40, h: 40 },
         loop48
       ),
       obstacle(
         'l3-c',
         pathFromFrames(offsetFrames(laneXWide, 12), repeatedFrames(728, loop48)),
-        { w: 34, h: 34 },
+        { w: 40, h: 40 },
+        loop48
+      ),
+      obstacle(
+        'l3-d',
+        pathFromFrames(offsetFrames(laneXWide, 36), repeatedFrames(324, loop48)),
+        { w: 40, h: 40 },
         loop48
       )
     ]
@@ -165,19 +183,19 @@ const LEVELS = Object.freeze([
       obstacle(
         'l4-a',
         pathFromFrames(repeatedFrames(512, loop56), weaveY),
-        { w: 32, h: 32 },
+        { w: 36, h: 36 },
         loop56
       ),
       obstacle(
         'l4-b',
         pathFromFrames(repeatedFrames(1060, loop56), offsetFrames(weaveY, 18)),
-        { w: 32, h: 32 },
+        { w: 36, h: 36 },
         loop56
       ),
       obstacle(
         'l4-c',
         pathFromFrames(crossX, repeatedFrames(420, crossX.length)),
-        { w: 30, h: 30 },
+        { w: 34, h: 34 },
         crossX.length
       )
     ]
@@ -198,19 +216,19 @@ const LEVELS = Object.freeze([
       obstacle(
         'l5-a',
         pathFromFrames(repeatedFrames(420, loop52), weaveYFast),
-        { w: 28, h: 28 },
+        { w: 34, h: 34 },
         loop52
       ),
       obstacle(
         'l5-b',
         pathFromFrames(repeatedFrames(780, loop52), offsetFrames(weaveYFast, 16)),
-        { w: 28, h: 28 },
+        { w: 34, h: 34 },
         loop52
       ),
       obstacle(
         'l5-c',
         pathFromFrames(repeatedFrames(1140, loop52), offsetFrames(weaveYFast, 32)),
-        { w: 28, h: 28 },
+        { w: 34, h: 34 },
         loop52
       )
     ]
@@ -231,13 +249,19 @@ const LEVELS = Object.freeze([
       obstacle(
         'l6-a',
         pathFromFrames(centerX, repeatedFrames(250, loop64)),
-        { w: 32, h: 32 },
+        { w: 38, h: 38 },
         loop64
       ),
       obstacle(
         'l6-b',
         pathFromFrames(offsetFrames(centerX, 32), repeatedFrames(618, loop64)),
-        { w: 32, h: 32 },
+        { w: 38, h: 38 },
+        loop64
+      ),
+      obstacle(
+        'l6-c',
+        pathFromFrames(offsetFrames(centerX, 16), repeatedFrames(434, loop64)),
+        { w: 38, h: 38 },
         loop64
       )
     ]
@@ -260,19 +284,19 @@ const LEVELS = Object.freeze([
       obstacle(
         'l7-a',
         pathFromFrames(repeatedFrames(470, loop60), laneXTight),
-        { w: 28, h: 28 },
+        { w: 34, h: 34 },
         loop60
       ),
       obstacle(
         'l7-b',
         pathFromFrames(repeatedFrames(928, loop60), offsetFrames(laneXTight, 20)),
-        { w: 28, h: 28 },
+        { w: 34, h: 34 },
         loop60
       ),
       obstacle(
         'l7-c',
         pathFromFrames(offsetFrames(laneXWide, 8), repeatedFrames(432, loop48)),
-        { w: 30, h: 30 },
+        { w: 34, h: 34 },
         loop48
       )
     ]
@@ -294,25 +318,25 @@ const LEVELS = Object.freeze([
       obstacle(
         'l8-a',
         pathFromFrames(repeatedFrames(360, loop56), weaveY),
-        { w: 30, h: 30 },
+        { w: 34, h: 34 },
         loop56
       ),
       obstacle(
         'l8-b',
         pathFromFrames(repeatedFrames(760, loop56), offsetFrames(weaveY, 18)),
-        { w: 30, h: 30 },
+        { w: 34, h: 34 },
         loop56
       ),
       obstacle(
         'l8-c',
         pathFromFrames(repeatedFrames(1160, loop56), offsetFrames(weaveY, 36)),
-        { w: 30, h: 30 },
+        { w: 34, h: 34 },
         loop56
       ),
       obstacle(
         'l8-d',
         pathFromFrames(offsetFrames(centerX, 14), repeatedFrames(410, loop64)),
-        { w: 28, h: 28 },
+        { w: 32, h: 32 },
         loop64
       )
     ]
@@ -335,25 +359,25 @@ const LEVELS = Object.freeze([
       obstacle(
         'l9-a',
         pathFromFrames(crossX, repeatedFrames(210, crossX.length)),
-        { w: 28, h: 28 },
+        { w: 32, h: 32 },
         crossX.length
       ),
       obstacle(
         'l9-b',
         pathFromFrames(offsetFrames(crossX, 18), repeatedFrames(640, crossX.length)),
-        { w: 28, h: 28 },
+        { w: 32, h: 32 },
         crossX.length
       ),
       obstacle(
         'l9-c',
         pathFromFrames(repeatedFrames(610, loop52), offsetFrames(weaveYFast, 10)),
-        { w: 28, h: 28 },
+        { w: 32, h: 32 },
         loop52
       ),
       obstacle(
         'l9-d',
         pathFromFrames(repeatedFrames(1088, loop52), offsetFrames(weaveYFast, 30)),
-        { w: 28, h: 28 },
+        { w: 32, h: 32 },
         loop52
       )
     ]

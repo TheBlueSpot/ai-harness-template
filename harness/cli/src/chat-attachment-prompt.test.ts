@@ -146,6 +146,8 @@ describe("chat attachment prompt builder", () => {
     ]);
 
     expect(result.transcript).toContain("Hello PDF extraction");
-    expect(result.transcript).toContain("...[truncated]");
+    expect(result.transcript).toContain("Attachment contents: moved to cacheable context block.");
+    expect(result.cacheableUserBlocks).toHaveLength(1);
+    expect(result.cacheableUserBlocks[0]?.text).toContain("...[truncated]");
   });
 });

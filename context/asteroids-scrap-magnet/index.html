@@ -109,6 +109,12 @@
       font-size: 13px;
       line-height: 1.45;
       pointer-events: none;
+      transition: opacity 140ms ease, transform 140ms ease;
+    }
+
+    .note.is-hidden {
+      opacity: 0;
+      transform: translateY(12px);
     }
 
     .note strong {
@@ -125,9 +131,9 @@
   <main class="shell">
     <section class="stage">
       <canvas id="game" width="1280" height="720" aria-label="Asteroids Scrap Magnet game canvas"></canvas>
-      <aside class="note">
+      <aside class="note" id="helper-note">
         <strong>Asteroids: Scrap Magnet</strong>
-        `WASD` / arrows move, mouse aims, `LMB` or `Space` fires, `RMB` or `Shift` pulls scrap. Stand beside an `assets` folder for Kenney art and SFX.
+        WASD / arrows move, mouse aims, LMB or Space fires, RMB or Shift charges the tractor beam. Hold and release the beam to vent a shockwave: it yanks nearby scrap inward during normal play and cracks breach cores once the orb is inside your dashed vent ring. Recover glowing black-box caches during each contract for extra salvage, hull, and dispatch story logs. The haul now runs eighteen contracts with new late-yard hazards, so pace your upgrades for a much longer burn. Optional Kenney art and SFX load when the local assets folder is present.
       </aside>
     </section>
   </main>
@@ -140,7 +146,7 @@
         height: 720,
         fixedStep: 1 / 120,
         maxFrame: 0.05,
-        winScrap: 36,
+        winScrap: 1000,
         startHull: 100,
         beamRadius: 170,
         beamForce: 980,
@@ -149,8 +155,102 @@
         bulletSpeed: 820,
         bulletLife: 1.1,
         spawnBase: 2.6,
-        maxAsteroids: 13,
-        invulnTime: 1.6
+        maxAsteroids: 15,
+        invulnTime: 1.6,
+        beamHeatMax: 100,
+        beamHeatGain: 38,
+        beamHeatCoolIdle: 30,
+        beamHeatCoolActive: 7,
+        beamOverloadTime: 1.75,
+        ventMinHeat: 24,
+        ventHeatRetain: 0.35,
+        ventScrapForce: 1940,
+        ventAsteroidForce: 480,
+        ventCrackRatio: 0.3,
+        breachHomePull: 22,
+        breachFarPull: 36,
+        breachMaxSpeed: 28,
+        breachVentKick: 14,
+        breachWallBounce: 0.18,
+        unlocks: [
+          { scrap: 12, name: "Cluster Pulse", detail: "Destroyed asteroids knot nearby scrap into tighter harvest piles." },
+          { scrap: 24, name: "Pierce Cannon", detail: "Every fourth shot punches through rocks and hits harder." },
+          { scrap: 36, name: "Recycler Surge", detail: "Every 6 scrap triggers a hull patch and brief rate boost." },
+          { scrap: 52, name: "Resonance Net", detail: "Tractor beam now drags nearby asteroids off-line and slows their rush." },
+          { scrap: 72, name: "Salvo Rotor", detail: "Every fifth trigger spits a three-shot spread for late-run crowd breaks." },
+          { scrap: 98, name: "Heat Battery", detail: "Vent releases keep more stored beam heat for faster follow-up breaches." },
+          { scrap: 132, name: "Wake Harvester", detail: "Vent shockwaves vacuum nearby scrap straight into the hold." },
+          { scrap: 174, name: "Aegis Slip", detail: "Every vent release gives a brief invulnerable drift to cross bad lanes." },
+          { scrap: 218, name: "Crown Engine", detail: "Thrusters bite harder and beam cooling quickens for the final contracts." },
+          { scrap: 284, name: "Salvage Bloom", detail: "Cleared breach cores erupt into richer scrap blooms and a tighter pickup pulse." },
+          { scrap: 362, name: "Vector Fins", detail: "Late-yard drift corrections bite harder so you can snap between lattice lanes." },
+          { scrap: 446, name: "Null Vent", detail: "Beam cooling accelerates and overload downtime shortens for the extended haul." },
+          { scrap: 538, name: "Archive Choir", detail: "Recovered black boxes cash out extra salvage and widen your hull ceiling." },
+          { scrap: 644, name: "Witness Drive", detail: "High-heat vent releases gouge breach cores even harder." },
+          { scrap: 774, name: "Oracle Scope", detail: "Black-box pings surface earlier and dispatch marks the next late-yard objective sooner." }
+        ],
+        sectorThresholds: [0, 24, 58, 98, 144, 198, 258, 324, 396, 486, 590, 708, 840],
+        contractTargets: [20, 46, 76, 110, 148, 190, 236, 286, 340, 398, 460, 526, 596, 670, 748, 830, 916, 1000],
+        breachProfiles: [
+          { title: "Survey Spindle", hp: 2, radius: 54, pulse: 3.2, bonusScrap: 4, mode: "scatter", detail: "Dispatch wants tow-route telemetry. Vent wake cracks the spindle and reopens traffic." },
+          { title: "Breaker Node", hp: 3, radius: 60, pulse: 2.7, bonusScrap: 6, mode: "scatter", detail: "A breaker nest is chewing tug hulls apart. Break plates fast before the lane fills." },
+          { title: "Drift Maw", hp: 3, radius: 68, pulse: 2.3, bonusScrap: 8, mode: "inward", detail: "The maw drags salvage inward. Use hot releases so the pull does not bury the route." },
+          { title: "Lantern Vault", hp: 4, radius: 70, pulse: 2.05, bonusScrap: 9, mode: "orbit", detail: "Old beacon glass still spins cargo into rings. Ride the orbit, vent, and break the lock." },
+          { title: "Chain Relay", hp: 4, radius: 74, pulse: 1.85, bonusScrap: 10, mode: "shear", detail: "Ghost relays are sweeping the lane sideways. Stay light, cut across the wind, and vent close." },
+          { title: "Grave Lattice", hp: 5, radius: 78, pulse: 1.68, bonusScrap: 12, mode: "crush", detail: "A salvage tomb keeps crushing rocks into the center. Burst it before the field seals over." },
+          { title: "Crown Heart", hp: 6, radius: 84, pulse: 1.52, bonusScrap: 14, mode: "storm", detail: "Final crown core. The whole graveyard answers its pulses. Chain releases and break orbit alive." },
+          { title: "Aftermath Crown", hp: 7, radius: 88, pulse: 1.38, bonusScrap: 16, mode: "storm", detail: "The yard is still screaming after the crown breaks. Hold shape, vent late, and keep the route alive." },
+          { title: "Ember Lock", hp: 7, radius: 92, pulse: 1.28, bonusScrap: 18, mode: "shear", detail: "Furnace chains are carving hot lanes through the wreck field. Track the sweeps, vent inside them, and keep the tug steady." },
+          { title: "Homeburn Husk", hp: 8, radius: 98, pulse: 1.14, bonusScrap: 20, mode: "storm", detail: "Last command husk before home burn. The whole yard is awake. Chain calm releases and close the run clean." },
+          { title: "Wake Tithe", hp: 8, radius: 102, pulse: 1.08, bonusScrap: 22, mode: "riptide", detail: "A tax wake is stripping every tug that crosses home lane. Surf the pull, grab the logs, and vent from the eddies." },
+          { title: "Archive Pyre", hp: 9, radius: 108, pulse: 0.96, bonusScrap: 26, mode: "maelstrom", detail: "The first archive firestorm is only the threshold. Recover proof, crack the pyre, and keep the tow alive deeper in." },
+          { title: "Quota Scar", hp: 9, radius: 112, pulse: 0.92, bonusScrap: 30, mode: "lattice", detail: "Quota-cut shield rails are still routing live cargo. Thread the seams, vent through the grid, and tear the scar open." },
+          { title: "Witness Reef", hp: 10, radius: 118, pulse: 0.86, bonusScrap: 34, mode: "undertow", detail: "A witness grave keeps dragging scrap into the trench. Ride the undertow, grab the testimony, and pull back out alive." },
+          { title: "Toll Bloom", hp: 10, radius: 124, pulse: 0.8, bonusScrap: 38, mode: "flare", detail: "The toll route is flowering into plasma wakes. Vent through the hot bloom before the whole yard flashes shut." },
+          { title: "Signal Tribunal", hp: 11, radius: 130, pulse: 0.76, bonusScrap: 44, mode: "lattice", detail: "A surviving signal court is redrawing traffic into kill squares. Snap between lanes and punch the tribunal apart." },
+          { title: "Ledger Grave", hp: 11, radius: 136, pulse: 0.72, bonusScrap: 50, mode: "undertow", detail: "Every unpaid convoy was buried under one last drag. Cut the ledger loose and outrun the trench pull." },
+          { title: "Exit Pyre", hp: 12, radius: 144, pulse: 0.66, bonusScrap: 60, mode: "cataclysm", detail: "Final testimony sits inside a full-yard firestorm. Hold the line through every hazard at once, crack the pyre, and burn clear." }
+        ],
+        contractOps: [
+          { name: "Dockside Echo", brief: "Tow drones vanished in the Outer Belt. Recover telemetry and reopen the haul lane.", fieldTitle: "Clean lane", fieldBrief: "Loose breakers only. Learn the vent loop and start stacking scrap.", fieldMode: "quiet", colors: ["rgba(126,247,214,0.08)", "rgba(0,0,0,0)"], haze: "#13313b" },
+          { name: "Rust Choir", brief: "Breaker chatter is flooding dispatch. Cut through the noise before scrap storms thicken.", fieldTitle: "Crosswind wake", fieldBrief: "Debris currents sweep sideways between pulses. Keep one open lane.", fieldMode: "crosswind", colors: ["rgba(255,202,115,0.12)", "rgba(0,0,0,0)"], haze: "#34261e" },
+          { name: "Maw Wake", brief: "Convoy black boxes point into a hungry anomaly. Take the maw apart in bursts.", fieldTitle: "Gravity sink", fieldBrief: "Center mass drags loose scrap inward. Vent close, then cut out fast.", fieldMode: "inward", colors: ["rgba(155,231,255,0.14)", "rgba(0,0,0,0)"], haze: "#182a38" },
+          { name: "Beacon Glass", brief: "An old lantern vault is spinning freight in circles. Crack it and steal the route map.", fieldTitle: "Orbit ring", fieldBrief: "Midfield debris starts to circle. Use the arc, then break across it.", fieldMode: "orbit", colors: ["rgba(180,160,255,0.12)", "rgba(0,0,0,0)"], haze: "#241d39" },
+          { name: "Ghost Relay", brief: "Dead relays are still sweeping cargo sideways. Surf the gusts and keep the hold full.", fieldTitle: "Relay shear", fieldBrief: "Alternating lane sweeps push both rocks and scrap off line.", fieldMode: "shear", colors: ["rgba(126,247,214,0.12)", "rgba(0,0,0,0)"], haze: "#102f30" },
+          { name: "Tomb Sweep", brief: "A grave lattice is compacting the whole field. Break the crush before every lane clots.", fieldTitle: "Compactor storm", fieldBrief: "Field pulses add fresh rocks on a timer. Kill breaches fast for breathing room.", fieldMode: "storm", colors: ["rgba(255,106,120,0.12)", "rgba(0,0,0,0)"], haze: "#33181f" },
+          { name: "Crownfall", brief: "The final crown core is waking the entire yard. One last haul and then burn for home.", fieldTitle: "Crown drift", fieldBrief: "Faster debris and hot pulses. Keep the vent radius visible in your lane.", fieldMode: "embers", colors: ["rgba(255,136,88,0.14)", "rgba(0,0,0,0)"], haze: "#3a2216" },
+          { name: "Afterfall", brief: "The yard is still hot after the crown breaks. Finish the long recovery run and haul every last shard.", fieldTitle: "Aftershock line", fieldBrief: "Storm bursts continue while the route reopens. Expect pressure spikes.", fieldMode: "gauntlet", colors: ["rgba(255,202,115,0.12)", "rgba(0,0,0,0)"], haze: "#342a1a" },
+          { name: "Furnace Chain", brief: "Forge wreckage keeps reigniting the lane. Cut the locks before the burn tunnels close.", fieldTitle: "Furnace shear", fieldBrief: "Hot lateral sweeps plus tougher rock speed. Stay light and vent on the move.", fieldMode: "shearStorm", colors: ["rgba(255,114,72,0.14)", "rgba(0,0,0,0)"], haze: "#402014" },
+          { name: "Home Burn", brief: "Command wants one clean haul home through the collapsing yard. Strip the husk, cash out, and leave nothing behind.", fieldTitle: "Homebound gauntlet", fieldBrief: "All systems angry. More breakers, more drift, longer final push.", fieldMode: "homeburn", colors: ["rgba(126,247,214,0.12)", "rgba(0,0,0,0)"], haze: "#142a25" },
+          { name: "Wake Ledger", brief: "A toll wake is sweeping surviving traffic for data cores. Steal the ledger and bring every box back yourself.", fieldTitle: "Riptide pull", fieldBrief: "Alternating sink lanes tug scrap and caches off course. Cut diagonally and recover the log.", fieldMode: "riptide", colors: ["rgba(114,194,255,0.14)", "rgba(0,0,0,0)"], haze: "#13253f" },
+          { name: "Last Testament", brief: "Dispatch lost whole crews proving the yard killed itself from inside. Pull the archive and keep the story intact as the lane deepens.", fieldTitle: "Archive maelstrom", fieldBrief: "Crosswind, inward drag, and ember acceleration stack in the late lane.", fieldMode: "maelstrom", colors: ["rgba(255,174,96,0.16)", "rgba(0,0,0,0)"], haze: "#392414" },
+          { name: "Quota Scar", brief: "The yard carved live traffic into a quota lattice and called it routing. Tear the scar apart and reopen the witness lane.", fieldTitle: "Lattice rails", fieldBrief: "Horizontal and vertical sweeps alternate while the center keeps shifting.", fieldMode: "lattice", colors: ["rgba(140,220,255,0.16)", "rgba(0,0,0,0)"], haze: "#13293b" },
+          { name: "Witness Reef", brief: "Convoy testimony is still sinking into a trench wake. Pull the reef apart and haul the names back out.", fieldTitle: "Undertow trench", fieldBrief: "The whole field drags toward a low trench while sidewinds keep cutting lanes.", fieldMode: "undertow", colors: ["rgba(110,160,255,0.16)", "rgba(0,0,0,0)"], haze: "#10203a" },
+          { name: "Toll Bloom", brief: "The toll crews lit the yard to hide the books. Punch through the bloom before the burn wave reaches home lane.", fieldTitle: "Plasma bloom", fieldBrief: "Hot flashes accelerate debris and punish long holds in one lane.", fieldMode: "flare", colors: ["rgba(255,122,88,0.18)", "rgba(0,0,0,0)"], haze: "#3f1d12" },
+          { name: "Signal Tribunal", brief: "A surviving signal court is still sentencing convoys by route. Break the grid and leave nothing judging the lane behind you.", fieldTitle: "Tribunal grid", fieldBrief: "Late pulses snap lanes into kill squares. Hard cuts matter more than drift.", fieldMode: "lattice", colors: ["rgba(160,214,255,0.18)", "rgba(0,0,0,0)"], haze: "#1a2441" },
+          { name: "Ledger Grave", brief: "The final ledger pit is dragging proof, wreckage, and tow crews into one trench. Steal the record and climb out.", fieldTitle: "Grave undertow", fieldBrief: "Heavier trench pull plus faster debris. Recover boxes early or lose the angle.", fieldMode: "undertow", colors: ["rgba(120,182,255,0.2)", "rgba(0,0,0,0)"], haze: "#101c34" },
+          { name: "Exit Pyre", brief: "Every surviving route ends here. Crack the last pyre under full-yard collapse and burn home with the testimony.", fieldTitle: "Exit cataclysm", fieldBrief: "Grid sweeps, trench drag, ember acceleration, and fresh breaker floods stack together.", fieldMode: "cataclysm", colors: ["rgba(255,158,96,0.2)", "rgba(0,0,0,0)"], haze: "#3e2216" }
+        ],
+        signalCaches: [
+          { title: "Tow Log 01", detail: "Crew says Dockside Echo went dark after one clean pulse. Dispatch still thought it was weather.", bonusScrap: 4, hull: 8, overdrive: 1.2 },
+          { title: "Tow Log 02", detail: "Rust Choir audio is not static. It is docking chatter looped backward over distress calls.", bonusScrap: 4, hull: 8, overdrive: 1.25 },
+          { title: "Tow Log 03", detail: "Convoy pilots dumped whole holds to escape the maw. Salvage trail still points deeper in.", bonusScrap: 5, hull: 9, overdrive: 1.3 },
+          { title: "Tow Log 04", detail: "Beacon Glass ran traffic in circles until tugs starved their thrusters dry.", bonusScrap: 5, hull: 9, overdrive: 1.35 },
+          { title: "Tow Log 05", detail: "Ghost Relay did not fail. Somebody kept sweeping survivors back into breaker lanes.", bonusScrap: 6, hull: 10, overdrive: 1.4 },
+          { title: "Tow Log 06", detail: "Tomb Sweep compacted rescue markers into one grave cloud. Nobody came back for bodies.", bonusScrap: 6, hull: 10, overdrive: 1.45 },
+          { title: "Tow Log 07", detail: "Crownfall logs show command stayed on-channel while crews burned the route open.", bonusScrap: 7, hull: 11, overdrive: 1.5 },
+          { title: "Tow Log 08", detail: "Afterfall record: survivors called this lane a slaughter tax, not an accident.", bonusScrap: 7, hull: 11, overdrive: 1.55 },
+          { title: "Tow Log 09", detail: "Furnace Chain crews found heat tunnels cut on purpose through live tow traffic.", bonusScrap: 8, hull: 12, overdrive: 1.6 },
+          { title: "Tow Log 10", detail: "Home Burn command finally admits they need one witness to come back with proof.", bonusScrap: 8, hull: 12, overdrive: 1.65 },
+          { title: "Tow Log 11", detail: "Wake Ledger cache names the toll crews. They were charged scrap to cross their own rescue route.", bonusScrap: 10, hull: 14, overdrive: 1.8 },
+          { title: "Tow Log 12", detail: "Archive Pyre proves the yard did not collapse. It was stripped alive for quota.", bonusScrap: 12, hull: 16, overdrive: 2 },
+          { title: "Tow Log 13", detail: "Quota Scar routing tables show the safe lanes were closed on purpose once the tally slipped.", bonusScrap: 13, hull: 18, overdrive: 2.05 },
+          { title: "Tow Log 14", detail: "Witness Reef stores survivor names in ballast blocks so they would sink with the unpaid cargo.", bonusScrap: 14, hull: 18, overdrive: 2.1 },
+          { title: "Tow Log 15", detail: "Toll Bloom records show fires were lit after the rescue beacons, not before.", bonusScrap: 16, hull: 20, overdrive: 2.2 },
+          { title: "Tow Log 16", detail: "Signal Tribunal sentenced whole lanes by quota loss and called it drift correction.", bonusScrap: 18, hull: 22, overdrive: 2.35 },
+          { title: "Tow Log 17", detail: "Ledger Grave kept the debtors under the trench until the manifest balanced.", bonusScrap: 20, hull: 24, overdrive: 2.5 },
+          { title: "Tow Log 18", detail: "Exit Pyre is the burn order itself. Bring it home and the whole lie survives one more minute.", bonusScrap: 24, hull: 28, overdrive: 2.7 }
+        ]
       });
 
       const STATE = Object.freeze({
@@ -161,7 +261,6 @@
       });
 
       const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
-      const lerp = (a, b, t) => a + (b - a) * t;
       const rand = (min, max) => Math.random() * (max - min) + min;
       const randInt = (min, max) => Math.floor(rand(min, max + 1));
       const distSq = (ax, ay, bx, by) => {
@@ -169,7 +268,28 @@
         const dy = by - ay;
         return dx * dx + dy * dy;
       };
+      const clampMagnitude = (vx, vy, max) => {
+        const speed = Math.hypot(vx, vy);
+        if (speed <= max || speed === 0) return { vx, vy };
+        const scale = max / speed;
+        return { vx: vx * scale, vy: vy * scale };
+      };
       const svgToDataUrl = (markup) => `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(markup.trim())}`;
+      const sectorName = (sector) => [
+        "Outer Belt",
+        "Breaker Drift",
+        "Core Storm",
+        "Ghost Lanes",
+        "Grave Spiral",
+        "Salvage Crown",
+        "Ember Run",
+        "Home Burn",
+        "Toll Wake",
+        "Quota Scar",
+        "Witness Yard",
+        "Archive Verge",
+        "Exit Pyre"
+      ][sector - 1] ?? "Deep Field";
 
       const MANIFEST = Object.freeze({
         images: {
@@ -365,6 +485,9 @@
           this.ctx = null;
           this.unlocked = false;
           this.lastBeamAt = 0;
+          this.nextMusicAt = 0;
+          this.musicStep = 0;
+          this.musicMuted = false;
         }
 
         unlock() {
@@ -376,6 +499,10 @@
             this.ctx.resume();
           }
           this.unlocked = true;
+        }
+
+        toggleMusic() {
+          this.musicMuted = !this.musicMuted;
         }
 
         play(name, opts = {}) {
@@ -450,6 +577,64 @@
             gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.12);
             osc.start(now);
             osc.stop(now + 0.13);
+          }
+        }
+
+        updateMusic(game) {
+          if (!this.ctx || !this.unlocked || this.musicMuted) return;
+          const now = this.ctx.currentTime;
+          if (now < this.nextMusicAt) return;
+          const inMenu = game.state !== STATE.PLAYING;
+          const breachActive = Boolean(game.activeBreach);
+          const field = game.fieldStatus();
+          const modeRoots = {
+            quiet: 164.81,
+            crosswind: 155.56,
+            inward: 138.59,
+            orbit: 164.81,
+            shear: 146.83,
+            embers: 174.61,
+            gauntlet: 130.81,
+            shearStorm: 123.47,
+            trench: 116.54,
+            riptide: 110,
+            lattice: 103.83,
+            undertow: 98,
+            storm: 92.5
+          };
+          const root = inMenu ? 164.81 : (modeRoots[field.fieldMode] ?? 146.83);
+          const pattern = breachActive ? [0, 3, 7, 10, 7, 3] : [0, 7, 10, 7, 12, 7];
+          const step = pattern[this.musicStep % pattern.length];
+          const rate = inMenu ? 1.5 : breachActive ? 0.56 : 0.82;
+          const duration = inMenu ? 1.9 : breachActive ? 0.72 : 1.15;
+          const volume = inMenu ? 0.011 : 0.015 + Math.min(0.01, game.ship.scrap / CONFIG.winScrap * 0.01) + (breachActive ? 0.004 : 0);
+          this.playMusicChord(now, root, step, duration, volume, breachActive);
+          this.musicStep += 1;
+          this.nextMusicAt = now + rate;
+        }
+
+        playMusicChord(time, root, semitone, duration, volume, breachActive) {
+          const notes = [semitone, semitone + (breachActive ? 6 : 7), semitone + 12];
+          for (const [index, offset] of notes.entries()) {
+            const osc = this.ctx.createOscillator();
+            const gain = this.ctx.createGain();
+            const filter = this.ctx.createBiquadFilter();
+            filter.type = breachActive ? "bandpass" : "lowpass";
+            filter.frequency.setValueAtTime(breachActive ? 820 : 940, time);
+            filter.Q.value = breachActive ? 1.8 : 0.7;
+            osc.type = index === 2 ? "triangle" : "sine";
+            osc.frequency.setValueAtTime(root * 2 ** (offset / 12), time);
+            if (breachActive) {
+              osc.detune.setValueAtTime(index === 1 ? -8 : 6, time);
+            }
+            gain.gain.setValueAtTime(0.0001, time);
+            gain.gain.exponentialRampToValueAtTime(volume * (index === 0 ? 1 : index === 1 ? 0.68 : 0.42), time + 0.08);
+            gain.gain.exponentialRampToValueAtTime(0.0001, time + duration);
+            osc.connect(filter);
+            filter.connect(gain);
+            gain.connect(this.ctx.destination);
+            osc.start(time);
+            osc.stop(time + duration + 0.04);
           }
         }
       }
@@ -534,19 +719,55 @@
           this.fireTier = 0;
           this.scrap = 0;
           this.invuln = CONFIG.invulnTime;
+          this.clusterPulse = false;
+          this.pierceCannon = false;
+          this.recyclerSurge = false;
+          this.resonanceNet = false;
+          this.salvoRotor = false;
+          this.heatBattery = false;
+          this.wakeHarvester = false;
+          this.aegisSlip = false;
+          this.crownEngine = false;
+          this.salvageBloom = false;
+          this.vectorFins = false;
+          this.nullVent = false;
+          this.archiveChoir = false;
+          this.witnessDrive = false;
+          this.oracleScope = false;
+          this.pierceCounter = 0;
+          this.salvoCounter = 0;
+          this.salvageLoop = 0;
+          this.overdrive = 0;
+          this.beamHeat = 0;
+          this.beamOverload = 0;
+          this.beamVentWindow = 0;
         }
 
         get fireRate() {
-          return Math.max(0.08, this.baseFireRate - this.fireTier * 0.022);
+          const overdriveBoost = this.overdrive > 0 ? 0.08 : 0;
+          return Math.max(0.08, this.baseFireRate - this.fireTier * 0.022 - overdriveBoost);
         }
 
         get beamStrength() {
           return 1 + this.scrap * 0.02;
         }
 
+        get beamHeatRatio() {
+          return clamp(this.beamHeat / CONFIG.beamHeatMax, 0, 1);
+        }
+
+        get beamAvailable() {
+          return this.beamOverload <= 0;
+        }
+
+        get ventRetain() {
+          return this.heatBattery ? 0.5 : CONFIG.ventHeatRetain;
+        }
+
         upgradeFromScrap() {
           const hullTier = Math.floor(this.scrap / 3);
           const fireTier = Math.floor(this.scrap / 2);
+          const unlocked = [];
           if (hullTier > this.hullTier) {
             const diff = hullTier - this.hullTier;
             this.maxHull += diff * 8;
@@ -554,13 +775,74 @@
             this.hullTier = hullTier;
           }
           this.fireTier = fireTier;
+          if (!this.clusterPulse && this.scrap >= CONFIG.unlocks[0].scrap) {
+            this.clusterPulse = true;
+            unlocked.push(CONFIG.unlocks[0]);
+          }
+          if (!this.pierceCannon && this.scrap >= CONFIG.unlocks[1].scrap) {
+            this.pierceCannon = true;
+            unlocked.push(CONFIG.unlocks[1]);
+          }
+          if (!this.recyclerSurge && this.scrap >= CONFIG.unlocks[2].scrap) {
+            this.recyclerSurge = true;
+            unlocked.push(CONFIG.unlocks[2]);
+          }
+          if (!this.resonanceNet && this.scrap >= CONFIG.unlocks[3].scrap) {
+            this.resonanceNet = true;
+            unlocked.push(CONFIG.unlocks[3]);
+          }
+          if (!this.salvoRotor && this.scrap >= CONFIG.unlocks[4].scrap) {
+            this.salvoRotor = true;
+            unlocked.push(CONFIG.unlocks[4]);
+          }
+          if (!this.heatBattery && this.scrap >= CONFIG.unlocks[5].scrap) {
+            this.heatBattery = true;
+            unlocked.push(CONFIG.unlocks[5]);
+          }
+          if (!this.wakeHarvester && this.scrap >= CONFIG.unlocks[6].scrap) {
+            this.wakeHarvester = true;
+            unlocked.push(CONFIG.unlocks[6]);
+          }
+          if (!this.aegisSlip && this.scrap >= CONFIG.unlocks[7].scrap) {
+            this.aegisSlip = true;
+            unlocked.push(CONFIG.unlocks[7]);
+          }
+          if (!this.crownEngine && this.scrap >= CONFIG.unlocks[8].scrap) {
+            this.crownEngine = true;
+            unlocked.push(CONFIG.unlocks[8]);
+          }
+          if (!this.salvageBloom && this.scrap >= CONFIG.unlocks[9].scrap) {
+            this.salvageBloom = true;
+            unlocked.push(CONFIG.unlocks[9]);
+          }
+          if (!this.vectorFins && this.scrap >= CONFIG.unlocks[10].scrap) {
+            this.vectorFins = true;
+            unlocked.push(CONFIG.unlocks[10]);
+          }
+          if (!this.nullVent && this.scrap >= CONFIG.unlocks[11].scrap) {
+            this.nullVent = true;
+            unlocked.push(CONFIG.unlocks[11]);
+          }
+          if (!this.archiveChoir && this.scrap >= CONFIG.unlocks[12].scrap) {
+            this.archiveChoir = true;
+            unlocked.push(CONFIG.unlocks[12]);
+          }
+          if (!this.witnessDrive && this.scrap >= CONFIG.unlocks[13].scrap) {
+            this.witnessDrive = true;
+            unlocked.push(CONFIG.unlocks[13]);
+          }
+          if (!this.oracleScope && this.scrap >= CONFIG.unlocks[14].scrap) {
+            this.oracleScope = true;
+            unlocked.push(CONFIG.unlocks[14]);
+          }
+          return unlocked;
         }
 
         update(dt, input) {
           const moveX = (input.down("KeyD") || input.down("ArrowRight") ? 1 : 0) - (input.down("KeyA") || input.down("ArrowLeft") ? 1 : 0);
           const moveY = (input.down("KeyS") || input.down("ArrowDown") ? 1 : 0) - (input.down("KeyW") || input.down("ArrowUp") ? 1 : 0);
           const len = Math.hypot(moveX, moveY) || 1;
-          const thrust = 420;
+          const thrust = this.vectorFins ? 590 : this.crownEngine ? 510 : 420;
           this.vx += (moveX / len) * thrust * dt;
           this.vy += (moveY / len) * thrust * dt;
           this.vx *= CONFIG.friction;
@@ -570,6 +852,9 @@
           this.angle = Math.atan2(input.mouse.y - this.y, input.mouse.x - this.x);
           this.fireCooldown = Math.max(0, this.fireCooldown - dt);
           this.invuln = Math.max(0, this.invuln - dt);
+          this.overdrive = Math.max(0, this.overdrive - dt);
+          this.beamOverload = Math.max(0, this.beamOverload - dt);
+          this.beamVentWindow = Math.max(0, this.beamVentWindow - dt);
         }
 
         damage(amount) {
@@ -581,14 +866,16 @@
       }
 
       class Bullet {
-        constructor(x, y, angle) {
+        constructor(x, y, angle, opts = {}) {
           this.x = x;
           this.y = y;
           this.vx = Math.cos(angle) * CONFIG.bulletSpeed;
           this.vy = Math.sin(angle) * CONFIG.bulletSpeed;
           this.life = CONFIG.bulletLife;
-          this.radius = 6;
-          this.damage = 1;
+          this.radius = opts.radius ?? 6;
+          this.damage = opts.damage ?? 1;
+          this.penetration = opts.penetration ?? 0;
+          this.color = opts.color ?? "#fff7d1";
         }
         update(dt) {
           this.x += this.vx * dt;
@@ -614,6 +901,33 @@
           this.vx *= 0.986;
           this.vy *= 0.986;
           this.angle += this.spin * dt;
+        }
+      }
+
+      class SignalCache {
+        constructor(x, y, profile, contractIndex) {
+          this.x = x;
+          this.y = y;
+          this.vx = rand(-42, 42);
+          this.vy = rand(-42, 42);
+          this.radius = 16;
+          this.profile = profile;
+          this.contractIndex = contractIndex;
+          this.angle = rand(0, Math.PI * 2);
+          this.spin = rand(-2.4, 2.4);
+          this.pulse = rand(0, Math.PI * 2);
+        }
+        update(dt) {
+          this.x += this.vx * dt;
+          this.y += this.vy * dt;
+          this.vx *= 0.992;
+          this.vy *= 0.992;
+          this.angle += this.spin * dt;
+          this.pulse += dt * 4.2;
+          if (this.x < this.radius || this.x > CONFIG.width - this.radius) this.vx *= -1;
+          if (this.y < this.radius || this.y > CONFIG.height - this.radius) this.vy *= -1;
+          this.x = clamp(this.x, this.radius, CONFIG.width - this.radius);
+          this.y = clamp(this.y, this.radius, CONFIG.height - this.radius);
         }
       }
 
@@ -646,6 +960,51 @@
         }
       }
 
+      class BreachCore {
+        constructor(x, y, profile, contractIndex) {
+          this.x = x;
+          this.y = y;
+          this.homeX = x;
+          this.homeY = y;
+          this.vx = rand(-18, 18);
+          this.vy = rand(-14, 14);
+          this.radius = profile.radius;
+          this.hp = profile.hp;
+          this.maxHp = profile.hp;
+          this.profile = profile;
+          this.contractIndex = contractIndex;
+          this.angle = rand(0, Math.PI * 2);
+          this.spin = rand(-0.45, 0.45);
+          this.pulseTimer = profile.pulse;
+          this.driftRadius = profile.radius + 84;
+          this.flash = 0;
+        }
+
+        update(dt) {
+          const homeDx = this.homeX - this.x;
+          const homeDy = this.homeY - this.y;
+          const homeDist = Math.hypot(homeDx, homeDy) || 1;
+          this.vx += (homeDx / homeDist) * CONFIG.breachHomePull * dt;
+          this.vy += (homeDy / homeDist) * CONFIG.breachHomePull * dt;
+          if (homeDist > this.driftRadius) {
+            this.vx += (homeDx / homeDist) * CONFIG.breachFarPull * dt;
+            this.vy += (homeDy / homeDist) * CONFIG.breachFarPull * dt;
+          }
+          const cappedVelocity = clampMagnitude(this.vx, this.vy, CONFIG.breachMaxSpeed);
+          this.vx = cappedVelocity.vx * 0.994;
+          this.vy = cappedVelocity.vy * 0.994;
+          this.x += this.vx * dt;
+          this.y += this.vy * dt;
+          if (this.x < this.radius || this.x > CONFIG.width - this.radius) this.vx *= -CONFIG.breachWallBounce;
+          if (this.y < this.radius || this.y > CONFIG.height - this.radius) this.vy *= -CONFIG.breachWallBounce;
+          this.x = clamp(this.x, this.radius, CONFIG.width - this.radius);
+          this.y = clamp(this.y, this.radius, CONFIG.height - this.radius);
+          this.angle += this.spin * dt;
+          this.pulseTimer -= dt;
+          this.flash = Math.max(0, this.flash - dt * 2.6);
+        }
+      }
+
       class HUD {
         draw(ctx, game) {
           const ship = game.ship;
@@ -653,7 +1012,7 @@
           ctx.fillStyle = "rgba(8,19,28,0.74)";
           ctx.strokeStyle = "rgba(132,233,255,0.18)";
           ctx.lineWidth = 1;
-          this.roundRect(ctx, 22, 20, 324, 120, 20);
+          this.roundRect(ctx, 22, 20, 324, 216, 20);
           ctx.fill();
           ctx.stroke();
 
@@ -666,6 +1025,10 @@
           ctx.fillText(`Hull ${Math.ceil(ship.hull)} / ${ship.maxHull}`, 84, 82);
           ctx.fillText(`Fire Rate ${(1 / ship.fireRate).toFixed(1)} shots/s`, 84, 105);
           ctx.fillText(`Scrap ${ship.scrap} / ${CONFIG.winScrap}`, 84, 128);
+          ctx.fillText(game.operationLabel(), 84, 151);
+          ctx.fillText(`Sector ${game.sector}  ${sectorName(game.sector)}`, 84, 174);
+          ctx.fillText(`Goal: ${game.objectiveLabel()}`, 40, 198);
+          ctx.fillText(game.fieldLabel(), 40, 221);
 
           const hullFill = clamp(ship.hull / ship.maxHull, 0, 1);
           ctx.fillStyle = "rgba(255,255,255,0.08)";
@@ -676,8 +1039,8 @@
           this.drawIcon(ctx, game.assets.images.get("hullIcon"), 45, 70, 28);
           this.drawIcon(ctx, game.assets.images.get("fireIcon"), 45, 93, 28);
 
-          const barX = CONFIG.width - 248;
-          this.roundRect(ctx, barX, 20, 226, 92, 20);
+          const barX = CONFIG.width - 278;
+          this.roundRect(ctx, barX, 20, 256, 224, 20);
           ctx.fillStyle = "rgba(8,19,28,0.74)";
           ctx.fill();
           ctx.strokeStyle = "rgba(132,233,255,0.18)";
@@ -687,15 +1050,79 @@
           ctx.fillText("TRACTOR BEAM", barX + 18, 48);
           ctx.font = "600 14px Trebuchet MS";
           ctx.fillStyle = "#9bc7cf";
-          ctx.fillText("Hold RMB or Shift", barX + 18, 72);
+          ctx.fillText("Hold RMB or Shift to charge a vent wake", barX + 18, 72);
           ctx.fillText(`Pull x${ship.beamStrength.toFixed(1)}`, barX + 18, 95);
+          ctx.fillText(ship.beamAvailable ? game.beamLabel() : `Overloaded ${ship.beamOverload.toFixed(1)}s`, barX + 18, 118);
+          ctx.fillText(game.ventTeachLabel(), barX + 18, 141);
+          ctx.fillText(game.unlockLabel(), barX + 18, 164);
+          ctx.fillText(game.contractLabel(), barX + 18, 187);
+          ctx.fillText(game.breachLabel(), barX + 18, 210);
+          ctx.fillText(game.signalLabel(), barX + 18, 233);
 
           const progress = clamp(ship.scrap / CONFIG.winScrap, 0, 1);
           ctx.fillStyle = "rgba(255,255,255,0.08)";
-          ctx.fillRect(barX + 18, 76, 184, 8);
+          ctx.fillRect(barX + 18, 76, 214, 8);
           ctx.fillStyle = "#ffca73";
-          ctx.fillRect(barX + 18, 76, 184 * progress, 8);
+          ctx.fillRect(barX + 18, 76, 214 * progress, 8);
+          const beamHeat = ship.beamHeatRatio;
+          ctx.fillStyle = "rgba(255,255,255,0.08)";
+          ctx.fillRect(barX + 18, 145, 214, 8);
+          ctx.fillStyle = beamHeat >= 0.85 ? "#ff6a78" : beamHeat >= 0.55 ? "#ffca73" : "#7ef7d6";
+          ctx.fillRect(barX + 18, 145, 214 * beamHeat, 8);
+          const contractProgress = game.currentContractProgress();
+          ctx.fillStyle = "rgba(255,255,255,0.08)";
+          ctx.fillRect(barX + 18, 191, 214, 8);
+          ctx.fillStyle = "#7ef7d6";
+          ctx.fillRect(barX + 18, 191, 214 * contractProgress, 8);
+          if (ship.overdrive > 0) {
+            ctx.fillStyle = "rgba(126,247,214,0.18)";
+            ctx.fillRect(barX + 18, 179, 214, 8);
+            ctx.fillStyle = "#7ef7d6";
+            ctx.fillRect(barX + 18, 179, 214 * clamp(ship.overdrive / 2.4, 0, 1), 8);
+          }
+
+          this.drawControlStrip(ctx, game);
+          this.drawNextContractPreview(ctx, game);
           ctx.restore();
+        }
+
+        drawControlStrip(ctx, game) {
+          if (game.state !== STATE.PLAYING) return;
+          const width = 620;
+          const height = 38;
+          const x = CONFIG.width * 0.5 - width * 0.5;
+          const y = CONFIG.height - 60;
+          this.roundRect(ctx, x, y, width, height, 18);
+          ctx.fillStyle = "rgba(8,19,28,0.74)";
+          ctx.fill();
+          ctx.strokeStyle = "rgba(132,233,255,0.18)";
+          ctx.stroke();
+          ctx.textAlign = "center";
+          ctx.font = "600 13px Trebuchet MS";
+          ctx.fillStyle = "#9bc7cf";
+          ctx.fillText("Move WASD / Arrows   |   Fire LMB / Space   |   Hold beam, vent for scrap pulls, crack breach cores inside dashed ring   |   H details   |   M music", CONFIG.width * 0.5, y + 24);
+          ctx.textAlign = "start";
+        }
+
+        drawNextContractPreview(ctx, game) {
+          if (game.state !== STATE.PLAYING) return;
+          const preview = game.nextContractPreview();
+          if (!preview) return;
+          const width = 324;
+          const x = CONFIG.width - width - 22;
+          const y = 256;
+          this.roundRect(ctx, x, y, width, 74, 18);
+          ctx.fillStyle = "rgba(8,19,28,0.8)";
+          ctx.fill();
+          ctx.strokeStyle = "rgba(132,233,255,0.18)";
+          ctx.lineWidth = 1;
+          ctx.stroke();
+          ctx.fillStyle = preview.tone;
+          ctx.font = "700 14px Trebuchet MS";
+          ctx.fillText(preview.title, x + 16, y + 23);
+          ctx.fillStyle = "#9bc7cf";
+          ctx.font = "600 12px Trebuchet MS";
+          this.drawWrappedText(ctx, preview.detail, x + 16, y + 43, width - 32, 15, 2);
         }
 
         drawOverlay(ctx, game, title, subtitle) {
@@ -714,11 +1141,12 @@
           ctx.fillText("Press Enter or click to start", CONFIG.width * 0.5, 340);
           ctx.font = "500 16px Trebuchet MS";
           ctx.fillStyle = "#9bc7cf";
-          ctx.fillText("Ship parts and sounds come from local Kenney assets when present, fallback art/synth if not.", CONFIG.width * 0.5, 385);
+          ctx.fillText("Eighteen salvage contracts. Each quota wakes a new breach core, field modifier, and black-box recovery chance.", CONFIG.width * 0.5, 385);
+          ctx.fillText("Ship parts and sounds come from local Kenney assets when present, fallback art and synth audio if not.", CONFIG.width * 0.5, 412);
           if (game.assetText) {
             ctx.font = "500 14px Trebuchet MS";
             ctx.fillStyle = "rgba(239,252,255,0.7)";
-            ctx.fillText(game.assetText, CONFIG.width * 0.5, 422);
+            ctx.fillText(game.assetText, CONFIG.width * 0.5, 446);
           }
           ctx.restore();
         }
@@ -737,11 +1165,32 @@
           ctx.arcTo(x, y, x + w, y, r);
           ctx.closePath();
         }
+
+        drawWrappedText(ctx, text, x, y, maxWidth, lineHeight, maxLines = Infinity) {
+          const words = text.split(/\s+/).filter(Boolean);
+          let line = "";
+          let lineIndex = 0;
+          for (const word of words) {
+            const candidate = line ? `${line} ${word}` : word;
+            if (ctx.measureText(candidate).width > maxWidth && line) {
+              ctx.fillText(line, x, y + lineIndex * lineHeight);
+              lineIndex += 1;
+              if (lineIndex >= maxLines) return;
+              line = word;
+              continue;
+            }
+            line = candidate;
+          }
+          if (line && lineIndex < maxLines) {
+            ctx.fillText(line, x, y + lineIndex * lineHeight);
+          }
+        }
       }
 
       class Game {
         constructor(canvas) {
           this.canvas = canvas;
+          this.note = document.getElementById("helper-note");
           this.ctx = canvas.getContext("2d");
           this.assets = null;
           this.loader = new AssetLoader(MANIFEST);
@@ -751,6 +1200,7 @@
           this.screenFX = new ScreenFX();
           this.hud = new HUD();
           this.state = STATE.MENU;
+          this.showHelperNote = false;
           this.assetText = "Loading manifest...";
           this.starfield = Array.from({ length: 110 }, () => ({
             x: rand(0, CONFIG.width),
@@ -759,6 +1209,8 @@
             speed: rand(8, 40),
             alpha: rand(0.2, 0.9)
           }));
+          this.sector = 1;
+          this.announcer = { title: "", detail: "", timer: 0 };
           this.resetSession();
         }
 
@@ -767,27 +1219,261 @@
           this.bullets = [];
           this.asteroids = [];
           this.scraps = [];
+          this.signalCaches = [];
           this.spawnTimer = 1.4;
           this.gameTime = 0;
+          this.sector = 1;
+          this.fieldPulseTimer = 5;
+          this.completedContracts = new Set();
+          this.recoveredSignals = [];
+          this.spawnedSignalContracts = new Set();
+          this.pendingContract = null;
+          this.activeBreach = null;
+          this.announcer = { title: "", detail: "", timer: 0 };
+          this.beamWasActive = false;
+          this.tutorial = {
+            breachHitSeen: false,
+            ventPullSeen: false
+          };
+          this.audio.musicStep = 0;
+          this.audio.nextMusicAt = 0;
         }
 
         async init() {
           await this.loader.load();
           this.assets = this.loader;
-          this.assetText = this.loader.status.join(" | ");
+          const fallbackCount = this.loader.status.filter((entry) => entry.endsWith(": fallback") || entry.endsWith(": synth")).length;
+          this.assetText = fallbackCount > 0
+            ? `Optional Kenney assets missing; using fallback art and synth audio for ${fallbackCount} item${fallbackCount === 1 ? "" : "s"}.`
+            : "All local Kenney assets loaded.";
           this.enter(STATE.MENU);
         }
 
         enter(next) {
           this.state = next;
+          this.showHelperNote = false;
+          this.syncChrome();
           if (next === STATE.PLAYING) {
             this.resetSession();
             for (let i = 0; i < 4; i += 1) this.spawnAsteroid(true);
           }
         }
 
+        syncChrome() {
+          if (!this.note) return;
+          const hidden = this.state === STATE.PLAYING && !this.showHelperNote;
+          this.note.classList.toggle("is-hidden", hidden);
+        }
+
+        unlockLabel() {
+          const next = CONFIG.unlocks.find((unlock) => this.ship.scrap < unlock.scrap);
+          return next ? `Next ${next.name} at ${next.scrap}` : "All salvage modules online";
+        }
+
+        operation(index = this.activeBreach?.contractIndex ?? this.currentContract()) {
+          return CONFIG.contractOps[index] ?? CONFIG.contractOps[CONFIG.contractOps.length - 1];
+        }
+
+        fieldStatus() {
+          return this.operation();
+        }
+
+        operationLabel() {
+          const opIndex = this.activeBreach?.contractIndex ?? this.currentContract();
+          const op = this.operation(opIndex);
+          return `Op ${opIndex + 1}/${CONFIG.contractTargets.length}  ${op.name}`;
+        }
+
+        objectiveLabel() {
+          if (this.signalCaches.length > 0 && !this.activeBreach) {
+            const signal = this.signalCaches[0];
+            const distance = Math.round(this.signalDistance(signal));
+            return `Objective: pull in ${signal.profile.title} for +${signal.profile.bonusScrap} scrap, hull, and overdrive (${distance}px).`;
+          }
+          if (!this.activeBreach) {
+            const nextProfile = this.ship.oracleScope ? CONFIG.breachProfiles[this.currentContract()] : null;
+            return nextProfile
+              ? `Objective: haul scrap, prep for ${nextProfile.title}, and watch ${this.fieldStatus().fieldTitle.toLowerCase()}.`
+              : `Objective: haul scrap, unlock upgrades, reach next quota, watch ${this.fieldStatus().fieldTitle.toLowerCase()}.`;
+          }
+          return `Objective: close on ${this.activeBreach.profile.title}, vent a shockwave inside the ring to crack it (${this.activeBreach.hp}/${this.activeBreach.maxHp})`;
+        }
+
+        beamLabel() {
+          if (this.ship.beamVentWindow > 0) return `Vent wake ${this.ship.beamVentWindow.toFixed(1)}s. Scrap gets dragged in and breach cores stay exposed.`;
+          if (this.ship.beamHeat <= 0.01) return this.activeBreach ? "Beam cool. Hold to charge a core-cracking vent." : "Beam cool. Hold to charge a scrap-pulling vent.";
+          if (this.activeBreach && this.ship.beamHeat >= CONFIG.ventMinHeat) {
+            return this.isBreachInVentRange()
+              ? `Heat ${Math.round(this.ship.beamHeat)}%. Core in ring, vent now to crack it.`
+              : `Heat ${Math.round(this.ship.beamHeat)}%. Close on the core until it enters the ring.`;
+          }
+          return this.ship.beamHeatRatio >= 0.8
+            ? `Heat ${Math.round(this.ship.beamHeat)}%. Release now for a stronger scrap pull.`
+            : `Heat ${Math.round(this.ship.beamHeat)}%. Build more for a wider scrap pull.`;
+        }
+
+        ventTeachLabel() {
+          if (!this.activeBreach) {
+            return this.ship.beamHeat >= CONFIG.ventMinHeat ? "Release now to vent-pull nearby scrap." : "Build 24%+ heat to release a scrap-pulling vent.";
+          }
+          if (this.ship.beamHeat < CONFIG.ventMinHeat) return "Step 1: hold beam until heat passes 24% so the vent can crack the core.";
+          return this.isBreachInVentRange() ? "Step 2: release now so the vent shock cracks the core." : "Step 2: move until the core enters the dashed ring, then release.";
+        }
+
+        ventChecklist() {
+          const canVent = this.ship.beamHeat >= CONFIG.ventMinHeat;
+          const inRange = canVent && this.isBreachInVentRange();
+          return [
+            {
+              label: "1 Charge beam past 24% heat",
+              tone: canVent ? "done" : "active"
+            },
+            {
+              label: "2 Move core inside dashed vent ring",
+              tone: !canVent ? "idle" : inRange ? "done" : "active"
+            },
+            {
+              label: "3 Release to crack the core",
+              tone: inRange ? "active" : "idle"
+            }
+          ];
+        }
+
+        currentContract() {
+          for (let i = 0; i < CONFIG.contractTargets.length; i += 1) {
+            if (this.ship.scrap < CONFIG.contractTargets[i]) return i;
+          }
+          return CONFIG.contractTargets.length - 1;
+        }
+
+        currentContractProgress() {
+          if (this.activeBreach) {
+            const cracked = this.activeBreach.maxHp - this.activeBreach.hp;
+            return clamp(cracked / this.activeBreach.maxHp, 0, 1);
+          }
+          const contract = this.currentContract();
+          const start = contract === 0 ? 0 : CONFIG.contractTargets[contract - 1];
+          const end = CONFIG.contractTargets[contract];
+          return clamp((this.ship.scrap - start) / Math.max(1, end - start), 0, 1);
+        }
+
+        contractLabel() {
+          if (this.activeBreach) {
+            return `${this.activeBreach.profile.title} ${this.activeBreach.hp} / ${this.activeBreach.maxHp} core plates`;
+          }
+          const contract = this.currentContract();
+          const start = contract === 0 ? 0 : CONFIG.contractTargets[contract - 1];
+          const end = CONFIG.contractTargets[contract];
+          const current = clamp(this.ship.scrap - start, 0, end - start);
+          return `Quota ${current} / ${end - start} this contract`;
+        }
+
+        signalLabel() {
+          if (this.signalCaches.length > 0) {
+            const signal = this.signalCaches[0];
+            const distance = Math.round(this.signalDistance(signal));
+            return `Black box live: ${signal.profile.title} ${distance}px out. Pull it in for +${signal.profile.bonusScrap} scrap, hull, and overdrive.`;
+          }
+          return this.ship.oracleScope
+            ? `Recovered logs ${this.recoveredSignals.length} / ${CONFIG.signalCaches.length}. Next ping marks early.`
+            : `Recovered logs ${this.recoveredSignals.length} / ${CONFIG.signalCaches.length}`;
+        }
+
+        breachLabel() {
+          if (!this.activeBreach) return "No breach live. Next quota wakes anomaly.";
+          const distance = Math.round(this.breachDistance());
+          return this.isBreachInVentRange()
+            ? `Core inside vent ring. Release now. ${distance}px out.`
+            : `Core shielded. Close ${distance}px until it enters the ring, then vent.`;
+        }
+
+        fieldLabel() {
+          const field = this.fieldStatus();
+          return `${field.fieldTitle}: ${field.fieldBrief}`;
+        }
+
+        nextContractPreview() {
+          const nextIndex = this.activeBreach ? this.activeBreach.contractIndex + 1 : this.currentContract();
+          if (nextIndex >= CONFIG.contractOps.length) {
+            return {
+              title: "UP NEXT  Final burn",
+              detail: "Exit Pyre is the last haul. Recover the final testimony and burn clear.",
+              tone: "#ffca73"
+            };
+          }
+          const op = CONFIG.contractOps[nextIndex];
+          const breach = CONFIG.breachProfiles[nextIndex];
+          const cache = CONFIG.signalCaches[nextIndex];
+          const target = CONFIG.contractTargets[nextIndex];
+          const scrapDelta = Math.max(0, target - this.ship.scrap);
+          return {
+            title: this.activeBreach
+              ? `UP NEXT  Op ${nextIndex + 1}/${CONFIG.contractTargets.length}`
+              : `NEXT QUOTA  ${scrapDelta} scrap to go`,
+            detail: this.activeBreach
+              ? `${op.name}: ${op.fieldTitle.toLowerCase()}, ${breach.title.toLowerCase()} breach, ${cache.title.toLowerCase()} cache.`
+              : `${op.name} waits at ${target} scrap with ${op.fieldTitle.toLowerCase()}, ${breach.title.toLowerCase()} breach, and ${cache.title.toLowerCase()} cache.`,
+            tone: this.activeBreach ? "#7ef7d6" : "#ffca73"
+          };
+        }
+
+        announce(title, detail, duration = 2.6) {
+          this.announcer = { title, detail, timer: duration };
+        }
+
+        tutorialPrompt() {
+          if (this.showHelperNote || this.state !== STATE.PLAYING) return null;
+          if (this.activeBreach && !this.tutorial.breachHitSeen) {
+            return {
+              detail: "Charge past 24% heat, move the core inside the dashed ring, then release.",
+              title: "First breach coach"
+            };
+          }
+          if (!this.tutorial.ventPullSeen) {
+            return {
+              detail: "Hold RMB or Shift, then release near loose scrap to yank it into pickup range.",
+              title: "First vent coach"
+            };
+          }
+          return null;
+        }
+
+        previewVentRadius() {
+          if (this.ship.beamHeat < CONFIG.ventMinHeat) return 0;
+          const ratio = clamp((this.ship.beamHeat - CONFIG.ventMinHeat) / Math.max(1, CONFIG.beamHeatMax - CONFIG.ventMinHeat), 0, 1);
+          return CONFIG.beamRadius + 90 + this.ship.scrap * 0.8 + ratio * 130;
+        }
+
+        breachReachRadius() {
+          if (!this.activeBreach) return 0;
+          return this.previewVentRadius() * 0.8 + this.activeBreach.radius;
+        }
+
+        breachDistance() {
+          if (!this.activeBreach) return Infinity;
+          return Math.hypot(this.activeBreach.x - this.ship.x, this.activeBreach.y - this.ship.y);
+        }
+
+        signalDistance(signal = this.signalCaches[0]) {
+          if (!signal) return Infinity;
+          return Math.hypot(signal.x - this.ship.x, signal.y - this.ship.y);
+        }
+
+        isBreachInVentRange() {
+          if (!this.activeBreach || this.ship.beamHeat < CONFIG.ventMinHeat) return false;
+          return this.breachDistance() <= this.breachReachRadius();
+        }
+
+        currentSector() {
+          for (let i = CONFIG.sectorThresholds.length - 1; i >= 0; i -= 1) {
+            if (this.ship.scrap >= CONFIG.sectorThresholds[i]) return i + 1;
+          }
+          return 1;
+        }
+
         spawnAsteroid(edgeOnly = false) {
-          if (this.asteroids.length >= CONFIG.maxAsteroids) return;
+          const cap = CONFIG.maxAsteroids + (this.sector - 1) * 2;
+          if (this.asteroids.length >= cap) return;
           let x = rand(0, CONFIG.width);
           let y = rand(0, CONFIG.height);
           if (edgeOnly) {
@@ -798,7 +1484,53 @@
             if (edge === 3) { x = rand(0, CONFIG.width); y = CONFIG.height + 40; }
           }
           if (distSq(x, y, this.ship.x, this.ship.y) < 220 * 220) return this.spawnAsteroid(edgeOnly);
-          this.asteroids.push(new Asteroid(x, y, rand(26, 56), randInt(0, 2)));
+          const radiusBands = [
+            { min: 26, max: 56, speed: 0.96 },
+            { min: 30, max: 62, speed: 1.05 },
+            { min: 34, max: 68, speed: 1.14 },
+            { min: 36, max: 76, speed: 1.24 },
+            { min: 38, max: 82, speed: 1.33 },
+            { min: 40, max: 88, speed: 1.42 }
+          ];
+          const band = radiusBands[this.sector - 1] ?? radiusBands[radiusBands.length - 1];
+          const asteroid = new Asteroid(x, y, rand(band.min, band.max), randInt(this.sector - 1, this.sector + 1));
+          asteroid.vx *= band.speed;
+          asteroid.vy *= band.speed;
+          this.asteroids.push(asteroid);
+        }
+
+        spawnBreachCore(contractIndex) {
+          const profile = CONFIG.breachProfiles[contractIndex];
+          const op = this.operation(contractIndex);
+          if (!profile) return;
+          const x = rand(CONFIG.width * 0.24, CONFIG.width * 0.76);
+          const y = rand(CONFIG.height * 0.22, CONFIG.height * 0.72);
+          this.activeBreach = new BreachCore(x, y, profile, contractIndex);
+          this.pendingContract = CONFIG.contractTargets[contractIndex];
+          this.screenFX.kick(0.85, 0.26);
+          this.audio.play("hit", { volume: 0.28 });
+          this.announce(
+            `${op.name}: ${profile.title}`,
+            `${op.brief} ${profile.detail} Field shift: ${op.fieldTitle.toLowerCase()}. Hold beam past 24 heat, bring the core inside your dashed ring, then release to crack it.`,
+            4.2
+          );
+          for (let i = 0; i < this.sector + 3 + contractIndex; i += 1) this.spawnAsteroid(true);
+        }
+
+        spawnSignalCache(contractIndex) {
+          const profile = CONFIG.signalCaches[contractIndex];
+          if (!profile || this.spawnedSignalContracts.has(contractIndex)) return;
+          let x = rand(CONFIG.width * 0.2, CONFIG.width * 0.8);
+          let y = rand(CONFIG.height * 0.18, CONFIG.height * 0.76);
+          let tries = 0;
+          while (distSq(x, y, this.ship.x, this.ship.y) < 220 * 220 && tries < 8) {
+            x = rand(CONFIG.width * 0.2, CONFIG.width * 0.8);
+            y = rand(CONFIG.height * 0.18, CONFIG.height * 0.76);
+            tries += 1;
+          }
+          this.signalCaches.push(new SignalCache(x, y, profile, contractIndex));
+          this.spawnedSignalContracts.add(contractIndex);
+          this.announce(`${profile.title} found`, "Optional black box live. Pull it in for bonus salvage and dispatch testimony.", 3.2);
         }
 
         shoot() {
@@ -807,7 +1539,32 @@
           const nose = this.ship.radius + 10;
           const x = this.ship.x + Math.cos(angle) * nose;
           const y = this.ship.y + Math.sin(angle) * nose;
-          this.bullets.push(new Bullet(x, y, angle));
+          const shots = [{ angle, opts: {} }];
+          if (this.ship.pierceCannon) {
+            this.ship.pierceCounter += 1;
+            if (this.ship.pierceCounter >= 4) {
+              this.ship.pierceCounter = 0;
+              shots[0].opts = {
+                color: "#7ef7d6",
+                damage: 2,
+                penetration: 2,
+                radius: 8
+              };
+            }
+          }
+          if (this.ship.salvoRotor) {
+            this.ship.salvoCounter += 1;
+            if (this.ship.salvoCounter >= 5) {
+              this.ship.salvoCounter = 0;
+              shots.push(
+                { angle: angle - 0.18, opts: { radius: 5, color: "#9be7ff" } },
+                { angle: angle + 0.18, opts: { radius: 5, color: "#9be7ff" } }
+              );
+            }
+          }
+          for (const shot of shots) {
+            this.bullets.push(new Bullet(x, y, shot.angle, shot.opts));
+          }
           this.ship.fireCooldown = this.ship.fireRate;
           this.audio.play("shoot");
           this.particles.burst(x, y, 7, () => ({
@@ -862,12 +1619,26 @@
               this.asteroids.push(child);
             }
           }
+          if (this.ship.clusterPulse) {
+            this.emitClusterPulse(asteroid.x, asteroid.y, asteroid.radius * 4.8);
+          }
         }
 
         collectScrap(scrap, index) {
           this.scraps.splice(index, 1);
           this.ship.scrap += scrap.value;
-          this.ship.upgradeFromScrap();
+          this.ship.salvageLoop += scrap.value;
+          const unlocked = this.ship.upgradeFromScrap();
+          for (const unlock of unlocked) {
+            this.announce(unlock.name, unlock.detail, 3.2);
+          }
+          if (this.ship.recyclerSurge && this.ship.salvageLoop >= 6) {
+            this.ship.salvageLoop -= 6;
+            this.ship.hull = Math.min(this.ship.maxHull, this.ship.hull + 10);
+            this.ship.overdrive = Math.max(this.ship.overdrive, 2.4);
+            this.announce("Recycler Surge", "Six scrap converted into hull patch and burst fire.", 1.8);
+            this.screenFX.kick(0.28, 0.12);
+          }
           this.audio.play("collect");
           this.screenFX.kick(0.16, 0.12);
           this.particles.burst(scrap.x, scrap.y, 11, () => ({
@@ -884,10 +1655,615 @@
           }));
         }
 
+        collectSignalCache(signal, index) {
+          this.signalCaches.splice(index, 1);
+          this.recoveredSignals.push(signal.profile.title);
+          const choirScrap = this.ship.archiveChoir ? 6 : 0;
+          const choirHull = this.ship.archiveChoir ? 10 : 0;
+          this.ship.scrap = Math.min(CONFIG.winScrap, this.ship.scrap + signal.profile.bonusScrap + choirScrap);
+          if (this.ship.archiveChoir) {
+            this.ship.maxHull += 4;
+          }
+          this.ship.hull = Math.min(this.ship.maxHull, this.ship.hull + signal.profile.hull + choirHull);
+          this.ship.overdrive = Math.max(this.ship.overdrive, signal.profile.overdrive + (this.ship.archiveChoir ? 0.3 : 0));
+          const unlocked = this.ship.upgradeFromScrap();
+          for (const unlock of unlocked) {
+            this.announce(unlock.name, unlock.detail, 3.2);
+          }
+          this.screenFX.kick(0.28, 0.12);
+          this.audio.play("collect", { volume: 0.42 });
+          this.announce(signal.profile.title, signal.profile.detail, 4.6);
+          this.particles.burst(signal.x, signal.y, 18, () => ({
+            x: signal.x,
+            y: signal.y,
+            vx: rand(-110, 110),
+            vy: rand(-110, 110),
+            life: rand(0.2, 0.42),
+            maxLife: 0.42,
+            size: rand(1.8, 4.4),
+            color: Math.random() < 0.6 ? "#9be7ff" : "#7ef7d6",
+            drag: 0.93,
+            shrink: 0.96
+          }));
+        }
+
+        clearBreachCore() {
+          if (!this.activeBreach) return;
+          const breach = this.activeBreach;
+          const op = this.operation(breach.contractIndex);
+          this.activeBreach = null;
+          this.fieldPulseTimer = 4.5;
+          if (this.pendingContract !== null) {
+            this.completedContracts.add(this.pendingContract);
+            this.pendingContract = null;
+          }
+          this.ship.scrap = Math.min(CONFIG.winScrap, this.ship.scrap + breach.profile.bonusScrap);
+          this.ship.hull = Math.min(this.ship.maxHull, this.ship.hull + 20);
+          this.ship.invuln = Math.max(this.ship.invuln, 1.25);
+          this.ship.overdrive = Math.max(this.ship.overdrive, 2.8);
+          this.screenFX.kick(1.1, 0.32);
+          this.audio.play("explode");
+          this.announce(
+            `${op.name} clear`,
+            breach.contractIndex === CONFIG.breachProfiles.length - 1
+              ? "Home lane open. Cash out the last salvage and burn clear."
+              : "Route map spooled. Bonus salvage and hull patch secured for the next push.",
+            3.8
+          );
+          this.particles.burst(breach.x, breach.y, 40, () => {
+            const angle = rand(0, Math.PI * 2);
+            const speed = rand(90, 260);
+            return {
+              x: breach.x,
+              y: breach.y,
+              vx: Math.cos(angle) * speed,
+              vy: Math.sin(angle) * speed,
+              life: rand(0.2, 0.5),
+              maxLife: 0.5,
+              size: rand(2.4, 6.2),
+              color: Math.random() < 0.55 ? "#7ef7d6" : "#ffca73",
+              drag: 0.95,
+              shrink: 0.96
+            };
+          });
+          if (this.ship.salvageBloom) {
+            this.emitClusterPulse(breach.x, breach.y, breach.radius * 5.8);
+          }
+          const scrapBurst = breach.profile.bonusScrap + (this.ship.salvageBloom ? 6 : 0);
+          for (let i = 0; i < scrapBurst; i += 1) {
+            const angle = rand(0, Math.PI * 2);
+            const scrap = new Scrap(
+              breach.x + Math.cos(angle) * rand(8, breach.radius * 0.4),
+              breach.y + Math.sin(angle) * rand(8, breach.radius * 0.4),
+              rand(6, 10)
+            );
+            scrap.vx += Math.cos(angle) * rand(60, 170);
+            scrap.vy += Math.sin(angle) * rand(60, 170);
+            this.scraps.push(scrap);
+          }
+        }
+
+        emitClusterPulse(x, y, radius) {
+          for (const scrap of this.scraps) {
+            const dx = x - scrap.x;
+            const dy = y - scrap.y;
+            const distance = Math.hypot(dx, dy) || 1;
+            if (distance > radius) continue;
+            const pull = (1 - distance / radius) * 240;
+            scrap.vx += (dx / distance) * pull;
+            scrap.vy += (dy / distance) * pull;
+          }
+          this.particles.burst(x, y, 12, () => ({
+            x,
+            y,
+            vx: rand(-120, 120),
+            vy: rand(-120, 120),
+            life: rand(0.14, 0.3),
+            maxLife: 0.3,
+            size: rand(1.6, 3.8),
+            color: "#7ef7d6",
+            drag: 0.93,
+            shrink: 0.96
+          }));
+        }
+
+        ventBeam() {
+          if (!this.ship.beamAvailable || this.ship.beamHeat < CONFIG.ventMinHeat) return;
+          const ratio = clamp((this.ship.beamHeat - CONFIG.ventMinHeat) / Math.max(1, CONFIG.beamHeatMax - CONFIG.ventMinHeat), 0, 1);
+          const radius = CONFIG.beamRadius + 90 + this.ship.scrap * 0.8 + ratio * 130;
+          const crackRadius = radius * (CONFIG.ventCrackRatio + ratio * 0.16);
+          let ventPulledScrap = 0;
+          this.ship.beamHeat *= this.ship.ventRetain;
+          this.ship.beamVentWindow = Math.max(this.ship.beamVentWindow, 0.8 + ratio * 1.2);
+          this.ship.overdrive = Math.max(this.ship.overdrive, 0.45 + ratio * 0.95);
+          if (this.ship.aegisSlip) {
+            this.ship.invuln = Math.max(this.ship.invuln, 1.15 + ratio * 0.35);
+          }
+          this.screenFX.kick(0.44 + ratio * 0.28, 0.16 + ratio * 0.08);
+          this.audio.play("collect", { volume: 0.34 });
+          this.audio.play("hit", { volume: 0.22 });
+          this.particles.burst(this.ship.x, this.ship.y, 28, () => {
+            const angle = rand(0, Math.PI * 2);
+            const speed = rand(180, 420 + ratio * 160);
+            return {
+              x: this.ship.x,
+              y: this.ship.y,
+              vx: Math.cos(angle) * speed,
+              vy: Math.sin(angle) * speed,
+              life: rand(0.16, 0.32),
+              maxLife: 0.32,
+              size: rand(1.8, 4.4),
+              color: Math.random() < 0.75 ? "#7ef7d6" : "#9be7ff",
+              drag: 0.93,
+              shrink: 0.95
+            };
+          });
+
+          for (const scrap of this.scraps) {
+            const dx = this.ship.x - scrap.x;
+            const dy = this.ship.y - scrap.y;
+            const dist = Math.hypot(dx, dy) || 1;
+            if (dist > radius) continue;
+            ventPulledScrap += 1;
+            const force = (1 - dist / radius) * CONFIG.ventScrapForce * (1 + ratio * 0.4);
+            scrap.vx += (dx / dist) * force;
+            scrap.vy += (dy / dist) * force;
+          }
+          if (!this.activeBreach && ventPulledScrap > 0) {
+            this.tutorial.ventPullSeen = true;
+          }
+          if (this.ship.wakeHarvester) {
+            for (let i = this.scraps.length - 1; i >= 0; i -= 1) {
+              const scrap = this.scraps[i];
+              if (distSq(this.ship.x, this.ship.y, scrap.x, scrap.y) <= (radius * 0.3) ** 2) {
+                this.collectScrap(scrap, i);
+              }
+            }
+          }
+
+          for (let i = this.asteroids.length - 1; i >= 0; i -= 1) {
+            const asteroid = this.asteroids[i];
+            const dx = asteroid.x - this.ship.x;
+            const dy = asteroid.y - this.ship.y;
+            const dist = Math.hypot(dx, dy) || 1;
+            if (dist > radius) continue;
+            const force = (1 - dist / radius) * CONFIG.ventAsteroidForce * (1 + ratio * 0.55);
+            asteroid.vx += (dx / dist) * force;
+            asteroid.vy += (dy / dist) * force;
+            if (dist <= crackRadius) {
+              asteroid.hp -= 1;
+              if (asteroid.hp <= 0) {
+                this.destroyAsteroid(i, Math.atan2(dy, dx));
+              }
+            }
+          }
+
+          if (this.activeBreach) {
+            const breach = this.activeBreach;
+            const dx = breach.x - this.ship.x;
+            const dy = breach.y - this.ship.y;
+            const dist = Math.hypot(dx, dy) || 1;
+            if (dist <= radius * 0.8 + breach.radius) {
+              this.tutorial.breachHitSeen = true;
+              const damage = (ratio >= 0.7 ? 2 : 1) + (this.ship.witnessDrive && ratio >= 0.82 ? 1 : 0);
+              breach.hp = Math.max(0, breach.hp - damage);
+              breach.flash = 0.9;
+              breach.vx += (dx / dist) * CONFIG.breachVentKick;
+              breach.vy += (dy / dist) * CONFIG.breachVentKick;
+              const cappedVelocity = clampMagnitude(breach.vx, breach.vy, CONFIG.breachMaxSpeed);
+              breach.vx = cappedVelocity.vx;
+              breach.vy = cappedVelocity.vy;
+              this.screenFX.kick(0.6 + damage * 0.12, 0.22);
+              this.audio.play("collect", { volume: 0.38 });
+            this.announce(
+              `${breach.profile.title} cracked`,
+              breach.hp > 0 ? "Keep venting close. Shield plates failing." : "Core integrity gone. Route opening.",
+              1.7
+            );
+              if (breach.hp <= 0) {
+                this.clearBreachCore();
+              }
+            } else {
+              this.announce("Wake missed", "Charge again, bring the core inside your dashed ring, then release to crack it.", 1.55);
+            }
+          }
+        }
+
+        updateSectorFlow() {
+          const nextSector = this.currentSector();
+          if (nextSector <= this.sector) return;
+          this.sector = nextSector;
+          this.announce(
+            `Sector ${this.sector}: ${sectorName(this.sector)}`,
+            this.sector === CONFIG.sectorThresholds.length
+              ? "Home burn route. Fast rocks, thin lanes, no safe orbit."
+              : "Pressure spikes, richer rocks, and sharper route hazards.",
+            3.2
+          );
+          this.screenFX.kick(0.7, 0.24);
+          for (let i = 0; i < this.sector + 2; i += 1) {
+            this.spawnAsteroid(true);
+          }
+        }
+
+        updateFieldEvent(dt) {
+          const field = this.fieldStatus();
+          const centerX = CONFIG.width * 0.5;
+          const centerY = CONFIG.height * 0.5;
+          const sway = Math.sin(this.gameTime * 0.55) >= 0 ? 1 : -1;
+          const trenchX = CONFIG.width * (0.5 + Math.sin(this.gameTime * 0.22) * 0.18);
+          const trenchY = CONFIG.height * 0.82;
+          const applyCrosswind = (strength) => {
+            for (const asteroid of this.asteroids) asteroid.vx += sway * strength * dt;
+            for (const scrap of this.scraps) scrap.vx += sway * strength * 1.35 * dt;
+            for (const signal of this.signalCaches) signal.vx += sway * strength * 1.1 * dt;
+          };
+          const applyVertical = (strength) => {
+            for (const asteroid of this.asteroids) asteroid.vy += sway * strength * dt;
+            for (const scrap of this.scraps) scrap.vy += sway * strength * 1.3 * dt;
+            for (const signal of this.signalCaches) signal.vy += sway * strength * dt;
+          };
+          const applyOrbit = (strength) => {
+            for (const asteroid of this.asteroids) {
+              const dx = asteroid.x - centerX;
+              const dy = asteroid.y - centerY;
+              const dist = Math.hypot(dx, dy) || 1;
+              if (dist > 300) continue;
+              asteroid.vx += (-dy / dist) * strength * dt;
+              asteroid.vy += (dx / dist) * strength * dt;
+            }
+            for (const scrap of this.scraps) {
+              const dx = scrap.x - centerX;
+              const dy = scrap.y - centerY;
+              const dist = Math.hypot(dx, dy) || 1;
+              if (dist > 280) continue;
+              scrap.vx += (-dy / dist) * strength * 1.25 * dt;
+              scrap.vy += (dx / dist) * strength * 1.25 * dt;
+            }
+            for (const signal of this.signalCaches) {
+              const dx = signal.x - centerX;
+              const dy = signal.y - centerY;
+              const dist = Math.hypot(dx, dy) || 1;
+              if (dist > 300) continue;
+              signal.vx += (-dy / dist) * strength * 1.05 * dt;
+              signal.vy += (dx / dist) * strength * 1.05 * dt;
+            }
+          };
+          const applyInward = (strength) => {
+            for (const asteroid of this.asteroids) {
+              const dx = centerX - asteroid.x;
+              const dy = centerY - asteroid.y;
+              const dist = Math.hypot(dx, dy) || 1;
+              if (dist > 360) continue;
+              asteroid.vx += (dx / dist) * strength * dt;
+              asteroid.vy += (dy / dist) * strength * dt;
+            }
+            for (const scrap of this.scraps) {
+              const dx = centerX - scrap.x;
+              const dy = centerY - scrap.y;
+              const dist = Math.hypot(dx, dy) || 1;
+              if (dist > 340) continue;
+              scrap.vx += (dx / dist) * strength * 1.4 * dt;
+              scrap.vy += (dy / dist) * strength * 1.4 * dt;
+            }
+            for (const signal of this.signalCaches) {
+              const dx = centerX - signal.x;
+              const dy = centerY - signal.y;
+              const dist = Math.hypot(dx, dy) || 1;
+              if (dist > 360) continue;
+              signal.vx += (dx / dist) * strength * 0.95 * dt;
+              signal.vy += (dy / dist) * strength * 0.95 * dt;
+            }
+          };
+          const applyTrenchPull = (strength) => {
+            for (const asteroid of this.asteroids) {
+              const dx = trenchX - asteroid.x;
+              const dy = trenchY - asteroid.y;
+              const dist = Math.hypot(dx, dy) || 1;
+              asteroid.vx += (dx / dist) * strength * 0.8 * dt;
+              asteroid.vy += (dy / dist) * strength * dt;
+            }
+            for (const scrap of this.scraps) {
+              const dx = trenchX - scrap.x;
+              const dy = trenchY - scrap.y;
+              const dist = Math.hypot(dx, dy) || 1;
+              scrap.vx += (dx / dist) * strength * dt;
+              scrap.vy += (dy / dist) * strength * 1.15 * dt;
+            }
+            for (const signal of this.signalCaches) {
+              const dx = trenchX - signal.x;
+              const dy = trenchY - signal.y;
+              const dist = Math.hypot(dx, dy) || 1;
+              signal.vx += (dx / dist) * strength * 0.7 * dt;
+              signal.vy += (dy / dist) * strength * 0.9 * dt;
+            }
+          };
+
+          if (field.fieldMode === "crosswind") applyCrosswind(26);
+          if (field.fieldMode === "inward") applyInward(18);
+          if (field.fieldMode === "orbit") applyOrbit(28);
+          if (field.fieldMode === "shear") applyCrosswind(34);
+          if (field.fieldMode === "storm") applyInward(10);
+          if (field.fieldMode === "embers") {
+            for (const asteroid of this.asteroids) {
+              const speed = Math.hypot(asteroid.vx, asteroid.vy) || 1;
+              asteroid.vx += (asteroid.vx / speed) * 10 * dt;
+              asteroid.vy += (asteroid.vy / speed) * 10 * dt;
+            }
+          }
+          if (field.fieldMode === "gauntlet") {
+            applyInward(8);
+            applyCrosswind(18);
+          }
+          if (field.fieldMode === "shearStorm") {
+            applyCrosswind(42);
+            applyOrbit(12);
+          }
+          if (field.fieldMode === "homeburn") {
+            applyCrosswind(22);
+            applyInward(14);
+            for (const asteroid of this.asteroids) {
+              const speed = Math.hypot(asteroid.vx, asteroid.vy) || 1;
+              asteroid.vx += (asteroid.vx / speed) * 12 * dt;
+              asteroid.vy += (asteroid.vy / speed) * 12 * dt;
+            }
+          }
+          if (field.fieldMode === "riptide") {
+            applyCrosswind(26);
+            applyInward(20);
+            applyOrbit(10);
+          }
+          if (field.fieldMode === "maelstrom") {
+            applyCrosswind(30);
+            applyInward(24);
+            applyOrbit(18);
+            for (const asteroid of this.asteroids) {
+              const speed = Math.hypot(asteroid.vx, asteroid.vy) || 1;
+              asteroid.vx += (asteroid.vx / speed) * 16 * dt;
+              asteroid.vy += (asteroid.vy / speed) * 16 * dt;
+            }
+          }
+          if (field.fieldMode === "lattice") {
+            applyCrosswind(22);
+            applyVertical(22);
+            applyOrbit(8);
+          }
+          if (field.fieldMode === "undertow") {
+            applyCrosswind(16);
+            applyTrenchPull(30);
+          }
+          if (field.fieldMode === "flare") {
+            applyCrosswind(14);
+            for (const asteroid of this.asteroids) {
+              const speed = Math.hypot(asteroid.vx, asteroid.vy) || 1;
+              asteroid.vx += (asteroid.vx / speed) * 18 * dt;
+              asteroid.vy += (asteroid.vy / speed) * 18 * dt;
+            }
+          }
+          if (field.fieldMode === "cataclysm") {
+            applyCrosswind(28);
+            applyVertical(24);
+            applyTrenchPull(36);
+            applyOrbit(14);
+            for (const asteroid of this.asteroids) {
+              const speed = Math.hypot(asteroid.vx, asteroid.vy) || 1;
+              asteroid.vx += (asteroid.vx / speed) * 20 * dt;
+              asteroid.vy += (asteroid.vy / speed) * 20 * dt;
+            }
+          }
+
+          this.fieldPulseTimer -= dt;
+          if (this.fieldPulseTimer > 0) return;
+          if (field.fieldMode === "storm" || field.fieldMode === "gauntlet" || field.fieldMode === "shearStorm" || field.fieldMode === "homeburn" || field.fieldMode === "riptide" || field.fieldMode === "maelstrom" || field.fieldMode === "lattice" || field.fieldMode === "undertow" || field.fieldMode === "flare" || field.fieldMode === "cataclysm") {
+            this.spawnAsteroid(true);
+            this.spawnAsteroid(true);
+            if (field.fieldMode === "homeburn" || field.fieldMode === "maelstrom" || field.fieldMode === "cataclysm") this.spawnAsteroid(true);
+            this.audio.play("beam", { volume: 0.14 });
+            this.announce(field.fieldTitle, "Fresh breaker wave enters the lane. Keep room to vent.", 1.5);
+          } else if (field.fieldMode !== "quiet") {
+            this.announce(field.fieldTitle, field.fieldBrief, 1.35);
+          }
+          this.fieldPulseTimer = field.fieldMode === "homeburn" || field.fieldMode === "maelstrom"
+            ? 4.2
+            : field.fieldMode === "cataclysm"
+              ? 3.9
+              : field.fieldMode === "flare"
+                ? 4.8
+                : field.fieldMode === "storm" || field.fieldMode === "gauntlet" || field.fieldMode === "shearStorm" || field.fieldMode === "riptide" || field.fieldMode === "lattice" || field.fieldMode === "undertow"
+              ? 5.3
+              : 7.4;
+        }
+
+        updateContracts() {
+          for (let i = 0; i < CONFIG.contractTargets.length; i += 1) {
+            const threshold = CONFIG.contractTargets[i];
+            if (this.ship.scrap < threshold || this.completedContracts.has(threshold) || this.pendingContract === threshold) continue;
+            this.spawnBreachCore(i);
+          }
+        }
+
+        updateSignalSpawns() {
+          if (this.activeBreach || this.signalCaches.length > 0) return;
+          const contract = this.currentContract();
+          if (contract >= CONFIG.signalCaches.length) return;
+          const start = contract === 0 ? 0 : CONFIG.contractTargets[contract - 1];
+          const end = CONFIG.contractTargets[contract];
+          const progress = clamp((this.ship.scrap - start) / Math.max(1, end - start), 0, 1);
+          const trigger = this.ship.oracleScope ? 0.18 : 0.35;
+          if (progress >= trigger) this.spawnSignalCache(contract);
+        }
+
+        updateBreach(dt) {
+          if (!this.activeBreach) return;
+          const breach = this.activeBreach;
+          const mode = breach.profile.mode ?? "scatter";
+          breach.update(dt);
+          if (breach.pulseTimer > 0) return;
+          breach.pulseTimer = breach.profile.pulse;
+          this.screenFX.kick(0.38, 0.14);
+          this.audio.play("beam", { volume: 0.18 });
+          this.announce(
+            `${breach.profile.title} pulse`,
+            mode === "scatter" ? "Shockwave kicked loose debris across lane."
+              : mode === "inward" ? "Core is pulling the field inward. Stay mobile and vent on approach."
+              : mode === "orbit" ? "Cargo orbit is live. Ride the ring, then cut across it."
+              : mode === "shear" ? "Sidewind sweep incoming. Cross the lane, do not drift with it."
+              : mode === "crush" ? "Core is compacting the yard. Break pressure before rocks stack."
+              : mode === "lattice" ? "Grid sweep live. Snap between rails before the square closes."
+              : mode === "undertow" ? "Trench pull rising. Climb out after every vent pass."
+              : mode === "flare" ? "Plasma bloom flashed. Debris is accelerating through the lane."
+              : mode === "cataclysm" ? "Whole-yard collapse pulse. Every hazard channel just stacked."
+              : "Storm pulse live. Expect fresh pressure with every beat.",
+            1.5
+          );
+          const pulseRadius = breach.radius * (mode === "storm" || mode === "cataclysm" ? 3.7 : mode === "crush" ? 3.45 : mode === "undertow" ? 3.55 : 3.2);
+          for (const asteroid of this.asteroids) {
+            const dx = breach.x - asteroid.x;
+            const dy = breach.y - asteroid.y;
+            const dist = Math.hypot(dx, dy) || 1;
+            if (dist > pulseRadius) continue;
+            const nx = dx / dist;
+            const ny = dy / dist;
+            const tx = -ny;
+            const ty = nx;
+            if (mode === "scatter") {
+              asteroid.vx -= nx * 42;
+              asteroid.vy -= ny * 42;
+            } else if (mode === "inward") {
+              asteroid.vx += nx * 66;
+              asteroid.vy += ny * 66;
+            } else if (mode === "orbit") {
+              asteroid.vx += tx * 58 + nx * 16;
+              asteroid.vy += ty * 58 + ny * 16;
+            } else if (mode === "shear") {
+              const sweep = Math.sin(breach.angle) >= 0 ? 1 : -1;
+              asteroid.vx += sweep * 78;
+              asteroid.vy += ny * 22;
+            } else if (mode === "crush") {
+              asteroid.vx += nx * 88;
+              asteroid.vy += ny * 88;
+            } else if (mode === "lattice") {
+              const sweep = Math.sin(breach.angle * 1.5) >= 0 ? 1 : -1;
+              asteroid.vx += sweep * 74;
+              asteroid.vy += -sweep * 74;
+            } else if (mode === "undertow") {
+              asteroid.vx += nx * 24;
+              asteroid.vy += 102;
+            } else if (mode === "flare") {
+              asteroid.vx -= nx * 42 + tx * 24;
+              asteroid.vy -= ny * 42 + ty * 24;
+            } else if (mode === "cataclysm") {
+              const sweep = Math.sin(breach.angle * 1.3) >= 0 ? 1 : -1;
+              asteroid.vx += nx * 44 + sweep * 52;
+              asteroid.vy += ny * 44 - sweep * 46;
+            } else {
+              asteroid.vx += tx * 44 + nx * 72;
+              asteroid.vy += ty * 44 + ny * 72;
+            }
+          }
+          for (const scrap of this.scraps) {
+            const dx = breach.x - scrap.x;
+            const dy = breach.y - scrap.y;
+            const dist = Math.hypot(dx, dy) || 1;
+            if (dist > pulseRadius * 0.9) continue;
+            const nx = dx / dist;
+            const ny = dy / dist;
+            const tx = -ny;
+            const ty = nx;
+            if (mode === "scatter") {
+              scrap.vx -= nx * 54;
+              scrap.vy -= ny * 54;
+            } else if (mode === "inward") {
+              scrap.vx += nx * 84;
+              scrap.vy += ny * 84;
+            } else if (mode === "orbit") {
+              scrap.vx += tx * 72 + nx * 10;
+              scrap.vy += ty * 72 + ny * 10;
+            } else if (mode === "shear") {
+              const sweep = Math.cos(breach.angle * 1.4) >= 0 ? 1 : -1;
+              scrap.vx += sweep * 92;
+              scrap.vy += ny * 18;
+            } else if (mode === "crush") {
+              scrap.vx -= nx * 96;
+              scrap.vy -= ny * 96;
+            } else if (mode === "lattice") {
+              const sweep = Math.cos(breach.angle * 1.4) >= 0 ? 1 : -1;
+              scrap.vx += sweep * 82;
+              scrap.vy += -sweep * 82;
+            } else if (mode === "undertow") {
+              scrap.vx += nx * 18;
+              scrap.vy += 118;
+            } else if (mode === "flare") {
+              scrap.vx -= nx * 36 + tx * 20;
+              scrap.vy -= ny * 36 + ty * 20;
+            } else if (mode === "cataclysm") {
+              const sweep = Math.cos(breach.angle * 1.25) >= 0 ? 1 : -1;
+              scrap.vx += nx * 28 + sweep * 64;
+              scrap.vy += ny * 28 - sweep * 58;
+            } else {
+              scrap.vx += tx * 52 - nx * 42;
+              scrap.vy += ty * 52 - ny * 42;
+            }
+          }
+          for (const signal of this.signalCaches) {
+            const dx = breach.x - signal.x;
+            const dy = breach.y - signal.y;
+            const dist = Math.hypot(dx, dy) || 1;
+            if (dist > pulseRadius * 0.82) continue;
+            const nx = dx / dist;
+            const ny = dy / dist;
+            const tx = -ny;
+            const ty = nx;
+            if (mode === "scatter") {
+              signal.vx -= nx * 42;
+              signal.vy -= ny * 42;
+            } else if (mode === "inward") {
+              signal.vx += nx * 66;
+              signal.vy += ny * 66;
+            } else if (mode === "orbit") {
+              signal.vx += tx * 56 + nx * 8;
+              signal.vy += ty * 56 + ny * 8;
+            } else if (mode === "shear") {
+              const sweep = Math.cos(breach.angle * 1.4) >= 0 ? 1 : -1;
+              signal.vx += sweep * 76;
+              signal.vy += ny * 16;
+            } else if (mode === "crush") {
+              signal.vx -= nx * 82;
+              signal.vy -= ny * 82;
+            } else if (mode === "lattice") {
+              const sweep = Math.cos(breach.angle * 1.4) >= 0 ? 1 : -1;
+              signal.vx += sweep * 70;
+              signal.vy += -sweep * 70;
+            } else if (mode === "undertow") {
+              signal.vx += nx * 12;
+              signal.vy += 94;
+            } else if (mode === "flare") {
+              signal.vx -= nx * 28 + tx * 18;
+              signal.vy -= ny * 28 + ty * 18;
+            } else if (mode === "cataclysm") {
+              const sweep = Math.cos(breach.angle * 1.2) >= 0 ? 1 : -1;
+              signal.vx += nx * 22 + sweep * 54;
+              signal.vy += ny * 22 - sweep * 48;
+            } else {
+              signal.vx += tx * 46 - nx * 24;
+              signal.vy += ty * 46 - ny * 24;
+            }
+          }
+          if (mode === "storm" || mode === "cataclysm") {
+            this.spawnAsteroid(true);
+            this.spawnAsteroid(true);
+          }
+          const pulseDamage = 6 + breach.contractIndex * 2 + (mode === "crush" || mode === "storm" || mode === "cataclysm" ? 2 : mode === "undertow" ? 1 : 0);
+          if (distSq(this.ship.x, this.ship.y, breach.x, breach.y) <= (pulseRadius * 0.48) ** 2 && this.ship.damage(pulseDamage)) {
+            this.audio.play("hit");
+          }
+        }
+
         update(dt) {
           this.screenFX.update(dt);
           this.particles.update(dt);
           this.updateStars(dt);
+          this.announcer.timer = Math.max(0, this.announcer.timer - dt);
 
           if (this.state !== STATE.PLAYING) {
             if (this.input.pressed("Enter") || this.input.mousePressed("left") || this.input.pressed("Space")) {
@@ -900,6 +2276,23 @@
 
           this.audio.unlock();
           this.gameTime += dt;
+          this.audio.updateMusic(this);
+          if (this.input.pressed("KeyH")) {
+            this.showHelperNote = !this.showHelperNote;
+            this.syncChrome();
+          }
+          if (this.input.pressed("KeyM")) {
+            this.audio.toggleMusic();
+            this.announce(
+              this.audio.musicMuted ? "Dispatch bed muted" : "Dispatch bed live",
+              this.audio.musicMuted ? "Press M to bring the salvage radio bed back." : "Press M if you want a quieter haul.",
+              1.8
+            );
+          }
+          if (this.input.pressed("Escape") && this.showHelperNote) {
+            this.showHelperNote = false;
+            this.syncChrome();
+          }
           this.ship.update(dt, this.input);
 
           const firing = this.input.down("Space") || this.input.mouse.left;
@@ -909,7 +2302,7 @@
           if (beamActive) this.audio.play("beam", { volume: 0.2 });
 
           this.spawnTimer -= dt;
-          const spawnRate = Math.max(0.75, CONFIG.spawnBase - this.ship.scrap * 0.03);
+          const spawnRate = Math.max(0.58, CONFIG.spawnBase - this.ship.scrap * 0.022 - (this.sector - 1) * 0.16);
           if (this.spawnTimer <= 0) {
             this.spawnAsteroid(true);
             this.spawnTimer = spawnRate;
@@ -929,13 +2322,19 @@
 
           for (const asteroid of this.asteroids) asteroid.update(dt);
           for (const scrap of this.scraps) scrap.update(dt);
+          for (const signal of this.signalCaches) signal.update(dt);
+          this.updateBreach(dt);
 
           this.handleBulletHits();
           this.handleShipHits();
           this.handleTractorBeam(dt, beamActive);
+          this.updateFieldEvent(dt);
+          this.updateContracts();
+          this.updateSignalSpawns();
+          this.updateSectorFlow();
 
           if (this.ship.hull <= 0) this.enter(STATE.LOSE);
-          if (this.ship.scrap >= CONFIG.winScrap) this.enter(STATE.WIN);
+          if (this.ship.scrap >= CONFIG.winScrap && !this.activeBreach && this.completedContracts.has(CONFIG.winScrap)) this.enter(STATE.WIN);
 
           this.input.nextFrame();
         }
@@ -950,7 +2349,6 @@
               if (distSq(bullet.x, bullet.y, asteroid.x, asteroid.y) <= hitRadius * hitRadius) {
                 asteroid.hp -= bullet.damage;
                 hit = true;
-                this.bullets.splice(b, 1);
                 this.particles.burst(bullet.x, bullet.y, 5, () => ({
                   x: bullet.x,
                   y: bullet.y,
@@ -966,6 +2364,13 @@
                 if (asteroid.hp <= 0) {
                   const angle = Math.atan2(asteroid.y - this.ship.y, asteroid.x - this.ship.x);
                   this.destroyAsteroid(a, angle);
+                }
+                if (bullet.penetration > 0) {
+                  bullet.penetration -= 1;
+                  bullet.damage = 1;
+                  bullet.radius = Math.max(6, bullet.radius - 0.5);
+                } else {
+                  this.bullets.splice(b, 1);
                 }
                 break;
               }
@@ -1007,7 +2412,32 @@
         }
 
         handleTractorBeam(dt, active) {
-          if (!active) return;
+          if (this.beamWasActive && !active && this.ship.beamAvailable && this.ship.beamHeat >= CONFIG.ventMinHeat) {
+            this.ventBeam();
+          }
+          if (active && this.ship.beamAvailable) {
+            const heatGain = CONFIG.beamHeatGain * dt * (this.ship.resonanceNet ? 0.92 : 1);
+            this.ship.beamHeat = Math.min(CONFIG.beamHeatMax, this.ship.beamHeat + heatGain);
+            if (this.ship.beamHeat >= CONFIG.beamHeatMax) {
+              this.ship.beamHeat = CONFIG.beamHeatMax;
+              this.ship.beamOverload = CONFIG.beamOverloadTime * (this.ship.nullVent ? 0.72 : 1);
+              this.ship.beamVentWindow = 0;
+              this.beamWasActive = false;
+              this.screenFX.kick(0.6, 0.2);
+              this.audio.play("hit");
+              this.announce("Beam overload", "Release the field, vent heat, then pull again.", 2.4);
+              return;
+            }
+          } else {
+            const coolBoost = (this.ship.crownEngine ? 1.3 : 1) * (this.ship.nullVent ? 1.32 : 1);
+            const coolRate = (active ? CONFIG.beamHeatCoolActive : CONFIG.beamHeatCoolIdle) * coolBoost * dt;
+            this.ship.beamHeat = Math.max(0, this.ship.beamHeat - coolRate);
+          }
+
+          if (!active || !this.ship.beamAvailable) {
+            this.beamWasActive = active;
+            return;
+          }
           const beamRadius = CONFIG.beamRadius + this.ship.scrap * 1.5;
           for (let i = this.scraps.length - 1; i >= 0; i -= 1) {
             const scrap = this.scraps[i];
@@ -1037,6 +2467,33 @@
               this.collectScrap(scrap, i);
             }
           }
+          for (let i = this.signalCaches.length - 1; i >= 0; i -= 1) {
+            const signal = this.signalCaches[i];
+            const dx = this.ship.x - signal.x;
+            const dy = this.ship.y - signal.y;
+            const dist = Math.hypot(dx, dy) || 1;
+            if (dist <= beamRadius * 0.92) {
+              const force = (1 - dist / (beamRadius * 0.92)) * CONFIG.beamForce * 0.7;
+              signal.vx += (dx / dist) * force * dt;
+              signal.vy += (dy / dist) * force * dt;
+            }
+            if (dist <= CONFIG.collectRadius + signal.radius + 4) {
+              this.collectSignalCache(signal, i);
+            }
+          }
+          if (!this.ship.resonanceNet) return;
+          for (const asteroid of this.asteroids) {
+            const dx = this.ship.x - asteroid.x;
+            const dy = this.ship.y - asteroid.y;
+            const dist = Math.hypot(dx, dy) || 1;
+            if (dist > beamRadius * 0.9) continue;
+            const slow = 1 - clamp((1 - dist / (beamRadius * 0.9)) * 0.09, 0.02, 0.09);
+            asteroid.vx *= slow;
+            asteroid.vy *= slow;
+            asteroid.vx += (dx / dist) * 24 * dt;
+            asteroid.vy += (dy / dist) * 24 * dt;
+          }
+          this.beamWasActive = active;
         }
 
         updateStars(dt) {
@@ -1062,11 +2519,18 @@
 
           this.hud.draw(ctx, this);
           if (this.state === STATE.MENU) {
-            this.hud.drawOverlay(ctx, this, "Asteroids: Scrap Magnet", "Blast rocks, pull debris, rebuild your ship mid-fight.");
+            this.hud.drawOverlay(ctx, this, "Asteroids: Scrap Magnet", "Blast rocks, pull debris, recover black boxes, and survive an eighteen-contract salvage run.");
           } else if (this.state === STATE.WIN) {
-            this.hud.drawOverlay(ctx, this, "Scrap Hold Full", `You hauled ${this.ship.scrap} scrap and turned junk into armor.`);
+            this.hud.drawOverlay(ctx, this, "Salvage Crown Secured", `Eighteen contracts cleared. ${this.ship.scrap} scrap hauled out, ${this.recoveredSignals.length} black boxes recovered.`);
           } else if (this.state === STATE.LOSE) {
-            this.hud.drawOverlay(ctx, this, "Hull Breach", `Recovered scrap: ${this.ship.scrap}. Re-enter field and try a cleaner harvest.`);
+            this.hud.drawOverlay(ctx, this, "Hull Breach", `Recovered scrap: ${this.ship.scrap}. Black boxes saved: ${this.recoveredSignals.length}. Re-enter field and try a cleaner harvest.`);
+          }
+
+          if (this.announcer.timer > 0 && this.state === STATE.PLAYING) {
+            this.drawAnnouncer(ctx);
+          }
+          if (this.state === STATE.PLAYING) {
+            this.drawTutorialCoach(ctx);
           }
 
           if (this.screenFX.flash > 0) {
@@ -1076,11 +2540,22 @@
         }
 
         drawBackdrop(ctx) {
+          const field = this.fieldStatus();
           const gradient = ctx.createRadialGradient(CONFIG.width * 0.5, 40, 40, CONFIG.width * 0.5, 40, 520);
-          gradient.addColorStop(0, "rgba(126,247,214,0.08)");
+          gradient.addColorStop(0, field.colors?.[0] ?? "rgba(126,247,214,0.08)");
           gradient.addColorStop(1, "rgba(0,0,0,0)");
           ctx.fillStyle = gradient;
           ctx.fillRect(0, 0, CONFIG.width, CONFIG.height);
+
+          ctx.fillStyle = field.haze ?? "#10212d";
+          ctx.globalAlpha = 0.2;
+          ctx.beginPath();
+          ctx.ellipse(CONFIG.width * 0.18, CONFIG.height * 0.74, 240, 150, Math.sin(this.gameTime * 0.06) * 0.4, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.beginPath();
+          ctx.ellipse(CONFIG.width * 0.78, CONFIG.height * 0.24, 290, 170, Math.cos(this.gameTime * 0.05) * 0.4, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.globalAlpha = 1;
 
           for (const star of this.starfield) {
             ctx.globalAlpha = star.alpha;
@@ -1092,11 +2567,54 @@
 
         drawWorld(ctx) {
           for (const scrap of this.scraps) this.drawScrap(ctx, scrap);
+          for (const signal of this.signalCaches) this.drawSignalCache(ctx, signal);
           for (const asteroid of this.asteroids) this.drawAsteroid(ctx, asteroid);
+          if (this.activeBreach) this.drawBreach(ctx, this.activeBreach);
+          if (this.activeBreach) this.drawBreachGuidance(ctx, this.activeBreach);
+          if (this.signalCaches.length > 0) this.drawSignalGuidance(ctx, this.signalCaches[0]);
           for (const bullet of this.bullets) this.drawBullet(ctx, bullet);
           this.drawShip(ctx, this.ship);
           this.drawBeam(ctx);
+          this.drawVentPreview(ctx);
           this.particles.draw(ctx);
+        }
+
+        drawAnnouncer(ctx) {
+          ctx.save();
+          const alpha = clamp(this.announcer.timer / 0.45, 0, 1) * clamp(this.announcer.timer / 2.6, 0.35, 1);
+          ctx.globalAlpha = alpha;
+          this.hud.roundRect(ctx, CONFIG.width * 0.5 - 220, 26, 440, 62, 18);
+          ctx.fillStyle = "rgba(8,19,28,0.88)";
+          ctx.fill();
+          ctx.strokeStyle = "rgba(132,233,255,0.22)";
+          ctx.stroke();
+          ctx.textAlign = "center";
+          ctx.fillStyle = "#effcff";
+          ctx.font = "700 20px Trebuchet MS";
+          ctx.fillText(this.announcer.title, CONFIG.width * 0.5, 50);
+          ctx.fillStyle = "#9bc7cf";
+          ctx.font = "600 13px Trebuchet MS";
+          ctx.fillText(this.announcer.detail, CONFIG.width * 0.5, 71);
+          ctx.restore();
+        }
+
+        drawTutorialCoach(ctx) {
+          const prompt = this.tutorialPrompt();
+          if (!prompt) return;
+          ctx.save();
+          this.hud.roundRect(ctx, CONFIG.width * 0.5 - 244, 92, 488, 56, 18);
+          ctx.fillStyle = "rgba(8,19,28,0.86)";
+          ctx.fill();
+          ctx.strokeStyle = "rgba(132,233,255,0.22)";
+          ctx.stroke();
+          ctx.textAlign = "center";
+          ctx.fillStyle = "#ffca73";
+          ctx.font = "700 16px Trebuchet MS";
+          ctx.fillText(prompt.title, CONFIG.width * 0.5, 114);
+          ctx.fillStyle = "#effcff";
+          ctx.font = "600 13px Trebuchet MS";
+          ctx.fillText(prompt.detail, CONFIG.width * 0.5, 135);
+          ctx.restore();
         }
 
         drawShip(ctx, ship) {
@@ -1126,10 +2644,12 @@
           const image = this.assets.images.get("bullet");
           ctx.save();
           ctx.translate(bullet.x, bullet.y);
+          ctx.globalCompositeOperation = bullet.penetration > 0 ? "lighter" : "source-over";
           if (image) {
-            ctx.drawImage(image, -10, -10, 20, 20);
+            const size = bullet.penetration > 0 ? 26 : 20;
+            ctx.drawImage(image, -size * 0.5, -size * 0.5, size, size);
           } else {
-            ctx.fillStyle = "#fff7d1";
+            ctx.fillStyle = bullet.color;
             ctx.beginPath();
             ctx.arc(0, 0, bullet.radius, 0, Math.PI * 2);
             ctx.fill();
@@ -1146,6 +2666,29 @@
             const size = scrap.radius * 2.6;
             ctx.drawImage(image, -size * 0.5, -size * 0.5, size, size);
           }
+          ctx.restore();
+        }
+
+        drawSignalCache(ctx, signal) {
+          const pulse = 0.5 + Math.sin(signal.pulse) * 0.5;
+          ctx.save();
+          ctx.translate(signal.x, signal.y);
+          ctx.rotate(signal.angle);
+          ctx.globalCompositeOperation = "lighter";
+          ctx.strokeStyle = `rgba(155,231,255,${0.45 + pulse * 0.2})`;
+          ctx.lineWidth = 2.2;
+          ctx.beginPath();
+          ctx.rect(-10, -10, 20, 20);
+          ctx.stroke();
+          ctx.strokeStyle = `rgba(126,247,214,${0.35 + pulse * 0.3})`;
+          ctx.beginPath();
+          ctx.moveTo(-13, 0);
+          ctx.lineTo(13, 0);
+          ctx.moveTo(0, -13);
+          ctx.lineTo(0, 13);
+          ctx.stroke();
+          ctx.fillStyle = "rgba(255,202,115,0.16)";
+          ctx.fillRect(-6, -6, 12, 12);
           ctx.restore();
         }
 
@@ -1169,26 +2712,180 @@
           ctx.restore();
         }
 
+        drawBreach(ctx, breach) {
+          const pulse = 0.5 + Math.sin(performance.now() * 0.006) * 0.5;
+          ctx.save();
+          ctx.translate(breach.x, breach.y);
+          ctx.rotate(breach.angle);
+          ctx.globalCompositeOperation = "lighter";
+          ctx.strokeStyle = `rgba(155,231,255,${0.26 + pulse * 0.2 + breach.flash * 0.32})`;
+          ctx.lineWidth = 5;
+          ctx.beginPath();
+          ctx.arc(0, 0, breach.radius + 16 + pulse * 8, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.lineWidth = 3;
+          ctx.strokeStyle = `rgba(126,247,214,${0.45 + breach.flash * 0.28})`;
+          ctx.beginPath();
+          for (let i = 0; i < 6; i += 1) {
+            const angle = (i / 6) * Math.PI * 2;
+            const r = i % 2 === 0 ? breach.radius : breach.radius * 0.58;
+            const x = Math.cos(angle) * r;
+            const y = Math.sin(angle) * r;
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          }
+          ctx.closePath();
+          ctx.stroke();
+          ctx.fillStyle = "rgba(255, 157, 111, 0.14)";
+          ctx.beginPath();
+          ctx.arc(0, 0, breach.radius * 0.72, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = "#effcff";
+          ctx.font = "700 14px Trebuchet MS";
+          ctx.textAlign = "center";
+          ctx.fillText(breach.profile.title, 0, breach.radius + 34);
+          ctx.fillStyle = "#ffca73";
+          ctx.fillText(`VENT ${breach.hp}/${breach.maxHp}`, 0, breach.radius + 52);
+          ctx.restore();
+        }
+
+        drawBreachGuidance(ctx, breach) {
+          const distance = this.breachDistance();
+          const canVent = this.ship.beamHeat >= CONFIG.ventMinHeat;
+          const inRange = canVent && this.isBreachInVentRange();
+          const reachRadius = this.breachReachRadius();
+          const ringRadius = canVent ? Math.max(breach.radius + 18, distance - reachRadius + breach.radius) : breach.radius + 26;
+
+          ctx.save();
+          ctx.globalCompositeOperation = "lighter";
+          ctx.setLineDash([10, 10]);
+          ctx.lineDashOffset = -performance.now() * 0.025;
+          ctx.strokeStyle = inRange ? "rgba(126,247,214,0.85)" : canVent ? "rgba(255,202,115,0.8)" : "rgba(155,231,255,0.42)";
+          ctx.lineWidth = inRange ? 3.5 : 2;
+          ctx.beginPath();
+          ctx.moveTo(this.ship.x, this.ship.y);
+          ctx.lineTo(breach.x, breach.y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          ctx.strokeStyle = inRange ? "rgba(126,247,214,0.72)" : "rgba(255,202,115,0.5)";
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(breach.x, breach.y, ringRadius, 0, Math.PI * 2);
+          ctx.stroke();
+
+          ctx.fillStyle = inRange ? "#7ef7d6" : canVent ? "#ffca73" : "#9bc7cf";
+          ctx.font = "700 13px Trebuchet MS";
+          ctx.textAlign = "center";
+          ctx.fillText(
+            inRange ? "RELEASE NOW" : canVent ? "CLOSE IN" : "CHARGE BEAM",
+            breach.x,
+            breach.y - ringRadius - 12
+          );
+
+          const checklist = this.ventChecklist();
+          const cardWidth = 232;
+          const cardHeight = 94;
+          const cardX = clamp(breach.x + ringRadius + 18, 18, CONFIG.width - cardWidth - 18);
+          const cardY = clamp(breach.y - cardHeight * 0.5, 104, CONFIG.height - cardHeight - 18);
+          this.hud.roundRect(ctx, cardX, cardY, cardWidth, cardHeight, 16);
+          ctx.fillStyle = "rgba(8,19,28,0.88)";
+          ctx.fill();
+          ctx.strokeStyle = inRange ? "rgba(126,247,214,0.4)" : canVent ? "rgba(255,202,115,0.34)" : "rgba(155,231,255,0.26)";
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+          ctx.textAlign = "start";
+          ctx.font = "700 12px Trebuchet MS";
+          ctx.fillStyle = "#effcff";
+          ctx.fillText("VENT CHECKLIST", cardX + 14, cardY + 18);
+
+          ctx.font = "600 12px Trebuchet MS";
+          checklist.forEach((step, index) => {
+            const y = cardY + 40 + index * 18;
+            const isDone = step.tone === "done";
+            const isActive = step.tone === "active";
+            ctx.fillStyle = isDone ? "#7ef7d6" : isActive ? "#ffca73" : "#9bc7cf";
+            ctx.fillText(step.label, cardX + 32, y);
+            ctx.beginPath();
+            ctx.fillStyle = isDone ? "#7ef7d6" : isActive ? "#ffca73" : "rgba(155,199,207,0.35)";
+            ctx.arc(cardX + 16, y - 4, isActive ? 5 : 4, 0, Math.PI * 2);
+            ctx.fill();
+          });
+          ctx.restore();
+        }
+
+        drawSignalGuidance(ctx, signal) {
+          const distance = Math.round(this.signalDistance(signal));
+          ctx.save();
+          ctx.globalCompositeOperation = "lighter";
+          ctx.setLineDash([8, 8]);
+          ctx.lineDashOffset = -performance.now() * 0.02;
+          ctx.strokeStyle = "rgba(155,231,255,0.6)";
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(this.ship.x, this.ship.y);
+          ctx.lineTo(signal.x, signal.y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.strokeStyle = "rgba(126,247,214,0.52)";
+          ctx.beginPath();
+          ctx.arc(signal.x, signal.y, 28, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.textAlign = "center";
+          ctx.font = "700 12px Trebuchet MS";
+          ctx.fillStyle = "#9be7ff";
+          ctx.fillText(`BLACK BOX ${distance}px`, signal.x, signal.y - 36);
+          ctx.fillStyle = "#7ef7d6";
+          ctx.fillText(`PULL IN: +${signal.profile.bonusScrap} scrap, hull, overdrive`, signal.x, signal.y + 44);
+          ctx.restore();
+        }
+
+        drawVentPreview(ctx) {
+          if (this.state !== STATE.PLAYING || !this.activeBreach || !this.ship.beamAvailable || this.ship.beamHeat < CONFIG.ventMinHeat) return;
+          const radius = this.previewVentRadius();
+          const inRange = this.isBreachInVentRange();
+          ctx.save();
+          ctx.globalCompositeOperation = "lighter";
+          ctx.setLineDash([14, 10]);
+          ctx.lineDashOffset = -performance.now() * 0.03;
+          ctx.strokeStyle = inRange ? "rgba(126,247,214,0.65)" : "rgba(255,202,115,0.45)";
+          ctx.lineWidth = inRange ? 3 : 2;
+          ctx.beginPath();
+          ctx.arc(this.ship.x, this.ship.y, radius, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = inRange ? "#7ef7d6" : "#ffca73";
+          ctx.font = "700 12px Trebuchet MS";
+          ctx.textAlign = "center";
+          ctx.fillText(inRange ? "VENT LOCK" : "VENT RANGE", this.ship.x, this.ship.y - radius - 10);
+          ctx.restore();
+        }
+
         drawBeam(ctx) {
           const active = this.input.down("ShiftLeft") || this.input.down("ShiftRight") || this.input.mouse.right;
-          if (!active || this.state !== STATE.PLAYING) return;
-          const radius = CONFIG.beamRadius + this.ship.scrap * 1.5;
+          if (this.state !== STATE.PLAYING || (!active && this.ship.beamVentWindow <= 0)) return;
+          const ventRatio = clamp(this.ship.beamVentWindow / 1.8, 0, 1);
+          const radius = active
+            ? CONFIG.beamRadius + this.ship.scrap * 1.5
+            : CONFIG.beamRadius + 90 + this.ship.scrap * 0.8 + ventRatio * 130;
           const pulse = 0.5 + Math.sin(performance.now() * 0.012) * 0.12;
           ctx.save();
           const gradient = ctx.createRadialGradient(this.ship.x, this.ship.y, 20, this.ship.x, this.ship.y, radius);
-          gradient.addColorStop(0, "rgba(126,247,214,0.16)");
-          gradient.addColorStop(0.65, "rgba(126,247,214,0.08)");
+          gradient.addColorStop(0, active ? "rgba(126,247,214,0.16)" : "rgba(155,231,255,0.2)");
+          gradient.addColorStop(0.65, active ? "rgba(126,247,214,0.08)" : "rgba(155,231,255,0.1)");
           gradient.addColorStop(1, "rgba(126,247,214,0)");
           ctx.fillStyle = gradient;
           ctx.beginPath();
           ctx.arc(this.ship.x, this.ship.y, radius, 0, Math.PI * 2);
           ctx.fill();
-          ctx.strokeStyle = `rgba(126,247,214,${0.18 + pulse * 0.2})`;
-          ctx.setLineDash([10, 10]);
-          ctx.lineDashOffset = -performance.now() * 0.04;
+          ctx.strokeStyle = active
+            ? `rgba(126,247,214,${0.18 + pulse * 0.2})`
+            : `rgba(155,231,255,${0.12 + ventRatio * 0.24})`;
+          ctx.setLineDash(active ? [10, 10] : []);
+          ctx.lineDashOffset = active ? -performance.now() * 0.04 : 0;
           ctx.lineWidth = 2;
           ctx.beginPath();
-          ctx.arc(this.ship.x, this.ship.y, radius * (0.92 + pulse * 0.04), 0, Math.PI * 2);
+          ctx.arc(this.ship.x, this.ship.y, radius * (active ? (0.92 + pulse * 0.04) : (0.9 + ventRatio * 0.08)), 0, Math.PI * 2);
           ctx.stroke();
           ctx.restore();
         }

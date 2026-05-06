@@ -12,7 +12,7 @@ import {
   BRICK_WIDTH,
   HEIGHT,
   LASER_SPEED,
-  LEVEL_LAYOUTS,
+  LEVELS,
   PADDLE_HEIGHT,
   PADDLE_SPEED,
   PADDLE_WIDTH,
@@ -23,6 +23,12 @@ import {
 } from "./data.js";
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+const MAX_BALLS = 6;
+const FOCUS_PADDLE_BONUS = 34;
+const FOCUS_PADDLE_BONUS_MAX = 68;
+const BURST_TIME = 8;
+const MIN_VERTICAL_SPEED = 150;
+const MIN_VERTICAL_RATIO = 0.24;
 
 function randId(prefix) {
   return `${prefix}-${Math.random().toString(36).slice(2, 9)}`;
@@ -34,6 +40,32 @@ function rotateVelocity(vx, vy, radians) {
   return {
     vx: vx * cos - vy * sin,
     vy: vx * sin + vy * cos,
+  };
+}
+
+function scaleVelocity(vx, vy, targetSpeed) {
+  const length = Math.hypot(vx, vy) || 1;
+  return {
+    vx: (vx / length) * targetSpeed,
+    vy: (vy / length) * targetSpeed,
+  };
+}
+
+function clampBallVelocity(vx, vy, preferredVerticalSign = -1) {
+  const speed = clamp(Math.hypot(vx, vy) || BALL_SPEED, BALL_SPEED, BALL_MAX_SPEED);
+  const verticalSign = Math.sign(vy) || preferredVerticalSign || -1;
+  const minimumVertical = Math.min(speed * 0.9, Math.max(MIN_VERTICAL_SPEED, speed * MIN_VERTICAL_RATIO));
+  let nextVy = vy;
+
+  if (Math.abs(nextVy) < minimumVertical) {
+    nextVy = verticalSign * minimumVertical;
+  }
+
+  const horizontalMagnitude = Math.sqrt(Math.max(0, speed * speed - nextVy * nextVy));
+  const horizontalSign = Math.sign(vx) || (Math.random() < 0.5 ? -1 : 1);
+  return {
+    vx: horizontalMagnitude * horizontalSign,
+    vy: nextVy,
   };
 }
 
@@ -80,6 +112,10 @@ export class Game {
     this.lives = 3;
     this.levelIndex = 0;
     this.time = 0;
+    this.serveTimer = 0;
+    this.serveReleaseStatus = null;
+    this.phaseTimer = 0;
+    this.burstTimer = 0;
     this.status = "Shape the first rebound.";
     this.paddle = {
       x: WIDTH * 0.5,
@@ -108,12 +144,16 @@ export class Game {
   start() {
     if (this.mode === "menu") {
       this.mode = "playing";
-      this.status = "Crack the prism line.";
+      this.queueServe(this.currentLevel.startStatus, 0.85);
     }
   }
 
   loadLevel(index) {
-    const layout = LEVEL_LAYOUTS[index];
+    const level = LEVELS[index];
+    const layout = level.layout;
+    this.currentLevel = level;
+    this.basePaddleWidth = Math.round(PADDLE_WIDTH * level.paddleScale);
+    this.focusPaddleBonus = 0;
     this.bricks = [];
     for (let row = 0; row < BRICK_ROWS; row += 1) {
       const line = layout[row];
@@ -127,10 +167,55 @@ export class Game {
     this.lasers = [];
     this.powerups = [];
     this.particles = [];
+    this.levelBrickCount = this.bricks.length;
+    this.levelBricksCleared = 0;
+    this.levelPowerDrops = {
+      multiball: 0,
+      focus: 0,
+      laser: 0,
+      phase: 0,
+      burst: 0,
+    };
+    this.surgeActive = false;
+    this.phaseTimer = 0;
+    this.burstTimer = 0;
+    this.syncPaddleWidth();
   }
 
   resetBallOnPaddle() {
-    this.balls = [createBall(this.paddle.x, this.paddle.y - 24, 0, -BALL_SPEED)];
+    this.balls = [createBall(this.paddle.x, this.paddle.y - 24, 0, 0)];
+  }
+
+  queueServe(status, duration = 0.75, releaseStatus = status) {
+    this.status = status;
+    this.serveTimer = duration;
+    this.serveReleaseStatus = releaseStatus;
+    this.resetBallOnPaddle();
+  }
+
+  syncHeldBall() {
+    const ball = this.balls[0];
+    if (!ball) {
+      return;
+    }
+    ball.x = this.paddle.x;
+    ball.y = this.paddle.y - 24;
+    ball.vx = 0;
+    ball.vy = 0;
+    ball.trail.length = 0;
+  }
+
+  releaseHeldBall() {
+    const ball = this.balls[0];
+    if (!ball) {
+      return;
+    }
+    ball.x = this.paddle.x;
+    ball.y = this.paddle.y - 24;
+    Object.assign(
+      ball,
+      clampBallVelocity(clamp(this.paddle.vx * 0.18, -180, 180), -this.currentLevel.ballSpeed, -1),
+    );
   }
 
   setMoveDirection(direction) {
@@ -148,6 +233,11 @@ export class Game {
 
   setFire(active) {
     this.input.fire = active;
+  }
+
+  syncPaddleWidth() {
+    const surgeScale = this.surgeActive ? this.currentLevel.surgePaddleScale : 1;
+    this.paddle.width = Math.max(88, Math.round((this.basePaddleWidth + this.focusPaddleBonus) * surgeScale));
   }
 
   restartRound() {
@@ -169,6 +259,19 @@ export class Game {
 
     this.paddle.laserTimer = Math.max(0, this.paddle.laserTimer - step);
     this.paddle.laserCooldown = Math.max(0, this.paddle.laserCooldown - step);
+    this.phaseTimer = Math.max(0, this.phaseTimer - step);
+    this.burstTimer = Math.max(0, this.burstTimer - step);
+
+    if (this.serveTimer > 0) {
+      this.serveTimer = Math.max(0, this.serveTimer - step);
+      this.syncHeldBall();
+      if (this.serveTimer === 0) {
+        this.status = this.serveReleaseStatus || this.status;
+        this.serveReleaseStatus = null;
+        this.releaseHeldBall();
+      }
+      return;
+    }
 
     if (this.input.fire && this.paddle.laserTimer > 0 && this.paddle.laserCooldown === 0) {
       this.fireLasers();
@@ -205,14 +308,17 @@ export class Game {
       if (ball.x - ball.radius <= 0) {
         ball.x = ball.radius;
         ball.vx = Math.abs(ball.vx);
+        Object.assign(ball, clampBallVelocity(ball.vx, ball.vy));
       } else if (ball.x + ball.radius >= WIDTH) {
         ball.x = WIDTH - ball.radius;
         ball.vx = -Math.abs(ball.vx);
+        Object.assign(ball, clampBallVelocity(ball.vx, ball.vy));
       }
 
       if (ball.y - ball.radius <= 0) {
         ball.y = ball.radius;
         ball.vy = Math.abs(ball.vy);
+        Object.assign(ball, clampBallVelocity(ball.vx, ball.vy, 1));
       }
 
       if (this.hitPaddle(ball)) {
@@ -236,8 +342,7 @@ export class Game {
         this.mode = "lose";
         this.status = "The prism wall held.";
       } else {
-        this.status = "Ball lost. Reset and strike again.";
-        this.resetBallOnPaddle();
+        this.queueServe("Ball lost. Line up the next rebound.");
       }
     }
   }
@@ -263,6 +368,7 @@ export class Game {
     if (ball.vy > -260) {
       ball.vy = -260;
     }
+    Object.assign(ball, clampBallVelocity(ball.vx, ball.vy, -1));
     ball.y = paddle.y - paddle.height * 0.5 - ball.radius - 1;
     this.emitBurst(ball.x, ball.y, "#ffffff", 6);
     this.status = Math.abs(contact) > 0.72 ? "Sharp angle rebound." : "Clean center rebound.";
@@ -270,6 +376,9 @@ export class Game {
 
   hitBrick(ball) {
     for (const brick of this.bricks) {
+      if (brick.destroyed) {
+        continue;
+      }
       if (
         ball.x + ball.radius < brick.x ||
         ball.x - ball.radius > brick.x + brick.width ||
@@ -284,20 +393,36 @@ export class Game {
       const overlapTop = ball.y + ball.radius - brick.y;
       const overlapBottom = brick.y + brick.height - (ball.y - ball.radius);
       const minOverlap = Math.min(overlapLeft, overlapRight, overlapTop, overlapBottom);
+      const phasePierce = this.phaseTimer > 0 && brick.kind === "standard";
 
-      if (minOverlap === overlapLeft || minOverlap === overlapRight) {
-        ball.vx *= -1;
-      } else {
-        ball.vy *= -1;
+      if (!phasePierce) {
+        if (minOverlap === overlapLeft || minOverlap === overlapRight) {
+          ball.vx *= -1;
+        } else {
+          ball.vy *= -1;
+        }
+        Object.assign(ball, clampBallVelocity(ball.vx, ball.vy));
       }
 
       this.damageBrick(brick, ball);
+      if (phasePierce) {
+        this.emitBurst(ball.x, ball.y, "#ffd970", 4);
+        this.status = "Phase lane open.";
+      }
       break;
     }
   }
 
   damageBrick(brick, source) {
+    if (brick.destroyed) {
+      return;
+    }
     brick.hp -= 1;
+    if (this.burstTimer > 0 && brick.hp > 0 && brick.kind === "standard") {
+      brick.hp -= 1;
+      this.emitBurst(source.x, source.y, "#ffb56f", 5);
+      this.status = "Burst shot cracked through.";
+    }
     this.score += brick.hp <= 0 ? brick.score : Math.round(brick.score * 0.35);
     this.emitBurst(source.x, source.y, brick.color, brick.kind === "prism" ? 10 : 6);
 
@@ -309,25 +434,34 @@ export class Game {
 
     if (brick.hp <= 0) {
       brick.destroyed = true;
+      this.levelBricksCleared += 1;
       this.rollPowerup(brick);
+      this.updateLevelPressure();
     }
   }
 
   splitBall(source) {
-    if (this.balls.length >= 6) {
+    if (this.balls.length >= MAX_BALLS) {
       return;
     }
     const additions = [];
     const baseSpeed = clamp(Math.hypot(source.vx, source.vy), BALL_SPEED, BALL_MAX_SPEED);
     for (const angle of [-0.55, 0.55]) {
+      if (this.balls.length + additions.length >= MAX_BALLS) {
+        break;
+      }
       const rotated = rotateVelocity(source.vx || 0, source.vy || -baseSpeed, angle);
       const length = Math.hypot(rotated.vx, rotated.vy) || 1;
+      const nextVelocity = clampBallVelocity(
+        (rotated.vx / length) * baseSpeed,
+        (rotated.vy / length) * baseSpeed,
+      );
       additions.push(
         createBall(
           source.x,
           source.y,
-          (rotated.vx / length) * baseSpeed,
-          (rotated.vy / length) * baseSpeed,
+          nextVelocity.vx,
+          nextVelocity.vy,
         ),
       );
     }
@@ -335,16 +469,60 @@ export class Game {
   }
 
   rollPowerup(brick) {
-    const roll = Math.random();
-    let type = null;
-    if (brick.kind === "prism" || roll < 0.16) {
-      type = "multiball";
-    } else if (roll < 0.28) {
-      type = "laser";
+    const clearRatio = this.getLevelClearRatio();
+    if (clearRatio < this.currentLevel.powerUnlockRatio) {
+      return;
     }
+
+    const roll = Math.random();
+    const availableTypes = [];
+    if (
+      roll < this.currentLevel.multiballChance &&
+      this.levelPowerDrops.multiball < this.currentLevel.multiballCap
+    ) {
+      availableTypes.push("multiball");
+    }
+    if (
+      roll < this.currentLevel.multiballChance + this.currentLevel.focusChance &&
+      this.levelPowerDrops.focus < this.currentLevel.focusCap
+    ) {
+      availableTypes.push("focus");
+    }
+    if (
+      roll < this.currentLevel.multiballChance + this.currentLevel.focusChance + this.currentLevel.laserChance &&
+      this.levelPowerDrops.laser < this.currentLevel.laserCap
+    ) {
+      availableTypes.push("laser");
+    }
+    if (
+      roll <
+        this.currentLevel.multiballChance +
+          this.currentLevel.focusChance +
+          this.currentLevel.laserChance +
+          this.currentLevel.phaseChance &&
+      this.levelPowerDrops.phase < this.currentLevel.phaseCap
+    ) {
+      availableTypes.push("phase");
+    }
+    if (
+      roll <
+        this.currentLevel.multiballChance +
+          this.currentLevel.focusChance +
+          this.currentLevel.laserChance +
+          this.currentLevel.phaseChance +
+          this.currentLevel.burstChance &&
+      this.levelPowerDrops.burst < this.currentLevel.burstCap
+    ) {
+      availableTypes.push("burst");
+    }
+
+    const type = availableTypes[Math.floor(Math.random() * availableTypes.length)];
     if (!type) {
       return;
     }
+
+    this.levelPowerDrops[type] += 1;
+
     this.powerups.push({
       id: randId("powerup"),
       type,
@@ -373,19 +551,69 @@ export class Game {
     }
   }
 
+  getLevelClearRatio() {
+    if (this.levelBrickCount <= 0) {
+      return 1;
+    }
+    return this.levelBricksCleared / this.levelBrickCount;
+  }
+
+  updateLevelPressure() {
+    if (this.surgeActive || this.getLevelClearRatio() < this.currentLevel.surgeRatio) {
+      return;
+    }
+
+    this.surgeActive = true;
+    this.paddle.width = Math.max(
+      88,
+      Math.round((this.basePaddleWidth + this.focusPaddleBonus) * this.currentLevel.surgePaddleScale),
+    );
+    for (const ball of this.balls) {
+      const nextSpeed = clamp(
+        Math.hypot(ball.vx, ball.vy) * this.currentLevel.surgeBallSpeedBonus,
+        BALL_SPEED,
+        BALL_MAX_SPEED,
+      );
+      Object.assign(ball, scaleVelocity(ball.vx || 0, ball.vy || -nextSpeed, nextSpeed));
+      Object.assign(ball, clampBallVelocity(ball.vx, ball.vy));
+    }
+    this.status = this.currentLevel.surgeStatus;
+  }
+
   applyPowerup(type) {
     if (type === "multiball") {
       const sourceBalls = [...this.balls];
       for (const ball of sourceBalls) {
-        if (this.balls.length >= 6) {
+        if (this.balls.length >= MAX_BALLS) {
           break;
         }
         this.splitBall(ball);
       }
       this.status = "Multi-ball online.";
+    } else if (type === "focus") {
+      this.focusPaddleBonus = clamp(this.focusPaddleBonus + FOCUS_PADDLE_BONUS, 0, FOCUS_PADDLE_BONUS_MAX);
+      this.syncPaddleWidth();
+      this.status =
+        this.focusPaddleBonus >= FOCUS_PADDLE_BONUS_MAX
+          ? "Focus cradle maxed for this layer."
+          : "Focus cradle widened.";
     } else if (type === "laser") {
       this.paddle.laserTimer = 12;
       this.status = "Laser cannons armed.";
+    } else if (type === "phase") {
+      this.phaseTimer = 9;
+      for (const ball of this.balls) {
+        Object.assign(ball, clampBallVelocity(ball.vx, ball.vy));
+      }
+      this.status = "Phase shots online.";
+    } else if (type === "burst") {
+      this.burstTimer = BURST_TIME;
+      for (const ball of this.balls) {
+        const nextSpeed = clamp(Math.hypot(ball.vx, ball.vy) * 1.08, BALL_SPEED, BALL_MAX_SPEED);
+        Object.assign(ball, scaleVelocity(ball.vx || 0, ball.vy || -nextSpeed, nextSpeed));
+        Object.assign(ball, clampBallVelocity(ball.vx, ball.vy));
+      }
+      this.status = "Burst rounds online.";
     }
   }
 
@@ -404,6 +632,9 @@ export class Game {
     for (const laser of this.lasers) {
       laser.y += laser.vy * dt;
       for (const brick of this.bricks) {
+        if (brick.destroyed) {
+          continue;
+        }
         if (
           laser.x >= brick.x &&
           laser.x <= brick.x + brick.width &&
@@ -430,16 +661,16 @@ export class Game {
       return;
     }
 
+    const clearedLevel = this.currentLevel;
     this.levelIndex += 1;
-    if (this.levelIndex >= LEVEL_LAYOUTS.length) {
+    if (this.levelIndex >= LEVELS.length) {
       this.mode = "win";
       this.status = "Prism matrix collapsed.";
       return;
     }
 
     this.loadLevel(this.levelIndex);
-    this.resetBallOnPaddle();
-    this.status = `Prism layer ${this.levelIndex + 1} engaged.`;
+    this.queueServe(clearedLevel.clearStatus, 1, this.currentLevel.startStatus);
   }
 
   cleanup() {
@@ -508,10 +739,14 @@ export class Game {
       score: this.score,
       lives: this.lives,
       level: this.levelIndex + 1,
-      levelCount: LEVEL_LAYOUTS.length,
+      levelCount: LEVELS.length,
       ballCount: this.balls.length,
+      burstTime: this.burstTimer,
+      burstActive: this.burstTimer > 0,
       laserTime: this.paddle.laserTimer,
       laserActive: this.paddle.laserTimer > 0,
+      phaseTime: this.phaseTimer,
+      phaseActive: this.phaseTimer > 0,
       status: this.status,
       paddle: {
         x: this.paddle.x,

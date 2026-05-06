@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Curveball Spinshot</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="shell">
+    <canvas id="game" width="1280" height="720" aria-label="Curveball Spinshot"></canvas>
+    <div class="hud">
+      <div class="hud__block">
+        <span>Score</span>
+        <strong id="scoreValue">0 - 0</strong>
+      </div>
+      <div class="hud__block">
+        <span>Stage</span>
+        <strong id="roundValue">Round 1</strong>
+      </div>
+      <div class="hud__block">
+        <span>Rally</span>
+        <strong id="rallyValue">0</strong>
+      </div>
+      <div class="hud__block">
+        <span>Speed</span>
+        <strong id="speedValue">0</strong>
+      </div>
+      <div class="hud__block hud__block--wide">
+        <span>Status</span>
+        <strong id="statusValue">Track the ball and shape the return.</strong>
+      </div>
+    </div>
+    <div class="overlay" id="overlay">
+      <div class="card">
+        <p class="eyebrow">Curveball Spinshot</p>
+        <h1 id="overlayTitle">Bend the tunnel back at the bot.</h1>
+        <p id="overlayBody">
+          Move the paddle with the mouse or arrow keys. Click, press Space, or Enter to serve.
+          Swipe across the ball to add curve. First to five points wins.
+        </p>
+        <button id="overlayButton" type="button">Start Match</button>
+      </div>
+    </div>
+  </div>
+  <script src="./game.js"></script>
+</body>
+</html>

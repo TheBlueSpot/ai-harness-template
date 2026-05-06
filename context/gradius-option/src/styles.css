@@ -107,6 +107,10 @@ body {
   opacity: 0.85;
 }
 
+.powerbar__track[data-ready="false"]::after {
+  opacity: 0.28;
+}
+
 .powerbar__cursor {
   position: relative;
   z-index: 1;

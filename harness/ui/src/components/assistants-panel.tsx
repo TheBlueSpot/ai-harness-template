@@ -1,5 +1,6 @@
 import { For, Show, createEffect, createMemo, createSignal, type JSX } from "solid-js";
 import {
+  ArrowDown,
   Bot,
   Check,
   CircleAlert,
@@ -22,8 +23,11 @@ import {
 } from "lucide-solid";
 import {
   createAssistantTodoId,
+  type BackgroundJob,
+  type BackgroundJobRun,
   createRequestId,
   type Assistant,
+  type AssistantLearning,
   type AssistantQuestion,
   type AssistantTodo
 } from "../../../shared/protocol";
@@ -48,9 +52,11 @@ import { CopyTextButton } from "./primitives/copy-text-button";
 import { Dialog } from "./primitives/dialog";
 import { ExecutionLog } from "./primitives/execution-log";
 import { DropdownControl } from "./primitives/dropdown";
+import { Input } from "./primitives/input";
 import { ScrollArea } from "./primitives/scroll-area";
 import { Textarea } from "./primitives/textarea";
 import { Tooltip } from "./primitives/tooltip";
+import { VirtualList } from "./primitives/virtual-list";
 
 const assistantTodoStateOptions = [
   { value: "pending", label: "pending", description: "Queued but not started yet." },
@@ -72,6 +78,39 @@ function renderMessageActionRow(timestamp: string | number | Date | undefined, c
   );
 }
 
+function compareAssistantLearnings(left: AssistantLearning, right: AssistantLearning) {
+  const leftSummary = (left.kind ?? "fact") === "summary" ? 1 : 0;
+  const rightSummary = (right.kind ?? "fact") === "summary" ? 1 : 0;
+  return rightSummary - leftSummary || right.createdAt.localeCompare(left.createdAt);
+}
+
+function formatFailureCategory(value: string) {
+  return value.replace(/-/g, " ");
+}
+
+function formatFailureTracking(job: BackgroundJob) {
+  const streak = job.consecutiveFailureCount ?? 0;
+  const lastCategory = job.lastFailureCategory ? formatFailureCategory(job.lastFailureCategory) : undefined;
+  const backoffUntil = job.backoffUntil ? formatShortTimestamp(job.backoffUntil) : undefined;
+  if (streak <= 0 && !lastCategory && !backoffUntil) {
+    return undefined;
+  }
+  return [
+    streak > 0 ? `Failure streak ${streak}` : undefined,
+    lastCategory ? `last ${lastCategory}` : undefined,
+    backoffUntil ? `backoff until ${backoffUntil}` : undefined
+  ]
+    .filter(Boolean)
+    .join(" | ");
+}
+
+function formatPromptStats(promptStats: BackgroundJobRun["promptStats"] | undefined) {
+  if (!promptStats) {
+    return undefined;
+  }
+  return `${promptStats.promptChars} chars, hash ${promptStats.promptHash}`;
+}
+
 type AssistantsPanelProps = {
   initialCircuitBreakerAssistantId?: string;
   variant?: "full" | "roster" | "detail";
@@ -79,45 +118,59 @@ type AssistantsPanelProps = {
 
 export function AssistantsPanel(props: AssistantsPanelProps = {}) {
   let assistantChatTextarea: HTMLTextAreaElement | undefined;
+  let assistantMessageViewport: HTMLDivElement | undefined;
   const state = harnessStore.state;
   const sendCommand = harnessStore.actions.sendCommand;
   const activeTab = createMemo(() => state.assistants.selectedTab);
   const [chatDraft, setChatDraft] = createSignal("");
+  const [assistantStickToBottom, setAssistantStickToBottom] = createSignal(true);
   const [assistantStreamingStartedAtByAssistantId, setAssistantStreamingStartedAtByAssistantId] = createSignal<Record<string, string>>({});
   const [newTodoTitle, setNewTodoTitle] = createSignal("");
   const [selectedCircuitBreakerAssistantId, setSelectedCircuitBreakerAssistantId] = createSignal<string | undefined>(
     props.initialCircuitBreakerAssistantId
   );
   const [questionAnswers, setQuestionAnswers] = createSignal<Record<string, string>>({});
-  const visibleAssistants = createMemo(() => getVisibleAssistants(state));
+  const visibleAssistants = createMemo(() =>
+    getVisibleAssistants(state)
+      .filter((assistant) => matchesAssistantFilters(assistant, state))
+      .filter((assistant) => fuzzyMatches(assistantSearchHaystack(assistant, state), state.assistants.rosterSearch))
+  );
   const selectedAssistant = createMemo(() => getSelectedAssistant(state));
   const selectedThread = createMemo(() =>
     state.assistants.threads.find((thread) => thread.assistantId === selectedAssistant()?.id)
+  );
+  const visibleAssistantMessages = createMemo(() =>
+    (selectedThread()?.messages ?? []).filter((message) => fuzzyMatches([message.role, message.content].join(" "), state.assistants.detailSearch))
   );
   const selectedTodos = createMemo(() =>
     [...state.assistants.todos]
       .filter((todo) => todo.assistantId === selectedAssistant()?.id)
       .sort((left, right) => left.sortOrder - right.sortOrder || right.updatedAt.localeCompare(left.updatedAt))
   );
+  const visibleTodos = createMemo(() => selectedTodos().filter((todo) => fuzzyMatches([todo.title, todo.description, todo.state, todo.blockerReason].filter(Boolean).join(" "), state.assistants.detailSearch)));
   const selectedQuestions = createMemo(() =>
     [...state.assistants.questions]
       .filter((question) => question.assistantId === selectedAssistant()?.id)
       .sort((left, right) => right.askedAt.localeCompare(left.askedAt))
   );
+  const visibleQuestions = createMemo(() => selectedQuestions().filter((question) => fuzzyMatches([question.prompt, question.answerText, question.status].filter(Boolean).join(" "), state.assistants.detailSearch)));
   const selectedLearnings = createMemo(() =>
     [...state.assistants.learnings]
       .filter((learning) => learning.assistantId === selectedAssistant()?.id)
-      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .sort(compareAssistantLearnings)
   );
+  const filteredLearnings = createMemo(() => selectedLearnings().filter((learning) => fuzzyMatches([learning.summary, learning.source, learning.confidence, learning.kind].filter(Boolean).join(" "), state.assistants.detailSearch)));
   const selectedLogs = createMemo(() =>
     [...state.assistants.logs]
       .filter((entry) => entry.assistantId === selectedAssistant()?.id)
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
   );
+  const visibleLogs = createMemo(() => selectedLogs().filter((entry) => fuzzyMatches([entry.summary, entry.detail, entry.level, entry.detailsJson].filter(Boolean).join(" "), state.assistants.detailSearch)));
   const selectedExecutionLogs = createMemo(() =>
-    selectedLogs().map((entry) => ({
+    visibleLogs().map((entry) => ({
       id: entry.id,
       message: entry.summary,
+      rowSummary: [entry.summary, entry.detail].filter(Boolean).join(" "),
       level: entry.level,
       createdAt: entry.createdAt,
       detail: entry.detail,
@@ -132,11 +185,13 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
       .filter((job) => job.assistantId === selectedAssistant()?.id)
       .sort((left, right) => (right.nextRunAt ?? right.updatedAt).localeCompare(left.nextRunAt ?? left.updatedAt))
   );
+  const visibleJobs = createMemo(() => selectedJobs().filter((job) => fuzzyMatches([job.name, job.description, job.status, job.kind, job.scheduleInput].filter(Boolean).join(" "), state.assistants.detailSearch)));
   const selectedRuns = createMemo(() =>
     [...state.backgroundJobs.runs]
       .filter((run) => run.assistantId === selectedAssistant()?.id)
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
   );
+  const visibleRuns = createMemo(() => selectedRuns().filter((run) => fuzzyMatches([run.summary, run.status, run.failureMessage, run.failureCategory, run.triggerSource].filter(Boolean).join(" "), state.assistants.detailSearch)));
   const circuitBreakerAssistant = createMemo(() =>
     state.assistants.assistants.find((assistant) => assistant.id === selectedCircuitBreakerAssistantId())
   );
@@ -159,6 +214,18 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
       .slice(0, 5)
   );
   const streamingText = createMemo(() => state.assistants.streamingByAssistantId[selectedAssistant()?.id ?? ""] ?? "");
+  const assistantChatRows = createMemo(() => [
+    ...visibleAssistantMessages().map((message) => ({ kind: "message" as const, message })),
+    ...(streamingText()
+      ? [
+          {
+            kind: "streaming" as const,
+            content: streamingText(),
+            createdAt: assistantStreamingStartedAtByAssistantId()[selectedAssistant()?.id ?? ""]
+          }
+        ]
+      : [])
+  ]);
   const executionPaused = createMemo(() => state.executionControl.isPaused);
   const executionPauseReason = "Global execution pause is active";
   const variant = () => props.variant ?? "full";
@@ -183,6 +250,43 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
       delete next[assistantId];
       return next;
     });
+  });
+
+  const scrollAssistantChatToBottom = (force: boolean = false) => {
+    if (!assistantMessageViewport || (!force && !assistantStickToBottom())) {
+      return;
+    }
+
+    queueMicrotask(() => {
+      if (!assistantMessageViewport) {
+        return;
+      }
+
+      assistantMessageViewport.scrollTop = assistantMessageViewport.scrollHeight;
+    });
+  };
+
+  const updateAssistantScrollLock = () => {
+    if (!assistantMessageViewport) {
+      setAssistantStickToBottom(true);
+      return;
+    }
+
+    const distanceFromBottom =
+      assistantMessageViewport.scrollHeight - assistantMessageViewport.scrollTop - assistantMessageViewport.clientHeight;
+    setAssistantStickToBottom(distanceFromBottom <= 32);
+  };
+
+  createEffect(() => {
+    selectedAssistant()?.id;
+    activeTab();
+    scrollAssistantChatToBottom(true);
+  });
+
+  createEffect(() => {
+    selectedThread()?.messages.length;
+    streamingText();
+    scrollAssistantChatToBottom();
   });
   const showRoster = () => variant() !== "detail";
   const showDetail = () => variant() !== "roster";
@@ -307,6 +411,36 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
           completedAt: nextState === "completed" ? new Date().toISOString() : undefined,
           cancelledAt: nextState === "cancelled" ? new Date().toISOString() : undefined
         }
+      }
+    });
+  }
+
+  function deleteTodo(todo: AssistantTodo) {
+    const confirmed = window.confirm(`Delete todo "${todo.title}"?`);
+    if (!confirmed) {
+      return;
+    }
+    sendCommand({
+      type: "assistant.todo.delete",
+      requestId: createRequestId(),
+      payload: {
+        assistantId: todo.assistantId,
+        todoId: todo.id
+      }
+    });
+  }
+
+  function deleteLearning(learning: AssistantLearning) {
+    const confirmed = window.confirm("Delete this assistant learning?");
+    if (!confirmed) {
+      return;
+    }
+    sendCommand({
+      type: "assistant.learning.delete",
+      requestId: createRequestId(),
+      payload: {
+        assistantId: learning.assistantId,
+        learningId: learning.id
       }
     });
   }
@@ -490,6 +624,9 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                         <div class="rounded-xl border border-(--border) bg-white/70 p-2 text-[0.675rem] leading-5">
                           <div class="font-semibold text-(--foreground)">{run.status}</div>
                           <div class="text-(--muted)">{run.failureMessage ?? run.summary ?? run.id}</div>
+                          <Show when={run.failureCategory}>
+                            {(category) => <div class="text-(--muted)">Category: {formatFailureCategory(category())}</div>}
+                          </Show>
                           <div class="mt-1 text-[0.575rem] uppercase tracking-[0.12em] text-(--muted)">{formatShortTimestamp(run.updatedAt)}</div>
                         </div>
                       )}
@@ -570,55 +707,77 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
               </button>
             </Tooltip>
           </nav>
+          <div class="grid gap-2">
+            <Input
+              value={state.assistants.rosterSearch}
+              placeholder="Search assistants"
+              onInput={(event) => harnessStore.setAssistantPaneFilters({ rosterSearch: (event.target as HTMLInputElement).value })}
+            />
+            <div class="grid gap-2 text-[0.675rem] sm:grid-cols-2">
+              <select class="rounded-lg border border-(--border) bg-white/75 px-2 py-2" value={state.assistants.runStateFilter ?? ""} onChange={(event) => harnessStore.setAssistantPaneFilters({ runStateFilter: event.currentTarget.value ? event.currentTarget.value as Assistant["runState"] : undefined })}>
+                <option value="">All run states</option>
+                <option value="active">Active</option>
+                <option value="paused">Paused</option>
+              </select>
+              <select class="rounded-lg border border-(--border) bg-white/75 px-2 py-2" value={state.assistants.bootstrapStateFilter ?? ""} onChange={(event) => harnessStore.setAssistantPaneFilters({ bootstrapStateFilter: event.currentTarget.value ? event.currentTarget.value as Assistant["bootstrapState"] : undefined })}>
+                <option value="">All bootstrap</option>
+                <option value="pending">Pending</option>
+                <option value="running">Running</option>
+                <option value="completed">Completed</option>
+                <option value="failed">Failed</option>
+              </select>
+              <select class="rounded-lg border border-(--border) bg-white/75 px-2 py-2" value={state.assistants.providerBrandFilter ?? ""} onChange={(event) => harnessStore.setAssistantPaneFilters({ providerBrandFilter: event.currentTarget.value ? event.currentTarget.value as Assistant["providerBrand"] : undefined })}>
+                <option value="">All providers</option>
+                <option value="gpt">GPT</option>
+                <option value="gemini">Gemini</option>
+                <option value="claude">Claude</option>
+              </select>
+              <select class="rounded-lg border border-(--border) bg-white/75 px-2 py-2" value={state.assistants.projectIdFilter ?? ""} onChange={(event) => harnessStore.setAssistantPaneFilters({ projectIdFilter: event.currentTarget.value || undefined })}>
+                <option value="">All projects</option>
+                <For each={state.workspace.projects}>{(project) => <option value={project.id}>{project.name}</option>}</For>
+              </select>
+            </div>
+            <Show when={hasAssistantRosterFilters(state)}>
+              <ActionButton tooltip="Clear assistant roster search and filters" size="sm" variant="ghost" onClick={() => harnessStore.setAssistantPaneFilters({ rosterSearch: "", runStateFilter: undefined, bootstrapStateFilter: undefined, providerBrandFilter: undefined, projectIdFilter: undefined })}>Clear filters</ActionButton>
+            </Show>
+          </div>
           <section class="flex min-h-0 flex-1 flex-col rounded-[1.35rem] border border-(--border) bg-white/55 p-3">
           <div class="mb-3 flex items-center justify-between gap-3">
             <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Roster</div>
             <span class="text-[0.625rem] text-(--muted)">{visibleAssistants().length} total</span>
           </div>
-          <ScrollArea class="min-h-0 flex-1 pr-2">
-            <Show
-              when={visibleAssistants().length > 0}
-              fallback={
-                <div class="rounded-[1.2rem] border border-dashed border-(--border) bg-white/45 p-4 text-[0.675rem] leading-5 text-(--muted)">
-                  No assistants in this scope yet.
+          <VirtualList
+            class="min-h-0 flex-1 pr-2"
+            contentClass="w-full"
+            itemClass="pb-3"
+            items={visibleAssistants()}
+            getKey={(assistant) => assistant.id}
+            estimateSize={140}
+            pagination={{ kind: "forward", initialCount: 60, batchSize: 60 }}
+            empty={<div class="rounded-[1.2rem] border border-dashed border-(--border) bg-white/45 p-4 text-[0.675rem] leading-5 text-(--muted)">No assistants match current search or filters.</div>}
+          >
+            {(assistant) => (
+              <button
+                class={`w-full rounded-[1.2rem] border p-3 text-left transition ${selectedAssistant()?.id === assistant.id ? "border-(--accent) bg-[linear-gradient(135deg,rgba(15,118,110,0.14),rgba(255,255,255,0.92))]" : "border-(--border) bg-white/70"}`}
+                type="button"
+                onClick={() => harnessStore.setSelectedAssistantId(assistant.id)}
+              >
+                <div class="flex items-start justify-between gap-3">
+                  <div>
+                    <div class="text-[0.775rem] font-semibold text-(--foreground)">{assistant.name}</div>
+                    <div class="mt-1 text-[0.575rem] uppercase tracking-[0.16em] text-(--muted)">{assistant.scope} | {assistant.runState} | {assistant.bootstrapState}</div>
+                  </div>
+                  <Show when={assistant.unreadQuestionCount > 0}>
+                    <span class="rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[0.55rem] font-semibold uppercase tracking-[0.12em] text-amber-900">{assistant.unreadQuestionCount} q</span>
+                  </Show>
                 </div>
-              }
-            >
-              <div class="space-y-3">
-                <For each={visibleAssistants()}>
-                  {(assistant) => (
-                    <button
-                      class={`w-full rounded-[1.2rem] border p-3 text-left transition ${
-                        selectedAssistant()?.id === assistant.id
-                          ? "border-(--accent) bg-[linear-gradient(135deg,rgba(15,118,110,0.14),rgba(255,255,255,0.92))]"
-                          : "border-(--border) bg-white/70"
-                      }`}
-                      type="button"
-                      onClick={() => harnessStore.setSelectedAssistantId(assistant.id)}
-                    >
-                      <div class="flex items-start justify-between gap-3">
-                        <div>
-                          <div class="text-[0.775rem] font-semibold text-(--foreground)">{assistant.name}</div>
-                          <div class="mt-1 text-[0.575rem] uppercase tracking-[0.16em] text-(--muted)">
-                            {assistant.scope} | {assistant.runState} | {assistant.bootstrapState}
-                          </div>
-                        </div>
-                        <Show when={assistant.unreadQuestionCount > 0}>
-                          <span class="rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[0.55rem] font-semibold uppercase tracking-[0.12em] text-amber-900">
-                            {assistant.unreadQuestionCount} q
-                          </span>
-                        </Show>
-                      </div>
-                      <div class="mt-3 text-[0.675rem] leading-5 text-(--muted)">
-                        <div>{assistant.description ?? summarizePrompt(assistant.jobPrompt)}</div>
-                        <div class="mt-1">{assistant.circuitBreakerState === "tripped" ? "Circuit breaker tripped" : `Updated ${formatShortTimestamp(assistant.updatedAt)}`}</div>
-                      </div>
-                    </button>
-                  )}
-                </For>
-              </div>
-            </Show>
-          </ScrollArea>
+                <div class="mt-3 text-[0.675rem] leading-5 text-(--muted)">
+                  <div>{assistant.description ?? summarizePrompt(assistant.jobPrompt)}</div>
+                  <div class="mt-1">{assistant.circuitBreakerState === "tripped" ? "Circuit breaker tripped" : `Updated ${formatShortTimestamp(assistant.updatedAt)}`}</div>
+                </div>
+              </button>
+            )}
+          </VirtualList>
           </section>
         </div>
         </Show>
@@ -635,7 +794,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
           >
             {(assistant) => (
               <div class="flex h-full min-h-0 flex-col gap-4">
-                <div class="rounded-[1.2rem] border border-(--border) bg-white/70 p-4">
+                <div>
                   <div class="flex flex-wrap items-start justify-between gap-4">
                     <div>
                       <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Inspector</div>
@@ -663,7 +822,6 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                             on:click={(event) => {
                               event.stopPropagation();
                               setSelectedCircuitBreakerAssistantId(assistant().id);
-                              console.log("selected breaker id", selectedCircuitBreakerAssistantId());
                             }}
                           >
                             <CircleAlert class="h-4 w-4" />
@@ -732,57 +890,75 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                   <TabButton icon={<SquarePen class="h-4 w-4" />} label="Config" active={activeTab() === "config"} onClick={() => harnessStore.setAssistantDetailTab("config")} />
                   <TabButton icon={<FlaskConical class="h-4 w-4" />} label="Learnings" active={activeTab() === "learnings"} onClick={() => harnessStore.setAssistantDetailTab("learnings")} />
                 </div>
+                <Show when={activeTab() !== "config"}>
+                  <div class="flex flex-col gap-2">
+                    <Input
+                      value={state.assistants.detailSearch}
+                      placeholder={`Search assistant ${activeTab()}`}
+                      onInput={(event) => harnessStore.setAssistantPaneFilters({ detailSearch: (event.target as HTMLInputElement).value })}
+                    />
+                    <Show when={state.assistants.detailSearch}>
+                      <ActionButton tooltip="Clear assistant detail search" size="sm" variant="ghost" onClick={() => harnessStore.setAssistantPaneFilters({ detailSearch: "" })}>Clear search</ActionButton>
+                    </Show>
+                  </div>
+                </Show>
 
                 <Show when={activeTab() === "chat"}>
                   <div class="grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
-                    <section class="flex min-h-0 flex-col rounded-[1.2rem] border border-(--border) bg-white/70 p-4">
+                    <section class="flex min-h-0 flex-col">
                       <div class="mb-3 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Assistant chat</div>
-                      <ScrollArea class="min-h-0 flex-1 pr-2">
-                        <div class="space-y-3">
-                          <For each={selectedThread()?.messages ?? []}>
-                            {(message) => (
-                              <article class={`rounded-2xl border p-3 ${message.role === "user" ? "border-(--border) bg-white/75" : "border-teal-200 bg-teal-50/65"}`}>
-                                <div class="mb-2 text-[0.575rem] font-semibold uppercase tracking-[0.16em] text-(--muted)">{message.role}</div>
-                                <MarkdownContent content={message.content} />
-                                {renderMessageActionRow(
-                                  message.createdAt,
-                                  <CopyTextButton
-                                    value={message.content}
-                                    tooltip="Copy message"
-                                    copiedTitle="Message copied"
-                                    copiedDescription="Message copied to clipboard."
-                                    size="sm"
-                                    variant="ghost"
-                                    ariaLabel={`Copy ${message.role} message`}
-                                  >
-                                    Copy
-                                  </CopyTextButton>
-                                )}
-                              </article>
-                            )}
-                          </For>
-                          <Show when={streamingText()}>
-                            <article class="rounded-2xl border border-teal-200 bg-teal-50/65 p-3">
-                              <div class="mb-2 text-[0.575rem] font-semibold uppercase tracking-[0.16em] text-(--muted)">assistant</div>
-                              <MarkdownContent content={streamingText()} />
+                      <div class="relative flex min-h-0 flex-1 flex-col">
+                        <VirtualList
+                          viewportRef={(element) => {
+                            assistantMessageViewport = element;
+                            scrollAssistantChatToBottom(true);
+                          }}
+                          class="min-h-0 flex-1 pr-2"
+                          contentClass="w-full"
+                          itemClass="pb-3"
+                          data-test-assistant-chat-scroll=""
+                          items={assistantChatRows()}
+                          getKey={(row, index) => row.kind === "message" ? row.message.id : `streaming-${index}`}
+                          estimateSize={150}
+                          pagination={{ kind: "reverse", initialCount: 80, batchSize: 80 }}
+                          overscan={6}
+                          stickToEnd
+                          onScroll={updateAssistantScrollLock}
+                        >
+                          {(row) => row.kind === "message" ? (
+                            <article class={`rounded-2xl border p-3 ${row.message.role === "user" ? "border-(--border) bg-white/75" : "border-teal-200 bg-teal-50/65"}`}>
+                              <div class="mb-2 text-[0.575rem] font-semibold uppercase tracking-[0.16em] text-(--muted)">{row.message.role}</div>
+                              <MarkdownContent content={row.message.content} />
                               {renderMessageActionRow(
-                                assistantStreamingStartedAtByAssistantId()[assistant().id],
-                                <CopyTextButton
-                                  value={streamingText()}
-                                  tooltip="Copy streaming assistant message"
-                                  copiedTitle="Message copied"
-                                  copiedDescription="Message copied to clipboard."
-                                  size="sm"
-                                  variant="ghost"
-                                  ariaLabel="Copy streaming assistant message"
-                                >
+                                row.message.createdAt,
+                                <CopyTextButton value={row.message.content} tooltip="Copy message" copiedTitle="Message copied" copiedDescription="Message copied to clipboard." size="sm" variant="ghost" ariaLabel={`Copy ${row.message.role} message`}>
                                   Copy
                                 </CopyTextButton>
                               )}
                             </article>
-                          </Show>
-                        </div>
-                      </ScrollArea>
+                          ) : (
+                            <article class="rounded-2xl border border-teal-200 bg-teal-50/65 p-3">
+                              <div class="mb-2 text-[0.575rem] font-semibold uppercase tracking-[0.16em] text-(--muted)">assistant</div>
+                              <MarkdownContent content={row.content} />
+                              {renderMessageActionRow(
+                                row.createdAt,
+                                <CopyTextButton value={row.content} tooltip="Copy streaming assistant message" copiedTitle="Message copied" copiedDescription="Message copied to clipboard." size="sm" variant="ghost" ariaLabel="Copy streaming assistant message">
+                                  Copy
+                                </CopyTextButton>
+                              )}
+                            </article>
+                          )}
+                        </VirtualList>
+                        <Show when={!assistantStickToBottom()}>
+                          <div class="pointer-events-none absolute inset-x-0 bottom-3 flex justify-center">
+                            <div class="pointer-events-auto">
+                              <ActionButton tooltip="Scroll to latest message" icon={<ArrowDown class="h-4 w-4" />} variant="secondary" onClick={() => scrollAssistantChatToBottom(true)}>
+                                Scroll to latest
+                              </ActionButton>
+                            </div>
+                          </div>
+                        </Show>
+                      </div>
                       <ChatComposer
                         class="mt-4"
                         textareaRef={(element) => {
@@ -796,22 +972,12 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                         onInput={setChatDraft}
                         onSubmit={handleSendChat}
                         rightActions={
-                          <ActionButton
-                            tooltip="Send message to assistant"
-                            disabled={executionPaused()}
-                            disabledReason={executionPauseReason}
-                            icon={<MessageSquare class="h-4 w-4" />}
-                            variant="ghost"
-                            size="icon"
-                            class="pointer-events-auto h-8 w-8 rounded-lg"
-                            ariaLabel="Send message to assistant"
-                            onClick={handleSendChat}
-                          />
+                          <ActionButton tooltip="Send message to assistant" disabled={executionPaused()} disabledReason={executionPauseReason} icon={<MessageSquare class="h-4 w-4" />} variant="ghost" size="icon" class="pointer-events-auto h-8 w-8 rounded-lg" ariaLabel="Send message to assistant" onClick={handleSendChat} />
                         }
                       />
                     </section>
 
-                    <section class="rounded-[1.2rem] border border-(--border) bg-white/70 p-4">
+                    <section>
                       <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Working memory</div>
                       <div class="mt-3 space-y-4 text-[0.675rem] leading-5 text-(--muted)">
                         <div>
@@ -821,7 +987,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                         <div>
                           <div class="font-semibold text-(--foreground)">Active todos</div>
                           <ul class="mt-1 space-y-1">
-                            <For each={selectedTodos().filter((todo) => isActiveTodo(todo.state)).slice(0, 8)}>
+                            <For each={visibleTodos().filter((todo) => isActiveTodo(todo.state)).slice(0, 8)}>
                               {(todo) => <li>{todo.state} | {todo.title}</li>}
                             </For>
                           </ul>
@@ -832,39 +998,29 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                 </Show>
 
                 <Show when={activeTab() === "todos"}>
-                  <section class="flex min-h-0 flex-1 flex-col rounded-[1.2rem] border border-(--border) bg-white/70 p-4">
+                  <section class="flex min-h-0 flex-1 flex-col">
                     <div class="mb-4 flex gap-2">
                       <Textarea rows="2" value={newTodoTitle()} onInput={(event) => setNewTodoTitle(event.currentTarget.value)} placeholder="Add manual todo." />
                       <ActionButton tooltip="Add todo to assistant list" icon={<Plus class="h-4 w-4" />} onClick={handleAddTodo}>Add</ActionButton>
                     </div>
-                    <ScrollArea class="min-h-0 flex-1 pr-2">
-                      <div class="space-y-3">
-                        <For each={selectedTodos()}>
-                          {(todo) => (
-                            <article class="rounded-2xl border border-(--border) bg-white/75 p-3">
-                              <div class="flex flex-wrap items-start justify-between gap-3">
-                                <div>
-                                  <div class="text-[0.75rem] font-semibold text-(--foreground)">{todo.title}</div>
-                                  <Show when={todo.description}><div class="mt-1 text-[0.675rem] leading-5 text-(--muted)">{todo.description}</div></Show>
-                                  <Show when={todo.blockerReason}><div class="mt-1 text-[0.625rem] text-amber-900">Blocker: {todo.blockerReason}</div></Show>
-                                </div>
-                                <DropdownControl
-                                  kind="select"
-                                  ariaLabel={`Select ${todo.title} state`}
-                                  icon={<ClipboardList class="h-3.5 w-3.5" />}
-                                  size="md"
-                                  class="w-40"
-                                  value={todo.state}
-                                  options={assistantTodoStateOptions}
-                                  onChange={(value) => updateTodo(todo, { state: value as AssistantTodo["state"] })}
-                                />
-                              </div>
-                              <div class="mt-2 text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">{todo.source ?? "assistant"} | sort {todo.sortOrder}</div>
-                            </article>
-                          )}
-                        </For>
-                      </div>
-                    </ScrollArea>
+                    <VirtualList class="min-h-0 flex-1 pr-2" contentClass="w-full" itemClass="pb-3" items={visibleTodos()} getKey={(todo) => todo.id} estimateSize={128} pagination={{ kind: "forward", initialCount: 60, batchSize: 60 }}>
+                      {(todo) => (
+                        <article class="rounded-2xl border border-(--border) bg-white/75 p-3">
+                          <div class="flex flex-wrap items-start justify-between gap-3">
+                            <div>
+                              <div class="text-[0.75rem] font-semibold text-(--foreground)">{todo.title}</div>
+                              <Show when={todo.description}><div class="mt-1 text-[0.675rem] leading-5 text-(--muted)">{todo.description}</div></Show>
+                              <Show when={todo.blockerReason}><div class="mt-1 text-[0.625rem] text-amber-900">Blocker: {todo.blockerReason}</div></Show>
+                            </div>
+                            <div class="flex shrink-0 items-center gap-2">
+                              <DropdownControl kind="select" ariaLabel={`Select ${todo.title} state`} icon={<ClipboardList class="h-3.5 w-3.5" />} size="md" class="w-40" value={todo.state} options={assistantTodoStateOptions} onChange={(value) => updateTodo(todo, { state: value as AssistantTodo["state"] })} />
+                              <ActionButton tooltip="Delete assistant todo" ariaLabel={`Delete ${todo.title}`} icon={<Trash2 class="h-4 w-4" />} size="icon" variant="ghost" class="h-8 w-8 text-rose-700 hover:bg-rose-50" onClick={() => deleteTodo(todo)} />
+                            </div>
+                          </div>
+                          <div class="mt-2 text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">{todo.source ?? "assistant"} | sort {todo.sortOrder}</div>
+                        </article>
+                      )}
+                    </VirtualList>
                   </section>
                 </Show>
 
@@ -872,7 +1028,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                   <section class="grid min-h-0 flex-1 gap-4 lg:grid-cols-2">
                     <QuestionColumn
                       title="Pending questions"
-                      questions={selectedQuestions().filter((question) => question.status === "pending")}
+                      questions={visibleQuestions().filter((question) => question.status === "pending")}
                       disabled={executionPaused()}
                       disabledReason={executionPauseReason}
                       questionAnswers={questionAnswers()}
@@ -881,7 +1037,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                     />
                     <QuestionColumn
                       title="Resolved questions"
-                      questions={selectedQuestions().filter((question) => question.status === "answered")}
+                      questions={visibleQuestions().filter((question) => question.status === "answered")}
                       disabled={false}
                       disabledReason={undefined}
                       questionAnswers={questionAnswers()}
@@ -893,52 +1049,57 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
 
                 <Show when={activeTab() === "jobs"}>
                   <section class="grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(18rem,22rem)_minmax(0,1fr)]">
-                    <div class="rounded-[1.2rem] border border-(--border) bg-white/70 p-4">
+                    <div class="min-w-0">
                       <div class="mb-3 flex items-center justify-between gap-3">
                         <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Assistant jobs</div>
                         <ActionButton tooltip="Create background job for this assistant" icon={<Plus class="h-4 w-4" />} onClick={openAssistantJobEditor}>New job</ActionButton>
                       </div>
-                      <div class="space-y-3">
-                        <For each={selectedJobs()}>
-                          {(job) => (
-                            <article class="rounded-2xl border border-(--border) bg-white/75 p-3">
-                              <div class="text-[0.75rem] font-semibold text-(--foreground)">{job.name}</div>
-                              <div class="mt-1 text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">{job.status} | {job.kind}</div>
-                              <div class="mt-2 text-[0.675rem] leading-5 text-(--muted)">{job.description ?? job.scheduleInput}</div>
-                            </article>
-                          )}
-                        </For>
-                        <Show when={selectedJobs().length === 0}>
-                          <div class="rounded-2xl border border-dashed border-(--border) bg-white/55 p-3 text-[0.675rem] text-(--muted)">No assistant-owned background jobs.</div>
-                        </Show>
-                      </div>
+                      <VirtualList
+                        class="h-120 pr-2 lg:h-full"
+                        contentClass="w-full"
+                        itemClass="pb-3"
+                        items={visibleJobs()}
+                        getKey={(job) => job.id}
+                        estimateSize={120}
+                        pagination={{ kind: "forward", initialCount: 60, batchSize: 60 }}
+                        empty={<div class="rounded-2xl border border-dashed border-(--border) bg-white/55 p-3 text-[0.675rem] text-(--muted)">No assistant-owned background jobs.</div>}
+                      >
+                        {(job) => (
+                          <article class="overflow-hidden rounded-2xl border border-(--border) bg-white/75 p-3">
+                            <div class="break-words text-[0.75rem] font-semibold text-(--foreground)">{job.name}</div>
+                            <div class="mt-1 text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">{job.status} | {job.kind}</div>
+                            <div class="mt-2 break-words text-[0.675rem] leading-5 text-(--muted) [overflow-wrap:anywhere]">
+                              <div>{job.description ?? job.scheduleInput}</div>
+                              <Show when={formatFailureTracking(job)}>{(line) => <div class="mt-1">{line()}</div>}</Show>
+                            </div>
+                          </article>
+                        )}
+                      </VirtualList>
                     </div>
-                    <div class="rounded-[1.2rem] border border-(--border) bg-white/70 p-4">
+                    <div class="min-w-0">
                       <div class="mb-3 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Recent runs</div>
-                      <ScrollArea class="h-120 pr-2 lg:h-full">
-                        <div class="space-y-3">
-                          <For each={selectedRuns()}>
-                            {(run) => (
-                              <article class="rounded-2xl border border-(--border) bg-white/75 p-3">
-                                <div class="flex items-center justify-between gap-3">
-                                  <div class="text-[0.75rem] font-semibold text-(--foreground)">{run.summary ?? run.id}</div>
-                                  <div class="text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">{run.status}</div>
-                                </div>
-                                <div class="mt-2 text-[0.675rem] leading-5 text-(--muted)">
-                                  <div>{run.failureMessage ?? `Triggered by ${run.triggerSource}`}</div>
-                                  <div class="mt-1">Updated {formatShortTimestamp(run.updatedAt)}</div>
-                                </div>
-                              </article>
-                            )}
-                          </For>
-                        </div>
-                      </ScrollArea>
+                      <VirtualList class="h-120 pr-2 lg:h-full" contentClass="w-full" itemClass="pb-3" items={visibleRuns()} getKey={(run) => run.id} estimateSize={145} pagination={{ kind: "forward", initialCount: 60, batchSize: 60 }}>
+                        {(run) => (
+                          <article class="overflow-hidden rounded-2xl border border-(--border) bg-white/75 p-3">
+                            <div class="flex items-center justify-between gap-3">
+                              <div class="min-w-0 break-words text-[0.75rem] font-semibold text-(--foreground) [overflow-wrap:anywhere]">{run.summary ?? run.id}</div>
+                              <div class="shrink-0 text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">{run.status}</div>
+                            </div>
+                            <div class="mt-2 break-words text-[0.675rem] leading-5 text-(--muted) [overflow-wrap:anywhere]">
+                              <div>{run.failureMessage ?? `Triggered by ${run.triggerSource}`}</div>
+                              <Show when={run.failureCategory}>{(category) => <div class="mt-1">Failure category: {formatFailureCategory(category())}</div>}</Show>
+                              <Show when={formatPromptStats(run.promptStats)}>{(stats) => <div class="mt-1">Prompt: {stats()}</div>}</Show>
+                              <div class="mt-1">Updated {formatShortTimestamp(run.updatedAt)}</div>
+                            </div>
+                          </article>
+                        )}
+                      </VirtualList>
                     </div>
                   </section>
                 </Show>
 
                 <Show when={activeTab() === "log"}>
-                  <section class="flex min-h-0 flex-1 flex-col rounded-[1.2rem] border border-(--border) bg-white/70 p-4">
+                  <section class="flex min-h-0 flex-1 flex-col">
                     <div class="mb-3 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Execution log</div>
                     <ExecutionLog
                       entries={selectedExecutionLogs()}
@@ -982,26 +1143,35 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                 </Show>
 
                 <Show when={activeTab() === "learnings"}>
-                  <section class="flex min-h-0 flex-1 flex-col rounded-[1.2rem] border border-(--border) bg-white/70 p-4">
-                    <div class="mb-3 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Learnings</div>
-                    <ScrollArea class="min-h-0 flex-1 pr-2">
-                      <div class="space-y-3">
-                        <For each={selectedLearnings()}>
-                          {(learning) => (
-                            <article class="rounded-2xl border border-(--border) bg-white/75 p-3">
-                              <div class="flex items-center justify-between gap-3">
-                                <div class="text-[0.75rem] font-semibold text-(--foreground)">{learning.summary}</div>
-                                <div class="text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">{learning.confidence}</div>
-                              </div>
-                              <div class="mt-2 text-[0.675rem] leading-5 text-(--muted)">
-                                <div>Source: {learning.source}</div>
-                                <div>{formatShortTimestamp(learning.createdAt)}</div>
-                              </div>
-                            </article>
-                          )}
-                        </For>
-                      </div>
-                    </ScrollArea>
+                  <section class="flex min-h-0 flex-1 flex-col">
+                    <VirtualList
+                      class="min-h-0 flex-1 pr-2"
+                      contentClass="w-full"
+                      itemClass="pb-3"
+                      items={filteredLearnings()}
+                      getKey={(learning) => learning.id}
+                      estimateSize={115}
+                      pagination={{ kind: "forward", initialCount: 50, batchSize: 50 }}
+                      empty={<div class="rounded-lg border border-dashed border-(--border) bg-white/60 p-4 text-[0.75rem] text-(--muted)">No learnings yet.</div>}
+                    >
+                      {(learning) => (
+                        <article class="rounded-lg border border-(--border) bg-white/75 p-3">
+                          <div class="flex items-start justify-between gap-3">
+                            <div class="min-w-0">
+                              <div class="text-[0.75rem] font-semibold leading-5 text-(--foreground)">{learning.summary}</div>
+                            </div>
+                            <div class="flex shrink-0 items-center gap-2">
+                              <div class="text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">{learning.confidence}</div>
+                              <ActionButton tooltip="Delete assistant learning" ariaLabel={`Delete learning ${learning.summary}`} icon={<Trash2 class="h-4 w-4" />} size="icon" variant="ghost" class="h-8 w-8 text-rose-700 hover:bg-rose-50" onClick={() => deleteLearning(learning)} />
+                            </div>
+                          </div>
+                          <div class="mt-2 text-[0.675rem] leading-5 text-(--muted)">
+                            <div>Source: {learning.source}</div>
+                            <div>{formatShortTimestamp(learning.createdAt)}</div>
+                          </div>
+                        </article>
+                      )}
+                    </VirtualList>
                   </section>
                 </Show>
               </div>
@@ -1040,54 +1210,47 @@ function QuestionColumn(props: {
   onAnswer: (question: AssistantQuestion, answerText?: string) => void;
 }) {
   return (
-    <section class="flex min-h-0 flex-col rounded-[1.2rem] border border-(--border) bg-white/70 p-4">
+    <section class="flex min-h-0 flex-col">
       <div class="mb-3 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">{props.title}</div>
-      <ScrollArea class="min-h-0 flex-1 pr-2">
-        <div class="space-y-3">
-          <For each={props.questions}>
-            {(question) => (
-              <article class="rounded-2xl border border-(--border) bg-white/75 p-3">
-                <div class="text-[0.75rem] font-semibold text-(--foreground)">{question.prompt}</div>
-                <div class="mt-1 text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">{question.status} | {formatShortTimestamp(question.askedAt)}</div>
-                <Show when={question.status === "pending"}>
-                  <div class="mt-3 flex flex-col gap-2">
-                    <div class="grid gap-2">
-                      <For each={getAssistantQuestionDefaultChoices()}>
-                        {(choice) => (
-                          <ActionButton
-                            tooltip={choice.description}
-                            disabled={props.disabled}
-                            disabledReason={props.disabledReason}
-                            icon={choice.recommended ? <Check class="h-4 w-4" /> : undefined}
-                            variant={choice.recommended ? "default" : "secondary"}
-                            class="justify-start"
-                            onClick={() => props.onAnswer(question, choice.answerText)}
-                          >
-                            {choice.label}
-                          </ActionButton>
-                        )}
-                      </For>
-                    </div>
-                    <Textarea rows="3" disabled={props.disabled} value={props.questionAnswers[question.id] ?? ""} onKeyDown={submitOnEnter(() => props.onAnswer(question))} onInput={(event) => props.onAnswerInput(question.id, event.currentTarget.value)} placeholder="Answer this question." />
-                    <ActionButton tooltip="Send answer to assistant" disabled={props.disabled} disabledReason={props.disabledReason} icon={<Save class="h-4 w-4" />} onClick={() => props.onAnswer(question)}>Answer</ActionButton>
-                  </div>
-                </Show>
-                <Show when={question.answerText}><div class="mt-3 text-[0.675rem] leading-5 text-(--muted)">{question.answerText}</div></Show>
-              </article>
-            )}
-          </For>
-          <Show when={props.questions.length === 0}>
-            <div class="rounded-2xl border border-dashed border-(--border) bg-white/55 p-3 text-[0.675rem] text-(--muted)">No questions here.</div>
-          </Show>
-        </div>
-      </ScrollArea>
+      <VirtualList
+        class="min-h-0 flex-1 pr-2"
+        contentClass="w-full"
+        itemClass="pb-3"
+        items={props.questions}
+        getKey={(question) => question.id}
+        estimateSize={220}
+        pagination={{ kind: "forward", initialCount: 60, batchSize: 60 }}
+        empty={<div class="rounded-2xl border border-dashed border-(--border) bg-white/55 p-3 text-[0.675rem] text-(--muted)">No questions here.</div>}
+      >
+        {(question) => (
+          <article class="rounded-2xl border border-(--border) bg-white/75 p-3">
+            <div class="text-[0.75rem] font-semibold text-(--foreground)">{question.prompt}</div>
+            <div class="mt-1 text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">{question.status} | {formatShortTimestamp(question.askedAt)}</div>
+            <Show when={question.status === "pending"}>
+              <div class="mt-3 flex flex-col gap-2">
+                <div class="grid gap-2">
+                  <For each={getAssistantQuestionDefaultChoices()}>
+                    {(choice) => (
+                      <ActionButton tooltip={choice.description} disabled={props.disabled} disabledReason={props.disabledReason} icon={choice.recommended ? <Check class="h-4 w-4" /> : undefined} variant={choice.recommended ? "default" : "secondary"} class="justify-start" onClick={() => props.onAnswer(question, choice.answerText)}>
+                        {choice.label}
+                      </ActionButton>
+                    )}
+                  </For>
+                </div>
+                <Textarea rows="3" disabled={props.disabled} value={props.questionAnswers[question.id] ?? ""} onKeyDown={submitOnEnter(() => props.onAnswer(question))} onInput={(event) => props.onAnswerInput(question.id, event.currentTarget.value)} placeholder="Answer this question." />
+                <ActionButton tooltip="Send answer to assistant" disabled={props.disabled} disabledReason={props.disabledReason} icon={<Save class="h-4 w-4" />} onClick={() => props.onAnswer(question)}>Answer</ActionButton>
+              </div>
+            </Show>
+            <Show when={question.answerText}><div class="mt-3 text-[0.675rem] leading-5 text-(--muted)">{question.answerText}</div></Show>
+          </article>
+        )}
+      </VirtualList>
     </section>
   );
 }
-
 function ConfigCard(props: { title: string; children: JSX.Element }) {
   return (
-    <section class="rounded-[1.2rem] border border-(--border) bg-white/70 p-4 text-[0.675rem] leading-6 text-(--muted)">
+    <section class="text-[0.675rem] leading-6 text-(--muted)">
       <div class="mb-3 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">{props.title}</div>
       {props.children}
     </section>
@@ -1096,6 +1259,64 @@ function ConfigCard(props: { title: string; children: JSX.Element }) {
 
 function summarizePrompt(prompt: string, maxLength: number = 120) {
   return prompt.replace(/\s+/g, " ").trim().slice(0, maxLength);
+}
+
+function matchesAssistantFilters(assistant: Assistant, state: typeof harnessStore.state) {
+  const filters = state.assistants;
+  if (filters.runStateFilter && assistant.runState !== filters.runStateFilter) {
+    return false;
+  }
+  if (filters.bootstrapStateFilter && assistant.bootstrapState !== filters.bootstrapStateFilter) {
+    return false;
+  }
+  if (filters.providerBrandFilter && assistant.providerBrand !== filters.providerBrandFilter) {
+    return false;
+  }
+  if (filters.projectIdFilter && assistant.projectId !== filters.projectIdFilter) {
+    return false;
+  }
+  return true;
+}
+
+function hasAssistantRosterFilters(state: typeof harnessStore.state) {
+  return Boolean(
+    state.assistants.rosterSearch ||
+      state.assistants.runStateFilter ||
+      state.assistants.bootstrapStateFilter ||
+      state.assistants.providerBrandFilter ||
+      state.assistants.projectIdFilter
+  );
+}
+
+function assistantSearchHaystack(assistant: Assistant, state: typeof harnessStore.state) {
+  const project = state.workspace.projects.find((entry) => entry.id === assistant.projectId);
+  return [
+    assistant.name,
+    assistant.description,
+    assistant.personalityPrompt,
+    assistant.jobPrompt,
+    assistant.scope,
+    assistant.runState,
+    assistant.bootstrapState,
+    assistant.providerBrand,
+    project?.name,
+    project?.rootPath
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function fuzzyMatches(haystack: string, query: string) {
+  const tokens = query
+    .toLowerCase()
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+  if (tokens.length === 0) {
+    return true;
+  }
+  const normalized = haystack.toLowerCase();
+  return tokens.every((token) => normalized.includes(token));
 }
 
 function isActiveTodo(state: AssistantTodo["state"]) {

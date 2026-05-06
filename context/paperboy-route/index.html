@@ -191,6 +191,8 @@
   <script>
     const canvas = document.getElementById("game");
     const ctx = canvas.getContext("2d");
+    const searchParams = new URLSearchParams(window.location.search);
+    const autoStartSmoke = searchParams.get("autostart") === "1";
 
     const deliveredCountEl = document.getElementById("deliveredCount");
     const targetCountEl = document.getElementById("targetCount");
@@ -295,6 +297,37 @@
       state.sparkles = [];
       updateHud();
     }
+
+    function startRoute() {
+      menuOverlay.classList.add("hidden");
+      endOverlay.classList.add("hidden");
+      clearHint();
+      resetGame();
+    }
+
+    function restartRoute() {
+      endOverlay.classList.add("hidden");
+      clearHint();
+      resetGame();
+    }
+
+    window.__paperboyRoute = {
+      getState() {
+        return {
+          phase: state.phase,
+          delivered: state.delivered,
+          targetDeliveries,
+          lives: state.lives,
+          status: statusTextEl.textContent,
+          hintVisible: !hintBox.classList.contains("hidden"),
+          hintText: hintBox.textContent.trim(),
+          menuVisible: !menuOverlay.classList.contains("hidden"),
+          endVisible: !endOverlay.classList.contains("hidden")
+        };
+      },
+      startRoute,
+      restartRoute
+    };
 
     function updateHud() {
       deliveredCountEl.textContent = state.delivered;
@@ -730,20 +763,26 @@
 
     document.addEventListener("keydown", (event) => onKey(event, true));
     document.addEventListener("keyup", (event) => onKey(event, false));
-    document.getElementById("startButton").addEventListener("click", () => {
-      menuOverlay.classList.add("hidden");
-      endOverlay.classList.add("hidden");
-      clearHint();
-      resetGame();
+    window.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        if (!menuOverlay.classList.contains("hidden")) {
+          startRoute();
+        } else if (!endOverlay.classList.contains("hidden")) {
+          restartRoute();
+        }
+      }
+      if (event.key.toLowerCase() === "r" && !menuOverlay.classList.contains("hidden")) {
+        startRoute();
+      }
     });
-    document.getElementById("restartButton").addEventListener("click", () => {
-      endOverlay.classList.add("hidden");
-      clearHint();
-      resetGame();
-    });
+    document.getElementById("startButton").addEventListener("click", startRoute);
+    document.getElementById("restartButton").addEventListener("click", restartRoute);
 
     updateHud();
     render();
+    if (autoStartSmoke) {
+      startRoute();
+    }
     requestAnimationFrame(frame);
   </script>
 </body>

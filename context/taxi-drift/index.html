@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Crazy Taxi Neon Fare Rush</title>
+  <link rel="stylesheet" href="./src/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <section class="game-shell" aria-label="Crazy Taxi Neon Fare Rush">
+      <canvas id="game" width="1280" height="720" aria-label="Taxi game canvas"></canvas>
+      <div class="hud" id="hud">
+        <div class="hud-block">
+          <span class="hud-label">Fare Rush</span>
+          <strong id="fare-status">Booting city</strong>
+        </div>
+        <div class="hud-block">
+          <span class="hud-label">Controls</span>
+          <strong>Drive, drift, stop in rings</strong>
+        </div>
+      </div>
+      <div class="overlay" id="overlay" aria-live="polite"></div>
+    </section>
+  </main>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

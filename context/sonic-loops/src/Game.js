@@ -29,7 +29,7 @@ export class Game {
     if (!this.state) this.state = createRuntimeState();
     this.state.mode = "running";
     this.state.status = "Running";
-    this.state.message = "Run started.";
+    this.state.message = "Collect the opener rings before the first spike. Rings block one hit.";
     this.frameState = buildFrameState(this.state, sampleTrack(this.state.world));
   }
 
@@ -56,6 +56,9 @@ export class Game {
     const track = sampleTrack(world);
     const contact = getSurfaceContact(track, state.player);
     const hazard = track.hazards.find((item) => Math.hypot(state.player.x - item.x, state.player.y - item.y) <= item.radius + 14);
+    if (!hazard) {
+      state.activeHazardId = null;
+    }
 
     const steer = (input.right ? 1 : 0) - (input.left ? 1 : 0);
     const targetAccel = contact.attached ? GROUND_ACCEL : AIR_ACCEL;
@@ -132,21 +135,23 @@ export class Game {
     }
 
     updateCollectedRings(state);
-    if (hazard && state.damageCooldown <= 0) {
-      scatterRingsFromDamage(state, 8);
-      state.message = "Ring burst on impact.";
-      state.status = "Hit";
-      if (state.lastCheckpoint) {
-        state.player.x = state.lastCheckpoint.x;
-        state.player.y = state.lastCheckpoint.y;
-        state.player.vx = 0;
-        state.player.vy = 0;
-        state.player.attached = true;
-      }
-      if (state.health <= 0) {
+    if (hazard && state.damageCooldown <= 0 && state.activeHazardId !== hazard.id) {
+      state.activeHazardId = hazard.id;
+      if (state.rings.collected <= 0) {
         state.mode = "lose";
         state.status = "Lost";
-        state.message = "Run failed.";
+        state.message = "Hit with no rings.";
+      } else {
+        const { lostCount } = scatterRingsFromDamage(state);
+        state.message =
+          lostCount === 1 ? "One ring saved the run." : `All ${lostCount} rings spilled. Grab them back.`;
+        state.status = "Hit";
+        state.player.attached = false;
+        state.player.grounded = false;
+        state.player.x += Math.sign(state.player.x - hazard.x || -1) * 18;
+        state.player.y -= 4;
+        state.player.vx = Math.sign(state.player.x - hazard.x || -1) * Math.max(220, Math.abs(state.player.vx) * 0.42);
+        state.player.vy = -280;
       }
     }
     if (state.player.y > world.fallY) {
@@ -162,7 +167,6 @@ export class Game {
     }
 
     const transition = getModeTransition(state.mode, {
-      health: state.health,
       rings: state.rings.collected,
       timer: state.timer,
     });

@@ -8,6 +8,7 @@ const uiSourceDir = path.resolve(process.cwd(), "harness/ui");
 const uiOutDir = path.resolve(process.cwd(), "dist/ui");
 const uiEntryPoint = path.resolve(uiSourceDir, "src/main.tsx");
 const contextSourceDir = path.resolve(process.cwd(), "context");
+const repoRoot = path.resolve(process.cwd());
 
 type UiBuildOptions = {
   minify?: boolean;
@@ -187,7 +188,7 @@ export function createUiAssetManager(options: CreateUiAssetManagerOptions = {}) 
       }
 
       watcher = watchSourceDir(uiSourceDir, (changedPath) => {
-        if (isContextWatchPath(changedPath)) {
+        if (isIgnoredLiveReloadWatchPath(changedPath)) {
           return;
         }
 
@@ -236,11 +237,27 @@ function resolveWatchEventPath(sourceDir: string, filename: string | Buffer | nu
   return path.resolve(sourceDir, relativePath);
 }
 
-function isContextWatchPath(changedPath: string | undefined) {
+function isIgnoredLiveReloadWatchPath(changedPath: string | undefined) {
   if (!changedPath) {
     return false;
   }
 
-  const relativePath = path.relative(contextSourceDir, path.resolve(changedPath));
+  const resolvedPath = path.resolve(changedPath);
+  if (isPathWithin(contextSourceDir, resolvedPath)) {
+    return true;
+  }
+
+  const repoRelativePath = path.relative(repoRoot, resolvedPath);
+  if (repoRelativePath === "" || repoRelativePath.startsWith("..") || path.isAbsolute(repoRelativePath)) {
+    return false;
+  }
+
+  const segments = repoRelativePath.split(path.sep);
+  const firstSegment = segments[0]?.toLowerCase();
+  return firstSegment === ".agent" || firstSegment === ".agents" || path.basename(resolvedPath).toLowerCase() === "agents.md";
+}
+
+function isPathWithin(directory: string, candidatePath: string) {
+  const relativePath = path.relative(directory, candidatePath);
   return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
 }

@@ -197,6 +197,70 @@ export const ENEMY_TYPES = freeze({
       { kind: "flicker", count: 2, spread: 0.16 },
     ],
   }),
+  phase_titan: makeEnemy("phase_titan", {
+    label: "Phase Titan",
+    maxHealth: 248,
+    speedCells: 1.42,
+    radius: 18,
+    tint: "#9ce6ff",
+    reward: 28,
+    traits: {
+      phaseShift: true,
+      splashResistance: 0.34,
+      burnResistance: 0.88,
+      targetPriority: 5,
+    },
+  }),
+  echo_weaver: makeEnemy("echo_weaver", {
+    label: "Echo Weaver",
+    maxHealth: 122,
+    speedCells: 1.26,
+    radius: 14,
+    tint: "#d7f7ff",
+    reward: 20,
+    traits: {
+      hidden: true,
+      flicker: true,
+      scanRequired: true,
+      splashResistance: 0.76,
+      mirrorCaster: true,
+    },
+    deathSpawn: [
+      { kind: "flicker", count: 2, spread: 0.18 },
+      { kind: "ember", count: 2, spread: 0.16 },
+    ],
+  }),
+  mirror_archon: makeEnemy("mirror_archon", {
+    label: "Mirror Archon",
+    maxHealth: 560,
+    speedCells: 0.98,
+    radius: 24,
+    tint: "#d8ffff",
+    reward: 86,
+    boss: true,
+    traits: {
+      boss: true,
+      phaseShift: true,
+      splashResistance: 0.4,
+      shielded: true,
+      slowResistance: 0.84,
+      burnResistance: 0.82,
+      disruptWeak: 1.28,
+      targetPriority: 6,
+    },
+    shieldAuraRadius: 104,
+    shieldAuraStrength: 0.24,
+    deathSpawn: [
+      { kind: "phase_titan", count: 2, spread: 0.2 },
+      { kind: "echo_weaver", count: 3, spread: 0.24 },
+    ],
+    disruption: {
+      pulseSeconds: 2.2,
+      fieldSeconds: 1.7,
+      hardFieldWeight: 15,
+      softFieldWeight: 10,
+    },
+  }),
   lattice_overseer: makeEnemy("lattice_overseer", {
     label: "Lattice Crown",
     maxHealth: 780,
@@ -226,6 +290,71 @@ export const ENEMY_TYPES = freeze({
       fieldSeconds: 2.1,
       hardFieldWeight: 18,
       softFieldWeight: 12,
+    },
+  }),
+  gap_colossus: makeEnemy("gap_colossus", {
+    label: "Gap Colossus",
+    maxHealth: 264,
+    speedCells: 1.48,
+    radius: 19,
+    tint: "#aef8ff",
+    reward: 30,
+    traits: {
+      phaseShift: true,
+      splashResistance: 0.28,
+      burnResistance: 0.92,
+      targetPriority: 5,
+    },
+  }),
+  lattice_seraph: makeEnemy("lattice_seraph", {
+    label: "Lattice Seraph",
+    maxHealth: 176,
+    speedCells: 1.18,
+    radius: 16,
+    tint: "#d8fcff",
+    reward: 26,
+    traits: {
+      shieldProjector: true,
+      mirrorCaster: true,
+      hidden: true,
+      scanRequired: true,
+      splashResistance: 0.7,
+      targetPriority: 5,
+    },
+    shieldAuraRadius: 108,
+    shieldAuraStrength: 0.26,
+  }),
+  holo_regent: makeEnemy("holo_regent", {
+    label: "Holo Regent",
+    maxHealth: 980,
+    speedCells: 0.84,
+    radius: 30,
+    tint: "#dffeff",
+    reward: 150,
+    boss: true,
+    traits: {
+      boss: true,
+      phaseShift: true,
+      shielded: true,
+      mirrorCaster: true,
+      splashResistance: 0.46,
+      slowResistance: 0.78,
+      burnResistance: 0.8,
+      disruptWeak: 1.34,
+      targetPriority: 7,
+    },
+    shieldAuraRadius: 126,
+    shieldAuraStrength: 0.32,
+    deathSpawn: [
+      { kind: "gap_colossus", count: 2, spread: 0.22 },
+      { kind: "lattice_seraph", count: 3, spread: 0.28 },
+      { kind: "echo_weaver", count: 4, spread: 0.34 },
+    ],
+    disruption: {
+      pulseSeconds: 1.9,
+      fieldSeconds: 2.3,
+      hardFieldWeight: 20,
+      softFieldWeight: 13,
     },
   }),
 });
@@ -334,11 +463,12 @@ export const DEFAULT_WAVES = freeze([
   }),
   freeze({
     name: "Crown",
+    briefing: "First crown-class breach. Strip shields early so the Phase Titans do not sprint through the center lane.",
     actions: [
       wait(1.0),
       burst("overseer", 1, "right-mid"),
       burst("warden", 2, "left-upper"),
-      interval("brute", 5, 0.2, "left-mid"),
+      interval("phase_titan", 3, 0.52, "left-mid"),
       mix(
         [
           { kind: "projector", count: 2, every: 0.18 },
@@ -370,7 +500,8 @@ export const DEFAULT_WAVES = freeze([
       ),
       wait(1.1),
       burst("prism", 4, "right-lower"),
-      interval("flicker", 4, 0.24, "right-upper"),
+      interval("echo_weaver", 3, 0.36, "right-upper"),
+      burst("flicker", 3, "left-mid"),
     ],
   }),
   freeze({
@@ -416,7 +547,8 @@ export const DEFAULT_WAVES = freeze([
       ),
       wait(1.0),
       burst("projector", 3, "right-mid"),
-      interval("brute", 6, 0.18, "right-lower"),
+      interval("phase_titan", 4, 0.58, "right-lower"),
+      burst("breaker", 3, "left-upper"),
     ],
   }),
   freeze({
@@ -451,8 +583,68 @@ export const DEFAULT_WAVES = freeze([
     ],
   }),
   freeze({
+    name: "Parallax",
+    actions: [
+      burst("echo_weaver", 3, "left-upper"),
+      wait(0.55),
+      interval("phase_titan", 4, 0.62, "right-mid"),
+      mix(
+        [
+          { kind: "projector", count: 3, every: 0.18 },
+          { kind: "carrier", count: 3, every: 0.24 },
+        ],
+        { spawnPoint: "left-lower" },
+      ),
+      burst("breaker", 4, "right-upper"),
+    ],
+  }),
+  freeze({
+    name: "Mirrorfall",
+    boss: true,
+    briefing: "Mirror Archon folds false walls across the field. Keep reveal towers online before the boss anchors.",
+    actions: [
+      wait(0.9),
+      burst("projector", 3, "left-upper"),
+      mix(
+        [
+          { kind: "echo_weaver", count: 4, every: 0.18 },
+          { kind: "breaker", count: 4, every: 0.16 },
+        ],
+        { spawnPoint: "right-upper" },
+      ),
+      wait(1.0),
+      burst("mirror_archon", 1, "left-mid", { kind: "mirror_archon" }),
+      interval("phase_titan", 3, 0.7, "right-mid"),
+      burst("carrier", 2, "left-lower"),
+    ],
+  }),
+  freeze({
+    name: "Hardlight",
+    briefing: "Hardlight waves stack bruisers from opposite rails. Save one fast lane answer for the right-mid breach.",
+    actions: [
+      mix(
+        [
+          { kind: "phase_titan", count: 4, every: 0.58 },
+          { kind: "prism", count: 5, every: 0.16 },
+        ],
+        { spawnPoint: "right-mid" },
+      ),
+      wait(0.7),
+      burst("echo_weaver", 4, "left-upper"),
+      interval("husk", 5, 0.16, "left-lower"),
+      mix(
+        [
+          { kind: "projector", count: 2, every: 0.16 },
+          { kind: "breaker", count: 5, every: 0.14 },
+        ],
+        { spawnPoint: "right-upper" },
+      ),
+    ],
+  }),
+  freeze({
     name: "Lattice Crown",
     boss: true,
+    briefing: "The lattice crown floods the board with fake pressure. Stabilize center-left before the crown core arrives.",
     actions: [
       wait(1.2),
       burst("projector", 4, "left-upper"),
@@ -475,6 +667,58 @@ export const DEFAULT_WAVES = freeze([
         ],
         { spawnPoint: "center-left" },
       ),
+    ],
+  }),
+  freeze({
+    name: "Ghost Columns",
+    briefing: "Gap Colossi sprint in long intervals. Use the breathing room between drops to retarget and rebuild.",
+    actions: [
+      interval("gap_colossus", 4, 1.15, "left-mid"),
+      wait(0.65),
+      mix(
+        [
+          { kind: "echo_weaver", count: 4, every: 0.2 },
+          { kind: "breaker", count: 3, every: 0.2 },
+        ],
+        { spawnPoint: "right-upper" },
+      ),
+      burst("carrier", 2, "left-lower"),
+    ],
+  }),
+  freeze({
+    name: "Seraph Net",
+    briefing: "Lattice Seraphs cast mirrored shield webs while fast tanks punch the open route.",
+    actions: [
+      mix(
+        [
+          { kind: "lattice_seraph", count: 3, every: 0.45 },
+          { kind: "gap_colossus", count: 3, every: 0.9 },
+        ],
+        { spawnPoint: "right-mid" },
+      ),
+      wait(0.8),
+      burst("projector", 3, "left-upper"),
+      interval("flicker", 5, 0.14, "left-lower"),
+    ],
+  }),
+  freeze({
+    name: "Regent Broadcast",
+    boss: true,
+    briefing: "Holo Regent seeds phase walls and shield lattices. Break the shell, then burn the exposed core before the next pulse.",
+    actions: [
+      wait(1.0),
+      burst("lattice_seraph", 2, "left-upper"),
+      mix(
+        [
+          { kind: "gap_colossus", count: 3, every: 0.88 },
+          { kind: "breaker", count: 4, every: 0.18 },
+        ],
+        { spawnPoint: "right-upper" },
+      ),
+      wait(1.0),
+      burst("holo_regent", 1, "left-mid", { kind: "holo_regent" }),
+      interval("carrier", 3, 0.28, "right-lower"),
+      burst("echo_weaver", 4, "left-lower"),
     ],
   }),
 ]);

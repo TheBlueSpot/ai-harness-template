@@ -274,7 +274,7 @@
       rescued: 0,
       lost: 0,
       promptsSeen: new Set(),
-      terrain: [],
+      terrain: buildTerrain(),
       blockers: [],
       lastTime: 0,
     };
@@ -377,7 +377,7 @@
       goalCountEl.textContent = `${GOAL}`;
       const active = state.abilities.find((ability) => ability.id === state.selectedAbility);
       const verb = active ? `${active.name} selected` : "Choose an assignment";
-      statusTextEl.textContent = `${verb} · ${TOTAL - state.rescued - state.lost} in field`;
+      statusTextEl.textContent = `${verb} - ${TOTAL - state.rescued - state.lost} in field`;
     }
 
     function renderAbilityButtons() {
@@ -386,7 +386,7 @@
         const button = document.createElement("button");
         button.className = `ability${ability.id === state.selectedAbility ? " active" : ""}`;
         button.disabled = ability.remaining <= 0 || state.mode !== "playing";
-        button.innerHTML = `<strong>${ability.key}. ${ability.name} ×${ability.remaining}</strong><span>${ability.blurb}</span>`;
+        button.innerHTML = `<strong>${ability.key}. ${ability.name} x${ability.remaining}</strong><span>${ability.blurb}</span>`;
         button.addEventListener("click", () => {
           state.selectedAbility = ability.id;
           renderAbilityButtons();
@@ -807,3 +807,4 @@
   </script>
 </body>
 </html>
+

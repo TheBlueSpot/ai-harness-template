@@ -32,6 +32,39 @@ body {
   margin-bottom: 12px;
 }
 
+.run-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0 0 12px;
+}
+
+.run-meta[aria-hidden="true"] {
+  display: none;
+}
+
+.run-meta > div {
+  background: rgba(8, 12, 22, 0.88);
+  border: 1px solid rgba(135, 192, 255, 0.22);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+.run-meta strong,
+.run-meta span {
+  display: block;
+}
+
+.run-meta strong {
+  font-size: 15px;
+}
+
+.run-meta span {
+  margin-top: 4px;
+  color: #a8b8d3;
+  font-size: 13px;
+}
+
 .hud__chip {
   background: rgba(12, 17, 29, 0.9);
   border: 1px solid rgba(135, 192, 255, 0.28);
@@ -90,6 +123,13 @@ canvas {
   margin: 0;
 }
 
+.overlay__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+}
+
 .eyebrow {
   color: #8aa4d6;
   text-transform: uppercase;
@@ -141,15 +181,53 @@ canvas {
   line-height: 1.4;
 }
 
+.class-card small {
+  display: block;
+  margin-top: 10px;
+  color: #7f90ab;
+  line-height: 1.45;
+}
+
+.relic-preview {
+  margin-top: 10px;
+  color: #f0dc9b;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.relic-reason {
+  margin-top: 10px;
+  color: #dce8ff;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.relic-grid {
+  max-width: 920px;
+}
+
+.relic-card {
+  min-height: 212px;
+}
+
 .overlay button {
   justify-self: center;
   padding: 12px 20px;
   font-size: 16px;
 }
 
+.overlay__button--secondary {
+  background: rgba(8, 12, 22, 0.92);
+  color: #c9d7ee;
+}
+
 @media (max-width: 900px) {
   .hud {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .run-meta {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .class-grid {

@@ -103,21 +103,20 @@
     }
 
     .banner {
-      position: absolute;
-      top: 28px;
-      left: 28px;
-      padding: 12px 14px;
-      max-width: min(360px, calc(100% - 56px));
+      width: min(100%, 1024px);
+      margin-top: 14px;
+      padding: 10px 14px;
       border-radius: 16px;
       border: 1px solid var(--line);
       background: var(--panel);
       backdrop-filter: blur(12px);
-      pointer-events: none;
+      display: grid;
+      gap: 4px;
     }
 
     .banner h1 {
       margin: 0 0 6px;
-      font-size: 15px;
+      font-size: 13px;
       letter-spacing: 0.18em;
       text-transform: uppercase;
     }
@@ -125,7 +124,7 @@
     .banner p {
       margin: 0;
       color: var(--muted);
-      font-size: 13px;
+      font-size: 12px;
       line-height: 1.45;
     }
 
@@ -179,8 +178,6 @@
       }
 
       .banner {
-        top: 18px;
-        left: 18px;
         padding: 10px 12px;
       }
 
@@ -199,8 +196,8 @@
     <section class="stage">
       <canvas id="game" width="1024" height="768" aria-label="Frogger Neon Lanes game canvas"></canvas>
       <aside class="banner">
-        <h1>Frogger: Neon Lanes</h1>
-        <p>Arrow keys, WASD, or tap controls. Ride barges, dodge traffic, and charge five docking pads before the timer burns out.</p>
+        <h1>Route Brief</h1>
+        <p>Cross five docks. Arrow keys, WASD, or tap controls move one lane at a time. Ride glowing barges through river rows, dodge traffic, and beat the timer.</p>
       </aside>
     </section>
 
@@ -226,6 +223,8 @@
         startY: 672,
         frogSize: 36,
         hopTime: 0.12,
+        hotGoalCycle: 7,
+        hotGoalBonus: 175,
         roundTime: 45,
         maxLives: 4,
         maxFrame: 0.05
@@ -279,6 +278,7 @@
 
         return {
           ...config,
+          baseSpeed: config.speed,
           y: config.row * CONFIG.cell,
           items,
           loop: config.count * (config.itemWidth + config.gap)
@@ -395,6 +395,8 @@
           this.timeLeft = CONFIG.roundTime;
           this.elapsed = 0;
           this.flash = 0;
+          this.hotGoalIndex = null;
+          this.hotGoalTimer = CONFIG.hotGoalCycle;
           this.stars = Array.from({ length: 120 }, () => ({
             x: Math.random() * CONFIG.width,
             y: Math.random() * CONFIG.height,
@@ -407,10 +409,10 @@
             makeLane({ row: 2, kind: "river", speed: 118, itemWidth: 220, gap: 122, count: 4, offset: -90, colorA: "#9df6d8", colorB: "#18906d" }),
             makeLane({ row: 3, kind: "river", speed: -164, itemWidth: 152, gap: 108, count: 6, offset: 26, colorA: "#e0ff9e", colorB: "#89af27" }),
             makeLane({ row: 4, kind: "river", speed: 92, itemWidth: 252, gap: 164, count: 4, offset: -120, colorA: "#fce28c", colorB: "#d68d1f" }),
-            makeLane({ row: 6, kind: "road", speed: 186, itemWidth: 148, gap: 132, count: 5, offset: 8, colorA: "#ff8eb3", colorB: "#d22e72" }),
-            makeLane({ row: 7, kind: "road", speed: -248, itemWidth: 92, gap: 116, count: 7, offset: 32, colorA: "#6efff0", colorB: "#1895ba" }),
-            makeLane({ row: 8, kind: "road", speed: 140, itemWidth: 182, gap: 144, count: 5, offset: -40, colorA: "#ffc17d", colorB: "#d86e1a" }),
-            makeLane({ row: 9, kind: "road", speed: -304, itemWidth: 120, gap: 104, count: 6, offset: 14, colorA: "#d2a3ff", colorB: "#7c36d6" })
+            makeLane({ row: 6, kind: "road", speed: 176, itemWidth: 148, gap: 152, count: 5, offset: 8, colorA: "#ff8eb3", colorB: "#d22e72" }),
+            makeLane({ row: 7, kind: "road", speed: -228, itemWidth: 92, gap: 136, count: 6, offset: 32, colorA: "#6efff0", colorB: "#1895ba" }),
+            makeLane({ row: 8, kind: "road", speed: 144, itemWidth: 182, gap: 164, count: 5, offset: -40, colorA: "#ffc17d", colorB: "#d86e1a" }),
+            makeLane({ row: 9, kind: "road", speed: -272, itemWidth: 120, gap: 124, count: 5, offset: 14, colorA: "#d2a3ff", colorB: "#7c36d6" })
           ];
           this.resetGoals();
           this.resetFrog();
@@ -476,6 +478,46 @@
           goalSlots.forEach((slot) => {
             slot.filled = false;
           });
+          this.hotGoalIndex = this.pickHotGoalIndex();
+          this.hotGoalTimer = CONFIG.hotGoalCycle;
+        }
+
+        roadTrafficPace() {
+          const secured = goalSlots.filter((slot) => slot.filled).length;
+          return 0.72 + secured * 0.07;
+        }
+
+        pickHotGoalIndex() {
+          const openGoals = goalSlots
+            .map((slot, index) => ({ slot, index }))
+            .filter(({ slot }) => !slot.filled);
+          if (openGoals.length === 0) {
+            return null;
+          }
+          const choice = openGoals[Math.floor(Math.random() * openGoals.length)];
+          return choice.index;
+        }
+
+        rotateHotGoal() {
+          const nextIndex = this.pickHotGoalIndex();
+          if (nextIndex === null) {
+            this.hotGoalIndex = null;
+            this.hotGoalTimer = 0;
+            return;
+          }
+          if (nextIndex !== this.hotGoalIndex) {
+            const slot = goalSlots[nextIndex];
+            this.particles.burst(slot.x, 32, 14, ["#ffd36c", "#ffffff", "#ff6aa2"], 180, 10);
+          }
+          this.hotGoalIndex = nextIndex;
+          this.hotGoalTimer = CONFIG.hotGoalCycle;
+        }
+
+        laneSpeed(lane) {
+          if (lane.kind !== "road") {
+            return lane.baseSpeed;
+          }
+          return lane.baseSpeed * this.roadTrafficPace();
         }
 
         resetFrog() {
@@ -501,6 +543,7 @@
           this.message = "Cross five neon docks.";
           this.death = null;
           this.resetFrog();
+          this.rotateHotGoal();
           this.state = STATES.PLAYING;
         }
 
@@ -619,18 +662,26 @@
         }
 
         scoreGoal(slot) {
+          const slotIndex = goalSlots.indexOf(slot);
+          const hotGoalHit = slotIndex === this.hotGoalIndex;
           slot.filled = true;
-          this.score += 200 + Math.round(this.timeLeft * 5);
-          this.message = "Dock secured. Push the next lane.";
+          this.score += 200 + Math.round(this.timeLeft * 5) + (hotGoalHit ? CONFIG.hotGoalBonus : 0);
+          this.message = hotGoalHit ? "Hot dock charged. Bonus route locked in." : "Dock secured. Push the next lane.";
           this.particles.burst(slot.x, CONFIG.cell * 0.5, 30, ["#7fffd4", "#56d7ff", "#ffffff"], 220, 16);
+          if (hotGoalHit) {
+            this.particles.burst(slot.x, 32, 18, ["#ffd36c", "#ffffff", "#ff6aa2"], 240, 18);
+          }
           this.soundboard.play("goal");
           if (goalSlots.every((entry) => entry.filled)) {
+            this.hotGoalIndex = null;
+            this.hotGoalTimer = 0;
             this.state = STATES.WIN;
             this.message = "All five docks charged.";
             this.soundboard.play("win");
             return;
           }
           this.timeLeft = CONFIG.roundTime;
+          this.rotateHotGoal();
           this.resetFrog();
         }
 
@@ -640,11 +691,12 @@
 
         updateLanes(dt) {
           for (const lane of this.lanes) {
+            const speed = this.laneSpeed(lane);
             for (const item of lane.items) {
-              item.x += lane.speed * dt;
-              if (lane.speed > 0 && item.x > CONFIG.width) {
+              item.x += speed * dt;
+              if (speed > 0 && item.x > CONFIG.width) {
                 item.x -= lane.loop;
-              } else if (lane.speed < 0 && item.x + item.width < 0) {
+              } else if (speed < 0 && item.x + item.width < 0) {
                 item.x += lane.loop;
               }
             }
@@ -693,6 +745,11 @@
             return;
           }
 
+          this.hotGoalTimer -= dt;
+          if (this.hotGoalTimer <= 0) {
+            this.rotateHotGoal();
+          }
+
           if (this.frog.moving) {
             this.frog.progress += dt / CONFIG.hopTime;
             const t = Math.min(this.frog.progress, 1);
@@ -713,7 +770,7 @@
               this.clearLife("Current pulled you under.", "drown", ["#56d7ff", "#9be6ff", "#ffffff"]);
               return;
             }
-            this.frog.x += support.speed * dt;
+            this.frog.x += this.laneSpeed(support) * dt;
           }
 
           if (this.frog.x < CONFIG.cell * 0.25 || this.frog.x > CONFIG.width - CONFIG.cell * 0.25) {
@@ -808,17 +865,33 @@
 
           for (const slot of goalSlots) {
             const x = slot.x - slot.width * 0.5;
-            this.ctx.fillStyle = slot.filled ? "rgba(127, 255, 212, 0.26)" : "rgba(17, 37, 62, 0.95)";
+            const isHotGoal = this.hotGoalIndex !== null && goalSlots[this.hotGoalIndex] === slot && !slot.filled;
+            this.ctx.fillStyle = slot.filled
+              ? "rgba(127, 255, 212, 0.26)"
+              : isHotGoal
+                ? "rgba(58, 28, 10, 0.96)"
+                : "rgba(17, 37, 62, 0.95)";
             roundRectPath(this.ctx, x, 12, slot.width, 40, 16);
             this.ctx.fill();
-            this.ctx.strokeStyle = slot.filled ? "rgba(127, 255, 212, 0.8)" : "rgba(86, 215, 255, 0.2)";
-            this.ctx.lineWidth = 2;
+            this.ctx.strokeStyle = slot.filled
+              ? "rgba(127, 255, 212, 0.8)"
+              : isHotGoal
+                ? "rgba(255, 211, 108, 0.92)"
+                : "rgba(86, 215, 255, 0.2)";
+            this.ctx.lineWidth = isHotGoal ? 3 : 2;
             this.ctx.stroke();
 
-            this.ctx.fillStyle = slot.filled ? "#7fffd4" : "rgba(255, 255, 255, 0.08)";
+            this.ctx.fillStyle = slot.filled ? "#7fffd4" : isHotGoal ? "#ffd36c" : "rgba(255, 255, 255, 0.08)";
             this.ctx.beginPath();
-            this.ctx.arc(slot.x, 32, slot.filled ? 11 : 8, 0, Math.PI * 2);
+            this.ctx.arc(slot.x, 32, slot.filled ? 11 : isHotGoal ? 10 : 8, 0, Math.PI * 2);
             this.ctx.fill();
+
+            if (isHotGoal) {
+              const pulse = 0.62 + Math.sin(this.elapsed * 8) * 0.18;
+              this.ctx.strokeStyle = `rgba(255, 211, 108, ${pulse})`;
+              this.ctx.lineWidth = 2;
+              this.ctx.strokeRect(x + 8, 18, slot.width - 16, 28);
+            }
           }
         }
 
@@ -892,7 +965,7 @@
 
         drawHud() {
           this.ctx.fillStyle = "rgba(7, 13, 28, 0.8)";
-          roundRectPath(this.ctx, 18, CONFIG.height - 72, 988, 54, 18);
+          roundRectPath(this.ctx, 18, CONFIG.height - 94, 988, 76, 18);
           this.ctx.fill();
           this.ctx.strokeStyle = "rgba(150, 196, 255, 0.18)";
           this.ctx.lineWidth = 1;
@@ -900,16 +973,22 @@
 
           this.ctx.fillStyle = "#eef7ff";
           this.ctx.font = "700 18px Trebuchet MS, sans-serif";
-          this.ctx.fillText(`Score ${this.score.toString().padStart(5, "0")}`, 40, CONFIG.height - 39);
-          this.ctx.fillText(`Lives ${Math.max(this.lives, 0)}`, 248, CONFIG.height - 39);
-          this.ctx.fillText(`Docks ${goalSlots.filter((slot) => slot.filled).length}/5`, 388, CONFIG.height - 39);
+          this.ctx.fillText(`Score ${this.score.toString().padStart(5, "0")}`, 40, CONFIG.height - 59);
+          this.ctx.fillText(`Lives ${Math.max(this.lives, 0)}`, 248, CONFIG.height - 59);
+          this.ctx.fillText(`Docks ${goalSlots.filter((slot) => slot.filled).length}/5`, 388, CONFIG.height - 59);
 
           this.ctx.fillStyle = "#ffd36c";
-          this.ctx.fillText(`Timer ${Math.ceil(this.timeLeft)}`, 560, CONFIG.height - 39);
+          this.ctx.fillText(`Timer ${Math.ceil(this.timeLeft)}`, 560, CONFIG.height - 59);
+
+          if (this.hotGoalIndex !== null && this.state === STATES.PLAYING) {
+            this.ctx.fillStyle = "#7fffd4";
+            this.ctx.font = "700 15px Trebuchet MS, sans-serif";
+            this.ctx.fillText(`Hot dock +${CONFIG.hotGoalBonus} rotates in ${Math.ceil(this.hotGoalTimer)}`, 560, CONFIG.height - 33);
+          }
 
           this.ctx.fillStyle = "rgba(238, 247, 255, 0.76)";
           this.ctx.font = "15px Trebuchet MS, sans-serif";
-          this.ctx.fillText(this.message, 714, CONFIG.height - 38);
+          this.ctx.fillText(this.message, 40, CONFIG.height - 33);
         }
 
         drawOverlay() {
@@ -950,6 +1029,7 @@
             ? [
                 "Hop one lane at a time with arrow keys, WASD, or touch buttons.",
                 "Use neon barges as moving platforms in the river rows.",
+                `One dock pulses hot at a time for +${CONFIG.hotGoalBonus} bonus score, then shifts routes every ${CONFIG.hotGoalCycle} seconds.`,
                 "Every missed dock, crash, drift, or timeout costs one life.",
                 "Fill all five docks to clear the district."
               ]

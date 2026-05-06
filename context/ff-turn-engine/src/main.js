@@ -29,9 +29,14 @@ function createInput() {
 
 function setState(state) {
   app.dataset.state = state;
+  const resultVisible = state === "victory" || state === "defeat";
+  menu.classList.toggle("is-visible", state === "menu");
+  hud.classList.toggle("is-visible", state !== "menu");
+  result.classList.toggle("is-visible", resultVisible);
   menu.hidden = state !== "menu";
   hud.hidden = state === "menu";
-  result.setAttribute("aria-hidden", String(state !== "victory" && state !== "defeat"));
+  result.hidden = !resultVisible;
+  result.setAttribute("aria-hidden", String(!resultVisible));
 }
 
 function resize() {

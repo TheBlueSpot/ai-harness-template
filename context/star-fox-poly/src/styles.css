@@ -63,6 +63,11 @@ body {
   background: var(--panel);
   backdrop-filter: blur(14px);
   box-shadow: 0 18px 48px var(--shadow);
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease,
+    background 160ms ease,
+    border-color 160ms ease;
 }
 
 .hud__row {
@@ -92,6 +97,41 @@ body {
   font-size: 0.75rem;
 }
 
+.hud[data-mode="play"] {
+  top: 0.8rem;
+  right: 0.8rem;
+  left: auto;
+  min-width: 0;
+  gap: 0.3rem;
+  padding: 0.55rem 0.7rem;
+  border-radius: 999px;
+  border-color: rgba(122, 228, 255, 0.12);
+  background: rgba(8, 17, 31, 0.42);
+  backdrop-filter: blur(8px);
+  opacity: 0.52;
+  transform: translateY(-0.1rem);
+}
+
+.hud[data-mode="play"]:hover,
+.hud[data-mode="play"]:focus-within {
+  opacity: 0.9;
+}
+
+.hud[data-mode="play"] .hud__row {
+  gap: 0.5rem;
+  font-size: 0.82rem;
+}
+
+.hud[data-mode="play"] .hud__label {
+  display: none;
+}
+
+.hud[data-mode="play"] .hud__alert {
+  padding-top: 0;
+  font-size: 0.68rem;
+  text-align: right;
+}
+
 .overlay {
   position: absolute;
   inset: 0;
@@ -100,6 +140,10 @@ body {
   padding: 1.5rem;
   background: linear-gradient(180deg, rgba(4, 10, 18, 0.35), rgba(4, 10, 18, 0.78));
   text-align: center;
+}
+
+.overlay[hidden] {
+  display: none;
 }
 
 .overlay__eyebrow,
@@ -146,6 +190,11 @@ body {
     inset: auto 0 0 0;
     width: auto;
     border-radius: 1rem 1rem 0 0;
+  }
+
+  .hud[data-mode="play"] {
+    inset: auto 0.65rem 0.65rem auto;
+    border-radius: 999px;
   }
 
   .overlay {

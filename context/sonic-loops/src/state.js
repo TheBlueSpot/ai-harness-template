@@ -20,13 +20,13 @@ export function createRuntimeState() {
     message: "Press Start Run.",
     timer: 0,
     speed: 0,
-    health: 3,
     rings: {
       collected: 0,
       total: 24,
       list: createRingList(),
       temp: [],
     },
+    activeHazardId: null,
     damageCooldown: 0,
     activeCheckpointId: null,
     lastCheckpoint: null,
@@ -58,17 +58,18 @@ export function stepRuntimeState(state, dt) {
     ring.x += ring.vx * dt;
     ring.y += ring.vy * dt;
     ring.vy += state.gravity * 0.45 * dt;
+    ring.collectDelay = Math.max(0, (ring.collectDelay ?? 0) - dt);
   }
   state.player.canJump = Math.min(0.12, state.player.canJump + dt);
 }
 
-export function scatterRingsFromDamage(state, count = 8) {
-  const burst = buildRingScatter({ x: state.player.x, y: state.player.y }, count);
+export function scatterRingsFromDamage(state, count = state.rings.collected) {
+  const lostCount = Math.max(0, Math.min(state.rings.collected, count));
+  const burst = buildRingScatter({ x: state.player.x, y: state.player.y }, lostCount);
   state.rings.temp.push(...burst);
-  state.rings.collected = Math.max(0, state.rings.collected - count);
+  state.rings.collected -= lostCount;
   state.damageCooldown = 0.8;
-  state.health = Math.max(0, state.health - 1);
-  return burst;
+  return { burst, lostCount };
 }
 
 export function getCheckpointByX(checkpoints, x) {
@@ -80,9 +81,6 @@ export function getCheckpointByX(checkpoints, x) {
 }
 
 export function getModeTransition(mode, values) {
-  if (mode === "running" && values.health <= 0) {
-    return { mode: "lose", status: "Lost", message: "No rings left." };
-  }
   if (mode === "running" && values.rings >= 24) {
     return null;
   }
@@ -101,7 +99,7 @@ export function buildFrameState(state, track) {
     time: state.timer,
     timer: state.timer,
     speed: state.speed,
-    health: state.health,
+    guard: state.rings.collected > 0 ? "Rings Up" : "Exposed",
     rings: { collected: state.rings.collected, total: state.rings.total },
     player: { ...state.player },
     surfaces: track.surfaces.map((surface) => ({ ...surface })),
@@ -122,15 +120,38 @@ export function buildFrameState(state, track) {
 }
 
 function createRingList() {
-  const points = [];
-  for (let i = 0; i < 24; i += 1) {
-    points.push({
-      id: `ring-${i}`,
-      x: 260 + i * 92,
-      y: i < 8 ? 500 - i * 10 : i < 16 ? 400 + Math.sin(i * 0.65) * 24 : 470 - (i - 16) * 16,
-      radius: 11,
-      collected: false,
-    });
-  }
-  return points;
+  const positions = [
+    { x: 172, y: 522 },
+    { x: 232, y: 514 },
+    { x: 292, y: 506 },
+    { x: 352, y: 498 },
+    { x: 432, y: 492 },
+    { x: 516, y: 478 },
+    { x: 602, y: 464 },
+    { x: 676, y: 452 },
+    { x: 780, y: 326 },
+    { x: 844, y: 270 },
+    { x: 908, y: 236 },
+    { x: 960, y: 228 },
+    { x: 1012, y: 236 },
+    { x: 1076, y: 270 },
+    { x: 1140, y: 326 },
+    { x: 1232, y: 456 },
+    { x: 1320, y: 470 },
+    { x: 1412, y: 484 },
+    { x: 1504, y: 498 },
+    { x: 1630, y: 498 },
+    { x: 1810, y: 498 },
+    { x: 1990, y: 498 },
+    { x: 2270, y: 486 },
+    { x: 2460, y: 468 },
+  ];
+
+  return positions.map((point, index) => ({
+    id: `ring-${index}`,
+    x: point.x,
+    y: point.y,
+    radius: 11,
+    collected: false,
+  }));
 }

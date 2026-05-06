@@ -262,6 +262,7 @@
           <div class="panel">
             <div class="tiny">Portal State</div>
             <p class="tiny" id="portal-state">Blue: offline. Orange: offline.</p>
+            <p class="tiny" id="portal-preview">Aim at a bright panel to preview a stable portal.</p>
             <p class="status-line tiny" id="status-line">Ready.</p>
           </div>
           <div class="panel">
@@ -315,6 +316,7 @@
       var hudTitle = document.getElementById("hud-title");
       var hudObjective = document.getElementById("hud-objective");
       var portalState = document.getElementById("portal-state");
+      var portalPreview = document.getElementById("portal-preview");
       var statusLine = document.getElementById("status-line");
       var worldReadout = document.getElementById("world-readout");
       var screens = {
@@ -461,6 +463,24 @@
         }
       }
 
+      function getPortalPreview(color) {
+        if (activeScreen !== "play" || !world || !portalSystem) {
+          return null;
+        }
+
+        var player = world.player;
+        var origin = {
+          x: player.bounds.centerX(),
+          y: player.bounds.centerY()
+        };
+        var direction = {
+          x: pointer.x - origin.x,
+          y: pointer.y - origin.y
+        };
+
+        return portalSystem.previewPortalPlacement(color, origin, direction, currentLevel());
+      }
+
       function drawSurface(surface) {
         context.fillStyle = surface.isPortalable ? "#213c52" : "#121b28";
         context.fillRect(surface.x, surface.y, surface.width, surface.height);
@@ -483,6 +503,45 @@
         if (images.portalFrame.complete) {
           context.drawImage(images.portalFrame, x - 10, y - 10, portal.width + 20, portal.height + 20);
         }
+        context.restore();
+      }
+
+      function drawPortalPreview(preview) {
+        if (!preview || !preview.portal) {
+          return;
+        }
+
+        var portal = preview.portal;
+        var x = portal.center.x - portal.width * 0.5;
+        var y = portal.center.y - portal.height * 0.5;
+
+        context.save();
+        context.globalAlpha = 0.34;
+        context.setLineDash([10, 8]);
+        context.lineWidth = 3;
+        context.strokeStyle = portal.color === "orange" ? "#ffab4f" : "#4fc5ff";
+        context.strokeRect(x, y, portal.width, portal.height);
+        context.beginPath();
+        context.ellipse(portal.center.x, portal.center.y, Math.max(8, portal.width * 0.56), Math.max(8, portal.height * 0.56), 0, 0, Math.PI * 2);
+        context.stroke();
+        context.restore();
+      }
+
+      function drawPointerReticle(preview) {
+        var accent = preview && preview.placed ? "#9de7a6" : "#ff9e94";
+
+        context.save();
+        context.strokeStyle = accent;
+        context.lineWidth = 2;
+        context.beginPath();
+        context.arc(pointer.x, pointer.y, 9, 0, Math.PI * 2);
+        context.stroke();
+        context.beginPath();
+        context.moveTo(pointer.x - 14, pointer.y);
+        context.lineTo(pointer.x + 14, pointer.y);
+        context.moveTo(pointer.x, pointer.y - 14);
+        context.lineTo(pointer.x, pointer.y + 14);
+        context.stroke();
         context.restore();
       }
 
@@ -534,6 +593,7 @@
       function drawScene(state) {
         var playerActor = getPlayerActor(state);
         var renderState = portalSystem.getRenderState();
+        var preview = getPortalPreview("blue");
 
         context.clearRect(0, 0, canvas.width, canvas.height);
         context.fillStyle = "#07111c";
@@ -544,6 +604,7 @@
         currentLevel().surfaces.forEach(drawSurface);
         state.buttons.forEach(drawButton);
         state.doors.forEach(drawDoor);
+        drawPortalPreview(preview);
         renderState.portals.forEach(drawPortal);
 
         state.actors.forEach(function draw(actor) {
@@ -555,10 +616,12 @@
         if (playerActor) {
           drawPointerLine(playerActor);
         }
+        drawPointerReticle(preview);
       }
 
       function updateReadout(state) {
         var renderState = portalSystem.getRenderState();
+        var preview = getPortalPreview("blue");
         var blueOnline = renderState.portals.some(function checkBlue(portal) {
           return portal.color === "blue";
         });
@@ -571,6 +634,15 @@
         }).length;
 
         portalState.textContent = "Blue: " + (blueOnline ? "online" : "offline") + ". Orange: " + (orangeOnline ? "online" : "offline") + ".";
+        if (!preview) {
+          portalPreview.textContent = "Aim at a bright panel to preview a stable portal.";
+        } else if (preview.placed) {
+          portalPreview.textContent = "Preview: blue portal will lock here.";
+        } else if (preview.reason === "surface-too-small") {
+          portalPreview.textContent = "Preview: bright panel is too short for a stable portal.";
+        } else {
+          portalPreview.textContent = "Preview: dark stone rejects portal placement.";
+        }
         worldReadout.textContent = carried + " | Buttons: " + state.buttons.filter(function filterPressed(button) {
           return button.pressed;
         }).length + "/" + state.buttons.length + " | Doors open: " + openDoors + "/" + state.doors.length;

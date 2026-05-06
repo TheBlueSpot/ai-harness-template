@@ -1,8 +1,4 @@
-import { EconomyManager } from "./EconomyManager.js";
-import { EnemySpawner } from "./EnemySpawner.js";
-import { SiegeEngine } from "./SiegeEngine.js";
-import { UpgradeTree } from "./UpgradeTree.js";
-
+(() => {
 const ASSET_PATHS = {
   house: "./assets/house.png",
   sniper: "./assets/sniper.png",
@@ -46,7 +42,7 @@ const drawHealthBar = (ctx, x, y, width, ratio, color) => {
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
-export function bootstrapStormDefense() {
+function bootstrapStormDefense() {
   const canvas = document.getElementById("game-canvas");
   const shell = document.getElementById("game-shell");
   const startButton = document.getElementById("start-button");
@@ -115,11 +111,11 @@ export function bootstrapStormDefense() {
     waveValue.textContent = `${Math.max(1, snapshot.wave || 1)}`;
 
     if (intermissionStatus) {
-      intermissionStatus.textContent = `Wave ${snapshot.wave} clear. Snipers ${snapshot.allies.sniper}, craftsmen ${snapshot.allies.craftsman}, turrets ${snapshot.turrets}.`;
+      intermissionStatus.textContent = `Wave ${snapshot.wave} clear. Spend gold, keep one upgrade path open, then launch the next push.`;
     }
 
     if (gameoverWave) {
-      gameoverWave.textContent = `Final wave reached: ${snapshot.finalWaveReached || snapshot.wave}`;
+      gameoverWave.textContent = `Final wave reached: ${snapshot.finalWaveReached || snapshot.wave}.`;
     }
 
     if (gameoverStats) {
@@ -197,7 +193,14 @@ export function bootstrapStormDefense() {
 
     ctx.fillStyle = "rgba(255,255,255,0.75)";
     ctx.font = "700 20px Impact, Arial Black, sans-serif";
-    ctx.fillText(`Enemies ${snapshot.waveStatus.active}/${snapshot.waveStatus.totalSpawns}`, 32, 682);
+    ctx.fillText(`Enemies ${snapshot.waveStatus.active}/${snapshot.waveStatus.totalSpawns} | Wave ${snapshot.wave}`, 32, 682);
+  };
+
+  const refreshFromEngine = () => {
+    const snapshot = engine.getSnapshot();
+    renderUI(snapshot);
+    renderScene(snapshot);
+    return snapshot;
   };
 
   const toCanvasPoint = (event) => {
@@ -207,17 +210,33 @@ export function bootstrapStormDefense() {
     return { x, y };
   };
 
-  startButton?.addEventListener("click", () => engine.startRun());
-  advanceButton?.addEventListener("click", () => engine.advanceIntermission());
-  restartButton?.addEventListener("click", () => engine.restartRun());
+  startButton?.addEventListener("click", () => {
+    if (engine.startRun()) {
+      refreshFromEngine();
+    }
+  });
+  advanceButton?.addEventListener("click", () => {
+    if (engine.advanceIntermission()) {
+      refreshFromEngine();
+    }
+  });
+  restartButton?.addEventListener("click", () => {
+    engine.restartRun();
+    refreshFromEngine();
+  });
 
   canvas.addEventListener("pointermove", (event) => engine.setAimTarget(toCanvasPoint(event)));
   canvas.addEventListener("pointerdown", (event) => {
+    canvas.setPointerCapture?.(event.pointerId);
     engine.setAimTarget(toCanvasPoint(event));
     engine.setTriggerHeld(true);
   });
-  canvas.addEventListener("pointerup", () => engine.setTriggerHeld(false));
-  canvas.addEventListener("pointerleave", () => engine.setTriggerHeld(false));
+  const releaseTrigger = () => engine.setTriggerHeld(false);
+  canvas.addEventListener("pointerup", releaseTrigger);
+  canvas.addEventListener("pointercancel", releaseTrigger);
+  canvas.addEventListener("pointerleave", releaseTrigger);
+  window.addEventListener("pointerup", releaseTrigger);
+  window.addEventListener("blur", releaseTrigger);
 
   let last = performance.now();
   const frame = (now) => {
@@ -230,9 +249,7 @@ export function bootstrapStormDefense() {
     requestAnimationFrame(frame);
   };
 
-  const initialSnapshot = engine.getSnapshot();
-  renderUI(initialSnapshot);
-  renderScene(initialSnapshot);
+  refreshFromEngine();
   requestAnimationFrame(frame);
 
   return engine;
@@ -246,3 +263,4 @@ if (typeof window !== "undefined") {
     bootstrapStormDefense();
   }
 }
+})();

@@ -54,10 +54,18 @@
             <div id="shop-list" class="shop__list" role="toolbar" aria-label="Upgrade shop"></div>
           </div>
 
-          <div class="controls">
-            <button id="slam-button" class="action action--primary" type="button">Slam</button>
-            <button id="pause-button" class="action action--ghost" type="button">Pause</button>
-            <button id="restart-button" class="action action--ghost" type="button">Restart</button>
+          <div class="side-rail">
+            <section id="coach-card" class="coach" data-tone="wait" aria-live="polite">
+              <p class="eyebrow">Next move</p>
+              <h3 id="coach-title">Wait for auto-launch</h3>
+              <p id="coach-copy" class="coach__copy">Let the ring charge, then watch for the slam cue on the drop.</p>
+            </section>
+
+            <div class="controls">
+              <button id="slam-button" class="action action--primary" type="button">Slam</button>
+              <button id="pause-button" class="action action--ghost" type="button">Pause</button>
+              <button id="restart-button" class="action action--ghost" type="button">Restart</button>
+            </div>
           </div>
         </div>
       </section>

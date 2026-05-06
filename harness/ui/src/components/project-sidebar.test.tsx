@@ -1,9 +1,9 @@
 /** @jsxImportSource solid-js */
-import { beforeEach, expect, it } from "bun:test";
+import { beforeEach, expect, it, mock } from "bun:test";
 import { createUiTest } from "../utils/tests/test-harness";
-import { cleanup, render, screen } from "@solidjs/testing-library";
+import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
 import { ProjectSidebar } from "./project-sidebar";
-import { clearBrowserStateForTests, seedHarnessStoreForTests } from "../utils/tests/store-test-utils";
+import { captureDispatchedCommands, clearBrowserStateForTests, seedHarnessStoreForTests } from "../utils/tests/store-test-utils";
 import { createHarnessStateFixture, createViewProjectFixture } from "../utils/tests/test-fixtures";
 import { createProjectThreadSummary } from "../../../shared/protocol";
 
@@ -26,6 +26,7 @@ createUiTest("ProjectSidebar", () => {
           kind: "user",
           title: "Thread 1",
           titleSource: "generated",
+          status: "active",
           badgeState: "executing",
           messageCount: 3,
           updatedAt: new Date().toISOString()
@@ -35,6 +36,7 @@ createUiTest("ProjectSidebar", () => {
           kind: "user",
           title: "Thread 2",
           titleSource: "generated",
+          status: "active",
           badgeState: "planning",
           messageCount: 1,
           updatedAt: new Date().toISOString()
@@ -68,6 +70,7 @@ createUiTest("ProjectSidebar", () => {
           kind: "user",
           title: "Thread 1",
           titleSource: "generated",
+          status: "active",
           badgeState: "done",
           messageCount: 4,
           updatedAt: new Date().toISOString()
@@ -105,6 +108,7 @@ createUiTest("ProjectSidebar", () => {
           kind: "user",
           title: "Thread 1",
           titleSource: "generated",
+          status: "active",
           badgeState: "executing",
           messageCount: 3,
           updatedAt: new Date().toISOString()
@@ -114,6 +118,7 @@ createUiTest("ProjectSidebar", () => {
           kind: "user",
           title: "Thread 2",
           titleSource: "generated",
+          status: "active",
           badgeState: "idle",
           messageCount: 1,
           updatedAt: new Date().toISOString()
@@ -144,6 +149,7 @@ createUiTest("ProjectSidebar", () => {
           kind: "user",
           title: "Visible thread",
           titleSource: "generated",
+          status: "active",
           badgeState: "idle",
           messageCount: 1,
           updatedAt: new Date().toISOString()
@@ -153,6 +159,7 @@ createUiTest("ProjectSidebar", () => {
           kind: "automation",
           title: "Hidden automation thread",
           titleSource: "generated",
+          status: "active",
           badgeState: "idle",
           messageCount: 2,
           updatedAt: new Date().toISOString()
@@ -173,6 +180,142 @@ createUiTest("ProjectSidebar", () => {
     expect(screen.getByText("1 threads")).not.toBeNull();
     expect(screen.queryByText("Hidden automation thread")).toBeNull();
     expect(screen.getByText("Visible thread")).not.toBeNull();
+  });
+
+  it("hides archived threads from sidebar thread list", () => {
+    const now = new Date().toISOString();
+    const project = createViewProjectFixture({
+      id: "project-archived",
+      threads: [
+        createProjectThreadSummary({
+          id: "thread-active",
+          title: "Visible thread",
+          titleSource: "generated",
+          status: "active",
+          updatedAt: now
+        }),
+        createProjectThreadSummary({
+          id: "thread-archived",
+          title: "Archived thread",
+          titleSource: "generated",
+          status: "archived",
+          updatedAt: now
+        })
+      ]
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ProjectSidebar />);
+
+    expect(screen.getByText("1 threads")).not.toBeNull();
+    expect(screen.queryByText("Archived thread")).toBeNull();
+    expect(screen.getByText("Visible thread")).not.toBeNull();
+  });
+
+  it("requires a second delete click before archiving a thread", async () => {
+    const now = new Date().toISOString();
+    const project = createViewProjectFixture({
+      id: "project-delete-thread",
+      activeThreadId: "thread-1",
+      threads: [
+        createProjectThreadSummary({
+          id: "thread-1",
+          title: "Active thread",
+          titleSource: "generated",
+          status: "active",
+          updatedAt: now
+        }),
+        createProjectThreadSummary({
+          id: "thread-2",
+          title: "Thread to delete",
+          titleSource: "generated",
+          status: "active",
+          updatedAt: now
+        })
+      ]
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+    const commands: unknown[] = [];
+    captureDispatchedCommands(commands);
+
+    render(() => <ProjectSidebar />);
+
+    const deleteButton = screen.getByRole("button", { name: "Delete Thread to delete" });
+    fireEvent.click(deleteButton);
+    await Promise.resolve();
+
+    expect(commands).toEqual([]);
+    expect(deleteButton.className).toContain("text-rose-600");
+
+    fireEvent.click(deleteButton);
+
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      type: "thread.archive",
+      payload: {
+        projectId: "project-delete-thread",
+        threadId: "thread-2"
+      }
+    });
+  });
+
+  it("resets the pending delete state after two seconds", async () => {
+    const now = new Date().toISOString();
+    const project = createViewProjectFixture({
+      id: "project-delete-reset",
+      activeThreadId: "thread-1",
+      threads: [
+        createProjectThreadSummary({
+          id: "thread-1",
+          title: "Active thread",
+          titleSource: "generated",
+          status: "active",
+          updatedAt: now
+        }),
+        createProjectThreadSummary({
+          id: "thread-2",
+          title: "Thread to reset",
+          titleSource: "generated",
+          status: "active",
+          updatedAt: now
+        })
+      ]
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+    const commands: unknown[] = [];
+    captureDispatchedCommands(commands);
+
+    render(() => <ProjectSidebar />);
+
+    const deleteButton = screen.getByRole("button", { name: "Delete Thread to reset" });
+    fireEvent.click(deleteButton);
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 2050));
+    fireEvent.click(deleteButton);
+
+    expect(commands).toEqual([]);
+    expect(deleteButton.className).toContain("text-rose-600");
   });
 
   it("renders sort control and applies project sorting", () => {
@@ -288,5 +431,35 @@ createUiTest("ProjectSidebar", () => {
     expect(screen.getByText("C:\\repos\\alpha")).not.toBeNull();
     expect(screen.getByRole("button", { name: "Drag repo-one" })).not.toBeNull();
     expect(screen.getByRole("button", { name: "Move repo-two up" })).not.toBeNull();
+  });
+
+  it("unmounts non-manual project lists without dnd cleanup warnings", () => {
+    const project = createViewProjectFixture({ id: "project-cleanup", name: "repo-cleanup" });
+    const warn = mock(() => undefined);
+    const originalWarn = console.warn;
+    console.warn = warn;
+    try {
+      seedHarnessStoreForTests(
+        createHarnessStateFixture({
+          projectSidebarPreferences: {
+            projectSort: "last-user-message",
+            threadSort: "last-user-message",
+            grouping: "separate",
+            manualProjectOrder: []
+          },
+          workspace: {
+            activeProjectId: project.id,
+            projects: [project]
+          }
+        })
+      );
+
+      render(() => <ProjectSidebar />);
+      cleanup();
+
+      expect(warn.mock.calls).toEqual([]);
+    } finally {
+      console.warn = originalWarn;
+    }
   });
 });

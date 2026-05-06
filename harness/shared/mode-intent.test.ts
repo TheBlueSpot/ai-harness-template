@@ -5,7 +5,9 @@ import {
   AUTO_MODE_MARGIN_THRESHOLD,
   PLANNER_BYPASS_CONFIDENCE,
   PLANNER_BYPASS_MAX_WORDS,
+  PLANNER_DIFFICULTY_THRESHOLD,
   detectAutoMode,
+  estimateTaskDifficulty,
   extractWorkspaceAction,
   isDirectWorkspaceImplementTask,
   scoreBuiltinModeIntent
@@ -433,6 +435,7 @@ test("invariant: thresholds and bypass confidence are consistent", () => {
   expect(AUTO_MODE_MARGIN_THRESHOLD).toBeLessThan(AUTO_MODE_CONFIDENCE_THRESHOLD);
   expect(PLANNER_BYPASS_CONFIDENCE).toBeGreaterThan(AUTO_MODE_CONFIDENCE_THRESHOLD);
   expect(PLANNER_BYPASS_CONFIDENCE).toBeLessThanOrEqual(1);
+  expect(PLANNER_DIFFICULTY_THRESHOLD).toBe(40);
 });
 
 test("invariant: scoreBuiltinModeIntent is pure across repeated calls", () => {
@@ -446,4 +449,16 @@ test("invariant: margin threshold prevents low-separation auto-switch", () => {
   // Equally weighted debug vs implement signals.
   const detected = detectAutoMode("Fix login and patch the error handler", builtinModes);
   expect(detected).toBeUndefined();
+});
+
+test("difficulty: direct workspace tasks stay below planner threshold", () => {
+  expect(estimateTaskDifficulty("Create readme.md")).toBeLessThanOrEqual(PLANNER_DIFFICULTY_THRESHOLD);
+});
+
+test("difficulty: complex implementation tasks exceed planner threshold", () => {
+  expect(
+    estimateTaskDifficulty(
+      "Implement a protocol migration with database persistence, concurrency handling, integration tests, and end to end verification."
+    )
+  ).toBeGreaterThan(PLANNER_DIFFICULTY_THRESHOLD);
 });

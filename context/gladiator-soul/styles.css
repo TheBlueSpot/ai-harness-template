@@ -103,6 +103,9 @@ body {
 .arena-portrait img {
   width: 100%;
   height: auto;
+  max-height: 500px;
+  max-width: 500px;
+  margin-inline: auto;
   display: block;
   object-fit: contain;
 }
@@ -158,6 +161,51 @@ button:hover {
   font-size: 1.05rem;
 }
 
+.plan-note,
+.card-note {
+  margin-top: 0.85rem;
+}
+
+.guide-list {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.guide-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.75rem;
+  align-items: start;
+}
+
+.guide-tag {
+  display: inline-flex;
+  min-width: 3.25rem;
+  justify-content: center;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  background: rgba(246, 197, 90, 0.14);
+  color: var(--gold);
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+}
+
+.plan-note {
+  padding: 0.8rem 0.9rem;
+  border: 1px solid rgba(246, 197, 90, 0.12);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.plan-note strong {
+  color: var(--gold);
+}
+
+.plan-note p,
+.card-note {
+  margin-bottom: 0;
+}
+
 .detail-row {
   display: flex;
   justify-content: space-between;
@@ -183,6 +231,12 @@ button:hover {
   border-left: 3px solid var(--gold);
   background: rgba(255, 255, 255, 0.03);
   border-radius: 10px;
+}
+
+.arena-tip {
+  border-left-color: var(--green);
+  background: rgba(107, 217, 140, 0.08);
+  color: var(--sand);
 }
 
 .screen-grid {
@@ -219,6 +273,11 @@ button:hover {
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }
 
+.market-item--guide,
+.training-item--guide {
+  grid-column: 1 / -1;
+}
+
 .champion-layout {
   padding: 1rem;
 }
@@ -234,6 +293,25 @@ button:hover {
 .status-pill--active {
   background: rgba(107, 217, 140, 0.15);
   color: var(--green);
+}
+
+.status-pill--best {
+  background: rgba(107, 217, 140, 0.15);
+  color: var(--green);
+}
+
+.status-pill--power,
+.status-pill--tempo,
+.status-pill--guard,
+.status-pill--endurance,
+.status-pill--showmanship {
+  background: rgba(246, 197, 90, 0.18);
+  color: var(--gold);
+}
+
+.status-pill--pivot {
+  background: rgba(216, 108, 78, 0.16);
+  color: #ffc2b2;
 }
 
 .status-pill--danger {

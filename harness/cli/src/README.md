@@ -8,18 +8,37 @@ Backend websocket handlers and runtime orchestration for harness.
 - Run lifecycle guards, deferred planning questions, and emitted transcript updates are scoped to the target thread so separate project threads can plan or execute in parallel while project-level destructive actions still wait for streaming to finish.
 - Run startup status rows surface active composer controls like fast mode early so refresh or reconnect still leaves control choices visible in transcript context.
 - Background-job commands validate project ownership and allowed run-status transitions before mutating persisted runs.
+- Stopping a background job run also stops its linked agent run, including stale persisted runs after reconnect.
+- Background-job scheduler state persists due, blocked, stale, queued launch, approval, timeout, progress, and overload reasons so overdue work is explainable after long runs or reconnects.
 - Background-job scheduling avoids stacking another occurrence while a prior run for the same job is still queued, waiting, or running.
+- Background-run ownership now uses renewable controller leases, startup grace, and explicit shutdown interruption handling so restart recovery does not orphan healthy work or quietly lose ownership.
+- Reliability failure categories flow through one shared classification path so backoff, repair, diagnostics, and operator surfaces agree on why runs failed.
+- Recent run diagnostics roll up health, active backoff, dominant failures, and prompt repetition for 1d, 7d, and 30d operator review in-product.
+- Assistant-owned background jobs can launch concurrently with other jobs owned by the same assistant.
+- Recurring background jobs move stale next-run times past completion, so long runs do not trigger immediate catch-up loops.
 - Background-job questions persist against the owning automation thread even when another project thread is active.
 - Assistant-owned background jobs persist prompt and output evidence in run events and assistant logs instead of normal project chat.
+- Assistant reprioritization includes recent assistant logs, keeping state summaries grounded in the job that just finished.
+- First assistant chat and assistant-owned job outputs are prompted to introduce the assistant role, prompts, and current learnings before work begins.
+- Assistant prompts share a consistent identity, operational logic, and active mission shape while passive background notifications redact prompt scaffolding.
+- Assistant learnings reject placeholder summaries, clean stale garbage rows at startup, dedupe on write, compact through bounded AI summaries after growth thresholds, and keep prompt context focused on summaries plus durable user guidance.
+- Assistant todos and learnings can be manually removed, and completed todos age out after a short retention window to keep assistant state focused.
 - Assistant-owned background jobs carry recent answered questions into routine context so repeated prompts honor prior user guidance.
+- Background job launch repairs stale assistant or automation-thread links before queuing, so old imported jobs fail closed only when the project itself is gone.
 - Assistant questions pass through a deterministic async-first policy gate, so duplicate or low-risk uncertainty becomes durable guidance instead of another inbox blocker.
 - Live CLI session commands validate the session's owning thread, reject unsupported resize instead of faking terminal dimensions, keep terminal output bounded, and store captured terminal context for the next prompt on that thread.
+- CLI and shell-job termination kills Windows process trees so stopped, timed-out, or capped runs do not leave orphaned shell windows behind.
 - Assistant-linked assets are resolved to scoped capabilities before persistence or runtime launch so missing or out-of-scope refs fail early.
 - Assistant creation can be routed from chat intent through typed websocket commands and persisted setup questions, keeping underspecified or ambiguous prompts from silently becoming one-off project runs.
 - Assistant bootstrap work is tracked as retryable durable state so reconnects and duplicate retries do not leave operators stuck in invisible setup work.
 - Websocket streaming paths batch high-frequency assistant and terminal output, use heartbeat checks for stale sockets, and keep hot transcript updates narrow.
+- Development live reload ignores context and repo-local agent metadata so prompt or skill edits do not refresh the harness UI.
+- Development DB recovery backs up local SQLite artifacts before purge so corrupted or schema-drifted workspace state remains inspectable.
 - Prompt attachments are accepted only from trusted upload metadata and can be reused on planning answers or refinements.
+- Pi provider routing supports GPT, Gemini, and Claude while keeping stable prompt context and large attachments cache-aware for cheaper repeated runs.
 - Top-level CLI and support scripts share explicit flag parsing for help, usage failures, and doctor JSON output.
+- Doctor repairs missing or stale dependencies before reporting setup health.
+- Setup health now reports real browser-tool readiness, including missing Playwright dependencies or Chromium installs, instead of a generic unsupported placeholder.
 - Integration coverage for project and thread switching lives through the shared server test harness entrypoints under this folder.
 
 See [root README](../../../README.md) for product overview.

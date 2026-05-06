@@ -739,6 +739,8 @@
           this.wave = 1;
           this.waveLimit = 4;
           this.cooldown = 1.2;
+          this.descent = 0;
+          this.startingNodes = 0;
           this.spawnWave(this.wave);
         }
 
@@ -748,6 +750,7 @@
           this.enemyBullets = [];
           this.time = 0;
           this.cooldown = 1.2;
+          this.descent = 0;
           const rows = clamp(3 + wave, 3, 5);
           const cols = 5 + wave;
           const spacingX = 88 - wave * 4;
@@ -778,6 +781,7 @@
               }
             }
           }
+          this.startingNodes = this.nodes.length;
         }
 
         get livingNodes() {
@@ -787,8 +791,11 @@
         update(dt, player) {
           this.time += dt;
           const living = this.livingNodes;
+          const clearedRatio = this.startingNodes > 0 ? 1 - living.length / this.startingNodes : 0;
+          const descentSpeed = 10 + this.wave * 3 + clearedRatio * 30;
+          this.descent += descentSpeed * dt;
           const swayX = Math.sin(this.time * 1.1) * (16 + this.wave * 3);
-          const swayY = Math.sin(this.time * 0.75) * 10 + this.wave * 4;
+          const swayY = Math.sin(this.time * 0.75) * 10 + this.wave * 4 + this.descent;
           for (const node of living) {
             node.update(dt, this.time, swayX, swayY);
           }
@@ -801,10 +808,10 @@
           });
           this.cooldown -= dt;
           if (living.length && this.cooldown <= 0) {
-            this.cooldown = rand(0.55, 1.2) - this.wave * 0.06;
+            this.cooldown = Math.max(0.2, rand(0.5, 1.05) - this.wave * 0.05 - clearedRatio * 0.24);
             const shooter = living[randInt(0, living.length - 1)];
-            const aimX = (player.x - shooter.pos.x) * 0.45;
-            this.enemyBullets.push(new Bullet(shooter.pos.x, shooter.pos.y + 14, aimX, 240 + this.wave * 18, false));
+            const aimX = (player.x - shooter.pos.x) * (0.48 + clearedRatio * 0.2);
+            this.enemyBullets.push(new Bullet(shooter.pos.x, shooter.pos.y + 14, aimX, 250 + this.wave * 22 + clearedRatio * 70, false));
           }
         }
 

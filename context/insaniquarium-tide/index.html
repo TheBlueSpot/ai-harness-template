@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Insaniquarium Tide</title>
+  <link rel="stylesheet" href="./src/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <section class="game-frame" aria-label="Insaniquarium Tide">
+      <canvas id="game-canvas" width="1600" height="900" aria-label="Insaniquarium Tide playfield"></canvas>
+      <div class="hud hud-top" aria-live="polite">
+        <div class="hud-pill">
+          <span class="hud-label">Sun</span>
+          <strong id="hud-sun">0</strong>
+        </div>
+        <div class="hud-pill">
+          <span class="hud-label">Fish</span>
+          <strong id="hud-fish">0</strong>
+        </div>
+        <div class="hud-pill">
+          <span class="hud-label">Threat</span>
+          <strong id="hud-threat">Calm</strong>
+        </div>
+        <div class="hud-pill hud-pill-goal">
+          <span class="hud-label">Goal</span>
+          <strong id="hud-goal">Egg 0 / 100</strong>
+        </div>
+      </div>
+      <div class="hud hud-bottom">
+        <p id="hud-tip">Move the cursor to feed the tank and keep the next attack readable.</p>
+      </div>
+      <aside id="coach-panel" class="coach-panel" aria-live="polite">
+        <p class="coach-eyebrow">Run Coach</p>
+        <div id="coach-feed" class="coach-row">Click water to drop food.</div>
+        <div id="coach-collect" class="coach-row">Sweep through coins to bank sun.</div>
+        <div id="coach-goal" class="coach-row">Win at Egg 100. Lose at 0 fish.</div>
+        <div id="coach-school" class="coach-row">School 0 live.</div>
+      </aside>
+      <div id="overlay-root" class="overlay-root" aria-live="polite">
+        <section id="overlay-panel" class="overlay-panel" hidden>
+          <p id="overlay-eyebrow" class="overlay-eyebrow">Aquarium run</p>
+          <h1 id="overlay-title" class="overlay-title">Insaniquarium Tide</h1>
+          <p id="overlay-copy" class="overlay-copy">Wake the tank, feed the fish, and stay ahead of the alien sweep.</p>
+          <ul class="overlay-steps" aria-label="How to play">
+            <li>Click water to drop food.</li>
+            <li>Sweep over coins to bank sun.</li>
+            <li>Release near aliens to fire.</li>
+          </ul>
+          <p class="overlay-outcome">Fill the egg meter before every fish is gone.</p>
+          <div class="overlay-actions">
+            <button id="overlay-button" class="button primary" type="button">Start</button>
+          </div>
+        </section>
+      </div>
+    </section>
+  </main>
+  <script src="./game.js"></script>
+</body>
+</html>

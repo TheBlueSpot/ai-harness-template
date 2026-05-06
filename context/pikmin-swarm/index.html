@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pikmin Swarm</title>
+    <meta
+      name="description"
+      content="Direct-play browser swarm command game with a compact HUD, fast retry flow, and readable action prompts."
+    />
+    <link rel="stylesheet" href="./src/styles.css" />
+    <script type="module" src="./src/main.js"></script>
+  </head>
+  <body>
+    <main class="shell">
+      <section class="stage" aria-label="Pikmin Swarm">
+        <canvas id="game" width="1280" height="720" aria-label="Pikmin Swarm playfield"></canvas>
+        <aside class="hud" aria-live="polite">
+          <div><span>Day</span><strong id="hudDay">1</strong></div>
+          <div><span>Time</span><strong id="hudTime">120</strong></div>
+          <div><span>Seeds</span><strong id="hudSeeds">0</strong></div>
+          <div><span>Carried</span><strong id="hudCarried">0</strong></div>
+          <div><span>Rescued</span><strong id="hudRescued">0</strong></div>
+          <p id="hudPrompt" class="hud__prompt"></p>
+        </aside>
+        <section id="overlay" class="overlay" hidden>
+          <p id="overlayEyebrow" class="overlay__eyebrow">Mission</p>
+          <h1 id="overlayTitle" class="overlay__title">Pikmin Swarm</h1>
+          <p id="overlayCopy" class="overlay__copy"></p>
+          <button id="overlayButton" class="overlay__button" type="button">Launch</button>
+        </section>
+      </section>
+    </main>
+  </body>
+</html>

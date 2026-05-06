@@ -1,7 +1,7 @@
 import { createEffect, createMemo, onCleanup, Show, type JSX } from "solid-js";
-import { Portal } from "solid-js/web";
 import { X } from "lucide-solid";
 import { cn } from "../../lib/utils";
+import { PrimitivePortal } from "./primitive-portal";
 
 type DialogProps = {
   open?: boolean;
@@ -14,10 +14,6 @@ type DialogProps = {
   children: JSX.Element;
   footer?: JSX.Element;
 };
-
-function shouldBypassPortalForTests() {
-  return (globalThis as typeof globalThis & { __padPilotDisablePortals?: boolean }).__padPilotDisablePortals === true;
-}
 
 export function Dialog(props: DialogProps) {
   let surfaceRef: HTMLElement | undefined;
@@ -51,7 +47,7 @@ export function Dialog(props: DialogProps) {
       <div class="fixed inset-0 z-[81] flex items-center justify-center px-3 py-3 md:px-5 md:py-5">
         <section
           class={cn(
-            "panel-shell flex max-h-[90vh] w-full max-w-xl flex-col gap-4 rounded-[1.75rem] p-5 shadow-2xl",
+            "app-zoom-portal-dialog panel-shell flex max-h-[90vh] w-full max-w-xl flex-col gap-4 rounded-[1.75rem] p-5 shadow-2xl",
             props.class
           )}
           data-test-dialog=""
@@ -97,9 +93,9 @@ export function Dialog(props: DialogProps) {
     </Show>
   );
 
-  if (shouldBypassPortalForTests()) {
-    return content;
-  }
-
-  return <Portal>{content}</Portal>;
+  return (
+    <PrimitivePortal active={isOpen()} layer="dialog">
+      {content}
+    </PrimitivePortal>
+  );
 }

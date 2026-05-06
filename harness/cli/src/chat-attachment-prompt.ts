@@ -7,26 +7,40 @@ import {
 } from "../../shared/chat-attachments";
 import type { ChatAttachment, ChatMessage } from "../../shared/protocol";
 import { extractDocumentText } from "./document-extractors";
+import type { CacheableUserBlock } from "./prompt-cache-assembly";
+import type { GeminiCachedAttachmentContext } from "./gemini-cached-contents";
 
 type PromptAttachmentContext = {
   transcript: string;
   images: ImageContent[];
+  cacheableUserBlocks: CacheableUserBlock[];
 };
 
 type TextBudget = {
   remainingChars: number;
 };
 
-export async function buildPromptAttachmentContext(messages: ChatMessage[]): Promise<PromptAttachmentContext> {
+type AttachmentPromptPart = {
+  transcript: string;
+  image?: ImageContent;
+  cacheableUserBlock?: CacheableUserBlock;
+};
+
+export async function buildPromptAttachmentContext(
+  messages: ChatMessage[],
+  options: { geminiCachedAttachmentContext?: GeminiCachedAttachmentContext } = {}
+): Promise<PromptAttachmentContext> {
   const visibleMessages = messages.filter((message) => message.role !== "system");
   if (visibleMessages.length === 0) {
     return {
       transcript: "(no prior messages)",
-      images: []
+      images: [],
+      cacheableUserBlocks: []
     };
   }
 
   const images: ImageContent[] = [];
+  const cacheableUserBlocks: CacheableUserBlock[] = [];
   const transcriptParts: string[] = [];
   const textBudget: TextBudget = {
     remainingChars: MAX_CHAT_ATTACHMENT_TOTAL_NON_IMAGE_CHARS
@@ -39,8 +53,11 @@ export async function buildPromptAttachmentContext(messages: ChatMessage[]): Pro
     }
 
     for (const attachment of message.attachments) {
-      const attachmentPart = await describeAttachment(message.role, attachment, images.length + 1, textBudget);
+      const attachmentPart = await describeAttachment(message.role, attachment, images.length + 1, textBudget, options);
       transcriptParts.push(attachmentPart.transcript);
+      if (attachmentPart.cacheableUserBlock) {
+        cacheableUserBlocks.push(attachmentPart.cacheableUserBlock);
+      }
       if (attachmentPart.image && images.length < MAX_CHAT_ATTACHMENT_IMAGES_PER_PROMPT) {
         images.push(attachmentPart.image);
       }
@@ -49,7 +66,8 @@ export async function buildPromptAttachmentContext(messages: ChatMessage[]): Pro
 
   return {
     transcript: transcriptParts.join("\n"),
-    images
+    images,
+    cacheableUserBlocks
   };
 }
 
@@ -57,8 +75,9 @@ async function describeAttachment(
   role: ChatMessage["role"],
   attachment: ChatAttachment,
   imageOrdinal: number,
-  textBudget: TextBudget
-) {
+  textBudget: TextBudget,
+  options: { geminiCachedAttachmentContext?: GeminiCachedAttachmentContext }
+): Promise<AttachmentPromptPart> {
   if (attachment.kind === "image") {
     if (imageOrdinal > MAX_CHAT_ATTACHMENT_IMAGES_PER_PROMPT) {
       return {
@@ -90,6 +109,12 @@ async function describeAttachment(
     }
   }
 
+  if (options.geminiCachedAttachmentContext?.attachmentKeys.includes(attachment.key)) {
+    return {
+      transcript: `[Attachment cached] ${attachment.name} (${attachment.mimeType}, ${attachment.sizeBytes} bytes) via ${options.geminiCachedAttachmentContext.cachedContentName}`
+    };
+  }
+
   try {
     const response = await fetch(attachment.url);
     if (!response.ok) {
@@ -110,27 +135,23 @@ async function describeAttachment(
         };
       }
 
-      return {
-        transcript: formatNonImageAttachmentTranscript({
+      return formatNonImageAttachmentTranscript({
           role,
           attachment,
           label: `Attachment document ${attachment.documentType ?? "unknown"}`,
           content: extractionResult.text,
           emptyText: "Attachment contents: (no extractable text)"
-        }, textBudget)
-      };
+        }, textBudget);
     }
 
     const text = (await response.text()).trim();
-    return {
-      transcript: formatNonImageAttachmentTranscript({
+    return formatNonImageAttachmentTranscript({
         role,
         attachment,
         label: "Attachment text",
         content: text,
         emptyText: "Attachment contents: (empty file)"
-      }, textBudget)
-    };
+      }, textBudget);
   } catch (error) {
     const kindLabel = attachment.kind === "document" ? "document unavailable" : "text unavailable";
     return {
@@ -150,15 +171,15 @@ function formatNonImageAttachmentTranscript(
     emptyText: string;
   },
   textBudget: TextBudget
-) {
+): AttachmentPromptPart {
   const header = `[${input.label}] ${input.role} attached ${input.attachment.name} (${input.attachment.mimeType}, ${input.attachment.sizeBytes} bytes).`;
   const trimmedContent = input.content.trim();
   if (!trimmedContent) {
-    return [header, input.emptyText].join("\n");
+    return { transcript: [header, input.emptyText].join("\n") };
   }
 
   if (textBudget.remainingChars <= 0) {
-    return [header, "Attachment contents: text budget exhausted before this attachment."].join("\n");
+    return { transcript: [header, "Attachment contents: text budget exhausted before this attachment."].join("\n") };
   }
 
   const allowedChars = Math.min(MAX_CHAT_ATTACHMENT_TEXT_CHARS, textBudget.remainingChars);
@@ -167,5 +188,16 @@ function formatNonImageAttachmentTranscript(
   const visibleContent = truncated ? `${trimmedContent.slice(0, allowedChars)}\n...[truncated]` : trimmedContent;
   textBudget.remainingChars -= consumedChars;
 
-  return [header, `Attachment contents:\n${visibleContent}`].join("\n");
+  if (visibleContent.length >= 4000) {
+    return {
+      transcript: [header, "Attachment contents: moved to cacheable context block."].join("\n"),
+      cacheableUserBlock: {
+        kind: "uploadthing-attachment" as const,
+        title: `${input.label}: ${input.attachment.name}`,
+        text: [header, `Attachment contents:\n${visibleContent}`].join("\n")
+      }
+    };
+  }
+
+  return { transcript: [header, `Attachment contents:\n${visibleContent}`].join("\n") };
 }

@@ -239,7 +239,7 @@
     const WORLD_HEIGHT = canvas.height;
     const GRAVITY = 165;
     const MOVE_SPEED = 72;
-    const BLAST_RADIUS = 34;
+    const BLAST_RADIUS = 38;
     const MAX_HEALTH = 100;
     const TURN_DELAY = 1.35;
     const keys = new Set();
@@ -266,6 +266,10 @@
 
     function randomRange(min, max) {
       return min + Math.random() * (max - min);
+    }
+
+    function shotSpeed(power) {
+      return 250 + power * 220;
     }
 
     function terrainHeightAt(x) {
@@ -357,7 +361,7 @@
         const dy = worm.y - y;
         const distance = Math.hypot(dx, dy);
         if (distance < BLAST_RADIUS + worm.radius) {
-          const damage = Math.round(clamp(52 - distance * 1.1, 12, 52));
+          const damage = Math.round(clamp(84 - distance * 1.35, 24, 84));
           worm.health = clamp(worm.health - damage, 0, MAX_HEALTH);
           directHit = true;
         }
@@ -391,7 +395,7 @@
         return;
       }
       const shooter = turn === "player" ? worms[0] : worms[1];
-      const speed = 250 + shooter.power * 220;
+      const speed = shotSpeed(shooter.power);
       projectile = {
         owner: turn,
         x: shooter.x + Math.cos(shooter.angle) * 18,
@@ -443,14 +447,43 @@
       const player = worms[0];
       const dx = player.x - enemy.x;
       const distanceFactor = clamp(Math.abs(dx) / 520, 0.18, 1);
-      const power = clamp(0.45 + distanceFactor * 0.42 + randomRange(-0.08, 0.08), 0.28, 0.98);
-      const loft = clamp(1.04 + distanceFactor * 0.78 + randomRange(-0.18, 0.18), 0.92, 1.95);
-      const angle = -Math.PI + loft;
+      const idealPower = clamp(0.5 + distanceFactor * 0.38, 0.3, 0.98);
+      const baseAngle = clamp(-2.55 + distanceFactor * 1.25, -2.75, -0.4);
+      let best = null;
+
+      for (let powerStep = -2; powerStep <= 2; powerStep += 1) {
+        for (let angleStep = -4; angleStep <= 4; angleStep += 1) {
+          const power = clamp(idealPower + powerStep * 0.06, 0.28, 0.98);
+          const angle = clamp(baseAngle + angleStep * 0.08, -2.75, -0.4);
+          let simX = enemy.x + Math.cos(angle) * 18;
+          let simY = enemy.y - 12 + Math.sin(angle) * 12;
+          let simVx = Math.cos(angle) * shotSpeed(power);
+          let simVy = Math.sin(angle) * shotSpeed(power);
+          let closest = Infinity;
+
+          for (let step = 0; step < 140; step += 1) {
+            simVx += wind * 0.033;
+            simVy += GRAVITY * 0.033;
+            simX += simVx * 0.033;
+            simY += simVy * 0.033;
+            closest = Math.min(closest, Math.hypot(simX - player.x, simY - (player.y - 10)));
+            if (simX < 0 || simX >= WORLD_WIDTH || simY > WORLD_HEIGHT + 30 || simY >= terrainHeightAt(simX)) {
+              break;
+            }
+          }
+
+          const score = closest + Math.abs(power - idealPower) * 90;
+          if (!best || score < best.score) {
+            best = { angle, power, score };
+          }
+        }
+      }
+
       aiState = {
-        moveTarget: clamp(enemy.x + randomRange(-36, 36), WORLD_WIDTH * 0.58, WORLD_WIDTH - 38),
-        timer: randomRange(0.55, 1.0),
-        angle,
-        power,
+        moveTarget: clamp(player.x + randomRange(-28, 28), WORLD_WIDTH * 0.44, WORLD_WIDTH - 90),
+        timer: randomRange(0.32, 0.7),
+        angle: best?.angle ?? baseAngle,
+        power: best?.power ?? idealPower,
       };
     }
 
@@ -553,6 +586,42 @@
       ui.enemyHealthBar.style.width = `${worms[1].health}%`;
     }
 
+    function buildAimGuide(worm) {
+      const points = [];
+      let x = worm.x + Math.cos(worm.angle) * 18;
+      let y = worm.y - 12 + Math.sin(worm.angle) * 12;
+      let vx = Math.cos(worm.angle) * shotSpeed(worm.power);
+      let vy = Math.sin(worm.angle) * shotSpeed(worm.power);
+      let impact = null;
+
+      for (let step = 0; step < 34; step += 1) {
+        vx += wind * 0.04;
+        vy += GRAVITY * 0.04;
+        x += vx * 0.04;
+        y += vy * 0.04;
+        if (x < 0 || x >= WORLD_WIDTH || y > WORLD_HEIGHT + 30) {
+          impact = { x: clamp(x, 0, WORLD_WIDTH - 1), y: clamp(y, 12, WORLD_HEIGHT - 16), kind: "edge" };
+          break;
+        }
+
+        const groundY = terrainHeightAt(x);
+        if (y >= groundY) {
+          impact = { x, y: groundY, kind: "ground" };
+          break;
+        }
+
+        const enemy = worms[1];
+        if (enemy.health > 0 && Math.hypot(x - enemy.x, y - (enemy.y - 10)) < enemy.radius + 4) {
+          impact = { x, y, kind: "enemy" };
+          break;
+        }
+
+        points.push({ x, y });
+      }
+
+      return { impact, points };
+    }
+
     function drawSky() {
       ctx.save();
       for (let i = 0; i < 5; i += 1) {
@@ -650,6 +719,42 @@
       ctx.fill();
     }
 
+    function drawAimGuide() {
+      if (turn !== "player" || projectile || winner || turnCooldown > 0) {
+        return;
+      }
+
+      const guide = buildAimGuide(worms[0]);
+      for (let i = 0; i < guide.points.length; i += 1) {
+        const point = guide.points[i];
+        const alpha = 0.16 + (i / Math.max(guide.points.length - 1, 1)) * 0.48;
+        ctx.fillStyle = `rgba(255, 244, 182, ${alpha.toFixed(3)})`;
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, 2.2 + i * 0.05, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      if (!guide.impact) {
+        return;
+      }
+
+      ctx.save();
+      ctx.strokeStyle = guide.impact.kind === "enemy" ? "rgba(255, 122, 122, 0.95)" : "rgba(255, 244, 182, 0.92)";
+      ctx.fillStyle = "rgba(5, 10, 18, 0.78)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(guide.impact.x, guide.impact.y, 12, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(guide.impact.x, guide.impact.y, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.font = "12px Trebuchet MS";
+      ctx.fillStyle = "#f3eddc";
+      ctx.textAlign = "center";
+      ctx.fillText(guide.impact.kind === "enemy" ? "Hit line" : "Landing", guide.impact.x, guide.impact.y - 16);
+      ctx.restore();
+    }
+
     function drawParticles() {
       for (const particle of particles) {
         ctx.globalAlpha = clamp(particle.life * 1.8, 0, 1);
@@ -692,6 +797,7 @@
       drawTerrain();
       drawWorm(worms[0], turn === "player");
       drawWorm(worms[1], turn === "enemy");
+      drawAimGuide();
       drawProjectile();
       drawParticles();
       drawHud();

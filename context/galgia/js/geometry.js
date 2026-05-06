@@ -1,6 +1,6 @@
 // galgia/js/geometry.js
 
-import * as THREE from 'three';
+import * as THREE from 'https://esm.sh/three@0.163.0';
 import { randFloat, randInt } from './utils.js';
 
 // This module will handle creating abstract shapes and geometry using clusters of smaller geometries.
@@ -10,12 +10,47 @@ export class ClusterGeometry {
         this.group = new THREE.Group();
     }
 
+    createTargetCore(scale) {
+        const core = new THREE.Mesh(
+            new THREE.SphereGeometry(0.11 * scale, 10, 10),
+            new THREE.MeshBasicMaterial({
+                color: 0xffffff,
+                transparent: true,
+                opacity: 0.95,
+            }),
+        );
+        const halo = new THREE.Mesh(
+            new THREE.RingGeometry(0.16 * scale, 0.3 * scale, 24),
+            new THREE.MeshBasicMaterial({
+                color: 0xb9ecff,
+                transparent: true,
+                opacity: 0.72,
+                side: THREE.DoubleSide,
+                depthWrite: false,
+            }),
+        );
+        halo.position.z = 0.08 * scale;
+
+        const coreGroup = new THREE.Group();
+        coreGroup.add(core);
+        coreGroup.add(halo);
+        return coreGroup;
+    }
+
+    createReadabilityShell(color) {
+        return new THREE.MeshBasicMaterial({
+            color,
+            side: THREE.BackSide,
+            transparent: true,
+            opacity: 0.35,
+            depthWrite: false,
+        });
+    }
+
     // Example: Create a clustered asteroid-like shape
     createAsteroidCluster(position, scale = 1, numClusters = 10, clusterSizeMin = 0.1, clusterSizeMax = 0.3) {
-        const baseGeometry = new THREE.IcosahedronGeometry(0.5 * scale, 1);
-        const baseMaterial = new THREE.MeshBasicMaterial({ color: 0x888888, wireframe: true });
-        const baseMesh = new THREE.Mesh(baseGeometry, baseMaterial);
-        // this.group.add(baseMesh); // Optional: add a base shape for reference or as part of the cluster
+        const targetCore = this.createTargetCore(scale);
+        this.group.add(targetCore);
 
         for (let i = 0; i < numClusters; i++) {
             const subClusterGeometry = new THREE.DodecahedronGeometry(randFloat(clusterSizeMin, clusterSizeMax) * scale, 0);
@@ -24,6 +59,10 @@ export class ClusterGeometry {
                 flatShading: true
             });
             const subClusterMesh = new THREE.Mesh(subClusterGeometry, subClusterMaterial);
+            const shellMesh = new THREE.Mesh(
+                subClusterGeometry.clone(),
+                this.createReadabilityShell(0x9ad8ff),
+            );
 
             subClusterMesh.position.set(
                 randFloat(-1, 1) * scale * 0.7,
@@ -35,6 +74,8 @@ export class ClusterGeometry {
                 randFloat(0, Math.PI * 2),
                 randFloat(0, Math.PI * 2)
             );
+            shellMesh.scale.setScalar(1.55);
+            subClusterMesh.add(shellMesh);
             this.group.add(subClusterMesh);
         }
 

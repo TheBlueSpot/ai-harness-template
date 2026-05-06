@@ -4,6 +4,7 @@ import { renderGame } from "./render.js";
 const canvas = document.getElementById("gameCanvas");
 const ctx = canvas?.getContext("2d");
 const statusText = document.getElementById("statusText");
+const detailText = document.getElementById("detailText");
 const scoreText = document.getElementById("scoreText");
 const livesText = document.getElementById("livesText");
 const stageText = document.getElementById("stageText");
@@ -21,7 +22,8 @@ const input = { left: false, right: false, up: false, down: false, jump: false, 
 let lastTime = performance.now();
 
 function updateHud(frameState) {
-  if (statusText) statusText.textContent = frameState?.status ?? "";
+  if (statusText) statusText.textContent = frameState?.objective ?? frameState?.status ?? "";
+  if (detailText) detailText.textContent = frameState?.detail ?? frameState?.hint ?? "";
   if (scoreText) scoreText.textContent = String(frameState?.score ?? 0).padStart(6, "0");
   if (livesText) livesText.textContent = String(frameState?.lives ?? 0);
   if (stageText) stageText.textContent = String(frameState?.stage ?? 1);

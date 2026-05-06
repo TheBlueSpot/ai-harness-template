@@ -26,7 +26,7 @@ export const projectSearchRepoKindSchema = z.enum(["git-repo", "folder"]);
 export const projectSearchMatchKindSchema = z.enum(["exact", "path-prefix", "name-prefix", "substring"]);
 export const threadTitleSchema = z.string().trim().min(1).max(256);
 export const agentIdSchema = z.enum(["pi", "copilot-cli", "codex-cli"]);
-export const providerBrandSchema = z.enum(["gpt", "gemini"]);
+export const providerBrandSchema = z.enum(["gpt", "gemini", "claude"]);
 export const runtimeKindSchema = z.enum(["sdk", "cli"]);
 export const modelDiscoveryConfidenceSchema = z.enum(["exact", "partial", "unknown"]);
 export const composerReasoningStrengthSchema = z.enum(["low", "medium", "high", "extra-high"]);
@@ -54,6 +54,7 @@ export const threadTitleSourceSchema = z.enum(["generated", "custom"]);
 export const threadBadgeStateSchema = z.enum(["idle", "needs-input", "planning", "executing", "error", "done"]);
 export const backgroundJobKindSchema = z.enum(["ai-routine", "shell"]);
 export const backgroundJobStatusSchema = z.enum(["enabled", "paused", "disabled"]);
+export const backgroundJobSchedulerStatusSchema = z.enum(["idle", "due", "queued", "blocked", "running", "stale"]);
 export const backgroundJobRunStatusSchema = z.enum([
   "queued",
   "awaiting-approval",
@@ -524,6 +525,108 @@ export const backgroundJobDefinitionSchema = z.discriminatedUnion("kind", [
   backgroundJobShellDefinitionSchema
 ]);
 
+export const runFailureCategorySchema = z.enum([
+  "empty-response",
+  "stream-disconnect",
+  "invalid-json",
+  "question-persist-conflict",
+  "manual-abort",
+  "shutdown-interrupt",
+  "controller-lost",
+  "heartbeat-timeout",
+  "max-runtime-timeout",
+  "turn-budget-exhausted",
+  "launch-failure",
+  "planner-question",
+  "unknown"
+]);
+
+export const runRuntimeBudgetSchema = z.object({
+  maxTurns: z.number().int().min(1).max(1000),
+  turnsUsed: z.number().int().min(0).max(1000),
+  currentTurn: z.number().int().min(0).max(1000),
+  remainingTurns: z.number().int().min(0).max(1000),
+  exhausted: z.boolean()
+});
+
+export const runLaunchRuntimeBudgetSchema = z.object({
+  maxTurns: z.number().int().min(1).max(1000)
+});
+
+export const runPromptStatsSchema = z.object({
+  promptChars: z.number().int().min(0).max(2_000_000),
+  promptHash: z.string().min(1).max(64),
+  transcriptChars: z.number().int().min(0).max(2_000_000).optional(),
+  latestTaskChars: z.number().int().min(0).max(2_000_000).optional()
+});
+
+export const runDiagnosticsWindowDaysSchema = z.union([z.literal(1), z.literal(7), z.literal(30)]);
+
+export const runDiagnosticsSummarySchema = z.object({
+  activeBackoffJobs: z.number().int().min(0).max(100000),
+  questionPersistConflictCount: z.number().int().min(0).max(100000),
+  agentEmptyResponseCount: z.number().int().min(0).max(100000),
+  backgroundFailureCount: z.number().int().min(0).max(100000),
+  lifecycleFailureCount: z.number().int().min(0).max(100000),
+  lifecycleFailureShare: z.number().min(0).max(1),
+  dominantBackgroundFailureCategory: runFailureCategorySchema.optional()
+});
+
+export const runDiagnosticsPromptHashSchema = z.object({
+  sourceType: z.enum(["agent-run", "background-job-run"]),
+  promptHash: z.string().min(1).max(64),
+  assistantId: assistantIdSchema.optional(),
+  jobId: backgroundJobIdSchema.optional(),
+  runCount: z.number().int().min(0).max(100000),
+  averagePromptChars: z.number().int().min(0).max(2_000_000),
+  latestSeenAt: z.string().datetime().or(z.string().min(1))
+});
+
+export const runDiagnosticsOwnerPromptSchema = z.object({
+  assistantId: assistantIdSchema.optional(),
+  jobId: backgroundJobIdSchema.optional(),
+  runCount: z.number().int().min(0).max(100000),
+  averagePromptChars: z.number().int().min(0).max(2_000_000),
+  latestSeenAt: z.string().datetime().or(z.string().min(1))
+});
+
+export const runDiagnosticsFailureBreakdownSchema = z.object({
+  sourceType: z.enum(["agent-run", "background-job-run"]),
+  failureCategory: runFailureCategorySchema,
+  count: z.number().int().min(0).max(100000),
+  share: z.number().min(0).max(1),
+  assistantId: assistantIdSchema.optional(),
+  jobId: backgroundJobIdSchema.optional()
+});
+
+export const runDiagnosticsBackoffJobSchema = z.object({
+  jobId: backgroundJobIdSchema,
+  jobName: z.string().min(1).max(256),
+  assistantId: assistantIdSchema.optional(),
+  consecutiveFailureCount: z.number().int().min(0).max(100000),
+  backoffUntil: z.string().datetime().or(z.string().min(1)),
+  lastFailureCategory: runFailureCategorySchema.optional()
+});
+
+export const runDiagnosticsReportSchema = z.object({
+  windowDays: runDiagnosticsWindowDaysSchema,
+  generatedAt: z.string().datetime().or(z.string().min(1)),
+  summary: runDiagnosticsSummarySchema,
+  topPromptHashes: z.array(runDiagnosticsPromptHashSchema).max(64),
+  promptSizeByOwner: z.array(runDiagnosticsOwnerPromptSchema).max(128),
+  failureBreakdown: z.array(runDiagnosticsFailureBreakdownSchema).max(256),
+  dailyFailureSeries: z.array(
+    z.object({
+      day: z.string().min(1).max(32),
+      sourceType: z.enum(["agent-run", "background-job-run"]),
+      failureCategory: runFailureCategorySchema,
+      count: z.number().int().min(0).max(100000),
+      jobId: backgroundJobIdSchema.optional()
+    })
+  ).max(512),
+  activeBackoffJobRows: z.array(runDiagnosticsBackoffJobSchema).max(128)
+});
+
 export const backgroundJobSchema = z.object({
   id: backgroundJobIdSchema,
   projectId: projectIdSchema,
@@ -543,6 +646,21 @@ export const backgroundJobSchema = z.object({
   nextRunAt: z.string().datetime().or(z.string().min(1)).optional(),
   lastRunAt: z.string().datetime().or(z.string().min(1)).optional(),
   lastEnqueuedAt: z.string().datetime().or(z.string().min(1)).optional(),
+  schedulerStatus: backgroundJobSchedulerStatusSchema.optional(),
+  schedulerDetail: z.string().min(1).max(1024).optional(),
+  schedulerQueuePosition: z.number().int().min(1).max(100000).optional(),
+  schedulerQueueReason: z.string().min(1).max(1024).optional(),
+  schedulerBlockedSinceAt: z.string().datetime().or(z.string().min(1)).optional(),
+  schedulerActiveRunId: backgroundJobRunIdSchema.optional(),
+  schedulerActiveRunStartedAt: z.string().datetime().or(z.string().min(1)).optional(),
+  schedulerLastProgressAt: z.string().datetime().or(z.string().min(1)).optional(),
+  schedulerOverloaded: z.boolean().optional(),
+  consecutiveFailureCount: z.number().int().min(0).max(100000).optional(),
+  backoffUntil: z.string().datetime().or(z.string().min(1)).optional(),
+  lastFailureCategory: runFailureCategorySchema.optional(),
+  lastSchedulerCheckAt: z.string().datetime().or(z.string().min(1)).optional(),
+  lastBlockedAt: z.string().datetime().or(z.string().min(1)).optional(),
+  blockedReason: z.string().min(1).max(1024).optional(),
   createdAt: z.string().datetime().or(z.string().min(1)),
   updatedAt: z.string().datetime().or(z.string().min(1))
 });
@@ -569,6 +687,13 @@ export const backgroundJobRunSchema = z.object({
   linkedAgentRunId: runIdSchema.optional(),
   summary: z.string().min(1).max(4000).optional(),
   failureMessage: z.string().min(1).max(4000).optional(),
+  failureCategory: runFailureCategorySchema.optional(),
+  promptStats: runPromptStatsSchema.optional(),
+  lastHeartbeatAt: z.string().datetime().or(z.string().min(1)).optional(),
+  heartbeatStage: z.string().min(1).max(64).optional(),
+  heartbeatDetail: z.string().min(1).max(1024).optional(),
+  timedOutAt: z.string().datetime().or(z.string().min(1)).optional(),
+  resumeAttemptCount: z.number().int().min(0).max(1000).optional(),
   queuedAt: z.string().datetime().or(z.string().min(1)),
   startedAt: z.string().datetime().or(z.string().min(1)).optional(),
   completedAt: z.string().datetime().or(z.string().min(1)).optional(),
@@ -595,7 +720,8 @@ export const backgroundJobSchedulePreviewSchema = z.object({
 export const backgroundJobsStateSchema = z.object({
   jobs: z.array(backgroundJobSchema).max(512),
   runs: z.array(backgroundJobRunSchema).max(2048),
-  templates: z.array(backgroundJobTemplateSchema).max(64)
+  templates: z.array(backgroundJobTemplateSchema).max(64),
+  schedulerHeartbeatAt: z.string().datetime().or(z.string().min(1)).optional()
 });
 
 export const notificationInboxItemIdSchema = z.string().min(1).max(128);
@@ -757,7 +883,10 @@ export const assistantLearningSchema = z.object({
   summary: z.string().min(1).max(4000),
   source: z.string().min(1).max(256),
   confidence: assistantLearningConfidenceSchema,
-  createdAt: z.string().datetime().or(z.string().min(1))
+  createdAt: z.string().datetime().or(z.string().min(1)),
+  kind: z.enum(["fact", "summary"]).optional(),
+  supersedesLearningIds: z.array(assistantLearningIdSchema).max(512).optional(),
+  compactedAt: z.string().datetime().or(z.string().min(1)).optional()
 });
 
 export const assistantQuestionSchema = z.object({
@@ -846,6 +975,8 @@ export const preferencesStateSchema = z.object({
   hasStoredOpenAiApiKey: z.boolean(),
   hasUsableGoogleApiKey: z.boolean(),
   hasStoredGoogleApiKey: z.boolean(),
+  hasUsableAnthropicApiKey: z.boolean().default(false),
+  hasStoredAnthropicApiKey: z.boolean().default(false),
   providerBrand: providerBrandSchema,
   debugEnabledDefault: z.boolean(),
   tracePanelDefaultOpen: z.boolean(),
@@ -857,6 +988,7 @@ export const preferencesStateSchema = z.object({
   planExecutionDelaySecondsDefault: z.number().int().min(0).max(300),
   correctnessIterationModeDefault: correctnessIterationModeSchema,
   backgroundJobApprovalPolicyDefault: backgroundJobApprovalPolicySchema,
+  autoArchiveCompletedThreadsDefault: z.boolean().optional(),
   memoryBankEnabledDefault: z.boolean(),
   attachmentsEnabled: z.boolean(),
   capabilities: z.array(providerCapabilitySchema).max(4),
@@ -981,6 +1113,7 @@ export const projectContextUsageSchema = z.object({
   contextWindow: z.number().int().min(1),
   usagePercent: z.number().min(0).max(100).optional(),
   totalProcessedTokens: z.number().int().min(0).optional(),
+  cachedInputTokens: z.number().int().min(0).optional(),
   updatedAt: z.string().datetime().or(z.string().min(1))
 });
 
@@ -1067,6 +1200,7 @@ const planningChoicesSchema = z
 
 export const planningQuestionSchema = z.object({
   id: questionIdSchema,
+  logicalQuestionId: questionIdSchema.optional(),
   prompt: z.string().min(1),
   placeholder: z.string().min(1).optional(),
   responseKind: z.enum(["choice", "freeform"]).optional(),
@@ -1126,6 +1260,9 @@ export const agentRunStateSchema = z.object({
   summary: z.string().min(1).optional(),
   finalExecutionBrief: z.string().min(1).optional(),
   failureMessage: z.string().min(1).optional(),
+  failureCategory: runFailureCategorySchema.optional(),
+  runtimeBudget: runRuntimeBudgetSchema.optional(),
+  promptStats: runPromptStatsSchema.optional(),
   executionTarget: runExecutionTargetSchema.optional(),
   plan: executionPlanSchema.optional(),
   correctnessReview: correctnessReviewSchema.optional(),
@@ -1147,6 +1284,9 @@ export const agentRunSummarySchema = z.object({
   threadId: threadIdSchema,
   status: agentRunStatusSchema,
   failureMessage: z.string().min(1).optional(),
+  failureCategory: runFailureCategorySchema.optional(),
+  runtimeBudget: runRuntimeBudgetSchema.optional(),
+  promptStats: runPromptStatsSchema.optional(),
   resumable: z.boolean(),
   retryable: z.boolean(),
   updatedAt: z.string().datetime().or(z.string().min(1)),
@@ -1236,6 +1376,7 @@ export const chatSessionStateSchema = z.object({
 export const projectThreadSummarySchema = z.object({
   id: threadIdSchema,
   kind: backgroundJobThreadKindSchema,
+  status: z.enum(["active", "archived"]),
   title: threadTitleSchema,
   titleSource: threadTitleSourceSchema,
   badgeState: threadBadgeStateSchema,
@@ -1243,6 +1384,7 @@ export const projectThreadSummarySchema = z.object({
   lastMessagePreview: z.string().min(1).optional(),
   createdAt: z.string().datetime().or(z.string().min(1)).optional(),
   lastUserMessageAt: z.string().datetime().or(z.string().min(1)).optional(),
+  archivedAt: z.string().datetime().or(z.string().min(1)).optional(),
   updatedAt: z.string().datetime().or(z.string().min(1)),
   forkedFromThreadId: threadIdSchema.optional()
 });
@@ -1410,6 +1552,22 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     })
   }),
   z.object({
+    type: z.literal("thread.archive"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      threadId: threadIdSchema
+    })
+  }),
+  z.object({
+    type: z.literal("thread.restore"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      threadId: threadIdSchema
+    })
+  }),
+  z.object({
     type: z.literal("session.reset"),
     requestId: requestIdSchema,
     payload: z.object({
@@ -1462,6 +1620,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       executionModelId: executionModelIdSchema.optional(),
       reasoningStrength: composerReasoningStrengthSchema.optional(),
       fastMode: z.boolean().optional(),
+      runtimeBudget: runLaunchRuntimeBudgetSchema.optional(),
       debug: z.boolean().optional()
     })
   }),
@@ -1476,6 +1635,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       content: z.string().trim().min(1).max(32000),
       attachments: z.array(chatAttachmentSchema).max(8).optional(),
       reasoningStrength: composerReasoningStrengthSchema.optional(),
+      runtimeBudget: runLaunchRuntimeBudgetSchema.optional(),
       fastMode: z.boolean().optional()
     })
   }),
@@ -1492,6 +1652,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       })).min(1).max(5),
       attachments: z.array(chatAttachmentSchema).max(8).optional(),
       reasoningStrength: composerReasoningStrengthSchema.optional(),
+      runtimeBudget: runLaunchRuntimeBudgetSchema.optional(),
       fastMode: z.boolean().optional()
     })
   }),
@@ -1505,6 +1666,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       content: z.string().trim().min(1).max(32000),
       attachments: z.array(chatAttachmentSchema).max(8).optional(),
       reasoningStrength: composerReasoningStrengthSchema.optional(),
+      runtimeBudget: runLaunchRuntimeBudgetSchema.optional(),
       fastMode: z.boolean().optional()
     })
   }),
@@ -1518,6 +1680,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       guidanceText: z.string().trim().min(1).max(32000).optional(),
       subagentIds: z.array(z.string().min(1).max(128)).max(8).optional(),
       reasoningStrength: composerReasoningStrengthSchema.optional(),
+      runtimeBudget: runLaunchRuntimeBudgetSchema.optional(),
       fastMode: z.boolean().optional()
     })
   }),
@@ -1530,6 +1693,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       runId: runIdSchema,
       subagentId: z.string().min(1).max(128).optional(),
       reasoningStrength: composerReasoningStrengthSchema.optional(),
+      runtimeBudget: runLaunchRuntimeBudgetSchema.optional(),
       fastMode: z.boolean().optional()
     })
   }),
@@ -1542,7 +1706,19 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       runId: runIdSchema,
       target: runExecutionTargetSchema.optional(),
       reasoningStrength: composerReasoningStrengthSchema.optional(),
+      runtimeBudget: runLaunchRuntimeBudgetSchema.optional(),
       fastMode: z.boolean().optional()
+    })
+  }),
+  z.object({
+    type: z.literal("run.complete"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      threadId: threadIdSchema,
+      runId: runIdSchema,
+      assistantMessageContent: z.string().min(1).max(32000),
+      partialReason: z.string().trim().min(1).max(4000).optional()
     })
   }),
   z.object({
@@ -1808,11 +1984,27 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     })
   }),
   z.object({
+    type: z.literal("assistant.todo.delete"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      assistantId: assistantIdSchema,
+      todoId: assistantTodoIdSchema
+    })
+  }),
+  z.object({
     type: z.literal("assistant.todo.reorder"),
     requestId: requestIdSchema,
     payload: z.object({
       assistantId: assistantIdSchema,
       todoIds: z.array(assistantTodoIdSchema).max(512)
+    })
+  }),
+  z.object({
+    type: z.literal("assistant.learning.delete"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      assistantId: assistantIdSchema,
+      learningId: assistantLearningIdSchema
     })
   }),
   z.object({
@@ -1955,6 +2147,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     payload: z.object({
       openAiApiKey: z.string().min(1).max(1024).optional(),
       googleApiKey: z.string().min(1).max(1024).optional(),
+      anthropicApiKey: z.string().min(1).max(1024).optional(),
       providerBrand: providerBrandSchema,
       debugEnabled: z.boolean(),
       tracePanelDefaultOpen: z.boolean(),
@@ -1966,12 +2159,22 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       planExecutionDelaySecondsDefault: z.number().int().min(0).max(300),
       correctnessIterationModeDefault: correctnessIterationModeSchema,
       backgroundJobApprovalPolicyDefault: backgroundJobApprovalPolicySchema,
+      autoArchiveCompletedThreadsDefault: z.boolean().optional(),
       memoryBankEnabledDefault: z.boolean().optional()
     })
   }),
   z.object({
     type: z.literal("preferences.clearApiKey"),
     requestId: requestIdSchema
+  }),
+  z.object({
+    type: z.literal("run-diagnostics.inspect"),
+    requestId: requestIdSchema,
+    payload: z
+      .object({
+        windowDays: runDiagnosticsWindowDaysSchema.optional()
+      })
+      .optional()
   })
 ]);
 
@@ -2224,6 +2427,7 @@ export const serverEventSchema = z.discriminatedUnion("type", [
       runId: runIdSchema,
       status: agentRunStatusSchema,
       failureMessage: z.string().min(1).optional(),
+      failureCategory: runFailureCategorySchema.optional(),
       resumable: z.boolean().optional(),
       retryable: z.boolean().optional(),
       updatedAt: z.string().datetime().or(z.string().min(1)),
@@ -2351,6 +2555,13 @@ export const serverEventSchema = z.discriminatedUnion("type", [
     requestId: requestIdSchema,
     payload: z.object({
       run: backgroundJobRunSchema
+    })
+  }),
+  z.object({
+    type: z.literal("run-diagnostics.inspected"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      report: runDiagnosticsReportSchema
     })
   }),
   z.object({
@@ -2510,6 +2721,7 @@ export type ThreadTitleSource = z.infer<typeof threadTitleSourceSchema>;
 export type ThreadBadgeState = z.infer<typeof threadBadgeStateSchema>;
 export type BackgroundJobKind = z.infer<typeof backgroundJobKindSchema>;
 export type BackgroundJobStatus = z.infer<typeof backgroundJobStatusSchema>;
+export type BackgroundJobSchedulerStatus = z.infer<typeof backgroundJobSchedulerStatusSchema>;
 export type BackgroundJobRunStatus = z.infer<typeof backgroundJobRunStatusSchema>;
 export type BackgroundJobRiskLevel = z.infer<typeof backgroundJobRiskLevelSchema>;
 export type BackgroundJobApprovalPolicy = z.infer<typeof backgroundJobApprovalPolicySchema>;
@@ -2621,6 +2833,16 @@ export type PlannerSubtask = z.infer<typeof plannerSubtaskSchema>;
 export type PlanningChoice = z.infer<typeof planningChoiceSchema>;
 export type AgentRunStatus = z.infer<typeof agentRunStatusSchema>;
 export type RunExecutionTarget = z.infer<typeof runExecutionTargetSchema>;
+export type RunFailureCategory = z.infer<typeof runFailureCategorySchema>;
+export type RunPromptStats = z.infer<typeof runPromptStatsSchema>;
+export type RunRuntimeBudget = z.infer<typeof runRuntimeBudgetSchema>;
+export type RunDiagnosticsWindowDays = z.infer<typeof runDiagnosticsWindowDaysSchema>;
+export type RunDiagnosticsSummary = z.infer<typeof runDiagnosticsSummarySchema>;
+export type RunDiagnosticsPromptHash = z.infer<typeof runDiagnosticsPromptHashSchema>;
+export type RunDiagnosticsOwnerPrompt = z.infer<typeof runDiagnosticsOwnerPromptSchema>;
+export type RunDiagnosticsFailureBreakdown = z.infer<typeof runDiagnosticsFailureBreakdownSchema>;
+export type RunDiagnosticsBackoffJob = z.infer<typeof runDiagnosticsBackoffJobSchema>;
+export type RunDiagnosticsReport = z.infer<typeof runDiagnosticsReportSchema>;
 export type PlanningQuestionStatus = z.infer<typeof planningQuestionStatusSchema>;
 export type PlanningQuestion = z.infer<typeof planningQuestionSchema>;
 export type SubagentTaskStatus = z.infer<typeof subagentTaskStatusSchema>;
@@ -2755,13 +2977,22 @@ export function createProjectThreadSummary(
     Partial<
       Pick<
         ProjectThreadSummary,
-        "kind" | "badgeState" | "messageCount" | "lastMessagePreview" | "createdAt" | "lastUserMessageAt" | "forkedFromThreadId"
+        | "kind"
+        | "status"
+        | "badgeState"
+        | "messageCount"
+        | "lastMessagePreview"
+        | "createdAt"
+        | "lastUserMessageAt"
+        | "archivedAt"
+        | "forkedFromThreadId"
       >
     >
 ): ProjectThreadSummary {
   return {
     id: input.id,
     kind: input.kind ?? "user",
+    status: input.status ?? "active",
     title: input.title,
     titleSource: input.titleSource,
     badgeState: input.badgeState ?? "idle",
@@ -2769,6 +3000,7 @@ export function createProjectThreadSummary(
     lastMessagePreview: input.lastMessagePreview,
     createdAt: input.createdAt,
     lastUserMessageAt: input.lastUserMessageAt,
+    archivedAt: input.archivedAt,
     updatedAt: input.updatedAt,
     forkedFromThreadId: input.forkedFromThreadId
   };

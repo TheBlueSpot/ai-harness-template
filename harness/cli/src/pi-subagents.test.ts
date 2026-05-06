@@ -9,6 +9,7 @@ import {
 } from "./pi-orchestrator";
 import { buildSubagentPrompt, scheduleSubagentTasks, type SubagentResult } from "./pi-subagents";
 import { buildSubagentEnvironmentBrief } from "./subagent-environment";
+import { WorkspaceRepository } from "./workspace-repository";
 
 type ScopedTask = {
   task: PlannerSubtask;
@@ -197,6 +198,31 @@ describe("subagent scheduler", () => {
 
     release.release("task-b");
     await run;
+  });
+
+  test("parallel subagents reserve turns without exceeding max budget", async () => {
+    const repository = new WorkspaceRepository(":memory:", process.cwd(), { durability: "test-fast" });
+    const project = repository.addProject(process.cwd());
+    const run = repository.createAgentRun(project.id, "parallel budget", "openai/gpt-5.4", project.activeThreadId, 2).activeRun!;
+
+    await scheduleSubagentTasks<ScopedTask, SubagentResult, never>({
+      tasks: [createScopedTask("task-a", ["src/a.ts"]), createScopedTask("task-b", ["src/b.ts"])],
+      getTaskId(entry) {
+        return entry.task.id;
+      },
+      async executeTask(entry) {
+        repository.reserveAgentRunTurn(project.id, run.id);
+        return { result: createResult(entry.task.id, "completed") };
+      }
+    });
+
+    expect(repository.getRun(project.id, run.id)?.runtimeBudget).toMatchObject({
+      maxTurns: 2,
+      turnsUsed: 2,
+      remainingTurns: 0,
+      exhausted: true
+    });
+    expect(() => repository.reserveAgentRunTurn(project.id, run.id)).toThrow("turn-budget-exhausted");
   });
 
   test("same-worktree path helpers support Windows case-insensitive ownership", () => {

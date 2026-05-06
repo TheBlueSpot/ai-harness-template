@@ -1,6 +1,10 @@
 # Star Fox Polygon Strike
 
-Star Fox Polygon Strike is a stand-alone catalog entry built around a canvas shell and a modular `Game` core. The page handles boot, input, resize, HUD state, and overlay presentation while the simulation owns the rail shooter rules.
+Star Fox Polygon Strike is a stand-alone browser rail shooter about banked flight, formation pressure, and surviving a short mission without losing control clarity.
+
+## Play
+
+Open [index.html](./index.html) in a browser to play.
 
 ## Concept
 
@@ -8,14 +12,13 @@ Star Fox Polygon Strike is a stand-alone catalog entry built around a canvas she
 - Enemy waves that read as polygons, squadrons, and boss weakpoints
 - Fast restart flow with a clear mission state and end-of-run feedback
 
-## Structure
-
-- `index.html` hosts the standalone canvas, HUD, and overlay scaffolding
-- `src/main.js` owns page boot, input wiring, resize handling, and frame syncing
-- `src/styles.css` provides the responsive presentation layer for the shell
-
 ## Notes
 
-- The shell mirrors `Game.getFrameState()` for score, health, progress, boss alerts, and restart messaging
-- The entry is meant to work from the folder root without extra app chrome
-- Game rules stay inside the `Game` module; the shell only presents state
+- The shell stays light so score, health, progress, and boss alerts read quickly during flight.
+- Control honesty matters before feel tuning. If the shell advertises alternate steering paths, they must be live on frame one or the player learns distrust before they learn the mechanic.
+- First-run trust improved once the menu stopped depending on one tiny CTA. The route now launches from any overlay tap/click, which matches how players probe browser games before reading full instructions.
+- The opening stretch now runs slower for longer so lane-dodge onboarding lands before wave pressure spikes.
+
+## Next Todo
+
+- If another review still calls the route too fast, trim enemy and projectile speed during the first non-boss stage instead of only slowing forward scroll.

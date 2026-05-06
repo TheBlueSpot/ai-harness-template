@@ -22,8 +22,8 @@ const TILE_STYLES = {
   surface: ["#87b55b", "#5d7f35"],
   dirt: ["#6f4f2a", "#55381d"],
   rock: ["#70737c", "#4e5259"],
-  basalt: ["#40464f", "#252a32"],
-  cave: ["#2c3139", "#171b21"],
+  basalt: ["#566072", "#2f3644"],
+  cave: ["#495464", "#202733"],
   copper: ["#9c6235", "#6f4022"],
   iron: ["#99a1ab", "#606772"],
   gold: ["#c7a44c", "#8c6b21"],
@@ -142,7 +142,10 @@ export class GridManager {
         if (!result.mined) {
           continue;
         }
-        const ore = result.oreValue > 0 ? { id: result.type, value: result.oreValue } : null;
+        const ore =
+          result.oreValue > 0
+            ? { id: result.type, value: result.oreValue, fuelBonus: result.fuelBonus ?? 0 }
+            : null;
         changes.push({ col, row, ore });
       }
     }
@@ -152,12 +155,14 @@ export class GridManager {
 
   collectOre(changes) {
     let value = 0;
+    let fuelBonus = 0;
     for (const change of changes) {
       if (change?.ore) {
         value += change.ore.value ?? 0;
+        fuelBonus += change.ore.fuelBonus ?? 0;
       }
     }
-    return value;
+    return { value, fuelBonus };
   }
 
   mineTile(x, y, power = 1) {
@@ -464,7 +469,8 @@ export class GridManager {
     const palette = tile.color ?? TILE_STYLES[tile.type] ?? TILE_STYLES.rock;
     const [dark, light] = palette;
     const drawSize = size;
-    const spriteSheet = assets?.tiles;
+    const spriteSheet = this.#terrainSpriteForTile(tile, assets);
+    const depthRatio = clamp(this.depthOf(tile.row) / 100, 0, 1);
 
     ctx.save();
     ctx.translate(screenX, screenY);
@@ -482,6 +488,16 @@ export class GridManager {
       ctx.fillRect(0, 0, drawSize, drawSize);
       ctx.fillStyle = dark;
       ctx.fillRect(drawSize * 0.08, drawSize * 0.08, drawSize * 0.84, drawSize * 0.84);
+    }
+
+    if (tile.type === CELL.BASALT || tile.type === CELL.CAVE) {
+      const depthLight = tile.type === CELL.CAVE ? 0.22 : 0.14;
+      const ambient = ctx.createLinearGradient(0, 0, drawSize, drawSize);
+      ambient.addColorStop(0, `rgba(164, 208, 255, ${depthLight + depthRatio * 0.06})`);
+      ambient.addColorStop(0.42, "rgba(255,255,255,0.02)");
+      ambient.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = ambient;
+      ctx.fillRect(0, 0, drawSize, drawSize);
     }
 
     if (tile.type === CELL.SURFACE) {
@@ -508,14 +524,42 @@ export class GridManager {
     }
 
     if (tile.exposed) {
-      ctx.fillStyle = "rgba(255,255,255,0.04)";
+      ctx.fillStyle = tile.type === CELL.CAVE ? "rgba(149, 218, 255, 0.12)" : "rgba(255,255,255,0.05)";
       ctx.fillRect(0, 0, drawSize, drawSize);
+      ctx.strokeStyle = tile.type === CELL.CAVE ? "rgba(149, 218, 255, 0.32)" : "rgba(255,255,255,0.18)";
+      ctx.lineWidth = Math.max(1, drawSize * 0.045);
+      ctx.strokeRect(drawSize * 0.07, drawSize * 0.07, drawSize * 0.86, drawSize * 0.86);
     }
 
     ctx.strokeStyle = "rgba(0,0,0,0.28)";
     ctx.lineWidth = Math.max(1, drawSize * 0.04);
     ctx.strokeRect(0, 0, drawSize, drawSize);
     ctx.restore();
+  }
+
+  #terrainSpriteForTile(tile, assets) {
+    if (!assets) {
+      return null;
+    }
+
+    switch (tile.type) {
+      case CELL.SURFACE:
+      case CELL.DIRT:
+      case CELL.ORE_COPPER:
+        return assets.terrain?.soil ?? assets.tiles ?? null;
+      case CELL.ROCK:
+      case CELL.ORE_IRON:
+        return assets.terrain?.rock ?? assets.tiles ?? null;
+      case CELL.BASALT:
+      case CELL.ORE_GOLD:
+        return assets.terrain?.basalt ?? assets.tiles ?? null;
+      case CELL.CAVE:
+        return assets.terrain?.void ?? assets.terrain?.basalt ?? assets.tiles ?? null;
+      case CELL.ORE_CRYSTAL:
+        return assets.terrain?.crystal ?? assets.terrain?.void ?? assets.tiles ?? null;
+      default:
+        return assets.tiles ?? null;
+    }
   }
 
   #resolveDrawArgs(ctx, cameraOrAssets, maybeAssetsOrCameraY, maybeViewportHeight) {

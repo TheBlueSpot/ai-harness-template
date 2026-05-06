@@ -25,7 +25,7 @@ export class PiRuntime implements AgentRuntime {
       agentId: "pi",
       label: this.label,
       installed: true,
-      authenticated: this.adapter.hasApiKey("openai") || this.adapter.hasApiKey("google"),
+      authenticated: this.adapter.hasApiKey("openai") || this.adapter.hasApiKey("google") || this.adapter.hasApiKey("anthropic"),
       supportsInteractive: false,
       interactivePipeCompatible: false,
       supportsPlanning: true,
@@ -33,9 +33,9 @@ export class PiRuntime implements AgentRuntime {
       supportsReasoningStrengthControl: true,
       supportsFastModeControl: true,
       healthMessage:
-        this.adapter.hasApiKey("openai") || this.adapter.hasApiKey("google")
+        this.adapter.hasApiKey("openai") || this.adapter.hasApiKey("google") || this.adapter.hasApiKey("anthropic")
           ? undefined
-          : "Add OpenAI or Google API key to use Pi runtime.",
+          : "Add OpenAI, Google, or Anthropic API key to use Pi runtime.",
       docsUrl: "https://platform.openai.com/docs"
     });
     return this.capability;

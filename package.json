@@ -15,7 +15,8 @@
     "screenshot": "bun run scripts/screenshot.ts",
     "test": "bun run scripts/run-tests.ts",
     "test:profile": "bun run scripts/profile-tests.ts",
-    "typecheck": "bunx tsc --noEmit"
+    "typecheck": "bunx tsc --noEmit",
+    "kill-all": "tasklist -FI 'IMAGENAME eq bun*' | grep '^bun.exe' | awk '{print $2}' | xargs -n 1 taskkill -F -T -PID"
   },
   "dependencies": {
     "@kobalte/core": "^0.13.11",
@@ -23,6 +24,7 @@
     "@openai/codex": "^0.122.0",
     "@openai/codex-sdk": "^0.122.0",
     "@tanstack/solid-hotkeys": "^0.9.1",
+    "@tanstack/solid-virtual": "^3.13.24",
     "@thisbeyond/solid-dnd": "^0.7.5",
     "@vscode/ripgrep": "^1.17.1",
     "bun-plugin-tailwind": "^0.1.2",

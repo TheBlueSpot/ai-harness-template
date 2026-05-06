@@ -107,6 +107,8 @@ describe("launch harness with recovery", () => {
       port: 0,
       openBrowser: false,
       purgeDatabase: async () => ({
+        backedUpArtifacts: [dbPath],
+        backupPath: `${dbPath}.backup-test`,
         purgedArtifacts: [],
         blockedArtifacts: [dbPath],
         fallbackDbPath
@@ -139,7 +141,8 @@ describe("launch harness with recovery", () => {
     servers.push(server);
     expect(attemptCount).toBe(2);
     expect(warnings.some((entry) => entry.includes("startup failed with recoverable workspace db error"))).toBe(true);
-    expect(warnings.some((entry) => entry.includes("purging corrupted local workspace db"))).toBe(true);
+    expect(warnings.some((entry) => entry.includes("backing up and purging corrupted local workspace db"))).toBe(true);
+    expect(warnings.some((entry) => entry.includes("backed up local workspace db artifacts"))).toBe(true);
     expect(warnings.some((entry) => entry.includes("fresh fallback db"))).toBe(true);
   });
 
@@ -153,6 +156,7 @@ describe("launch harness with recovery", () => {
         purgeDatabase: async () => {
           purgeCalled = true;
           return {
+            backedUpArtifacts: [],
             purgedArtifacts: [],
             blockedArtifacts: []
           };
@@ -222,6 +226,8 @@ describe("launch harness with recovery", () => {
       openBrowser: false,
       startupTelemetry: telemetry,
       purgeDatabase: async () => ({
+        backedUpArtifacts: [dbPath],
+        backupPath: `${dbPath}.backup-test`,
         purgedArtifacts: [dbPath],
         blockedArtifacts: [dbPath],
         fallbackDbPath
@@ -251,6 +257,7 @@ describe("launch harness with recovery", () => {
     expect(telemetry.events.find((event) => event.kind === "retry")).toMatchObject({
       attempt: 1,
       details: {
+        backupPath: `${dbPath}.backup-test`,
         dbPath: resolveHarnessDbPath(),
         fallbackDbPath,
         purgeAction: "purge-corrupted-workspace-db",

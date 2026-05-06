@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { CliProcessManager, CLI_PROCESS_OUTPUT_CAP_BYTES } from "./cli-process-manager";
+import { CliProcessManager, CLI_PROCESS_OUTPUT_CAP_BYTES, testExports } from "./cli-process-manager";
 
 describe("CliProcessManager", () => {
   test("caps noninteractive stdout and reports limit", async () => {
@@ -16,5 +16,9 @@ describe("CliProcessManager", () => {
     expect(result.outputLimitExceeded).toBe(true);
     expect(result.outputLimitMessage).toContain("stdout output exceeded cap");
     expect(new TextEncoder().encode(result.stdout).byteLength).toBeLessThanOrEqual(CLI_PROCESS_OUTPUT_CAP_BYTES);
+  });
+
+  test("builds Windows tree-kill command for orphan-prone shells", () => {
+    expect(testExports.buildWindowsKillTreeCommand(1234)).toEqual(["taskkill", "/PID", "1234", "/T", "/F"]);
   });
 });

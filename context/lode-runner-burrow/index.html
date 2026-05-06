@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Lode Runner Burrow</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="game-frame" aria-label="Lode Runner Burrow">
+        <canvas id="gameCanvas" aria-label="Lode Runner Burrow playfield"></canvas>
+        <div class="hud" id="hud">
+          <div class="hud__row">
+            <span id="hudScore">0</span>
+            <span id="hudGold">0/0 gold</span>
+            <span id="hudTime">0.0s</span>
+          </div>
+          <div class="hud__row hud__row--right">
+            <span id="hudState">Burrow calm</span>
+          </div>
+          <div class="hud__hint" id="hudHint">Collect every gold pile to reveal the exit ladder. Z digs left, X digs right, Space digs forward.</div>
+        </div>
+        <div class="overlay" id="overlay">
+          <div class="overlay__card">
+            <p class="overlay__eyebrow" id="overlayEyebrow">Burrow run</p>
+            <h1 id="overlayTitle">Lode Runner Burrow</h1>
+            <p id="overlayCopy">Run the tunnels, grab the gold, and reach the ladder exit before the guards box you in.</p>
+            <button class="overlay__button" id="overlayButton" type="button">Start</button>
+            <p class="overlay__controls">Move: Arrow keys or WASD. Dig left: Z. Dig right: X. Space digs the side you face. Start or restart: Enter or R.</p>
+          </div>
+        </div>
+      </section>
+    </main>
+    <script src="./game.js"></script>
+  </body>
+</html>

@@ -1,0 +1,1040 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Spelunky Pocket Ruins</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg-0: #0e0b08;
+      --bg-1: #1f1712;
+      --bg-2: #34261d;
+      --sand: #d7b98f;
+      --amber: #f5b65f;
+      --danger: #ff715b;
+      --jade: #7de2b1;
+      --sky: #8bd4ff;
+      --panel: rgba(19, 14, 10, 0.88);
+      --line: rgba(255, 236, 211, 0.14);
+      --text: #f6ead7;
+      --muted: rgba(246, 234, 215, 0.72);
+      font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      background:
+        radial-gradient(circle at top, rgba(245, 182, 95, 0.12), transparent 30%),
+        radial-gradient(circle at 20% 25%, rgba(139, 212, 255, 0.08), transparent 24%),
+        linear-gradient(180deg, var(--bg-2), var(--bg-1) 45%, var(--bg-0));
+      color: var(--text);
+    }
+
+    body {
+      display: grid;
+      place-items: center;
+      padding: 18px;
+    }
+
+    .shell {
+      width: min(100%, 1280px);
+      display: grid;
+      gap: 14px;
+    }
+
+    .frame {
+      padding: 16px;
+      border-radius: 28px;
+      border: 1px solid var(--line);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent),
+        linear-gradient(180deg, rgba(58, 38, 26, 0.28), rgba(10, 8, 6, 0.94));
+      box-shadow:
+        0 28px 70px rgba(0, 0, 0, 0.44),
+        inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    }
+
+    canvas {
+      width: 100%;
+      height: auto;
+      display: block;
+      border-radius: 22px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: linear-gradient(180deg, #241811, #120d09);
+    }
+
+    .hud-strip {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      padding: 0 4px;
+      font-size: 11px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .hud-strip span {
+      padding: 8px 12px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: rgba(20, 15, 11, 0.72);
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="frame">
+      <canvas id="game" width="1280" height="720" aria-label="Spelunky Pocket Ruins"></canvas>
+    </section>
+    <div class="hud-strip">
+      <span>Move: A D or arrows</span>
+      <span>Jump: Space</span>
+      <span>Rope: E</span>
+      <span>Bomb: Q</span>
+      <span>Collect 3 idols, then reach the moon gate</span>
+    </div>
+  </main>
+
+  <script>
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+
+    const WIDTH = canvas.width;
+    const HEIGHT = canvas.height;
+    const TILE = 40;
+    const COLS = 24;
+    const ROWS = 18;
+    const PLAY_WIDTH = COLS * TILE;
+    const HUD_X = PLAY_WIDTH;
+    const GRAVITY = 1800;
+    const MAX_DT = 1 / 30;
+    const keys = new Set();
+    const pressed = new Set();
+
+    function wrap(inner) {
+      if (inner.length !== COLS - 2) {
+        throw new Error(`Bad row width: ${inner}`);
+      }
+      return `#${inner}#`;
+    }
+
+    const layout = [
+      "########################",
+      wrap("P....#....C....#......"),
+      wrap(".....#.........#...>.."),
+      wrap(".....#..ddd....#......"),
+      wrap(".....#####.######....."),
+      wrap("...........#.........."),
+      wrap("..C........#.....ddd.."),
+      wrap("######.....#.........."),
+      wrap("...........#..#######."),
+      wrap("...>.......#..#....C#."),
+      wrap("...........#..#.....#."),
+      wrap("....ddd....#..#.....#."),
+      wrap("...........#..#.....#E"),
+      wrap("..######...#..###.###."),
+      wrap("......#....#.........."),
+      wrap("..<...#....#####..>..."),
+      wrap("......#..............."),
+      "########################"
+    ];
+
+    const palette = {
+      caveTop: "#3a271b",
+      caveBottom: "#170f0b",
+      wall: "#5b4432",
+      wallShade: "#3e2e22",
+      soft: "#7b593f",
+      rope: "#d5b17f",
+      bomb: "#201816",
+      fuse: "#f5c977",
+      idol: "#f4d48f",
+      gateOff: "#365563",
+      gateOn: "#8be0ff",
+      playerHat: "#d08942",
+      playerBody: "#f0d7b2",
+      playerPack: "#6c492f",
+      telegraph: "rgba(255, 113, 91, 0.88)",
+      arrow: "#f3e7d6",
+      sky: "#8bd4ff",
+      dust: "rgba(255, 233, 201, 0.38)",
+      ui: "#f6ead7",
+      success: "#7de2b1",
+      damage: "#ff715b"
+    };
+
+    const state = {
+      scene: "menu",
+      time: 0,
+      tips: [
+        "Bomb soft stone to open idol routes.",
+        "Drop ropes in tall shafts before you commit to the fall.",
+        "Arrow traps show their shot line before they fire."
+      ],
+      hintTimer: 0,
+      hintIndex: 0,
+      particles: []
+    };
+
+    let world = null;
+
+    function clamp(value, min, max) {
+      return Math.max(min, Math.min(max, value));
+    }
+
+    function lerp(a, b, t) {
+      return a + (b - a) * t;
+    }
+
+    function overlaps(a, b) {
+      return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+    }
+
+    function sign(value) {
+      return value < 0 ? -1 : value > 0 ? 1 : 0;
+    }
+
+    function spawnParticles(x, y, color, count, speed) {
+      for (let i = 0; i < count; i += 1) {
+        const angle = Math.random() * Math.PI * 2;
+        const magnitude = speed * (0.4 + Math.random() * 0.6);
+        state.particles.push({
+          x,
+          y,
+          vx: Math.cos(angle) * magnitude,
+          vy: Math.sin(angle) * magnitude,
+          life: 0.3 + Math.random() * 0.35,
+          size: 2 + Math.random() * 4,
+          color
+        });
+      }
+    }
+
+    function createWorld() {
+      const tiles = layout.map((row) => row.split(""));
+      const relics = [];
+      const traps = [];
+      let exit = null;
+      let spawn = { x: TILE * 1.4, y: TILE * 1.4 };
+
+      for (let y = 0; y < ROWS; y += 1) {
+        for (let x = 0; x < COLS; x += 1) {
+          const cell = tiles[y][x];
+          if (cell === "P") {
+            spawn = { x: x * TILE + 7, y: y * TILE + 2 };
+            tiles[y][x] = ".";
+          } else if (cell === "C") {
+            relics.push({
+              x: x * TILE + 10,
+              y: y * TILE + 8,
+              w: 20,
+              h: 24,
+              bob: Math.random() * Math.PI * 2,
+              taken: false
+            });
+            tiles[y][x] = ".";
+          } else if (cell === "E") {
+            exit = {
+              x: x * TILE + 6,
+              y: y * TILE,
+              w: TILE - 12,
+              h: TILE * 1.5
+            };
+            tiles[y][x] = ".";
+          } else if (cell === ">" || cell === "<") {
+            traps.push({
+              x: x * TILE,
+              y: y * TILE + 8,
+              dir: cell === ">" ? 1 : -1,
+              state: "idle",
+              timer: 0,
+              cooldown: 0
+            });
+            tiles[y][x] = ".";
+          }
+        }
+      }
+
+      return {
+        tiles,
+        relics,
+        traps,
+        arrows: [],
+        ropes: [],
+        bombs: [],
+        exit,
+        totalRelics: relics.length,
+        player: {
+          x: spawn.x,
+          y: spawn.y,
+          w: 24,
+          h: 34,
+          vx: 0,
+          vy: 0,
+          facing: 1,
+          onGround: false,
+          climbing: false,
+          ropeId: -1,
+          ropes: 4,
+          bombs: 4,
+          health: 4,
+          invuln: 0,
+          coyote: 0,
+          collected: 0
+        }
+      };
+    }
+
+    function resetGame(scene) {
+      world = createWorld();
+      state.scene = scene;
+      state.hintTimer = 0;
+      state.hintIndex = 0;
+      state.particles.length = 0;
+    }
+
+    function tileAt(tx, ty) {
+      if (tx < 0 || tx >= COLS || ty < 0 || ty >= ROWS) {
+        return "#";
+      }
+      return world.tiles[ty][tx];
+    }
+
+    function isSolidCell(cell) {
+      return cell === "#" || cell === "d";
+    }
+
+    function isSolidAt(tx, ty) {
+      return isSolidCell(tileAt(tx, ty));
+    }
+
+    function pointSolid(x, y) {
+      return isSolidAt(Math.floor(x / TILE), Math.floor(y / TILE));
+    }
+
+    function rayBlocked(x0, y0, x1, y1) {
+      const distance = Math.hypot(x1 - x0, y1 - y0);
+      const steps = Math.max(1, Math.ceil(distance / 8));
+      for (let i = 0; i <= steps; i += 1) {
+        const t = i / steps;
+        const x = lerp(x0, x1, t);
+        const y = lerp(y0, y1, t);
+        if (pointSolid(x, y)) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function resolveHorizontalCollision(body) {
+      const left = Math.floor(body.x / TILE);
+      const right = Math.floor((body.x + body.w - 1) / TILE);
+      const top = Math.floor(body.y / TILE);
+      const bottom = Math.floor((body.y + body.h - 1) / TILE);
+      for (let ty = top; ty <= bottom; ty += 1) {
+        for (let tx = left; tx <= right; tx += 1) {
+          if (!isSolidAt(tx, ty)) {
+            continue;
+          }
+          if (body.vx > 0) {
+            body.x = tx * TILE - body.w;
+          } else {
+            body.x = (tx + 1) * TILE;
+          }
+          body.vx = 0;
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function resolveVerticalCollision(body) {
+      const left = Math.floor(body.x / TILE);
+      const right = Math.floor((body.x + body.w - 1) / TILE);
+      const top = Math.floor(body.y / TILE);
+      const bottom = Math.floor((body.y + body.h - 1) / TILE);
+      for (let ty = top; ty <= bottom; ty += 1) {
+        for (let tx = left; tx <= right; tx += 1) {
+          if (!isSolidAt(tx, ty)) {
+            continue;
+          }
+          if (body.vy > 0) {
+            body.y = ty * TILE - body.h;
+            body.onGround = true;
+          } else {
+            body.y = (ty + 1) * TILE;
+          }
+          body.vy = 0;
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function moveBody(body, dt) {
+      const maxStep = TILE * 0.25;
+      let remainingX = body.vx * dt;
+      while (Math.abs(remainingX) > 0) {
+        const stepX = clamp(remainingX, -maxStep, maxStep);
+        body.x += stepX;
+        if (resolveHorizontalCollision(body)) {
+          break;
+        }
+        remainingX -= stepX;
+      }
+
+      body.onGround = false;
+      let remainingY = body.vy * dt;
+      while (Math.abs(remainingY) > 0) {
+        const stepY = clamp(remainingY, -maxStep, maxStep);
+        body.y += stepY;
+        if (resolveVerticalCollision(body)) {
+          break;
+        }
+        remainingY -= stepY;
+      }
+    }
+
+    function findNearbyRope(player) {
+      for (let i = world.ropes.length - 1; i >= 0; i -= 1) {
+        const rope = world.ropes[i];
+        const px = player.x + player.w * 0.5;
+        const py = player.y + player.h * 0.5;
+        if (Math.abs(px - rope.x) < 16 && py > rope.yTop && py < rope.yBottom + 8) {
+          return i;
+        }
+      }
+      return -1;
+    }
+
+    function dropRope() {
+      const player = world.player;
+      if (player.ropes <= 0) {
+        return;
+      }
+      const tx = Math.floor((player.x + player.w * 0.5) / TILE);
+      const startTy = Math.floor(player.y / TILE);
+      let ceiling = -1;
+      for (let ty = startTy; ty >= 0; ty -= 1) {
+        if (isSolidAt(tx, ty)) {
+          ceiling = ty;
+          break;
+        }
+      }
+      if (ceiling === -1) {
+        return;
+      }
+      const yTop = (ceiling + 1) * TILE + 2;
+      const yBottom = clamp(yTop + TILE * 6, yTop + TILE * 2, HEIGHT - TILE);
+      world.ropes.push({
+        x: tx * TILE + TILE * 0.5,
+        yTop,
+        yBottom
+      });
+      player.ropes -= 1;
+      spawnParticles(player.x + player.w * 0.5, player.y + 8, palette.rope, 10, 55);
+    }
+
+    function placeBomb() {
+      const player = world.player;
+      if (player.bombs <= 0) {
+        return;
+      }
+      world.bombs.push({
+        x: player.x + player.w * 0.5 - 10,
+        y: player.y + player.h - 20,
+        w: 20,
+        h: 20,
+        vx: player.facing * 55,
+        vy: -120,
+        timer: 1.15
+      });
+      player.bombs -= 1;
+    }
+
+    function damagePlayer(amount, sourceX) {
+      const player = world.player;
+      if (player.invuln > 0 || state.scene !== "play") {
+        return;
+      }
+      player.health -= amount;
+      player.invuln = 1.1;
+      player.vx = sourceX ? sign(player.x - sourceX) * 240 : -player.facing * 180;
+      player.vy = -320;
+      player.climbing = false;
+      spawnParticles(player.x + player.w * 0.5, player.y + player.h * 0.5, palette.damage, 14, 90);
+      if (player.health <= 0) {
+        state.scene = "lose";
+      }
+    }
+
+    function explodeBomb(bomb) {
+      const radius = TILE * 1.6;
+      const centerX = bomb.x + bomb.w * 0.5;
+      const centerY = bomb.y + bomb.h * 0.5;
+      spawnParticles(centerX, centerY, palette.amber, 30, 180);
+
+      for (let ty = 0; ty < ROWS; ty += 1) {
+        for (let tx = 0; tx < COLS; tx += 1) {
+          if (tileAt(tx, ty) !== "d") {
+            continue;
+          }
+          const tileCenterX = tx * TILE + TILE * 0.5;
+          const tileCenterY = ty * TILE + TILE * 0.5;
+          if (Math.hypot(tileCenterX - centerX, tileCenterY - centerY) <= radius) {
+            world.tiles[ty][tx] = ".";
+            spawnParticles(tileCenterX, tileCenterY, palette.soft, 12, 90);
+          }
+        }
+      }
+
+      for (const trap of world.traps) {
+        const trapCenterX = trap.x + TILE * 0.5;
+        const trapCenterY = trap.y + 12;
+        if (Math.hypot(trapCenterX - centerX, trapCenterY - centerY) <= radius * 0.8) {
+          trap.cooldown = 2.5;
+          trap.state = "cooldown";
+        }
+      }
+
+      const player = world.player;
+      const playerCenterX = player.x + player.w * 0.5;
+      const playerCenterY = player.y + player.h * 0.5;
+      if (Math.hypot(playerCenterX - centerX, playerCenterY - centerY) <= radius) {
+        damagePlayer(1, centerX);
+      }
+    }
+
+    function canTrapSeePlayer(trap, player) {
+      const trapX = trap.x + TILE * 0.5;
+      const trapY = trap.y + 12;
+      const playerX = player.x + player.w * 0.5;
+      const playerY = player.y + player.h * 0.45;
+      const horizontal = playerX - trapX;
+      if (sign(horizontal) !== trap.dir || Math.abs(horizontal) > TILE * 7.5) {
+        return false;
+      }
+      if (Math.abs(playerY - trapY) > 16) {
+        return false;
+      }
+      return !rayBlocked(trapX, trapY, playerX, playerY);
+    }
+
+    function updatePlayer(dt) {
+      const player = world.player;
+      player.invuln = Math.max(0, player.invuln - dt);
+      player.coyote = Math.max(0, player.coyote - dt);
+      const move = (keys.has("ArrowRight") || keys.has("KeyD") ? 1 : 0) - (keys.has("ArrowLeft") || keys.has("KeyA") ? 1 : 0);
+      if (move !== 0) {
+        player.facing = move;
+      }
+
+      if (pressed.has("KeyE")) {
+        dropRope();
+      }
+      if (pressed.has("KeyQ")) {
+        placeBomb();
+      }
+
+      const nearRope = findNearbyRope(player);
+      const wantsClimb = keys.has("ArrowUp") || keys.has("KeyW") || keys.has("ArrowDown") || keys.has("KeyS");
+      if (!player.climbing && nearRope !== -1 && wantsClimb) {
+        player.climbing = true;
+        player.ropeId = nearRope;
+        player.vx = 0;
+        player.vy = 0;
+      }
+
+      if (player.climbing) {
+        const rope = world.ropes[player.ropeId];
+        if (!rope) {
+          player.climbing = false;
+        } else {
+          const climb = (keys.has("ArrowDown") || keys.has("KeyS") ? 1 : 0) - (keys.has("ArrowUp") || keys.has("KeyW") ? 1 : 0);
+          player.x = lerp(player.x, rope.x - player.w * 0.5, 0.42);
+          player.vy = climb * 180;
+          player.y = clamp(player.y + player.vy * dt, rope.yTop - 8, rope.yBottom - player.h);
+          if (pressed.has("Space")) {
+            player.climbing = false;
+            player.vy = -560;
+            player.vx = player.facing * 140;
+          }
+          if (!wantsClimb && nearRope === -1) {
+            player.climbing = false;
+          }
+        }
+      }
+
+      if (!player.climbing) {
+        const targetSpeed = move * 220;
+        const accel = player.onGround ? 1400 : 900;
+        player.vx = lerp(player.vx, targetSpeed, clamp(accel * dt / 220, 0, 1));
+        if (pressed.has("Space") && (player.onGround || player.coyote > 0)) {
+          player.vy = -610;
+          player.onGround = false;
+          player.coyote = 0;
+        }
+        player.vy += GRAVITY * dt;
+        moveBody(player, dt);
+        if (player.onGround) {
+          player.coyote = 0.1;
+        }
+      }
+
+      player.x = clamp(player.x, 0, PLAY_WIDTH - player.w);
+      if (player.y > HEIGHT + 80) {
+        state.scene = "lose";
+      }
+
+      for (const relic of world.relics) {
+        if (!relic.taken && overlaps(player, relic)) {
+          relic.taken = true;
+          player.collected += 1;
+          spawnParticles(relic.x + relic.w * 0.5, relic.y + relic.h * 0.5, palette.idol, 18, 90);
+        }
+      }
+
+      if (player.collected === world.totalRelics && overlaps(player, world.exit)) {
+        state.scene = "win";
+      }
+    }
+
+    function updateBombs(dt) {
+      for (let i = world.bombs.length - 1; i >= 0; i -= 1) {
+        const bomb = world.bombs[i];
+        bomb.vy += GRAVITY * dt;
+        moveBody(bomb, dt);
+        if (bomb.onGround) {
+          bomb.vx *= 0.8;
+        }
+        bomb.timer -= dt;
+        if (bomb.timer <= 0) {
+          explodeBomb(bomb);
+          world.bombs.splice(i, 1);
+        }
+      }
+    }
+
+    function updateArrows(dt) {
+      for (let i = world.arrows.length - 1; i >= 0; i -= 1) {
+        const arrow = world.arrows[i];
+        arrow.x += arrow.vx * dt;
+        if (pointSolid(arrow.x + (arrow.vx > 0 ? arrow.w : 0), arrow.y + arrow.h * 0.5)) {
+          world.arrows.splice(i, 1);
+          continue;
+        }
+        if (overlaps(arrow, world.player)) {
+          damagePlayer(1, arrow.x);
+          world.arrows.splice(i, 1);
+          continue;
+        }
+        if (arrow.x < -40 || arrow.x > PLAY_WIDTH + 40) {
+          world.arrows.splice(i, 1);
+        }
+      }
+    }
+
+    function updateTraps(dt) {
+      for (const trap of world.traps) {
+        trap.cooldown = Math.max(0, trap.cooldown - dt);
+        if (trap.state === "idle" && trap.cooldown === 0 && canTrapSeePlayer(trap, world.player)) {
+          trap.state = "arming";
+          trap.timer = 0.7;
+        } else if (trap.state === "arming") {
+          trap.timer -= dt;
+          if (!canTrapSeePlayer(trap, world.player)) {
+            trap.state = "idle";
+          } else if (trap.timer <= 0) {
+            trap.state = "cooldown";
+            trap.cooldown = 1.6;
+            world.arrows.push({
+              x: trap.x + TILE * 0.5 + trap.dir * 10,
+              y: trap.y + 6,
+              w: 20,
+              h: 8,
+              vx: trap.dir * 420
+            });
+            spawnParticles(trap.x + TILE * 0.5, trap.y + 10, palette.arrow, 8, 60);
+          }
+        } else if (trap.state === "cooldown" && trap.cooldown === 0) {
+          trap.state = "idle";
+        }
+      }
+    }
+
+    function updateParticles(dt) {
+      for (let i = state.particles.length - 1; i >= 0; i -= 1) {
+        const particle = state.particles[i];
+        particle.life -= dt;
+        particle.x += particle.vx * dt;
+        particle.y += particle.vy * dt;
+        particle.vy += 380 * dt;
+        if (particle.life <= 0) {
+          state.particles.splice(i, 1);
+        }
+      }
+    }
+
+    function update(dt) {
+      state.time += dt;
+      if (state.scene !== "play") {
+        if (pressed.has("Enter") || pressed.has("KeyR") || pressed.has("Space")) {
+          resetGame("play");
+        }
+        updateParticles(dt);
+        return;
+      }
+
+      state.hintTimer += dt;
+      if (state.hintTimer >= 4.5) {
+        state.hintTimer = 0;
+        state.hintIndex = (state.hintIndex + 1) % state.tips.length;
+      }
+
+      updatePlayer(dt);
+      updateBombs(dt);
+      updateArrows(dt);
+      updateTraps(dt);
+      updateParticles(dt);
+    }
+
+    function drawBackground() {
+      const gradient = ctx.createLinearGradient(0, 0, 0, HEIGHT);
+      gradient.addColorStop(0, palette.caveTop);
+      gradient.addColorStop(1, palette.caveBottom);
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, PLAY_WIDTH, HEIGHT);
+
+      for (let i = 0; i < 18; i += 1) {
+        ctx.fillStyle = i % 2 === 0 ? "rgba(255, 225, 170, 0.03)" : "rgba(0, 0, 0, 0.04)";
+        ctx.fillRect(0, i * TILE, PLAY_WIDTH, TILE);
+      }
+    }
+
+    function drawTiles() {
+      for (let y = 0; y < ROWS; y += 1) {
+        for (let x = 0; x < COLS; x += 1) {
+          const cell = tileAt(x, y);
+          if (cell === ".") {
+            continue;
+          }
+          const px = x * TILE;
+          const py = y * TILE;
+          if (cell === "#") {
+            ctx.fillStyle = palette.wall;
+            ctx.fillRect(px, py, TILE, TILE);
+            ctx.fillStyle = palette.wallShade;
+            ctx.fillRect(px + 4, py + 4, TILE - 8, TILE - 8);
+            ctx.fillStyle = "rgba(255, 232, 193, 0.06)";
+            ctx.fillRect(px + 6, py + 6, TILE - 12, 6);
+          } else if (cell === "d") {
+            ctx.fillStyle = palette.soft;
+            ctx.fillRect(px, py, TILE, TILE);
+            ctx.fillStyle = "rgba(52, 34, 23, 0.3)";
+            for (let i = 0; i < 3; i += 1) {
+              ctx.fillRect(px + 6 + i * 10, py + 8 + (i % 2) * 8, 8, TILE - 16);
+            }
+          }
+        }
+      }
+    }
+
+    function drawExit() {
+      const active = world.player.collected === world.totalRelics;
+      ctx.fillStyle = active ? palette.gateOn : palette.gateOff;
+      ctx.fillRect(world.exit.x, world.exit.y, world.exit.w, world.exit.h);
+      ctx.fillStyle = active ? "rgba(255,255,255,0.5)" : "rgba(0,0,0,0.25)";
+      ctx.fillRect(world.exit.x + 8, world.exit.y + 10, world.exit.w - 16, world.exit.h - 18);
+      ctx.strokeStyle = active ? "rgba(139, 224, 255, 0.95)" : "rgba(78, 122, 141, 0.9)";
+      ctx.lineWidth = 3;
+      ctx.strokeRect(world.exit.x + 2, world.exit.y + 2, world.exit.w - 4, world.exit.h - 4);
+    }
+
+    function drawRopes() {
+      ctx.strokeStyle = palette.rope;
+      ctx.lineWidth = 4;
+      for (const rope of world.ropes) {
+        ctx.beginPath();
+        ctx.moveTo(rope.x, rope.yTop);
+        ctx.lineTo(rope.x, rope.yBottom);
+        ctx.stroke();
+        for (let y = rope.yTop + 6; y < rope.yBottom; y += 18) {
+          ctx.beginPath();
+          ctx.moveTo(rope.x - 7, y);
+          ctx.lineTo(rope.x + 7, y);
+          ctx.stroke();
+        }
+      }
+    }
+
+    function drawRelics() {
+      for (const relic of world.relics) {
+        if (relic.taken) {
+          continue;
+        }
+        const bob = Math.sin(state.time * 3 + relic.bob) * 4;
+        ctx.fillStyle = palette.idol;
+        ctx.beginPath();
+        ctx.moveTo(relic.x + relic.w * 0.5, relic.y + bob);
+        ctx.lineTo(relic.x + relic.w, relic.y + 10 + bob);
+        ctx.lineTo(relic.x + relic.w - 4, relic.y + relic.h + bob);
+        ctx.lineTo(relic.x + 4, relic.y + relic.h + bob);
+        ctx.lineTo(relic.x, relic.y + 10 + bob);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = "#7d5d30";
+        ctx.fillRect(relic.x + 7, relic.y + 11 + bob, 3, 3);
+        ctx.fillRect(relic.x + relic.w - 10, relic.y + 11 + bob, 3, 3);
+      }
+    }
+
+    function drawTraps() {
+      for (const trap of world.traps) {
+        const px = trap.x;
+        const py = trap.y;
+        ctx.fillStyle = palette.wallShade;
+        ctx.fillRect(px + 4, py, TILE - 8, 24);
+        ctx.fillStyle = trap.state === "arming" ? palette.damage : palette.telegraph;
+        ctx.fillRect(px + (trap.dir > 0 ? TILE - 10 : 4), py + 8, 6, 8);
+        if (trap.state === "arming") {
+          const startX = px + TILE * 0.5;
+          const startY = py + 12;
+          const endX = startX + trap.dir * TILE * 6;
+          ctx.strokeStyle = palette.telegraph;
+          ctx.lineWidth = 3;
+          ctx.setLineDash([10, 8]);
+          ctx.beginPath();
+          ctx.moveTo(startX, startY);
+          ctx.lineTo(endX, startY);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+      }
+    }
+
+    function drawBombs() {
+      for (const bomb of world.bombs) {
+        ctx.fillStyle = palette.bomb;
+        ctx.beginPath();
+        ctx.arc(bomb.x + 10, bomb.y + 10, 10, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = palette.fuse;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(bomb.x + 10, bomb.y + 4);
+        ctx.lineTo(bomb.x + 14, bomb.y - 2);
+        ctx.stroke();
+        if (bomb.timer < 0.5) {
+          ctx.fillStyle = palette.fuse;
+          ctx.beginPath();
+          ctx.arc(bomb.x + 16, bomb.y - 2, 3, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+    }
+
+    function drawArrows() {
+      ctx.fillStyle = palette.arrow;
+      for (const arrow of world.arrows) {
+        ctx.fillRect(arrow.x, arrow.y, arrow.w, arrow.h);
+        ctx.beginPath();
+        if (arrow.vx > 0) {
+          ctx.moveTo(arrow.x + arrow.w, arrow.y + arrow.h * 0.5);
+          ctx.lineTo(arrow.x + arrow.w + 10, arrow.y);
+          ctx.lineTo(arrow.x + arrow.w + 10, arrow.y + arrow.h);
+        } else {
+          ctx.moveTo(arrow.x, arrow.y + arrow.h * 0.5);
+          ctx.lineTo(arrow.x - 10, arrow.y);
+          ctx.lineTo(arrow.x - 10, arrow.y + arrow.h);
+        }
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+
+    function drawPlayer() {
+      const player = world.player;
+      const flash = player.invuln > 0 && Math.floor(player.invuln * 10) % 2 === 0;
+      if (flash) {
+        return;
+      }
+      ctx.fillStyle = palette.playerHat;
+      ctx.fillRect(player.x + 4, player.y + 2, 16, 6);
+      ctx.fillStyle = palette.playerBody;
+      ctx.fillRect(player.x + 3, player.y + 8, 18, 20);
+      ctx.fillStyle = palette.playerPack;
+      ctx.fillRect(player.x + (player.facing > 0 ? 1 : 13), player.y + 12, 10, 12);
+      ctx.fillStyle = "#3d2417";
+      ctx.fillRect(player.x + 7, player.y + 28, 4, 6);
+      ctx.fillRect(player.x + 13, player.y + 28, 4, 6);
+      ctx.fillStyle = "#2a1a12";
+      ctx.fillRect(player.x + 7, player.y + 13, 3, 3);
+      ctx.fillRect(player.x + 15, player.y + 13, 3, 3);
+    }
+
+    function drawParticles() {
+      for (const particle of state.particles) {
+        ctx.globalAlpha = Math.max(0, particle.life * 2);
+        ctx.fillStyle = particle.color;
+        ctx.fillRect(particle.x, particle.y, particle.size, particle.size);
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    function drawSidebar() {
+      ctx.fillStyle = "rgba(14, 10, 8, 0.92)";
+      ctx.fillRect(HUD_X, 0, WIDTH - HUD_X, HEIGHT);
+      ctx.strokeStyle = "rgba(255, 241, 220, 0.09)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(HUD_X, 0);
+      ctx.lineTo(HUD_X, HEIGHT);
+      ctx.stroke();
+
+      const player = world.player;
+      ctx.fillStyle = palette.ui;
+      ctx.font = "700 28px Trebuchet MS";
+      ctx.fillText("POCKET", HUD_X + 32, 56);
+      ctx.fillText("RUINS", HUD_X + 32, 88);
+
+      ctx.font = "12px Trebuchet MS";
+      ctx.fillStyle = "rgba(246, 234, 215, 0.7)";
+      ctx.fillText("Collect all idols, then escape.", HUD_X + 32, 118);
+
+      ctx.font = "700 16px Trebuchet MS";
+      ctx.fillStyle = palette.ui;
+      ctx.fillText(`IDOLS ${player.collected}/${world.totalRelics}`, HUD_X + 32, 170);
+      ctx.fillText(`ROPES ${player.ropes}`, HUD_X + 32, 206);
+      ctx.fillText(`BOMBS ${player.bombs}`, HUD_X + 32, 242);
+      ctx.fillText(`HEALTH ${player.health}`, HUD_X + 32, 278);
+
+      for (let i = 0; i < 4; i += 1) {
+        ctx.fillStyle = i < player.health ? palette.damage : "rgba(255,255,255,0.12)";
+        ctx.fillRect(HUD_X + 32 + i * 26, 292, 18, 14);
+      }
+
+      ctx.font = "700 14px Trebuchet MS";
+      ctx.fillStyle = palette.amber;
+      ctx.fillText("CURRENT READ", HUD_X + 32, 356);
+      ctx.font = "13px Trebuchet MS";
+      ctx.fillStyle = palette.ui;
+      wrapText(state.tips[state.hintIndex], HUD_X + 32, 384, 240, 20);
+
+      ctx.fillStyle = palette.amber;
+      ctx.font = "700 14px Trebuchet MS";
+      ctx.fillText("TRAP RULE", HUD_X + 32, 472);
+      ctx.font = "13px Trebuchet MS";
+      ctx.fillStyle = palette.ui;
+      wrapText("When a wall eye flashes and a red line appears, break sight or duck out before the bolt lands.", HUD_X + 32, 500, 240, 20);
+
+      ctx.fillStyle = world.player.collected === world.totalRelics ? palette.success : "rgba(246, 234, 215, 0.54)";
+      ctx.fillRect(HUD_X + 32, 616, 230, 18);
+      ctx.fillStyle = "rgba(20, 14, 10, 0.85)";
+      ctx.fillRect(HUD_X + 34, 618, 226, 14);
+      ctx.fillStyle = world.player.collected === world.totalRelics ? palette.success : palette.amber;
+      ctx.fillRect(HUD_X + 34, 618, (226 * player.collected) / world.totalRelics, 14);
+      ctx.fillStyle = palette.ui;
+      ctx.font = "12px Trebuchet MS";
+      ctx.fillText(world.player.collected === world.totalRelics ? "Moon gate active" : "Moon gate sealed", HUD_X + 32, 652);
+    }
+
+    function wrapText(text, x, y, maxWidth, lineHeight) {
+      const words = text.split(" ");
+      let line = "";
+      for (const word of words) {
+        const test = line ? `${line} ${word}` : word;
+        if (ctx.measureText(test).width > maxWidth && line) {
+          ctx.fillText(line, x, y);
+          line = word;
+          y += lineHeight;
+        } else {
+          line = test;
+        }
+      }
+      if (line) {
+        ctx.fillText(line, x, y);
+      }
+    }
+
+    function drawOverlay() {
+      if (state.scene === "play") {
+        return;
+      }
+      ctx.fillStyle = "rgba(8, 6, 5, 0.66)";
+      ctx.fillRect(0, 0, PLAY_WIDTH, HEIGHT);
+      ctx.textAlign = "center";
+      ctx.fillStyle = palette.ui;
+      ctx.font = "700 44px Trebuchet MS";
+      if (state.scene === "menu") {
+        ctx.fillText("Spelunky Pocket Ruins", PLAY_WIDTH * 0.5, 220);
+        ctx.font = "20px Trebuchet MS";
+        ctx.fillText("Route with ropes, open soft stone with bombs, and read trap telegraphs.", PLAY_WIDTH * 0.5, 272);
+        ctx.fillText("Press Enter or Space to descend.", PLAY_WIDTH * 0.5, 336);
+      } else if (state.scene === "win") {
+        ctx.fillText("Moon Gate Open", PLAY_WIDTH * 0.5, 260);
+        ctx.font = "20px Trebuchet MS";
+        ctx.fillText("You cleared the pocket ruins. Press Enter to run it again.", PLAY_WIDTH * 0.5, 312);
+      } else if (state.scene === "lose") {
+        ctx.fillText("Expedition Lost", PLAY_WIDTH * 0.5, 260);
+        ctx.font = "20px Trebuchet MS";
+        ctx.fillText("Instant retry is live. Press Enter, R, or Space.", PLAY_WIDTH * 0.5, 312);
+      }
+      ctx.textAlign = "left";
+    }
+
+    function draw() {
+      drawBackground();
+      drawTiles();
+      drawExit();
+      drawRopes();
+      drawRelics();
+      drawTraps();
+      drawBombs();
+      drawArrows();
+      drawPlayer();
+      drawParticles();
+      drawSidebar();
+      drawOverlay();
+    }
+
+    function frame(now) {
+      if (!frame.last) {
+        frame.last = now;
+      }
+      let dt = (now - frame.last) / 1000;
+      frame.last = now;
+      dt = Math.min(MAX_DT, dt);
+      update(dt);
+      draw();
+      pressed.clear();
+      requestAnimationFrame(frame);
+    }
+
+    window.addEventListener("keydown", (event) => {
+      if (!keys.has(event.code)) {
+        pressed.add(event.code);
+      }
+      keys.add(event.code);
+      if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"].includes(event.code)) {
+        event.preventDefault();
+      }
+    });
+
+    window.addEventListener("keyup", (event) => {
+      keys.delete(event.code);
+    });
+
+    resetGame("menu");
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>

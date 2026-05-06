@@ -27,6 +27,17 @@ createUiTest("ExecutionLog", () => {
     expect(screen.getByRole("button", { name: /Show details/ })).not.toBeNull();
   });
 
+  it("truncates row summaries without changing dialog details", () => {
+    const rowSummary = `Assistant job succeeded ${longMessage}`;
+
+    render(() => <ExecutionLog entries={[{ ...entries[0]!, rowSummary }]} selectedEntryId="entry-1" />);
+
+    expect(screen.getByText(truncateLogText(rowSummary))).not.toBeNull();
+    expect(screen.queryByText(rowSummary)).toBeNull();
+    expect(screen.getByRole("dialog")).not.toBeNull();
+    expect(screen.getByText(longMessage)).not.toBeNull();
+  });
+
   it("renders selected entry details in a dialog", () => {
     render(() => <ExecutionLog entries={entries} selectedEntryId="entry-1" />);
 
@@ -34,5 +45,28 @@ createUiTest("ExecutionLog", () => {
     expect(screen.getByText(longMessage)).not.toBeNull();
     expect(screen.getByText("Full detail body")).not.toBeNull();
     expect(screen.getByText(/README.md/)).not.toBeNull();
+  });
+
+  it("formats selected entry details as markdown", () => {
+    render(() => (
+      <ExecutionLog
+        entries={[
+          {
+            id: "entry-markdown",
+            message: "Prompt **summary**",
+            level: "info",
+            createdAt,
+            detail: "- first\n- second"
+          }
+        ]}
+        selectedEntryId="entry-markdown"
+      />
+    ));
+
+    const emphasized = screen.getByText("summary");
+    expect(emphasized.tagName.toLowerCase()).toBe("strong");
+    expect(screen.getByRole("list")).not.toBeNull();
+    expect(screen.getByText("first")).not.toBeNull();
+    expect(screen.getByText("second")).not.toBeNull();
   });
 });

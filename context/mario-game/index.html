@@ -3,33 +3,130 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Tetris 1985 (IBM PC)</title>
+    <title>Mushroom Stack</title>
     <style>
-        body { margin: 0; overflow: hidden; display: flex; justify-content: center; align-items: center; min-height: 100vh; background-color: #333; font-family: 'Press Start 2P', cursive; color: #eee; }
-        #game-container { display: flex; gap: 20px; }
-        canvas { background-color: #000; border: 2px solid #ccc; display: block; }
-        #sidebar { width: 150px; display: flex; flex-direction: column; justify-content: flex-start; align-items: flex-start; gap: 10px; padding-top: 20px; }
-        #sidebar > div { width: 100%; }
-        #sidebar h2 { margin-top: 0; font-size: 1.2em; }
-        #sidebar p { margin: 5px 0; font-size: 0.9em; }
-        #next-piece-display { border: 1px solid #777; width: 100px; height: 100px; display: flex; justify-content: center; align-items: center; background-color: #222; margin-top: 10px; }
+        :root {
+            --sky-top: #69c8ff;
+            --sky-bottom: #dff7ff;
+            --panel-red: #b4282e;
+            --panel-cream: #fff1c7;
+            --panel-brown: #5c2b12;
+            --panel-yellow: #ffd54d;
+            --shadow: rgba(32, 14, 5, 0.3);
+        }
+        body {
+            margin: 0;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background:
+                radial-gradient(circle at 20% 16%, rgba(255,255,255,0.72) 0 34px, transparent 35px),
+                radial-gradient(circle at 29% 16%, rgba(255,255,255,0.72) 0 24px, transparent 25px),
+                radial-gradient(circle at 68% 12%, rgba(255,255,255,0.78) 0 42px, transparent 43px),
+                radial-gradient(circle at 77% 12%, rgba(255,255,255,0.78) 0 28px, transparent 29px),
+                linear-gradient(180deg, var(--sky-top), var(--sky-bottom) 70%, #67be52 70%, #67be52 80%, #9b5a30 80%, #9b5a30 100%);
+            font-family: "Trebuchet MS", Verdana, sans-serif;
+            color: #2b1608;
+        }
+        #game-container {
+            display: flex;
+            gap: 20px;
+            padding: 20px;
+            border: 4px solid #ffffff;
+            border-radius: 18px;
+            background: rgba(255, 249, 230, 0.85);
+            box-shadow: 0 18px 48px var(--shadow);
+        }
+        canvas { background-color: #0e2842; border: 4px solid #f5f0de; display: block; image-rendering: pixelated; box-shadow: inset 0 0 0 4px #284e73; }
+        #sidebar { width: 220px; display: flex; flex-direction: column; justify-content: flex-start; align-items: stretch; gap: 12px; padding-top: 4px; }
+        #sidebar > div, #sidebar > section { width: 100%; }
+        #sidebar h1, #sidebar h2, #sidebar h3 { margin: 0; }
+        .panel {
+            border: 4px solid var(--panel-brown);
+            border-radius: 12px;
+            background: var(--panel-cream);
+            box-shadow: inset 0 -4px 0 rgba(92, 43, 18, 0.2);
+        }
+        .hero-panel {
+            padding: 12px 14px;
+            background: linear-gradient(180deg, #d53b2d, var(--panel-red));
+            color: #fff8de;
+        }
+        .hero-panel h1 { font-size: 1.45rem; letter-spacing: 0.04em; }
+        .hero-panel p { margin: 6px 0 0; font-size: 0.85rem; line-height: 1.35; color: #ffeebd; }
+        .stats-panel { padding: 12px 14px; display: grid; gap: 8px; }
+        .stat-row { display: flex; justify-content: space-between; align-items: baseline; font-weight: 700; }
+        .stat-row span { color: #6f3414; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.08em; }
+        .stat-row strong { font-size: 1.05rem; color: #201005; }
+        #next-card { padding: 12px 14px; background: linear-gradient(180deg, #ffe68c, var(--panel-yellow)); }
+        #next-card h2 { font-size: 1rem; color: #6f3414; text-transform: uppercase; letter-spacing: 0.08em; }
+        #next-piece-display { border: 3px solid #9e5b14; width: 100px; height: 100px; display: flex; justify-content: center; align-items: center; background-color: rgba(255, 248, 222, 0.92); margin-top: 10px; border-radius: 10px; }
+        #next-piece-display canvas { image-rendering: pixelated; }
+        #startButton {
+            width: 100%;
+            padding: 12px 14px;
+            border: 4px solid var(--panel-brown);
+            border-radius: 12px;
+            background: linear-gradient(180deg, #5ed36d, #2f9f48);
+            color: #fbfff1;
+            font: 700 1rem "Trebuchet MS", Verdana, sans-serif;
+            letter-spacing: 0.04em;
+            cursor: pointer;
+            box-shadow: inset 0 -4px 0 rgba(0, 0, 0, 0.16);
+        }
+        #startButton:hover { filter: brightness(1.04); }
+        #controls-display, #theme-notes {
+            padding: 12px 14px;
+            font-size: 0.72rem;
+            line-height: 1.55;
+            color: #4f250f;
+        }
+        #controls-display h3, #theme-notes h3 {
+            margin-bottom: 8px;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: #7a3917;
+        }
+        #controls-display p, #theme-notes p { margin: 4px 0; }
+        #startButton {
+            margin: 0;
+        }
     </style>
-    <!-- Optional: Use a retro-style font from Google Fonts -->
-    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
 </head>
 <body>
     <div id="game-container">
         <canvas id="tetrisCanvas" width="200" height="400"></canvas>
         <div id="sidebar">
-            <h2>TETRIS</h2>
-            <div id="score-display">Score: 0</div>
-            <div id="level-display">Level: 1</div>
-            <div id="lines-display">Lines: 0</div>
-            <div>
+            <section class="panel hero-panel">
+                <h1>Mushroom Stack</h1>
+                <p>Mario shell on top of clean falling-block loop. Clear rows, climb worlds, keep tower out of clouds.</p>
+            </section>
+            <section class="panel stats-panel">
+                <div class="stat-row"><span>Coins</span><strong id="score-display">0</strong></div>
+                <div class="stat-row"><span>World</span><strong id="level-display">1-1</strong></div>
+                <div class="stat-row"><span>Rows</span><strong id="lines-display">0</strong></div>
+            </section>
+            <section class="panel" id="next-card">
                 <h2>Next</h2>
                 <div id="next-piece-display"></div>
-            </div>
+            </section>
             <button id="startButton">Start Game</button>
+            <section class="panel" id="theme-notes">
+                <h3>Run Goal</h3>
+                <p>Every 10 cleared rows pushes Mario to next world.</p>
+                <p>Single, double, triple, and tetris clears now call out as coin, shell, star, and castle beats.</p>
+            </section>
+            <section class="panel" id="controls-display">
+                <h3>Controls</h3>
+                <p>Move: Left / Right</p>
+                <p>Rotate: Up or Z</p>
+                <p>Drop: Down / Space</p>
+                <p>Pause: P</p>
+                <p>Restart: R</p>
+            </section>
         </div>
     </div>
     <script type="module" src="./src/main.js"></script>

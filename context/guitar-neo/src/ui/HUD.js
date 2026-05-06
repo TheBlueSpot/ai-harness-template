@@ -7,6 +7,7 @@ export class HUD {
         <div><span>Score</span><strong data-field="score">0</strong></div>
         <div><span>Combo</span><strong data-field="combo">0</strong></div>
         <div><span>Judgement</span><strong data-field="judgement">-</strong></div>
+        <div><span>Timing</span><strong data-field="timing">Center</strong></div>
         <div><span>Hyper-Speed</span><strong data-field="hyperSpeed">Idle</strong></div>
       </div>
     `;
@@ -14,6 +15,7 @@ export class HUD {
       score: this.element.querySelector('[data-field="score"]'),
       combo: this.element.querySelector('[data-field="combo"]'),
       judgement: this.element.querySelector('[data-field="judgement"]'),
+      timing: this.element.querySelector('[data-field="timing"]'),
       hyperSpeed: this.element.querySelector('[data-field="hyperSpeed"]'),
     };
   }
@@ -23,11 +25,13 @@ export class HUD {
     const score = safeSnapshot.score ?? 0;
     const combo = safeSnapshot.combo ?? 0;
     const judgement = safeSnapshot.judgement ?? "-";
+    const timing = safeSnapshot.timing ?? "Center";
     const hyperSpeed = safeSnapshot.hyperSpeed ?? "Idle";
     this.element.classList.toggle("is-hidden", state !== "gameplay");
     this.fields.score.textContent = String(score);
     this.fields.combo.textContent = String(combo);
     this.fields.judgement.textContent = judgement;
+    this.fields.timing.textContent = timing;
     this.fields.hyperSpeed.textContent = hyperSpeed;
     this.element.dataset.track = track?.title ?? "";
     this.element.dataset.state = state ?? "boot";

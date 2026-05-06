@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lunar Thrust Rescue</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="shell">
+    <header class="hud" id="hud">
+      <div class="hud__item"><span class="label">Fuel</span><span id="fuelValue">0</span></div>
+      <div class="hud__item"><span class="label">Hull</span><span id="hullValue">0</span></div>
+      <div class="hud__item"><span class="label">Rescued</span><span id="rescueValue">0/0</span></div>
+      <div class="hud__item"><span class="label">Target</span><span id="targetValue">Stand by</span></div>
+      <div class="hud__item"><span class="label">Speed</span><span id="speedValue">0.0</span></div>
+      <div class="hud__item"><span class="label">Altitude</span><span id="altitudeValue">0</span></div>
+    </header>
+    <main class="stage">
+      <canvas id="game" width="1280" height="720" aria-label="Lunar Thrust Rescue"></canvas>
+      <section class="overlay" id="overlay">
+        <div class="panel">
+          <p class="eyebrow">Lunar Thrust Rescue</p>
+          <h1 id="overlayTitle">Route the survivors home.</h1>
+          <p id="overlayBody">Land on beacon pads to pick up stranded crew, bring them back to Command, and manage fuel with clean descents. Arrow keys steer, Up thrusts, Enter starts, R restarts.</p>
+          <button id="startButton" type="button">Start Mission</button>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="./game.js"></script>
+</body>
+</html>

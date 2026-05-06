@@ -40,6 +40,8 @@ Do **not** reach for BranchFS when:
 - You're outside a git repo (`BranchfsManager` requires `git rev-parse --show-toplevel`).
 - You need true multi-process concurrency against the same mount (BranchFS is per-run; each `runId` gets its own disk copy).
 
+Subagent overlap rule: when multiple subagent contracts have overlapping owned paths or unknown ownership, use isolated BranchFS mounts instead of same-worktree execution. Integration still follows the normal inspect/verify/promote flow, and flush remains explicit.
+
 ## Canonical lifecycle
 
 Every BranchFS call site must follow this shape. `try/finally` is non-negotiable: leaking a mount dirties `.local/branchfs/` and can hold file locks on Windows.

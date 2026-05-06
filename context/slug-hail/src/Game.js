@@ -6,6 +6,8 @@ import { BulletManager } from "./actors/Bullet.js";
 import { WaveDirector } from "./WaveDirector.js";
 import { HUD } from "./HUD.js";
 
+const TARGET_WAVES = 7;
+
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
@@ -66,6 +68,7 @@ export class Game {
   reset() {
     this.state = "ready";
     this.message = "Press Space or click to deploy.";
+    this.controlsHintMode = "full";
     this.terrain = new Terrain(this.world);
     this.player = new Player(this.world, this.weapons);
     this.enemies = [];
@@ -132,7 +135,7 @@ export class Game {
       this.reset();
     }
     this.state = "playing";
-    this.message = "Hold lane. Break cover. Survive.";
+    this.message = `Wave 1 of ${TARGET_WAVES}. Hold lane.`;
   }
 
   firePlayerWeapon() {
@@ -155,6 +158,23 @@ export class Game {
       return;
     }
 
+    if (
+      this.controlsHintMode === "full"
+      && (
+        input.up
+        || input.down
+        || input.left
+        || input.right
+        || input.slow
+        || input.switchWeapon
+        || input.fire
+        || input.start
+        || input.aimWorld
+      )
+    ) {
+      this.controlsHintMode = "compact";
+    }
+
     this.player.update(dt, input, this.terrain, this.emit.bind(this));
     if (input.fire) {
       this.firePlayerWeapon();
@@ -173,9 +193,9 @@ export class Game {
     if (this.player.hp <= 0) {
       this.state = "dead";
       this.message = "Downed. Click or Space restart.";
-    } else if (this.waveDirector.wave >= 7 && this.waveDirector.spawnBudget === 0 && this.enemies.length === 0) {
+    } else if (this.waveDirector.wave >= TARGET_WAVES && this.waveDirector.spawnBudget === 0 && this.enemies.length === 0) {
       this.state = "won";
-      this.message = "Landing zone clear.";
+      this.message = `Wave ${TARGET_WAVES} cleared. Landing zone clear.`;
     }
   }
 
@@ -228,14 +248,21 @@ export class Game {
   }
 
   getFrameState() {
+    const wave = this.waveDirector.wave;
+    const spawnRemaining = this.waveDirector.spawnBudget;
+    const cleanupRemaining = wave >= TARGET_WAVES && spawnRemaining === 0 ? this.enemies.length : 0;
     return {
       width: this.view.width,
       height: this.view.height,
       state: this.state,
       score: this.waveDirector.score,
-      wave: this.waveDirector.wave,
+      wave,
+      targetWave: TARGET_WAVES,
       enemies: this.enemies.length,
       message: this.message,
+      spawnRemaining,
+      cleanupRemaining,
+      controlsHintMode: this.controlsHintMode,
       player: {
         hp: this.player.hp,
         maxHp: this.player.maxHp,
@@ -294,9 +321,10 @@ export class Game {
     const body = this.state === "dead"
       ? "Enemy line broke through. Restart, carve new cover, hold harder."
       : this.state === "won"
-        ? "Paratrooper push collapsed. Landing zone survived hail."
-        : "Run-and-gun survival. Shoot terrain open, swap weapons, outlast wave pressure.";
+        ? `Paratrooper push collapsed. You held all ${TARGET_WAVES} waves.`
+        : `Run-and-gun survival. Clear all ${TARGET_WAVES} waves and the last hostile to win.`;
     ctx.fillText(body, 362, 300);
     ctx.fillText("Press Space or click start. Press Q switch weapon.", 362, 350);
+    ctx.fillText(`Win condition: survive ${TARGET_WAVES} waves, then wipe the field clean.`, 362, 382);
   }
 }

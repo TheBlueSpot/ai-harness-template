@@ -1,0 +1,11 @@
+{
+  "extends": "../../../../tsconfig.json",
+  "compilerOptions": {
+    "outDir": "../../../../.tmp-test-data/readable-progression-audit",
+    "rootDir": ".",
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    "types": ["bun-types"]
+  },
+  "include": ["./*.ts"]
+}

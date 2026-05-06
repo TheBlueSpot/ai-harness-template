@@ -1,6 +1,7 @@
 const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
 const game = new window.BubbleClusterGame();
+const audio = window.createBubbleClusterAudio ? window.createBubbleClusterAudio() : null;
 
 const input = {
   dt: 0,
@@ -43,11 +44,16 @@ function toCanvasPoint(event) {
 window.addEventListener("resize", resize);
 
 window.addEventListener("keydown", (event) => {
+  audio?.unlock();
   if (event.key === "ArrowLeft") {
     input.leftHeld = true;
+    input.pointerX = null;
+    input.pointerY = null;
   }
   if (event.key === "ArrowRight") {
     input.rightHeld = true;
+    input.pointerX = null;
+    input.pointerY = null;
   }
   if (event.key === " " || event.key === "Spacebar") {
     event.preventDefault();
@@ -70,21 +76,24 @@ window.addEventListener("keyup", (event) => {
   }
 });
 
-canvas.addEventListener("mousemove", (event) => {
+function updatePointer(event) {
   const point = toCanvasPoint(event);
   input.pointerX = point.x;
   input.pointerY = point.y;
+}
+
+canvas.addEventListener("pointermove", (event) => {
+  updatePointer(event);
 });
 
-canvas.addEventListener("mouseleave", () => {
+canvas.addEventListener("pointerleave", () => {
   input.pointerX = null;
   input.pointerY = null;
 });
 
-canvas.addEventListener("click", (event) => {
-  const point = toCanvasPoint(event);
-  input.pointerX = point.x;
-  input.pointerY = point.y;
+canvas.addEventListener("pointerdown", (event) => {
+  audio?.unlock();
+  updatePointer(event);
   const frameState = game.getFrameState();
   if (frameState.mode === "ready" || frameState.mode === "win" || frameState.mode === "lose") {
     input.startPressed = true;
@@ -101,7 +110,10 @@ function loop(now) {
   lastTime = now;
   input.dt = dt;
   game.update(dt, input);
-  window.renderBubbleCluster(ctx, game.getFrameState());
+  const frameState = game.getFrameState();
+  audio?.playEvents(game.consumeAudioEvents());
+  audio?.syncMusic(frameState);
+  window.renderBubbleCluster(ctx, frameState);
   clearPressedFlags();
   requestAnimationFrame(loop);
 }

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import path from "node:path";
 import { WorkspaceRepository } from "../workspace-repository";
 import { useGitProjectFixture } from "./git-project-fixture";
-import { executeReadyRunUntil, FakePiAgentAdapter, startServerForTest } from "./server-test-harness";
+import { executeReadyRunUntil, FakePiAgentAdapter, startServerForTest, stopServerForTest } from "./server-test-harness";
 
 class FakeSocket extends EventTarget {
   sentPayloads: string[] = [];
@@ -107,6 +107,6 @@ describe("server test harness support", () => {
 
     expect(readyEvent.type).toBe("connection.ready");
     socket.close();
-    server.stop(true);
+    await stopServerForTest(server);
   });
 });

@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bejeweled Burst Cascade</title>
+  <link rel="stylesheet" href="./src/styles.css" />
+</head>
+<body>
+  <main class="app">
+    <section class="shell">
+      <header class="hud">
+        <div class="stat">
+          <span class="label">Score</span>
+          <span id="score">0</span>
+        </div>
+        <div class="stat">
+          <span class="label">Target</span>
+          <span id="target">0</span>
+        </div>
+        <div class="stat">
+          <span class="label">Time</span>
+          <span id="timer">0.0</span>
+        </div>
+        <div class="stat">
+          <span class="label">Combo</span>
+          <span id="combo">x1</span>
+        </div>
+      </header>
+      <section class="stage">
+        <canvas id="game" width="640" height="760" aria-label="Bejeweled Burst Cascade"></canvas>
+        <div class="overlay" id="overlay">
+          <div class="panel">
+            <p class="eyebrow" id="overlay-eyebrow">Match-3 blitz</p>
+            <h1 id="overlay-title">Bejeweled Burst Cascade</h1>
+            <p id="overlay-body">Swap adjacent gems, trigger cascades, and hit the target score before time runs out.</p>
+            <button id="start-button" type="button">Start Run</button>
+            <p class="hint">Mouse: select then swap adjacent gems. `R`: restart.</p>
+          </div>
+        </div>
+      </section>
+    </section>
+  </main>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

@@ -7,7 +7,7 @@ description: Download Craftpix asset archives from craftpix.net by reusing an ex
 
 ## Overview
 
-Use this skill to fetch Craftpix archives into a game-local folder with a saved browser session. Keep the cookie export local, prefer product page URLs as input, and store downloaded packs near the game that uses them.
+Use this skill to fetch Craftpix archives into a game-local folder with a saved browser session. Keep the cookie export local, prefer product page URLs as input, and store downloaded packs near the game that uses them. Use the batch plan helper when several queued catalog entries need assets in one sweep.
 
 ## Workflow
 
@@ -18,6 +18,7 @@ Use this skill to fetch Craftpix archives into a game-local folder with a saved 
 5. Prefer the public Craftpix product page URL. The helper extracts `product_ID` from the page and resolves the premium endpoint as `https://craftpix.net/download/<product_id>/`.
 6. Pass `--subitem <id>` only when the product exposes an alternate package such as a Unity sub-download.
 7. After download, unpack and curate only the files the game needs. Keep attribution or pack notes with that game entry.
+8. If you need several packs across the queue, write a small local JSON plan and run the batch helper so paths and cookie reuse stay consistent.
 
 ## Commands
 
@@ -55,14 +56,46 @@ bun .agents/skills/craftpix-download/scripts/download_asset.ts `
   --output-dir "some-game/assets/source/craftpix"
 ```
 
+Resolve or download several queued packs from one local plan:
+
+```powershell
+bun .agents/skills/craftpix-download/scripts/download_plan.ts `
+  ".local/craftpix/queue-plan.json" `
+  --continue-on-error
+```
+
+Example plan shape:
+
+```json
+{
+  "defaults": {
+    "cookieFile": ".local/craftpix/cookies.txt",
+    "timeout": 60
+  },
+  "downloads": [
+    {
+      "sourceUrl": "https://craftpix.net/product/machine-mobile-ui/",
+      "outputDir": "velocity-grind/assets/source/craftpix"
+    },
+    {
+      "sourceUrl": "https://craftpix.net/product/some-pack/",
+      "subitem": "unity",
+      "outputDir": "some-game/assets/source/craftpix"
+    }
+  ]
+}
+```
+
 ## Guardrails
 
 - Never commit cookie exports or other session secrets.
 - Treat download failures that return HTML as an auth problem first; refresh the cookie export before changing the script.
 - Do not create shared asset buckets unless the user explicitly wants cross-game sharing.
+- Keep batch plans local and game-scoped. A plan is for queue throughput, not a new shared asset system.
 - Keep root markdown high-level; game-specific asset notes belong in the game folder that consumes them.
 
 ## Resources
 
-- `scripts/download_asset.ts`: Resolve Craftpix product pages to download endpoints, reuse exported cookies, and stream the archive to disk with Bun.
+- `scripts/download_asset.ts`: Resolve one Craftpix product page to a download endpoint and stream the archive to disk with Bun.
+- `scripts/download_plan.ts`: Run a local JSON plan for multi-game asset sweeps with shared defaults and optional continue-on-error handling.
 - [references/cookies.md](references/cookies.md): Cookie file location, format, and auth troubleshooting.

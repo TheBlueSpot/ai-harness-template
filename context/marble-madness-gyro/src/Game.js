@@ -117,17 +117,29 @@ export class Game {
     this.score = 0;
   }
 
-  start() {
-    this.levelIndex = 0;
+  loadStage(index, { intro = false } = {}) {
+    this.levelIndex = index;
+    const level = LEVELS[index];
+    this.levelState = createLevelState(level);
+    this.camera = { x: level.camera.x, y: level.camera.y };
+    this.mode = intro ? "stage-intro" : "playing";
+    this.messageTimer = intro ? 0 : 2;
+    this.message = intro ? level.briefing : `${level.name}. Reach checkpoint 1.`;
+  }
+
+  beginStage() {
+    const level = LEVELS[this.levelIndex];
     this.mode = "playing";
-    this.levelState = createLevelState(LEVELS[0]);
+    this.messageTimer = 2;
+    this.message = `${level.name}. Reach checkpoint 1.`;
+  }
+
+  start() {
     this.falls = 0;
     this.totalTime = 0;
     this.totalGems = 0;
     this.score = 0;
-    this.messageTimer = 2.2;
-    this.message = "Tilt into the first ring.";
-    this.camera = { x: LEVELS[0].camera.x, y: LEVELS[0].camera.y };
+    this.loadStage(0, { intro: true });
   }
 
   restart() {
@@ -299,12 +311,7 @@ export class Game {
               this.message = `Course clear. Score ${this.score}.`;
               return;
             }
-            this.levelIndex += 1;
-            const newLevel = LEVELS[this.levelIndex];
-            this.levelState = createLevelState(newLevel);
-            this.camera = { x: newLevel.camera.x, y: newLevel.camera.y };
-            this.messageTimer = 2;
-            this.message = `${newLevel.name}. Reach checkpoint 1.`;
+            this.loadStage(this.levelIndex + 1, { intro: true });
             return;
           }
 
@@ -338,6 +345,7 @@ export class Game {
       stageNumber: this.levelIndex + 1,
       stageCount: LEVELS.length,
       stageName: level.name,
+      stageBriefing: level.briefing,
       timeLeft: state.timeLeft,
       gemsCollected: state.gemsCollected,
       gemsRequired: level.gemsRequired,

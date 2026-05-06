@@ -51,6 +51,15 @@ type InteractiveOptions = {
   onExit?: (exitCode: number) => void;
 };
 
+type ProcessKillSignal = Parameters<Subprocess<"ignore", "ignore", "ignore">["kill"]>[0];
+
+type KillableProcess = {
+  readonly pid: number;
+  readonly exitCode: number | null;
+  readonly exited: Promise<number>;
+  kill(signal?: ProcessKillSignal): void;
+};
+
 const WATCHDOG_POLL_MS = 250;
 const FORCE_KILL_DELAY_MS = 3000;
 export const CLI_PROCESS_OUTPUT_CAP_BYTES = 2 * 1024 * 1024;
@@ -106,7 +115,7 @@ export class CliProcessManager {
         if (snapshot.exceeded && !outputLimitExceeded) {
           outputLimitExceeded = true;
           outputLimitMessage = formatOutputCapExceeded("stdout", snapshot);
-          void terminateProcess(proc);
+          void terminateProcessTree(proc);
         }
       }
     });
@@ -118,7 +127,7 @@ export class CliProcessManager {
         if (snapshot.exceeded && !outputLimitExceeded) {
           outputLimitExceeded = true;
           outputLimitMessage = formatOutputCapExceeded("stderr", snapshot);
-          void terminateProcess(proc);
+          void terminateProcessTree(proc);
         }
       }
     });
@@ -132,18 +141,18 @@ export class CliProcessManager {
       if (options.totalTimeoutMs > 0 && now - startedAt >= options.totalTimeoutMs) {
         timedOut = true;
         hangDetected = true;
-        await terminateProcess(proc);
+        await terminateProcessTree(proc);
         return;
       }
 
       if (options.idleTimeoutMs > 0 && now - lastOutputAt >= options.idleTimeoutMs) {
         hangDetected = true;
-        await terminateProcess(proc);
+        await terminateProcessTree(proc);
       }
     }, WATCHDOG_POLL_MS);
 
     const abortHandler = async () => {
-      await terminateProcess(proc);
+      await terminateProcessTree(proc);
     };
     options.abortSignal?.addEventListener("abort", abortHandler, { once: true });
 
@@ -215,7 +224,7 @@ export class CliProcessManager {
         await proc.stdin.write(data);
       },
       async stop() {
-        await terminateProcess(proc);
+        await terminateProcessTree(proc);
       }
     };
   }
@@ -242,7 +251,12 @@ async function consumeStream(
   }
 }
 
-async function terminateProcess(proc: Subprocess<"pipe", "pipe", "pipe">) {
+export async function terminateProcessTree(proc: KillableProcess) {
+  if (process.platform === "win32") {
+    await terminateWindowsProcessTree(proc);
+    return;
+  }
+
   try {
     proc.kill();
   } catch {
@@ -262,3 +276,32 @@ async function terminateProcess(proc: Subprocess<"pipe", "pipe", "pipe">) {
     }
   }
 }
+
+async function terminateWindowsProcessTree(proc: KillableProcess) {
+  if (proc.exitCode !== null) {
+    return;
+  }
+
+  const killProc = Bun.spawn({
+    cmd: buildWindowsKillTreeCommand(proc.pid),
+    stdout: "ignore",
+    stderr: "ignore"
+  });
+  await Promise.race([killProc.exited, new Promise((resolve) => setTimeout(resolve, FORCE_KILL_DELAY_MS))]);
+
+  if (proc.exitCode === null) {
+    try {
+      proc.kill("SIGKILL");
+    } catch {
+      return;
+    }
+  }
+}
+
+function buildWindowsKillTreeCommand(pid: number) {
+  return ["taskkill", "/PID", String(pid), "/T", "/F"];
+}
+
+export const testExports = {
+  buildWindowsKillTreeCommand
+};

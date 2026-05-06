@@ -1,6 +1,8 @@
-import { ZombieLogic } from "./ZombieLogic.js";
-import { WeaponSystem } from "./WeaponSystem.js";
-import { DayCycle } from "./DayCycle.js";
+const { ZombieLogic, WeaponSystem, DayCycle } = window.StandBreach ?? {};
+
+if (!ZombieLogic || !WeaponSystem || !DayCycle) {
+  throw new Error("Stand Breach dependencies failed to load.");
+}
 
 const shell = document.getElementById("game-shell");
 const canvas = document.getElementById("game-canvas");

@@ -2,12 +2,91 @@
 import { beforeEach, expect, it } from "bun:test";
 import { cleanup, fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { createEmptyAssistantsState, createInitialViewState, harnessStore, readBrowserUiSession, type HarnessViewState } from "../harness-store";
+import type { AssistantLearning, AssistantTodo, BackgroundJob, BackgroundJobRun } from "../../../shared/protocol";
 import { formatShortTimestamp } from "../lib/time-format";
 import { toastStore } from "../toast-store";
 import { createUiTest } from "../utils/tests/test-harness";
 import { captureDispatchedCommands, clearBrowserStateForTests, seedHarnessStoreForTests } from "../utils/tests/store-test-utils";
 import { createHarnessStateFixture, createViewProjectFixture } from "../utils/tests/test-fixtures";
 import { AssistantsPanel } from "./assistants-panel";
+
+function defineScrollMetrics(scrollHeight: number, clientHeight: number) {
+  const originalScrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+  const originalClientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+  const originalScrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
+  const scrollTops = new WeakMap<HTMLElement, number>();
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, value: scrollHeight });
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, value: clientHeight });
+  Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+    configurable: true,
+    get() {
+      return scrollTops.get(this) ?? 0;
+    },
+    set(value) {
+      scrollTops.set(this, Number(value));
+    }
+  });
+  return () => {
+    if (originalScrollHeight) {
+      Object.defineProperty(HTMLElement.prototype, "scrollHeight", originalScrollHeight);
+    }
+    if (originalClientHeight) {
+      Object.defineProperty(HTMLElement.prototype, "clientHeight", originalClientHeight);
+    }
+    if (originalScrollTop) {
+      Object.defineProperty(HTMLElement.prototype, "scrollTop", originalScrollTop);
+    }
+  };
+}
+
+function seedAssistantDetailState(input: {
+  assistantId: string;
+  projectId: string;
+  learnings?: AssistantLearning[];
+  todos?: AssistantTodo[];
+  selectedTab?: "chat" | "todos" | "questions" | "jobs" | "log" | "config" | "learnings";
+}) {
+  const now = new Date().toISOString();
+  const project = createViewProjectFixture({ id: input.projectId });
+  seedHarnessStoreForTests(
+    createHarnessStateFixture({
+      activeLeftTab: "assistants",
+      activeSurface: "assistants",
+      workspace: {
+        activeProjectId: project.id,
+        projects: [project]
+      },
+      assistants: {
+        ...createEmptyAssistantsState(),
+        assistants: [
+          {
+            id: input.assistantId,
+            name: "Repo helper",
+            scope: "project",
+            projectId: project.id,
+            description: "Handles repo tasks",
+            personalityPrompt: "Be helpful",
+            jobPrompt: "Do repo work",
+            agentId: "pi",
+            modeId: "implement",
+            executionModelId: "openai/gpt-5.4",
+            runState: "active",
+            bootstrapState: "completed",
+            failureStreakCount: 0,
+            circuitBreakerState: "closed",
+            unreadQuestionCount: 0,
+            createdAt: now,
+            updatedAt: now
+          }
+        ],
+        selectedAssistantId: input.assistantId,
+        selectedTab: input.selectedTab ?? "learnings",
+        learnings: input.learnings ?? [],
+        todos: input.todos ?? []
+      }
+    })
+  );
+}
 
 createUiTest("AssistantsPanel", () => {
   beforeEach(() => {
@@ -86,6 +165,192 @@ createUiTest("AssistantsPanel", () => {
 
     expect(harnessStore.state.assistants.selectedTab).toBe("learnings");
     expect(screen.getByRole("button", { name: "Open learnings tab" }).className).toContain("bg-(--accent)");
+  });
+
+  it("filters assistant roster by search and persists query", async () => {
+    const now = new Date().toISOString();
+    const project = createViewProjectFixture({ id: "project-assistant-filter" });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        activeLeftTab: "assistants",
+        activeSurface: "assistants",
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        },
+        assistants: {
+          ...createEmptyAssistantsState(),
+          rosterSearch: "backend",
+          assistants: [
+            {
+              id: "assistant-frontend",
+              name: "Frontend operator",
+              scope: "project",
+              projectId: project.id,
+              description: "UI tasks",
+              personalityPrompt: "UI",
+              jobPrompt: "Work on interfaces",
+              agentId: "pi",
+              runState: "active",
+              bootstrapState: "completed",
+              failureStreakCount: 0,
+              circuitBreakerState: "closed",
+              unreadQuestionCount: 0,
+              createdAt: now,
+              updatedAt: now
+            },
+            {
+              id: "assistant-backend",
+              name: "Backend operator",
+              scope: "project",
+              projectId: project.id,
+              description: "API tasks",
+              personalityPrompt: "API",
+              jobPrompt: "Work on services",
+              agentId: "pi",
+              runState: "paused",
+              bootstrapState: "completed",
+              failureStreakCount: 0,
+              circuitBreakerState: "closed",
+              unreadQuestionCount: 0,
+              createdAt: now,
+              updatedAt: now
+            }
+          ]
+        }
+      })
+    );
+
+    render(() => <AssistantsPanel variant="roster" />);
+
+    expect(screen.queryByText("Frontend operator")).toBeNull();
+    expect(screen.getByText("Backend operator")).toBeTruthy();
+    harnessStore.setAssistantPaneFilters({ rosterSearch: "backend" });
+    expect(readBrowserUiSession().assistantPane?.rosterSearch).toBe("backend");
+  });
+
+  it("shows an empty assistant learnings state", () => {
+    seedAssistantDetailState({
+      assistantId: "assistant-empty-learnings",
+      projectId: "project-empty-learnings"
+    });
+
+    render(() => <AssistantsPanel variant="detail" />);
+
+    expect(screen.getByText("No learnings yet.")).not.toBeNull();
+  });
+
+  it("virtualizes assistant learnings without a batch control", () => {
+    const assistantId = "assistant-many-learnings";
+    const now = new Date(2026, 3, 28, 10, 4).toISOString();
+    const learnings = Array.from({ length: 55 }, (_, index): AssistantLearning => ({
+      id: `learning-${index}`,
+      assistantId,
+      summary: `Learning row ${index}`,
+      source: "test",
+      confidence: "medium",
+      createdAt: new Date(Date.parse(now) + index).toISOString()
+    }));
+    learnings.push({
+      id: "learning-summary",
+      assistantId,
+      summary: "Compacted assistant memory",
+      source: "compaction:test",
+      confidence: "high",
+      createdAt: now,
+      kind: "summary",
+      compactedAt: now
+    });
+    seedAssistantDetailState({
+      assistantId,
+      projectId: "project-many-learnings",
+      learnings
+    });
+
+    render(() => <AssistantsPanel variant="detail" />);
+
+    expect(screen.queryByText("Compacted summary")).toBeNull();
+    expect(screen.getByText("Compacted assistant memory")).not.toBeNull();
+    expect(screen.getByText("Learning row 54")).not.toBeNull();
+    expect(screen.queryByText("Learning row 0")).toBeNull();
+
+    expect(screen.queryByRole("button", { name: "Show more assistant learnings" })).toBeNull();
+  });
+
+  it("sends delete commands for assistant todos and learnings", async () => {
+    const commands: unknown[] = [];
+    const assistantId = "assistant-delete-memory";
+    const now = new Date(2026, 3, 28, 10, 4).toISOString();
+    seedAssistantDetailState({
+      assistantId,
+      projectId: "project-delete-memory",
+      selectedTab: "todos",
+      todos: [
+        {
+          id: "todo-delete",
+          assistantId,
+          title: "Clean up old task",
+          state: "pending",
+          sortOrder: 0,
+          createdAt: now,
+          updatedAt: now
+        }
+      ],
+      learnings: [
+        {
+          id: "learning-delete",
+          assistantId,
+          summary: "Old guidance",
+          source: "test",
+          confidence: "medium",
+          createdAt: now
+        }
+      ]
+    });
+    captureDispatchedCommands(commands);
+    const originalConfirm = window.confirm;
+    window.confirm = () => true;
+
+    render(() => <AssistantsPanel variant="detail" />);
+    fireEvent.click(screen.getByRole("button", { name: "Delete Clean up old task" }));
+
+    cleanup();
+    seedAssistantDetailState({
+      assistantId,
+      projectId: "project-delete-memory",
+      selectedTab: "learnings",
+      learnings: [
+        {
+          id: "learning-delete",
+          assistantId,
+          summary: "Old guidance",
+          source: "test",
+          confidence: "medium",
+          createdAt: now
+        }
+      ]
+    });
+    captureDispatchedCommands(commands);
+    render(() => <AssistantsPanel variant="detail" />);
+    fireEvent.click(screen.getByRole("button", { name: "Delete learning Old guidance" }));
+
+    window.confirm = originalConfirm;
+    expect(commands).toMatchObject([
+      {
+        type: "assistant.todo.delete",
+        payload: {
+          assistantId,
+          todoId: "todo-delete"
+        }
+      },
+      {
+        type: "assistant.learning.delete",
+        payload: {
+          assistantId,
+          learningId: "learning-delete"
+        }
+      }
+    ]);
   });
 
   it("seeds new assistants from current composer routing", async () => {
@@ -213,6 +478,74 @@ createUiTest("AssistantsPanel", () => {
 
     expect(copiedText).toBe("Status ready");
     expect(toastStore.toasts[0]?.title).toBe("Message copied");
+  });
+
+  it("keeps assistant chat latest content visible by default", async () => {
+    const now = new Date(2026, 3, 28, 10, 4).toISOString();
+    const project = createViewProjectFixture({
+      id: "project-assistant-default-scroll"
+    });
+    const assistantId = "assistant-default-scroll";
+    const state: Partial<HarnessViewState> = createHarnessStateFixture({
+      workspace: {
+        activeProjectId: project.id,
+        projects: [project]
+      },
+      assistants: {
+        ...createEmptyAssistantsState(),
+        assistants: [
+          {
+            id: assistantId,
+            name: "Repo helper",
+            scope: "project",
+            projectId: project.id,
+            description: "Handles repo tasks",
+            personalityPrompt: "Be helpful",
+            jobPrompt: "Do repo work",
+            agentId: "pi",
+            modeId: "implement",
+            executionModelId: "openai/gpt-5.4",
+            runState: "active",
+            bootstrapState: "completed",
+            failureStreakCount: 0,
+            circuitBreakerState: "closed",
+            unreadQuestionCount: 0,
+            createdAt: now,
+            updatedAt: now
+          }
+        ],
+        threads: [
+          {
+            id: "assistant-thread-default-scroll",
+            assistantId,
+            sessionId: "assistant-session-default-scroll",
+            messageCount: 20,
+            messages: Array.from({ length: 20 }, (_, index) => ({
+              id: `message-user-default-scroll-${index}`,
+              role: "user" as const,
+              kind: "plain" as const,
+              content: `Need status ${index}`,
+              createdAt: new Date(Date.parse(now) + index).toISOString()
+            })),
+            updatedAt: now
+          }
+        ],
+        selectedAssistantId: assistantId,
+        streamingByAssistantId: {
+          [assistantId]: "Streaming status"
+        }
+      }
+    });
+    seedHarnessStoreForTests(state);
+
+    const restoreScrollMetrics = defineScrollMetrics(1000, 200);
+    render(() => <AssistantsPanel variant="detail" />);
+
+    const viewport = document.querySelector("[data-test-assistant-chat-scroll]") as HTMLElement;
+    expect(viewport).not.toBeNull();
+
+    await waitFor(() => expect(screen.getByText("Streaming status")).not.toBeNull());
+    restoreScrollMetrics();
   });
 
   it("sends assistant chat from shared composer", async () => {
@@ -436,5 +769,106 @@ createUiTest("AssistantsPanel", () => {
     await waitFor(() => expect(screen.getByRole("dialog", { name: "Job completed" })).not.toBeNull());
     expect(screen.getAllByText("Collected release notes.").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText(/CHANGELOG.md/)).not.toBeNull();
+  });
+
+  it("shows assistant job failure tracking and run diagnostics", () => {
+    const now = new Date().toISOString();
+    const project = createViewProjectFixture({ id: "project-assistant-jobs" });
+    const assistantId = "assistant-jobs";
+    const job: BackgroundJob = {
+      id: "job-assistant-jobs",
+      projectId: project.id,
+      assistantId,
+      automationThreadId: "thread-automation",
+      kind: "ai-routine",
+      name: "Release patrol",
+      status: "enabled",
+      riskLevel: "safe",
+      definition: {
+        kind: "ai-routine",
+        prompt: "Inspect release status."
+      },
+      schedule: {
+        type: "interval",
+        intervalSeconds: 600,
+        nextRunAt: now,
+        sourceText: "10m"
+      },
+      scheduleInput: "10m",
+      consecutiveFailureCount: 3,
+      backoffUntil: new Date(Date.parse(now) + 5 * 60_000).toISOString(),
+      lastFailureCategory: "controller-lost",
+      createdAt: now,
+      updatedAt: now
+    };
+    const run: BackgroundJobRun = {
+      id: "run-assistant-jobs",
+      jobId: job.id,
+      projectId: project.id,
+      assistantId,
+      automationThreadId: job.automationThreadId,
+      triggerSource: "retry",
+      status: "failed",
+      riskLevel: "safe",
+      approvalStatus: "not-needed",
+      skippedOccurrenceCount: 0,
+      failureMessage: "Background run interrupted before completion",
+      failureCategory: "controller-lost",
+      promptStats: {
+        promptChars: 1800,
+        promptHash: "hash-assistant"
+      },
+      queuedAt: now,
+      startedAt: now,
+      completedAt: now,
+      createdAt: now,
+      updatedAt: now,
+      events: []
+    };
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        activeLeftTab: "assistants",
+        activeSurface: "assistants",
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        },
+        assistants: {
+          ...createEmptyAssistantsState(),
+          selectedAssistantId: assistantId,
+          selectedTab: "jobs",
+          assistants: [
+            {
+              id: assistantId,
+              name: "Release watcher",
+              scope: "project",
+              projectId: project.id,
+              description: "Tracks release risk.",
+              personalityPrompt: "Be direct.",
+              jobPrompt: "Watch release blockers.",
+              agentId: "pi",
+              runState: "active",
+              bootstrapState: "completed",
+              failureStreakCount: 0,
+              circuitBreakerState: "closed",
+              unreadQuestionCount: 0,
+              createdAt: now,
+              updatedAt: now
+            }
+          ]
+        },
+        backgroundJobs: {
+          jobs: [job],
+          runs: [run],
+          templates: []
+        }
+      })
+    );
+
+    render(() => <AssistantsPanel variant="detail" />);
+
+    expect(screen.getByText(/Failure streak 3/)).not.toBeNull();
+    expect(screen.getByText(/Failure category: controller lost/)).not.toBeNull();
+    expect(screen.getByText(/Prompt: 1800 chars, hash hash-assistant/)).not.toBeNull();
   });
 });

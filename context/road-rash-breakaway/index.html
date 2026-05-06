@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Road Rash Breakaway</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="frame">
+        <canvas id="game" width="1280" height="720" aria-label="Road Rash Breakaway"></canvas>
+        <div class="hud">
+          <div class="hud__row">
+            <span id="speed">0 mph</span>
+            <span id="timer">0.0s</span>
+            <span id="checkpoint">CP 0/5</span>
+          </div>
+          <div class="hud__row">
+            <span id="integrity">Bike 100%</span>
+            <span id="heat">Pressure low</span>
+            <span id="score">Score 0</span>
+          </div>
+          <div class="hud__message" id="message">Weave traffic, swipe rivals, reach the next gate.</div>
+        </div>
+        <div class="overlay" id="overlay">
+          <div class="overlay__card">
+            <p class="overlay__eyebrow">Combat racer</p>
+            <h1>Road Rash Breakaway</h1>
+            <p id="overlay-text">
+              Hold your checkpoint line through packed traffic. Close on rival riders, time your swipe when they drift alongside, and keep the sprint alive.
+            </p>
+            <p class="overlay__controls">Drive: Arrow keys or WASD. Swipe: Space. Start: Enter. Restart: R.</p>
+          </div>
+        </div>
+      </section>
+    </main>
+    <script src="./game.js"></script>
+  </body>
+</html>

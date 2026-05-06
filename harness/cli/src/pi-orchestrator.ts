@@ -51,6 +51,9 @@ import {
 import { buildPromptAttachmentContext } from "./chat-attachment-prompt";
 import { resolveSubagentModelId, resolveSubagentReasoningStrength } from "./subagent-defaults";
 import { createMilestoneDeltaParser, extractMilestoneLines, stripMilestoneLines } from "./run-milestone-windows";
+import { assembleDeterministicPrompt } from "./deterministic-prompt";
+import type { PromptCacheIdentity } from "./prompt-cache";
+import type { GeminiCachedAttachmentContext } from "./gemini-cached-contents";
 import {
   buildSubagentEnvironmentBrief,
   discoverRepoSkillPaths,
@@ -89,6 +92,7 @@ export type PiOrchestratorCallbacks = {
 export type PlannerTurnOutcome = {
   planningModelId: ProviderModelId;
   plannerResult: Awaited<ReturnType<typeof planTask>>["plannerResult"];
+  promptStats: Awaited<ReturnType<typeof planTask>>["promptStats"];
   contextUsage?: ProjectContextUsage;
   plan?: AgentPlan;
   executionPlan?: ExecutionPlan;
@@ -137,6 +141,8 @@ export async function runPlannerTurn(
     priorQuestions?: PlanningQuestion[];
     reasoningStrength?: ComposerReasoningStrength;
     fastMode?: boolean;
+    promptCacheIdentity?: PromptCacheIdentity;
+    geminiCachedAttachmentContext?: GeminiCachedAttachmentContext;
     abortSignal?: AbortSignal;
     callbacks?: PiOrchestratorCallbacks;
   }
@@ -184,6 +190,7 @@ export async function runPlannerTurn(
     return {
       planningModelId,
       plannerResult,
+      promptStats: plannerTurn.promptStats,
       contextUsage: plannerTurn.contextUsage
     };
   }
@@ -202,6 +209,15 @@ export async function runPlannerTurn(
     iteration: options.iteration ?? 1,
     origin: options.origin ?? "initial"
   });
+  if (options.subagentWorktreeStrategy === "same-worktree" && executionPlan.subagentWorktreeStrategy === "separate-worktrees") {
+    emitTrace(options.callbacks, {
+      sessionId: options.sessionId,
+      stage: "worktree-provision",
+      message: "Upgraded subagent isolation",
+      detail: "same-worktree -> separate-worktrees due to overlapping owned paths",
+      modelId: executionPlan.executionModelId
+    });
+  }
   const executionTasks = executionPlanToTasks(executionPlan);
   const readyPlannerResult: PlannerReadyTurn = {
     ...plannerResult,
@@ -235,6 +251,7 @@ export async function runPlannerTurn(
   return {
     planningModelId,
     plannerResult: readyPlannerResult,
+    promptStats: plannerTurn.promptStats,
     contextUsage: plannerTurn.contextUsage,
     plan,
     executionPlan
@@ -260,6 +277,8 @@ export async function executeReadyRun(
     executionPlan?: ExecutionPlan;
     reasoningStrength?: ComposerReasoningStrength;
     fastMode?: boolean;
+    promptCacheIdentity?: PromptCacheIdentity;
+    geminiCachedAttachmentContext?: GeminiCachedAttachmentContext;
   }
 ): Promise<ExecutionOutcome> {
   if (!options.readyPlan.usesSubagents) {
@@ -275,6 +294,8 @@ export async function executeReadyRun(
           executionPlan: options.executionPlan,
           reasoningStrength: options.reasoningStrength,
           fastMode: options.fastMode,
+          promptCacheIdentity: options.promptCacheIdentity,
+          geminiCachedAttachmentContext: options.geminiCachedAttachmentContext,
           abortSignal: options.abortSignal,
           callbacks: options.callbacks
         },
@@ -303,6 +324,8 @@ export async function executeReadyRun(
         executionPlan: options.executionPlan,
         reasoningStrength: options.reasoningStrength,
         fastMode: options.fastMode,
+        promptCacheIdentity: options.promptCacheIdentity,
+        geminiCachedAttachmentContext: options.geminiCachedAttachmentContext,
         abortSignal: options.abortSignal,
         callbacks: options.callbacks
       },
@@ -337,6 +360,7 @@ export async function executeReadyRun(
     executionModelId: options.readyPlan.executionModelId,
     reasoningStrength: resolveSubagentReasoningStrength(options.reasoningStrength),
     fastMode: options.fastMode,
+    promptCacheIdentity: options.promptCacheIdentity,
     abortSignal: options.abortSignal,
     verifyResult(input) {
       return verifySubagentResultAgainstContracts(input.task.id, contracts, input.mountPath, input.abortSignal);
@@ -459,9 +483,11 @@ export async function executeReadyRun(
       sessionId: options.sessionId,
       messages: options.messages,
       executionPlan: options.executionPlan,
-      reasoningStrength: options.reasoningStrength,
-      fastMode: options.fastMode,
-      abortSignal: options.abortSignal,
+    reasoningStrength: options.reasoningStrength,
+    fastMode: options.fastMode,
+    promptCacheIdentity: options.promptCacheIdentity,
+    geminiCachedAttachmentContext: options.geminiCachedAttachmentContext,
+    abortSignal: options.abortSignal,
       callbacks: options.callbacks
     },
     options.readyPlan.executionModelId,
@@ -499,6 +525,8 @@ async function executeSameWorktreeSubagents(
     executionPlan?: ExecutionPlan;
     reasoningStrength?: ComposerReasoningStrength;
     fastMode?: boolean;
+    promptCacheIdentity?: PromptCacheIdentity;
+    geminiCachedAttachmentContext?: GeminiCachedAttachmentContext;
   }
 ) {
   const tasks = options.tasksToRun ?? options.readyPlan.subtasks;
@@ -591,6 +619,7 @@ async function executeSameWorktreeSubagents(
               prompt: basePrompt,
               reasoningStrength: subagentReasoningStrength,
               fastMode: options.fastMode,
+              promptCacheIdentity: options.promptCacheIdentity,
               onTextDelta(delta: string) {
                 milestoneParser.push(delta);
               },
@@ -616,6 +645,7 @@ async function executeSameWorktreeSubagents(
               prompt: ["continue", "", basePrompt].join("\n"),
               reasoningStrength: subagentReasoningStrength,
               fastMode: options.fastMode,
+              promptCacheIdentity: options.promptCacheIdentity,
               onTextDelta(delta: string) {
                 milestoneParser.push(delta);
               },
@@ -748,6 +778,8 @@ async function executeMainAgent(
     executionPlan?: ExecutionPlan;
     reasoningStrength?: ComposerReasoningStrength;
     fastMode?: boolean;
+    promptCacheIdentity?: PromptCacheIdentity;
+    geminiCachedAttachmentContext?: GeminiCachedAttachmentContext;
     abortSignal?: AbortSignal;
     callbacks?: PiOrchestratorCallbacks;
   },
@@ -755,13 +787,18 @@ async function executeMainAgent(
   finalExecutionBrief: string
 ) {
   const startedAt = Date.now();
-  const executionInput = await buildExecutionInput(options.cwd, options.messages, finalExecutionBrief, options.executionPlan);
+  const executionInput = await buildExecutionInput(options.cwd, options.messages, finalExecutionBrief, options.executionPlan, undefined, {
+    geminiCachedAttachmentContext: options.geminiCachedAttachmentContext
+  });
   const continuationInput = await buildExecutionInput(
     options.cwd,
     options.messages,
     finalExecutionBrief,
     options.executionPlan,
-    "continue"
+    "continue",
+    {
+      geminiCachedAttachmentContext: options.geminiCachedAttachmentContext
+    }
   );
   const agentLabel = getAgentRuntimeLabel(options.agentId);
   emitTrace(options.callbacks, {
@@ -777,6 +814,9 @@ async function executeMainAgent(
     modelId: executionModelId,
     prompt: executionInput.prompt,
     images: executionInput.images,
+    cacheableUserBlocks: executionInput.cacheableUserBlocks,
+    promptCacheIdentity: options.promptCacheIdentity,
+    geminiCachedContentName: options.geminiCachedAttachmentContext?.cachedContentName,
     readOnly: shouldUseReadOnlyExecutionTools(options.executionPlan),
     reasoningStrength: options.reasoningStrength,
     fastMode: options.fastMode,
@@ -803,7 +843,8 @@ async function executeMainAgent(
     continuationRequest: {
       ...originalRequest,
       prompt: continuationInput.prompt,
-      images: continuationInput.images
+      images: continuationInput.images,
+      cacheableUserBlocks: continuationInput.cacheableUserBlocks
     },
     abortSignal: options.abortSignal,
     store: createExecutionStore(options.callbacks, options.runId, "main"),
@@ -825,6 +866,7 @@ async function executeMainAgent(
       contextWindow: result.contextUsage.contextWindow,
       usagePercent: result.contextUsage.usagePercent,
       totalProcessedTokens: result.contextUsage.sessionStats.tokens.total,
+      cachedInputTokens: result.contextUsage.cachedInputTokens,
       updatedAt: new Date().toISOString()
     });
   }
@@ -858,6 +900,8 @@ export async function executePlanPrerequisites(
     agentId?: AgentId;
     reasoningStrength?: ComposerReasoningStrength;
     fastMode?: boolean;
+    promptCacheIdentity?: PromptCacheIdentity;
+    geminiCachedAttachmentContext?: GeminiCachedAttachmentContext;
     abortSignal?: AbortSignal;
     callbacks?: PiOrchestratorCallbacks;
     onPrerequisiteComplete?: (executionPlan: ExecutionPlan) => void | Promise<void>;
@@ -894,6 +938,8 @@ export async function executePlanPrerequisites(
       readOnly: shouldUseReadOnlyExecutionTools(executionPlan),
       reasoningStrength: options.reasoningStrength,
       fastMode: options.fastMode,
+      promptCacheIdentity: options.promptCacheIdentity,
+      geminiCachedContentName: options.geminiCachedAttachmentContext?.cachedContentName,
       abortSignal: options.abortSignal
     });
 
@@ -906,6 +952,7 @@ export async function executePlanPrerequisites(
         contextWindow: response.contextUsage.contextWindow,
         usagePercent: response.contextUsage.usagePercent,
         totalProcessedTokens: response.contextUsage.sessionStats.tokens.total,
+        cachedInputTokens: response.contextUsage.cachedInputTokens,
         updatedAt: new Date().toISOString()
       });
     }
@@ -1202,6 +1249,8 @@ export async function aggregateSubagentResults(
     executionPlan?: ExecutionPlan;
     reasoningStrength?: ComposerReasoningStrength;
     fastMode?: boolean;
+    promptCacheIdentity?: PromptCacheIdentity;
+    geminiCachedAttachmentContext?: GeminiCachedAttachmentContext;
     abortSignal?: AbortSignal;
     callbacks?: PiOrchestratorCallbacks;
   },
@@ -1213,7 +1262,9 @@ export async function aggregateSubagentResults(
   integrationNote?: string
 ) {
   const startedAt = Date.now();
-  const executionInput = await buildExecutionInput(options.cwd, options.messages, finalExecutionBrief, options.executionPlan);
+  const executionInput = await buildExecutionInput(options.cwd, options.messages, finalExecutionBrief, options.executionPlan, undefined, {
+    geminiCachedAttachmentContext: options.geminiCachedAttachmentContext
+  });
   options.callbacks?.onAggregationStart?.();
   emitTrace(options.callbacks, {
     sessionId: options.sessionId,
@@ -1245,6 +1296,9 @@ export async function aggregateSubagentResults(
       modelId: executionModelId,
       prompt: aggregationPrompt,
       images: executionInput.images,
+      cacheableUserBlocks: executionInput.cacheableUserBlocks,
+      promptCacheIdentity: options.promptCacheIdentity,
+      geminiCachedContentName: options.geminiCachedAttachmentContext?.cachedContentName,
       readOnly: shouldUseReadOnlyExecutionTools(options.executionPlan),
       reasoningStrength: options.reasoningStrength,
       fastMode: options.fastMode,
@@ -1274,6 +1328,9 @@ export async function aggregateSubagentResults(
         aggregationPrompt
       ].join("\n"),
       images: executionInput.images,
+      cacheableUserBlocks: executionInput.cacheableUserBlocks,
+      promptCacheIdentity: options.promptCacheIdentity,
+      geminiCachedContentName: options.geminiCachedAttachmentContext?.cachedContentName,
       readOnly: shouldUseReadOnlyExecutionTools(options.executionPlan),
       reasoningStrength: options.reasoningStrength,
       fastMode: options.fastMode,
@@ -1313,6 +1370,7 @@ export async function aggregateSubagentResults(
       contextWindow: result.contextUsage.contextWindow,
       usagePercent: result.contextUsage.usagePercent,
       totalProcessedTokens: result.contextUsage.sessionStats.tokens.total,
+      cachedInputTokens: result.contextUsage.cachedInputTokens,
       updatedAt: new Date().toISOString()
     });
   }
@@ -1334,6 +1392,35 @@ export function buildExecutionPrompt(
   executionPlan?: ExecutionPlan,
   cwd?: string
 ) {
+  return assembleDeterministicPrompt([
+    {
+      kind: "system",
+      content: [
+        "You are the execution stage for a local coding harness.",
+        "Use the available coding tools when needed and respond with the final assistant answer only."
+      ]
+    },
+    {
+      kind: "workspace",
+      content: cwd ? buildExecutionWorkspaceContext(messages, finalExecutionBrief, executionPlan, cwd) : undefined
+    },
+    {
+      kind: "frozen-plan",
+      content: finalExecutionBrief
+    },
+    {
+      kind: "dynamic",
+      content: ["Conversation transcript:", formatMessages(messages)]
+    }
+  ]);
+}
+
+function buildExecutionWorkspaceContext(
+  messages: ChatMessage[],
+  finalExecutionBrief: string,
+  executionPlan?: ExecutionPlan,
+  cwd?: string
+) {
   const workspacePathGuidance = cwd
     ? buildWorkspacePathGuidance(
         [...messages.filter((message) => message.role === "user").slice(-3).map((message) => message.content), finalExecutionBrief].join(
@@ -1346,9 +1433,6 @@ export function buildExecutionPrompt(
     ? normalizeWorkspaceRelativePaths(finalExecutionBrief, cwd)
     : finalExecutionBrief;
   return [
-    "You are the execution stage for a local coding harness.",
-    "Use the available coding tools when needed and respond with the final assistant answer only.",
-    "",
     executionPlan?.mode
       ? [
           "Active mode:",
@@ -1367,11 +1451,6 @@ export function buildExecutionPrompt(
         ].join("\n")
       : "",
     workspacePathGuidance ?? "",
-    workspacePathGuidance ? "" : undefined,
-    "",
-    "Conversation transcript:",
-    formatMessages(messages),
-    "",
     `Execution brief: ${normalizedFinalExecutionBrief}`
   ].filter(Boolean).join("\n");
 }
@@ -1418,31 +1497,43 @@ async function buildExecutionInput(
   messages: ChatMessage[],
   finalExecutionBrief: string,
   executionPlan?: ExecutionPlan,
-  prefix?: string
+  prefix?: string,
+  options: { geminiCachedAttachmentContext?: GeminiCachedAttachmentContext } = {}
 ) {
-  const attachmentContext = await buildPromptAttachmentContext(messages);
-  const prompt = [
-    prefix,
-    prefix ? "" : undefined,
-    [
-      buildExecutionPrompt(messages, finalExecutionBrief, executionPlan, cwd),
-      attachmentContext.transcript === formatMessages(messages)
-        ? undefined
-        : [
-            "",
-            "Attachment transcript:",
-            attachmentContext.transcript
-          ].join("\n")
-    ]
-      .filter(Boolean)
-      .join("\n")
-  ]
-    .filter(Boolean)
-    .join("\n");
+  const attachmentContext = await buildPromptAttachmentContext(messages, {
+    geminiCachedAttachmentContext: options.geminiCachedAttachmentContext
+  });
+  const basePrompt = assembleDeterministicPrompt([
+    {
+      kind: "system",
+      content: [
+        "You are the execution stage for a local coding harness.",
+        "Use the available coding tools when needed and respond with the final assistant answer only."
+      ]
+    },
+    {
+      kind: "workspace",
+      content: buildExecutionWorkspaceContext(messages, finalExecutionBrief, executionPlan, cwd)
+    },
+    {
+      kind: "attachments",
+      content: attachmentContext.transcript === formatMessages(messages) ? undefined : attachmentContext.transcript
+    },
+    {
+      kind: "frozen-plan",
+      content: finalExecutionBrief
+    },
+    {
+      kind: "dynamic",
+      content: ["Conversation transcript:", formatMessages(messages)]
+    }
+  ]);
+  const prompt = [prefix, prefix ? "" : undefined, basePrompt].filter(Boolean).join("\n");
 
   return {
     prompt,
-    images: attachmentContext.images
+    images: attachmentContext.images,
+    cacheableUserBlocks: attachmentContext.cacheableUserBlocks
   };
 }
 
@@ -1584,9 +1675,13 @@ export function buildExecutionPlan(input: {
 }): ExecutionPlan {
   const prerequisites = normalizePrerequisites(input.plannerResult);
   const contracts = normalizeContracts(input.plannerResult, input.subagentWorktreeStrategy);
+  const effectiveSubagentWorktreeStrategy =
+    input.subagentWorktreeStrategy === "same-worktree" && requiresSeparateWorktreesForContracts(contracts)
+      ? "separate-worktrees"
+      : input.subagentWorktreeStrategy;
   const targetSubagentCount = contracts.length === 0 ? 0 : getTargetSubagentCount(input.plannerResult.difficultyScore);
   const actualSubagentCount =
-    targetSubagentCount < 2 ? 0 : getActualSubagentCount(contracts, targetSubagentCount, input.subagentWorktreeStrategy);
+    targetSubagentCount < 2 ? 0 : getActualSubagentCount(contracts, targetSubagentCount, effectiveSubagentWorktreeStrategy);
   const gateMode = resolveExecutionPlanGateMode(input.mode, input.planExecutionMode, actualSubagentCount);
 
   return {
@@ -1599,7 +1694,7 @@ export function buildExecutionPlan(input: {
     planningModelId: input.planningModelId,
     executionModelId: input.plannerResult.executionModelId,
     route: actualSubagentCount > 1 ? "pi-subagents" : "main",
-    subagentWorktreeStrategy: input.subagentWorktreeStrategy,
+    subagentWorktreeStrategy: effectiveSubagentWorktreeStrategy,
     targetSubagentCount,
     actualSubagentCount: actualSubagentCount > 1 ? actualSubagentCount : 0,
     gating: {
@@ -1813,6 +1908,16 @@ function hasDisjointOwnedPaths(buckets: SubagentContract[][]) {
   return true;
 }
 
+function requiresSeparateWorktreesForContracts(contracts: SubagentContract[]) {
+  if (contracts.length < 2) {
+    return false;
+  }
+  if (contracts.some((contract) => contract.ownedPaths.includes("(planner-unspecified)") || contract.ownedPaths.length === 0)) {
+    return true;
+  }
+  return !hasDisjointOwnedPaths(contracts.map((contract) => [contract]));
+}
+
 function pathsOverlap(leftPaths: string[], rightPaths: string[]) {
   return leftPaths.some((leftPath) =>
     rightPaths.some((rightPath) => {
@@ -1835,3 +1940,4 @@ export function applyAssistantMessage(state: ChatSessionState, assistantMessage:
     isStreaming: false
   };
 }
+

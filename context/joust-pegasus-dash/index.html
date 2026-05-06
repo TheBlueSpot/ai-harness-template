@@ -177,6 +177,37 @@
       const GAME_HEIGHT = 720;
       const GROUND_Y = 650;
       const TWO_PI = Math.PI * 2;
+      const WAVE_CONFIGS = Object.freeze([
+        {
+          count: 4,
+          color: "#ffe9a8",
+          mountColor: "#c48dff",
+          message: "Open with clean stomps and short dash confirms.",
+          type: "lancer",
+        },
+        {
+          count: 5,
+          color: "#ffe9a8",
+          mountColor: "#ff9a70",
+          message: "Wave 2 incoming. Orange riders punish low recoveries.",
+          type: "lancer",
+        },
+        {
+          count: 6,
+          color: "#ffd6d6",
+          mountColor: "#ff9a70",
+          message: "Wave 3 incoming. Ace riders dive faster from above.",
+          type: "ace",
+        },
+        {
+          count: 5,
+          color: "#e9f4ff",
+          mountColor: "#7fe7ff",
+          message: "Final storm wing. Elite dashers hold the high lane.",
+          type: "storm",
+        },
+      ]);
+      const TOTAL_WAVES = WAVE_CONFIGS.length;
       const STATES = Object.freeze({
         MENU: "MENU",
         PLAYING: "PLAYING",
@@ -493,6 +524,8 @@
           this.chargeHold = false;
           this.dashDirection = { x: this.facing, y: 0 };
           this.dashTime = 0;
+          this.dashRecoveryTime = 0;
+          this.dashGraceTime = 0;
           this.dashCooldown = 0;
           this.flapTimer = 0;
           this.aiTimer = 0;
@@ -614,7 +647,7 @@
           this.score = 0;
           this.wave = 1;
           this.flash = 0;
-          this.message = "Dismount every rider in three waves.";
+          this.message = "Dismount every rider in four escalating waves.";
           this.player = this.createPlayer();
           this.enemies = this.spawnWave(this.wave);
           this.looseRiders = [];
@@ -638,17 +671,18 @@
         }
 
         spawnWave(wave) {
-          const count = 3 + wave;
+          const config = WAVE_CONFIGS[wave - 1] ?? WAVE_CONFIGS.at(-1);
+          const count = config.count;
           const enemies = [];
           for (let i = 0; i < count; i += 1) {
             enemies.push(new Rider(
               760 + i * 95 + Math.random() * 90,
               190 + Math.random() * 240,
               {
-                color: wave >= 3 ? "#ffd6d6" : "#ffe9a8",
-                mountColor: wave >= 2 ? "#ff9a70" : "#c48dff",
+                color: config.color,
+                mountColor: config.mountColor,
                 facing: -1,
-                type: wave >= 3 ? "ace" : "lancer",
+                type: config.type,
                 staminaMax: 999,
               },
             ));
@@ -773,6 +807,8 @@
           }
 
           player.dashCooldown = Math.max(0, player.dashCooldown - dt);
+          player.dashRecoveryTime = Math.max(0, player.dashRecoveryTime - dt);
+          player.dashGraceTime = Math.max(0, player.dashGraceTime - dt);
           player.invulnerability = Math.max(0, player.invulnerability - dt);
           this.applyPhysics(player, dt);
         }
@@ -781,6 +817,8 @@
           const strength = clamp(player.charge / player.chargeMax, 0, 1);
           if (strength > 0.15) {
             player.dashTime = 0.18 + strength * 0.2;
+            player.dashRecoveryTime = 0.18 + strength * 0.08;
+            player.dashGraceTime = player.dashTime + player.dashRecoveryTime;
             player.dashCooldown = 0.45;
             this.audio.play("dash", { volume: 0.4, rate: 1 + strength * 0.2 });
             this.particles.emit({
@@ -813,28 +851,34 @@
             const playerOffsetX = this.player.x - enemy.x;
             enemy.facing = playerOffsetX >= 0 ? 1 : -1;
             const drift = clamp(playerOffsetX / 340, -1, 1);
-            enemy.vx += drift * 280 * dt;
-            enemy.vy += clamp(enemy.targetAltitude - enemy.y, -1, 1) * 320 * dt;
+            const driftSpeed = enemy.type === "storm" ? 360 : enemy.type === "ace" ? 320 : 280;
+            const altitudeSpeed = enemy.type === "storm" ? 380 : enemy.type === "ace" ? 350 : 320;
+            enemy.vx += drift * driftSpeed * dt;
+            enemy.vy += clamp(enemy.targetAltitude - enemy.y, -1, 1) * altitudeSpeed * dt;
 
             if (enemy.y > enemy.targetAltitude + 35) {
-              enemy.vy -= enemy.flapPower * dt * 0.78;
+              const flapBias = enemy.type === "storm" ? 0.9 : enemy.type === "ace" ? 0.84 : 0.78;
+              enemy.vy -= enemy.flapPower * dt * flapBias;
             }
 
-            const aggressive = Math.abs(playerOffsetX) < 220 && this.player.y < enemy.y + 30;
+            const aggressionRange = enemy.type === "storm" ? 300 : enemy.type === "ace" ? 250 : 220;
+            const aggressive = Math.abs(playerOffsetX) < aggressionRange && this.player.y < enemy.y + 30;
             if (!enemy.dismounted && aggressive && enemy.dashCooldown <= 0) {
-              enemy.dashTime = 0.16;
-              enemy.dashCooldown = 1.2 + Math.random() * 0.4;
+              enemy.dashTime = enemy.type === "storm" ? 0.2 : 0.16;
+              enemy.dashCooldown = enemy.type === "storm" ? 0.9 + Math.random() * 0.25 : 1.2 + Math.random() * 0.4;
               const direction = normalize({
                 x: playerOffsetX,
-                y: this.player.y - enemy.y - 20,
+                y: this.player.y - enemy.y - (enemy.type === "storm" ? 8 : 20),
               });
               enemy.dashDirection = direction;
             }
 
             if (enemy.dashTime > 0) {
               enemy.dashTime -= dt;
-              enemy.vx = enemy.dashDirection.x * 760;
-              enemy.vy = enemy.dashDirection.y * 540;
+              const dashSpeed = enemy.type === "storm" ? 860 : 760;
+              const dashLift = enemy.type === "storm" ? 610 : 540;
+              enemy.vx = enemy.dashDirection.x * dashSpeed;
+              enemy.vy = enemy.dashDirection.y * dashLift;
             } else {
               enemy.dashCooldown = Math.max(0, enemy.dashCooldown - dt);
             }
@@ -878,11 +922,22 @@
             if (!overlaps(this.player.getRect(), enemy.getRect())) {
               continue;
             }
-            if (this.player.dashTime > 0 && this.player.y < enemy.y - 8) {
+            const playerRecentDash =
+              this.player.dashTime > 0 || this.player.dashRecoveryTime > 0 || this.player.dashGraceTime > 0;
+            const playerDashProtected = playerRecentDash || this.player.invulnerability > 0;
+            const dashStrikeBias = playerRecentDash ? 14 : -2;
+            // Favor committed dash clashes slightly so close overlaps resolve for player instead of
+            // flipping into a trade on the exact frame dash thrust ends.
+            if (playerDashProtected && this.player.y < enemy.y + dashStrikeBias) {
               this.dismountEnemy(enemy, this.player.dashDirection);
               this.player.vy = -240;
               this.player.vx *= 0.75;
               this.score += 150;
+              continue;
+            }
+            if (playerDashProtected) {
+              this.player.vx -= enemy.facing * 35;
+              this.player.vy = Math.min(this.player.vy, -80);
               continue;
             }
             if (enemy.dashTime > 0 && enemy.y < this.player.y - 12 && this.player.invulnerability <= 0) {
@@ -937,6 +992,9 @@
           this.player.charge = 0;
           this.player.chargeHold = false;
           this.player.dashTime = 0;
+          this.player.dashRecoveryTime = 0;
+          this.player.dashGraceTime = 0;
+          this.player.dashCooldown = Math.max(this.player.dashCooldown, 0.18);
           this.player.vx = -this.player.facing * 200;
           this.player.vy = -260;
           this.flash = 0.4;
@@ -969,13 +1027,13 @@
             return;
           }
           if (this.enemies.length === 0) {
-            if (this.wave >= 3) {
+            if (this.wave >= TOTAL_WAVES) {
               this.machine.set(STATES.WIN);
               return;
             }
             this.wave += 1;
             this.score += 300;
-            this.message = `Wave ${this.wave} incoming. More riders, faster dives.`;
+            this.message = WAVE_CONFIGS[this.wave - 1]?.message ?? `Wave ${this.wave} incoming.`;
             this.enemies = this.spawnWave(this.wave);
             this.player.lives = Math.min(3, this.player.lives + 1);
             this.player.stamina = this.player.staminaMax;
@@ -1119,7 +1177,7 @@
           ctx.fillText("Pegasus Dash", 36, 52);
           ctx.font = "14px Trebuchet MS";
           ctx.fillStyle = "#a8c4d8";
-          ctx.fillText(`Wave ${this.wave} / 3`, 36, 78);
+          ctx.fillText(`Wave ${this.wave} / ${TOTAL_WAVES}`, 36, 78);
           ctx.fillText(`Score ${this.score}`, 132, 78);
           ctx.fillText(`Best ${this.bestScore}`, 238, 78);
           ctx.fillText(this.assetWarning, 36, 142);
@@ -1147,7 +1205,7 @@
           ctx.font = "18px Trebuchet MS";
           ctx.fillStyle = "#cde4f2";
           ctx.fillText("Modern sky joust with stamina flight and charged directional dash.", 356, 286);
-          ctx.fillText("Clear three waves by dismounting every airborne rider.", 405, 312);
+          ctx.fillText("Clear four waves and survive the final storm wing.", 400, 312);
           ctx.fillStyle = "#ffffff";
           ctx.fillText("Controls", 584, 358);
           ctx.fillStyle = "#a8c4d8";

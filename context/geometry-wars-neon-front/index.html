@@ -1,0 +1,732 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Geometry Wars Neon Front</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #060816;
+        --panel: rgba(9, 14, 36, 0.86);
+        --line: rgba(145, 228, 255, 0.18);
+        --cyan: #91e4ff;
+        --pink: #ff4fd8;
+        --amber: #ffd166;
+        --lime: #8dff8a;
+        --danger: #ff6474;
+        --white: #f5fbff;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background:
+          radial-gradient(circle at 20% 20%, rgba(145, 228, 255, 0.14), transparent 24%),
+          radial-gradient(circle at 80% 12%, rgba(255, 79, 216, 0.16), transparent 22%),
+          linear-gradient(180deg, #10183c 0%, #060816 78%);
+        color: var(--white);
+        font-family: Arial, Helvetica, sans-serif;
+      }
+
+      main {
+        width: min(100vw, 1120px);
+        padding: 16px;
+      }
+
+      canvas {
+        width: 100%;
+        display: block;
+        border-radius: 22px;
+        border: 1px solid rgba(145, 228, 255, 0.18);
+        background:
+          radial-gradient(circle at 50% 50%, rgba(145, 228, 255, 0.05), transparent 42%),
+          #080c1b;
+        box-shadow: 0 24px 70px rgba(0, 0, 0, 0.38);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <canvas id="game" width="960" height="600" aria-label="Geometry Wars Neon Front" role="img"></canvas>
+    </main>
+    <script>
+      const canvas = document.getElementById("game");
+      const ctx = canvas.getContext("2d");
+
+      const arena = { x: 84, y: 82, w: 792, h: 436 };
+      const center = { x: arena.x + arena.w * 0.5, y: arena.y + arena.h * 0.5 };
+      const keys = new Set();
+      const mouse = { x: center.x, y: center.y, down: false, active: false };
+
+      const laneTemplates = [
+        { x: arena.x + 128, y: arena.y - 10, side: "top" },
+        { x: center.x, y: arena.y - 10, side: "top" },
+        { x: arena.x + arena.w - 128, y: arena.y - 10, side: "top" },
+        { x: arena.x + arena.w + 10, y: arena.y + 104, side: "right" },
+        { x: arena.x + arena.w + 10, y: center.y, side: "right" },
+        { x: arena.x + arena.w + 10, y: arena.y + arena.h - 104, side: "right" },
+        { x: arena.x + 128, y: arena.y + arena.h + 10, side: "bottom" },
+        { x: center.x, y: arena.y + arena.h + 10, side: "bottom" },
+        { x: arena.x + arena.w - 128, y: arena.y + arena.h + 10, side: "bottom" },
+        { x: arena.x - 10, y: arena.y + 104, side: "left" },
+        { x: arena.x - 10, y: center.y, side: "left" },
+        { x: arena.x - 10, y: arena.y + arena.h - 104, side: "left" },
+      ];
+
+      const state = {
+        mode: "title",
+        score: 0,
+        wave: 1,
+        kills: 0,
+        bestMultiplier: 1,
+        multiplier: 1,
+        chainEnergy: 0,
+        chainClock: 0,
+        chainWindow: 3.5,
+        waveTimer: 0,
+        wavePulse: 0,
+        flash: 0,
+        shake: 0,
+        message: "Route through drops to keep the multiplier alive.",
+        enemies: [],
+        bullets: [],
+        sparks: [],
+        drops: [],
+        laneWarnings: [],
+        player: null,
+      };
+
+      function resetGame() {
+        state.mode = "title";
+        state.score = 0;
+        state.wave = 1;
+        state.kills = 0;
+        state.bestMultiplier = 1;
+        state.multiplier = 1;
+        state.chainEnergy = 0;
+        state.chainClock = 0;
+        state.waveTimer = 0;
+        state.wavePulse = 0;
+        state.flash = 0;
+        state.shake = 0;
+        state.message = "Route through drops to keep the multiplier alive.";
+        state.enemies = [];
+        state.bullets = [];
+        state.sparks = [];
+        state.drops = [];
+        state.laneWarnings = [];
+        state.player = createPlayer();
+      }
+
+      function createPlayer() {
+        return {
+          x: center.x,
+          y: center.y,
+          r: 10,
+          speed: 288,
+          hp: 4,
+          cooldown: 0,
+          fireRate: 0.11,
+          facing: { x: 1, y: 0 },
+          dashGlow: 0,
+        };
+      }
+
+      function startRun() {
+        resetGame();
+        state.mode = "running";
+        queueWave(state.wave);
+      }
+
+      function queueWave(wave) {
+        state.wavePulse = 1;
+        state.waveTimer = 1.4;
+        const spikeWave = wave % 3 === 0;
+        state.message = spikeWave ? "Spike wave: more lanes stay hot." : "Sweep lanes and catch the cells.";
+        const count = 5 + wave * 2 + (spikeWave ? 5 : 0);
+        const simultaneous = spikeWave ? 3 : wave >= 5 ? 2 : 1;
+        for (let i = 0; i < count; i += 1) {
+          const delay = 0.5 + i * (spikeWave ? 0.32 : 0.48);
+          for (let j = 0; j < simultaneous; j += 1) {
+            const lane = laneTemplates[Math.floor(Math.random() * laneTemplates.length)];
+            const typeRoll = Math.random();
+            let type = "chaser";
+            if (wave >= 2 && typeRoll > 0.52) type = "spinner";
+            if (wave >= 4 && typeRoll > 0.8) type = "sniper";
+            state.laneWarnings.push({
+              side: lane.side,
+              x: lane.x,
+              y: lane.y,
+              delay: delay + j * 0.12,
+              telegraph: spikeWave ? 0.78 : 0.96,
+              pulse: Math.random() * Math.PI * 2,
+              type,
+              wave,
+            });
+          }
+        }
+      }
+
+      function spawnEnemy(laneWarning) {
+        const lane = laneWarning;
+        let x = lane.x;
+        let y = lane.y;
+        if (lane.side === "top") y = arena.y + 12;
+        if (lane.side === "bottom") y = arena.y + arena.h - 12;
+        if (lane.side === "left") x = arena.x + 12;
+        if (lane.side === "right") x = arena.x + arena.w - 12;
+        const speedBase = 88 + lane.wave * 10;
+        const enemy = {
+          type: lane.type,
+          x,
+          y,
+          vx: 0,
+          vy: 0,
+          r: lane.type === "spinner" ? 12 : lane.type === "sniper" ? 10 : 11,
+          hp: lane.type === "spinner" ? 2 : lane.type === "sniper" ? 1 : 1,
+          speed: speedBase + (lane.type === "spinner" ? 28 : 0),
+          fireCooldown: 1.6 + Math.random() * 0.4,
+          telegraph: lane.type === "sniper" ? 0.9 : 0,
+          pulse: Math.random() * Math.PI * 2,
+          heading: Math.random() * Math.PI * 2,
+        };
+        state.enemies.push(enemy);
+      }
+
+      function createBullet(x, y, dx, dy, speed, friendly) {
+        return { x, y, vx: dx * speed, vy: dy * speed, r: friendly ? 3.5 : 4.5, friendly, life: 1.4 };
+      }
+
+      function createDrop(x, y) {
+        return {
+          x,
+          y,
+          r: 8,
+          ttl: 4.2,
+          bob: Math.random() * Math.PI * 2,
+        };
+      }
+
+      function createSpark(x, y, color, burst) {
+        for (let i = 0; i < burst; i += 1) {
+          const angle = Math.random() * Math.PI * 2;
+          const speed = 28 + Math.random() * 110;
+          state.sparks.push({
+            x,
+            y,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            life: 0.35 + Math.random() * 0.45,
+            color,
+          });
+        }
+      }
+
+      function addScore(amount) {
+        state.score += Math.round(amount * state.multiplier);
+      }
+
+      function update(dt) {
+        if (state.mode !== "running") return;
+
+        state.flash = Math.max(0, state.flash - dt * 2.4);
+        state.shake = Math.max(0, state.shake - dt * 4);
+        state.wavePulse = Math.max(0, state.wavePulse - dt);
+        state.player.cooldown = Math.max(0, state.player.cooldown - dt);
+        state.player.dashGlow = Math.max(0, state.player.dashGlow - dt * 2.8);
+
+        const inputX = (keys.has("KeyD") || keys.has("ArrowRight") ? 1 : 0) - (keys.has("KeyA") || keys.has("ArrowLeft") ? 1 : 0);
+        const inputY = (keys.has("KeyS") || keys.has("ArrowDown") ? 1 : 0) - (keys.has("KeyW") || keys.has("ArrowUp") ? 1 : 0);
+        const len = Math.hypot(inputX, inputY) || 1;
+        const moving = inputX !== 0 || inputY !== 0;
+        if (moving) {
+          state.player.x += (inputX / len) * state.player.speed * dt;
+          state.player.y += (inputY / len) * state.player.speed * dt;
+          state.player.dashGlow = 1;
+        }
+        state.player.x = clamp(state.player.x, arena.x + 18, arena.x + arena.w - 18);
+        state.player.y = clamp(state.player.y, arena.y + 18, arena.y + arena.h - 18);
+
+        const aimX = mouse.x - state.player.x;
+        const aimY = mouse.y - state.player.y;
+        const aimLen = Math.hypot(aimX, aimY) || 1;
+        state.player.facing.x = aimX / aimLen;
+        state.player.facing.y = aimY / aimLen;
+
+        if ((mouse.down || keys.has("Space")) && state.player.cooldown <= 0) {
+          const spread = 0.09;
+          const angle = Math.atan2(state.player.facing.y, state.player.facing.x) + (Math.random() - 0.5) * spread;
+          state.bullets.push(
+            createBullet(
+              state.player.x + Math.cos(angle) * 16,
+              state.player.y + Math.sin(angle) * 16,
+              Math.cos(angle),
+              Math.sin(angle),
+              560,
+              true,
+            ),
+          );
+          state.player.cooldown = state.player.fireRate;
+          state.flash = 0.3;
+          createSpark(state.player.x, state.player.y, "#91e4ff", 4);
+        }
+
+        for (const laneWarning of state.laneWarnings) {
+          laneWarning.delay -= dt;
+          laneWarning.pulse += dt * 7;
+        }
+        const readyWarnings = state.laneWarnings.filter((laneWarning) => laneWarning.delay <= 0);
+        state.laneWarnings = state.laneWarnings.filter((laneWarning) => laneWarning.delay > 0);
+        for (const laneWarning of readyWarnings) {
+          spawnEnemy(laneWarning);
+        }
+
+        for (const enemy of state.enemies) {
+          const dx = state.player.x - enemy.x;
+          const dy = state.player.y - enemy.y;
+          const dist = Math.hypot(dx, dy) || 1;
+          enemy.pulse += dt * 4;
+          if (enemy.type === "chaser") {
+            enemy.vx = (dx / dist) * enemy.speed;
+            enemy.vy = (dy / dist) * enemy.speed;
+          } else if (enemy.type === "spinner") {
+            enemy.heading += dt * 1.7;
+            const orbitX = dx / dist;
+            const orbitY = dy / dist;
+            enemy.vx = orbitX * enemy.speed + Math.cos(enemy.heading) * 58;
+            enemy.vy = orbitY * enemy.speed + Math.sin(enemy.heading) * 58;
+          } else {
+            enemy.fireCooldown -= dt;
+            enemy.telegraph = enemy.fireCooldown < 0.55 ? 1 : 0;
+            if (dist > 210) {
+              enemy.vx = (dx / dist) * (enemy.speed * 0.8);
+              enemy.vy = (dy / dist) * (enemy.speed * 0.8);
+            } else if (dist < 150) {
+              enemy.vx = (-dx / dist) * (enemy.speed * 0.7);
+              enemy.vy = (-dy / dist) * (enemy.speed * 0.7);
+            } else {
+              enemy.vx = 0;
+              enemy.vy = 0;
+            }
+            if (enemy.fireCooldown <= 0) {
+              state.bullets.push(createBullet(enemy.x, enemy.y, dx / dist, dy / dist, 270, false));
+              enemy.fireCooldown = 1.5 - Math.min(0.55, state.wave * 0.04);
+              createSpark(enemy.x, enemy.y, "#ff6474", 6);
+            }
+          }
+          enemy.x += enemy.vx * dt;
+          enemy.y += enemy.vy * dt;
+          enemy.x = clamp(enemy.x, arena.x + enemy.r, arena.x + arena.w - enemy.r);
+          enemy.y = clamp(enemy.y, arena.y + enemy.r, arena.y + arena.h - enemy.r);
+        }
+
+        for (const bullet of state.bullets) {
+          bullet.x += bullet.vx * dt;
+          bullet.y += bullet.vy * dt;
+          bullet.life -= dt;
+        }
+        state.bullets = state.bullets.filter(
+          (bullet) =>
+            bullet.life > 0 &&
+            bullet.x > arena.x - 40 &&
+            bullet.x < arena.x + arena.w + 40 &&
+            bullet.y > arena.y - 40 &&
+            bullet.y < arena.y + arena.h + 40,
+        );
+
+        for (const spark of state.sparks) {
+          spark.x += spark.vx * dt;
+          spark.y += spark.vy * dt;
+          spark.life -= dt;
+        }
+        state.sparks = state.sparks.filter((spark) => spark.life > 0);
+
+        for (const drop of state.drops) {
+          drop.ttl -= dt;
+          drop.bob += dt * 4.8;
+        }
+        state.drops = state.drops.filter((drop) => drop.ttl > 0);
+
+        if (state.chainClock > 0) {
+          state.chainClock -= dt;
+        } else if (state.multiplier > 1) {
+          state.multiplier = Math.max(1, state.multiplier - dt * 2.2);
+        }
+        state.chainEnergy = clamp(state.chainEnergy - dt * 0.06, 0, 1);
+
+        handleCollisions();
+
+        if (state.player.hp <= 0) {
+          state.mode = "gameover";
+          state.message = "Retry fast. Route tighter through the cells.";
+        } else if (state.enemies.length === 0 && state.laneWarnings.length === 0) {
+          state.wave += 1;
+          if (state.wave > 6) {
+            state.mode = "victory";
+            state.message = "Arena clear. Higher route, higher multiplier.";
+          } else {
+            queueWave(state.wave);
+          }
+        }
+      }
+
+      function handleCollisions() {
+        for (const bullet of state.bullets) {
+          if (!bullet.friendly) {
+            if (distance(bullet.x, bullet.y, state.player.x, state.player.y) < bullet.r + state.player.r) {
+              bullet.life = 0;
+              hitPlayer();
+            }
+            continue;
+          }
+
+          for (const enemy of state.enemies) {
+            if (distance(bullet.x, bullet.y, enemy.x, enemy.y) < bullet.r + enemy.r) {
+              bullet.life = 0;
+              enemy.hp -= 1;
+              createSpark(bullet.x, bullet.y, "#91e4ff", 5);
+              if (enemy.hp <= 0) {
+                addScore(90);
+                state.kills += 1;
+                state.drops.push(createDrop(enemy.x, enemy.y));
+                createSpark(enemy.x, enemy.y, enemy.type === "sniper" ? "#ffd166" : "#ff4fd8", 14);
+                enemy.dead = true;
+                state.shake = 0.55;
+              }
+              break;
+            }
+          }
+        }
+
+        for (const enemy of state.enemies) {
+          if (distance(enemy.x, enemy.y, state.player.x, state.player.y) < enemy.r + state.player.r + 2) {
+            enemy.dead = true;
+            createSpark(enemy.x, enemy.y, "#ff6474", 12);
+            hitPlayer();
+          }
+        }
+        state.enemies = state.enemies.filter((enemy) => !enemy.dead);
+
+        for (const drop of state.drops) {
+          if (distance(drop.x, drop.y, state.player.x, state.player.y) < drop.r + state.player.r + 4) {
+            drop.ttl = 0;
+            state.chainEnergy = clamp(state.chainEnergy + 0.28, 0, 1);
+            state.chainClock = state.chainWindow;
+            state.multiplier = clamp(state.multiplier + 0.65, 1, 8);
+            state.bestMultiplier = Math.max(state.bestMultiplier, Math.round(state.multiplier * 10) / 10);
+            addScore(30);
+            createSpark(drop.x, drop.y, "#8dff8a", 10);
+          }
+        }
+      }
+
+      function hitPlayer() {
+        state.player.hp -= 1;
+        state.flash = 0.85;
+        state.shake = 1;
+        state.multiplier = Math.max(1, state.multiplier * 0.55);
+        state.chainEnergy = Math.max(0, state.chainEnergy * 0.4);
+        state.chainClock = 0;
+      }
+
+      function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        const shakeX = state.shake > 0 ? (Math.random() - 0.5) * 8 * state.shake : 0;
+        const shakeY = state.shake > 0 ? (Math.random() - 0.5) * 8 * state.shake : 0;
+        ctx.save();
+        ctx.translate(shakeX, shakeY);
+
+        drawBackground();
+        drawLaneWarnings();
+        drawDrops();
+        drawBullets();
+        drawEnemies();
+        drawPlayer();
+        drawSparks();
+        drawHud();
+        drawOverlay();
+
+        ctx.restore();
+      }
+
+      function drawBackground() {
+        ctx.fillStyle = "#080c1b";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        ctx.strokeStyle = "rgba(145, 228, 255, 0.11)";
+        ctx.lineWidth = 1;
+        for (let x = arena.x; x <= arena.x + arena.w; x += 44) {
+          ctx.beginPath();
+          ctx.moveTo(x, arena.y);
+          ctx.lineTo(x, arena.y + arena.h);
+          ctx.stroke();
+        }
+        for (let y = arena.y; y <= arena.y + arena.h; y += 44) {
+          ctx.beginPath();
+          ctx.moveTo(arena.x, y);
+          ctx.lineTo(arena.x + arena.w, y);
+          ctx.stroke();
+        }
+
+        ctx.strokeStyle = "rgba(145, 228, 255, 0.3)";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(arena.x, arena.y, arena.w, arena.h);
+
+        ctx.strokeStyle = `rgba(255, 79, 216, ${0.28 + state.wavePulse * 0.3})`;
+        ctx.lineWidth = 3;
+        ctx.strokeRect(arena.x - 8, arena.y - 8, arena.w + 16, arena.h + 16);
+      }
+
+      function drawLaneWarnings() {
+        for (const lane of laneWarningsOrEmpty()) {
+          const alpha = 0.18 + Math.max(0, lane.telegraph - Math.max(0, lane.delay)) * 0.9;
+          ctx.strokeStyle = lane.type === "sniper" ? `rgba(255, 209, 102, ${alpha})` : `rgba(255, 100, 116, ${alpha})`;
+          ctx.lineWidth = lane.type === "sniper" ? 8 : 12;
+          ctx.beginPath();
+          if (lane.side === "top" || lane.side === "bottom") {
+            ctx.moveTo(lane.x - 42, lane.y);
+            ctx.lineTo(lane.x + 42, lane.y);
+          } else {
+            ctx.moveTo(lane.x, lane.y - 42);
+            ctx.lineTo(lane.x, lane.y + 42);
+          }
+          ctx.stroke();
+        }
+      }
+
+      function laneWarningsOrEmpty() {
+        return state.laneWarnings;
+      }
+
+      function drawDrops() {
+        for (const drop of state.drops) {
+          const glow = 0.35 + Math.sin(drop.bob) * 0.12;
+          ctx.fillStyle = `rgba(141, 255, 138, ${0.24 + glow})`;
+          ctx.beginPath();
+          ctx.arc(drop.x, drop.y, drop.r + 7, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = "#8dff8a";
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(drop.x, drop.y - 8);
+          ctx.lineTo(drop.x + 8, drop.y);
+          ctx.lineTo(drop.x, drop.y + 8);
+          ctx.lineTo(drop.x - 8, drop.y);
+          ctx.closePath();
+          ctx.stroke();
+        }
+      }
+
+      function drawBullets() {
+        for (const bullet of state.bullets) {
+          ctx.fillStyle = bullet.friendly ? "#91e4ff" : "#ff6474";
+          ctx.beginPath();
+          ctx.arc(bullet.x, bullet.y, bullet.r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      function drawEnemies() {
+        for (const enemy of state.enemies) {
+          if (enemy.type === "chaser") {
+            ctx.strokeStyle = "#ff4fd8";
+            ctx.lineWidth = 2.5;
+            ctx.beginPath();
+            ctx.moveTo(enemy.x, enemy.y - 12);
+            ctx.lineTo(enemy.x + 12, enemy.y);
+            ctx.lineTo(enemy.x, enemy.y + 12);
+            ctx.lineTo(enemy.x - 12, enemy.y);
+            ctx.closePath();
+            ctx.stroke();
+          } else if (enemy.type === "spinner") {
+            ctx.strokeStyle = "#ff6474";
+            ctx.lineWidth = 2.5;
+            ctx.beginPath();
+            ctx.arc(enemy.x, enemy.y, 12, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(enemy.x - 12, enemy.y);
+            ctx.lineTo(enemy.x + 12, enemy.y);
+            ctx.moveTo(enemy.x, enemy.y - 12);
+            ctx.lineTo(enemy.x, enemy.y + 12);
+            ctx.stroke();
+          } else {
+            ctx.strokeStyle = "#ffd166";
+            ctx.lineWidth = 2.5;
+            ctx.beginPath();
+            ctx.rect(enemy.x - 10, enemy.y - 10, 20, 20);
+            ctx.stroke();
+            if (enemy.telegraph > 0) {
+              const dx = state.player.x - enemy.x;
+              const dy = state.player.y - enemy.y;
+              const dist = Math.hypot(dx, dy) || 1;
+              ctx.strokeStyle = `rgba(255, 209, 102, ${0.24 + enemy.telegraph * 0.55})`;
+              ctx.lineWidth = 3;
+              ctx.beginPath();
+              ctx.moveTo(enemy.x, enemy.y);
+              ctx.lineTo(enemy.x + (dx / dist) * 120, enemy.y + (dy / dist) * 120);
+              ctx.stroke();
+            }
+          }
+        }
+      }
+
+      function drawPlayer() {
+        const player = state.player;
+        ctx.save();
+        ctx.translate(player.x, player.y);
+        ctx.rotate(Math.atan2(player.facing.y, player.facing.x));
+        ctx.strokeStyle = "#f5fbff";
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.moveTo(14, 0);
+        ctx.lineTo(-10, -9);
+        ctx.lineTo(-5, 0);
+        ctx.lineTo(-10, 9);
+        ctx.closePath();
+        ctx.stroke();
+        ctx.restore();
+
+        if (player.dashGlow > 0) {
+          ctx.strokeStyle = `rgba(145, 228, 255, ${player.dashGlow * 0.35})`;
+          ctx.lineWidth = 5;
+          ctx.beginPath();
+          ctx.arc(player.x, player.y, 18, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+
+      function drawSparks() {
+        for (const spark of state.sparks) {
+          ctx.fillStyle = spark.color;
+          ctx.globalAlpha = Math.max(0, spark.life);
+          ctx.fillRect(spark.x, spark.y, 2.5, 2.5);
+          ctx.globalAlpha = 1;
+        }
+      }
+
+      function drawHud() {
+        ctx.fillStyle = "rgba(9, 14, 36, 0.86)";
+        ctx.fillRect(24, 18, 230, 78);
+        ctx.fillRect(canvas.width - 250, 18, 226, 78);
+        ctx.fillStyle = "#f5fbff";
+        ctx.font = "700 24px Arial";
+        ctx.fillText(`Score ${state.score}`, 38, 48);
+        ctx.font = "600 16px Arial";
+        ctx.fillStyle = "#91e4ff";
+        ctx.fillText(`Wave ${state.wave <= 6 ? state.wave : 6} / 6`, 38, 72);
+        ctx.fillStyle = "#ff4fd8";
+        ctx.fillText(`HP ${Math.max(0, state.player.hp)}`, 146, 72);
+
+        ctx.fillStyle = "#f5fbff";
+        ctx.font = "700 22px Arial";
+        ctx.fillText(`x${state.multiplier.toFixed(1)}`, canvas.width - 228, 48);
+        ctx.font = "600 15px Arial";
+        ctx.fillStyle = "#8dff8a";
+        ctx.fillText("Catch cells to hold route bonus", canvas.width - 228, 72);
+
+        ctx.strokeStyle = "rgba(141, 255, 138, 0.35)";
+        ctx.strokeRect(canvas.width - 228, 82, 170, 10);
+        ctx.fillStyle = "#8dff8a";
+        ctx.fillRect(canvas.width - 228, 82, 170 * clamp(state.chainClock / state.chainWindow, 0, 1), 10);
+
+        ctx.fillStyle = "rgba(245, 251, 255, 0.9)";
+        ctx.font = "600 14px Arial";
+        ctx.fillText(state.message, 36, canvas.height - 24);
+      }
+
+      function drawOverlay() {
+        if (state.flash > 0) {
+          ctx.fillStyle = `rgba(255, 255, 255, ${state.flash * 0.18})`;
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+
+        if (state.mode === "running") return;
+
+        ctx.fillStyle = "rgba(5, 8, 20, 0.72)";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.textAlign = "center";
+        ctx.fillStyle = "#f5fbff";
+        ctx.font = "700 42px Arial";
+        const title =
+          state.mode === "title" ? "Geometry Wars Neon Front" : state.mode === "victory" ? "Arena Clear" : "Signal Lost";
+        ctx.fillText(title, canvas.width * 0.5, 188);
+        ctx.font = "600 20px Arial";
+        ctx.fillStyle = "#91e4ff";
+        const detail =
+          state.mode === "title"
+            ? "Sweep spawn lanes, break the wave, then route through dropped cells."
+            : state.mode === "victory"
+              ? `Score ${state.score}  |  Best route x${state.bestMultiplier.toFixed(1)}`
+              : `Score ${state.score}  |  Best route x${state.bestMultiplier.toFixed(1)}`;
+        ctx.fillText(detail, canvas.width * 0.5, 226);
+
+        ctx.font = "600 18px Arial";
+        ctx.fillStyle = "#ffd166";
+        ctx.fillText("Move: WASD or arrows  |  Aim: mouse  |  Fire: click or Space", canvas.width * 0.5, 274);
+        ctx.fillText("Red lane bars mark incoming spawns. Green cells keep multiplier alive.", canvas.width * 0.5, 306);
+        ctx.fillStyle = "#8dff8a";
+        ctx.fillText("Press Enter to start. Press R any time for instant retry.", canvas.width * 0.5, 348);
+        ctx.textAlign = "left";
+      }
+
+      function clamp(value, min, max) {
+        return Math.max(min, Math.min(max, value));
+      }
+
+      function distance(ax, ay, bx, by) {
+        return Math.hypot(ax - bx, ay - by);
+      }
+
+      let last = performance.now();
+      function frame(now) {
+        const dt = Math.min(0.033, (now - last) / 1000);
+        last = now;
+        update(dt);
+        draw();
+        requestAnimationFrame(frame);
+      }
+
+      window.addEventListener("keydown", (event) => {
+        keys.add(event.code);
+        if (event.code === "Enter" && state.mode !== "running") {
+          startRun();
+        }
+        if (event.code === "KeyR") {
+          startRun();
+        }
+        if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"].includes(event.code)) {
+          event.preventDefault();
+        }
+      });
+
+      window.addEventListener("keyup", (event) => {
+        keys.delete(event.code);
+      });
+
+      canvas.addEventListener("mousemove", (event) => {
+        const rect = canvas.getBoundingClientRect();
+        mouse.x = ((event.clientX - rect.left) / rect.width) * canvas.width;
+        mouse.y = ((event.clientY - rect.top) / rect.height) * canvas.height;
+        mouse.active = true;
+      });
+
+      canvas.addEventListener("mousedown", () => {
+        mouse.down = true;
+      });
+      window.addEventListener("mouseup", () => {
+        mouse.down = false;
+      });
+
+      resetGame();
+      requestAnimationFrame(frame);
+    </script>
+  </body>
+</html>

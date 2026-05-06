@@ -130,7 +130,8 @@
         position: absolute;
         inset: 0;
         display: none;
-        pointer-events: none;
+        pointer-events: auto;
+        z-index: 2;
       }
 
       .hud.is-visible {
@@ -176,6 +177,42 @@
         grid-template-columns: 1.1fr 1fr;
         gap: 16px;
         padding: 18px;
+      }
+
+      .battle-readout {
+        display: grid;
+        gap: 8px;
+        padding: 0 18px 14px;
+      }
+
+      .battle-readout strong {
+        font-size: 13px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--accent);
+      }
+
+      .battle-readout span {
+        color: var(--muted);
+        line-height: 1.45;
+      }
+
+      .hud-shortcuts {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 0 18px 14px;
+      }
+
+      .shortcut-chip {
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 8px 12px;
+        background: rgba(10, 18, 30, 0.9);
+        color: var(--muted);
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
       }
 
       .spell-column, .lane-column {
@@ -305,6 +342,15 @@
             </div>
           </div>
         </section>
+        <div class="battle-readout" aria-label="Battle objective">
+          <strong>Objective</strong>
+          <span id="battle-objective">Hold all three lanes, spend mana on the focused lane, and break the enemy keep before yours falls.</span>
+        </div>
+        <div class="hud-shortcuts" aria-label="Battle shortcuts">
+          <span class="shortcut-chip">1-3 lane focus</span>
+          <span class="shortcut-chip">Q/W/E/R summon</span>
+          <span class="shortcut-chip">A/S/D/F spells</span>
+        </div>
       </section>
 
       <section id="victory-screen" class="overlay screen" aria-labelledby="victory-title" aria-hidden="true">

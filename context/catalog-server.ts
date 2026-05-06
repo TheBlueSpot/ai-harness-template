@@ -1,12 +1,14 @@
-import { readFile, readdir, stat, writeFile } from "node:fs/promises";
-import { join, normalize, resolve, sep } from "node:path";
+import { readdir, stat } from "node:fs/promises";
+import { dirname, join, normalize, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+import { Database } from "bun:sqlite";
 
-const ROOT = process.cwd();
+const ROOT = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 2999);
 const HIDDEN_PREFIX = ".";
 const CATALOG_ENDPOINT = "/__catalog.json";
 const USER_REVIEWS_ENDPOINT = "/__user-reviews";
-const USER_REVIEWS_FILE = join(ROOT, "user-reviews.json");
+const USER_REVIEWS_DB_FILE = join(ROOT, "user-reviews.sqlite");
 const INFRA_DIRECTORIES = new Set([
   ".agents",
   ".git",
@@ -38,11 +40,38 @@ type ReviewEntry = {
   broken: string;
   dislikes: string;
   likes: string;
+  needsAdditionalFeedback?: boolean;
   rating: number | null;
   updatedAt: string | null;
 };
 
 type ReviewStore = Record<string, ReviewEntry>;
+
+type ReviewPatch = {
+  broken?: string;
+  dislikes?: string;
+  likes?: string;
+  needsAdditionalFeedback?: boolean;
+  rating?: number | null;
+};
+
+type ReviewRow = {
+  broken: string;
+  dislikes: string;
+  likes: string;
+  needs_additional_feedback: number;
+  rating: number | null;
+  slug: string;
+  updated_at: string | null;
+};
+
+let reviewDatabaseReady: Promise<Database> | null = null;
+
+class ReviewConflictError extends Error {
+  constructor(readonly review: ReviewEntry) {
+    super("Review changed since loaded.");
+  }
+}
 
 async function pathStat(pathname: string) {
   try {
@@ -90,52 +119,176 @@ function defaultReviewEntry(): ReviewEntry {
     broken: "",
     dislikes: "",
     likes: "",
+    needsAdditionalFeedback: false,
     rating: null,
     updatedAt: null,
   };
 }
 
-function sanitizeReviewEntry(value: unknown): ReviewEntry {
-  const record = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-  const ratingValue = record.rating;
-  const parsedRating =
-    typeof ratingValue === "number" && Number.isInteger(ratingValue) && ratingValue >= 1 && ratingValue <= 5
-      ? ratingValue
-      : null;
-
+function reviewRowToEntry(row: ReviewRow): ReviewEntry {
   return {
-    broken: typeof record.broken === "string" ? record.broken : "",
-    dislikes: typeof record.dislikes === "string" ? record.dislikes : "",
-    likes: typeof record.likes === "string" ? record.likes : "",
-    rating: parsedRating,
-    updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : null,
+    broken: row.broken,
+    dislikes: row.dislikes,
+    likes: row.likes,
+    ...(row.needs_additional_feedback ? { needsAdditionalFeedback: true } : {}),
+    rating: row.rating,
+    updatedAt: row.updated_at,
   };
 }
 
-async function readReviewStore(): Promise<ReviewStore> {
-  const fileStat = await pathStat(USER_REVIEWS_FILE);
-  if (!fileStat) {
-    await writeReviewStore({});
-    return {};
+async function openReviewDatabase() {
+  if (reviewDatabaseReady) {
+    return reviewDatabaseReady;
   }
 
-  const raw = await readFile(USER_REVIEWS_FILE, "utf8");
-  if (!raw.trim()) {
-    return {};
-  }
+  reviewDatabaseReady = (async () => {
+    const db = new Database(USER_REVIEWS_DB_FILE, { create: true, strict: true });
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS user_reviews (
+        slug TEXT PRIMARY KEY NOT NULL,
+        broken TEXT NOT NULL DEFAULT '',
+        dislikes TEXT NOT NULL DEFAULT '',
+        likes TEXT NOT NULL DEFAULT '',
+        needs_additional_feedback INTEGER NOT NULL DEFAULT 0 CHECK (needs_additional_feedback IN (0, 1)),
+        rating INTEGER CHECK (rating IS NULL OR (rating BETWEEN 1 AND 5)),
+        updated_at TEXT
+      )
+    `);
 
-  const parsed = JSON.parse(raw);
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return {};
-  }
+    return db;
+  })();
 
-  return Object.fromEntries(
-    Object.entries(parsed).map(([slug, review]) => [slug, sanitizeReviewEntry(review)]),
-  );
+  return reviewDatabaseReady;
 }
 
-async function writeReviewStore(store: ReviewStore) {
-  await writeFile(USER_REVIEWS_FILE, `${JSON.stringify(store, null, 2)}\n`, "utf8");
+async function readReviewStore(): Promise<ReviewStore> {
+  const db = await openReviewDatabase();
+  const rows = db
+    .query<ReviewRow, []>(
+      `SELECT
+        slug,
+        broken,
+        dislikes,
+        likes,
+        needs_additional_feedback,
+        rating,
+        updated_at
+      FROM user_reviews
+      ORDER BY slug`,
+    )
+    .all();
+  return Object.fromEntries(rows.map((row) => [row.slug, reviewRowToEntry(row)]));
+}
+
+async function getReviewEntry(slug: string) {
+  const db = await openReviewDatabase();
+  const row = db
+    .query<ReviewRow, [string]>(
+      `SELECT
+        slug,
+        broken,
+        dislikes,
+        likes,
+        needs_additional_feedback,
+        rating,
+        updated_at
+      FROM user_reviews
+      WHERE slug = ?1`,
+    )
+    .get(slug);
+  return row ? reviewRowToEntry(row) : null;
+}
+
+function parseReviewPatch(payload: unknown): { baseUpdatedAt?: string | null; patch: ReviewPatch } {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("Invalid JSON body.");
+  }
+
+  const record = payload as Record<string, unknown>;
+  const allowedKeys = new Set(["baseUpdatedAt", "broken", "dislikes", "likes", "needsAdditionalFeedback", "rating"]);
+  for (const key of Object.keys(record)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(`Unknown review field: ${key}`);
+    }
+  }
+
+  const patch: ReviewPatch = {};
+  if ("rating" in record) {
+    const rating = record.rating;
+    if (rating !== null && !(typeof rating === "number" && Number.isInteger(rating) && rating >= 1 && rating <= 5)) {
+      throw new Error("rating must be null or an integer from 1 to 5.");
+    }
+    patch.rating = rating;
+  }
+
+  for (const key of ["broken", "dislikes", "likes"] as const) {
+    if (key in record) {
+      if (typeof record[key] !== "string") {
+        throw new Error(`${key} must be a string.`);
+      }
+      patch[key] = record[key];
+    }
+  }
+
+  if ("needsAdditionalFeedback" in record) {
+    if (typeof record.needsAdditionalFeedback !== "boolean") {
+      throw new Error("needsAdditionalFeedback must be a boolean.");
+    }
+    patch.needsAdditionalFeedback = record.needsAdditionalFeedback;
+  }
+
+  if (Object.keys(patch).length === 0) {
+    throw new Error("Review patch must include at least one changed field.");
+  }
+
+  const baseUpdatedAt = record.baseUpdatedAt;
+  if (baseUpdatedAt !== undefined && baseUpdatedAt !== null && typeof baseUpdatedAt !== "string") {
+    throw new Error("baseUpdatedAt must be a string or null.");
+  }
+
+  return {
+    baseUpdatedAt: baseUpdatedAt === undefined ? undefined : baseUpdatedAt,
+    patch,
+  };
+}
+
+async function patchReviewEntry(slug: string, patch: ReviewPatch, baseUpdatedAt?: string | null) {
+  const db = await openReviewDatabase();
+  const existing = (await getReviewEntry(slug)) ?? defaultReviewEntry();
+  if (baseUpdatedAt !== undefined && baseUpdatedAt !== existing.updatedAt) {
+    throw new ReviewConflictError(existing);
+  }
+
+  if (!(await getReviewEntry(slug))) {
+    db.query<unknown, [string]>("INSERT INTO user_reviews (slug) VALUES (?1)").run(slug);
+  }
+
+  const assignments: string[] = [];
+  const values: Array<string | number | null> = [];
+  const addAssignment = (column: string, value: string | number | null) => {
+    assignments.push(`${column} = ?${values.length + 1}`);
+    values.push(value);
+  };
+
+  if ("broken" in patch) {
+    addAssignment("broken", patch.broken ?? "");
+  }
+  if ("dislikes" in patch) {
+    addAssignment("dislikes", patch.dislikes ?? "");
+  }
+  if ("likes" in patch) {
+    addAssignment("likes", patch.likes ?? "");
+  }
+  addAssignment("needs_additional_feedback", 0);
+  if ("rating" in patch) {
+    addAssignment("rating", patch.rating ?? null);
+  }
+
+  addAssignment("updated_at", new Date().toISOString());
+  values.push(slug);
+  db.query(`UPDATE user_reviews SET ${assignments.join(", ")} WHERE slug = ?${values.length}`).run(...values);
+  const saved = await getReviewEntry(slug);
+  return saved ?? defaultReviewEntry();
 }
 
 function isValidSlug(slug: string) {
@@ -174,7 +327,7 @@ async function handleUserReviewsRequest() {
   return Response.json(reviews);
 }
 
-async function handleUserReviewUpdate(request: Request, slug: string) {
+async function handleUserReviewPatch(request: Request, slug: string) {
   if (!isValidSlug(slug) || !(await isContentDirectory(slug))) {
     return new Response("Unknown catalog entry.", { status: 404 });
   }
@@ -186,17 +339,21 @@ async function handleUserReviewUpdate(request: Request, slug: string) {
     return new Response("Invalid JSON body.", { status: 400 });
   }
 
-  const review = sanitizeReviewEntry(payload);
-  const nextReview: ReviewEntry = {
-    ...review,
-    updatedAt: new Date().toISOString(),
-  };
+  let parsed: { baseUpdatedAt?: string | null; patch: ReviewPatch };
+  try {
+    parsed = parseReviewPatch(payload);
+  } catch (error) {
+    return new Response(error instanceof Error ? error.message : "Invalid review patch.", { status: 400 });
+  }
 
-  const store = await readReviewStore();
-  store[slug] = nextReview;
-  await writeReviewStore(store);
-
-  return Response.json(nextReview);
+  try {
+    return Response.json(await patchReviewEntry(slug, parsed.patch, parsed.baseUpdatedAt));
+  } catch (error) {
+    if (error instanceof ReviewConflictError) {
+      return Response.json({ error: error.message, review: error.review }, { status: 409 });
+    }
+    throw error;
+  }
 }
 
 async function handleStaticRequest(urlPath: string) {
@@ -245,9 +402,13 @@ const server = Bun.serve({
       return handleUserReviewsRequest();
     }
 
-    if (url.pathname.startsWith(`${USER_REVIEWS_ENDPOINT}/`) && request.method === "PUT") {
+    if (url.pathname.startsWith(`${USER_REVIEWS_ENDPOINT}/`) && request.method === "PATCH") {
       const slug = decodeURIComponent(url.pathname.slice(USER_REVIEWS_ENDPOINT.length + 1));
-      return handleUserReviewUpdate(request, slug);
+      return handleUserReviewPatch(request, slug);
+    }
+
+    if (url.pathname.startsWith(`${USER_REVIEWS_ENDPOINT}/`) && request.method === "PUT") {
+      return new Response("Use PATCH for review updates.", { status: 405 });
     }
 
     const response = await handleStaticRequest(url.pathname);

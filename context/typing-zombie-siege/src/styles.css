@@ -1,0 +1,29 @@
+html, body {
+  margin: 0;
+  min-height: 100%;
+  background:
+    radial-gradient(circle at top, rgba(230, 178, 96, 0.12), transparent 30%),
+    linear-gradient(180deg, #11171b 0%, #070b0e 100%);
+  color: #f4efe6;
+  font-family: "Courier New", monospace;
+}
+
+body {
+  display: grid;
+  place-items: center;
+}
+
+.app-shell {
+  width: 100vw;
+  height: 100vh;
+  display: grid;
+  place-items: center;
+}
+
+canvas {
+  display: block;
+  width: min(100vw, 1600px);
+  height: min(100vh, 900px);
+  box-shadow: 0 24px 90px rgba(0, 0, 0, 0.45);
+  outline: 1px solid rgba(255, 255, 255, 0.08);
+}

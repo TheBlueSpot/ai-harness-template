@@ -15,7 +15,9 @@ const scoreValue = document.getElementById("score-value");
 const livesValue = document.getElementById("lives-value");
 const levelValue = document.getElementById("level-value");
 const ballsValue = document.getElementById("balls-value");
+const burstValue = document.getElementById("burst-value");
 const laserValue = document.getElementById("laser-value");
+const phaseValue = document.getElementById("phase-value");
 
 canvas.width = WIDTH;
 canvas.height = HEIGHT;
@@ -35,7 +37,9 @@ function syncUi(state) {
   livesValue.textContent = `${state.lives}`;
   levelValue.textContent = `${Math.min(state.level, state.levelCount)} / ${state.levelCount}`;
   ballsValue.textContent = `${state.ballCount}`;
+  burstValue.textContent = state.burstActive ? `${state.burstTime.toFixed(1)}s` : "Offline";
   laserValue.textContent = state.laserActive ? `${state.laserTime.toFixed(1)}s` : "Offline";
+  phaseValue.textContent = state.phaseActive ? `${state.phaseTime.toFixed(1)}s` : "Offline";
 
   if (state.overlay) {
     overlay.hidden = false;

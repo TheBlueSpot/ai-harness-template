@@ -27,6 +27,8 @@ import {
 const INITIAL_ENERGY = 260;
 const DEFAULT_FAST_MULTIPLIER = 2;
 const BOARD_ASPECT = 1.65;
+const VIEW_WIDTH = 1440;
+const VIEW_HEIGHT = 900;
 const TOWER_RADIUS = 28;
 const TOWER_CLEARANCE = 12;
 
@@ -50,6 +52,8 @@ const livesValue = document.getElementById("lives-value");
 const countdownValue = document.getElementById("countdown-value");
 const bossValue = document.getElementById("boss-value");
 const enemyTraitsValue = document.getElementById("enemy-traits-value");
+const signalFeedTitle = document.getElementById("signal-feed-title");
+const signalFeedBody = document.getElementById("signal-feed-body");
 const winWavesValue = document.getElementById("win-waves-value");
 const gameoverWavesValue = document.getElementById("gameover-waves-value");
 const gameoverScreen = document.getElementById("gameover-screen");
@@ -57,6 +61,7 @@ const gameoverRestartButton = document.getElementById("gameover-restart-button")
 const selectedTowerTitle = document.getElementById("selected-tower-title");
 const selectedTowerRole = document.getElementById("selected-tower-role");
 const selectedTowerStats = document.getElementById("selected-tower-stats");
+const towerPanel = hud.querySelector(".tower-panel");
 const towerUpgradeChoices = document.getElementById("tower-upgrade-choices");
 const towerUpgradeNote = document.getElementById("tower-upgrade-note");
 const statusMessage = document.createElement("p");
@@ -105,6 +110,8 @@ const state = {
   },
   viewWidth: 0,
   viewHeight: 0,
+  inputScaleX: 1,
+  inputScaleY: 1,
   messageUntil: 0,
   messageTone: "info",
   messageText: "",
@@ -153,8 +160,8 @@ function clearTowerSelection() {
 
 function computeLayout(width, height) {
   const marginX = Math.max(52, Math.floor(width * 0.07));
-  const marginTop = Math.max(92, Math.floor(height * 0.12));
-  const marginBottom = Math.max(124, Math.floor(height * 0.16));
+  const marginTop = Math.max(72, Math.floor(height * 0.09));
+  const marginBottom = Math.max(86, Math.floor(height * 0.11));
   const availableWidth = width - marginX * 2;
   const availableHeight = height - marginTop - marginBottom;
   let boardWidth = availableWidth;
@@ -179,12 +186,14 @@ function computeLayout(width, height) {
 function resizeCanvas() {
   const rect = canvas.getBoundingClientRect();
   const dpr = window.devicePixelRatio || 1;
-  canvas.width = Math.max(1, Math.round(rect.width * dpr));
-  canvas.height = Math.max(1, Math.round(rect.height * dpr));
+  canvas.width = Math.max(1, Math.round(VIEW_WIDTH * dpr));
+  canvas.height = Math.max(1, Math.round(VIEW_HEIGHT * dpr));
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  state.viewWidth = rect.width;
-  state.viewHeight = rect.height;
-  state.layout = computeLayout(rect.width, rect.height);
+  state.viewWidth = VIEW_WIDTH;
+  state.viewHeight = VIEW_HEIGHT;
+  state.inputScaleX = rect.width > 0 ? VIEW_WIDTH / rect.width : 1;
+  state.inputScaleY = rect.height > 0 ? VIEW_HEIGHT / rect.height : 1;
+  state.layout = computeLayout(VIEW_WIDTH, VIEW_HEIGHT);
   pathfinder.setWorld({
     width: state.layout.width,
     height: state.layout.height,
@@ -283,6 +292,7 @@ function updateHud() {
   countdownValue.textContent = info.waveState === "countdown" ? `${Math.max(0, info.countdown).toFixed(1)}s` : "0.0s";
   bossValue.textContent = info.bossActive ? (info.waveState === "countdown" ? "Incoming" : "Live") : info.bossWave ? "Queued" : "None";
   enemyTraitsValue.textContent = (info.enemyTraits && info.enemyTraits.length > 0 ? info.enemyTraits.join(" / ") : "Quiet").slice(0, 36);
+  updateSignalFeed(info);
   if (fastToggle) {
     fastToggle.textContent = state.fastMode ? "Fast x2" : "Fast x1";
     fastToggle.setAttribute("aria-pressed", String(state.fastMode));
@@ -292,6 +302,38 @@ function updateHud() {
     gameoverScreen.setAttribute("aria-hidden", String(state.phase !== "gameover"));
   }
   renderTowerPanel();
+}
+
+function defaultWaveBriefing(info) {
+  const threats = info.enemyTraits?.slice(0, 3).join(", ");
+  if (info.waveState === "countdown") {
+    return info.nextBriefing ?? `Next wave ${info.nextWaveName ?? "broadcast"} is lining up across ${Math.max(1, info.spawnPoints?.length ?? 1)} breach routes.`;
+  }
+
+  if (info.bossActive || info.bossWave) {
+    return info.briefing ?? `Boss pressure is active. Hold one clean route, strip shields, and answer the focal lane before the next phase wall forms.`;
+  }
+
+  if (threats) {
+    return info.briefing ?? `Current pressure mix: ${threats}. Keep the center route readable and punish gaps between spawn bursts.`;
+  }
+
+  return info.briefing ?? "Routes are stable. Build off the center lane and prepare for split entries.";
+}
+
+function updateSignalFeed(info) {
+  if (!signalFeedTitle || !signalFeedBody) {
+    return;
+  }
+
+  if (info.waveState === "countdown") {
+    signalFeedTitle.textContent = `Next: ${info.nextWaveName ?? "Complete"}`;
+    signalFeedBody.textContent = defaultWaveBriefing(info);
+    return;
+  }
+
+  signalFeedTitle.textContent = `Wave ${info.wave}: ${info.waveName}`;
+  signalFeedBody.textContent = defaultWaveBriefing(info);
 }
 
 function currentBlockers() {
@@ -435,13 +477,47 @@ function currentTowerStats(tower) {
   };
 }
 
+function towerPanelSignature() {
+  const tower = selectedTower();
+  const energy = Math.max(0, Math.floor(state.energy));
+  if (!tower) {
+    return `browse|${state.selectedTowerType}|${energy}`;
+  }
+
+  const branches = upgradeChoicesForTower(tower)
+    .map((branch) => `${branch.id}:${canUpgradeTower(state, tower, branch.id) ? 1 : 0}`)
+    .join("|");
+
+  return [
+    "tower",
+    tower.id,
+    tower.type,
+    tower.baseType ?? "",
+    tower.upgradeStage ?? 0,
+    tower.upgradeBranch ?? "",
+    tower.roleLabel ?? "",
+    energy,
+    branches,
+  ].join("|");
+}
+
 function renderTowerPanel() {
+  const signature = towerPanelSignature();
+  if (state.towerPanelSignature === signature) {
+    return;
+  }
+  state.towerPanelSignature = signature;
+
   const tower = selectedTower();
   const isTower = Boolean(tower);
   const baseType = tower?.baseType ?? tower?.type?.split("_")[0] ?? state.selectedTowerType;
   const definition = getTowerDefinition(tower?.type ?? state.selectedTowerType);
   const tree = TOWER_UPGRADES[baseType] ?? null;
   const label = tower ? definition.label : definition.label;
+
+  if (towerPanel) {
+    towerPanel.dataset.mode = isTower ? "selected" : "browse";
+  }
 
   if (selectedTowerTitle) {
     selectedTowerTitle.textContent = label;
@@ -468,19 +544,13 @@ function renderTowerPanel() {
   if (towerUpgradeChoices) {
     towerUpgradeChoices.innerHTML = "";
     const branches = upgradeChoicesForTower(tower);
-    if (!isTower) {
-      const hint = document.createElement("button");
-      hint.type = "button";
-      hint.disabled = true;
-      hint.innerHTML = "<strong>Inspect a tower</strong><span>Click a placed tower to see upgrades.</span>";
-      towerUpgradeChoices.append(hint);
-    } else if (branches.length === 0) {
+    if (isTower && branches.length === 0) {
       const done = document.createElement("button");
       done.type = "button";
       done.disabled = true;
       done.innerHTML = "<strong>Max role</strong><span>Final form reached.</span>";
       towerUpgradeChoices.append(done);
-    } else {
+    } else if (isTower) {
       for (const branch of branches) {
         const upgradeDefinition = branch.definition ?? getTowerDefinition(branch.type);
         const button = document.createElement("button");
@@ -547,7 +617,10 @@ function playPlacementSound() {
 
 function updatePointerCell(event) {
   const rect = canvas.getBoundingClientRect();
-  const point = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  const point = {
+    x: (event.clientX - rect.left) * state.inputScaleX,
+    y: (event.clientY - rect.top) * state.inputScaleY,
+  };
   state.hoverPoint = pointInBoard(point) ? point : null;
 }
 
@@ -574,6 +647,15 @@ function getPathPoints() {
   return pathfinder.findPath(pathfinder.spawn, pathfinder.goalPoint);
 }
 
+function getPreviewPaths() {
+  if (typeof waveManager.getPreviewPaths === "function") {
+    return waveManager.getPreviewPaths(pathfinder);
+  }
+
+  const fallbackPath = getPathPoints();
+  return fallbackPath.length > 0 ? [{ spawnPoint: "default", spawn: state.layout.spawn, path: fallbackPath }] : [];
+}
+
 function drawBackground() {
   const { width, height } = state.viewWidth > 0 ? { width: state.viewWidth, height: state.viewHeight } : canvas.getBoundingClientRect();
   ctx.clearRect(0, 0, width, height);
@@ -598,7 +680,7 @@ function drawBackground() {
 
 function drawBoard() {
   const { originX, originY, cellSize, width, height } = state.layout;
-  const path = getPathPoints();
+  const previewPaths = getPreviewPaths();
   const start = state.layout.spawn;
   const goal = state.layout.goal;
 
@@ -622,19 +704,29 @@ function drawBoard() {
     ctx.stroke();
   }
 
-  if (path.length > 0) {
-    ctx.save();
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    ctx.strokeStyle = "rgba(125, 243, 255, 0.26)";
-    ctx.lineWidth = 5;
-    ctx.beginPath();
-    ctx.moveTo(path[0].x, path[0].y);
-    for (let i = 1; i < path.length; i += 1) {
-      ctx.lineTo(path[i].x, path[i].y);
-    }
-    ctx.stroke();
-    ctx.restore();
+  if (previewPaths.length > 0) {
+    previewPaths.forEach(({ path, spawn }, index) => {
+      ctx.save();
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.strokeStyle = index === 0 ? "rgba(125, 243, 255, 0.3)" : "rgba(125, 243, 255, 0.18)";
+      ctx.lineWidth = index === 0 ? 5 : 3;
+      ctx.setLineDash(index === 0 ? [] : [8, 10]);
+      ctx.beginPath();
+      ctx.moveTo(path[0].x, path[0].y);
+      for (let i = 1; i < path.length; i += 1) {
+        ctx.lineTo(path[i].x, path[i].y);
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+      if (spawn) {
+        ctx.fillStyle = "rgba(125, 243, 255, 0.08)";
+        ctx.beginPath();
+        ctx.arc(spawn.x, spawn.y, cellSize * 0.28, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    });
   }
 
   if (start) {

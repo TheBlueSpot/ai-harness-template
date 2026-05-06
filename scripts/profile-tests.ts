@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { buildBunTestPlan, stripFlag } from "./test-runner";
+import { buildDefaultTestSegments, shouldUseDefaultTestSegments, type TestSegment } from "./test-segments";
 
 const repoRoot = path.resolve(import.meta.dir, "..");
 const profileDir = path.join(repoRoot, ".local", "profiles", "tests");
@@ -13,32 +14,48 @@ const plan = buildBunTestPlan(forwardedArgs, process.env);
 const profiledArgs = stripFlag(stripFlag(stripFlag(plan.bunArgs.slice(1), "--reporter"), "--reporter-outfile"), "--dots");
 
 const profileBasename = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
-const junitXmlPath = path.join(profileDir, `${profileBasename}.xml`);
+const defaultSegments = shouldUseDefaultTestSegments(forwardedArgs)
+  ? buildDefaultTestSegments(repoRoot)
+  : [{ name: "all", targets: [], env: {} }] satisfies TestSegment[];
+const junitXmlPaths = defaultSegments.map((segment) => path.join(profileDir, `${profileBasename}.${segment.name}.xml`));
+const junitXmlPath = junitXmlPaths[0] ?? path.join(profileDir, `${profileBasename}.xml`);
 const outputJsonPath = path.join(profileDir, `${profileBasename}.json`);
 const outputMarkdownPath = path.join(profileDir, `${profileBasename}.md`);
 
 console.log(`[test:profile] writing profiles to ${path.relative(repoRoot, profileDir)}`);
 
-const profiledTestProcess = Bun.spawn({
-  cmd: [
-    process.execPath,
-    "test",
-    ...profiledArgs,
-    "--reporter=junit",
-    `--reporter-outfile=${path.relative(repoRoot, junitXmlPath).replaceAll("\\", "/")}`
-  ],
-  cwd: repoRoot,
-  env: process.env,
-  stdin: "inherit",
-  stdout: "inherit",
-  stderr: "inherit"
-});
+const segmentExitCodes = await Promise.all(defaultSegments.map(async (segment, index) => {
+  const segmentJunitXmlPath = junitXmlPaths[index]!;
+  if (defaultSegments.length > 1) {
+    console.log(`[test:profile] ${segment.name}`);
+  }
+  const segmentStart = performance.now();
+  const profiledTestProcess = Bun.spawn({
+    cmd: [
+      process.execPath,
+      "test",
+      ...profiledArgs,
+      ...segment.targets,
+      "--reporter=junit",
+      `--reporter-outfile=${path.relative(repoRoot, segmentJunitXmlPath).replaceAll("\\", "/")}`
+    ],
+    cwd: repoRoot,
+    env: { ...process.env, ...segment.env },
+    stdin: "inherit",
+    stdout: "inherit",
+    stderr: "inherit"
+  });
 
-const exitCode = await profiledTestProcess.exited;
+  const segmentExitCode = await profiledTestProcess.exited;
+  console.log(`[test:profile] ${segment.name} completed in ${Math.round(performance.now() - segmentStart)}ms`);
+  return segmentExitCode;
+}));
+const exitCode = segmentExitCodes.find((segmentExitCode) => segmentExitCode !== 0) ?? 0;
 
-if (existsSync(junitXmlPath)) {
+const existingJunitXmlPaths = junitXmlPaths.filter((currentPath) => existsSync(currentPath));
+if (existingJunitXmlPaths.length > 0) {
   const report = {
-    ...parseJUnitReport(readFileSync(junitXmlPath, "utf8")),
+    ...mergeParsedReports(existingJunitXmlPaths.map((currentPath) => parseJUnitReport(readFileSync(currentPath, "utf8")))),
     workerCount: plan.workerCount,
     parallelDelayMs: plan.parallelDelayMs
   } satisfies ParsedReport;
@@ -48,6 +65,7 @@ if (existsSync(junitXmlPath)) {
       {
         generatedAt: new Date().toISOString(),
         junitXmlPath: path.relative(repoRoot, junitXmlPath).replaceAll("\\", "/"),
+        junitXmlPaths: existingJunitXmlPaths.map((currentPath) => path.relative(repoRoot, currentPath).replaceAll("\\", "/")),
         workerCount: report.workerCount,
         parallelDelayMs: report.parallelDelayMs,
         tests: report.tests,
@@ -61,8 +79,10 @@ if (existsSync(junitXmlPath)) {
   printSummary(report);
 }
 
-if (existsSync(junitXmlPath) || existsSync(outputJsonPath) || existsSync(outputMarkdownPath)) {
-  console.log(`[test:profile] junit: ${path.relative(repoRoot, junitXmlPath)}`);
+if (existingJunitXmlPaths.length > 0 || existsSync(outputJsonPath) || existsSync(outputMarkdownPath)) {
+  for (const existingJunitXmlPath of existingJunitXmlPaths) {
+    console.log(`[test:profile] junit: ${path.relative(repoRoot, existingJunitXmlPath)}`);
+  }
   console.log(`[test:profile] report: ${path.relative(repoRoot, outputJsonPath)}`);
   console.log(`[test:profile] summary: ${path.relative(repoRoot, outputMarkdownPath)}`);
 }
@@ -120,6 +140,33 @@ function parseJUnitReport(xmlText: string): ParsedReport {
     existing.failures += test.status === "fail" ? 1 : 0;
     existing.assertions += test.assertions;
     fileStats.set(test.file, existing);
+  }
+
+  const files = Array.from(fileStats.values())
+    .map((record) => ({ ...record, durationMs: roundDuration(record.durationMs) }))
+    .sort((left, right) => right.durationMs - left.durationMs);
+
+  return { tests, files };
+}
+
+function mergeParsedReports(reports: ParsedReport[]): ParsedReport {
+  const tests = reports.flatMap((report) => report.tests).sort((left, right) => right.durationMs - left.durationMs);
+  const fileStats = new Map<string, FileProfileRecord>();
+  for (const report of reports) {
+    for (const file of report.files) {
+      const existing = fileStats.get(file.file) ?? {
+        file: file.file,
+        durationMs: 0,
+        tests: 0,
+        failures: 0,
+        assertions: 0
+      };
+      existing.durationMs += file.durationMs;
+      existing.tests += file.tests;
+      existing.failures += file.failures;
+      existing.assertions += file.assertions;
+      fileStats.set(file.file, existing);
+    }
   }
 
   const files = Array.from(fileStats.values())

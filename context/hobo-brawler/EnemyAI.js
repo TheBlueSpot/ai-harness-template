@@ -11,7 +11,7 @@ function seededNoise(id, timeMs) {
   return (Math.abs(hash) % 1000) / 1000;
 }
 
-export class RandomCooldown {
+class RandomCooldown {
   constructor({ minMs = 520, maxMs = 1280 } = {}) {
     this.minMs = minMs;
     this.maxMs = maxMs;
@@ -28,7 +28,7 @@ export class RandomCooldown {
   }
 }
 
-export class EnemyAIController {
+class EnemyAIController {
   constructor(config = {}) {
     this.config = {
       planeTolerance: config.planeTolerance ?? 0.22,
@@ -109,4 +109,5 @@ export class EnemyAIController {
   }
 }
 
-export default EnemyAIController;
+window.RandomCooldown = RandomCooldown;
+window.EnemyAIController = EnemyAIController;

@@ -18,6 +18,8 @@ export class Renderer {
     this.width = ctx.canvas.width;
     this.height = ctx.canvas.height;
     this.patterns = new Map();
+    this.backdropCache = new Map();
+    this.levelCache = new Map();
   }
 
   resize(width, height) {
@@ -51,8 +53,24 @@ export class Renderer {
     return this.patterns.get(key);
   }
 
-  drawBackdrop(width, height, camera) {
-    const ctx = this.ctx;
+  createSurface(width, height) {
+    if (typeof OffscreenCanvas !== "undefined") {
+      return new OffscreenCanvas(width, height);
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    return canvas;
+  }
+
+  getBackdropCache(width, height) {
+    const key = `${width}x${height}`;
+    if (this.backdropCache.has(key)) {
+      return this.backdropCache.get(key);
+    }
+
+    const surface = this.createSurface(width, height);
+    const ctx = surface.getContext("2d");
     const sky = ctx.createLinearGradient(0, 0, 0, height);
     sky.addColorStop(0, "#1c1110");
     sky.addColorStop(0.48, "#120b0a");
@@ -62,6 +80,21 @@ export class Renderer {
 
     ctx.fillStyle = "rgba(255, 140, 98, 0.08)";
     ctx.fillRect(0, height * 0.56, width, height * 0.44);
+
+    const glow = ctx.createRadialGradient(width * 0.55, height * 0.22, 30, width * 0.55, height * 0.3, height * 0.65);
+    glow.addColorStop(0, "rgba(255, 189, 133, 0.15)");
+    glow.addColorStop(1, "rgba(255, 189, 133, 0)");
+    ctx.fillStyle = glow;
+    ctx.fillRect(0, 0, width, height);
+
+    this.backdropCache.set(key, surface);
+    return surface;
+  }
+
+  drawBackdrop(width, height, camera) {
+    const ctx = this.ctx;
+    const backdrop = this.getBackdropCache(width, height);
+    ctx.drawImage(backdrop, 0, 0, width, height);
 
     const mist = this.assets.backgroundMist;
     if (mist) {
@@ -77,85 +110,78 @@ export class Renderer {
       ctx.restore();
     }
 
-    const glow = ctx.createRadialGradient(width * 0.55, height * 0.22, 30, width * 0.55, height * 0.3, height * 0.65);
-    glow.addColorStop(0, "rgba(255, 189, 133, 0.15)");
-    glow.addColorStop(1, "rgba(255, 189, 133, 0)");
-    ctx.fillStyle = glow;
-    ctx.fillRect(0, 0, width, height);
+  }
+
+  getLevelCache(level) {
+    if (!level?.id) return null;
+    const cached = this.levelCache.get(level.id);
+    if (cached) {
+      return cached;
+    }
+
+    const tileSize = level.tileSize ?? 48;
+    const worldWidth = Math.max(1, Math.ceil(level.render?.width ?? 0));
+    const worldHeight = Math.max(1, Math.ceil(level.render?.height ?? 0));
+    const surface = this.createSurface(worldWidth, worldHeight);
+    const ctx = surface.getContext("2d");
+    const terrainPattern = this.assets.terrainCavern ? ctx.createPattern(this.assets.terrainCavern, "repeat") : null;
+    const spikes = this.assets.spikesStrip;
+
+    ctx.fillStyle = "rgba(14, 10, 10, 0.72)";
+    ctx.fillRect(0, 0, worldWidth, worldHeight);
+
+    for (const cell of level.solids ?? []) {
+      const drawX = cell.x * tileSize;
+      const drawY = cell.y * tileSize;
+      if (terrainPattern) {
+        ctx.save();
+        ctx.translate(drawX, drawY);
+        ctx.fillStyle = terrainPattern;
+        ctx.fillRect(0, 0, tileSize, tileSize);
+        ctx.restore();
+      } else {
+        ctx.fillStyle = "#402824";
+        ctx.fillRect(drawX, drawY, tileSize, tileSize);
+      }
+      ctx.strokeStyle = "rgba(255, 210, 176, 0.12)";
+      ctx.strokeRect(drawX + 0.5, drawY + 0.5, tileSize - 1, tileSize - 1);
+    }
+
+    for (const cell of level.hazards ?? []) {
+      const drawX = cell.x * tileSize;
+      const drawY = cell.y * tileSize;
+      ctx.fillStyle = "rgba(255, 56, 56, 0.18)";
+      ctx.fillRect(drawX, drawY, tileSize, tileSize);
+      if (spikes) {
+        ctx.drawImage(spikes, drawX, drawY, tileSize, tileSize);
+      } else {
+        ctx.fillStyle = "#ff4444";
+        ctx.beginPath();
+        ctx.moveTo(drawX, drawY + tileSize);
+        ctx.lineTo(drawX + tileSize * 0.5, drawY);
+        ctx.lineTo(drawX + tileSize, drawY + tileSize);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+
+    this.levelCache.set(level.id, surface);
+    return surface;
   }
 
   drawLevel(level, camera, width, height) {
     if (!level) return;
     const ctx = this.ctx;
-    const tileSize = level.tileSize ?? 48;
-    const terrainPattern = this.getPattern("terrain", this.assets.terrainCavern);
-
     const topLeft = worldToScreen(camera, width, height, 0, 0);
-    const boundsWidth = (level.render?.width ?? 0) * camera.zoom;
-    const boundsHeight = (level.render?.height ?? 0) * camera.zoom;
-    ctx.save();
-    ctx.fillStyle = "rgba(14, 10, 10, 0.72)";
-    ctx.fillRect(topLeft.x, topLeft.y, boundsWidth, boundsHeight);
-    ctx.restore();
-
-    for (const cell of level.solids ?? []) {
-      const screen = worldToScreen(
-        camera,
-        width,
-        height,
-        cell.x * tileSize + tileSize * 0.5,
-        cell.y * tileSize + tileSize * 0.5
-      );
-      const drawSize = tileSize * camera.zoom;
-      const drawX = screen.x - drawSize * 0.5;
-      const drawY = screen.y - drawSize * 0.5;
-
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(drawX, drawY, drawSize, drawSize);
-      ctx.clip();
-      if (terrainPattern) {
-        ctx.translate(drawX, drawY);
-        ctx.scale(camera.zoom, camera.zoom);
-        ctx.fillStyle = terrainPattern;
-        ctx.fillRect(0, 0, tileSize / camera.zoom + tileSize, tileSize / camera.zoom + tileSize);
-      } else {
-        ctx.fillStyle = "#402824";
-        ctx.fillRect(drawX, drawY, drawSize, drawSize);
-      }
-      ctx.restore();
-
-      ctx.strokeStyle = "rgba(255, 210, 176, 0.12)";
-      ctx.strokeRect(drawX + 0.5, drawY + 0.5, drawSize - 1, drawSize - 1);
-    }
-
-    const spikes = this.assets.spikesStrip;
-    for (const cell of level.hazards ?? []) {
-      const screen = worldToScreen(
-        camera,
-        width,
-        height,
-        cell.x * tileSize + tileSize * 0.5,
-        cell.y * tileSize + tileSize * 0.5
-      );
-      const drawSize = tileSize * camera.zoom;
-      const drawX = screen.x - drawSize * 0.5;
-      const drawY = screen.y - drawSize * 0.5;
-
-      ctx.fillStyle = "rgba(255, 56, 56, 0.18)";
-      ctx.fillRect(drawX, drawY, drawSize, drawSize);
-      if (spikes) {
-        ctx.drawImage(spikes, drawX, drawY, drawSize, drawSize);
-      } else {
-        ctx.fillStyle = "#ff4444";
-        ctx.beginPath();
-        ctx.moveTo(drawX, drawY + drawSize);
-        ctx.lineTo(drawX + drawSize * 0.5, drawY);
-        ctx.lineTo(drawX + drawSize, drawY + drawSize);
-        ctx.closePath();
-        ctx.fill();
-      }
-    }
+    const cachedLevel = this.getLevelCache(level);
+    if (!cachedLevel) return;
+    ctx.drawImage(
+      cachedLevel,
+      topLeft.x,
+      topLeft.y,
+      cachedLevel.width * camera.zoom,
+      cachedLevel.height * camera.zoom
+    );
   }
 
   drawGoal(level, camera, width, height) {

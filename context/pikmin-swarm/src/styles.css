@@ -1,0 +1,97 @@
+:root {
+  color-scheme: dark;
+  --bg: #09110d;
+  --panel: rgba(15, 25, 19, 0.84);
+  --panel-border: rgba(188, 229, 154, 0.22);
+  --text: #eef5df;
+  --muted: #acc39a;
+  --accent: #d9ef7a;
+}
+
+html, body {
+  margin: 0;
+  min-height: 100%;
+  background:
+    radial-gradient(circle at top, rgba(121, 183, 84, 0.2), transparent 36%),
+    linear-gradient(180deg, #132118 0%, var(--bg) 100%);
+  color: var(--text);
+  font-family: system-ui, sans-serif;
+}
+
+body { min-height: 100vh; }
+
+.shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.stage {
+  position: relative;
+  width: min(1280px, 100%);
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--panel-border);
+  border-radius: 20px;
+  overflow: hidden;
+  background: #0f1712;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+}
+
+canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.hud {
+  position: absolute;
+  left: 16px;
+  top: 16px;
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  backdrop-filter: blur(10px);
+  max-width: min(360px, calc(100% - 32px));
+}
+
+.hud > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.hud span { color: var(--muted); }
+.hud strong { color: var(--accent); }
+.hud__prompt { margin: 4px 0 0; color: var(--text); }
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  gap: 14px;
+  text-align: center;
+  background: linear-gradient(180deg, rgba(4, 8, 6, 0.36), rgba(4, 8, 6, 0.72));
+  padding: 32px;
+}
+
+.overlay[hidden] {
+  display: none;
+}
+
+.overlay__eyebrow { margin: 0; color: var(--muted); text-transform: uppercase; letter-spacing: 0.16em; }
+.overlay__title { margin: 0; font-size: clamp(2.2rem, 5vw, 4.6rem); }
+.overlay__copy { margin: 0 auto; max-width: 44rem; color: #e5eed8; }
+.overlay__button {
+  justify-self: center;
+  border: 0;
+  border-radius: 999px;
+  padding: 12px 22px;
+  background: var(--accent);
+  color: #1f280f;
+  font: 700 1rem/1 system-ui, sans-serif;
+}

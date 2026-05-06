@@ -11,9 +11,13 @@ const startButton = document.getElementById("start-button");
 const restartButton = document.getElementById("restart-button");
 
 const hudNodes = {
+  page: document.getElementById("page-value"),
+  progress: document.getElementById("progress-value"),
   zone: document.getElementById("zone-value"),
+  status: document.getElementById("status-value"),
   time: document.getElementById("time-value"),
   flow: document.getElementById("flow-value"),
+  tricks: document.getElementById("tricks-value"),
   speed: document.getElementById("speed-value"),
 };
 
@@ -24,6 +28,7 @@ const resultNodes = {
 };
 
 const game = new Game();
+window.__FANCY_PANTS_FLOW__ = { game };
 
 const input = {
   down: {
@@ -82,17 +87,22 @@ function updateUi(state) {
   app.dataset.state = state.appState;
   menuScreen.setAttribute("aria-hidden", state.appState === "menu" ? "false" : "true");
   hud.setAttribute("aria-hidden", state.appState === "playing" ? "false" : "true");
-  resultScreen.setAttribute("aria-hidden", state.appState === "finished" ? "false" : "true");
+  resultScreen.setAttribute("aria-hidden", state.appState === "finished" || state.appState === "intermission" ? "false" : "true");
 
   hudNodes.zone.textContent = state.zone;
+  hudNodes.status.textContent = state.status;
+  hudNodes.page.textContent = state.page;
+  hudNodes.progress.textContent = state.progress;
   hudNodes.time.textContent = state.time;
   hudNodes.flow.textContent = `${state.flow}`;
+  hudNodes.tricks.textContent = state.tricks;
   hudNodes.speed.textContent = `${state.speed}`;
 
   if (state.result) {
     resultNodes.eyebrow.textContent = state.result.eyebrow;
     resultNodes.title.textContent = state.result.title;
     resultNodes.copy.textContent = state.result.copy;
+    restartButton.textContent = state.result.buttonLabel ?? "Restart";
   }
 }
 
@@ -126,6 +136,10 @@ startButton.addEventListener("click", () => {
 });
 
 restartButton.addEventListener("click", () => {
+  if (game.getFrameState().appState === "intermission") {
+    input.pressed.enter = true;
+    return;
+  }
   input.pressed.restart = true;
 });
 

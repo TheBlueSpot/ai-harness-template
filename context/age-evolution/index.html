@@ -55,13 +55,17 @@
 
       .panel {
         pointer-events: auto;
-        max-width: min(460px, calc(100vw - 32px));
-        padding: 14px 16px;
-        border-radius: 18px;
+        max-width: min(360px, calc(100vw - 24px));
+        padding: 12px 14px;
+        border-radius: 16px;
         border: 1px solid var(--line);
-        background: var(--panel);
+        background: rgba(10, 18, 28, 0.76);
         backdrop-filter: blur(10px);
         box-shadow: 0 18px 38px rgba(0, 0, 0, 0.28);
+      }
+
+      .hero-panel {
+        max-width: min(350px, calc(100vw - 24px));
       }
 
       .eyebrow,
@@ -80,8 +84,8 @@
       }
 
       h1 {
-        font-size: clamp(1.3rem, 3vw, 2.3rem);
-        line-height: 1.06;
+        font-size: clamp(1.05rem, 2vw, 1.45rem);
+        line-height: 1.15;
       }
 
       #summary,
@@ -154,8 +158,14 @@
 
       .bottom {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        grid-template-columns: auto auto;
+        justify-content: space-between;
+        align-items: end;
         gap: 14px;
+      }
+
+      .bottom .panel {
+        max-width: min(330px, calc(50vw - 24px));
       }
 
       @media (max-width: 860px) {
@@ -184,9 +194,9 @@
 
     <section class="hud" aria-live="polite">
       <div class="row">
-        <div class="panel">
+        <div class="panel hero-panel">
           <p class="eyebrow">Age Evolution</p>
-          <h1>Push three lanes, evolve through eras, break enemy base.</h1>
+          <h1>Pick a lane. Counter hard. Break three walls.</h1>
           <p id="summary">Gold 0 | Era 1 | Lane 1</p>
         </div>
         <div class="panel">
@@ -199,14 +209,14 @@
       <div class="bottom">
         <div class="panel">
           <p class="label">Lane + Unit</p>
-          <p id="help">Keys `1-3` pick lane. `Q/W/E` spawn units. `F` advances era when affordable.</p>
+          <p id="help">Keys `1-3` pick a lane, `Q/W/E` spawn counters, and `F` advances era when affordable. Keep one lane under pressure while you prep the next push.</p>
           <div id="laneControls" class="controls"></div>
           <div id="unitControls" class="controls"></div>
         </div>
 
         <div class="panel">
           <p class="label">Tech</p>
-          <p id="techText">Advance through four eras. Each jump upgrades base shell, unlocks fresh counters, and raises income.</p>
+          <p id="techText">Advance through four eras. Each fallen wall funds the next act and the final capital push.</p>
           <div id="techControls" class="controls"></div>
         </div>
       </div>
@@ -215,7 +225,7 @@
     <section id="overlay" class="overlay">
       <div class="panel">
         <h2 id="overlayTitle">Age Evolution</h2>
-        <p id="overlayText">Lane-war siege. Spawn counters, time era jumps, crack enemy fortress before theirs outscales yours.</p>
+        <p id="overlayText">Three-act lane-war siege. Pick a lane, spawn counters, time era jumps, cash in each broken wall, and crack the capital before theirs outscales yours.</p>
         <p id="overlayCta">Press Space, Enter, or tap to begin.</p>
       </div>
     </section>

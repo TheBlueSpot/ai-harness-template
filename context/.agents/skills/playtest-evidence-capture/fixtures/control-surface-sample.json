@@ -1,0 +1,74 @@
+{
+  "game": "control-surface-sample",
+  "sessionDate": "2026-05-06",
+  "sessionFocus": ["control-surface", "first-contact"],
+  "evidence": {
+    "mode": "direct-play",
+    "sampledRuns": 1,
+    "sampledFailures": 0,
+    "sampledRetries": 0,
+    "notes": ["sample focused on remap and tuning surfaces only"]
+  },
+  "firstContact": {
+    "loopComplexity": "low",
+    "discoverableThroughExperiment": true,
+    "firstObjectiveClear": true,
+    "currentGoalEasyToRestate": true,
+    "nextStepPrescriptive": true,
+    "controlsReminderAvailable": true,
+    "objectiveReminderAvailable": true,
+    "progressSafeHelp": true,
+    "remapSafe": true,
+    "upfrontInstructionScreens": 0,
+    "promptsBeforeMeaningfulPlay": 0,
+    "blocksFirstMeaningfulInput": false,
+    "forcedTutorialSteps": 0,
+    "optionalHelpOnDemand": true
+  },
+  "controlSurface": {
+    "remapScope": "partial",
+    "remapInputsVisible": true,
+    "remapReflectedInPrompts": true,
+    "holdToggleAlternativeAvailable": true,
+    "sensitivityControlsAvailable": true,
+    "inversionControlsAvailable": true,
+    "axisControlsAvailable": true,
+    "gameSpeedReliefAvailable": false,
+    "timingReliefAvailable": true,
+    "settingsAndAssistsBoundaryClear": true,
+    "notes": "remap and tuning surfaces exist without collapsing into broader assist menus"
+  },
+  "inputDemand": {
+    "remapSafe": true,
+    "rapidRepeatedInputPresent": false,
+    "holdInputPresent": true,
+    "simultaneousInputPresent": false,
+    "rapidSequencePresent": false,
+    "precisionTimingDemandPresent": true,
+    "pathBasedOrAnalogDemandPresent": false,
+    "progressionCriticalDemandPresent": true,
+    "lowerDemandAlternativeAvailable": false,
+    "difficultyOptionHelps": false,
+    "demandReadableBeforeFailure": true,
+    "motorTaxLikelyPrimaryBlocker": false,
+    "notes": "motor-tax burden stays in the input-demand lane"
+  },
+  "probeOutcomes": [
+    {
+      "probe": "control-surface",
+      "goal": "verify remap and tuning surfaces without blending them into settings-and-assists",
+      "outcome": "success",
+      "successRating": 4,
+      "confidence": 6,
+      "satisfaction": 6,
+      "frustration": 6,
+      "mentalDemand": 2,
+      "timePressure": 1,
+      "effort": 2,
+      "blockers": [],
+      "notes": "starter should emit a separate control-surface packet"
+    }
+  ],
+  "strengths": ["control-surface surfaces are explicit"],
+  "frictions": ["no broader assist-menu verdict in this sample"]
+}

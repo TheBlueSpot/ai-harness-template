@@ -1,6 +1,6 @@
 import { createEffect, createMemo, createSignal, onCleanup, Show } from "solid-js";
-import { Portal } from "solid-js/web";
 import { getTutorialDefinition } from "./tutorial-definitions";
+import { PrimitivePortal } from "./primitives/primitive-portal";
 import { Tooltip } from "./primitives/tooltip";
 
 type TutorialOverlayProps = {
@@ -28,10 +28,6 @@ type Particle = {
 };
 
 const BOUNCE_CLASS = "tutorial-target-bounce";
-
-function shouldBypassPortalForTests() {
-  return (globalThis as typeof globalThis & { __padPilotDisablePortals?: boolean }).__padPilotDisablePortals === true;
-}
 
 export function TutorialOverlay(props: TutorialOverlayProps) {
   let canvasRef: HTMLCanvasElement | undefined;
@@ -179,11 +175,11 @@ export function TutorialOverlay(props: TutorialOverlayProps) {
     </Show>
   );
 
-  if (shouldBypassPortalForTests()) {
-    return content;
-  }
-
-  return <Portal>{content}</Portal>;
+  return (
+    <PrimitivePortal active={Boolean(props.tutorialId && currentStep())} layer="tutorial">
+      {content}
+    </PrimitivePortal>
+  );
 }
 
 function resizeCanvas(canvas: HTMLCanvasElement | undefined) {

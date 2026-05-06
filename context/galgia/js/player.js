@@ -1,6 +1,6 @@
 // galgia/js/player.js
 
-import * as THREE from 'three';
+import * as THREE from 'https://esm.sh/three@0.163.0';
 import { Bullets } from './bullets.js';
 import { Animations } from './animations.js';
 import { lerp } from './utils.js';

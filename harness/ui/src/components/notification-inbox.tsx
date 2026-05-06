@@ -9,9 +9,9 @@ import {
   LoaderCircle,
   SendHorizontal
 } from "lucide-solid";
-import { createRequestId, type ClientCommand, type NotificationInboxItem } from "../../../shared/protocol";
+import { createRequestId, type BackgroundJobRun, type ClientCommand, type NotificationInboxItem } from "../../../shared/protocol";
 import { getAssistantQuestionDefaultChoices } from "../assistant-question-defaults";
-import { harnessStore, type HarnessViewState } from "../harness-store";
+import { harnessStore, type HarnessViewState, type JobsRunFilter } from "../harness-store";
 import { submitOnEnter } from "../textarea-submit";
 import { ActionButton } from "./action-button";
 import { Popover } from "./primitives/popover";
@@ -78,6 +78,47 @@ export function openAssistantJobNotificationFromInbox(
   return true;
 }
 
+export function openBackgroundRunNotificationFromInbox(
+  state: HarnessViewState,
+  notification: Extract<NotificationInboxItem, { kind: "background-run-status" }>
+) {
+  const run = state.backgroundJobs.runs.find((entry) => entry.id === notification.backgroundRunId);
+  const runFilter = getBackgroundRunFilter(run);
+  harnessStore.setActiveSurface("background-jobs");
+  harnessStore.closeBackgroundJobDetailsDialog();
+  if (runFilter) {
+    harnessStore.setJobsRunFilter(runFilter);
+  }
+  harnessStore.setJobsPanePreferences({
+    segment: "inbox",
+    selectedRunId: notification.backgroundRunId,
+    selectedJobId: notification.jobId,
+    selectedNotificationId: undefined
+  });
+}
+
+function getBackgroundRunFilter(
+  run: Pick<BackgroundJobRun, "status" | "approvalStatus"> | undefined
+): JobsRunFilter | undefined {
+  if (!run) {
+    return undefined;
+  }
+
+  if (run.status === "awaiting-approval" || run.status === "awaiting-user-input" || run.approvalStatus === "pending") {
+    return "approval";
+  }
+  if (run.status === "queued") {
+    return "queued";
+  }
+  if (run.status === "running") {
+    return "running";
+  }
+  if (run.status === "failed" || run.status === "cancelled") {
+    return "failed";
+  }
+  return "done";
+}
+
 export function NotificationInbox() {
   const state = harnessStore.state;
   const sendCommand = harnessStore.actions.sendCommand;
@@ -104,11 +145,7 @@ export function NotificationInbox() {
 
     switch (notification.kind) {
       case "background-run-status":
-        if (openAssistantJobNotificationFromInbox(state, notification)) {
-          setOpen(false);
-          return;
-        }
-        harnessStore.setActiveSurface("background-jobs");
+        openBackgroundRunNotificationFromInbox(state, notification);
         activateProjectThread(notification.projectId, notification.threadId);
         setOpen(false);
         return;
@@ -277,7 +314,14 @@ export function NotificationInbox() {
             >
               <For each={items()}>
                 {(notification) => (
-                  <div class="rounded-[1.1rem] border border-(--border) bg-white/70 p-3">
+                  <div
+                    class="rounded-[1.1rem] border border-(--border) bg-white/70 p-3"
+                    onClick={(event) => {
+                      if (notification.kind === "background-run-status" && event.target === event.currentTarget) {
+                        openItem(notification);
+                      }
+                    }}
+                  >
                     <button
                       type="button"
                       class="flex w-full cursor-pointer items-start justify-between gap-3 text-left"

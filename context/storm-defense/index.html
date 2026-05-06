@@ -28,7 +28,7 @@
       <section class="overlay overlay--intermission" id="intermission-screen" aria-labelledby="intermission-title">
         <p class="eyebrow">Intermission</p>
         <h2 id="intermission-title">Rearm the line</h2>
-        <p id="intermission-status" class="lede">Spend gold before the next wave breaks.</p>
+        <p id="intermission-status" class="lede">Spend gold before the next wave breaks. Keep one upgrade path visible, then launch the next wave.</p>
         <div id="shop-offers" class="shop" aria-live="polite"></div>
         <button id="advance-button" class="action action--primary" type="button">Launch Next Wave</button>
       </section>
@@ -41,6 +41,10 @@
         <button id="restart-button" class="action action--primary" type="button">Restart</button>
       </section>
     </div>
-    <script type="module" src="/main.js"></script>
+    <script src="./EconomyManager.js"></script>
+    <script src="./EnemySpawner.js"></script>
+    <script src="./UpgradeTree.js"></script>
+    <script src="./SiegeEngine.js"></script>
+    <script src="./main.js"></script>
   </body>
 </html>

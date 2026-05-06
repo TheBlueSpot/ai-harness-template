@@ -100,8 +100,28 @@ createUiTest("App shortcuts", () => {
 
     expect(buttons[0]?.getAttribute("aria-label")).toBe("Projects");
     expect(buttons[1]?.getAttribute("aria-label")).toBe("Assistants");
+    expect(buttons[2]?.getAttribute("aria-label")).toBe("Jobs");
+    expect(buttons[3]?.getAttribute("aria-label")).toBe("Runs");
     expect(buttons[0]?.getAttribute("aria-pressed")).toBe("true");
     expect(buttons[1]?.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("keeps workspace grid columns shrinkable when project threads have long content", () => {
+    render(() => <App />);
+
+    const grid = document.querySelector("[data-test-main-panel-grid]");
+
+    expect(grid?.className).toContain(
+      "lg:grid-cols-[minmax(0,var(--left-panel-size))_0.35rem_minmax(0,var(--center-panel-size))_0.35rem_minmax(12rem,var(--right-panel-size))]"
+    );
+  });
+
+  it("persists main panel sizes in browser session state", () => {
+    render(() => <App />);
+
+    harnessStore.setMainPanelSizes({ left: 2, center: 4, right: 1.5 });
+
+    expect(readBrowserUiSession().mainPanelSizes).toEqual({ left: 2, center: 4, right: 1.5 });
   });
 
   it("moves active tab styling when switching left tabs", async () => {
@@ -109,6 +129,7 @@ createUiTest("App shortcuts", () => {
     const nav = document.querySelector("[data-test-left-tab-nav]");
     const buttons = [...(nav?.querySelectorAll("button") ?? [])] as HTMLButtonElement[];
     const assistantsTab = buttons[1];
+    const runsTab = buttons[3];
 
     expect(assistantsTab?.getAttribute("aria-pressed")).toBe("false");
 
@@ -119,5 +140,13 @@ createUiTest("App shortcuts", () => {
     expect(harnessStore.state.activeLeftTab).toBe("assistants");
     expect(harnessStore.state.activeSurface).toBe("assistants");
     expect(readBrowserUiSession().activeLeftTab).toBe("assistants");
+
+    if (runsTab) {
+      fireEvent.click(runsTab);
+    }
+
+    expect(harnessStore.state.activeLeftTab).toBe("runs");
+    expect(harnessStore.state.activeSurface).toBe("background-jobs");
+    expect(readBrowserUiSession().activeLeftTab).toBe("runs");
   });
 });

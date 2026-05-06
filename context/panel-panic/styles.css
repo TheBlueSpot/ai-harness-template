@@ -1,0 +1,147 @@
+:root {
+  color-scheme: dark;
+  --bg: #08111f;
+  --bg2: #13294b;
+  --panel: #0d1c31;
+  --panel2: rgba(6, 12, 24, 0.78);
+  --line: rgba(198, 227, 255, 0.18);
+  --text: #e9f5ff;
+  --muted: #9db2c8;
+  --accent: #f3db77;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+  background:
+    radial-gradient(circle at top, rgba(111, 184, 255, 0.18), transparent 35%),
+    linear-gradient(180deg, var(--bg2), var(--bg));
+  color: var(--text);
+  display: grid;
+  place-items: center;
+}
+
+.shell {
+  width: min(94vw, 760px);
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+}
+
+.hud {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.hud__group,
+.status-card {
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 10px 12px;
+  backdrop-filter: blur(8px);
+}
+
+.hud__label {
+  display: block;
+  font-size: 0.72rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.hud strong {
+  font-size: 1.35rem;
+}
+
+.playfield-wrap {
+  position: relative;
+  display: grid;
+  gap: 14px;
+}
+
+canvas {
+  width: 100%;
+  height: auto;
+  display: block;
+  background: linear-gradient(180deg, rgba(14, 32, 58, 0.92), rgba(8, 13, 24, 0.94));
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.35);
+}
+
+.status-card p {
+  margin: 0;
+}
+
+.status-card {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+}
+
+.overlay {
+  position: absolute;
+  inset: 0 0 82px 0;
+  display: grid;
+  place-items: center;
+  background: rgba(4, 9, 18, 0.68);
+  border-radius: 24px;
+}
+
+.overlay[hidden] {
+  display: none;
+}
+
+.overlay__card {
+  width: min(86%, 420px);
+  background: rgba(12, 22, 39, 0.95);
+  border: 1px solid rgba(243, 219, 119, 0.22);
+  border-radius: 22px;
+  padding: 22px;
+  text-align: center;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+}
+
+.overlay__card h1 {
+  margin: 0 0 12px;
+  font-size: clamp(2rem, 4vw, 2.7rem);
+}
+
+.overlay__card p {
+  margin: 0 0 18px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+button {
+  border: 0;
+  border-radius: 999px;
+  padding: 12px 22px;
+  font: inherit;
+  font-weight: 700;
+  background: linear-gradient(180deg, #ffe998, var(--accent));
+  color: #12213d;
+  cursor: pointer;
+}
+
+@media (max-width: 640px) {
+  .shell {
+    width: 100vw;
+    padding: 10px;
+  }
+
+  .hud {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .overlay {
+    inset: 0 0 98px 0;
+  }
+}

@@ -150,9 +150,15 @@ export class Game {
   }
 
   resolveMessage(phase) {
-    if (phase === GAME_PHASE.FALLEN) return "Runner down. Press R to restart.";
+    if (phase === GAME_PHASE.FALLEN) {
+      if (this.state.reason === "over-lean") return "Too much lean. Alternate sides sooner to catch the torso.";
+      if (this.state.reason === "collapse") return "Leg drive collapsed. Keep the stride pulse moving before the torso drops.";
+      if (this.state.reason === "bad-timing") return "Cadence broke. Tap the opposite side on a steady beat.";
+      if (this.state.reason === "loss-of-support") return "Both feet lost support. Swap sides before the runner floats.";
+      return "Runner down. Press R to restart.";
+    }
     if (phase === GAME_PHASE.FINISHED) return "Finish reached. Press R to run again.";
-    if (phase === GAME_PHASE.RUNNING) return "Running.";
+    if (phase === GAME_PHASE.RUNNING) return "Alternate left and right pulses to build speed.";
     return "Press Enter or Space to start.";
   }
 }

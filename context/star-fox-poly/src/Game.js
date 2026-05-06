@@ -4,9 +4,16 @@ import { computeRailOffset, getObstacleWindow, laneToX, progressToStage, RAIL_LE
 
 const PLAYER_FIRE_KEYS = ["Space", "KeyZ", "KeyX"];
 const PLAYER_MAX_HEALTH = 100;
-const PLAYER_BASE_SPEED = 88;
+const PLAYER_BASE_SPEED = 78;
 const PLAYER_BOSS_HOLD = BOSS_CORE.entryAt + 80;
 const PLAYER_CLEAR_TARGET = RAIL_LENGTH;
+const PLAYER_INTRO_DISTANCE = 1320;
+const PLAYER_INTRO_SPEED = 44;
+const PLAYER_LANE_SNAP_SPEED = 10.4;
+const PLAYER_SHIP_SNAP_SPEED = 640;
+const PLAYER_REPEAT_DELAY = 0.28;
+const PLAYER_REPEAT_DELAY_HELD = 0.18;
+const PLAYER_DODGE_GRACE = 0.18;
 
 function isFireHeld(held) {
   return PLAYER_FIRE_KEYS.some((key) => Boolean(held[key]));
@@ -16,6 +23,10 @@ function approach(current, target, delta) {
   if (current < target) return Math.min(target, current + delta);
   if (current > target) return Math.max(target, current - delta);
   return target;
+}
+
+function normalizeSteer(held) {
+  return (held.ArrowRight || held.KeyD ? 1 : 0) - (held.ArrowLeft || held.KeyA ? 1 : 0);
 }
 
 export class Game {
@@ -54,12 +65,16 @@ export class Game {
     this.lose = false;
     this.player = {
       lane: 2,
+      targetLane: 2,
       x: 0,
       y: 0,
       z: 0,
       bank: 0,
       fireCooldown: 0,
       invuln: 0,
+      dodgeGrace: 0,
+      steerHold: 0,
+      steerRepeatCooldown: 0,
     };
     this.camera = { x: 0, y: 0, z: 0 };
     this.enemies = [];
@@ -104,7 +119,7 @@ export class Game {
       return;
     }
 
-    this.updatePlayer(dt, held);
+    this.updatePlayer(dt, held, pressed, input.pointerLane, input.lastSource);
     this.updateProgress(dt);
     this.spawnEnemies();
     this.updateEnemies(dt);
@@ -139,27 +154,80 @@ export class Game {
     }
   }
 
-  updatePlayer(dt, held) {
-    const laneIntent = (held.ArrowRight ? 1 : 0) - (held.ArrowLeft ? 1 : 0);
-    this.player.lane = clamp(this.player.lane + laneIntent * dt * 4.4, 0, 4);
+  stepPlayerLane(direction) {
+    if (!direction) return;
+    const nextLane = clamp(Math.round(this.player.targetLane + direction), 0, 4);
+    if (nextLane === this.player.targetLane) return;
+    this.player.targetLane = nextLane;
+    this.player.dodgeGrace = PLAYER_DODGE_GRACE;
+  }
+
+  getPlayerLaneDistance(lane) {
+    const currentDistance = Math.abs(lane - this.player.lane);
+    const targetDistance = Math.abs(lane - this.player.targetLane);
+    if (Math.abs(this.player.targetLane - this.player.lane) > 0.08) {
+      const targetBias = this.player.dodgeGrace > 0 ? 0.38 : 0.28;
+      return Math.min(currentDistance, Math.max(0, targetDistance - targetBias));
+    }
+    return currentDistance;
+  }
+
+  updatePlayer(dt, held, pressed, pointerLane = null, inputSource = "keyboard") {
+    const steerHeld = normalizeSteer(held);
+    const steerPressed = (pressed.ArrowRight || pressed.KeyD ? 1 : 0) - (pressed.ArrowLeft || pressed.KeyA ? 1 : 0);
+    const usingPointer = Number.isFinite(pointerLane) && inputSource === "pointer";
+
+    if (usingPointer) {
+      const nextLane = clamp(Math.round(pointerLane), 0, 4);
+      if (nextLane !== this.player.targetLane) {
+        this.player.targetLane = nextLane;
+        this.player.dodgeGrace = PLAYER_DODGE_GRACE;
+      }
+      this.player.steerHold = 0;
+      this.player.steerRepeatCooldown = 0;
+    } else if (steerPressed) {
+      this.stepPlayerLane(steerPressed);
+      this.player.steerRepeatCooldown = PLAYER_REPEAT_DELAY;
+      this.player.steerHold = steerHeld;
+    } else if (steerHeld) {
+      if (this.player.steerHold !== steerHeld) {
+        this.player.steerHold = steerHeld;
+        this.player.steerRepeatCooldown = PLAYER_REPEAT_DELAY;
+      } else {
+        this.player.steerRepeatCooldown -= dt;
+        if (this.player.steerRepeatCooldown <= 0 && Math.abs(this.player.targetLane - this.player.lane) <= 0.08) {
+          this.stepPlayerLane(steerHeld);
+          this.player.steerRepeatCooldown = PLAYER_REPEAT_DELAY_HELD;
+        }
+      }
+    } else {
+      this.player.steerHold = 0;
+      this.player.steerRepeatCooldown = 0;
+    }
+
+    this.player.lane = approach(this.player.lane, this.player.targetLane, dt * PLAYER_LANE_SNAP_SPEED);
     const rail = computeRailOffset(this.progress);
     const laneX = laneToX(this.player.lane, rail.sway * 0.6);
-    this.player.x = approach(this.player.x, laneX, dt * 360);
+    this.player.x = approach(this.player.x, laneX, dt * PLAYER_SHIP_SNAP_SPEED);
     this.player.y = Math.sin(this.time * 4.2) * 7 + rail.sway * 28;
-    this.player.bank = approach(this.player.bank, laneIntent * 0.95, dt * 4.8);
+    this.player.bank = approach(this.player.bank, (this.player.targetLane - this.player.lane) * 0.88 + steerHeld * 0.34, dt * 9.5);
     this.player.z = this.progress + 90;
     this.camera.x = this.player.x * 0.16;
     this.camera.y = this.player.y * 0.14;
     this.camera.z = this.progress - 40;
     this.player.fireCooldown = Math.max(0, this.player.fireCooldown - dt);
     this.player.invuln = Math.max(0, this.player.invuln - dt);
+    this.player.dodgeGrace = Math.max(0, this.player.dodgeGrace - dt);
   }
 
   updateProgress(dt) {
     if (this.completed) return;
     if (this.progress < BOSS_CORE.entryAt - 160) {
       const stageProgress = progressToStage(this.progress);
-      this.progress = clamp(this.progress + dt * (PLAYER_BASE_SPEED + stageProgress * 40), 0, BOSS_CORE.entryAt - 160);
+      const introBlend = clamp(this.progress / PLAYER_INTRO_DISTANCE, 0, 1);
+      const cruiseSpeed = PLAYER_BASE_SPEED + stageProgress * 40;
+      const forwardSpeed = approach(PLAYER_INTRO_SPEED, cruiseSpeed, introBlend * (cruiseSpeed - PLAYER_INTRO_SPEED));
+      this.progress = clamp(this.progress + dt * forwardSpeed, 0, BOSS_CORE.entryAt - 160);
       return;
     }
     if (!this.boss.spawned) {
@@ -245,7 +313,7 @@ export class Game {
     }
 
     const bossAge = this.time - 4;
-    if (bossAge > 0 && Math.floor(bossAge * (coreOpen ? 1.7 : 1.1)) !== Math.floor((bossAge - dt) * (coreOpen ? 1.7 : 1.1))) {
+    if (bossAge > 0 && Math.floor(bossAge * (coreOpen ? 1.3 : 0.9)) !== Math.floor((bossAge - dt) * (coreOpen ? 1.3 : 0.9))) {
       const liveCannons = this.boss.weakpoints.filter((weakpoint) => weakpoint.id !== "core" && weakpoint.hp > 0);
       const firingPorts = liveCannons.length ? liveCannons : [this.boss.weakpoints.find((weakpoint) => weakpoint.id === "core")];
       for (const weakpoint of firingPorts) {
@@ -254,24 +322,39 @@ export class Game {
           x: laneToX(weakpoint.lane),
           y: weakpoint.id === "core" ? 18 : weakpoint.lane === 1 ? -42 : 42,
           z: this.progress + 320,
-          speed: coreOpen ? 410 : 320,
-          damage: coreOpen ? 10 : 7,
+          speed: coreOpen ? 252 : 210,
+          damage: coreOpen ? 6 : 5,
           color: coreOpen ? "#ff5c94" : "#ffd768",
         });
       }
     }
   }
 
+  getAutoAimLane() {
+    if (this.boss.spawned && this.boss.hp > 0) {
+      const bossTarget = this.boss.weakpoints.find(
+        (weakpoint) => weakpoint.open && weakpoint.hp > 0 && Math.abs(weakpoint.lane - this.player.targetLane) <= 1.35,
+      );
+      if (bossTarget) return bossTarget.lane;
+    }
+
+    const enemyTarget = this.enemies
+      .filter((enemy) => enemy.z > this.progress + 120 && Math.abs(enemy.lane - this.player.targetLane) <= 1.35)
+      .sort((a, b) => a.z - b.z)[0];
+    return enemyTarget?.lane ?? this.player.targetLane;
+  }
+
   updateShots(dt, held) {
     const fireHeld = isFireHeld(held);
     if (fireHeld && this.player.fireCooldown <= 0) {
-      this.player.fireCooldown = this.completed ? 0.09 : this.boss.spawned ? 0.11 : 0.16;
+      this.player.fireCooldown = this.completed ? 0.08 : this.boss.spawned ? 0.095 : 0.13;
+      const shotLane = this.getAutoAimLane();
       this.playerShots.push({
-        lane: this.player.lane,
-        x: this.player.x,
+        lane: shotLane,
+        x: laneToX(shotLane),
         y: this.player.y,
         z: this.progress + 85,
-        speed: this.boss.spawned ? 980 : 860,
+        speed: this.boss.spawned ? 1040 : 920,
         damage: this.boss.spawned ? 2 : 1,
       });
     }
@@ -290,10 +373,10 @@ export class Game {
   resolveObstacles() {
     if (this.player.invuln > 0) return;
     for (const obstacle of getObstacleWindow(this.progress, 70)) {
-      if (Math.abs(obstacle.lane - this.player.lane) > 0.55) continue;
+      if (this.getPlayerLaneDistance(obstacle.lane) > 0.34) continue;
       if (obstacle.z > this.progress + 26) continue;
-      this.health -= obstacle.kind === "turret" ? 16 : 10;
-      this.player.invuln = 0.55;
+      this.health -= obstacle.kind === "turret" ? 12 : 8;
+      this.player.invuln = 0.62;
       this.effects.push({ text: obstacle.kind === "turret" ? "turret hit" : "scrape", ttl: 0.45 });
       break;
     }
@@ -331,10 +414,10 @@ export class Game {
 
     if (this.player.invuln <= 0) {
       for (const shot of this.enemyShots) {
-        if (Math.abs(shot.lane - this.player.lane) > 0.72) continue;
-        if (Math.abs(shot.z - this.progress) > 50) continue;
+        if (this.getPlayerLaneDistance(shot.lane) > 0.34) continue;
+        if (Math.abs(shot.z - this.progress) > 42) continue;
         this.health -= shot.damage;
-        this.player.invuln = 0.55;
+        this.player.invuln = 0.62;
         shot.dead = true;
         this.effects.push({ text: "impact", ttl: 0.35 });
         break;
@@ -344,10 +427,10 @@ export class Game {
 
     if (this.player.invuln <= 0) {
       for (const enemy of this.enemies) {
-        if (Math.abs(enemy.lane - this.player.lane) > 0.7) continue;
-        if (Math.abs(enemy.z - this.progress) > 58) continue;
-        this.health -= 18;
-        this.player.invuln = 0.7;
+        if (this.getPlayerLaneDistance(enemy.lane) > 0.4) continue;
+        if (Math.abs(enemy.z - this.progress) > 48) continue;
+        this.health -= 14;
+        this.player.invuln = 0.74;
         enemy.hp = 0;
         this.effects.push({ text: "collision", ttl: 0.4 });
         break;
@@ -374,12 +457,12 @@ export class Game {
       return;
     }
 
-    const obstacles = getObstacleWindow(this.progress, 260);
+    const obstacles = getObstacleWindow(this.progress, 340);
     this.bossAlert = "";
     if (obstacles.length) {
-      this.alert = `Lane ${obstacles[0].lane + 1} blocked`;
+      this.alert = `Shift to lane ${obstacles[0].lane + 1}`;
     } else if (this.enemies.length) {
-      this.alert = "Formation pressure";
+      this.alert = "Hold lane, fire through";
     } else {
       this.alert = "Clear corridor";
     }
@@ -576,11 +659,11 @@ export class Game {
       overlayTitle: this.win ? "Sector Cleared" : this.lose ? "Ship Down" : "Star Fox Polygon Strike",
       overlayCopy:
         this.mode === "menu"
-          ? "Arrow keys bank between lanes. Hold Space to fire."
+          ? "Tap anywhere or press Start to launch. Use mouse, A/D, or arrow keys to dodge lanes, then hold Space to auto-fire while the first wave eases you into the route."
           : this.win
             ? "Boss core broken. Press Start to run the route again."
             : this.lose
-              ? "Hull failed. Press Start to retry."
+              ? "Hull failed. Tap anywhere or press Start to retry."
               : "",
       overlayButton: this.mode === "menu" ? "Start" : this.win || this.lose ? "Restart" : "Hide",
       showRestart: this.win || this.lose,

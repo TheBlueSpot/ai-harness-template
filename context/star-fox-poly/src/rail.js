@@ -15,8 +15,8 @@ const SEGMENTS = [
 ];
 
 export const OBSTACLE_POSITIONS = [
-  { z: 520, lane: 1, kind: "barrier" },
-  { z: 980, lane: 3, kind: "drone" },
+  { z: 760, lane: 1, kind: "barrier" },
+  { z: 1180, lane: 3, kind: "drone" },
   { z: 1520, lane: 0, kind: "barrier" },
   { z: 2050, lane: 4, kind: "turret" },
   { z: 2680, lane: 2, kind: "drone" },

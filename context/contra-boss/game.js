@@ -17,6 +17,48 @@
   const lerp = (a, b, t) => a + (b - a) * t;
   const rectsOverlap = (a, b) =>
     a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+  const ATTACK_DATA = {
+    burst: {
+      label: "Twin burst",
+      telegraph: "Turret locks show burst lanes.",
+      windup: 0.72,
+    },
+    sweep: {
+      label: "Core sweep",
+      telegraph: "Core sweep opens radial gaps.",
+      windup: 0.88,
+    },
+    missileRain: {
+      label: "Missile rain",
+      telegraph: "Ground markers show incoming rain.",
+      windup: 1.05,
+    },
+    charge: {
+      label: "Walker charge",
+      telegraph: "Walker charge paints ground lane.",
+      windup: 0.78,
+    },
+    fan: {
+      label: "Eye fan",
+      telegraph: "Eye fan draws spread lanes.",
+      windup: 0.76,
+    },
+    bladeDash: {
+      label: "Blade dash",
+      telegraph: "Blade dash marks body collision lane.",
+      windup: 0.8,
+    },
+    orbGrid: {
+      label: "Orb grid",
+      telegraph: "Orb grid seeds staggered columns.",
+      windup: 0.96,
+    },
+    beam: {
+      label: "Pulse beam",
+      telegraph: "Beam rails lock to current height.",
+      windup: 0.84,
+    },
+  };
 
   function magnitude(x, y) {
     return Math.hypot(x, y) || 1;
@@ -32,6 +74,31 @@
     if (!x && !y) x = input.facing;
     const mag = magnitude(x, y);
     return { x: x / mag, y: y / mag };
+  }
+
+  function getAttackData(attackId) {
+    return ATTACK_DATA[attackId] || { label: attackId, telegraph: attackId, windup: 0.7 };
+  }
+
+  function getBossPart(boss, partId) {
+    return boss?.parts.find((part) => part.id === partId);
+  }
+
+  function solveImpactTime(y, vy, gravity, targetY) {
+    if (Math.abs(gravity) < 0.001) {
+      if (Math.abs(vy) < 0.001) return 0;
+      return (targetY - y) / vy;
+    }
+    const a = 0.5 * gravity;
+    const b = vy;
+    const c = y - targetY;
+    const discriminant = b * b - 4 * a * c;
+    if (discriminant < 0) return 0;
+    const root = Math.sqrt(discriminant);
+    const t1 = (-b + root) / (2 * a);
+    const t2 = (-b - root) / (2 * a);
+    const valid = [t1, t2].filter((time) => time > 0);
+    return valid.length ? Math.min(...valid) : 0;
   }
 
   function spawnBurst(state, x, y, color, count, speedMin, speedMax, sizeMin, sizeMax) {
@@ -480,6 +547,87 @@
     }
   }
 
+  function drawTelegraphs() {
+    const boss = state.boss;
+    if (!boss || !boss.activeAttack || boss.attackWindup <= 0 || boss.defeated) return;
+
+    const alpha = clamp(0.18 + boss.attackWindup * 0.22 + (Math.sin(boss.hover * 18) + 1) * 0.08, 0.18, 0.6);
+    const playerCenterX = state.player.x + state.player.w / 2;
+    const playerCenterY = state.player.y + state.player.h / 2;
+
+    ctx.save();
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = `rgba(255, 111, 111, ${alpha})`;
+    ctx.fillStyle = `rgba(255, 87, 104, ${alpha * 0.35})`;
+
+    if (boss.activeAttack === "burst") {
+      const offsets = [-40, 0, 40];
+      for (const part of boss.parts.filter((item) => item.alive && item.role === "turret")) {
+        for (const offset of offsets) {
+          const laneY = clamp(playerCenterY + offset, 70, GROUND_Y - 22);
+          ctx.beginPath();
+          ctx.moveTo(part.x + part.w / 2, part.y + part.h / 2);
+          ctx.lineTo(playerCenterX, laneY);
+          ctx.stroke();
+        }
+      }
+    } else if (boss.activeAttack === "sweep") {
+      const core = getBossPart(boss, "core");
+      if (core) {
+        for (let i = 0; i < 7; i += 1) {
+          const angle = -0.85 + i * 0.28;
+          ctx.beginPath();
+          ctx.moveTo(core.x + core.w / 2, core.y + core.h / 2);
+          ctx.lineTo(core.x + core.w / 2 + Math.cos(angle) * 300, core.y + core.h / 2 + Math.sin(angle) * 260);
+          ctx.stroke();
+        }
+      }
+    } else if (boss.activeAttack === "missileRain") {
+      for (let i = 0; i < 5; i += 1) {
+        const x = 620 + i * 62;
+        const y = 70 - i * 18;
+        const vx = -110 - i * 18;
+        const vy = 65 + i * 14;
+        const gravity = 120;
+        const time = solveImpactTime(y, vy, gravity, GROUND_Y - 10);
+        const impactX = x + vx * time;
+        ctx.fillRect(impactX - 18, GROUND_Y - 62, 36, 62);
+        ctx.strokeRect(impactX - 18, GROUND_Y - 62, 36, 62);
+      }
+    } else if (boss.activeAttack === "charge") {
+      const laneTop = boss.y + 118;
+      const laneHeight = 100;
+      ctx.fillRect(0, laneTop, boss.x + 180, laneHeight);
+      ctx.strokeRect(0, laneTop, boss.x + 180, laneHeight);
+    } else if (boss.activeAttack === "fan") {
+      const eye = getBossPart(boss, "eye");
+      if (eye) {
+        for (let i = -3; i <= 3; i += 1) {
+          ctx.beginPath();
+          ctx.moveTo(eye.x + eye.w / 2, eye.y + eye.h / 2);
+          ctx.lineTo(playerCenterX, clamp(playerCenterY + i * 22, 56, GROUND_Y - 22));
+          ctx.stroke();
+        }
+      }
+    } else if (boss.activeAttack === "bladeDash") {
+      ctx.fillRect(0, boss.y + 18, boss.x + 240, 176);
+      ctx.strokeRect(0, boss.y + 18, boss.x + 240, 176);
+    } else if (boss.activeAttack === "orbGrid") {
+      for (let row = 0; row < 3; row += 1) {
+        for (let col = 0; col < 4; col += 1) {
+          ctx.strokeRect(670 + col * 64 - 10, 120 + row * 72 - 10, 38, 38);
+        }
+      }
+    } else if (boss.activeAttack === "beam") {
+      for (let i = 0; i < 6; i += 1) {
+        const y = clamp(player.y + i * 6, 40, GROUND_Y - 16);
+        ctx.fillRect(0, y, 760, 12);
+      }
+    }
+
+    ctx.restore();
+  }
+
   function updateBoss(dt) {
     const boss = state.boss;
     if (!boss) return;
@@ -499,9 +647,12 @@
     updateBossParts();
 
     const hpRatio = boss.hp / boss.maxHp;
-    if (hpRatio <= boss.phaseThresholds[1]) boss.phase = 3;
-    else if (hpRatio <= boss.phaseThresholds[0]) boss.phase = 2;
-    else boss.phase = 1;
+    const nextPhase =
+      hpRatio <= boss.phaseThresholds[1] ? 3 : hpRatio <= boss.phaseThresholds[0] ? 2 : 1;
+    if (nextPhase !== boss.phase) {
+      boss.phase = nextPhase;
+      state.message = `${boss.name} phase ${boss.phase}: pressure rising.`;
+    }
 
     if (boss.hp <= 0 && !boss.defeated) {
       boss.defeated = true;
@@ -521,14 +672,25 @@
       return;
     }
 
+    if (boss.attackWindup > 0) {
+      boss.attackWindup -= dt;
+      if (boss.attackWindup <= 0 && boss.activeAttack) {
+        const attack = boss.activeAttack;
+        executeBossAttack(boss, attack);
+        state.message = `${boss.name}: ${getAttackData(attack).label}.`;
+        boss.activeAttack = null;
+      }
+    }
+
     state.bossTimer += dt;
     state.bossAttackCooldown -= dt;
-    if (state.bossAttackCooldown <= 0 && boss.spawnInvuln <= 0) {
+    if (state.bossAttackCooldown <= 0 && boss.spawnInvuln <= 0 && boss.attackWindup <= 0) {
       const attack = chooseAttack(boss);
-      executeBossAttack(boss, attack);
+      const attackData = getAttackData(attack);
       boss.activeAttack = attack;
-      state.bossAttackCooldown = Math.max(0.65, 1.85 - boss.phase * 0.2);
-      state.message = `${boss.name} pattern: ${attack}`;
+      boss.attackWindup = attackData.windup;
+      state.bossAttackCooldown = attackData.windup + Math.max(0.7, 1.8 - boss.phase * 0.18);
+      state.message = `${boss.name}: ${attackData.telegraph}`;
     }
 
     if (boss.name === "Iron Reaper" && boss.x < state.player.x + 120 && boss.phase >= 2) {
@@ -700,6 +862,7 @@
     ctx.clearRect(0, 0, WIDTH, HEIGHT);
     ctx.translate(shakeX, shakeY);
     drawBackground();
+    drawTelegraphs();
     drawBoss();
     drawPlayer();
     drawBullets();

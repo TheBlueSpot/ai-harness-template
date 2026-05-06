@@ -74,12 +74,13 @@ export function createInitialGameState() {
       keyboard: {},
     },
     ui: {
-      statusText: "Shell ready. Drag to multi-select or click a unit to possess it.",
+      statusText:
+        "Hold the line: mine gold, queue a fighter, then drag-select units and click one to possess it.",
       buildMenu: HUD_BUILD_ACTIONS.map((action) => ({ ...action })),
       commandMenu: HUD_COMMAND_ACTIONS.map((action) => ({ ...action })),
       eventFeed: [
-        "Shared state contract established.",
-        "Future systems plug into src/game/config.js module specs.",
+        "Quick start: M, F, and H swap build orders without leaving the battlefield.",
+        "Objective: keep the statue standing while your miners fund the push.",
       ],
       activeCommandId: COMMAND_TYPES.MOVE,
       overlay: {

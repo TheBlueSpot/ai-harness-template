@@ -62,9 +62,20 @@ export function updateCollectedRings(state) {
     if (ring.collected) continue;
     const dx = state.player.x - ring.x;
     const dy = state.player.y - ring.y;
-    if (Math.hypot(dx, dy) < ring.radius + 12) {
+    if (Math.hypot(dx, dy) < ring.radius + 18) {
       ring.collected = true;
       state.rings.collected += 1;
+    }
+  }
+
+  for (let index = state.rings.temp.length - 1; index >= 0; index -= 1) {
+    const ring = state.rings.temp[index];
+    if ((ring.collectDelay ?? 0) > 0) continue;
+    const dx = state.player.x - ring.x;
+    const dy = state.player.y - ring.y;
+    if (Math.hypot(dx, dy) < (ring.radius ?? 7) + 18) {
+      state.rings.collected = Math.min(state.rings.total, state.rings.collected + 1);
+      state.rings.temp.splice(index, 1);
     }
   }
 }
@@ -75,8 +86,9 @@ export function buildRingScatter(origin, count) {
     y: origin.y,
     vx: Math.cos(index) * (140 + index * 10),
     vy: -220 + index * 22,
-    life: 1.2,
+    life: 1.8,
     radius: 7,
+    collectDelay: 0.18,
   }));
 }
 

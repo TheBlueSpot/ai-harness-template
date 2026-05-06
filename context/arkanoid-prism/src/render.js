@@ -45,15 +45,15 @@ function drawBrick(ctx, brick) {
   }
 }
 
-function drawPaddle(ctx, paddle, laserActive) {
+function drawPaddle(ctx, paddle, laserActive, burstActive) {
   const gradient = ctx.createLinearGradient(
     paddle.x,
     paddle.y - paddle.height * 0.5,
     paddle.x,
     paddle.y + paddle.height * 0.5,
   );
-  gradient.addColorStop(0, laserActive ? "#ffd7df" : "#d8ecff");
-  gradient.addColorStop(1, laserActive ? "#ff6f8b" : "#4d8dff");
+  gradient.addColorStop(0, burstActive ? "#ffe5c5" : laserActive ? "#ffd7df" : "#d8ecff");
+  gradient.addColorStop(1, burstActive ? "#ff9757" : laserActive ? "#ff6f8b" : "#4d8dff");
   ctx.fillStyle = gradient;
   ctx.fillRect(paddle.x - paddle.width * 0.5, paddle.y - paddle.height * 0.5, paddle.width, paddle.height);
 
@@ -73,17 +73,17 @@ function drawPaddle(ctx, paddle, laserActive) {
   }
 }
 
-function drawBall(ctx, ball) {
+function drawBall(ctx, ball, phaseActive, burstActive) {
   for (let i = ball.trail.length - 1; i >= 0; i -= 1) {
     const trail = ball.trail[i];
     ctx.globalAlpha = 0.08 + (ball.trail.length - i) * 0.05;
-    ctx.fillStyle = "#8de9ff";
+    ctx.fillStyle = burstActive ? "#ffb56f" : phaseActive ? "#ffe08f" : "#8de9ff";
     ctx.beginPath();
     ctx.arc(trail.x, trail.y, Math.max(2, ball.radius - i * 0.8), 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.globalAlpha = 1;
-  ctx.fillStyle = "#effcff";
+  ctx.fillStyle = burstActive ? "#fff0de" : phaseActive ? "#fff4cc" : "#effcff";
   ctx.beginPath();
   ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
   ctx.fill();
@@ -104,7 +104,7 @@ function drawPowerup(ctx, powerup) {
   ctx.fillStyle = "#09111e";
   ctx.font = "700 12px Trebuchet MS, sans-serif";
   ctx.textAlign = "center";
-  ctx.fillText(powerup.type === "laser" ? "L" : "M", powerup.x, powerup.y + 4);
+  ctx.fillText(def.glyph, powerup.x, powerup.y + 4);
   ctx.textAlign = "start";
 }
 
@@ -133,10 +133,10 @@ export function renderScene(ctx, state) {
     ctx.fillRect(laser.x - 2, laser.y - 16, 4, 16);
   }
 
-  drawPaddle(ctx, state.paddle, state.laserActive);
+  drawPaddle(ctx, state.paddle, state.laserActive, state.burstActive);
 
   for (const ball of state.balls) {
-    drawBall(ctx, ball);
+    drawBall(ctx, ball, state.phaseActive, state.burstActive);
   }
 
   ctx.fillStyle = "rgba(5,12,20,0.72)";

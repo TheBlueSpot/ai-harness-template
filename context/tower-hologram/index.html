@@ -19,7 +19,8 @@
           <h1 id="menu-title">Project a defense field, hold the breach, and survive every wave.</h1>
           <p class="lede">
             Place splash, slow, and burn towers anywhere in the field. Routes stay open,
-            enemies adapt to your layout, and the last wave unlocks the win screen.
+            enemies adapt to your layout, mirror phantoms escalate the breach, and three crown-class
+            bosses stand between the opening signal and the regent's final broadcast.
           </p>
 
           <div class="menu-actions">
@@ -38,7 +39,7 @@
             </div>
             <div>
               <dt>Objective</dt>
-              <dd>Clear all waves</dd>
+              <dd>Clear all 22 waves</dd>
             </div>
             <div>
               <dt>Rule</dt>
@@ -55,10 +56,16 @@
             <h2>Defense Field</h2>
           </div>
 
+          <div class="signal-feed" aria-live="polite">
+            <p class="signal-feed__eyebrow">Signal feed</p>
+            <h3 id="signal-feed-title">Wave 1: Signal</h3>
+            <p id="signal-feed-body">Routes are stable. Place early towers off the center lane and prepare for split entries.</p>
+          </div>
+
           <div class="hud__status">
             <div class="stat">
               <span class="stat__label">Wave</span>
-              <strong class="stat__value" id="wave-value">1 / 16</strong>
+              <strong class="stat__value" id="wave-value">1 / 22</strong>
             </div>
             <div class="stat">
               <span class="stat__label">Wave name</span>
@@ -119,25 +126,27 @@
             </button>
           </div>
 
-          <div class="tower-panel" aria-label="Tower details">
-            <p class="tower-panel__eyebrow">Selected tower</p>
-            <h3 id="selected-tower-title">Splash</h3>
-            <p class="tower-panel__role" id="selected-tower-role">Area burst</p>
-            <dl class="tower-panel__stats" id="selected-tower-stats"></dl>
-            <div class="tower-panel__choices" id="tower-upgrade-choices"></div>
-            <p class="tower-panel__note" id="tower-upgrade-note">Place a tower to inspect upgrade paths.</p>
-          </div>
+          <div class="hud__dock">
+            <div class="tower-panel" aria-label="Tower details">
+              <p class="tower-panel__eyebrow">Selected tower</p>
+              <h3 id="selected-tower-title">Splash</h3>
+              <p class="tower-panel__role" id="selected-tower-role">Area burst</p>
+              <dl class="tower-panel__stats" id="selected-tower-stats"></dl>
+              <div class="tower-panel__choices" id="tower-upgrade-choices"></div>
+              <p class="tower-panel__note" id="tower-upgrade-note">Place a tower to inspect upgrade paths.</p>
+            </div>
 
-          <div class="control-strip" aria-label="Run controls">
-            <button id="fast-toggle" class="action action--ghost" type="button" data-action="fast">
-              Fast x1
-            </button>
-            <button id="pause-button" class="action action--ghost" type="button" data-action="pause">
-              Pause
-            </button>
-            <button id="restart-button" class="action action--ghost" type="button" data-action="restart">
-              Restart
-            </button>
+            <div class="control-strip" aria-label="Run controls">
+              <button id="fast-toggle" class="action action--ghost" type="button" data-action="fast">
+                Fast x1
+              </button>
+              <button id="pause-button" class="action action--ghost" type="button" data-action="pause">
+                Pause
+              </button>
+              <button id="restart-button" class="action action--ghost" type="button" data-action="restart">
+                Restart
+              </button>
+            </div>
           </div>
         </div>
       </section>
@@ -158,7 +167,7 @@
             </div>
             <div class="win-summary__item">
               <span class="win-summary__label">Waves cleared</span>
-              <strong class="win-summary__value" id="win-waves-value">16 / 16</strong>
+              <strong class="win-summary__value" id="win-waves-value">22 / 22</strong>
             </div>
             <div class="win-summary__item">
               <span class="win-summary__label">Best route</span>
@@ -189,7 +198,7 @@
             </div>
             <div class="win-summary__item">
               <span class="win-summary__label">Waves cleared</span>
-              <strong class="win-summary__value" id="gameover-waves-value">0 / 8</strong>
+              <strong class="win-summary__value" id="gameover-waves-value">0 / 22</strong>
             </div>
             <div class="win-summary__item">
               <span class="win-summary__label">Last state</span>
@@ -205,6 +214,6 @@
         </div>
       </aside>
     </div>
-    <script type="module" src="./src/main.js"></script>
+    <script src="./game.js"></script>
   </body>
 </html>

@@ -21,6 +21,7 @@ export const AUTO_MODE_CONFIDENCE_THRESHOLD = 0.6;
 export const AUTO_MODE_MARGIN_THRESHOLD = 0.1;
 export const PLANNER_BYPASS_CONFIDENCE = 0.95;
 export const PLANNER_BYPASS_MAX_WORDS = 22;
+export const PLANNER_DIFFICULTY_THRESHOLD = 40;
 
 const builtinAutoModeIds = ["ask", "plan", "implement", "debug", "review"] as const;
 type BuiltinAutoModeId = (typeof builtinAutoModeIds)[number];
@@ -287,6 +288,51 @@ export function scoreBuiltinModeIntent(content: string) {
     { modeId: "debug", confidence: debugScore },
     { modeId: "review", confidence: reviewScore }
   ] as Array<{ modeId: BuiltinAutoModeId; confidence: number }>;
+}
+
+export function estimateTaskDifficulty(content: string, context: ModeIntentContext = {}) {
+  const normalized = normalizeScoringIntentText(content);
+  if (!normalized) return 0;
+
+  if (isDirectWorkspaceImplementTask(content, context)) {
+    return 10;
+  }
+
+  const wordCount = normalized.split(" ").filter(Boolean).length;
+  const sentenceCount = Math.max(1, normalized.split(/[.!?\n]+/).filter((part) => part.trim()).length);
+  const planGateN = countMatches(normalized, planGates);
+  const debugN =
+    countMatches(normalized, debugSymptoms) +
+    countMatches(normalized, debugActions) +
+    countMatches(normalized, debugEvidence) +
+    countMatches(normalized, debugPhrases);
+  const reviewN =
+    countMatches(normalized, reviewVocab) +
+    countMatches(normalized, reviewArtifacts) +
+    countMatches(normalized, reviewTerms);
+  const implementN =
+    countMatches(normalized, implementVocab) +
+    countMatches(normalized, implementFollowups) +
+    countMatches(normalized, fixVocab);
+  const workspaceN =
+    countMatches(normalized, workspaceArtifact) +
+    countMatches(normalized, workspacePath) +
+    countMatches(normalized, fileLikeToken);
+
+  return Math.round(
+    clamp01(
+      0.08 +
+        (Math.min(wordCount, 120) / 120) * 0.26 +
+        Math.min(sentenceCount - 1, 6) * 0.04 +
+        Math.min(planGateN, 2) * 0.26 +
+        Math.min(debugN, 5) * 0.08 +
+        Math.min(reviewN, 5) * 0.07 +
+        Math.min(implementN, 6) * 0.04 +
+        Math.min(workspaceN, 6) * 0.03 +
+        (multiPartSplit.test(normalized) ? 0.08 : 0) +
+        (/\b(?:architecture|migration|security|database|protocol|concurrency|state|persistence|integration|end to end|e2e)\b/.test(normalized) ? 0.12 : 0)
+    ) * 100
+  );
 }
 
 export function isDirectWorkspaceImplementTask(content: string, context: ModeIntentContext = {}) {

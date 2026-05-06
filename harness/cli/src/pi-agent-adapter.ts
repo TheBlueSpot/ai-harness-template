@@ -12,8 +12,12 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import { streamSimple, type ImageContent, type SimpleStreamOptions } from "@mariozechner/pi-ai";
 import type { ComposerReasoningStrength } from "../../shared/protocol";
+import { transformAnthropicCachePayload } from "./anthropic-cache-payload";
 import { isBrowserToolName } from "./browser-session-state";
 import { debugLog } from "./logging";
+import type { CacheableUserBlock } from "./prompt-cache-assembly";
+import { buildPromptCacheKey, extractCachedInputTokens, type PromptCacheIdentity } from "./prompt-cache";
+import { supportsGeminiExplicitCaching } from "./gemini-cached-contents";
 
 export type PiAgentPromptKind = "planner" | "executor" | "subagent" | "aggregator" | "merge-resolver";
 
@@ -23,6 +27,9 @@ export type PiAgentPromptRequest = {
   modelId: string;
   prompt: string;
   images?: ImageContent[];
+  cacheableUserBlocks?: CacheableUserBlock[];
+  promptCacheIdentity?: PromptCacheIdentity;
+  geminiCachedContentName?: string;
   abortSignal?: AbortSignal;
   readOnly?: boolean;
   reasoningStrength?: ComposerReasoningStrength;
@@ -39,6 +46,7 @@ export type PiAgentPromptResult = {
     contextWindow: number;
     usagePercent?: number;
     sessionStats: SessionStats;
+    cachedInputTokens?: number;
   };
 };
 
@@ -59,8 +67,8 @@ export interface PiAgentExecutionController {
 export interface PiAgentAdapter {
   runPrompt(request: PiAgentPromptRequest): Promise<PiAgentPromptResult>;
   startExecution(request: PiAgentPromptRequest): Promise<PiAgentExecutionController>;
-  setApiKey(provider: "openai" | "google", apiKey: string | undefined): void;
-  hasApiKey(provider: "openai" | "google"): boolean;
+  setApiKey(provider: PiApiKeyProvider, apiKey: string | undefined): void;
+  hasApiKey(provider: PiApiKeyProvider): boolean;
 }
 
 const DEFAULT_AUTO_COMPACT_CONTEXT_THRESHOLD_PERCENT = 40;
@@ -71,6 +79,10 @@ const MIN_AUTO_COMPACTION_KEEP_RECENT_TOKENS = 4000;
 const DEFAULT_AUTO_COMPACTION_KEEP_RECENT_TOKENS = 20000;
 const FAST_OPENAI_PROVIDER = "openai";
 const FAST_OPENAI_SERVICE_TIER = "priority";
+const ANTHROPIC_PROVIDER = "anthropic";
+const GOOGLE_PROVIDER = "google";
+
+export type PiApiKeyProvider = "openai" | "google" | "anthropic";
 
 export function clampAutoCompactContextThresholdPercent(value: number) {
   return Math.max(
@@ -121,7 +133,7 @@ export class PiSdkAgentAdapter implements PiAgentAdapter {
     this.modelRegistry = ModelRegistry.create(this.authStorage);
   }
 
-  setApiKey(provider: "openai" | "google", apiKey: string | undefined) {
+  setApiKey(provider: PiApiKeyProvider, apiKey: string | undefined) {
     const normalizedKey = apiKey?.trim() || undefined;
     if (normalizedKey) {
       this.authStorage.setRuntimeApiKey(provider, normalizedKey);
@@ -131,7 +143,7 @@ export class PiSdkAgentAdapter implements PiAgentAdapter {
     this.authStorage.removeRuntimeApiKey(provider);
   }
 
-  hasApiKey(provider: "openai" | "google") {
+  hasApiKey(provider: PiApiKeyProvider) {
     return this.authStorage.hasAuth(provider);
   }
 
@@ -151,7 +163,7 @@ export class PiSdkAgentAdapter implements PiAgentAdapter {
   async startExecution(request: PiAgentPromptRequest): Promise<PiAgentExecutionController> {
     const modelRegistry = this.createExecutionModelRegistry(request);
     const model = this.resolveModel(modelRegistry, request.modelId);
-    const toolset = request.readOnly ? createReadOnlyTools(request.cwd) : createCodingTools(request.cwd);
+    const toolset = sortToolsByName(request.readOnly ? createReadOnlyTools(request.cwd) : createCodingTools(request.cwd));
     const settingsManager = SettingsManager.inMemory({
       compaction: buildPiAutoCompactionSettings(model.contextWindow, this.autoCompactContextThresholdPercent),
       retry: { enabled: true, maxRetries: 1 }
@@ -177,7 +189,7 @@ export class PiSdkAgentAdapter implements PiAgentAdapter {
   private resolveModel(modelRegistry: ModelRegistry, modelId: string) {
     const [provider, providerModelId] = modelId.split("/", 2);
 
-    if (provider !== "openai" && provider !== "google") {
+    if (provider !== "openai" && provider !== "google" && provider !== "anthropic") {
       throw new Error(`Unsupported provider: ${provider}`);
     }
 
@@ -190,26 +202,55 @@ export class PiSdkAgentAdapter implements PiAgentAdapter {
   }
 
   private createExecutionModelRegistry(request: PiAgentPromptRequest) {
-    if (!request.fastMode || !request.modelId.startsWith(`${FAST_OPENAI_PROVIDER}/`)) {
+    const shouldWrapOpenAi = Boolean(
+      request.modelId.startsWith(`${FAST_OPENAI_PROVIDER}/`) && (request.fastMode || request.promptCacheIdentity)
+    );
+    const shouldWrapAnthropic = request.modelId.startsWith(`${ANTHROPIC_PROVIDER}/`);
+    const shouldWrapGoogle = Boolean(
+      request.geminiCachedContentName &&
+        request.modelId.startsWith(`${GOOGLE_PROVIDER}/`) &&
+        supportsGeminiExplicitCaching(request.modelId)
+    );
+    if (!shouldWrapOpenAi && !shouldWrapAnthropic && !shouldWrapGoogle) {
       return this.modelRegistry;
     }
 
     const modelRegistry = ModelRegistry.inMemory(this.authStorage);
+    if (shouldWrapOpenAi) {
+      this.registerOpenAiProvider(modelRegistry, request);
+    }
+    if (shouldWrapAnthropic) {
+      this.registerAnthropicCacheProvider(modelRegistry, request);
+    }
+    if (shouldWrapGoogle) {
+      this.registerGoogleCachedContentProvider(modelRegistry, request);
+    }
+
+    return modelRegistry;
+  }
+
+  private registerOpenAiProvider(modelRegistry: ModelRegistry, request: PiAgentPromptRequest) {
     const openAiModels = modelRegistry.getAll().filter((model) => model.provider === FAST_OPENAI_PROVIDER);
     const baseModel = openAiModels[0];
     if (!baseModel || !baseModel.baseUrl) {
-      return modelRegistry;
+      return;
     }
-
     modelRegistry.registerProvider(FAST_OPENAI_PROVIDER, {
       api: baseModel.api,
       baseUrl: baseModel.baseUrl,
       apiKey: "OPENAI_API_KEY",
       streamSimple(model, context, options) {
+        const cacheOptions = request.promptCacheIdentity
+          ? {
+              sessionId: buildPromptCacheKey(request.promptCacheIdentity),
+              cacheRetention: "long" as const
+            }
+          : {};
         return streamSimple(model, context, {
           ...options,
-          serviceTier: FAST_OPENAI_SERVICE_TIER
-        } as SimpleStreamOptions & { serviceTier: string });
+          ...cacheOptions,
+          ...(request.fastMode ? { serviceTier: FAST_OPENAI_SERVICE_TIER } : {})
+        } as SimpleStreamOptions & { serviceTier?: string });
       },
       models: openAiModels.map((model) => ({
         id: model.id,
@@ -224,8 +265,82 @@ export class PiSdkAgentAdapter implements PiAgentAdapter {
         compat: model.compat
       }))
     });
+  }
 
-    return modelRegistry;
+  private registerGoogleCachedContentProvider(modelRegistry: ModelRegistry, request: PiAgentPromptRequest) {
+    const googleModels = modelRegistry.getAll().filter((model) => model.provider === GOOGLE_PROVIDER);
+    const baseModel = googleModels[0];
+    if (!baseModel || !baseModel.baseUrl) {
+      return;
+    }
+
+    modelRegistry.registerProvider(GOOGLE_PROVIDER, {
+      api: baseModel.api,
+      baseUrl: baseModel.baseUrl,
+      apiKey: "GEMINI_API_KEY",
+      streamSimple(model, context, options) {
+        return streamSimple(model, context, {
+          ...options,
+          async onPayload(payload, payloadModel) {
+            const nextPayload = injectGeminiCachedContent(payload, payloadModel, request.geminiCachedContentName);
+            return (await options?.onPayload?.(nextPayload, payloadModel)) ?? nextPayload;
+          }
+        } satisfies SimpleStreamOptions);
+      },
+      models: googleModels.map((model) => ({
+        id: model.id,
+        name: model.name,
+        api: model.api,
+        reasoning: model.reasoning,
+        input: [...model.input],
+        cost: { ...model.cost },
+        contextWindow: model.contextWindow,
+        maxTokens: model.maxTokens,
+        headers: model.headers,
+        compat: model.compat
+      }))
+    });
+  }
+
+  private registerAnthropicCacheProvider(modelRegistry: ModelRegistry, request: PiAgentPromptRequest) {
+    const anthropicModels = modelRegistry.getAll().filter((model) => model.provider === ANTHROPIC_PROVIDER);
+    const baseModel = anthropicModels[0];
+    if (!baseModel || !baseModel.baseUrl) {
+      return;
+    }
+
+    modelRegistry.registerProvider(ANTHROPIC_PROVIDER, {
+      api: baseModel.api,
+      baseUrl: baseModel.baseUrl,
+      apiKey: "ANTHROPIC_API_KEY",
+      streamSimple(model, context, options) {
+        return streamSimple(model, context, {
+          ...options,
+          cacheRetention: "long",
+          async onPayload(payload, payloadModel) {
+            const transformed = transformAnthropicCachePayload({
+              payload,
+              model: payloadModel,
+              cacheableUserBlocks: request.cacheableUserBlocks
+            });
+            const nextPayload = transformed ?? payload;
+            return (await options?.onPayload?.(nextPayload, payloadModel)) ?? nextPayload;
+          }
+        } satisfies SimpleStreamOptions);
+      },
+      models: anthropicModels.map((model) => ({
+        id: model.id,
+        name: model.name,
+        api: model.api,
+        reasoning: model.reasoning,
+        input: [...model.input],
+        cost: { ...model.cost },
+        contextWindow: model.contextWindow,
+        maxTokens: model.maxTokens,
+        headers: model.headers,
+        compat: model.compat
+      }))
+    });
   }
 
   private handleEvent(event: AgentSessionEvent, request: PiAgentPromptRequest) {
@@ -322,6 +437,7 @@ class PiSdkExecutionController implements PiAgentExecutionController {
   private readonly unsubscribe: () => void;
   private currentResult: Promise<PiAgentPromptResult> | undefined;
   private disposed = false;
+  private lastSessionEventSummary = "session-created";
   private running = false;
 
   constructor(
@@ -330,7 +446,10 @@ class PiSdkExecutionController implements PiAgentExecutionController {
     private readonly contextWindow: number,
     onSessionEvent: (event: AgentSessionEvent) => void
   ) {
-    this.unsubscribe = this.session.subscribe((event) => onSessionEvent(event));
+    this.unsubscribe = this.session.subscribe((event) => {
+      this.lastSessionEventSummary = summarizeSessionEvent(event);
+      onSessionEvent(event);
+    });
     this.request.onExecutionEvent?.({ type: "session-created" });
 
     this.abortHandler = this.request.abortSignal
@@ -381,22 +500,42 @@ class PiSdkExecutionController implements PiAgentExecutionController {
 
     this.running = true;
     this.currentResult = (async () => {
-      await this.session.prompt(prompt, { images: this.request.images });
-      const text = this.session.getLastAssistantText()?.trim();
+      await promptSession(this.session, prompt, this.request.images, this.request.abortSignal, this.lastSessionEventSummary);
+      let text = this.session.getLastAssistantText()?.trim();
+
+      if (!text && prompt.trim().toLowerCase() !== "continue") {
+        await promptSession(this.session, "continue", this.request.images, this.request.abortSignal, this.lastSessionEventSummary);
+        text = this.session.getLastAssistantText()?.trim();
+      }
 
       if (!text) {
-        throw new Error("Pi agent returned an empty response");
+        const sessionStats = this.session.getSessionStats();
+        throw createPiExecutionError(
+          "empty-response",
+          "Pi agent returned an empty response",
+          this.lastSessionEventSummary,
+          sessionStats
+        );
       }
 
       const sessionStats = this.session.getSessionStats();
+      if (this.request.modelId.startsWith("anthropic/") && sessionStats.tokens.cacheWrite > 0) {
+        debugLog("agent.cache.creation", {
+          providerBrand: "claude",
+          modelId: this.request.modelId,
+          cacheCreationInputTokens: sessionStats.tokens.cacheWrite
+        });
+      }
       const tokens = sessionStats.contextUsage?.tokens ?? undefined;
+      const cachedInputTokens = extractCachedInputTokens(sessionStats);
       return {
         text,
         contextUsage: {
           tokens,
           contextWindow: this.contextWindow,
           usagePercent: tokens === undefined ? undefined : Math.min(100, (tokens / this.contextWindow) * 100),
-          sessionStats
+          sessionStats,
+          cachedInputTokens
         }
       } satisfies PiAgentPromptResult;
     })().finally(() => {
@@ -405,4 +544,83 @@ class PiSdkExecutionController implements PiAgentExecutionController {
 
     return this.currentResult;
   }
+}
+
+function summarizeSessionEvent(event: AgentSessionEvent) {
+  switch (event.type) {
+    case "message_update":
+      return `message_update:${event.assistantMessageEvent.type}`;
+    case "tool_execution_start":
+      return `tool_execution_start:${event.toolName}`;
+    case "tool_execution_update":
+      return `tool_execution_update:${event.toolName}`;
+    case "tool_execution_end":
+      return `tool_execution_end:${event.toolName}:${event.isError ? "error" : "ok"}`;
+    default:
+      return event.type;
+  }
+}
+
+function createPiExecutionError(
+  category: "empty-response" | "stream-disconnect" | "invalid-json" | "unknown",
+  message: string,
+  lastEvent: string,
+  sessionStats: SessionStats
+) {
+  const stats = sessionStats.contextUsage?.tokens;
+  return new Error(
+    `${message} [category=${category}] [last-event=${lastEvent}]${stats === undefined ? "" : ` [tokens=${stats}]`}`
+  );
+}
+
+async function promptSession(
+  session: Awaited<ReturnType<typeof createAgentSession>>["session"],
+  prompt: string,
+  images: PiAgentPromptRequest["images"],
+  abortSignal: AbortSignal | undefined,
+  lastEvent: string
+) {
+  try {
+    await session.prompt(prompt, { images });
+  } catch (error) {
+    if (abortSignal?.aborted || isAbortLikeError(error)) {
+      throw error;
+    }
+    throw createPiExecutionError("stream-disconnect", "Pi agent stream transport failed", lastEvent, session.getSessionStats());
+  }
+}
+
+function isAbortLikeError(error: unknown) {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const normalized = error.message.toLowerCase();
+  return error.name === "AbortError" || normalized.includes("abort") || normalized.includes("cancel");
+}
+
+function sortToolsByName<T extends { name: string }>(tools: T[]) {
+  return [...tools].sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function injectGeminiCachedContent(payload: unknown, model: { provider: string; api: string }, cachedContentName: string | undefined) {
+  if (
+    !cachedContentName ||
+    model.provider !== GOOGLE_PROVIDER ||
+    model.api !== "google-generative-ai" ||
+    !isRecord(payload)
+  ) {
+    return payload;
+  }
+
+  return {
+    ...payload,
+    config: {
+      ...(isRecord(payload.config) ? payload.config : {}),
+      cachedContent: cachedContentName
+    }
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

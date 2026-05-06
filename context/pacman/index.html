@@ -1,0 +1,710 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pac-Man Power Circuit</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #060b16;
+      --panel: rgba(8, 14, 28, 0.9);
+      --line: rgba(116, 220, 255, 0.28);
+      --text: #eef7ff;
+      --muted: #90a7bf;
+      --accent: #ffe45e;
+      --danger: #ff6b8f;
+      --safe: #77f6c4;
+      --maze: #58bbff;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(circle at top, rgba(52, 121, 255, 0.22), transparent 40%),
+        radial-gradient(circle at bottom, rgba(255, 228, 94, 0.15), transparent 35%),
+        var(--bg);
+      color: var(--text);
+      font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+    }
+
+    .shell {
+      width: min(96vw, 980px);
+      display: grid;
+      gap: 16px;
+      padding: 18px;
+    }
+
+    .topbar,
+    .hintbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 14px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--panel);
+      backdrop-filter: blur(10px);
+    }
+
+    .statline {
+      display: flex;
+      gap: 18px;
+      flex-wrap: wrap;
+      font-size: 0.96rem;
+    }
+
+    .statline strong {
+      color: var(--accent);
+    }
+
+    .badge {
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: rgba(255, 228, 94, 0.12);
+      color: var(--accent);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      font-size: 0.76rem;
+      white-space: nowrap;
+    }
+
+    canvas {
+      width: 100%;
+      height: auto;
+      display: block;
+      border-radius: 22px;
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, #091426 0%, #050910 100%);
+      box-shadow: 0 30px 60px rgba(0, 0, 0, 0.35);
+    }
+
+    .hintbar {
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    @media (max-width: 720px) {
+      .topbar,
+      .hintbar {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <div class="topbar">
+      <div class="badge">Pac-Man Power Circuit</div>
+      <div class="statline">
+        <span>Score <strong id="score">0</strong></span>
+        <span>Lives <strong id="lives">3</strong></span>
+        <span>Pellets <strong id="pellets">0</strong></span>
+        <span>State <strong id="state">Menu</strong></span>
+      </div>
+    </div>
+    <canvas id="game" width="960" height="720" aria-label="Pac-Man Power Circuit"></canvas>
+    <div class="hintbar">
+      <span>Move with arrow keys or WASD. Eat every pellet. Power cells let you flip the chase.</span>
+      <span>Press <strong>Space</strong> to start or restart. <strong>Escape</strong> returns to menu.</span>
+    </div>
+  </main>
+  <script>
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+    const scoreEl = document.getElementById("score");
+    const livesEl = document.getElementById("lives");
+    const pelletsEl = document.getElementById("pellets");
+    const stateEl = document.getElementById("state");
+
+    const TILE = 40;
+    const HUD_HEIGHT = 80;
+    const MAZE = [
+      "####################",
+      "#o.......##.......o#",
+      "#.####.#.##.#.####.#",
+      "#.#....#....#....#.#",
+      "#.#.##.####.##.#.#.#",
+      "#..................#",
+      "#.##.#.######.#.##.#",
+      "#....#...##...#....#",
+      "####.### ## ###.####",
+      "   #.#GG    GG#.#   ",
+      "####.# ###### #.####",
+      "#........P.........#",
+      "#.##.#.######.#.##.#",
+      "#o..#....##....#..o#",
+      "##.#.##.####.##.#.##",
+      "#....##...##...##..#",
+      "#.######.##.######.#",
+      "#..................#",
+      "####################"
+    ];
+
+    const COLORS = {
+      wall: "#58bbff",
+      pellet: "#b9d9ff",
+      power: "#ffe45e",
+      player: "#ffd447",
+      vulnerable: "#77f6c4",
+      eye: "#091426",
+      text: "#eef7ff",
+      muted: "#90a7bf",
+      danger: "#ff6b8f"
+    };
+
+    const DIRS = {
+      left: { x: -1, y: 0, angle: Math.PI },
+      right: { x: 1, y: 0, angle: 0 },
+      up: { x: 0, y: -1, angle: -Math.PI / 2 },
+      down: { x: 0, y: 1, angle: Math.PI / 2 }
+    };
+
+    const GHOST_COLORS = ["#ff6b8f", "#6ed0ff", "#ffb86a", "#d49cff"];
+    const GHOST_NAMES = ["Rift", "Pulse", "Blaze", "Glint"];
+    const keys = new Set();
+    const baseMap = [];
+    const pellets = new Set();
+    const powerPellets = new Set();
+    let pelletGoal = 0;
+
+    let state = "menu";
+    let player = null;
+    let ghosts = [];
+    let score = 0;
+    let lives = 3;
+    let frightenedTimer = 0;
+    let flashTimer = 0;
+    let gameTime = 0;
+
+    function keyFor(col, row) {
+      return `${col},${row}`;
+    }
+
+    function centerOf(col, row) {
+      return {
+        x: col * TILE + TILE / 2,
+        y: HUD_HEIGHT + row * TILE + TILE / 2
+      };
+    }
+
+    function resetBoard() {
+      baseMap.length = 0;
+      pellets.clear();
+      powerPellets.clear();
+
+      for (let row = 0; row < MAZE.length; row += 1) {
+        const line = MAZE[row];
+        const cells = [];
+        for (let col = 0; col < line.length; col += 1) {
+          const cell = line[col] ?? " ";
+          if (cell === "#" || cell === " ") {
+            cells.push(cell);
+          } else {
+            cells.push(".");
+          }
+
+          if (cell === ".") {
+            pellets.add(keyFor(col, row));
+          } else if (cell === "o") {
+            powerPellets.add(keyFor(col, row));
+          } else if (cell === "P") {
+            pellets.add(keyFor(col, row));
+          }
+        }
+        baseMap.push(cells);
+      }
+
+      pelletGoal = pellets.size + powerPellets.size;
+    }
+
+    function isWall(col, row) {
+      if (row < 0 || row >= baseMap.length) {
+        return true;
+      }
+
+      const line = baseMap[row];
+      if (col < 0 || col >= line.length) {
+        return false;
+      }
+
+      return line[col] === "#";
+    }
+
+    function createPlayer() {
+      const spawn = centerOf(9, 11);
+      return {
+        x: spawn.x,
+        y: spawn.y,
+        dir: "left",
+        nextDir: "left",
+        speed: 145,
+        radius: 15,
+        mouth: 0,
+        alive: true
+      };
+    }
+
+    function createGhost(col, row, color, index) {
+      const spawn = centerOf(col, row);
+      return {
+        name: GHOST_NAMES[index],
+        x: spawn.x,
+        y: spawn.y,
+        dir: index % 2 === 0 ? "left" : "right",
+        speed: 112,
+        radius: 15,
+        color,
+        released: true,
+        eaten: false
+      };
+    }
+
+    function spawnGhosts() {
+      ghosts = [
+        createGhost(8, 9, GHOST_COLORS[0], 0),
+        createGhost(9, 9, GHOST_COLORS[1], 1),
+        createGhost(10, 9, GHOST_COLORS[2], 2),
+        createGhost(11, 9, GHOST_COLORS[3], 3)
+      ];
+    }
+
+    function startGame() {
+      resetBoard();
+      player = createPlayer();
+      spawnGhosts();
+      score = 0;
+      lives = 3;
+      frightenedTimer = 0;
+      flashTimer = 0;
+      gameTime = 0;
+      state = "playing";
+      updateHud();
+    }
+
+    function resetPositions() {
+      player = createPlayer();
+      spawnGhosts();
+      frightenedTimer = 0;
+      flashTimer = 0;
+    }
+
+    function wrapActor(actor) {
+      const width = MAZE[0].length * TILE;
+      if (actor.x < -TILE / 2) {
+        actor.x += width;
+      } else if (actor.x > width + TILE / 2) {
+        actor.x -= width;
+      }
+    }
+
+    function toGrid(x, y) {
+      return {
+        col: Math.floor(x / TILE),
+        row: Math.floor((y - HUD_HEIGHT) / TILE)
+      };
+    }
+
+    function atTileCenter(actor) {
+      const localX = actor.x % TILE;
+      const localY = (actor.y - HUD_HEIGHT) % TILE;
+      return Math.abs(localX - TILE / 2) < 4 && Math.abs(localY - TILE / 2) < 4;
+    }
+
+    function canMove(actor, dirName) {
+      const dir = DIRS[dirName];
+      const nextX = actor.x + dir.x * (TILE / 2 + 2);
+      const nextY = actor.y + dir.y * (TILE / 2 + 2);
+      const { col, row } = toGrid(nextX, nextY);
+      return !isWall(col, row);
+    }
+
+    function moveActor(actor, dt) {
+      if (atTileCenter(actor) && canMove(actor, actor.nextDir)) {
+        actor.dir = actor.nextDir;
+      }
+
+      if (!canMove(actor, actor.dir)) {
+        return;
+      }
+
+      const dir = DIRS[actor.dir];
+      actor.x += dir.x * actor.speed * dt;
+      actor.y += dir.y * actor.speed * dt;
+      wrapActor(actor);
+    }
+
+    function availableDirs(actor) {
+      return Object.keys(DIRS).filter((dirName) => canMove(actor, dirName));
+    }
+
+    function opposite(dirName) {
+      switch (dirName) {
+        case "left": return "right";
+        case "right": return "left";
+        case "up": return "down";
+        default: return "up";
+      }
+    }
+
+    function chooseGhostDir(ghost) {
+      const options = availableDirs(ghost).filter((dirName) => dirName !== opposite(ghost.dir));
+      const dirs = options.length > 0 ? options : availableDirs(ghost);
+      if (dirs.length === 0) {
+        return ghost.dir;
+      }
+
+      const playerCell = toGrid(player.x, player.y);
+      let target = playerCell;
+
+      if (frightenedTimer > 0) {
+        target = {
+          col: ghost.x < canvas.width / 2 ? MAZE[0].length - 2 : 1,
+          row: ghost.y < canvas.height / 2 ? MAZE.length - 2 : 1
+        };
+      } else if (ghost.name === "Pulse") {
+        target = {
+          col: Math.max(1, Math.min(MAZE[0].length - 2, playerCell.col + DIRS[player.dir].x * 3)),
+          row: Math.max(1, Math.min(MAZE.length - 2, playerCell.row + DIRS[player.dir].y * 3))
+        };
+      } else if (ghost.name === "Blaze") {
+        target = {
+          col: gameTime % 8 < 4 ? playerCell.col : 1,
+          row: gameTime % 8 < 4 ? playerCell.row : MAZE.length - 2
+        };
+      } else if (ghost.name === "Glint") {
+        target = {
+          col: playerCell.col < MAZE[0].length / 2 ? MAZE[0].length - 2 : 1,
+          row: playerCell.row < MAZE.length / 2 ? MAZE.length - 2 : 1
+        };
+      }
+
+      let bestDir = dirs[0];
+      let bestDist = Number.POSITIVE_INFINITY;
+      for (const dirName of dirs) {
+        const dir = DIRS[dirName];
+        const probe = toGrid(ghost.x + dir.x * TILE, ghost.y + dir.y * TILE);
+        const dist = Math.abs(probe.col - target.col) + Math.abs(probe.row - target.row);
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestDir = dirName;
+        }
+      }
+      return bestDir;
+    }
+
+    function updateGhosts(dt) {
+      for (const ghost of ghosts) {
+        ghost.speed = frightenedTimer > 0 ? 92 : 112 + Math.min(26, score / 120);
+
+        if (atTileCenter(ghost)) {
+          ghost.dir = chooseGhostDir(ghost);
+        }
+
+        if (canMove(ghost, ghost.dir)) {
+          const dir = DIRS[ghost.dir];
+          ghost.x += dir.x * ghost.speed * dt;
+          ghost.y += dir.y * ghost.speed * dt;
+          wrapActor(ghost);
+        }
+      }
+    }
+
+    function eatPellets() {
+      const cell = toGrid(player.x, player.y);
+      const id = keyFor(cell.col, cell.row);
+      if (pellets.delete(id)) {
+        score += 10;
+      }
+
+      if (powerPellets.delete(id)) {
+        score += 50;
+        frightenedTimer = 7.5;
+      }
+
+      if (pellets.size === 0 && powerPellets.size === 0) {
+        state = "won";
+      }
+    }
+
+    function collideGhosts() {
+      for (const ghost of ghosts) {
+        const width = MAZE[0].length * TILE;
+        let dx = ghost.x - player.x;
+        if (Math.abs(dx) > width / 2) {
+          dx += dx > 0 ? -width : width;
+        }
+        const dy = ghost.y - player.y;
+        if (Math.hypot(dx, dy) > ghost.radius + player.radius - 1) {
+          continue;
+        }
+
+        if (frightenedTimer > 0) {
+          score += 200;
+          const spawn = centerOf(9, 9);
+          ghost.x = spawn.x;
+          ghost.y = spawn.y;
+          ghost.dir = "left";
+          return;
+        }
+
+        lives -= 1;
+        flashTimer = 1;
+        if (lives <= 0) {
+          state = "lost";
+        } else {
+          resetPositions();
+        }
+        return;
+      }
+    }
+
+    function updateHud() {
+      scoreEl.textContent = String(score);
+      livesEl.textContent = String(lives);
+      pelletsEl.textContent = String(pellets.size + powerPellets.size);
+      stateEl.textContent = state[0].toUpperCase() + state.slice(1);
+    }
+
+    function update(dt) {
+      if (state !== "playing") {
+        updateHud();
+        return;
+      }
+
+      gameTime += dt;
+      frightenedTimer = Math.max(0, frightenedTimer - dt);
+      flashTimer = Math.max(0, flashTimer - dt);
+      player.mouth += dt * 11;
+
+      moveActor(player, dt);
+      updateGhosts(dt);
+      eatPellets();
+      collideGhosts();
+      updateHud();
+    }
+
+    function drawMaze() {
+      const width = MAZE[0].length * TILE;
+      const height = MAZE.length * TILE;
+
+      ctx.save();
+      ctx.translate((canvas.width - width) / 2, 0);
+
+      for (let row = 0; row < baseMap.length; row += 1) {
+        for (let col = 0; col < baseMap[row].length; col += 1) {
+          const x = col * TILE;
+          const y = HUD_HEIGHT + row * TILE;
+          if (baseMap[row][col] === "#") {
+            ctx.fillStyle = "rgba(88, 187, 255, 0.12)";
+            ctx.fillRect(x + 3, y + 3, TILE - 6, TILE - 6);
+            ctx.strokeStyle = COLORS.wall;
+            ctx.lineWidth = 3;
+            ctx.strokeRect(x + 5, y + 5, TILE - 10, TILE - 10);
+            continue;
+          }
+
+          const id = keyFor(col, row);
+          if (pellets.has(id)) {
+            ctx.fillStyle = COLORS.pellet;
+            ctx.beginPath();
+            ctx.arc(x + TILE / 2, y + TILE / 2, 4, 0, Math.PI * 2);
+            ctx.fill();
+          } else if (powerPellets.has(id)) {
+            ctx.fillStyle = COLORS.power;
+            ctx.beginPath();
+            ctx.arc(x + TILE / 2, y + TILE / 2, 8 + Math.sin(gameTime * 8) * 1.5, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+      }
+
+      ctx.restore();
+    }
+
+    function drawPlayer() {
+      if (!player) {
+        return;
+      }
+
+      const width = MAZE[0].length * TILE;
+      const offsetX = (canvas.width - width) / 2;
+      const mouth = 0.18 + (Math.sin(player.mouth) + 1) * 0.18;
+
+      ctx.save();
+      ctx.translate(offsetX + player.x, player.y);
+      ctx.rotate(DIRS[player.dir].angle);
+      ctx.fillStyle = COLORS.player;
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.arc(0, 0, player.radius, mouth, Math.PI * 2 - mouth);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+
+    function drawGhost(ghost) {
+      const width = MAZE[0].length * TILE;
+      const offsetX = (canvas.width - width) / 2;
+      const bodyColor = frightenedTimer > 0 ? COLORS.vulnerable : ghost.color;
+      const bob = Math.sin(gameTime * 7 + ghost.x * 0.01) * 2;
+
+      ctx.save();
+      ctx.translate(offsetX + ghost.x, ghost.y + bob);
+      ctx.fillStyle = bodyColor;
+      ctx.beginPath();
+      ctx.arc(0, -4, ghost.radius, Math.PI, 0);
+      ctx.lineTo(ghost.radius, ghost.radius);
+      for (let i = 0; i < 4; i += 1) {
+        const px = ghost.radius - i * (ghost.radius * 0.66);
+        const py = i % 2 === 0 ? ghost.radius : ghost.radius - 6;
+        ctx.lineTo(px, py);
+      }
+      ctx.lineTo(-ghost.radius, ghost.radius);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.arc(-6, -4, 4.5, 0, Math.PI * 2);
+      ctx.arc(6, -4, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+
+      const look = DIRS[ghost.dir];
+      ctx.fillStyle = COLORS.eye;
+      ctx.beginPath();
+      ctx.arc(-6 + look.x * 1.8, -4 + look.y * 1.8, 2.2, 0, Math.PI * 2);
+      ctx.arc(6 + look.x * 1.8, -4 + look.y * 1.8, 2.2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    function drawOverlay() {
+      if (state === "playing") {
+        if (frightenedTimer > 0) {
+          ctx.fillStyle = "rgba(119, 246, 196, 0.12)";
+          ctx.fillRect(0, HUD_HEIGHT, canvas.width, canvas.height - HUD_HEIGHT);
+          ctx.fillStyle = COLORS.vulnerable;
+          ctx.font = "700 22px Trebuchet MS";
+          ctx.fillText("Power cells live: chase the ghosts.", 30, 46);
+        }
+        return;
+      }
+
+      ctx.fillStyle = "rgba(3, 6, 12, 0.78)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.textAlign = "center";
+      ctx.fillStyle = COLORS.text;
+      ctx.font = "700 46px Trebuchet MS";
+
+      let title = "Pac-Man Power Circuit";
+      let body = "Clear the maze, use power cells, and keep your route clean.";
+      let cta = "Press Space to start.";
+
+      if (state === "won") {
+        title = "Maze Cleared";
+        body = "You swept every pellet and flipped the hunt.";
+        cta = "Press Space to run it again.";
+      } else if (state === "lost") {
+        title = "Circuit Collapsed";
+        body = "The ghosts closed the route. Reset fast and reroute.";
+        cta = "Press Space to restart instantly.";
+      }
+
+      ctx.fillText(title, canvas.width / 2, 270);
+      ctx.font = "400 24px Trebuchet MS";
+      ctx.fillStyle = COLORS.muted;
+      ctx.fillText(body, canvas.width / 2, 322);
+      ctx.fillText(cta, canvas.width / 2, 362);
+      ctx.font = "400 20px Trebuchet MS";
+      ctx.fillText("Arrow keys or WASD move. Escape returns to menu.", canvas.width / 2, 420);
+      ctx.textAlign = "left";
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = "#08111f";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      drawMaze();
+      ghosts.forEach(drawGhost);
+      drawPlayer();
+
+      if (flashTimer > 0) {
+        ctx.fillStyle = `rgba(255, 107, 143, ${flashTimer * 0.35})`;
+        ctx.fillRect(0, HUD_HEIGHT, canvas.width, canvas.height - HUD_HEIGHT);
+      }
+
+      drawOverlay();
+    }
+
+    function handleInput(event, down) {
+      const key = event.key.toLowerCase();
+      if (down) {
+        keys.add(key);
+      } else {
+        keys.delete(key);
+      }
+
+      if (down) {
+        if (key === " " || key === "spacebar") {
+          if (state === "menu" || state === "won" || state === "lost") {
+            startGame();
+          }
+        } else if (key === "escape") {
+          state = "menu";
+        }
+      }
+
+      if (!player) {
+        return;
+      }
+
+      if (keys.has("arrowleft") || keys.has("a")) {
+        player.nextDir = "left";
+      } else if (keys.has("arrowright") || keys.has("d")) {
+        player.nextDir = "right";
+      } else if (keys.has("arrowup") || keys.has("w")) {
+        player.nextDir = "up";
+      } else if (keys.has("arrowdown") || keys.has("s")) {
+        player.nextDir = "down";
+      }
+    }
+
+    window.addEventListener("keydown", (event) => {
+      if (["arrowleft", "arrowright", "arrowup", "arrowdown", " "].includes(event.key.toLowerCase())) {
+        event.preventDefault();
+      }
+      handleInput(event, true);
+    });
+
+    window.addEventListener("keyup", (event) => handleInput(event, false));
+
+    resetBoard();
+    player = createPlayer();
+    spawnGhosts();
+    updateHud();
+
+    let last = performance.now();
+    function frame(now) {
+      const dt = Math.min(0.033, (now - last) / 1000);
+      last = now;
+      update(dt);
+      draw();
+      requestAnimationFrame(frame);
+    }
+
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>

@@ -12,9 +12,14 @@ import type {
 import { createUiTest } from "../utils/tests/test-harness";
 import { clearBrowserStateForTests, seedHarnessStoreForTests } from "../utils/tests/store-test-utils";
 import { createHarnessStateFixture, createViewProjectFixture } from "../utils/tests/test-fixtures";
-import { createEmptyAssistantsState, createEmptyBackgroundJobsState, harnessStore } from "../harness-store";
+import { createEmptyAssistantsState, createEmptyBackgroundJobsState, harnessStore, type JobsRunFilter } from "../harness-store";
 import { getAssistantQuestionDefaultChoices } from "../assistant-question-defaults";
-import { NotificationInbox, activateProjectThreadFromInbox, openAssistantJobNotificationFromInbox } from "./notification-inbox";
+import {
+  NotificationInbox,
+  activateProjectThreadFromInbox,
+  openAssistantJobNotificationFromInbox,
+  openBackgroundRunNotificationFromInbox
+} from "./notification-inbox";
 
 function isoNow() {
   return new Date().toISOString();
@@ -92,6 +97,27 @@ function seedInbox(
       }
     })
   );
+}
+
+function createBackgroundRun(overrides: Partial<BackgroundJobRun> = {}): BackgroundJobRun {
+  const now = isoNow();
+  return {
+    id: "bg-run-1",
+    jobId: "bg-job-1",
+    projectId: "project-1",
+    automationThreadId: "thread-1",
+    triggerSource: "manual",
+    status: "succeeded",
+    riskLevel: "safe",
+    approvalStatus: "not-needed",
+    skippedOccurrenceCount: 0,
+    summary: "Done",
+    queuedAt: now,
+    createdAt: now,
+    updatedAt: now,
+    events: [],
+    ...overrides
+  };
 }
 
 createUiTest("NotificationInbox", () => {
@@ -306,6 +332,10 @@ createUiTest("openAssistantJobNotificationFromInbox", () => {
 
     seedHarnessStoreForTests(
       createHarnessStateFixture({
+        workspace: {
+          activeProjectId: "project-1",
+          projects: [createViewProjectFixture({ id: "project-1", activeThreadId: "thread-1" })]
+        },
         assistants: {
           ...createEmptyAssistantsState(),
           assistants: [assistant]
@@ -331,5 +361,149 @@ createUiTest("openAssistantJobNotificationFromInbox", () => {
     expect(openAssistantJobNotificationFromInbox(harnessStore.state, backgroundRunStatusNotification())).toBe(false);
     expect(harnessStore.state.activeSurface).toBe("chat");
     expect(harnessStore.state.assistants.selectedTab).toBe("chat");
+  });
+});
+
+createUiTest("openBackgroundRunNotificationFromInbox", () => {
+  beforeEach(() => {
+    clearBrowserStateForTests();
+  });
+
+  it("opens generic background run notifications on selected runs details", () => {
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        backgroundJobs: {
+          ...createEmptyBackgroundJobsState(),
+          runs: [createBackgroundRun({ status: "running", summary: "Running" })]
+        }
+      })
+    );
+
+    openBackgroundRunNotificationFromInbox(harnessStore.state, backgroundRunStatusNotification());
+
+    expect(harnessStore.state.activeSurface).toBe("background-jobs");
+    expect(harnessStore.state.activeLeftTab).toBe("runs");
+    expect(harnessStore.state.jobsRunFilter).toBe("running");
+    expect(harnessStore.state.jobsPanePreferences).toMatchObject({
+      segment: "inbox",
+      selectedRunId: "bg-run-1",
+      selectedJobId: "bg-job-1",
+      selectedNotificationId: undefined
+    });
+    expect(harnessStore.state.backgroundJobDetailsRunId).toBeUndefined();
+  });
+
+  it("switches run notification clicks to the selected run status filter", () => {
+    const cases: Array<[BackgroundJobRun["status"], BackgroundJobRun["approvalStatus"], JobsRunFilter]> = [
+      ["awaiting-approval", "pending", "approval"],
+      ["awaiting-user-input", "not-needed", "approval"],
+      ["queued", "not-needed", "queued"],
+      ["running", "not-needed", "running"],
+      ["failed", "not-needed", "failed"],
+      ["cancelled", "not-needed", "failed"],
+      ["succeeded", "not-needed", "done"],
+      ["skipped", "not-needed", "done"]
+    ];
+
+    for (const [status, approvalStatus, expectedFilter] of cases) {
+      seedHarnessStoreForTests(
+        createHarnessStateFixture({
+          backgroundJobs: {
+            ...createEmptyBackgroundJobsState(),
+            runs: [createBackgroundRun({ status, approvalStatus })]
+          },
+          jobsRunFilter: expectedFilter === "failed" ? "running" : "failed"
+        })
+      );
+
+      openBackgroundRunNotificationFromInbox(harnessStore.state, backgroundRunStatusNotification());
+
+      expect(harnessStore.state.jobsRunFilter).toBe(expectedFilter);
+      expect(harnessStore.state.jobsPanePreferences.selectedRunId).toBe("bg-run-1");
+    }
+  });
+
+  it("opens assistant-owned background run notifications in runs details", () => {
+    const now = isoNow();
+    const assistant: Assistant = {
+      id: "assistant-1",
+      name: "Release watcher",
+      scope: "project",
+      projectId: "project-1",
+      description: "Watch releases",
+      personalityPrompt: "Be concise.",
+      jobPrompt: "Scan releases.",
+      agentId: "pi",
+      runState: "active",
+      bootstrapState: "completed",
+      failureStreakCount: 0,
+      circuitBreakerState: "closed",
+      latestActivityAt: now,
+      unreadQuestionCount: 0,
+      createdAt: now,
+      updatedAt: now
+    };
+    const job: BackgroundJob = {
+      id: "bg-job-1",
+      projectId: "project-1",
+      assistantId: "assistant-1",
+      automationThreadId: "thread-1",
+      kind: "ai-routine",
+      name: "Release scan",
+      status: "enabled",
+      riskLevel: "safe",
+      definition: {
+        kind: "ai-routine",
+        prompt: "Scan releases",
+        planExecutionMode: "immediate",
+        subagentWorktreeStrategy: "same-worktree"
+      },
+      schedule: { type: "one-off", runAt: now, sourceText: "manual" },
+      scheduleInput: "manual",
+      createdAt: now,
+      updatedAt: now
+    };
+    const run: BackgroundJobRun = {
+      id: "bg-run-1",
+      jobId: "bg-job-1",
+      projectId: "project-1",
+      assistantId: "assistant-1",
+      automationThreadId: "thread-1",
+      triggerSource: "manual",
+      status: "succeeded",
+      riskLevel: "safe",
+      approvalStatus: "not-needed",
+      skippedOccurrenceCount: 0,
+      summary: "Done",
+      queuedAt: now,
+      createdAt: now,
+      updatedAt: now,
+      events: []
+    };
+
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        assistants: {
+          ...createEmptyAssistantsState(),
+          assistants: [assistant]
+        },
+        backgroundJobs: {
+          ...createEmptyBackgroundJobsState(),
+          jobs: [job],
+          runs: [run]
+        }
+      })
+    );
+
+    openBackgroundRunNotificationFromInbox(harnessStore.state, backgroundRunStatusNotification());
+
+    expect(harnessStore.state.activeSurface).toBe("background-jobs");
+    expect(harnessStore.state.activeLeftTab).toBe("runs");
+    expect(harnessStore.state.jobsPanePreferences).toMatchObject({
+      segment: "inbox",
+      selectedRunId: "bg-run-1",
+      selectedJobId: "bg-job-1"
+    });
+    expect(harnessStore.state.assistants.selectedAssistantId).toBeUndefined();
   });
 });

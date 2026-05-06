@@ -2,6 +2,8 @@
 
 Street Combat is a standalone fighting-game entry focused on readable frame-data interactions instead of content breadth. The shell keeps the match directly playable from the folder while the game module owns timing, combat rules, round flow, and AI behavior.
 
+Open [index.html](./index.html) in a browser to play.
+
 ## Concept
 
 - Compact one-on-one fighter with best-of-three rounds
@@ -21,16 +23,12 @@ Street Combat is a standalone fighting-game entry focused on readable frame-data
 - `Enter` starts the match
 - `R` restarts
 
-## Structure
+## Core Loop
 
-- `index.html` hosts the standalone shell, canvas, and overlays
-- `src/main.js` handles input, animation, resize, and DOM updates
-- `src/Game.js` owns round flow, combat timing, AI, and rendering
-- `src/data.js` defines the move list and shared frame-data values
-- `src/styles.css` provides the cabinet-like presentation and responsive layout
+- Walk into range, test safe pressure, and buffer follow-ups during recovery windows.
+- Read the rival's spacing habits, then convert clean openings into cancel strings before the round timer runs out.
+- Reset quickly after each set so the loop stays about adaptation and matchup reads instead of menu friction.
 
 ## Notes
 
-- The entry is isolated under `street-combat/` and does not depend on repo-wide runtime code
-- Combat feedback is intentionally explicit so state changes remain legible without opening the source
-- The README stays high level and links understanding back to the local entry structure
+- Combat feedback stays explicit so advantage shifts remain readable without pausing to inspect frame data.

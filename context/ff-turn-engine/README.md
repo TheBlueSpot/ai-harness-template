@@ -1,6 +1,6 @@
 # FF Turn Engine
 
-FF Turn Engine is a standalone active-time battle entry in the catalog. It is built as a direct folder boot with a small shell around a modular `Game` class, a frame-state renderer, and a restartable battle flow.
+FF Turn Engine is a browser-playable active-time battle about waiting on gauges, choosing commands quickly, and breaking the enemy line before the party collapses.
 
 ## Concept
 
@@ -17,16 +17,20 @@ FF Turn Engine is a standalone active-time battle entry in the catalog. It is bu
 - `Escape` cancels
 - `R` restarts
 
-## Structure
-
-- `index.html` is the direct browser entry
-- `src/main.js` handles boot, input, resize, and game loop wiring
-- `src/render.js` draws the current frame state
-- `src/Game.js` owns combat state and turn resolution
-- `src/styles.css` provides the shell presentation and responsive layout
-
 ## Notes
 
-- The shell reads only `Game.getFrameState()` for display data
-- Implementation details stay in source files so the README stays high level
-- The folder is intended to open and play on its own
+- Open [index.html](./index.html) in a browser to play.
+- Direct browser smoke on 2026-04-30 confirmed menu start, ATB flow, and result states are currently working, so older repo-local reports that the entry does not start appear stale.
+- Result and HUD screens now toggle the same visible state, so the defeat or victory view actually appears after a battle ends.
+- Combatants now carry inline name, HP, ATB, and selection cards on the battle lane so command confirms and target swaps read from the play space instead of only from the top HUD.
+
+## Learnings
+
+- ATB shells feel broken fast when charging, ready, selected target, and current HP live in separate places; putting those reads on each combatant is the cheapest clarity pass.
+- Stored May 6 review confusion was not only about screen state. The commands also lacked visible philosophy, so `Attack`, `Skill`, `Guard`, and `Item` now publish concrete tradeoffs in the live command panel and no longer collapse into the same choice with different numbers.
+- Fresh May 6 follow-up treated the old `not playable` report as stale but kept the `confusing` residue real: enemy turns now publish a compact `ENEMY NEXT` panel plus stronger imminent-hit banner copy, so target priority and incoming damage read before the strike lands instead of only after the log updates.
+- Another cheap ATB truth pass landed on May 6: enemy cards and the intent rail now name each foe's role and targeting habit, and the AI actually follows those rules, so `Imp`, `Drone`, and `Warden` read as different pressure problems before their gauges fill.
+
+## Next Todo
+
+- Recheck with fresh feedback whether explicit role tells are enough, or if the next cheap win is stronger hit timing telegraph on the exact ready frame so queued player actions and enemy interrupts never feel simultaneous by surprise.

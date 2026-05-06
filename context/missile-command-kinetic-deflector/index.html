@@ -108,7 +108,16 @@
       top: 32px;
       left: 32px;
       max-width: min(420px, calc(100% - 64px));
-      padding: 14px 16px;
+      padding: 14px 16px 18px;
+      opacity: 1;
+      transition: opacity 160ms ease, transform 160ms ease;
+    }
+
+    body[data-state="playing"] .hud,
+    body[data-state="win"] .hud,
+    body[data-state="lose"] .hud {
+      opacity: 0;
+      transform: translateY(-12px);
     }
 
     .hud h1 {
@@ -129,8 +138,27 @@
     .footer {
       right: 32px;
       bottom: 32px;
+      max-width: min(360px, calc(100% - 64px));
       padding: 12px 14px;
       text-align: right;
+    }
+
+    .footer p {
+      line-height: 1.45;
+    }
+
+    @media (max-width: 820px) {
+      .hud {
+        top: 16px;
+        left: 16px;
+        max-width: min(360px, calc(100% - 32px));
+      }
+
+      .footer {
+        right: 16px;
+        bottom: 16px;
+        max-width: min(320px, calc(100% - 32px));
+      }
     }
   </style>
 </head>
@@ -140,10 +168,10 @@
       <canvas id="game" width="1600" height="900" aria-label="Missile Command Kinetic Deflector"></canvas>
       <article class="hud">
         <h1>Missile Command: Kinetic Deflector</h1>
-        <p>Drag to paint kinetic lines. Incoming warheads ricochet off your field and score only when flung back into orbit.</p>
+        <p>Drag to paint kinetic lines. Keep the launcher lane open, bounce warheads back into orbit, and watch the top-left wave and city readout before the next push starts.</p>
       </article>
       <article class="footer">
-        <p>Kenney asset manifest ready. Missing files fall back to vector art and synth SFX.</p>
+        <p>Paint near the incoming arcs, leave the center lane clear for launches, and return every missile before the next barrage lands. Retry stays immediate, and missing files fall back to vector art and synth SFX.</p>
       </article>
     </section>
   </main>
@@ -205,6 +233,68 @@
       static dot(a, b) {
         return a.x * b.x + a.y * b.y;
       }
+    }
+
+    function closestPointsOnSegments(startA, endA, startB, endB) {
+      const segA = Vec2.subtract(endA, startA);
+      const segB = Vec2.subtract(endB, startB);
+      const delta = Vec2.subtract(startA, startB);
+      const a = Vec2.dot(segA, segA);
+      const e = Vec2.dot(segB, segB);
+      const f = Vec2.dot(segB, delta);
+      let s = 0;
+      let t = 0;
+
+      if (a <= 1e-6 && e <= 1e-6) {
+        return {
+          alongA: 0,
+          alongB: 0,
+          pointA: startA.copy(),
+          pointB: startB.copy(),
+          distanceSq: Vec2.dot(delta, delta),
+        };
+      }
+
+      if (a <= 1e-6) {
+        t = clamp(f / e, 0, 1);
+      } else {
+        const c = Vec2.dot(segA, delta);
+        if (e <= 1e-6) {
+          s = clamp(-c / a, 0, 1);
+        } else {
+          const b = Vec2.dot(segA, segB);
+          const denom = a * e - b * b;
+          if (denom !== 0) {
+            s = clamp((b * f - c * e) / denom, 0, 1);
+          }
+          t = (b * s + f) / e;
+          if (t < 0) {
+            t = 0;
+            s = clamp(-c / a, 0, 1);
+          } else if (t > 1) {
+            t = 1;
+            s = clamp((b - c) / a, 0, 1);
+          }
+        }
+      }
+
+      const pointA = new Vec2(
+        startA.x + segA.x * s,
+        startA.y + segA.y * s
+      );
+      const pointB = new Vec2(
+        startB.x + segB.x * t,
+        startB.y + segB.y * t
+      );
+      const separation = Vec2.subtract(pointA, pointB);
+
+      return {
+        alongA: s,
+        alongB: t,
+        pointA,
+        pointB,
+        distanceSq: Vec2.dot(separation, separation),
+      };
     }
 
     class AssetLoader {
@@ -645,10 +735,35 @@
         ctx.fillText(title, 0, -30);
         ctx.fillStyle = "#eef7ff";
         ctx.font = "400 28px Trebuchet MS, sans-serif";
-        ctx.fillText(subtitle, 0, 26);
+        const lines = [];
+        const maxWidth = 1260;
+        for (const paragraph of subtitle.split("\n")) {
+          const words = paragraph.trim().split(/\s+/).filter(Boolean);
+          if (!words.length) {
+            lines.push("");
+            continue;
+          }
+          let line = words.shift();
+          for (const word of words) {
+            const candidate = `${line} ${word}`;
+            if (ctx.measureText(candidate).width <= maxWidth) {
+              line = candidate;
+            } else {
+              lines.push(line);
+              line = word;
+            }
+          }
+          lines.push(line);
+        }
+        const lineHeight = 36;
+        const firstLineY = 26 - ((lines.length - 1) * lineHeight) / 2;
+        lines.forEach((line, index) => {
+          ctx.fillText(line, 0, firstLineY + index * lineHeight);
+        });
         ctx.font = "400 20px Trebuchet MS, sans-serif";
         ctx.fillStyle = "#a5bdd1";
-        ctx.fillText("Click, press Space, or Enter", 0, 82);
+        const hintY = firstLineY + (Math.max(lines.length, 1) - 1) * lineHeight + 56;
+        ctx.fillText("Click, press Space, or Enter", 0, hintY);
         ctx.restore();
       }
     }
@@ -695,6 +810,7 @@
 
       async init() {
         await this.assets.loadAll();
+        document.body.dataset.state = this.state;
         this.resetSession();
         requestAnimationFrame((time) => this.frame(time));
       }
@@ -735,6 +851,7 @@
 
       setState(nextState) {
         this.state = nextState;
+        document.body.dataset.state = nextState;
       }
 
       update(dt) {
@@ -848,6 +965,30 @@
         this.missiles.push(new Missile(origin, target, 1 + this.wave * 0.08));
       }
 
+      getAliveCityCount() {
+        return this.cities.filter((city) => city.alive).length;
+      }
+
+      getMissilesLeftInWave() {
+        const activeThreats = this.missiles.filter((missile) => missile.active && !missile.deflected).length;
+        return Math.max(0, this.waveQuota - this.spawnedInWave) + activeThreats;
+      }
+
+      getHudStatusText() {
+        if (this.wave >= 4) {
+          if (this.spawnedInWave >= this.waveQuota && this.missiles.length === 0) {
+            return "Status: final barrage cleared.";
+          }
+          return "Status: keep 1 city alive through the final barrage.";
+        }
+
+        if (this.spawnedInWave >= this.waveQuota && this.missiles.length === 0) {
+          return `Status: wave ${this.wave} clear. Next barrage charging.`;
+        }
+
+        return `Status: clear this wave to reach wave ${this.wave + 1}.`;
+      }
+
       handleLineCollision(missile) {
         for (const line of this.lines) {
           if (line.cooldown > 0) {
@@ -858,33 +999,45 @@
           if (lengthSq <= 0.001) {
             continue;
           }
-          const toPoint = Vec2.subtract(missile.position, line.start);
-          const t = clamp(Vec2.dot(toPoint, segment) / lengthSq, 0, 1);
-          const nearest = new Vec2(
-            line.start.x + segment.x * t,
-            line.start.y + segment.y * t
+          const hitRadius = missile.radius + line.thickness * 0.7;
+          const sweep = closestPointsOnSegments(
+            missile.previous,
+            missile.position,
+            line.start,
+            line.end
           );
-          const dist = distance(missile.position.x, missile.position.y, nearest.x, nearest.y);
-          if (dist > missile.radius + line.thickness * 0.7) {
+          if (sweep.distanceSq > hitRadius * hitRadius) {
             continue;
           }
 
           const tangent = segment.copy().normalize();
-          const normal = new Vec2(-tangent.y, tangent.x);
+          const hitBody = sweep.alongB > 0.02 && sweep.alongB < 0.98;
+          let normal = hitBody
+            ? new Vec2(-tangent.y, tangent.x)
+            : Vec2.subtract(sweep.pointA, sweep.pointB);
+          const normalLength = normal.length();
+          if (normalLength <= 1e-6) {
+            normal = new Vec2(-tangent.y, tangent.x);
+          } else {
+            normal.scale(1 / normalLength);
+          }
+          if (Vec2.dot(missile.velocity, normal) > 0) {
+            normal.scale(-1);
+          }
           const towardNormal = Vec2.dot(missile.velocity, normal);
-          if (Math.abs(towardNormal) < 6) {
+          if (towardNormal >= -0.5) {
             continue;
           }
 
           missile.velocity.x -= 2 * towardNormal * normal.x;
           missile.velocity.y -= 2 * towardNormal * normal.y;
           missile.velocity.scale(1.08);
-          missile.position.x = nearest.x + normal.x * (missile.radius + line.thickness);
-          missile.position.y = nearest.y + normal.y * (missile.radius + line.thickness);
+          missile.position.x = sweep.pointB.x + normal.x * (hitRadius + 0.5);
+          missile.position.y = sweep.pointB.y + normal.y * (hitRadius + 0.5);
           missile.deflected = true;
           line.cooldown = 0.08;
           this.score += 35;
-          this.particles.burst(nearest.x, nearest.y, 18, {
+          this.particles.burst(sweep.pointB.x, sweep.pointB.y, 18, {
             color: "rgba(148, 240, 182, 0.95)",
             size: 4,
             life: 0.7,
@@ -943,27 +1096,56 @@
       drawHud() {
         const { ctx } = this;
         ctx.save();
-        ctx.fillStyle = "rgba(6, 15, 25, 0.72)";
-        ctx.strokeStyle = "rgba(173, 223, 255, 0.18)";
+        ctx.fillStyle = "rgba(4, 11, 19, 0.9)";
+        ctx.strokeStyle = "rgba(173, 223, 255, 0.28)";
         ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.roundRect(28, 28, 300, 126, 20);
+        ctx.roundRect(28, 28, 360, 250, 20);
         ctx.fill();
         ctx.stroke();
 
-        ctx.font = "700 22px Trebuchet MS, sans-serif";
+        ctx.fillStyle = "rgba(165, 189, 209, 0.9)";
+        ctx.font = "700 16px Trebuchet MS, sans-serif";
+        ctx.fillText("READOUT", 52, 58);
         ctx.fillStyle = "#eef7ff";
-        ctx.fillText(`Score ${this.score}`, 52, 66);
-        ctx.font = "400 18px Trebuchet MS, sans-serif";
-        ctx.fillStyle = "#9db1c6";
-        ctx.fillText(`Wave ${this.wave} / 4`, 52, 96);
-        ctx.fillText(`Deflected ${this.savedMissiles}`, 52, 120);
-        ctx.fillText(`Cities ${this.cities.filter((city) => city.alive).length}`, 52, 144);
+        ctx.font = "700 26px Trebuchet MS, sans-serif";
+        ctx.fillText(`Score ${this.score}`, 52, 94);
+        ctx.font = "700 20px Trebuchet MS, sans-serif";
+        ctx.fillText(`Wave ${this.wave} / 4`, 52, 126);
+        ctx.fillStyle = "#d9ebf9";
+        ctx.font = "400 19px Trebuchet MS, sans-serif";
+        ctx.fillText(`Cities standing ${this.getAliveCityCount()} / 5`, 52, 156);
+        ctx.fillText(`Missiles left in barrage ${this.getMissilesLeftInWave()}`, 52, 184);
+        ctx.fillText(`Returned to orbit ${this.savedMissiles}`, 52, 212);
 
-        ctx.fillStyle = "rgba(6, 15, 25, 0.72)";
+        ctx.fillStyle = "rgba(120, 210, 255, 0.14)";
+        ctx.beginPath();
+        ctx.roundRect(44, 228, 328, 38, 14);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(120, 210, 255, 0.22)";
+        ctx.stroke();
+        ctx.fillStyle = "#b9ecff";
+        ctx.font = "700 18px Trebuchet MS, sans-serif";
+        ctx.fillText("Win rule: keep 1 city alive through wave 4.", 58, 252);
+
+        ctx.fillStyle = "rgba(255, 188, 100, 0.14)";
+        ctx.beginPath();
+        ctx.roundRect(44, 274, 328, 58, 14);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(255, 188, 100, 0.24)";
+        ctx.stroke();
+        ctx.fillStyle = "#eef7ff";
+        ctx.font = "700 16px Trebuchet MS, sans-serif";
+        ctx.fillText("LIVE STATUS", 58, 296);
+        ctx.font = "400 18px Trebuchet MS, sans-serif";
+        ctx.fillStyle = "#ffe1bf";
+        ctx.fillText(this.getHudStatusText(), 58, 322);
+
+        ctx.fillStyle = "rgba(4, 11, 19, 0.88)";
         ctx.beginPath();
         ctx.roundRect(WIDTH - 334, 28, 306, 100, 20);
         ctx.fill();
+        ctx.strokeStyle = "rgba(173, 223, 255, 0.22)";
         ctx.stroke();
         ctx.fillStyle = "#eef7ff";
         ctx.fillText("Launcher Charge", WIDTH - 310, 68);
@@ -1046,13 +1228,15 @@
         }
 
         this.particles.draw(this.ctx);
-        this.drawHud();
+        if (this.state !== GameState.MENU) {
+          this.drawHud();
+        }
         this.drawReticle();
 
         if (this.state === GameState.MENU) {
           this.renderer.drawOverlay(
             "Kinetic Deflector",
-            "Pull luminous lines under incoming warheads and sling them back above the atmosphere.",
+            "Pull luminous lines under incoming warheads, keep the launcher lane open, and survive 4 waves. If one city is still standing when the final barrage ends, you win.",
             "#78d2ff"
           );
         } else if (this.state === GameState.WIN) {

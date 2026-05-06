@@ -1,6 +1,6 @@
 // galgia/js/main.js
 
-import * as THREE from 'three';
+import * as THREE from 'https://esm.sh/three@0.163.0';
 import { Player } from './player.js';
 import { Enemies } from './enemies.js';
 import { Bullets } from './bullets.js';
@@ -28,7 +28,7 @@ function init() {
 
     // Camera setup
     camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-    camera.position.set(0, 0, 8); // Adjusted camera position to see more of the game area
+    camera.position.set(0, 0, 7.2); // Keep the lane readable while letting swarm targets read larger.
     camera.lookAt(0, 0, 0);
     originalCameraPosition.copy(camera.position);
 

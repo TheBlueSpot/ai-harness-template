@@ -1,3 +1,3 @@
 import { registerServerSubagentTests } from "./test-support/server-test-harness";
 
-registerServerSubagentTests();
+registerServerSubagentTests({ shardIndex: 0, shardCount: 2 });

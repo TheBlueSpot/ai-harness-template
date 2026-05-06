@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dr Mario Capsule Cascade</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0f172a;
+      --panel: #111827;
+      --panel-border: #334155;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --accent: #22d3ee;
+      --danger: #fb7185;
+      --warn: #fbbf24;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(circle at top, rgba(34, 211, 238, 0.18), transparent 35%),
+        linear-gradient(180deg, #020617, var(--bg));
+      color: var(--text);
+      font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+    }
+
+    .shell {
+      width: min(96vw, 980px);
+      display: grid;
+      gap: 18px;
+      grid-template-columns: minmax(240px, 280px) minmax(320px, 1fr);
+      align-items: start;
+    }
+
+    .panel {
+      background: rgba(15, 23, 42, 0.9);
+      border: 1px solid var(--panel-border);
+      border-radius: 18px;
+      padding: 18px;
+      box-shadow: 0 20px 50px rgba(2, 6, 23, 0.45);
+    }
+
+    h1, h2, p {
+      margin: 0;
+    }
+
+    .stack {
+      display: grid;
+      gap: 14px;
+    }
+
+    .title {
+      font-size: clamp(1.8rem, 3vw, 2.6rem);
+      letter-spacing: 0.04em;
+    }
+
+    .subtitle, .help, .stat-label {
+      color: var(--muted);
+    }
+
+    .stats {
+      display: grid;
+      gap: 10px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .stat {
+      padding: 12px;
+      border-radius: 14px;
+      background: rgba(15, 23, 42, 0.65);
+      border: 1px solid rgba(148, 163, 184, 0.18);
+    }
+
+    .stat-value {
+      font-size: 1.6rem;
+      font-weight: 700;
+      margin-top: 4px;
+    }
+
+    .pill-preview {
+      position: relative;
+      height: 92px;
+      border-radius: 14px;
+      background: rgba(15, 23, 42, 0.65);
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      display: grid;
+      place-items: center;
+    }
+
+    #nextCapsule {
+      width: 96px;
+      height: 48px;
+    }
+
+    canvas {
+      width: min(100%, 480px);
+      aspect-ratio: 8 / 16;
+      display: block;
+      margin: 0 auto;
+      border-radius: 18px;
+      background: linear-gradient(180deg, #172554, #0f172a 55%, #082f49);
+      border: 1px solid rgba(148, 163, 184, 0.2);
+    }
+
+    .playfield {
+      position: relative;
+      display: grid;
+      gap: 12px;
+      justify-items: center;
+    }
+
+    .overlay {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: rgba(2, 6, 23, 0.72);
+      border-radius: 18px;
+      text-align: center;
+    }
+
+    .overlay-card {
+      max-width: 320px;
+      display: grid;
+      gap: 12px;
+      padding: 20px;
+      border-radius: 18px;
+      background: rgba(15, 23, 42, 0.92);
+      border: 1px solid rgba(34, 211, 238, 0.25);
+    }
+
+    button {
+      border: 0;
+      border-radius: 999px;
+      padding: 12px 18px;
+      background: linear-gradient(135deg, var(--accent), #38bdf8);
+      color: #082f49;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    ul {
+      margin: 0;
+      padding-left: 18px;
+    }
+
+    li + li {
+      margin-top: 8px;
+    }
+
+    .status-line {
+      min-height: 1.5em;
+      text-align: center;
+      color: var(--warn);
+      font-weight: 700;
+    }
+
+    .hidden {
+      display: none;
+    }
+
+    @media (max-width: 860px) {
+      .shell {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="panel stack">
+      <div class="stack">
+        <h1 class="title">Dr Mario Capsule Cascade</h1>
+        <p class="subtitle">Drop two-tone capsules, line up four matching colors, and clear every virus before the bottle jams.</p>
+      </div>
+
+      <div class="stats">
+        <div class="stat">
+          <div class="stat-label">Level</div>
+          <div class="stat-value" id="levelValue">1</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Score</div>
+          <div class="stat-value" id="scoreValue">0</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Viruses</div>
+          <div class="stat-value" id="virusValue">0</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Chain</div>
+          <div class="stat-value" id="chainValue">0</div>
+        </div>
+      </div>
+
+      <div class="stack">
+        <h2>Next Capsule</h2>
+        <div class="pill-preview">
+          <canvas id="nextCapsule" width="96" height="48"></canvas>
+        </div>
+      </div>
+
+      <div class="stack">
+        <h2>Controls</h2>
+        <ul class="help">
+          <li><strong>Left / Right</strong>: move capsule</li>
+          <li><strong>Down</strong>: soft drop</li>
+          <li><strong>Z / X / Up</strong>: rotate</li>
+          <li><strong>Space</strong>: hard drop</li>
+          <li><strong>Enter</strong>: start or restart</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="panel playfield">
+      <div class="status-line" id="statusLine"></div>
+      <canvas id="gameCanvas" width="384" height="768" aria-label="Dr Mario Capsule Cascade"></canvas>
+      <div class="overlay" id="overlay">
+        <div class="overlay-card">
+          <h2 id="overlayTitle">Dr Mario Capsule Cascade</h2>
+          <p id="overlayText">Clear every virus across three escalating bottle layouts.</p>
+          <button id="overlayButton" type="button">Start Run</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="./game.js"></script>
+</body>
+</html>

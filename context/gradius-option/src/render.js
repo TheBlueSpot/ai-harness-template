@@ -19,6 +19,34 @@ function drawBar(ctx, x, y, w, h, ratio, fill, back) {
   ctx.fillRect(x, y, Math.max(0, Math.min(1, ratio)) * w, h);
 }
 
+function drawProjectile(ctx, projectile) {
+  const width = projectile.w ?? 10;
+  const height = projectile.h ?? 10;
+  const isPlayer = projectile.owner === "player";
+  const fill = isPlayer ? "#8cecff" : "#ff8b7f";
+  const glow = isPlayer ? "rgba(140, 236, 255, 0.35)" : "rgba(255, 139, 127, 0.4)";
+
+  ctx.save();
+  ctx.shadowBlur = isPlayer ? 12 : 16;
+  ctx.shadowColor = glow;
+  ctx.fillStyle = fill;
+
+  if (isPlayer) {
+    ctx.beginPath();
+    ctx.roundRect(projectile.x - width / 2, projectile.y - height / 2, width, height, Math.min(height / 2, 4));
+    ctx.fill();
+  } else {
+    ctx.beginPath();
+    ctx.arc(projectile.x, projectile.y, Math.max(width, height) / 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "#fff2ec";
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
 export function renderGame(ctx, frameState) {
   const width = frameState.view?.width ?? ctx.canvas.width;
   const height = frameState.view?.height ?? ctx.canvas.height;
@@ -47,12 +75,12 @@ export function renderGame(ctx, frameState) {
 
   for (const pickup of frameState.pickups ?? []) {
     ctx.strokeStyle = "#ffc857";
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 3;
     ctx.beginPath();
-    ctx.arc(pickup.x, pickup.y, 10, 0, Math.PI * 2);
+    ctx.arc(pickup.x, pickup.y, 13, 0, Math.PI * 2);
     ctx.stroke();
     ctx.fillStyle = "#fff2b3";
-    ctx.fillRect(pickup.x - 4, pickup.y - 4, 8, 8);
+    ctx.fillRect(pickup.x - 5, pickup.y - 5, 10, 10);
   }
 
   for (const enemy of frameState.enemies ?? []) {
@@ -69,8 +97,7 @@ export function renderGame(ctx, frameState) {
   }
 
   for (const projectile of frameState.projectiles ?? []) {
-    ctx.fillStyle = projectile.owner === "player" ? "#8cecff" : "#ff8b7f";
-    ctx.fillRect(projectile.x - projectile.w / 2, projectile.y - projectile.h / 2, projectile.w, projectile.h);
+    drawProjectile(ctx, projectile);
   }
 
   for (const option of frameState.options ?? []) {
@@ -116,6 +143,11 @@ export function renderGame(ctx, frameState) {
   ctx.fillStyle = "#eff7ff";
   ctx.fillText(`BOSS ${frameState.bossState ?? "idle"}`, width - 180, 28);
   ctx.fillText(frameState.powerBarLabel ?? "POWER BAR", width - 180, 50);
+  if (frameState.powerPromptText) {
+    ctx.fillStyle = "#7ff7c6";
+    ctx.font = "700 15px Trebuchet MS, system-ui, sans-serif";
+    ctx.fillText(frameState.powerPromptText, barX, barY - 12);
+  }
 
   if (frameState.overlay?.show) {
     ctx.fillStyle = "rgba(1, 4, 10, 0.68)";

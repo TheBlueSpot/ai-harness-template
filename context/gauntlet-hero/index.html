@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Gauntlet Hero-Crawl</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cpath fill='%236be0ff' d='M32 5 9 18v15c0 14 9 22 23 26 14-4 23-12 23-26V18z'/%3E%3Cpath fill='%2306111b' d='M32 16 20 23v10c0 8 4 14 12 18 8-4 12-10 12-18V23z'/%3E%3C/svg%3E" />
     <link rel="stylesheet" href="./src/styles.css" />
   </head>
   <body>
@@ -15,6 +16,17 @@
         <div class="hud__chip"><span>Score</span><strong id="score-value">0</strong></div>
         <div class="hud__chip"><span>Generators</span><strong id="generator-value">0</strong></div>
         <div class="hud__chip"><span>Door</span><strong id="door-value">Locked</strong></div>
+      </section>
+      <section class="run-meta" id="run-meta" aria-hidden="true">
+        <div>
+          <strong id="chapter-value">Sunken Hall - Floor 1</strong>
+          <span id="omen-value">Ghosts surge faster from generators.</span>
+        </div>
+        <div>
+          <strong id="relic-value">No relic</strong>
+          <span id="stats-value">DMG 0 | SPD 0 | CD 0.00s</span>
+          <span id="stats-help">Damage hits harder. Speed helps kiting. Cooldown lowers time between attacks.</span>
+        </div>
       </section>
 
       <section class="stage">
@@ -29,13 +41,27 @@
           <div class="class-grid" id="class-grid"></div>
           <button id="start-button" type="button">Start Crawl</button>
           <p class="hint">Move with `WASD` or arrows. Aim with mouse. Hold click or `Space` to attack.</p>
+          <p class="hint">Each floor opens camp choice: pick one relic, read next omen, push deeper.</p>
         </section>
 
-        <section class="overlay overlay--result" id="result-screen" aria-hidden="true">
+        <section class="overlay overlay--camp" id="intermission-screen" aria-hidden="true" hidden>
+          <p class="eyebrow" id="intermission-eyebrow">camp between floors</p>
+          <h2 id="intermission-title">Ash Foundry - Floor 2</h2>
+          <p id="intermission-copy">Forge below catacomb still burn.</p>
+          <div class="class-grid relic-grid" id="relic-grid"></div>
+        </section>
+
+        <section class="overlay overlay--result" id="result-screen" aria-hidden="true" hidden>
           <p class="eyebrow" id="result-eyebrow">run over</p>
           <h2 id="result-title">Hero fallen.</h2>
           <p id="result-copy">Restart and push deeper.</p>
-          <button id="restart-button" type="button">Run Again</button>
+          <div class="overlay__actions">
+            <button id="restart-button" type="button">Run Again</button>
+            <button class="overlay__button overlay__button--secondary" id="change-hero-button" type="button">
+              Change Hero
+            </button>
+          </div>
+          <p class="hint">Press `Enter` or `R` to retry instantly. Press `Esc` to return to hero select.</p>
         </section>
       </section>
     </main>

@@ -1,17 +1,19 @@
-import { For, Show, createMemo, createSignal } from "solid-js";
+import { Show, createMemo, createSignal } from "solid-js";
 import { Logs } from "lucide-solid";
 import { formatShortTimestamp } from "../../lib/time-format";
 import { cn } from "../../lib/utils";
+import { MarkdownContent } from "../markdown-content";
 import { Button } from "./button";
 import { Dialog } from "./dialog";
-import { ScrollArea } from "./scroll-area";
 import { Tooltip } from "./tooltip";
+import { VirtualList } from "./virtual-list";
 
 const defaultSummaryLength = 250;
 
 export type ExecutionLogEntry = {
   id: string;
   message: string;
+  rowSummary?: string;
   level: string;
   createdAt: string | number | Date | undefined;
   detail?: string;
@@ -55,34 +57,41 @@ export function ExecutionLog(props: ExecutionLogProps) {
         when={props.entries.length > 0}
         fallback={<div class="rounded-[0.9rem] border border-dashed border-(--border) bg-white/45 p-3 text-[0.675rem] text-(--muted)">{props.emptyMessage ?? "No execution log yet."}</div>}
       >
-        <ScrollArea class="min-h-0 flex-1 pr-2">
-          <div class="space-y-3">
-            <For each={props.entries}>
-              {(entry) => (
-                <article class="rounded-[0.9rem] border border-(--border) bg-white/70 p-3">
-                  <div class="flex flex-wrap items-start justify-between gap-3">
-                    <div class="min-w-0 flex-1">
-                      <div class="break-words text-[0.75rem] font-semibold text-(--foreground)">
-                        {truncateLogText(entry.message, summaryLength())}
-                      </div>
-                      <div class="mt-1 text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">
-                        {entry.level} | {formatShortTimestamp(entry.createdAt)}
-                      </div>
+        <VirtualList
+          class="min-h-0 flex-1 pr-2"
+          contentClass="w-full"
+          itemClass="pb-3"
+          items={props.entries}
+          getKey={(entry) => entry.id}
+          estimateSize={118}
+          pagination={{ kind: "reverse", initialCount: 80, batchSize: 80 }}
+        >
+          {(entry) => {
+            const rowSummary = () => entry.rowSummary ?? entry.message;
+            return (
+              <article class="rounded-[0.9rem] border border-(--border) bg-white/70 p-3">
+                <div class="flex flex-wrap items-start justify-between gap-3">
+                  <div class="min-w-0 flex-1">
+                    <div class="break-words text-[0.675rem] text-(--foreground)">
+                      {truncateLogText(rowSummary(), summaryLength())}
                     </div>
-                    <Tooltip content="Show execution log details">
-                      <span class="inline-flex">
-                        <Button variant="secondary" aria-label={`Show details for ${entry.message}`} onClick={() => openEntryDetails(entry.id)}>
-                          <Logs class="h-4 w-4" />
-                          Show details
-                        </Button>
-                      </span>
-                    </Tooltip>
+                    <div class="mt-1 text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">
+                      {entry.level} | {formatShortTimestamp(entry.createdAt)}
+                    </div>
                   </div>
-                </article>
-              )}
-            </For>
-          </div>
-        </ScrollArea>
+                  <Tooltip content="Show execution log details">
+                    <span class="inline-flex">
+                      <Button variant="secondary" aria-label={`Show details for ${entry.message}`} onClick={() => openEntryDetails(entry.id)}>
+                        <Logs class="h-4 w-4" />
+                        Show details
+                      </Button>
+                    </span>
+                  </Tooltip>
+                </div>
+              </article>
+            );
+          }}
+        </VirtualList>
       </Show>
 
       <Show when={selectedEntry()}>
@@ -97,9 +106,9 @@ export function ExecutionLog(props: ExecutionLogProps) {
             onClose={() => setSelectedEntryId(undefined)}
           >
             <div class="flex flex-col gap-3">
-              <div class="whitespace-pre-wrap break-words text-[0.75rem] leading-5 text-(--foreground)">{entry().message}</div>
+              <MarkdownContent content={entry().message} size="compact" />
               <Show when={entry().detail}>
-                {(detail) => <div class="whitespace-pre-wrap break-words text-[0.75rem] leading-5 text-(--muted)">{detail()}</div>}
+                {(detail) => <MarkdownContent content={detail()} tone="muted" size="compact" />}
               </Show>
               <Show when={entry().detailsJson !== undefined}>
                 <pre class="overflow-auto rounded-[0.9rem] bg-slate-950/95 p-3 text-[0.625rem] leading-5 text-slate-100">

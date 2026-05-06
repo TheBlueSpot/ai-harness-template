@@ -29,13 +29,14 @@ export const DEFAULT_CONFIG = {
   },
   player: {
     radius: 14,
-    speed: 220
+    speed: 220,
+    dangerSenseRadius: 172
   },
   lighting: {
     radius: 240,
     fov: Math.PI * 0.95,
     rayCount: 108,
-    darkness: 0.9,
+    darkness: 0.94,
     exposureCurve: 1.65,
     angleCurve: 1.4,
     debugRays: false
@@ -54,7 +55,7 @@ export const DEFAULT_CONFIG = {
     memoryDuration: 2.5,
     repathInterval: 0.18,
     waypointReach: 12,
-    debugLabels: true
+    debugLabels: false
   },
   debug: {
     enabled: false,

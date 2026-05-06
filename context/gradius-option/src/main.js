@@ -81,11 +81,21 @@ function syncHud(frameState) {
   hudBoss.textContent = frameState.bossState ?? frameState.bossStatus ?? "Idle";
   hudWeapon.textContent = frameState.weaponState ?? frameState.weapon ?? "Normal";
 
-  const powerIndex = Math.max(0, Math.min(6, Math.round(frameState.powerBarIndex ?? 0)));
+  const rawPowerIndex = Math.round(frameState.powerBarIndex ?? -1);
+  const powerIndex = Math.max(0, Math.min(6, rawPowerIndex));
   powerBar.dataset.active = String(powerIndex);
+  powerBar.dataset.ready = String(rawPowerIndex >= 0);
   powerBar.style.setProperty("--active", String(powerIndex));
-  powerBar.setAttribute("aria-valuenow", String(powerIndex));
-  powerBarHint.textContent = frameState.powerBarLabel ?? (frameState.powerBarReady ? "Ready" : "Charging");
+  powerBar.setAttribute("aria-valuenow", String(Math.max(0, rawPowerIndex + 1)));
+  powerBar.setAttribute(
+    "aria-valuetext",
+    rawPowerIndex >= 0
+      ? `${frameState.powerBarLabel ?? "Power-up"} armed`
+      : "No power-up armed",
+  );
+  powerBarHint.textContent =
+    frameState.powerBarHintText ??
+    (rawPowerIndex >= 0 ? "Shift / X to spend" : "Shoot drones, grab a capsule");
 
   const alertText = frameState.alert || frameState.bossAlert || "";
   hudAlert.textContent = alertText;

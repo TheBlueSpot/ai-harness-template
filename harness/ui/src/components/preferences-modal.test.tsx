@@ -3,7 +3,7 @@ import { beforeEach, expect, it } from "bun:test";
 import { createUiTest } from "../utils/tests/test-harness";
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { PreferencesModal } from "./preferences-modal";
-import { harnessStore } from "../harness-store";
+import { harnessStore, readBrowserUiSession } from "../harness-store";
 import { toastStore } from "../toast-store";
 import { captureDispatchedCommands, clearBrowserStateForTests, seedHarnessStoreForTests } from "../utils/tests/store-test-utils";
 import { createHarnessStateFixture } from "../utils/tests/test-fixtures";
@@ -154,5 +154,20 @@ createUiTest("PreferencesModal", () => {
 
     expect(commands.length).toBe(1);
     expect((commands[0] as { type: string }).type).toBe("preferences.clearApiKey");
+  });
+
+  it("restores panel sizes to defaults", () => {
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        preferencesModalOpen: true,
+        mainPanelSizes: { left: 2, center: 4, right: 2 }
+      })
+    );
+
+    render(() => <PreferencesModal />);
+    fireEvent.click(screen.getByRole("button", { name: "Restore panel sizes" }));
+
+    expect(harnessStore.state.mainPanelSizes).toEqual({ left: 1.25, center: 3, right: 1.4 });
+    expect(readBrowserUiSession().mainPanelSizes).toEqual({ left: 1.25, center: 3, right: 1.4 });
   });
 });

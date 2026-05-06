@@ -17,9 +17,7 @@ Standalone browser belt-scroller focused on lane control, crowd pressure, mount 
 - `E`: mount or dismount nearby beasts
 - `Enter`: start or restart a run
 
-## Files
+## Notes
 
-- `index.html`: direct browser entry
-- `src/Game.js`: combat and stage flow
-- `src/render.js`: scene drawing and effects
-- `src/main.js`: DOM wiring, loop, and input
+- Open [index.html](./index.html) in a browser to play.
+- The loop gets stickier when flank pressure, mount steals, and magic timing overlap without turning the lane read into clutter.

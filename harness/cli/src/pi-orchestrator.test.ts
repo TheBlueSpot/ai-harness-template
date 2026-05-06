@@ -6,6 +6,8 @@ import { buildExecutionPlan, buildExecutionPrompt, chooseExecutionPath, executeP
 import type { PiAgentAdapter, PiAgentExecutionController, PiAgentPromptRequest, PiAgentPromptResult } from "./pi-agent-adapter";
 import type { ExecutionPlan, ModeDefinition, PlannerReadyTurn, ProviderModelId } from "../../shared/protocol";
 import { resolveModeExecutionAccess } from "../../shared/modes";
+import { WorkspaceRepository } from "./workspace-repository";
+import { RunBudgetAgentAdapter } from "./run-budget-agent-adapter";
 
 describe("pi execution router", () => {
   test("routes low difficulty tasks to the main agent", () => {
@@ -198,7 +200,7 @@ describe("pi execution router", () => {
     });
 
     expect(calls[0]?.prompt).toContain("Workspace path guidance:");
-    expect(calls[0]?.prompt).toContain("Latest user task: Put all files in breakout and create breakout/index.html");
+    expect(calls[0]?.prompt).toContain("Latest user task delta: Put all files in breakout and create breakout/index.html");
     expect(result.executionPlan?.finalExecutionBrief).toBe("Create breakout/index.html");
   });
 
@@ -452,6 +454,64 @@ describe("pi execution router", () => {
     } finally {
       rmSync(rootPath, { recursive: true, force: true });
     }
+  });
+
+  test("overlapping same-worktree contracts upgrade to separate worktrees", () => {
+    const readyPlan = createReadyPlan();
+    readyPlan.subtasks = [
+      { id: "task-1", title: "A", instruction: "Edit src/index.ts" },
+      { id: "task-2", title: "B", instruction: "Edit src/index.ts" }
+    ];
+    readyPlan.contracts = [
+      { ...readyPlan.contracts![0]!, taskId: "task-1", ownedPaths: ["src"] },
+      { ...readyPlan.contracts![0]!, taskId: "task-2", ownedPaths: ["src/index.ts"] }
+    ];
+
+    const executionPlan = buildExecutionPlan({
+      runId: "run-overlap",
+      planningModelId: "openai/gpt-5.4",
+      plannerResult: readyPlan,
+      subagentWorktreeStrategy: "same-worktree",
+      planExecutionMode: "approve",
+      planExecutionDelaySeconds: 0,
+      correctnessIterationMode: "ask-before-iterate",
+      iteration: 1,
+      origin: "initial"
+    });
+
+    expect(executionPlan.subagentWorktreeStrategy).toBe("separate-worktrees");
+  });
+
+  test("budget wrapper appends runtime budget and stops before exhausted model call", async () => {
+    const repository = new WorkspaceRepository(":memory:", process.cwd(), { durability: "test-fast" });
+    const project = repository.addProject(process.cwd());
+    const run = repository.createAgentRun(project.id, "budget work", "openai/gpt-5.4", project.activeThreadId, 1).activeRun!;
+    const calls: PiAgentPromptRequest[] = [];
+    const adapter = new RunBudgetAgentAdapter(
+      createExecutionAdapter(calls, async () => ({ text: "done" })),
+      repository,
+      project.id,
+      run.id
+    );
+
+    await adapter.runPrompt({
+      kind: "planner",
+      cwd: process.cwd(),
+      modelId: "openai/gpt-5.4",
+      prompt: "Plan"
+    });
+
+    expect(calls[0]?.prompt).toContain("# Runtime Budget");
+    expect(calls[0]?.prompt).toContain("Remaining turns after this: 0");
+    await expect(
+      adapter.runPrompt({
+        kind: "planner",
+        cwd: process.cwd(),
+        modelId: "openai/gpt-5.4",
+        prompt: "Plan again"
+      })
+    ).rejects.toThrow("turn-budget-exhausted");
+    expect(calls).toHaveLength(1);
   });
 });
 

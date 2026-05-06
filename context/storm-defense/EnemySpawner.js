@@ -1,3 +1,4 @@
+(() => {
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
 const ENEMY_BASES = {
@@ -48,7 +49,7 @@ const createEnemyEntity = (spawn, waveNumber, modifiers = {}, index) => {
   };
 };
 
-export function updateEnemyFSM(entity, runtimeState = {}) {
+function updateEnemyFSM(entity, runtimeState = {}) {
   if (!entity || !entity.alive) return entity;
 
   const dt = clamp((runtimeState.deltaMs ?? 0) / 1000, 0, 0.05);
@@ -76,7 +77,7 @@ export function updateEnemyFSM(entity, runtimeState = {}) {
   return entity;
 }
 
-export function updateSniperFSM(entity, runtimeState = {}) {
+function updateSniperFSM(entity, runtimeState = {}) {
   if (!entity || !entity.alive) return entity;
 
   const dt = clamp((runtimeState.deltaMs ?? 0) / 1000, 0, 0.05);
@@ -110,7 +111,7 @@ export function updateSniperFSM(entity, runtimeState = {}) {
   return entity;
 }
 
-export function updateCraftsmanFSM(entity, runtimeState = {}) {
+function updateCraftsmanFSM(entity, runtimeState = {}) {
   if (!entity || !entity.alive) return entity;
 
   const dt = clamp((runtimeState.deltaMs ?? 0) / 1000, 0, 0.05);
@@ -127,7 +128,7 @@ export function updateCraftsmanFSM(entity, runtimeState = {}) {
   return entity;
 }
 
-export class EnemySpawner {
+class EnemySpawner {
   constructor() {
     this.reset();
   }
@@ -243,3 +244,9 @@ export class EnemySpawner {
     return this.pendingSpawns.length === 0 && activeEnemies.every((enemy) => !enemy.alive);
   }
 }
+
+globalThis.updateEnemyFSM = updateEnemyFSM;
+globalThis.updateSniperFSM = updateSniperFSM;
+globalThis.updateCraftsmanFSM = updateCraftsmanFSM;
+globalThis.EnemySpawner = EnemySpawner;
+})();

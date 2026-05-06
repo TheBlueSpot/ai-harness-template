@@ -26,12 +26,12 @@ const SCATTER_TARGETS = {
   clyde: { x: 1, y: MAZE_HEIGHT - 2 },
 };
 
-const PLAYER_SPEED = 112;
-const GHOST_SPEED = 100;
-const FRIGHTENED_SPEED = 74;
-const EATEN_SPEED = 180;
+const PLAYER_SPEED = 212;
+const GHOST_SPEED = 108;
+const FRIGHTENED_SPEED = 82;
+const EATEN_SPEED = 210;
 const POWER_DURATION = 7;
-const ROUND_START_DELAY = 1.1;
+const ROUND_START_DELAY = 0.45;
 const COLLISION_DISTANCE = TILE_SIZE * 0.45;
 const FINAL_LEVEL = 3;
 const MODE_SCRIPT = [
@@ -55,6 +55,8 @@ function makeActor(tile, direction, speed) {
   return {
     x: px.x,
     y: px.y,
+    prevX: px.x,
+    prevY: px.y,
     direction,
     desiredDirection: direction,
     speed,
@@ -65,6 +67,23 @@ function distanceSquared(a, b) {
   const dx = a.x - b.x;
   const dy = a.y - b.y;
   return dx * dx + dy * dy;
+}
+
+function minimumRelativeDistanceSquared(a, b) {
+  const startX = (a.prevX ?? a.x) - (b.prevX ?? b.x);
+  const startY = (a.prevY ?? a.y) - (b.prevY ?? b.y);
+  const endX = a.x - b.x;
+  const endY = a.y - b.y;
+  const segmentX = endX - startX;
+  const segmentY = endY - startY;
+  const lengthSquared = segmentX * segmentX + segmentY * segmentY;
+  if (lengthSquared <= 0.0001) {
+    return endX * endX + endY * endY;
+  }
+  const t = Math.max(0, Math.min(1, -((startX * segmentX) + (startY * segmentY)) / lengthSquared));
+  const closestX = startX + segmentX * t;
+  const closestY = startY + segmentY * t;
+  return closestX * closestX + closestY * closestY;
 }
 
 function tileFromPixels(entity) {
@@ -240,6 +259,8 @@ class Game {
   }
 
   movePlayer(dt) {
+    this.player.prevX = this.player.x;
+    this.player.prevY = this.player.y;
     this.tryTurn(this.player, this.pendingDirection);
     this.moveActor(this.player, dt);
     this.tryTurn(this.player, this.pendingDirection);
@@ -282,7 +303,8 @@ class Game {
       }
 
       ghost.speed = ghost.state === "eaten" ? EATEN_SPEED : ghost.state === "frightened" && this.frightenedTimer > 0 ? FRIGHTENED_SPEED : GHOST_SPEED + (this.level - 1) * 3;
-
+      ghost.prevX = ghost.x;
+      ghost.prevY = ghost.y;
       this.moveActor(ghost, dt);
 
       const ghostTile = tileFromPixels(ghost);
@@ -301,7 +323,10 @@ class Game {
         continue;
       }
 
-      if (distanceSquared(this.player, ghost) > COLLISION_DISTANCE * COLLISION_DISTANCE) {
+      if (
+        distanceSquared(this.player, ghost) > COLLISION_DISTANCE * COLLISION_DISTANCE &&
+        minimumRelativeDistanceSquared(this.player, ghost) > COLLISION_DISTANCE * COLLISION_DISTANCE
+      ) {
         continue;
       }
 

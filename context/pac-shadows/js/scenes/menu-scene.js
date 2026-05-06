@@ -25,16 +25,16 @@ export const createMenuScene = ({ assets }) => ({
     ctx.fillText(TITLE, width * 0.5, height * 0.35);
     ctx.fillStyle = "#f7f4ea";
     ctx.font = "400 24px Trebuchet MS";
-    ctx.fillText("Menu, play, win, and lose are separated by a scene machine.", width * 0.5, height * 0.43);
+    ctx.fillText("Reach the glowing exit without letting the beam feed nearby ghosts.", width * 0.5, height * 0.43);
     ctx.fillStyle = "rgba(247,244,234,0.72)";
     ctx.font = "400 18px Trebuchet MS";
-    ctx.fillText("Enter starts the play slice. Escape can return here from play.", width * 0.5, height * 0.49);
+    ctx.fillText("Move with WASD or arrows. The danger ring points toward the nearest threat.", width * 0.5, height * 0.49);
     ctx.fillStyle = "#9be564";
     ctx.font = "700 20px Trebuchet MS";
     ctx.fillText("Press Enter or Space", width * 0.5, height * 0.59);
     ctx.fillStyle = "rgba(247,244,234,0.62)";
     ctx.font = "400 14px Trebuchet MS";
-    ctx.fillText(`Scene: ${runtime.getCurrentId()}`, width * 0.5, height * 0.66);
+    ctx.fillText("Escape returns to this menu from a run.", width * 0.5, height * 0.66);
     ctx.textAlign = "left";
   }
 });

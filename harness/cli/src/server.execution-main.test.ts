@@ -1,3 +1,3 @@
 import { registerServerExecutionMainTests } from "./test-support/server-test-harness";
 
-registerServerExecutionMainTests();
+registerServerExecutionMainTests({ shardIndex: 0, shardCount: 2 });

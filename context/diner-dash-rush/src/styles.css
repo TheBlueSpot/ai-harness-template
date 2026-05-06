@@ -1,0 +1,144 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(circle at top, rgba(255, 226, 179, 0.45), transparent 32%),
+    linear-gradient(180deg, #612c25 0%, #2d1410 100%);
+  color: #fff5de;
+  font-family: Georgia, "Times New Roman", serif;
+}
+
+.shell {
+  width: min(100vw, 1360px);
+  padding: 20px;
+}
+
+.hud {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.hud__chip {
+  padding: 10px 12px;
+  border-radius: 16px;
+  background: rgba(50, 17, 13, 0.86);
+  border: 1px solid rgba(255, 232, 198, 0.16);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hud__chip span {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #ebc692;
+}
+
+.hud__chip strong {
+  font-size: 20px;
+}
+
+.hud__chip--accent {
+  background: rgba(160, 48, 46, 0.9);
+}
+
+.statusbar {
+  min-height: 34px;
+  padding: 0 4px 10px;
+  color: #ffeac6;
+}
+
+.statusbar p {
+  margin: 0;
+  font-size: 18px;
+}
+
+.stage {
+  position: relative;
+  border-radius: 30px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 230, 192, 0.18);
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.42);
+}
+
+canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  background: #e4b07e;
+}
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 14px;
+  padding: 40px;
+  text-align: center;
+  background: rgba(28, 9, 7, 0.7);
+  backdrop-filter: blur(8px);
+}
+
+.overlay[hidden] {
+  display: none;
+}
+
+.overlay__eyebrow {
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.3em;
+  color: #f5c667;
+}
+
+.overlay h1 {
+  margin: 0;
+  font-size: clamp(2.8rem, 5vw, 4.7rem);
+}
+
+.overlay p {
+  margin: 0;
+  max-width: 760px;
+  line-height: 1.45;
+  font-size: 1.05rem;
+}
+
+.overlay__hint {
+  color: #ebc692;
+}
+
+.overlay button {
+  border: 0;
+  border-radius: 999px;
+  padding: 14px 28px;
+  font: inherit;
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #2d1410;
+  background: linear-gradient(180deg, #ffd978 0%, #f0b94b 100%);
+  cursor: pointer;
+}
+
+@media (max-width: 900px) {
+  .shell {
+    padding: 12px;
+  }
+
+  .hud {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .statusbar p {
+    font-size: 15px;
+  }
+}

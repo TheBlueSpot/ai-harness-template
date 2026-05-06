@@ -1,4 +1,4 @@
-import { For, Show, createMemo, createSignal } from "solid-js";
+import { Show, createEffect, createMemo, createSignal, onCleanup, type JSX } from "solid-js";
 import { formatForDisplay } from "@tanstack/solid-hotkeys";
 import {
   DragDropProvider,
@@ -22,9 +22,9 @@ import { ActionButton } from "./action-button";
 import { Input } from "./primitives/input";
 import { Button } from "./primitives/button";
 import { Popover } from "./primitives/popover";
-import { ScrollArea } from "./primitives/scroll-area";
 import { Separator } from "./primitives/separator";
 import { Tooltip } from "./primitives/tooltip";
+import { VirtualList, type VirtualListHandle } from "./primitives/virtual-list";
 import { ArrowDown, ArrowUp, ArrowUpDown, Check, CircleHelp, Edit3, Folder, GripVertical, GitFork, Plus, Trash2 } from "lucide-solid";
 
 type ProjectSidebarProps = {
@@ -51,13 +51,13 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
       hasCliSession: Boolean(project.activeCliSession),
       isActive: project.id === state.workspace.activeProjectId,
       activeThreadId: project.activeThreadId,
-      threadCount: project.threads.filter((thread) => thread.kind === "user").length,
+      threadCount: project.threads.filter((thread) => thread.kind === "user" && thread.status === "active").length,
       updatedAt: project.threads.reduce((latest, thread) => maxIso(latest, thread.updatedAt), project.session.messages.at(-1)?.createdAt),
       createdAt: getEarliestIso(project.threads.map((thread) => thread.createdAt ?? thread.updatedAt)),
       lastUserMessageAt: getLatestIso(project.threads.map((thread) => thread.lastUserMessageAt)),
       threads: sortThreads(
         project.threads
-          .filter((thread) => thread.kind === "user")
+          .filter((thread) => thread.kind === "user" && thread.status === "active")
           .map((thread) => ({
             id: thread.id,
             title: thread.title,
@@ -74,10 +74,13 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
     return [...cards].sort((left, right) => compareProjects(left, right, preferences.projectSort, manualOrder));
   });
   const projectGroups = createMemo(() => groupProjectCards(projectCards(), state.projectSidebarPreferences.grouping));
+  const sidebarRows = createMemo<ProjectSidebarRow[]>(() => flattenProjectSidebarRows(projectGroups()));
   const visibleProjectIds = createMemo(() => projectCards().map((project) => project.id));
   const manualSortActive = () => state.projectSidebarPreferences.projectSort === "manual";
   const [editingThreadId, setEditingThreadId] = createSignal<string>();
   const [threadTitleDraft, setThreadTitleDraft] = createSignal("");
+  const [lastScrolledActiveKey, setLastScrolledActiveKey] = createSignal<string>();
+  let sidebarList: VirtualListHandle | undefined;
 
   function handleActivateProject(projectId: string) {
     if (projectId === state.workspace.activeProjectId) {
@@ -196,6 +199,268 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
     setEditingThreadId(undefined);
   }
 
+  function activeSidebarRowKey() {
+    const project = projectCards().find((card) => card.isActive);
+    if (!project) {
+      return undefined;
+    }
+    return `project:${project.id}`;
+  }
+
+  createEffect(() => {
+    const key = activeSidebarRowKey();
+    sidebarRows().length;
+    if (!key || lastScrolledActiveKey() === key) {
+      return;
+    }
+    setLastScrolledActiveKey(key);
+    queueMicrotask(() => sidebarList?.scrollToKey(key, "center"));
+  });
+
+  function renderProjectRow(project: ProjectCard) {
+    const isActiveProject = () => project.isActive;
+    const removeDisabledReason = () =>
+      project.hasWorkingThread ? "Project is streaming" : project.hasCliSession ? "Live CLI session attached" : undefined;
+    const renderCard = (sortable: ProjectCardSortableState) => (
+      <section
+        class={`rounded-[1.4rem] border p-3 transition ${sortable.isDragging ? "opacity-80 shadow-lg" : ""} ${isActiveProject()
+          ? "border-(--accent) bg-[linear-gradient(135deg,rgba(15,118,110,0.18),rgba(255,255,255,0.9))] shadow-md"
+          : "border-(--border) bg-white/55"
+          }`}
+        ref={sortable.ref}
+        style={sortable.style}
+      >
+        <div class="flex min-w-0 items-start gap-1.5">
+          <Show when={manualSortActive()}>
+            <button
+              type="button"
+              class="inline-flex h-8 w-6 shrink-0 cursor-grab items-center justify-center rounded-lg text-(--muted) transition hover:bg-black/5 active:cursor-grabbing"
+              aria-label={`Drag ${project.name}`}
+              {...sortable.dragActivators}
+            >
+              <GripVertical class="h-3.5 w-3.5" />
+            </button>
+          </Show>
+          <ActionButton
+            tooltip={isActiveProject() ? `${project.name} is active` : `Switch to ${project.name}`}
+            disabledReason="Project already active"
+            disabled={isActiveProject()}
+            icon={<Folder class="h-3.5 w-3.5 shrink-0" />}
+            variant={isActiveProject() ? "secondary" : "ghost"}
+            class="flex min-h-8 w-full min-w-0 justify-start rounded-xl px-2 py-1.5 gap-0"
+            wrapperClass="flex min-w-0 flex-1"
+            onClick={() => handleActivateProject(project.id)}
+          >
+            <div class="min-w-0 flex-1 text-left">
+              <div class="truncate text-[0.675rem] font-semibold text-(--foreground)">{project.name}</div>
+              <div class="truncate text-[0.585rem] text-(--muted)">
+                {truncateMiddle(project.rootPath, props.compact ? 24 : 30)}
+              </div>
+              <div class="flex flex-wrap gap-0.5 text-[0.585rem] text-(--muted)">
+                <span>{project.threadCount} threads</span>
+                {project.isStreaming ? <span>streaming</span> : null}
+                {isActiveProject() ? <span>active</span> : null}
+              </div>
+            </div>
+          </ActionButton>
+
+          <ActionButton
+            tooltip="Create a new thread in this project"
+            icon={<Plus class="h-3 w-3" />}
+            variant="ghost"
+            size="icon"
+            class="h-6 w-6 rounded-lg"
+            ariaLabel={`Create a new thread in ${project.name}`}
+            onClick={() => handleCreateThread(project.id)}
+          />
+
+          <ActionButton
+            tooltip={`Remove ${project.name}`}
+            disabledReason={removeDisabledReason()}
+            disabled={Boolean(removeDisabledReason())}
+            icon={<Trash2 class="h-3 w-3" />}
+            variant="ghost"
+            size="icon"
+            class="h-6 w-6 rounded-lg"
+            ariaLabel={`Remove ${project.name}`}
+            onClick={() => handleRemoveProject(project.id)}
+          />
+          <Show when={manualSortActive()}>
+            <ActionButton
+              tooltip={`Move ${project.name} up`}
+              disabledReason="Already first project"
+              disabled={visibleProjectIds().indexOf(project.id) === 0}
+              icon={<ArrowUp class="h-3 w-3" />}
+              variant="ghost"
+              size="icon"
+              class="h-6 w-6 rounded-lg"
+              ariaLabel={`Move ${project.name} up`}
+              onClick={() => moveProject(project.id, -1)}
+            />
+            <ActionButton
+              tooltip={`Move ${project.name} down`}
+              disabledReason="Already last project"
+              disabled={visibleProjectIds().indexOf(project.id) === visibleProjectIds().length - 1}
+              icon={<ArrowDown class="h-3 w-3" />}
+              variant="ghost"
+              size="icon"
+              class="h-6 w-6 rounded-lg"
+              ariaLabel={`Move ${project.name} down`}
+              onClick={() => moveProject(project.id, 1)}
+            />
+          </Show>
+        </div>
+        <Show when={project.threads.length > 0}>
+          <div class="mt-2 flex flex-col gap-2">
+            {project.threads.map((thread) => (
+              <ProjectThreadRow project={project} thread={thread} />
+            ))}
+          </div>
+        </Show>
+      </section>
+    );
+
+    return (
+      <Show when={manualSortActive()} fallback={renderCard(createStaticProjectCardSortableState())}>
+        <SortableProjectCard projectId={project.id}>{renderCard}</SortableProjectCard>
+      </Show>
+    );
+  }
+
+  function ProjectThreadRow(props: { project: ProjectCard; thread: ProjectThreadCard }) {
+    const project = props.project;
+    const thread = props.thread;
+    const isActiveThread = () => project.activeThreadId === thread.id;
+    const isEditing = () => editingThreadId() === thread.id;
+    let deleteArmed = false;
+    let deleteButton: HTMLButtonElement | undefined;
+    let deleteArmedTimeout: ReturnType<typeof setTimeout> | undefined;
+
+    function clearDeleteArmed() {
+      deleteArmed = false;
+      deleteButton?.classList.remove("text-rose-600", "hover:bg-rose-50");
+      deleteButton?.classList.add("text-(--foreground)");
+      if (deleteArmedTimeout) {
+        clearTimeout(deleteArmedTimeout);
+        deleteArmedTimeout = undefined;
+      }
+    }
+
+    function handleDeleteClick(event: MouseEvent & { currentTarget: HTMLButtonElement }) {
+      deleteButton = event.currentTarget;
+      if (deleteArmed) {
+        clearDeleteArmed();
+        sendCommand({
+          type: "thread.archive",
+          requestId: createRequestId(),
+          payload: { projectId: project.id, threadId: thread.id }
+        });
+        return;
+      }
+
+      deleteArmed = true;
+      deleteButton.classList.remove("text-(--foreground)");
+      deleteButton.classList.add("text-rose-600", "hover:bg-rose-50");
+      deleteArmedTimeout = setTimeout(clearDeleteArmed, 2000);
+    }
+
+    onCleanup(clearDeleteArmed);
+
+    return (
+      <div class={`rounded-2xl border px-3 py-2 ${isActiveThread() ? "border-teal-500/50 bg-white/80" : "border-(--border) bg-white/60"}`}>
+        <div class="flex min-w-0 items-start justify-between gap-1.5">
+          <button
+            class="flex min-w-0 flex-1 cursor-pointer flex-col text-left disabled:cursor-not-allowed"
+            disabled={isActiveThread()}
+            onClick={() => handleActivateThread(project.id, thread.id)}
+          >
+            <Show
+              when={isEditing()}
+              fallback={
+                <Tooltip content={thread.title} triggerClass="block min-w-0 w-full">
+                  <div class="truncate text-[0.675rem] font-semibold text-(--foreground)">{thread.title}</div>
+                </Tooltip>
+              }
+            >
+              <Input
+                value={threadTitleDraft()}
+                onInput={(event: InputEvent & { currentTarget: HTMLInputElement; target: Element }) =>
+                  setThreadTitleDraft(event.currentTarget.value)
+                }
+                onBlur={() => commitRename(project.id, thread.id)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    commitRename(project.id, thread.id);
+                  }
+                  if (event.key === "Escape") {
+                    setEditingThreadId(undefined);
+                  }
+                }}
+              />
+            </Show>
+            <div class="mt-1 flex w-full min-w-0 items-center justify-between gap-2 text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">
+              <Show when={thread.lastMessagePreview}>
+                <Tooltip content={thread.lastMessagePreview} triggerClass="flex min-w-0 flex-1">
+                  <span class="min-w-0 flex-1 truncate normal-case text-[0.625rem] tracking-normal">
+                    {thread.lastMessagePreview}
+                  </span>
+                </Tooltip>
+              </Show>
+              <div class="flex shrink-0 items-center gap-2">
+                <Show when={thread.badgeState !== "idle"}>
+                  <span class={`rounded-full px-2 py-0.5 text-[0.46rem] normal-case tracking-normal ${badgeClass(thread.badgeState)}`}>
+                    {badgeLabel(thread.badgeState)}
+                  </span>
+                </Show>
+                <span>{thread.messageCount} msgs</span>
+              </div>
+            </div>
+          </button>
+
+          <div class="flex shrink-0 gap-0.5">
+            <ActionButton
+              tooltip="Fork this thread"
+              icon={<GitFork class="h-3 w-3" />}
+              variant="ghost"
+              size="icon"
+              class="h-6 w-6 rounded-lg"
+              ariaLabel={`Fork ${thread.title}`}
+              onClick={() => handleForkThread(project.id, thread.id)}
+            />
+            <ActionButton
+              tooltip="Rename this thread"
+              icon={<Edit3 class="h-3 w-3" />}
+              variant="ghost"
+              size="icon"
+              class="h-6 w-6 rounded-lg"
+              ariaLabel={`Rename ${thread.title}`}
+              onClick={() => startRename(thread.id, thread.title)}
+            />
+            <ActionButton
+              tooltip="Delete this thread"
+              icon={<Trash2 class="h-3 w-3" />}
+              variant="ghost"
+              size="icon"
+              class="h-6 w-6 rounded-lg text-(--foreground)"
+              ariaLabel={`Delete ${thread.title}`}
+              onClick={handleDeleteClick}
+            />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function renderSidebarRow(row: ProjectSidebarRow) {
+    if (row.kind === "group") {
+      return <div class="px-1 text-[0.55rem] font-semibold uppercase tracking-[0.16em] text-(--muted)">{row.label}</div>;
+    }
+    if (row.kind === "project") {
+      return renderProjectRow(row.project);
+    }
+  }
+
   return (
     <div data-test-project-sidebar="" class="panel-shell flex h-full min-h-0 flex-col gap-4 rounded-2xl border-t-0 p-[0.8rem]">
       <div class="space-y-2">
@@ -255,235 +520,54 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
         </div>
       </div>
 
-      <ScrollArea class="flex-1 min-h-0 pr-1">
+      <Show
+        when={state.workspace.projects.length > 0}
+        fallback={
+          <div class="rounded-3xl border border-dashed border-(--border) bg-white/40 p-5 text-[0.675rem] leading-5 text-(--muted)">
+            No workspace roots yet. Open project switcher or browse folder to start isolated project threads.
+          </div>
+        }
+      >
         <Show
-          when={state.workspace.projects.length > 0}
+          when={manualSortActive()}
           fallback={
-            <div class="rounded-3xl border border-dashed border-(--border) bg-white/40 p-5 text-[0.675rem] leading-5 text-(--muted)">
-              No workspace roots yet. Open project switcher or browse folder to start isolated project threads.
-            </div>
+            <VirtualList
+              class="flex-1 min-h-0 pr-1"
+              contentClass="w-full"
+              itemClass="pb-2"
+              items={sidebarRows()}
+              getKey={(row) => row.key}
+              estimateSize={(row) => (row.kind === "group" ? 24 : 112 + row.project.threads.length * 82)}
+              pagination={{ kind: "forward", initialCount: 80, batchSize: 80 }}
+              handleRef={(handle) => {
+                sidebarList = handle;
+              }}
+            >
+              {(row) => renderSidebarRow(row)}
+            </VirtualList>
           }
         >
           <DragDropProvider onDragEnd={handleProjectDragEnd}>
             <DragDropSensors />
             <SortableProvider ids={visibleProjectIds()}>
-              <div class="space-y-3">
-                <For each={projectGroups()}>
-                  {(group) => (
-                    <div class="space-y-2">
-                      <Show when={group.label}>
-                        {(label) => (
-                          <div class="px-1 text-[0.55rem] font-semibold uppercase tracking-[0.16em] text-(--muted)">
-                            {label()}
-                          </div>
-                        )}
-                      </Show>
-                      <For each={group.projects}>
-                        {(project) => {
-                          const isActiveProject = () => project.isActive;
-                          const removeDisabledReason = () =>
-                            project.hasWorkingThread
-                              ? "Project is streaming"
-                              : project.hasCliSession
-                                ? "Live CLI session attached"
-                                : undefined;
-
-                          return (
-                            <SortableProjectCard projectId={project.id} enabled={manualSortActive()}>
-                              {(sortable) => (
-                                <section
-                                  class={`rounded-[1.4rem] border p-3 transition ${sortable.isDragging ? "opacity-80 shadow-lg" : ""} ${isActiveProject()
-                                    ? "border-(--accent) bg-[linear-gradient(135deg,rgba(15,118,110,0.18),rgba(255,255,255,0.9))] shadow-md"
-                                    : "border-(--border) bg-white/55"
-                                    }`}
-                                  ref={sortable.ref}
-                                  style={sortable.style}
-                                >
-                                  <div class="flex min-w-0 items-start gap-1.5">
-                                    <Show when={manualSortActive()}>
-                                      <button
-                                        type="button"
-                                        class="inline-flex h-8 w-6 shrink-0 cursor-grab items-center justify-center rounded-lg text-(--muted) transition hover:bg-black/5 active:cursor-grabbing"
-                                        aria-label={`Drag ${project.name}`}
-                                        {...sortable.dragActivators}
-                                      >
-                                        <GripVertical class="h-3.5 w-3.5" />
-                                      </button>
-                                    </Show>
-                                    <ActionButton
-                                      tooltip={isActiveProject() ? `${project.name} is active` : `Switch to ${project.name}`}
-                                      disabledReason="Project already active"
-                                      disabled={isActiveProject()}
-                                      icon={<Folder class="h-3.5 w-3.5 shrink-0" />}
-                                      variant={isActiveProject() ? "secondary" : "ghost"}
-                                      class="flex min-h-8 w-full min-w-0 justify-start rounded-xl px-2 py-1.5 gap-0"
-                                      wrapperClass="flex min-w-0 flex-1"
-                                      onClick={() => handleActivateProject(project.id)}
-                                    >
-                                      <div class="min-w-0 flex-1 text-left">
-                                        <div class="truncate text-[0.675rem] font-semibold text-(--foreground)">{project.name}</div>
-                                        <div class="truncate text-[0.585rem] text-(--muted)">
-                                          {truncateMiddle(project.rootPath, props.compact ? 24 : 30)}
-                                        </div>
-                                        <div class="flex flex-wrap gap-0.5 text-[0.585rem] text-(--muted)">
-                                          <span>{project.threadCount} threads</span>
-                                          {project.isStreaming ? <span>streaming</span> : null}
-                                          {isActiveProject() ? <span>active</span> : null}
-                                        </div>
-                                      </div>
-                                    </ActionButton>
-
-                                    <ActionButton
-                                      tooltip="Create a new thread in this project"
-                                      icon={<Plus class="h-3 w-3" />}
-                                      variant="ghost"
-                                      size="icon"
-                                      class="h-6 w-6 rounded-lg"
-                                      ariaLabel={`Create a new thread in ${project.name}`}
-                                      onClick={() => handleCreateThread(project.id)}
-                                    />
-
-                                    <ActionButton
-                                      tooltip={`Remove ${project.name}`}
-                                      disabledReason={removeDisabledReason()}
-                                      disabled={Boolean(removeDisabledReason())}
-                                      icon={<Trash2 class="h-3 w-3" />}
-                                      variant="ghost"
-                                      size="icon"
-                                      class="h-6 w-6 rounded-lg"
-                                      ariaLabel={`Remove ${project.name}`}
-                                      onClick={() => handleRemoveProject(project.id)}
-                                    />
-                                    <Show when={manualSortActive()}>
-                                      <ActionButton
-                                        tooltip={`Move ${project.name} up`}
-                                        disabledReason="Already first project"
-                                        disabled={visibleProjectIds().indexOf(project.id) === 0}
-                                        icon={<ArrowUp class="h-3 w-3" />}
-                                        variant="ghost"
-                                        size="icon"
-                                        class="h-6 w-6 rounded-lg"
-                                        ariaLabel={`Move ${project.name} up`}
-                                        onClick={() => moveProject(project.id, -1)}
-                                      />
-                                      <ActionButton
-                                        tooltip={`Move ${project.name} down`}
-                                        disabledReason="Already last project"
-                                        disabled={visibleProjectIds().indexOf(project.id) === visibleProjectIds().length - 1}
-                                        icon={<ArrowDown class="h-3 w-3" />}
-                                        variant="ghost"
-                                        size="icon"
-                                        class="h-6 w-6 rounded-lg"
-                                        ariaLabel={`Move ${project.name} down`}
-                                        onClick={() => moveProject(project.id, 1)}
-                                      />
-                                    </Show>
-                                  </div>
-
-                                  <div class="mt-2 space-y-1.5">
-                                    <For each={project.threads}>
-                                      {(thread) => {
-                                        const isActiveThread = () => project.activeThreadId === thread.id;
-                                        const isEditing = () => editingThreadId() === thread.id;
-
-                                        return (
-                                          <div
-                                            class={`rounded-2xl border px-3 py-2 ${isActiveThread() ? "border-teal-500/50 bg-white/80" : "border-(--border) bg-white/60"}`}
-                                          >
-                                            <div class="flex min-w-0 items-start justify-between gap-1.5">
-                                              <button
-                                                class="flex min-w-0 flex-1 cursor-pointer flex-col text-left disabled:cursor-not-allowed"
-                                                disabled={isActiveThread()}
-                                                onClick={() => handleActivateThread(project.id, thread.id)}
-                                              >
-                                                <Show
-                                                  when={isEditing()}
-                                                  fallback={
-                                                    <Tooltip content={thread.title} triggerClass="block min-w-0 w-full">
-                                                      <div class="truncate text-[0.675rem] font-semibold text-(--foreground)">
-                                                        {thread.title}
-                                                      </div>
-                                                    </Tooltip>
-                                                  }
-                                                >
-                                                  <Input
-                                                    value={threadTitleDraft()}
-                                                    onInput={(event: InputEvent & { currentTarget: HTMLInputElement; target: Element }) =>
-                                                      setThreadTitleDraft(event.currentTarget.value)
-                                                    }
-                                                    onBlur={() => commitRename(project.id, thread.id)}
-                                                    onKeyDown={(event) => {
-                                                      if (event.key === "Enter") {
-                                                        event.preventDefault();
-                                                        commitRename(project.id, thread.id);
-                                                      }
-                                                      if (event.key === "Escape") {
-                                                        setEditingThreadId(undefined);
-                                                      }
-                                                    }}
-                                                  />
-                                                </Show>
-                                                <div class="mt-1 flex w-full min-w-0 items-center justify-between gap-2 text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">
-                                                  <Show when={thread.lastMessagePreview}>
-                                                    <Tooltip content={thread.lastMessagePreview} triggerClass="flex min-w-0 flex-1">
-                                                      <span class="min-w-0 flex-1 truncate normal-case text-[0.625rem] tracking-normal">
-                                                        {thread.lastMessagePreview}
-                                                      </span>
-                                                    </Tooltip>
-                                                  </Show>
-                                                  <div class="flex shrink-0 items-center gap-2">
-                                                    <Show when={thread.badgeState !== "idle"}>
-                                                      <span
-                                                        class={`rounded-full px-2 py-0.5 text-[0.46rem] normal-case tracking-normal ${badgeClass(thread.badgeState)}`}
-                                                      >
-                                                        {badgeLabel(thread.badgeState)}
-                                                      </span>
-                                                    </Show>
-                                                    <span>{thread.messageCount} msgs</span>
-                                                  </div>
-                                                </div>
-                                              </button>
-
-                                              <div class="flex shrink-0 gap-0.5">
-                                                <ActionButton
-                                                  tooltip="Fork this thread"
-                                                  icon={<GitFork class="h-3 w-3" />}
-                                                  variant="ghost"
-                                                  size="icon"
-                                                  class="h-6 w-6 rounded-lg"
-                                                  ariaLabel={`Fork ${thread.title}`}
-                                                  onClick={() => handleForkThread(project.id, thread.id)}
-                                                />
-                                                <ActionButton
-                                                  tooltip="Rename this thread"
-                                                  icon={<Edit3 class="h-3 w-3" />}
-                                                  variant="ghost"
-                                                  size="icon"
-                                                  class="h-6 w-6 rounded-lg"
-                                                  ariaLabel={`Rename ${thread.title}`}
-                                                  onClick={() => startRename(thread.id, thread.title)}
-                                                />
-                                              </div>
-                                            </div>
-                                          </div>
-                                        );
-                                      }}
-                                    </For>
-                                  </div>
-                                </section>
-                              )}
-                            </SortableProjectCard>
-                          );
-                        }}
-                      </For>
-                    </div>
-                  )}
-                </For>
-              </div>
+              <VirtualList
+                class="flex-1 min-h-0 pr-1"
+                contentClass="w-full"
+                itemClass="pb-2"
+                items={sidebarRows()}
+                getKey={(row) => row.key}
+                estimateSize={(row) => (row.kind === "group" ? 24 : 112 + row.project.threads.length * 82)}
+                pagination={{ kind: "forward", initialCount: 80, batchSize: 80 }}
+                handleRef={(handle) => {
+                  sidebarList = handle;
+                }}
+              >
+                {(row) => renderSidebarRow(row)}
+              </VirtualList>
             </SortableProvider>
           </DragDropProvider>
         </Show>
-      </ScrollArea>
+      </Show>
 
       <Show when={activeProject()}>
         {(project) => (
@@ -515,17 +599,29 @@ type ProjectCard = {
   updatedAt?: string;
   createdAt?: string;
   lastUserMessageAt?: string;
-  threads: Array<{
-    id: string;
-    title: string;
-    lastMessagePreview?: string;
-    badgeState: string;
-    messageCount: number;
-    createdAt?: string;
-    updatedAt?: string;
-    lastUserMessageAt?: string;
-  }>;
+  threads: ProjectThreadCard[];
 };
+
+type ProjectThreadCard = {
+  id: string;
+  title: string;
+  lastMessagePreview?: string;
+  badgeState: string;
+  messageCount: number;
+  createdAt?: string;
+  updatedAt?: string;
+  lastUserMessageAt?: string;
+};
+
+type ProjectGroup = {
+  key: string;
+  label?: string;
+  projects: ProjectCard[];
+};
+
+type ProjectSidebarRow =
+  | { kind: "group"; key: string; label: string }
+  | { kind: "project"; key: string; project: ProjectCard };
 
 function SortMenu(props: {
   projectSort: ProjectSidebarProjectSort;
@@ -590,23 +686,29 @@ function MenuOption(props: { selected: boolean; label: string; onClick: () => vo
   );
 }
 
-function SortableProjectCard(props: {
-  projectId: string;
-  enabled: boolean;
-  children: (sortable: {
-    ref: (element: HTMLElement | null) => void;
-    style: ReturnType<typeof transformStyle>;
-    dragActivators: ReturnType<typeof createSortable>["dragActivators"];
-    isDragging: boolean;
-  }) => any;
-}) {
+type ProjectCardSortableState = {
+  ref?: (element: HTMLElement | null) => void;
+  style: JSX.CSSProperties;
+  dragActivators: ReturnType<typeof createSortable>["dragActivators"];
+  isDragging: boolean;
+};
+
+function SortableProjectCard(props: { projectId: string; children: (sortable: ProjectCardSortableState) => JSX.Element }) {
   const sortable = createSortable(props.projectId);
   return props.children({
     ref: sortable.ref,
-    style: props.enabled ? transformStyle(sortable.transform) : {},
+    style: transformStyle(sortable.transform),
     dragActivators: sortable.dragActivators,
     isDragging: sortable.isActiveDraggable
   });
+}
+
+function createStaticProjectCardSortableState(): ProjectCardSortableState {
+  return {
+    style: {},
+    dragActivators: {},
+    isDragging: false
+  };
 }
 
 function sortThreads<T extends { title: string; createdAt?: string; updatedAt?: string; lastUserMessageAt?: string }>(
@@ -653,7 +755,7 @@ function compareProjects(
   );
 }
 
-function groupProjectCards(projects: ProjectCard[], grouping: ProjectSidebarGrouping) {
+function groupProjectCards(projects: ProjectCard[], grouping: ProjectSidebarGrouping): ProjectGroup[] {
   if (grouping === "separate") {
     return [{ key: "all", label: undefined, projects }];
   }
@@ -674,6 +776,19 @@ function groupProjectCards(projects: ProjectCard[], grouping: ProjectSidebarGrou
   }
 
   return groups;
+}
+
+function flattenProjectSidebarRows(groups: ProjectGroup[]) {
+  const rows: ProjectSidebarRow[] = [];
+  for (const group of groups) {
+    if (group.label) {
+      rows.push({ kind: "group", key: `group:${group.key}`, label: group.label });
+    }
+    for (const project of group.projects) {
+      rows.push({ kind: "project", key: `project:${project.id}`, project });
+    }
+  }
+  return rows;
 }
 
 function getLatestIso(values: Array<string | undefined>) {

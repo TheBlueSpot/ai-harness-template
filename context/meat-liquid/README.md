@@ -2,19 +2,24 @@
 
 Standalone browser platformer built as its own folder in the game collection.
 
-## Concept
+Open [index.html](./index.html) in a browser to play.
 
-- Precision movement centers on air-strafing, frame-cut jump height, wall-slides, and forgiving corner kicks.
-- Every failed run becomes a ghost on the next attempt, so the level slowly fills with a swarm of prior deaths.
-- The route ends with a cumulative death total on the fail and clear screens.
+## Controls
 
-## Structure
+- `A` / `D` or arrow keys move
+- `W`, `Up`, or `Space` jumps
+- `R` or `Enter` restarts and also advances the run overlays
 
-- `index.html` boots the game directly from this folder.
-- `src/` holds the runtime modules for physics, level parsing, ghosts, input, rendering, and scene flow.
-- `assets/README.md` tracks the public-domain image sources used for the cave environment.
+## Core Loop
+
+- Air-strafe through a short cave route built around frame-cut jumps, wall-slides, and forgiving corner kicks.
+- Every failed run becomes a ghost on the next attempt, so the route slowly fills with your previous bad lines.
+- Push through three routes and watch the death counter turn each retry into part of the challenge.
 
 ## Notes
 
-- The campaign is a short three-route climb focused on learning movement tech one layer at a time.
-- Ghosts stay frame-accurate because they are recorded on the same fixed simulation step used by the live run.
+- The route teaches movement tech through repeated retries instead of a front-loaded tutorial.
+- Local pass: the ghost swarm now keeps only a bounded recent history per route, so long death chains stop growing replay memory and per-frame ghost scanning forever.
+- Local pass: the canvas now caps its internal pixel budget on large high-DPI viewports, which keeps the same framed play area but cuts the worst fill-rate spike that was dragging live FPS down.
+- Local pass: the cave backdrop and tilefield now render from cached offscreen layers, so each frame only repaints the moving mist, ghosts, player, and HUD instead of rebuilding every static block and gradient.
+- Next re-review target: confirm the cache pass removes the reported low-FPS feel on repeated retries, then decide whether the next change should raise route threat instead of adding more spectacle.

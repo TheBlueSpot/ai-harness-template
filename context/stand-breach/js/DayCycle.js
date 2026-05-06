@@ -1,3 +1,4 @@
+(() => {
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
 function smoothstep(edge0, edge1, value) {
@@ -5,7 +6,7 @@ function smoothstep(edge0, edge1, value) {
   return t * t * (3 - 2 * t);
 }
 
-export class DayCycle {
+class DayCycle {
   constructor(options = {}) {
     this.cycleSeconds = options.cycleSeconds ?? 110;
     this.startTime = options.startTime ?? this.cycleSeconds * 0.5;
@@ -128,3 +129,7 @@ export class DayCycle {
     ctx.restore();
   }
 }
+
+window.StandBreach = window.StandBreach || {};
+window.StandBreach.DayCycle = DayCycle;
+})();

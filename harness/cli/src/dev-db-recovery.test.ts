@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { isRecoverableWorkspaceDatabaseError, purgeWorkspaceDatabase } from "./dev-db-recovery";
+import { isRecoverableWorkspaceDatabaseError, purgeWorkspaceDatabase, resolveHarnessDbBackupPath } from "./dev-db-recovery";
 
 describe("dev db recovery", () => {
   test("detects recoverable sqlite schema errors", () => {
@@ -41,6 +41,70 @@ describe("dev db recovery", () => {
     }
   });
 
+  test("backs up sqlite db artifacts before purging", async () => {
+    const tempRoot = path.join(process.cwd(), ".tmp-test-data");
+    mkdirSync(tempRoot, { recursive: true });
+    const dbPath = path.join(tempRoot, `backup-${crypto.randomUUID()}.sqlite`);
+    const backupPath = `${dbPath}.backup-test`;
+
+    writeFileSync(dbPath, "main");
+    writeFileSync(`${dbPath}-wal`, "wal");
+    writeFileSync(`${dbPath}-shm`, "shm");
+
+    const result = await purgeWorkspaceDatabase(dbPath, {
+      createBackupPath: () => backupPath
+    });
+
+    expect(result.backupPath).toBe(backupPath);
+    expect(result.backedUpArtifacts).toEqual([backupPath, `${backupPath}-shm`, `${backupPath}-wal`]);
+    expect(readFileSync(backupPath, "utf8")).toBe("main");
+    expect(readFileSync(`${backupPath}-wal`, "utf8")).toBe("wal");
+    expect(readFileSync(`${backupPath}-shm`, "utf8")).toBe("shm");
+    expect(existsSync(dbPath)).toBe(false);
+    expect(existsSync(`${dbPath}-wal`)).toBe(false);
+    expect(existsSync(`${dbPath}-shm`)).toBe(false);
+  });
+
+  test("does not purge when backup fails", async () => {
+    const tempRoot = path.join(process.cwd(), ".tmp-test-data");
+    mkdirSync(tempRoot, { recursive: true });
+    const dbPath = path.join(tempRoot, `backup-fails-${crypto.randomUUID()}.sqlite`);
+    writeFileSync(dbPath, "main");
+
+    await expect(
+      purgeWorkspaceDatabase(dbPath, {
+        backupArtifact() {
+          throw new Error("backup failed");
+        }
+      })
+    ).rejects.toThrow("backup failed");
+
+    expect(existsSync(dbPath)).toBe(true);
+  });
+
+  test("formats timestamped db backup paths", () => {
+    const backupPath = resolveHarnessDbBackupPath(
+      path.join("workspace", ".local", "harness.db"),
+      new Date("2026-05-02T08:46:44.556Z")
+    );
+
+    expect(backupPath).toBe(path.join("workspace", ".local", "harness.db.backup-20260502T084644Z"));
+  });
+
+  test("adds a unique suffix when timestamped backup artifacts already exist", async () => {
+    const dbPath = path.join("workspace", ".local", "harness.db");
+
+    const result = await purgeWorkspaceDatabase(dbPath, {
+      artifactExists: () => true,
+      backupArtifact() {},
+      removeArtifact() {},
+      retryAttempts: 1,
+      retryDelayMs: 0
+    });
+
+    expect(result.backupPath).toMatch(/harness\.db\.backup-\d{8}T\d{6}Z-[0-9a-f-]+$/);
+  });
+
   test("returns fallback path when busy db cannot be purged yet", async () => {
     const tempRoot = path.join(process.cwd(), ".tmp-test-data");
     mkdirSync(tempRoot, { recursive: true });
@@ -52,6 +116,8 @@ describe("dev db recovery", () => {
       artifactExists(artifactPath) {
         return existingArtifacts.has(artifactPath);
       },
+      backupArtifact() {},
+      createBackupPath: () => `${dbPath}.backup-test`,
       removeArtifact(artifactPath) {
         if (artifactPath === dbPath) {
           const busyError = new Error("busy");
@@ -60,7 +126,9 @@ describe("dev db recovery", () => {
         }
 
         existingArtifacts.delete(artifactPath);
-      }
+      },
+      retryAttempts: 2,
+      retryDelayMs: 0
     });
 
     expect(result.purgedArtifacts).toEqual([walPath]);

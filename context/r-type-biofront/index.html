@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>R-Type Biofront</title>
+    <meta
+      name="description"
+      content="Browser-playable side-scrolling shooter with charge-shot routing, tunnel pressure, and a biomechanical boss."
+    />
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #06111a;
+        --panel: rgba(6, 18, 24, 0.88);
+        --line: rgba(107, 214, 201, 0.28);
+        --ink: #d8f7ef;
+        --muted: #9ab8b2;
+        --accent: #6ee6d4;
+        --danger: #ff7d71;
+        --warn: #ffd36a;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background:
+          radial-gradient(circle at top, rgba(33, 91, 104, 0.34), transparent 34%),
+          linear-gradient(180deg, #0a1824 0%, #03090f 100%);
+        color: var(--ink);
+        font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+      }
+
+      .shell {
+        width: min(100vw, 1100px);
+        padding: 18px;
+      }
+
+      .cabinet {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 220px;
+        gap: 16px;
+        align-items: start;
+      }
+
+      canvas,
+      .hud {
+        border: 1px solid var(--line);
+        background: var(--panel);
+        box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+      }
+
+      canvas {
+        width: 100%;
+        height: auto;
+        display: block;
+        border-radius: 18px;
+      }
+
+      .hud {
+        border-radius: 18px;
+        padding: 14px;
+        display: grid;
+        gap: 10px;
+      }
+
+      .panel {
+        padding: 10px 12px;
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.04);
+      }
+
+      .label {
+        display: block;
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.16em;
+        color: var(--muted);
+        margin-bottom: 4px;
+      }
+
+      .value {
+        font-size: 1.2rem;
+      }
+
+      .hint {
+        min-height: 64px;
+        line-height: 1.35;
+        color: var(--muted);
+        font-size: 0.95rem;
+      }
+
+      .legend {
+        color: var(--muted);
+        font-size: 0.9rem;
+        line-height: 1.5;
+      }
+
+      @media (max-width: 900px) {
+        .cabinet {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <section class="cabinet" aria-label="R-Type Biofront">
+        <canvas id="game" width="960" height="540" aria-label="Game view"></canvas>
+        <aside class="hud" aria-live="polite">
+          <div class="panel">
+            <span class="label">Score</span>
+            <span id="hudScore" class="value">0</span>
+          </div>
+          <div class="panel">
+            <span class="label">Lives</span>
+            <span id="hudLives" class="value">3</span>
+          </div>
+          <div class="panel">
+            <span class="label">Charge</span>
+            <span id="hudCharge" class="value">0%</span>
+          </div>
+          <div class="panel">
+            <span class="label">Phase</span>
+            <span id="hudPhase" class="value">Ingress</span>
+          </div>
+          <div id="hudHint" class="panel hint">
+            Hold Space to charge. Read the tunnel gap, then release into clustered threats.
+          </div>
+          <div class="panel legend">
+            Arrows move<br />
+            Z rapid fire<br />
+            Hold Space charge shot<br />
+            Enter start or retry
+          </div>
+        </aside>
+      </section>
+    </main>
+    <script src="./game.js"></script>
+  </body>
+</html>

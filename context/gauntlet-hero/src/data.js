@@ -71,8 +71,79 @@ export const HERO_CLASSES = [
 ];
 
 export const FLOOR_PALETTES = [
-  { floor: "#1d2238", line: "#2e3552", accent: "#6be0ff" },
-  { floor: "#221a2f", line: "#342349", accent: "#e175ff" },
-  { floor: "#1d2f22", line: "#294332", accent: "#9dff7b" },
-  { floor: "#2b2119", line: "#503423", accent: "#ffb36b" },
+  {
+    floor: "#1d2238",
+    line: "#2e3552",
+    accent: "#6be0ff",
+    name: "Sunken Hall",
+    lore: "Old moat seep through stone. First ghosts rise from flooded vault.",
+    omen: "Ghosts surge faster from generators.",
+    modifier: { generatorSpeedMultiplier: 1.16 },
+  },
+  {
+    floor: "#221a2f",
+    line: "#342349",
+    accent: "#e175ff",
+    name: "Violet Archive",
+    lore: "Hero pass cracked library. Names of dead kings whisper from walls.",
+    omen: "Wardens arrive tougher but drop bigger score.",
+    modifier: { enemyHpMultiplier: 1.22, scoreMultiplier: 1.18 },
+  },
+  {
+    floor: "#1d2f22",
+    line: "#294332",
+    accent: "#9dff7b",
+    name: "Root Crypt",
+    lore: "Tree roots break through tomb ceiling. Living maze close around crawl.",
+    omen: "Extra generator guarded by thicker swarm.",
+    modifier: { extraGenerators: 1, startingGhostBonus: 2 },
+  },
+  {
+    floor: "#2b2119",
+    line: "#503423",
+    accent: "#ffb36b",
+    name: "Ash Foundry",
+    lore: "Forge below catacomb still burn. Cinders mark path toward deeper gate.",
+    omen: "Hunters move faster and hit harder.",
+    modifier: { enemySpeedMultiplier: 1.14, enemyDamageBonus: 2 },
+  },
+];
+
+export const RELIC_DEFS = [
+  {
+    id: "iron-bastion",
+    name: "Iron Bastion",
+    flavor: "Tower shield shard from first gate captain.",
+    effectText: "+40 max HP. Heal 40 now.",
+  },
+  {
+    id: "ember-core",
+    name: "Ember Core",
+    flavor: "Forge heart still hot from siege below.",
+    effectText: "+7 damage. Projectiles grow larger.",
+  },
+  {
+    id: "wind-sandals",
+    name: "Wind Sandals",
+    flavor: "Ash-marked straps made for running circles around doom.",
+    effectText: "+26 move speed. -10% attack cooldown.",
+  },
+  {
+    id: "moon-quiver",
+    name: "Moon Quiver",
+    flavor: "Moon-silver fletching bends shots through packed ghosts.",
+    effectText: "Ranged heroes +1 pierce. Melee heroes +18 range.",
+  },
+  {
+    id: "grave-spice",
+    name: "Grave Spice",
+    flavor: "Dust vial. Bitter. Hero breath turn battle-hot.",
+    effectText: "Break generator -> heal 18. Kill streaks burst harder.",
+  },
+  {
+    id: "oracle-map",
+    name: "Oracle Map",
+    flavor: "Ink redraws future rooms while hero looks away.",
+    effectText: "+18% score value. Next floor start heal 24.",
+  },
 ];

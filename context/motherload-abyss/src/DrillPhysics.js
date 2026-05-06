@@ -31,10 +31,10 @@ export class DrillPhysics {
     }
 
     this.timeSurvived += dt;
-    const steerX = (input.right ? 1 : 0) - (input.left ? 1 : 0);
-    const steerY = (input.down ? 1 : 0) - (input.up ? 1 : 0);
+    const steerX = (input.isDown("right") ? 1 : 0) - (input.isDown("left") ? 1 : 0);
+    const steerY = (input.isDown("down") ? 1 : 0) - (input.isDown("up") ? 1 : 0);
     const len = Math.hypot(steerX, steerY) || 1;
-    const accel = this.speed * (input.boost ? 1.35 : 1);
+    const accel = this.speed * (input.isDown("boost") ? 1.35 : 1);
     this.vx += (steerX / len) * accel * dt * 3.6;
     this.vy += (steerY / len) * accel * dt * 3.6;
     this.vx *= Math.pow(0.002, dt);
@@ -45,9 +45,10 @@ export class DrillPhysics {
     const digRadius = this.radius + 5;
     const changes = grid.mineCircle(moveX, moveY, digRadius);
     if (changes.length) {
-      const ore = grid.collectOre(changes);
-      this.oreValue += ore;
-      this.lastMineValue = ore;
+      const mined = grid.collectOre(changes);
+      this.oreValue += mined.value;
+      this.lastMineValue = mined.value;
+      this.fuel += mined.fuelBonus;
       this.digCount += changes.length;
       this.heat = clamp(this.heat + 0.35 + changes.length * 0.06, 0, 100);
       this.miningPulse = 0.14;

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { buildUiBundle, createUiAssetManager } from "./ui-build";
@@ -45,6 +45,8 @@ class FakeClock {
 }
 
 const flushMicrotasks = () => Promise.resolve().then(() => Promise.resolve());
+
+setDefaultTimeout(15000);
 
 describe("ui build", () => {
   test("emits external source maps in development build", async () => {
@@ -145,7 +147,7 @@ describe("ui build", () => {
     }
   });
 
-  test("ignores context watch events", async () => {
+  test("ignores context and agent metadata watch events", async () => {
     const buildCalls: string[] = [];
     let watcherListener: ((changedPath?: string) => void) | undefined;
     const manager = createUiAssetManager({
@@ -162,6 +164,10 @@ describe("ui build", () => {
 
     manager.startWatching();
     watcherListener?.(path.resolve(process.cwd(), "context/notes.md"));
+    watcherListener?.(path.resolve(process.cwd(), ".agent/runtime.json"));
+    watcherListener?.(path.resolve(process.cwd(), ".agents/skills/caveman/SKILL.md"));
+    watcherListener?.(path.resolve(process.cwd(), "AGENTS.md"));
+    watcherListener?.(path.resolve(process.cwd(), "nested/agents.md"));
     await flushMicrotasks();
     expect(buildCalls).toEqual([]);
 

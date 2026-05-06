@@ -9,13 +9,16 @@ export function createInitialState(width = 960, height = 540) {
     lives: 3,
     shield: SHIELD_MAX,
     hull: HULL_MAX,
-    powerBarIndex: 0,
+    powerBarIndex: -1,
     powerBarReady: false,
-    powerBarLabel: "SPEED",
+    powerBarLabel: "NEXT SPEED",
     powerBarFlash: 0,
+    powerBarHintText: "Shoot drones, grab a capsule",
+    powerPromptText: "FIRST CAPSULE ARMS SPEED",
+    powerTutorialComplete: false,
     overlayEyebrow: "Mission",
     overlayTitle: "Gradius Option-Drive",
-    overlayCopy: "Press Start to launch.",
+    overlayCopy: "Hold Space to fire. First capsule arms SPEED, then spend it with Shift or X.",
     overlayButton: "Start",
     alert: "",
     player: makePlayer(width, height),
@@ -29,7 +32,11 @@ export function createInitialState(width = 960, height = 540) {
     obstacles: [],
     bossState: "idle",
     weaponState: "NORMAL",
-    overlay: { show: true, title: "Gradius Option-Drive", copy: "Press Start to launch." },
+    overlay: {
+      show: true,
+      title: "Gradius Option-Drive",
+      copy: "Hold Space to fire. First capsule arms SPEED, then spend it with Shift or X.",
+    },
   };
 }
 

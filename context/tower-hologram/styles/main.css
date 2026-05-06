@@ -40,6 +40,8 @@ body {
 
 body {
   min-height: 100vh;
+  display: grid;
+  place-items: center;
 }
 
 button {
@@ -48,8 +50,10 @@ button {
 
 .game-shell {
   position: relative;
-  width: 100vw;
-  height: 100vh;
+  width: min(100vw, calc(100vh * 1.6));
+  height: min(100vh, calc(100vw / 1.6));
+  max-width: 100vw;
+  max-height: 100vh;
   overflow: clip;
   isolation: isolate;
 }
@@ -250,19 +254,71 @@ h2 {
   font-size: clamp(1.25rem, 2vw, 1.7rem);
 }
 
+.signal-feed {
+  max-width: min(27vw, 320px);
+  padding: 10px 12px;
+  border: 1px solid rgba(125, 243, 255, 0.16);
+  border-radius: var(--radius-md);
+  background:
+    linear-gradient(135deg, rgba(125, 243, 255, 0.1), rgba(56, 189, 232, 0.04)),
+    rgba(6, 14, 27, 0.78);
+  backdrop-filter: blur(12px);
+}
+
+.signal-feed__eyebrow,
+.signal-feed h3,
+.signal-feed p {
+  margin: 0;
+}
+
+.signal-feed__eyebrow {
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
+.signal-feed h3 {
+  margin-top: 6px;
+  font-size: 0.92rem;
+  line-height: 1.1;
+  color: var(--cyan);
+}
+
+.signal-feed p {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.35;
+}
+
 .hud__status {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(108px, 1fr));
+  gap: 10px;
   justify-content: flex-end;
 }
 
 .tower-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
   align-items: stretch;
+}
+
+.hud__dock {
+  display: grid;
+  gap: 12px;
+  align-items: start;
+  width: min(100%, 320px);
+  justify-self: end;
 }
 
 .tower-button {
   display: grid;
-  gap: 4px;
-  min-width: 164px;
-  padding: 14px 16px;
+  gap: 2px;
+  min-width: 0;
+  padding: 10px 12px;
   color: var(--text);
   text-align: left;
   background: rgba(255, 255, 255, 0.05);
@@ -275,7 +331,7 @@ h2 {
 }
 
 .tower-button__name {
-  font-size: 1rem;
+  font-size: 0.92rem;
   font-weight: 700;
 }
 
@@ -292,12 +348,15 @@ h2 {
 }
 
 .tower-panel {
-  min-width: 240px;
-  padding: 14px 16px;
+  min-width: 0;
+  max-width: none;
+  max-height: min(42vh, 360px);
+  padding: 12px 14px;
   border: 1px solid rgba(125, 243, 255, 0.14);
   border-radius: var(--radius-md);
   background: rgba(6, 14, 27, 0.72);
   backdrop-filter: blur(12px);
+  overflow: auto;
 }
 
 .tower-panel__eyebrow,
@@ -328,12 +387,12 @@ h2 {
 .tower-panel__stats {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  margin: 14px 0 0;
+  gap: 8px;
+  margin: 10px 0 0;
 }
 
 .tower-panel__stats div {
-  padding: 10px 12px;
+  padding: 8px 10px;
   border: 1px solid rgba(125, 243, 255, 0.12);
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.03);
@@ -348,13 +407,13 @@ h2 {
 }
 
 .tower-panel__stats dd {
-  margin: 6px 0 0;
+  margin: 4px 0 0;
   color: var(--text);
-  font-size: 0.92rem;
+  font-size: 0.84rem;
 }
 
 .tower-panel__choices {
-  margin-top: 14px;
+  margin-top: 10px;
 }
 
 .tower-panel__choices button {
@@ -384,21 +443,29 @@ h2 {
   display: block;
   margin-top: 2px;
   color: var(--muted);
-  font-size: 0.76rem;
+  font-size: 0.72rem;
 }
 
 .tower-panel__note {
-  margin-top: 12px;
+  margin-top: 8px;
   color: var(--muted);
-  font-size: 0.86rem;
-  line-height: 1.45;
+  font-size: 0.78rem;
+  line-height: 1.35;
 }
 
 .hud__bar--bottom {
   display: grid;
-  grid-template-columns: minmax(260px, 1.3fr) minmax(280px, 1fr) auto;
-  gap: 16px;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 320px);
+  gap: 12px;
   align-items: end;
+}
+
+.control-strip {
+  justify-content: stretch;
+}
+
+.control-strip .action {
+  flex: 1 1 0;
 }
 
 .win-summary {
@@ -482,7 +549,11 @@ h2 {
 
 .hud__bar--bottom {
   position: relative;
-  align-items: end;
+  align-items: start;
+}
+
+.tower-panel[data-mode="browse"] .tower-panel__choices {
+  display: none;
 }
 
 .hud__notice {
@@ -531,7 +602,12 @@ h2 {
     justify-content: flex-start;
   }
 
+  .signal-feed {
+    max-width: none;
+  }
+
   .tower-strip,
+  .hud__dock,
   .control-strip,
   .tower-panel,
   .menu-actions {
@@ -563,6 +639,7 @@ h2 {
 
   .menu-actions,
   .tower-strip,
+  .hud__dock,
   .control-strip,
   .hud__status,
   .win-summary,
@@ -572,5 +649,9 @@ h2 {
 
   .tower-panel__stats {
     grid-template-columns: 1fr;
+  }
+
+  .tower-panel {
+    max-height: none;
   }
 }

@@ -1,3 +1,4 @@
+(() => {
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
 const WEAPON_LIBRARY = [
@@ -78,7 +79,7 @@ function upgradeAlias(key) {
   return map[key] ?? key;
 }
 
-export class WeaponSystem {
+class WeaponSystem {
   constructor(options = {}) {
     this.weapons = WEAPON_LIBRARY.map((weapon, index) => ({
       ...weapon,
@@ -354,3 +355,7 @@ export class WeaponSystem {
     return distance;
   }
 }
+
+window.StandBreach = window.StandBreach || {};
+window.StandBreach.WeaponSystem = WeaponSystem;
+})();

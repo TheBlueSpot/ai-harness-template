@@ -93,8 +93,10 @@ export function resolveUnitStacking(laneUnits) {
   }
 
   for (const sideUnits of bySide.values()) {
-    const descending = sideUnits[0]?.side === "enemy";
-    sideUnits.sort((a, b) => (descending ? (b.progress ?? 0) - (a.progress ?? 0) : (a.progress ?? 0) - (b.progress ?? 0)));
+    const isPlayerSide = sideUnits[0]?.side === "player";
+    sideUnits.sort((a, b) =>
+      isPlayerSide ? (b.progress ?? 0) - (a.progress ?? 0) : (a.progress ?? 0) - (b.progress ?? 0),
+    );
     for (let i = 0; i < sideUnits.length; i += 1) {
       const unit = sideUnits[i];
       const forwardNeighbor = sideUnits[i - 1];

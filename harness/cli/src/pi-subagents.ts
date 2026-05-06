@@ -12,6 +12,8 @@ import {
   resolveRepoRoot,
   SUBAGENT_MILESTONE_INSTRUCTION
 } from "./subagent-environment";
+import { assembleDeterministicPrompt } from "./deterministic-prompt";
+import type { PromptCacheIdentity } from "./prompt-cache";
 
 export type SubagentResult = {
   id: string;
@@ -190,6 +192,7 @@ export async function executeSubagents(
     executionModelId: string;
     reasoningStrength?: ComposerReasoningStrength;
     fastMode?: boolean;
+    promptCacheIdentity?: PromptCacheIdentity;
     abortSignal?: AbortSignal;
     verifyResult?: (input: SubagentVerificationInput) => Promise<string[] | void>;
     recoveryPrompt?: (input: { task: PlannerSubtask; result: SubagentResult }) => string;
@@ -227,6 +230,7 @@ export async function executeSubagents(
         debugEnabled: options.debugEnabled,
         reasoningStrength: options.reasoningStrength,
         fastMode: options.fastMode,
+        promptCacheIdentity: options.promptCacheIdentity,
         verifyResult: options.verifyResult
       });
     },
@@ -281,6 +285,7 @@ async function executeSubagentWithRetry(
     debugEnabled: boolean;
     reasoningStrength?: ComposerReasoningStrength;
     fastMode?: boolean;
+    promptCacheIdentity?: PromptCacheIdentity;
     verifyResult?: (input: SubagentVerificationInput) => Promise<string[] | void>;
   }
 ): Promise<{ result: SubagentResult; retainedSnapshot?: BranchfsSubagentSnapshot }> {
@@ -343,6 +348,7 @@ async function executeSubagentWithRetry(
           prompt: basePrompt,
           reasoningStrength: subagentReasoningStrength,
           fastMode: options.fastMode,
+          promptCacheIdentity: options.promptCacheIdentity,
           onTextDelta(delta: string) {
             milestoneParser.push(delta);
           },
@@ -368,6 +374,7 @@ async function executeSubagentWithRetry(
           prompt: ["continue", "", basePrompt].join("\n"),
           reasoningStrength: subagentReasoningStrength,
           fastMode: options.fastMode,
+          promptCacheIdentity: options.promptCacheIdentity,
           onTextDelta(delta: string) {
             milestoneParser.push(delta);
           },
@@ -419,6 +426,7 @@ async function executeSubagentWithRetry(
           contextWindow: response.contextUsage.contextWindow,
           usagePercent: response.contextUsage.usagePercent,
           totalProcessedTokens: response.contextUsage.sessionStats.tokens.total,
+          cachedInputTokens: response.contextUsage.cachedInputTokens,
           updatedAt: new Date().toISOString()
           });
       }
@@ -460,6 +468,7 @@ async function executeSubagentWithRetry(
                 contextWindow: response.contextUsage.contextWindow,
                 usagePercent: response.contextUsage.usagePercent,
                 totalProcessedTokens: response.contextUsage.sessionStats.tokens.total,
+                cachedInputTokens: response.contextUsage.cachedInputTokens,
                 updatedAt: new Date().toISOString()
               }
             : undefined,
@@ -520,25 +529,36 @@ function isTransientError(error: Error) {
 }
 
 export function buildSubagentPrompt(input: { brief: string; task: PlannerSubtask; recoveryPrompt?: string; environmentBrief?: string }) {
-  return [
-    "You are a focused implementation subagent.",
-    "Start in the provided cwd and apply the assigned file plan exactly.",
-    "Create missing directories and the first listed missing file immediately when the assignment names new paths.",
-    "Use owned paths as the primary work area; edit integration files when the assignment requires wiring.",
-    "Do not run browser, Playwright, dev server, python -m http.server, visible app smoke tests, or commands that can open windows.",
-    "Do not use Start-Process for verification.",
-    "Do not perform broad verification unless this subtask explicitly names a verification command.",
-    "On Windows, use PowerShell-compatible syntax only; do not use Bash heredocs like <<'EOF'.",
-    "Prefer bundled rg for search. If rg is unavailable, use Get-ChildItem plus Select-String.",
-    "Return a concise changed-file summary.",
-    SUBAGENT_MILESTONE_INSTRUCTION,
-    input.recoveryPrompt?.trim() ? input.recoveryPrompt.trim() : "",
-    input.environmentBrief?.trim() ? input.environmentBrief.trim() : "",
-    "",
-    `Shared brief: ${input.brief}`,
-    `Subtask title: ${input.task.title}`,
-    `Subtask instruction: ${input.task.instruction}`
-  ].join("\n");
+  return assembleDeterministicPrompt([
+    {
+      kind: "system",
+      content: [
+        "You are a focused implementation subagent.",
+        "Start in the provided cwd and apply the assigned file plan exactly.",
+        "Create missing directories and the first listed missing file immediately when the assignment names new paths.",
+        "Use owned paths as the primary work area; edit integration files when the assignment requires wiring.",
+        "Do not run browser, Playwright, dev server, python -m http.server, visible app smoke tests, or commands that can open windows.",
+        "Do not use Start-Process for verification.",
+        "Do not perform broad verification unless this subtask explicitly names a verification command.",
+        "On Windows, use PowerShell-compatible syntax only; do not use Bash heredocs like <<'EOF'.",
+        "Prefer bundled rg for search. If rg is unavailable, use Get-ChildItem plus Select-String.",
+        "Return a concise changed-file summary.",
+        SUBAGENT_MILESTONE_INSTRUCTION
+      ]
+    },
+    {
+      kind: "workspace",
+      content: input.environmentBrief?.trim()
+    },
+    {
+      kind: "frozen-plan",
+      content: [`Shared brief: ${input.brief}`, `Subtask title: ${input.task.title}`, `Subtask instruction: ${input.task.instruction}`]
+    },
+    {
+      kind: "dynamic",
+      content: input.recoveryPrompt?.trim()
+    }
+  ]);
 }
 
 function isAbortError(error: Error, abortSignal: AbortSignal | undefined) {
@@ -620,3 +640,4 @@ function emitSpawnTiming(
     subagentId: task.id
   });
 }
+

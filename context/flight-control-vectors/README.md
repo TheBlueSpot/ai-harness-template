@@ -19,5 +19,6 @@ Flight Control Vector Stack is a browser-playable air traffic routing game about
 ## Local Notes
 
 - Entry is isolated inside `flight-control-vectors/`
-- Open `flight-control-vectors/index.html` in a browser to play
+- Open [index.html](./index.html) in a browser to play.
 - Teaching stays in-context near the first plane, runway target, and danger point
+- Sweep note: matching the runway should require ending the route there, not just passing through it mid-path

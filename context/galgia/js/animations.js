@@ -1,6 +1,6 @@
 // galgia/js/animations.js
 
-import * as THREE from 'three';
+import * as THREE from 'https://esm.sh/three@0.163.0';
 import { lerp } from './utils.js';
 
 export const Animations = {

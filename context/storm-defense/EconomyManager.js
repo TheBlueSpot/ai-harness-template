@@ -1,6 +1,7 @@
+(() => {
 const clampInt = (value) => Math.max(0, Math.floor(Number(value) || 0));
 
-export class EconomyManager {
+class EconomyManager {
   constructor() {
     this.reset();
   }
@@ -114,3 +115,6 @@ export class EconomyManager {
     };
   }
 }
+
+globalThis.EconomyManager = EconomyManager;
+})();

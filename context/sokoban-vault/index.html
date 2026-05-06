@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sokoban Vault Shift</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="frame">
+        <header class="hud" aria-label="Game status">
+          <div class="hud__group">
+            <span class="hud__label">Stage</span>
+            <span id="stage-value">1 / 4</span>
+          </div>
+          <div class="hud__group">
+            <span class="hud__label">Steps</span>
+            <span id="step-value">0</span>
+          </div>
+          <div class="hud__group">
+            <span class="hud__label">Pushes</span>
+            <span id="push-value">0</span>
+          </div>
+          <div class="hud__group">
+            <span class="hud__label">Sockets</span>
+            <span id="socket-value">0 / 0</span>
+          </div>
+          <div class="hud__group">
+            <span class="hud__label">Relays</span>
+            <span id="switch-value">none</span>
+          </div>
+          <div class="hud__group">
+            <span class="hud__label">Focus</span>
+            <span id="focus-value">Sockets</span>
+          </div>
+        </header>
+        <canvas id="game" width="960" height="640" aria-label="Sokoban Vault Shift"></canvas>
+        <aside class="brief" aria-live="polite">
+          <p class="brief__eyebrow">Vault Brief</p>
+          <p id="brief-text" class="brief__body">
+            Push each amber power cell onto a glowing socket, then walk through the open vault door.
+          </p>
+          <p id="focus-text" class="brief__controls">Floor focus: socket routing.</p>
+          <ol id="stage-list" class="stage-list" aria-label="Campaign route"></ol>
+          <p class="brief__controls">Move: Arrow keys or WASD. Undo: Z. Reset room: R. Relays hold shutters. Warp pads jump you across the room.</p>
+        </aside>
+        <div id="overlay" class="overlay">
+          <div class="overlay__panel">
+            <p id="overlay-kicker" class="overlay__kicker">Sokoban Vault Shift</p>
+            <h1 id="overlay-title">Shift The Vault Route</h1>
+            <p id="overlay-body" class="overlay__body">
+              Move power cells through the security maze, keep the route readable, and crack all ten vault floors.
+            </p>
+            <ul class="overlay__tips">
+              <li>Push crates one tile at a time. You cannot pull them back.</li>
+              <li>Glowing sockets mark the exact cells that matter right now.</li>
+              <li>Blue relay switches can keep shutter gates open for later rooms.</li>
+              <li>Magenta warp pads teleport you to their linked partner the moment you step on them.</li>
+              <li>Use undo if a route closes before the vault door unlocks.</li>
+            </ul>
+            <button id="overlay-button" type="button">Start Shift</button>
+          </div>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

@@ -232,9 +232,14 @@
       font-size: 0.78rem;
     }
 
+    .status-strip .tag {
+      max-width: 420px;
+      text-align: right;
+    }
+
     .hud-row {
       display: grid;
-      grid-template-columns: repeat(6, minmax(0, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
       gap: 12px;
     }
 
@@ -276,7 +281,7 @@
     }
 
     .sidebar {
-      grid-template-rows: minmax(250px, auto) minmax(220px, 1fr);
+      grid-template-rows: minmax(210px, auto) minmax(250px, auto) minmax(220px, 1fr);
     }
 
     .panel-card {
@@ -438,6 +443,66 @@
       line-height: 1.55;
     }
 
+    .brief-stack,
+    .priority-list,
+    .control-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .brief-card {
+      padding: 12px;
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.56);
+      border: 1px solid rgba(61, 40, 28, 0.08);
+    }
+
+    .brief-card strong,
+    .priority-item strong {
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .priority-list {
+      margin-top: 12px;
+    }
+
+    .priority-item {
+      display: grid;
+      gap: 4px;
+      padding: 12px;
+      border-radius: 14px;
+      background: rgba(184, 92, 56, 0.08);
+      border: 1px solid rgba(184, 92, 56, 0.14);
+    }
+
+    .priority-item-button {
+      width: 100%;
+      text-align: left;
+      border-radius: 14px;
+      padding: 12px;
+    }
+
+    .priority-item.is-selected {
+      background: rgba(78, 127, 82, 0.14);
+      border-color: rgba(78, 127, 82, 0.28);
+    }
+
+    .priority-topline,
+    .brief-inline {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .priority-rank {
+      font-size: 0.74rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--accent-strong);
+    }
+
     .game-over-screen {
       place-items: center;
       padding: 22px;
@@ -523,10 +588,12 @@
               <p id="phase-label">Planning Phase</p>
             </div>
           </div>
-          <div class="top-actions">
-            <button id="restart-button" type="button">Restart</button>
-            <button id="end-turn-button" class="button-primary" type="button">Resolve Night</button>
-          </div>
+        <div class="top-actions">
+          <button id="restart-button" type="button">Restart</button>
+          <button id="auto-assign-button" type="button">Assign Best Fit</button>
+          <button id="draft-plan-button" type="button">Draft Safe Plan</button>
+          <button id="end-turn-button" class="button-primary" type="button">Resolve Night</button>
+        </div>
         </div>
 
         <div class="status-strip">
@@ -534,7 +601,7 @@
             <strong>Status</strong>
             <div id="status-line" class="small-copy">Select a tile to begin assignments.</div>
           </div>
-          <div class="tag">Menu, HUD, tile grid, event log, and game over report are all live in one page.</div>
+          <div id="focus-line" class="tag">Quick start: press Draft Safe Plan for a one-click first night layout.</div>
         </div>
 
         <div id="city-hud" class="hud-row" aria-label="city hud"></div>
@@ -554,6 +621,7 @@
           </div>
 
           <aside class="sidebar">
+            <section id="command-brief" class="panel-card" aria-label="command brief"></section>
             <section id="survivor-panel" class="panel-card" aria-label="survivor panel"></section>
             <section id="event-log" class="panel-card" aria-label="event log"></section>
           </aside>
@@ -570,8 +638,8 @@
           <div class="hero-head">
             <img src="./assets/zombie.svg" alt="" />
             <div>
-              <p class="small-copy">Settlement report</p>
-              <h1>Game Over</h1>
+              <p id="result-eyebrow" class="small-copy">Settlement report</p>
+              <h1 id="result-title">Game Over</h1>
             </div>
           </div>
           <p id="game-over-summary">The city has fallen.</p>
@@ -594,17 +662,25 @@
     const gameOverScreen = document.getElementById('game-over-screen');
     const cityGridEl = document.getElementById('city-grid');
     const cityHudEl = document.getElementById('city-hud');
+    const commandBriefEl = document.getElementById('command-brief');
     const survivorPanelEl = document.getElementById('survivor-panel');
     const eventLogEl = document.getElementById('event-log');
     const statusLineEl = document.getElementById('status-line');
+    const focusLineEl = document.getElementById('focus-line');
     const phaseLabelEl = document.getElementById('phase-label');
     const selectedTileLabelEl = document.getElementById('selected-tile-label');
     const gameOverSummaryEl = document.getElementById('game-over-summary');
     const gameOverReportEl = document.getElementById('game-over-report');
     const startButton = document.getElementById('start-button');
+    const autoAssignButton = document.getElementById('auto-assign-button');
+    const draftPlanButton = document.getElementById('draft-plan-button');
     const endTurnButton = document.getElementById('end-turn-button');
     const restartButton = document.getElementById('restart-button');
     const playAgainButton = document.getElementById('play-again-button');
+    const resultEyebrowEl = document.getElementById('result-eyebrow');
+    const resultTitleEl = document.getElementById('result-title');
+
+    const EXTRACTION_DAY = 6;
 
     const TILE_ICONS = {
       residential: './assets/survivor.svg',
@@ -612,6 +688,24 @@
       industrial: './assets/wall.svg',
       park: './assets/zombie.svg',
       utility: './assets/wall.svg'
+    };
+
+    const TASK_META = {
+      scavenge: {
+        label: 'Scavenge',
+        stat: 'Scavenging',
+        hint: 'safer food run'
+      },
+      defend: {
+        label: 'Defend',
+        stat: 'Defense',
+        hint: 'hold border pressure'
+      },
+      repair: {
+        label: 'Repair',
+        stat: 'Engineering',
+        hint: 'patch weak walls'
+      }
     };
 
     const state = {
@@ -644,6 +738,141 @@
     const getCity = () => state.city.getSnapshot();
     const getRoster = () => state.survivors.getSnapshot();
 
+    const getMissionDaysLeft = (city = getCity()) => Math.max(0, EXTRACTION_DAY - city.day);
+
+    const getPlanningSnapshot = (city = getCity()) => {
+      const activeTiles = city.tiles.filter((tile) => !tile.destroyed);
+      const openTiles = activeTiles.filter((tile) => !tile.assignment);
+      const borderOpen = openTiles.filter((tile) => tile.border || tile.type === 'park').length;
+      return {
+        openTiles: openTiles.length,
+        borderOpen
+      };
+    };
+
+    const taskForTile = (tile) => {
+      if (!tile) {
+        return TASK_META.scavenge;
+      }
+      if (tile.border || tile.type === 'park') {
+        return TASK_META.defend;
+      }
+      if (tile.type === 'utility' || tile.type === 'industrial') {
+        return TASK_META.repair;
+      }
+      return TASK_META.scavenge;
+    };
+
+    const isAssignableSurvivor = (survivor) => survivor.status !== 'deceased';
+
+    const getAssignableSurvivors = () => getRoster().survivors.filter(isAssignableSurvivor);
+
+    const tileUrgency = (tile) => {
+      const wallGap = Math.max(0, tile.maxWallHealth - tile.wallHealth);
+      if (tile.border || tile.type === 'park') {
+        return 26 + (tile.dangerLevel * 3) + (tile.noise * 2) + (wallGap * 4);
+      }
+      if (tile.type === 'utility' || tile.type === 'industrial') {
+        return 17 + (wallGap * 5) + (tile.dangerLevel * 2) + (tile.noise * 0.8);
+      }
+      return 10 + ((10 - tile.dangerLevel) * 1.4) + (tile.noise * 0.6);
+    };
+
+    const tileNeedScore = (tile, survivor) => {
+      if (!tile || !survivor || !isAssignableSurvivor(survivor)) {
+        return -Infinity;
+      }
+      const task = taskForTile(tile);
+      const statValue = survivor.stats[task.stat] ?? 0;
+      const wallGap = Math.max(0, tile.maxWallHealth - tile.wallHealth);
+      const assignedPenalty = survivor.assignment ? 18 : 0;
+      const borderBonus = tile.border && task.label === 'Defend' ? 8 : 0;
+      const repairBonus = task.label === 'Repair' ? wallGap * 3 : 0;
+      const scavengeBonus = task.label === 'Scavenge' ? Math.max(0, 6 - tile.dangerLevel) : 0;
+      return (statValue * 4) + tileUrgency(tile) + borderBonus + repairBonus + scavengeBonus - assignedPenalty;
+    };
+
+    const recommendSurvivorForTile = (tile, survivors = getAssignableSurvivors()) => {
+      if (!tile) {
+        return null;
+      }
+
+      let best = null;
+      let bestScore = -Infinity;
+      for (const survivor of survivors) {
+        const score = tileNeedScore(tile, survivor);
+        if (score > bestScore) {
+          best = survivor;
+          bestScore = score;
+        }
+      }
+      return best;
+    };
+
+    const getPriorityTiles = (limit = 3) => getCity().tiles
+      .filter((tile) => !tile.destroyed)
+      .sort((left, right) => tileUrgency(right) - tileUrgency(left))
+      .slice(0, limit);
+
+    const getSuggestedTile = () => getCity().tiles
+      .filter((tile) => !tile.destroyed && !tile.assignment)
+      .sort((left, right) => tileUrgency(right) - tileUrgency(left))[0] ?? null;
+
+    const ensureSelectedTile = () => {
+      if (!state.city) {
+        return;
+      }
+
+      const city = getCity();
+      const current = city.tiles.find((tile) => tile.id === state.selectedTileId);
+      if (current && !current.destroyed) {
+        return;
+      }
+
+      state.selectedTileId = getSuggestedTile()?.id ?? city.tiles.find((tile) => !tile.destroyed)?.id ?? null;
+    };
+
+    const buildDraftPlan = () => {
+      const city = getCity();
+      const survivors = getAssignableSurvivors()
+        .filter((survivor) => !survivor.assignment)
+        .sort((left, right) => {
+          const leftPeak = Math.max(left.stats.Scavenging, left.stats.Defense, left.stats.Engineering);
+          const rightPeak = Math.max(right.stats.Scavenging, right.stats.Defense, right.stats.Engineering);
+          return rightPeak - leftPeak;
+        });
+
+      const tiles = city.tiles
+        .filter((tile) => !tile.destroyed)
+        .sort((left, right) => tileUrgency(right) - tileUrgency(left));
+
+      const assignments = [];
+      const usedTiles = new Set();
+
+      for (const survivor of survivors) {
+        let bestTile = null;
+        let bestScore = -Infinity;
+
+        for (const tile of tiles) {
+          if (usedTiles.has(tile.id)) {
+            continue;
+          }
+          const score = tileNeedScore(tile, survivor);
+          if (score > bestScore) {
+            bestTile = tile;
+            bestScore = score;
+          }
+        }
+
+        if (bestTile) {
+          assignments.push({ survivor, tile: bestTile });
+          usedTiles.add(bestTile.id);
+        }
+      }
+
+      return assignments;
+    };
+
     const startRun = () => {
       state.city = new CityGrid();
       state.survivors = new SurvivorManager();
@@ -653,8 +882,10 @@
       state.log = [];
       appendLog([
         'Dawn briefing: assign survivors before ending the turn.',
-        'Border sectors have the highest breach pressure.'
+        'Border sectors have the highest breach pressure.',
+        'Survive until day 6 to reach the extraction convoy.'
       ]);
+      ensureSelectedTile();
       showScreen('game');
       syncView();
     };
@@ -692,6 +923,9 @@
     const finishGame = (report) => {
       const city = getCity();
       const roster = getRoster();
+      const isVictory = Boolean(report?.victory);
+      resultEyebrowEl.textContent = isVictory ? 'Settlement secured' : 'Settlement report';
+      resultTitleEl.textContent = isVictory ? 'Victory' : 'Game Over';
       gameOverSummaryEl.textContent = report?.gameOverReport?.summary ?? report?.summary ?? 'The settlement was lost.';
       gameOverReportEl.textContent = formatGameOver(city, roster, report);
       showScreen('game-over');
@@ -700,13 +934,16 @@
     const renderHud = () => {
       const city = getCity();
       const roster = getRoster().roster;
+      const planning = getPlanningSnapshot(city);
       const cards = [
         ['Day', city.day],
+        ['Dawns Left', getMissionDaysLeft(city)],
         ['Food', city.food],
         ['Walls', city.walls],
         ['Materials', city.materials],
         ['Living', roster.living],
-        ['Assigned', roster.assigned]
+        ['Assigned', roster.assigned],
+        ['Border Open', planning.borderOpen]
       ];
 
       cityHudEl.innerHTML = cards.map(([label, value]) => `
@@ -719,11 +956,81 @@
       phaseLabelEl.textContent = `${phaseText(city.phase)} | day ${city.day}`;
     };
 
+    const renderCommandBrief = () => {
+      ensureSelectedTile();
+      const city = getCity();
+      const roster = getRoster();
+      const selectedTile = city.tiles.find((tile) => tile.id === state.selectedTileId) ?? null;
+      const suggestedTile = getSuggestedTile();
+      const recommendedSurvivor = selectedTile ? recommendSurvivorForTile(selectedTile) : null;
+      const priorityTiles = getPriorityTiles();
+      const daysLeft = getMissionDaysLeft(city);
+      const missionLabel = daysLeft > 0
+        ? `Hold ${daysLeft} more dawn${daysLeft === 1 ? '' : 's'} for extraction.`
+        : 'Extraction window reached. Resolve the night cleanly to finish.';
+      const nextAction = suggestedTile
+        ? `Next best move: secure ${suggestedTile.label} with ${taskForTile(suggestedTile).label.toLowerCase()}.`
+        : 'All live sectors are staffed. Resolve the night when ready.';
+
+      commandBriefEl.innerHTML = `
+        <div class="panel-head">
+          <div>
+            <h3>Command Brief</h3>
+            <p class="small-copy">One visible goal, one best next move, and three live priorities.</p>
+          </div>
+          <div class="tag">Day ${city.day}/${EXTRACTION_DAY}</div>
+        </div>
+        <div class="brief-stack">
+          <div class="brief-card">
+            <div class="brief-inline">
+              <strong>Mission</strong>
+              <span class="tag">${roster.roster.assigned}/${roster.roster.living} staffed</span>
+            </div>
+            <div>${missionLabel}</div>
+          </div>
+          <div class="brief-card">
+            <div class="brief-inline">
+              <strong>Next move</strong>
+              <span class="tag">${selectedTile ? selectedTile.label : 'No tile selected'}</span>
+            </div>
+            <div>${selectedTile && recommendedSurvivor
+              ? `${nextAction} ${recommendedSurvivor.name} is the best fit on ${taskForTile(selectedTile).stat.toLowerCase()}.`
+              : nextAction}</div>
+          </div>
+          <div class="brief-card">
+            <strong>Fast controls</strong>
+            <div class="control-list">
+              <div>1. Pick the highlighted priority sector or press Draft Safe Plan.</div>
+              <div>2. Use Assign Best Fit to make one strong call fast.</div>
+              <div>3. Resolve Night once the border is covered.</div>
+            </div>
+          </div>
+        </div>
+        <div class="priority-list">
+          ${priorityTiles.map((tile, index) => `
+            <button
+              type="button"
+              class="priority-item priority-item-button ${tile.id === state.selectedTileId ? 'is-selected' : ''}"
+              data-priority-tile-id="${tile.id}"
+            >
+              <div class="priority-topline">
+                <strong>${tile.label}</strong>
+                <span class="priority-rank">Priority ${index + 1}</span>
+              </div>
+              <div>${taskForTile(tile).label} here. Danger ${tile.dangerLevel}, noise ${tile.noise}, wall ${tile.wallHealth}/${tile.maxWallHealth}.</div>
+              <div class="tag">${tile.assignment ? `Assigned: ${tile.assignment}` : 'Open sector'}</div>
+            </button>
+          `).join('')}
+        </div>
+      `;
+    };
+
     const renderGrid = () => {
       const city = getCity();
       cityGridEl.style.gridTemplateColumns = `repeat(${city.width}, minmax(0, 1fr))`;
       cityGridEl.innerHTML = city.tiles.map((tile) => {
         const isSelected = tile.id === state.selectedTileId;
+        const task = taskForTile(tile);
         const classNames = [
           'tile-button',
           tile.border ? 'is-border' : '',
@@ -742,6 +1049,7 @@
               <div class="tile-type">${tile.type}</div>
             </div>
             <div class="tile-metrics">
+              <span class="metric-pill">${task.label}</span>
               <span class="metric-pill">Danger ${tile.dangerLevel}</span>
               <span class="metric-pill">Noise ${tile.noise}</span>
             </div>
@@ -759,24 +1067,33 @@
 
     const renderSurvivors = () => {
       const city = getCity();
-      const survivors = getRoster().survivors;
       const selectedTile = city.tiles.find((tile) => tile.id === state.selectedTileId) ?? null;
+      const selectedTask = taskForTile(selectedTile);
+      const survivors = getRoster().survivors.slice().sort((left, right) => {
+        if (!selectedTile) {
+          if (left.status === 'deceased' && right.status !== 'deceased') return 1;
+          if (right.status === 'deceased' && left.status !== 'deceased') return -1;
+          return 0;
+        }
+        return tileNeedScore(selectedTile, right) - tileNeedScore(selectedTile, left);
+      });
       const canAssign = city.phase === GAME_PHASES.PLAYER_PLANNING && selectedTile && !selectedTile.destroyed;
+      const recommendedSurvivor = selectedTile ? recommendSurvivorForTile(selectedTile, survivors.filter(isAssignableSurvivor)) : null;
 
       survivorPanelEl.innerHTML = `
         <div class="panel-head">
           <div>
             <h3>Survivor Panel</h3>
-            <p class="small-copy">Each tile infers a task: scavenge, repair, or defend.</p>
+            <p class="small-copy">${selectedTile ? `${selectedTask.label} tile. ${selectedTask.stat} matters most here.` : 'Each tile infers a task: scavenge, repair, or defend.'}</p>
           </div>
-          <div class="tag">${selectedTile ? `Target: ${selectedTile.label}` : 'Pick a tile first'}</div>
+          <div class="tag">${selectedTile ? `Best fit: ${recommendedSurvivor?.name ?? 'none'} | ${selectedTask.hint}` : 'Pick a tile first'}</div>
         </div>
         <div class="survivor-list">
           ${survivors.map((survivor) => `
             <article class="survivor-card ${survivor.status === 'deceased' ? 'is-deceased' : ''}">
               <div class="survivor-meta">
                 <strong>${survivor.name}</strong>
-                <span class="tag">${survivor.status}</span>
+                <span class="tag">${recommendedSurvivor?.id === survivor.id ? 'best fit' : survivor.status}</span>
               </div>
               <div class="survivor-stats">
                 <div class="survivor-stat">Scav ${survivor.stats.Scavenging}</div>
@@ -823,14 +1140,39 @@
 
     const syncView = () => {
       const city = getCity();
+      const selectedTile = city.tiles.find((tile) => tile.id === state.selectedTileId) ?? null;
+      const selectedTask = taskForTile(selectedTile);
+      const suggestedSurvivor = selectedTile ? recommendSurvivorForTile(selectedTile) : null;
+      const suggestedTile = getSuggestedTile();
+      const planning = getPlanningSnapshot(city);
       renderHud();
+      renderCommandBrief();
       renderGrid();
       renderSurvivors();
       renderLog();
-      statusLineEl.textContent = city.phase === GAME_PHASES.PLAYER_PLANNING
-        ? 'Select a tile, assign survivors, then resolve the night.'
-        : 'Night resolution in progress.';
+      if (city.phase !== GAME_PHASES.PLAYER_PLANNING) {
+        statusLineEl.textContent = 'Night resolution in progress.';
+        focusLineEl.textContent = 'Hold. Dawn report will show breaches, food swing, and wall changes.';
+      } else if (planning.borderOpen > 0 && suggestedTile) {
+        statusLineEl.textContent = `${planning.borderOpen} border sector${planning.borderOpen === 1 ? '' : 's'} still open. Start with ${suggestedTile.label} before ending the turn.`;
+        focusLineEl.textContent = selectedTile && suggestedSurvivor
+          ? `${selectedTask.hint}. Assign ${suggestedSurvivor.name} to ${selectedTile.label}, or press Draft Safe Plan for a full first-night layout.`
+          : 'Quick start: click a priority card or press Draft Safe Plan for a full first-night layout.';
+      } else if (selectedTile && suggestedSurvivor) {
+        statusLineEl.textContent = `${selectedTile.label} wants ${selectedTask.label.toLowerCase()}. ${suggestedSurvivor.name} is top fit on ${selectedTask.stat.toLowerCase()}.`;
+        focusLineEl.textContent = planning.openTiles > 0
+          ? `${planning.openTiles} open sector${planning.openTiles === 1 ? '' : 's'} left. ${selectedTask.hint}.`
+          : 'Every live sector is staffed. Resolve the night when ready.';
+      } else if (city.assignments === 0) {
+        statusLineEl.textContent = 'Draft a safe first night or pick one tile to start assignments.';
+        focusLineEl.textContent = 'Quick start: click a priority card to jump straight to the hottest sector, or use Draft Safe Plan to fill the whole board first.';
+      } else {
+        statusLineEl.textContent = 'Assignments queued. Tweak any tile or resolve the night.';
+        focusLineEl.textContent = `${city.assignments} survivor${city.assignments === 1 ? '' : 's'} ready. ${planning.borderOpen > 0 ? `${planning.borderOpen} border sector${planning.borderOpen === 1 ? '' : 's'} still need cover.` : 'Perimeter is covered.'}`;
+      }
       endTurnButton.disabled = city.phase !== GAME_PHASES.PLAYER_PLANNING;
+      draftPlanButton.disabled = city.phase !== GAME_PHASES.PLAYER_PLANNING;
+      autoAssignButton.disabled = city.phase !== GAME_PHASES.PLAYER_PLANNING || !selectedTile || !suggestedSurvivor;
     };
 
     const assignSelectedTile = (survivorId) => {
@@ -848,7 +1190,23 @@
         border: tile.border
       });
       appendLog([`Assigned ${survivorId} to ${tile.label}.`]);
+      if (tile.id === state.selectedTileId) {
+        state.selectedTileId = getSuggestedTile()?.id ?? tile.id;
+      }
       syncView();
+    };
+
+    const assignBestFitToSelectedTile = () => {
+      const city = getCity();
+      const tile = city.tiles.find((entry) => entry.id === state.selectedTileId);
+      if (!tile || tile.destroyed || city.phase !== GAME_PHASES.PLAYER_PLANNING) {
+        return;
+      }
+      const survivor = recommendSurvivorForTile(tile);
+      if (!survivor) {
+        return;
+      }
+      assignSelectedTile(survivor.id);
     };
 
     const advanceTurn = () => {
@@ -873,7 +1231,45 @@
 
       if (nightReport.gameOver || getCity().gameOver) {
         finishGame(nightReport);
+        return;
       }
+
+      if (getCity().day >= EXTRACTION_DAY) {
+        finishGame({
+          ...nightReport,
+          victory: true,
+          summary: `Extraction convoy arrived on day ${getCity().day}. The settlement held long enough to evacuate.`
+        });
+      }
+    };
+
+    const draftSafePlan = () => {
+      const city = getCity();
+      if (city.phase !== GAME_PHASES.PLAYER_PLANNING) {
+        return;
+      }
+
+      state.city.clearAssignments();
+      state.survivors.clearAssignments();
+
+      const assignments = buildDraftPlan();
+      for (const entry of assignments) {
+        state.city.setSurvivorAssignment(entry.survivor.id, entry.tile.id);
+        state.survivors.assignSurvivor(entry.survivor.id, {
+          tileId: entry.tile.id,
+          tileLabel: entry.tile.label,
+          tileType: entry.tile.type,
+          border: entry.tile.border
+        });
+      }
+
+      state.selectedTileId = assignments[0]?.tile.id ?? null;
+      const summary = assignments
+        .slice(0, 3)
+        .map((entry) => `${entry.survivor.name} -> ${entry.tile.label}`)
+        .join('; ');
+      appendLog([`Draft safe plan queued ${assignments.length} survivors.${summary ? ` ${summary}.` : ''}`]);
+      syncView();
     };
 
     cityGridEl.addEventListener('click', (event) => {
@@ -882,6 +1278,19 @@
         return;
       }
       const tile = getCity().tiles.find((entry) => entry.id === button.dataset.tileId);
+      if (!tile || tile.destroyed || getCity().phase !== GAME_PHASES.PLAYER_PLANNING) {
+        return;
+      }
+      state.selectedTileId = tile.id;
+      syncView();
+    });
+
+    commandBriefEl.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-priority-tile-id]');
+      if (!button || !state.city) {
+        return;
+      }
+      const tile = getCity().tiles.find((entry) => entry.id === button.dataset.priorityTileId);
       if (!tile || tile.destroyed || getCity().phase !== GAME_PHASES.PLAYER_PLANNING) {
         return;
       }
@@ -900,6 +1309,8 @@
     startButton.addEventListener('click', startRun);
     playAgainButton.addEventListener('click', startRun);
     restartButton.addEventListener('click', resetToMenu);
+    autoAssignButton.addEventListener('click', assignBestFitToSelectedTile);
+    draftPlanButton.addEventListener('click', draftSafePlan);
     endTurnButton.addEventListener('click', advanceTurn);
 
     showScreen('menu');

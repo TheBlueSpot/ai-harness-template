@@ -38,6 +38,8 @@ import {
   type ProviderCapability,
   type ProjectSearchResult,
   type ProjectThreadSummary,
+  type RunDiagnosticsReport,
+  type RunDiagnosticsWindowDays,
   type RunPreflight,
   type ClientCommand,
   type ServerEvent,
@@ -53,6 +55,7 @@ import { pushToast, reportUiError } from "./toast-store";
 
 export const OPENAI_API_KEY_STORAGE_KEY = "openai_api_key";
 export const GOOGLE_API_KEY_STORAGE_KEY = "google_api_key";
+export const ANTHROPIC_API_KEY_STORAGE_KEY = "anthropic_api_key";
 export const PROVIDER_BRAND_STORAGE_KEY = "provider_brand";
 export const DEBUG_ENABLED_STORAGE_KEY = "debug_enabled";
 export const TRACE_PANEL_DEFAULT_OPEN_STORAGE_KEY = "trace_panel_default_open";
@@ -64,6 +67,7 @@ export const PLAN_EXECUTION_MODE_DEFAULT_STORAGE_KEY = "plan_execution_mode_defa
 export const PLAN_EXECUTION_DELAY_SECONDS_DEFAULT_STORAGE_KEY = "plan_execution_delay_seconds_default";
 export const CORRECTNESS_ITERATION_MODE_DEFAULT_STORAGE_KEY = "correctness_iteration_mode_default";
 export const BACKGROUND_JOB_APPROVAL_POLICY_DEFAULT_STORAGE_KEY = "background_job_approval_policy_default";
+const AUTO_ARCHIVE_COMPLETED_THREADS_DEFAULT_STORAGE_KEY = "pi-harness:auto-archive-completed-threads-default:v1";
 export const BACKGROUND_JOB_NOTIFICATIONS_ENABLED_STORAGE_KEY = "background_job_notifications_enabled";
 export const MEMORY_BANK_ENABLED_DEFAULT_STORAGE_KEY = "memory_bank_enabled_default";
 export const COMPOSER_REASONING_STRENGTH_STORAGE_KEY = "composer_reasoning_strength";
@@ -77,16 +81,22 @@ export const COMPOSER_REASONING_STRENGTHS: ComposerReasoningStrength[] = ["low",
 const MAX_STREAMING_MESSAGE_HEARTBEATS = 2;
 
 export type HarnessActiveSurface = "chat" | "background-jobs" | "assistants";
-export type HarnessLeftTab = "projects" | "assistants" | "jobs";
+export type HarnessLeftTab = "projects" | "assistants" | "jobs" | "runs";
 export type ChatPaneTab = "chat" | "plan" | "run" | "events" | "memory";
 export type AssistantDetailTab = "chat" | "todos" | "questions" | "jobs" | "log" | "config" | "learnings";
 export type AssistantScopeFilter = "global" | "project";
 export type ProjectSidebarProjectSort = "last-user-message" | "created-at" | "manual";
 export type ProjectSidebarThreadSort = "last-user-message" | "created-at";
 export type ProjectSidebarGrouping = "repository" | "repository-path" | "separate";
-export type JobsPaneSegment = "jobs" | "inbox";
+export type JobsPaneSegment = "jobs" | "inbox" | "health";
 export type JobsPaneJobSort = "next-run" | "updated" | "created" | "status" | "risk";
 export type JobsRunFilter = "approval" | "queued" | "running" | "failed" | "done";
+
+export type RunDiagnosticsViewState = {
+  loading: boolean;
+  windowDays: RunDiagnosticsWindowDays;
+  report?: RunDiagnosticsReport;
+};
 
 export type ProjectSidebarPreferences = {
   projectSort: ProjectSidebarProjectSort;
@@ -98,6 +108,8 @@ export type ProjectSidebarPreferences = {
 export type JobsPanePreferences = {
   segment: JobsPaneSegment;
   search: string;
+  jobSearch?: string;
+  runSearch?: string;
   jobSort: JobsPaneJobSort;
   projectId?: string;
   assistantId?: string;
@@ -109,6 +121,12 @@ export type JobsPanePreferences = {
   selectedNotificationId?: string;
 };
 
+export type MainPanelSizes = {
+  left: number;
+  center: number;
+  right: number;
+};
+
 export type BrowserUiSessionState = {
   selectedModeId?: string;
   selectedAgentId?: AgentId;
@@ -117,11 +135,18 @@ export type BrowserUiSessionState = {
   selectedFastMode?: boolean;
   tracePanelOpen?: boolean;
   activeLeftTab?: HarnessLeftTab;
+  mainPanelSizes?: MainPanelSizes;
   lastActiveProjectId?: string;
   lastActiveThreadByProjectId?: Record<string, string>;
   chatPaneTab?: ChatPaneTab;
   assistantPane?: {
     scopeFilter?: AssistantScopeFilter;
+    rosterSearch?: string;
+    detailSearch?: string;
+    runState?: Assistant["runState"];
+    bootstrapState?: Assistant["bootstrapState"];
+    providerBrand?: Assistant["providerBrand"];
+    projectId?: string;
     selectedAssistantId?: string;
     selectedTab?: AssistantDetailTab;
     selectedLogDetailsId?: string;
@@ -230,6 +255,12 @@ export type ViewAssistantsState = AssistantsState & {
   selectedTab: AssistantDetailTab;
   selectedLogDetailsId?: string;
   scopeFilter: AssistantScopeFilter;
+  rosterSearch: string;
+  detailSearch: string;
+  runStateFilter?: Assistant["runState"];
+  bootstrapStateFilter?: Assistant["bootstrapState"];
+  providerBrandFilter?: Assistant["providerBrand"];
+  projectIdFilter?: string;
   streamingByAssistantId: Record<string, string>;
 };
 
@@ -248,6 +279,8 @@ export type HarnessViewState = {
   jobsRunFilter: JobsRunFilter;
   assistants: ViewAssistantsState;
   backgroundJobs: BackgroundJobsState;
+  runDiagnostics: RunDiagnosticsViewState;
+  diagnosticsRefreshVersion: number;
   notifications: NotificationInboxState;
   executionControl: ExecutionControlState;
   backgroundJobSchedulePreview?: {
@@ -256,6 +289,7 @@ export type HarnessViewState = {
   };
   backgroundJobEditorOpen: boolean;
   backgroundJobEditorDraft?: BackgroundJobEditorDraft;
+  backgroundJobDetailsRunId?: string;
   assistantEditorOpen: boolean;
   assistantEditorDraft?: AssistantEditorDraft;
   backgroundJobNotificationsEnabled: boolean;
@@ -279,6 +313,7 @@ export type HarnessViewState = {
   tracePanelOpen: boolean;
   tracePanelDefaultOpen: boolean;
   hasPersistedTracePanelOpen: boolean;
+  mainPanelSizes: MainPanelSizes;
   executionPlanDialogOpen: boolean;
   selectedExecutionPlan?: ExecutionPlan;
   subagentWorktreeStrategyDefault: "same-worktree" | "separate-worktrees";
@@ -289,6 +324,7 @@ export type HarnessViewState = {
   planExecutionDelaySecondsDefault: number;
   correctnessIterationModeDefault: "ask-before-iterate" | "auto-once" | "auto-until-clean";
   backgroundJobApprovalPolicyDefault: BackgroundJobApprovalPolicy;
+  autoArchiveCompletedThreadsDefault: boolean;
   memoryBankEnabledDefault: boolean;
   attachmentsEnabled: boolean;
   capabilities: ProviderCapability[];
@@ -305,12 +341,16 @@ export type HarnessViewState = {
   hasStoredOpenAiApiKey: boolean;
   hasUsableGoogleApiKey: boolean;
   hasStoredGoogleApiKey: boolean;
+  hasUsableAnthropicApiKey: boolean;
+  hasStoredAnthropicApiKey: boolean;
   providerBrand: ProviderBrand;
   openAiApiKeyDraft: string;
   googleApiKeyDraft: string;
+  anthropicApiKeyDraft: string;
   apiKeyDirty: boolean;
   hasLocalOpenAiApiKey: boolean;
   hasLocalGoogleApiKey: boolean;
+  hasLocalAnthropicApiKey: boolean;
   hasLocalProviderBrandPreference: boolean;
   hasLocalDebugPreference: boolean;
   hasLocalTracePreference: boolean;
@@ -322,6 +362,7 @@ export type HarnessViewState = {
   hasLocalPlanExecutionDelaySecondsPreference: boolean;
   hasLocalCorrectnessIterationModePreference: boolean;
   hasLocalBackgroundJobApprovalPolicyPreference: boolean;
+  hasLocalAutoArchiveCompletedThreadsPreference: boolean;
   hasLocalMemoryBankEnabledPreference: boolean;
   lastActiveProjectId?: string;
   lastActiveThreadByProjectId: Record<string, string>;
@@ -348,6 +389,7 @@ export type HarnessViewState = {
 export type LocalPreferencesState = {
   openAiApiKey?: string;
   googleApiKey?: string;
+  anthropicApiKey?: string;
   providerBrand?: ProviderBrand;
   debugEnabled?: boolean;
   tracePanelDefaultOpen?: boolean;
@@ -359,6 +401,7 @@ export type LocalPreferencesState = {
   planExecutionDelaySecondsDefault?: number;
   correctnessIterationModeDefault?: "ask-before-iterate" | "auto-once" | "auto-until-clean";
   backgroundJobApprovalPolicyDefault?: BackgroundJobApprovalPolicy;
+  autoArchiveCompletedThreadsDefault?: boolean;
   memoryBankEnabledDefault?: boolean;
   backgroundJobNotificationsEnabled?: boolean;
   selectedReasoningStrength?: ComposerReasoningStrength;
@@ -388,6 +431,8 @@ export function createDefaultJobsPanePreferences(): JobsPanePreferences {
   return {
     segment: "inbox",
     search: "",
+    jobSearch: "",
+    runSearch: "",
     jobSort: "next-run",
     projectId: undefined,
     assistantId: undefined,
@@ -400,11 +445,27 @@ export function createDefaultJobsPanePreferences(): JobsPanePreferences {
   };
 }
 
+export function createDefaultMainPanelSizes(): MainPanelSizes {
+  return {
+    left: 1.25,
+    center: 3,
+    right: 1.4
+  };
+}
+
 export function createEmptyBackgroundJobsState(): BackgroundJobsState {
   return {
     jobs: [],
     runs: [],
     templates: []
+  };
+}
+
+export function createInitialRunDiagnosticsState(): RunDiagnosticsViewState {
+  return {
+    loading: false,
+    windowDays: 7,
+    report: undefined
   };
 }
 
@@ -421,6 +482,12 @@ export function createEmptyAssistantsState(): ViewAssistantsState {
     selectedTab: "chat",
     selectedLogDetailsId: undefined,
     scopeFilter: "project",
+    rosterSearch: "",
+    detailSearch: "",
+    runStateFilter: undefined,
+    bootstrapStateFilter: undefined,
+    providerBrandFilter: undefined,
+    projectIdFilter: undefined,
     streamingByAssistantId: {}
   };
 }
@@ -469,11 +536,14 @@ export function createInitialViewState(): HarnessViewState {
     jobsRunFilter: "approval",
     assistants: createEmptyAssistantsState(),
     backgroundJobs: createEmptyBackgroundJobsState(),
+    runDiagnostics: createInitialRunDiagnosticsState(),
+    diagnosticsRefreshVersion: 0,
     notifications: createEmptyNotificationInboxState(),
     executionControl: createInitialExecutionControlState(),
     backgroundJobSchedulePreview: undefined,
     backgroundJobEditorOpen: false,
     backgroundJobEditorDraft: undefined,
+    backgroundJobDetailsRunId: undefined,
     assistantEditorOpen: false,
     assistantEditorDraft: undefined,
     backgroundJobNotificationsEnabled: false,
@@ -497,6 +567,7 @@ export function createInitialViewState(): HarnessViewState {
     tracePanelOpen: true,
     tracePanelDefaultOpen: true,
     hasPersistedTracePanelOpen: false,
+    mainPanelSizes: createDefaultMainPanelSizes(),
     executionPlanDialogOpen: false,
     selectedExecutionPlan: undefined,
     subagentWorktreeStrategyDefault: "same-worktree",
@@ -507,6 +578,7 @@ export function createInitialViewState(): HarnessViewState {
     planExecutionDelaySecondsDefault: 10,
     correctnessIterationModeDefault: "ask-before-iterate",
     backgroundJobApprovalPolicyDefault: "ask-risky",
+    autoArchiveCompletedThreadsDefault: false,
     memoryBankEnabledDefault: true,
     attachmentsEnabled: false,
     capabilities: [...defaultProviderCapabilities],
@@ -523,12 +595,16 @@ export function createInitialViewState(): HarnessViewState {
     hasStoredOpenAiApiKey: false,
     hasUsableGoogleApiKey: false,
     hasStoredGoogleApiKey: false,
+    hasUsableAnthropicApiKey: false,
+    hasStoredAnthropicApiKey: false,
     providerBrand: "gpt",
     openAiApiKeyDraft: "",
     googleApiKeyDraft: "",
+    anthropicApiKeyDraft: "",
     apiKeyDirty: false,
     hasLocalOpenAiApiKey: false,
     hasLocalGoogleApiKey: false,
+    hasLocalAnthropicApiKey: false,
     hasLocalProviderBrandPreference: false,
     hasLocalDebugPreference: false,
     hasLocalTracePreference: false,
@@ -540,6 +616,7 @@ export function createInitialViewState(): HarnessViewState {
     hasLocalPlanExecutionDelaySecondsPreference: false,
     hasLocalCorrectnessIterationModePreference: false,
     hasLocalBackgroundJobApprovalPolicyPreference: false,
+    hasLocalAutoArchiveCompletedThreadsPreference: false,
     hasLocalMemoryBankEnabledPreference: false,
     lastActiveProjectId: undefined,
     lastActiveThreadByProjectId: {},
@@ -1016,7 +1093,8 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
               : state.projectPreflights[event.payload.projectId]?.requestId === event.requestId
               ? state.projectPreflights[event.payload.projectId]
               : undefined
-        }
+        },
+        diagnosticsRefreshVersion: state.diagnosticsRefreshVersion + 1
       };
     case "run.status-patched":
       return updateProjectState(state, event.payload.projectId, (project) => {
@@ -1027,6 +1105,7 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
               ...run,
               status: event.payload.status,
               failureMessage: event.payload.failureMessage,
+              failureCategory: event.payload.failureCategory,
               resumable: event.payload.resumable ?? run.resumable,
               retryable: event.payload.retryable ?? run.retryable,
               updatedAt: event.payload.updatedAt,
@@ -1046,6 +1125,7 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
                 ...run,
                 status: event.payload.status,
                 failureMessage: event.payload.failureMessage,
+                failureCategory: event.payload.failureCategory,
                 resumable: event.payload.resumable ?? run.resumable,
                 retryable: event.payload.retryable ?? run.retryable,
                 updatedAt: event.payload.updatedAt,
@@ -1111,7 +1191,8 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
     case "background-jobs.updated":
       return {
         ...state,
-        backgroundJobs: event.payload.backgroundJobs
+        backgroundJobs: event.payload.backgroundJobs,
+        diagnosticsRefreshVersion: state.diagnosticsRefreshVersion + 1
       };
     case "execution-control.updated":
       return {
@@ -1202,6 +1283,16 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
         backgroundJobs: {
           ...state.backgroundJobs,
           runs: upsertBackgroundJobRun(state.backgroundJobs.runs, event.payload.run)
+        },
+        diagnosticsRefreshVersion: state.diagnosticsRefreshVersion + 1
+      };
+    case "run-diagnostics.inspected":
+      return {
+        ...state,
+        runDiagnostics: {
+          loading: false,
+          windowDays: event.payload.report.windowDays,
+          report: event.payload.report
         }
       };
     case "background-job-schedule.preview":
@@ -1340,13 +1431,24 @@ export function createHarnessStore() {
           hasGlobalSelectedFastMode: browserUiSession.selectedFastMode !== undefined,
           activeLeftTab: normalizeLeftTab(browserUiSession.activeLeftTab),
           activeSurface: leftTabToActiveSurface(normalizeLeftTab(browserUiSession.activeLeftTab)),
+          mainPanelSizes: normalizeMainPanelSizes(browserUiSession.mainPanelSizes),
           chatPaneTab: normalizeChatPaneTab(browserUiSession.chatPaneTab),
-          assistants: {
-            ...state.assistants,
-            scopeFilter: normalizeAssistantScopeFilter(browserUiSession.assistantPane?.scopeFilter ?? state.assistants.scopeFilter),
-            selectedAssistantId: normalizeOptionalStorageString(
-              browserUiSession.assistantPane?.selectedAssistantId ?? state.assistants.selectedAssistantId
-            ),
+        assistants: {
+          ...state.assistants,
+          scopeFilter: normalizeAssistantScopeFilter(browserUiSession.assistantPane?.scopeFilter ?? state.assistants.scopeFilter),
+          rosterSearch: normalizeSearchText(browserUiSession.assistantPane?.rosterSearch ?? state.assistants.rosterSearch),
+          detailSearch: normalizeSearchText(browserUiSession.assistantPane?.detailSearch ?? state.assistants.detailSearch),
+          runStateFilter: normalizeAssistantRunStateFilter(browserUiSession.assistantPane?.runState ?? state.assistants.runStateFilter),
+          bootstrapStateFilter: normalizeAssistantBootstrapStateFilter(
+            browserUiSession.assistantPane?.bootstrapState ?? state.assistants.bootstrapStateFilter
+          ),
+          providerBrandFilter: normalizeAssistantProviderBrandFilter(
+            browserUiSession.assistantPane?.providerBrand ?? state.assistants.providerBrandFilter
+          ),
+          projectIdFilter: normalizeOptionalStorageString(browserUiSession.assistantPane?.projectId ?? state.assistants.projectIdFilter),
+          selectedAssistantId: normalizeOptionalStorageString(
+            browserUiSession.assistantPane?.selectedAssistantId ?? state.assistants.selectedAssistantId
+          ),
             selectedTab: normalizeAssistantDetailTab(browserUiSession.assistantPane?.selectedTab ?? state.assistants.selectedTab),
             selectedLogDetailsId: normalizeOptionalStorageString(
               browserUiSession.assistantPane?.selectedLogDetailsId ?? state.assistants.selectedLogDetailsId
@@ -1365,6 +1467,18 @@ export function createHarnessStore() {
       },
       persistBrowserUiSession() {
         persistBrowserUiSession(getBrowserUiSessionSnapshot(state));
+      },
+      startRunDiagnosticsRequest(windowDays: RunDiagnosticsWindowDays) {
+        setState({
+          runDiagnostics: {
+            loading: true,
+            windowDays,
+            report:
+              state.runDiagnostics.report?.windowDays === windowDays
+                ? state.runDiagnostics.report
+                : undefined
+          }
+        });
       }
     },
     setConnectionState(connectionState: ConnectionState, connectionError?: string) {
@@ -1497,6 +1611,23 @@ export function createHarnessStore() {
       setState(reconcile(nextState));
       persistBrowserUiStateIfChanged(previousSnapshot, nextState);
     },
+    setAssistantPaneFilters(filters: Partial<Pick<ViewAssistantsState, "rosterSearch" | "detailSearch" | "runStateFilter" | "bootstrapStateFilter" | "providerBrandFilter" | "projectIdFilter">>) {
+      const previousSnapshot = getBrowserUiSessionSnapshot(state);
+      const nextState = finalizeHarnessViewState({
+        ...state,
+        assistants: {
+          ...state.assistants,
+          rosterSearch: normalizeSearchText(filters.rosterSearch ?? state.assistants.rosterSearch),
+          detailSearch: normalizeSearchText(filters.detailSearch ?? state.assistants.detailSearch),
+          runStateFilter: normalizeAssistantRunStateFilter(filters.runStateFilter ?? state.assistants.runStateFilter),
+          bootstrapStateFilter: normalizeAssistantBootstrapStateFilter(filters.bootstrapStateFilter ?? state.assistants.bootstrapStateFilter),
+          providerBrandFilter: normalizeAssistantProviderBrandFilter(filters.providerBrandFilter ?? state.assistants.providerBrandFilter),
+          projectIdFilter: normalizeOptionalStorageString(filters.projectIdFilter ?? state.assistants.projectIdFilter)
+        }
+      });
+      setState(reconcile(nextState));
+      persistBrowserUiStateIfChanged(previousSnapshot, nextState);
+    },
     setAssistantDetailTab(selectedTab: AssistantDetailTab) {
       const previousSnapshot = getBrowserUiSessionSnapshot(state);
       const nextState = finalizeHarnessViewState({
@@ -1562,6 +1693,12 @@ export function createHarnessStore() {
         backgroundJobSchedulePreview: undefined
       });
     },
+    openBackgroundJobDetailsDialog(runId: string) {
+      setState({ backgroundJobDetailsRunId: runId });
+    },
+    closeBackgroundJobDetailsDialog() {
+      setState({ backgroundJobDetailsRunId: undefined });
+    },
     clearBackgroundJobSchedulePreview() {
       setState({ backgroundJobSchedulePreview: undefined });
     },
@@ -1621,7 +1758,10 @@ export function createHarnessStore() {
         selectedModeId,
         hasGlobalSelectedModeId: true
       });
-      setState(reconcile(nextState));
+      setState({
+        selectedModeId: nextState.selectedModeId,
+        hasGlobalSelectedModeId: nextState.hasGlobalSelectedModeId
+      });
       persistBrowserUiStateIfChanged(previousSnapshot, nextState);
     },
     setSelectedAgentId(selectedAgentId: AgentId) {
@@ -1734,6 +1874,24 @@ export function createHarnessStore() {
         ...state,
         tracePanelDefaultOpen,
         tracePanelOpen: state.hasPersistedTracePanelOpen ? state.tracePanelOpen : tracePanelDefaultOpen
+      });
+      setState(reconcile(nextState));
+      persistBrowserUiStateIfChanged(previousSnapshot, nextState);
+    },
+    setMainPanelSizes(mainPanelSizes: MainPanelSizes) {
+      const previousSnapshot = getBrowserUiSessionSnapshot(state);
+      const nextState = finalizeHarnessViewState({
+        ...state,
+        mainPanelSizes: normalizeMainPanelSizes(mainPanelSizes)
+      });
+      setState(reconcile(nextState));
+      persistBrowserUiStateIfChanged(previousSnapshot, nextState);
+    },
+    resetMainPanelSizes() {
+      const previousSnapshot = getBrowserUiSessionSnapshot(state);
+      const nextState = finalizeHarnessViewState({
+        ...state,
+        mainPanelSizes: createDefaultMainPanelSizes()
       });
       setState(reconcile(nextState));
       persistBrowserUiStateIfChanged(previousSnapshot, nextState);
@@ -1867,6 +2025,12 @@ export function createHarnessStore() {
         apiKeyDirty: true
       });
     },
+    setAnthropicApiKeyDraft(anthropicApiKeyDraft: string) {
+      setState({
+        anthropicApiKeyDraft,
+        apiKeyDirty: true
+      });
+    },
     setProviderBrand(providerBrand: ProviderBrand) {
       setState(reconcile(finalizeHarnessViewState({
         ...state,
@@ -1895,6 +2059,8 @@ export function createHarnessStore() {
           localPreferences.correctnessIterationModeDefault ?? state.correctnessIterationModeDefault,
         backgroundJobApprovalPolicyDefault:
           localPreferences.backgroundJobApprovalPolicyDefault ?? state.backgroundJobApprovalPolicyDefault,
+        autoArchiveCompletedThreadsDefault:
+          localPreferences.autoArchiveCompletedThreadsDefault ?? state.autoArchiveCompletedThreadsDefault,
         memoryBankEnabledDefault: localPreferences.memoryBankEnabledDefault ?? state.memoryBankEnabledDefault,
         backgroundJobNotificationsEnabled:
           localPreferences.backgroundJobNotificationsEnabled ?? state.backgroundJobNotificationsEnabled,
@@ -1909,9 +2075,11 @@ export function createHarnessStore() {
         hasGlobalSelectedFastMode: localPreferences.selectedFastMode !== undefined || state.hasGlobalSelectedFastMode,
         openAiApiKeyDraft: localPreferences.openAiApiKey ?? "",
         googleApiKeyDraft: localPreferences.googleApiKey ?? "",
+        anthropicApiKeyDraft: localPreferences.anthropicApiKey ?? "",
         apiKeyDirty: false,
         hasLocalOpenAiApiKey: Boolean(localPreferences.openAiApiKey),
         hasLocalGoogleApiKey: Boolean(localPreferences.googleApiKey),
+        hasLocalAnthropicApiKey: Boolean(localPreferences.anthropicApiKey),
         hasLocalProviderBrandPreference: localPreferences.providerBrand !== undefined,
         hasLocalDebugPreference: localPreferences.debugEnabled !== undefined,
         hasLocalTracePreference: localPreferences.tracePanelDefaultOpen !== undefined,
@@ -1924,6 +2092,7 @@ export function createHarnessStore() {
         hasLocalPlanExecutionDelaySecondsPreference: localPreferences.planExecutionDelaySecondsDefault !== undefined,
         hasLocalCorrectnessIterationModePreference: localPreferences.correctnessIterationModeDefault !== undefined,
         hasLocalBackgroundJobApprovalPolicyPreference: localPreferences.backgroundJobApprovalPolicyDefault !== undefined,
+        hasLocalAutoArchiveCompletedThreadsPreference: localPreferences.autoArchiveCompletedThreadsDefault !== undefined,
         hasLocalMemoryBankEnabledPreference: localPreferences.memoryBankEnabledDefault !== undefined
       })));
     },
@@ -1952,6 +2121,8 @@ export function createHarnessStore() {
           localPreferences.correctnessIterationModeDefault ?? state.correctnessIterationModeDefault,
         backgroundJobApprovalPolicyDefault:
           localPreferences.backgroundJobApprovalPolicyDefault ?? state.backgroundJobApprovalPolicyDefault,
+        autoArchiveCompletedThreadsDefault:
+          localPreferences.autoArchiveCompletedThreadsDefault ?? state.autoArchiveCompletedThreadsDefault,
         memoryBankEnabledDefault: localPreferences.memoryBankEnabledDefault ?? state.memoryBankEnabledDefault,
         backgroundJobNotificationsEnabled:
           localPreferences.backgroundJobNotificationsEnabled ?? state.backgroundJobNotificationsEnabled,
@@ -1966,9 +2137,11 @@ export function createHarnessStore() {
         hasGlobalSelectedFastMode: localPreferences.selectedFastMode !== undefined || state.hasGlobalSelectedFastMode,
         openAiApiKeyDraft: localPreferences.openAiApiKey ?? "",
         googleApiKeyDraft: localPreferences.googleApiKey ?? "",
+        anthropicApiKeyDraft: localPreferences.anthropicApiKey ?? "",
         apiKeyDirty: false,
         hasLocalOpenAiApiKey: Boolean(localPreferences.openAiApiKey),
         hasLocalGoogleApiKey: Boolean(localPreferences.googleApiKey),
+        hasLocalAnthropicApiKey: Boolean(localPreferences.anthropicApiKey),
         hasLocalProviderBrandPreference: localPreferences.providerBrand !== undefined,
         hasLocalDebugPreference: localPreferences.debugEnabled !== undefined,
         hasLocalTracePreference: localPreferences.tracePanelDefaultOpen !== undefined,
@@ -1981,6 +2154,7 @@ export function createHarnessStore() {
         hasLocalPlanExecutionDelaySecondsPreference: localPreferences.planExecutionDelaySecondsDefault !== undefined,
         hasLocalCorrectnessIterationModePreference: localPreferences.correctnessIterationModeDefault !== undefined,
         hasLocalBackgroundJobApprovalPolicyPreference: localPreferences.backgroundJobApprovalPolicyDefault !== undefined,
+        hasLocalAutoArchiveCompletedThreadsPreference: localPreferences.autoArchiveCompletedThreadsDefault !== undefined,
         hasLocalMemoryBankEnabledPreference: localPreferences.memoryBankEnabledDefault !== undefined
       });
       setState(reconcile(nextState));
@@ -2109,6 +2283,12 @@ function hydrateAssistants(existing: ViewAssistantsState, incoming: AssistantsSt
         ? existing.selectedLogDetailsId
         : undefined,
     scopeFilter: existing.scopeFilter,
+    rosterSearch: existing.rosterSearch,
+    detailSearch: existing.detailSearch,
+    runStateFilter: existing.runStateFilter,
+    bootstrapStateFilter: existing.bootstrapStateFilter,
+    providerBrandFilter: existing.providerBrandFilter,
+    projectIdFilter: existing.projectIdFilter,
     streamingByAssistantId: existing.streamingByAssistantId
   };
 }
@@ -2534,6 +2714,8 @@ function applyReadyPreferencesState(state: HarnessViewState, preferences: Prefer
     hasStoredOpenAiApiKey: preferences.hasStoredOpenAiApiKey,
     hasUsableGoogleApiKey: preferences.hasUsableGoogleApiKey,
     hasStoredGoogleApiKey: preferences.hasStoredGoogleApiKey,
+    hasUsableAnthropicApiKey: preferences.hasUsableAnthropicApiKey,
+    hasStoredAnthropicApiKey: preferences.hasStoredAnthropicApiKey,
     providerBrand,
     debugEnabled: state.hasLocalDebugPreference ? state.debugEnabled : preferences.debugEnabledDefault,
     tracePanelDefaultOpen,
@@ -2563,6 +2745,9 @@ function applyReadyPreferencesState(state: HarnessViewState, preferences: Prefer
     backgroundJobApprovalPolicyDefault: state.hasLocalBackgroundJobApprovalPolicyPreference
       ? state.backgroundJobApprovalPolicyDefault
       : preferences.backgroundJobApprovalPolicyDefault,
+    autoArchiveCompletedThreadsDefault: state.hasLocalAutoArchiveCompletedThreadsPreference
+      ? state.autoArchiveCompletedThreadsDefault
+      : (preferences.autoArchiveCompletedThreadsDefault ?? false),
     memoryBankEnabledDefault: state.hasLocalMemoryBankEnabledPreference
       ? state.memoryBankEnabledDefault
       : preferences.memoryBankEnabledDefault,
@@ -2579,6 +2764,7 @@ export function readLocalPreferences(): LocalPreferencesState {
 
   const openAiApiKey = window.localStorage.getItem(OPENAI_API_KEY_STORAGE_KEY)?.trim() || undefined;
   const googleApiKey = window.localStorage.getItem(GOOGLE_API_KEY_STORAGE_KEY)?.trim() || undefined;
+  const anthropicApiKey = window.localStorage.getItem(ANTHROPIC_API_KEY_STORAGE_KEY)?.trim() || undefined;
   const providerBrand = parseProviderBrandStorageValue(window.localStorage.getItem(PROVIDER_BRAND_STORAGE_KEY));
   const debugEnabled = parseBooleanStorageValue(window.localStorage.getItem(DEBUG_ENABLED_STORAGE_KEY));
   const tracePanelDefaultOpen = parseBooleanStorageValue(
@@ -2614,6 +2800,9 @@ export function readLocalPreferences(): LocalPreferencesState {
   const backgroundJobApprovalPolicyDefault = parseBackgroundJobApprovalPolicyStorageValue(
     window.localStorage.getItem(BACKGROUND_JOB_APPROVAL_POLICY_DEFAULT_STORAGE_KEY)
   );
+  const autoArchiveCompletedThreadsDefault = parseBooleanStorageValue(
+    window.localStorage.getItem(AUTO_ARCHIVE_COMPLETED_THREADS_DEFAULT_STORAGE_KEY)
+  );
   const memoryBankEnabledDefault = parseBooleanStorageValue(
     window.localStorage.getItem(MEMORY_BANK_ENABLED_DEFAULT_STORAGE_KEY)
   );
@@ -2628,6 +2817,7 @@ export function readLocalPreferences(): LocalPreferencesState {
   return {
     openAiApiKey,
     googleApiKey,
+    anthropicApiKey,
     providerBrand,
     debugEnabled,
     tracePanelDefaultOpen,
@@ -2639,6 +2829,7 @@ export function readLocalPreferences(): LocalPreferencesState {
     planExecutionDelaySecondsDefault,
     correctnessIterationModeDefault,
     backgroundJobApprovalPolicyDefault,
+    autoArchiveCompletedThreadsDefault,
     memoryBankEnabledDefault,
     backgroundJobNotificationsEnabled,
     selectedReasoningStrength,
@@ -2716,6 +2907,7 @@ export function persistLocalPreferences(input: LocalPreferencesState) {
 
   persistStorageValue(OPENAI_API_KEY_STORAGE_KEY, input.openAiApiKey);
   persistStorageValue(GOOGLE_API_KEY_STORAGE_KEY, input.googleApiKey);
+  persistStorageValue(ANTHROPIC_API_KEY_STORAGE_KEY, input.anthropicApiKey);
   persistProviderBrandStorageValue(PROVIDER_BRAND_STORAGE_KEY, input.providerBrand);
   persistBooleanStorageValue(DEBUG_ENABLED_STORAGE_KEY, input.debugEnabled);
   persistBooleanStorageValue(TRACE_PANEL_DEFAULT_OPEN_STORAGE_KEY, input.tracePanelDefaultOpen);
@@ -2732,6 +2924,7 @@ export function persistLocalPreferences(input: LocalPreferencesState) {
   persistIntegerStorageValue(PLAN_EXECUTION_DELAY_SECONDS_DEFAULT_STORAGE_KEY, input.planExecutionDelaySecondsDefault, 0, 300);
   persistStorageValue(CORRECTNESS_ITERATION_MODE_DEFAULT_STORAGE_KEY, input.correctnessIterationModeDefault);
   persistStorageValue(BACKGROUND_JOB_APPROVAL_POLICY_DEFAULT_STORAGE_KEY, input.backgroundJobApprovalPolicyDefault);
+  persistBooleanStorageValue(AUTO_ARCHIVE_COMPLETED_THREADS_DEFAULT_STORAGE_KEY, input.autoArchiveCompletedThreadsDefault);
   persistBooleanStorageValue(MEMORY_BANK_ENABLED_DEFAULT_STORAGE_KEY, input.memoryBankEnabledDefault);
   persistBooleanStorageValue(BACKGROUND_JOB_NOTIFICATIONS_ENABLED_STORAGE_KEY, input.backgroundJobNotificationsEnabled);
   persistStorageValue(COMPOSER_REASONING_STRENGTH_STORAGE_KEY, input.selectedReasoningStrength);
@@ -2810,12 +3003,21 @@ export function readBrowserUiSession(): BrowserUiSessionState {
     if (typeof parsed.activeLeftTab === "string") {
       result.activeLeftTab = normalizeLeftTab(parsed.activeLeftTab);
     }
+    if (isRecord(parsed.mainPanelSizes)) {
+      result.mainPanelSizes = normalizeMainPanelSizes(parsed.mainPanelSizes);
+    }
     if (typeof parsed.chatPaneTab === "string") {
       result.chatPaneTab = normalizeChatPaneTab(parsed.chatPaneTab);
     }
     if (isRecord(parsed.assistantPane)) {
       result.assistantPane = {
         scopeFilter: normalizeAssistantScopeFilter(parsed.assistantPane.scopeFilter),
+        rosterSearch: normalizeSearchText(parsed.assistantPane.rosterSearch),
+        detailSearch: normalizeSearchText(parsed.assistantPane.detailSearch),
+        runState: normalizeAssistantRunStateFilter(parsed.assistantPane.runState),
+        bootstrapState: normalizeAssistantBootstrapStateFilter(parsed.assistantPane.bootstrapState),
+        providerBrand: normalizeAssistantProviderBrandFilter(parsed.assistantPane.providerBrand),
+        projectId: normalizeOptionalStorageString(parsed.assistantPane.projectId),
         selectedAssistantId: normalizeOptionalStorageString(parsed.assistantPane.selectedAssistantId),
         selectedTab: normalizeAssistantDetailTab(parsed.assistantPane.selectedTab),
         selectedLogDetailsId: normalizeOptionalStorageString(parsed.assistantPane.selectedLogDetailsId)
@@ -2879,6 +3081,7 @@ export function persistBrowserUiSession(input: BrowserUiSessionState) {
     selectedFastMode: input.selectedFastMode,
     tracePanelOpen: input.tracePanelOpen,
     activeLeftTab: input.activeLeftTab ? normalizeLeftTab(input.activeLeftTab) : undefined,
+    mainPanelSizes: input.mainPanelSizes ? normalizeMainPanelSizes(input.mainPanelSizes) : undefined,
     lastActiveProjectId: input.lastActiveProjectId?.trim() || undefined,
     lastActiveThreadByProjectId: input.lastActiveThreadByProjectId
       ? Object.fromEntries(
@@ -2893,6 +3096,12 @@ export function persistBrowserUiSession(input: BrowserUiSessionState) {
           scopeFilter: input.assistantPane.scopeFilter
             ? normalizeAssistantScopeFilter(input.assistantPane.scopeFilter)
             : undefined,
+          rosterSearch: normalizeSearchText(input.assistantPane.rosterSearch),
+          detailSearch: normalizeSearchText(input.assistantPane.detailSearch),
+          runState: normalizeAssistantRunStateFilter(input.assistantPane.runState),
+          bootstrapState: normalizeAssistantBootstrapStateFilter(input.assistantPane.bootstrapState),
+          providerBrand: normalizeAssistantProviderBrandFilter(input.assistantPane.providerBrand),
+          projectId: normalizeOptionalStorageString(input.assistantPane.projectId),
           selectedAssistantId: normalizeOptionalStorageString(input.assistantPane.selectedAssistantId),
           selectedTab: input.assistantPane.selectedTab ? normalizeAssistantDetailTab(input.assistantPane.selectedTab) : undefined,
           selectedLogDetailsId: normalizeOptionalStorageString(input.assistantPane.selectedLogDetailsId)
@@ -2914,6 +3123,7 @@ export function persistBrowserUiSession(input: BrowserUiSessionState) {
     normalizedInput.selectedFastMode === undefined &&
     normalizedInput.tracePanelOpen === undefined &&
     normalizedInput.activeLeftTab === undefined &&
+    normalizedInput.mainPanelSizes === undefined &&
     normalizedInput.chatPaneTab === undefined &&
     normalizedInput.assistantPane === undefined &&
     normalizedInput.jobsPane === undefined &&
@@ -2983,9 +3193,16 @@ function getBrowserUiSessionSnapshot(state: HarnessViewState): BrowserUiSessionS
     selectedFastMode: state.hasGlobalSelectedFastMode ? state.selectedFastMode : undefined,
     tracePanelOpen: state.hasPersistedTracePanelOpen ? state.tracePanelOpen : undefined,
     activeLeftTab: state.activeLeftTab,
+    mainPanelSizes: state.mainPanelSizes,
     chatPaneTab: state.chatPaneTab,
     assistantPane: {
       scopeFilter: state.assistants.scopeFilter,
+      rosterSearch: state.assistants.rosterSearch,
+      detailSearch: state.assistants.detailSearch,
+      runState: state.assistants.runStateFilter,
+      bootstrapState: state.assistants.bootstrapStateFilter,
+      providerBrand: state.assistants.providerBrandFilter,
+      projectId: state.assistants.projectIdFilter,
       selectedAssistantId: state.assistants.selectedAssistantId,
       selectedTab: state.assistants.selectedTab,
       selectedLogDetailsId: state.assistants.selectedLogDetailsId
@@ -3004,7 +3221,7 @@ function activeSurfaceToLeftTab(activeSurface: HarnessActiveSurface): HarnessLef
     case "assistants":
       return "assistants";
     case "background-jobs":
-      return "jobs";
+      return "runs";
     case "chat":
       return "projects";
   }
@@ -3014,6 +3231,7 @@ function leftTabToActiveSurface(activeLeftTab: HarnessLeftTab): HarnessActiveSur
   switch (activeLeftTab) {
     case "assistants":
       return "assistants";
+    case "runs":
     case "jobs":
       return "background-jobs";
     case "projects":
@@ -3022,7 +3240,7 @@ function leftTabToActiveSurface(activeLeftTab: HarnessLeftTab): HarnessActiveSur
 }
 
 function normalizeLeftTab(input: unknown): HarnessLeftTab {
-  return input === "assistants" || input === "jobs" || input === "projects" ? input : "projects";
+  return input === "assistants" || input === "jobs" || input === "runs" || input === "projects" ? input : "projects";
 }
 
 function normalizeChatPaneTab(input: unknown): ChatPaneTab {
@@ -3045,8 +3263,24 @@ function normalizeAssistantScopeFilter(input: unknown): AssistantScopeFilter {
   return input === "global" || input === "project" ? input : "project";
 }
 
+function normalizeSearchText(input: unknown) {
+  return typeof input === "string" ? input.slice(0, 512) : "";
+}
+
+function normalizeAssistantRunStateFilter(input: unknown): Assistant["runState"] | undefined {
+  return input === "active" || input === "paused" ? input : undefined;
+}
+
+function normalizeAssistantBootstrapStateFilter(input: unknown): Assistant["bootstrapState"] | undefined {
+  return input === "pending" || input === "running" || input === "completed" || input === "failed" ? input : undefined;
+}
+
+function normalizeAssistantProviderBrandFilter(input: unknown): Assistant["providerBrand"] | undefined {
+  return input === "gpt" || input === "gemini" || input === "claude" ? input : undefined;
+}
+
 function normalizeJobsPaneSegment(input: unknown): JobsPaneSegment {
-  return input === "jobs" || input === "inbox" ? input : "inbox";
+  return input === "jobs" || input === "inbox" || input === "health" ? input : "inbox";
 }
 
 function normalizeJobsPaneJobSort(input: unknown): JobsPaneJobSort {
@@ -3064,6 +3298,8 @@ function normalizeJobsPanePreferences(input: unknown, state?: HarnessViewState, 
   const preferences: JobsPanePreferences = {
     segment: normalizeJobsPaneSegment(source.segment),
     search: typeof source.search === "string" ? source.search : "",
+    jobSearch: normalizeSearchText(source.jobSearch ?? source.search),
+    runSearch: normalizeSearchText(source.runSearch ?? source.search),
     jobSort: normalizeJobsPaneJobSort(source.jobSort),
     projectId: normalizeOptionalStorageString(source.projectId),
     assistantId: normalizeOptionalStorageString(source.assistantId),
@@ -3170,7 +3406,7 @@ function finalizeHarnessViewState(state: HarnessViewState): HarnessViewState {
     resolveModeById(activeProject?.selectedModeId ?? DEFAULT_MODE_ID, state.workspace.workspaceModes, activeProject?.projectModes ?? [])
       ?.id ?? DEFAULT_MODE_ID;
   const selectedModeId =
-    state.hasGlobalSelectedModeId && availableModes.some((mode) => mode.id === state.selectedModeId)
+    state.hasGlobalSelectedModeId && (state.selectedModeId === "auto" || availableModes.some((mode) => mode.id === state.selectedModeId))
       ? state.selectedModeId
       : fallbackModeId;
   const selectedAgentId =
@@ -3312,7 +3548,7 @@ function parseBooleanStorageValue(value: string | null) {
 }
 
 function parseProviderBrandStorageValue(value: string | null): ProviderBrand | undefined {
-  return value === "gpt" || value === "gemini" ? value : undefined;
+  return value === "gpt" || value === "gemini" || value === "claude" ? value : undefined;
 }
 
 function parseReasoningStrengthStorageValue(value: string | null): ComposerReasoningStrength | undefined {
@@ -3378,6 +3614,24 @@ function parseBackgroundJobApprovalPolicyStorageValue(value: string | null) {
     : undefined;
 }
 
+function normalizeMainPanelSizes(input: unknown): MainPanelSizes {
+  const defaults = createDefaultMainPanelSizes();
+  if (!input || typeof input !== "object") {
+    return defaults;
+  }
+
+  const parsed = input as Partial<Record<keyof MainPanelSizes, unknown>>;
+  return {
+    left: clampPanelSize(parsed.left, defaults.left),
+    center: clampPanelSize(parsed.center, defaults.center),
+    right: clampPanelSize(parsed.right, defaults.right)
+  };
+}
+
+function clampPanelSize(value: unknown, fallback: number) {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0.75, Math.min(5, value)) : fallback;
+}
+
 function parseBoundedIntegerStorageValue(value: string | null, min: number, max: number) {
   if (!value) {
     return undefined;
@@ -3437,17 +3691,31 @@ function resolveProviderBrand(state: HarnessViewState, preferences: PreferencesS
     return "gemini";
   }
 
+  if (isProviderBrandSelectable(state, preferences, "claude")) {
+    return "claude";
+  }
+
   return preferredBrand;
 }
 
 function isProviderBrandSelectable(
   state: Pick<
     HarnessViewState,
-    "openAiApiKeyDraft" | "googleApiKeyDraft" | "hasLocalOpenAiApiKey" | "hasLocalGoogleApiKey"
+    | "openAiApiKeyDraft"
+    | "googleApiKeyDraft"
+    | "anthropicApiKeyDraft"
+    | "hasLocalOpenAiApiKey"
+    | "hasLocalGoogleApiKey"
+    | "hasLocalAnthropicApiKey"
   >,
   preferences: Pick<
     PreferencesState,
-    "hasUsableOpenAiApiKey" | "hasStoredOpenAiApiKey" | "hasUsableGoogleApiKey" | "hasStoredGoogleApiKey"
+    | "hasUsableOpenAiApiKey"
+    | "hasStoredOpenAiApiKey"
+    | "hasUsableGoogleApiKey"
+    | "hasStoredGoogleApiKey"
+    | "hasUsableAnthropicApiKey"
+    | "hasStoredAnthropicApiKey"
   >,
   providerBrand: ProviderBrand
 ) {
@@ -3460,6 +3728,15 @@ function isProviderBrandSelectable(
     );
   }
 
+  if (providerBrand === "claude") {
+    return Boolean(
+      preferences.hasUsableAnthropicApiKey ||
+        preferences.hasStoredAnthropicApiKey ||
+        state.hasLocalAnthropicApiKey ||
+        state.anthropicApiKeyDraft.trim()
+    );
+  }
+
   return Boolean(
     preferences.hasUsableGoogleApiKey ||
       preferences.hasStoredGoogleApiKey ||
@@ -3469,7 +3746,13 @@ function isProviderBrandSelectable(
 }
 
 export function hasUsableApiKeyForProvider(state: HarnessViewState, providerBrand: ProviderBrand) {
-  return providerBrand === "gemini" ? state.hasUsableGoogleApiKey : state.hasUsableOpenAiApiKey;
+  if (providerBrand === "gemini") {
+    return state.hasUsableGoogleApiKey;
+  }
+  if (providerBrand === "claude") {
+    return state.hasUsableAnthropicApiKey;
+  }
+  return state.hasUsableOpenAiApiKey;
 }
 
 export function resolveUsablePiProviderBrand(state: HarnessViewState): ProviderBrand | undefined {
@@ -3483,6 +3766,10 @@ export function resolveUsablePiProviderBrand(state: HarnessViewState): ProviderB
 
   if (hasUsableApiKeyForProvider(state, "gemini")) {
     return "gemini";
+  }
+
+  if (hasUsableApiKeyForProvider(state, "claude")) {
+    return "claude";
   }
 
   return undefined;
@@ -3520,6 +3807,15 @@ export function canSelectProviderBrand(state: HarnessViewState, providerBrand: P
     );
   }
 
+  if (providerBrand === "claude") {
+    return Boolean(
+      state.hasUsableAnthropicApiKey ||
+        state.hasStoredAnthropicApiKey ||
+        state.hasLocalAnthropicApiKey ||
+        state.anthropicApiKeyDraft.trim()
+    );
+  }
+
   return Boolean(
     state.hasUsableOpenAiApiKey ||
       state.hasStoredOpenAiApiKey ||
@@ -3529,7 +3825,13 @@ export function canSelectProviderBrand(state: HarnessViewState, providerBrand: P
 }
 
 export function getDefaultExecutionModelIdForProvider(providerBrand: ProviderBrand) {
-  return providerBrand === "gemini" ? "google/gemini-2.5-flash" : "openai/gpt-5.4";
+  if (providerBrand === "gemini") {
+    return "google/gemini-2.5-flash";
+  }
+  if (providerBrand === "claude") {
+    return "anthropic/claude-sonnet-4-6";
+  }
+  return "openai/gpt-5.4";
 }
 
 export function getEffectiveProviderBrandForAgent(agentId: AgentId, providerBrand: ProviderBrand) {
@@ -3622,6 +3924,7 @@ export function getResolvedModes(state: HarnessViewState, project = getActivePro
 export function getActiveMode(state: HarnessViewState, project = getActiveProject(state)) {
   const hasValidGlobalMode =
     state.hasGlobalSelectedModeId &&
+    state.selectedModeId !== "auto" &&
     Boolean(resolveModeById(state.selectedModeId, state.workspace.workspaceModes, project?.projectModes ?? []));
   const modeId = hasValidGlobalMode ? state.selectedModeId : project?.selectedModeId ?? DEFAULT_MODE_ID;
   return resolveModeById(modeId, state.workspace.workspaceModes, project?.projectModes ?? []);
@@ -3679,5 +3982,11 @@ export function isModelIdForProvider(modelId: string | undefined, providerBrand:
     return false;
   }
 
-  return providerBrand === "gemini" ? modelId.startsWith("google/") : modelId.startsWith("openai/");
+  if (providerBrand === "gemini") {
+    return modelId.startsWith("google/");
+  }
+  if (providerBrand === "claude") {
+    return modelId.startsWith("anthropic/");
+  }
+  return modelId.startsWith("openai/");
 }

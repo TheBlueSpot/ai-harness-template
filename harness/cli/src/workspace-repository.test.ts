@@ -10,6 +10,7 @@ import {
   createAssistantQuestionId,
   createAssistantTodoId,
   createBackgroundJobId,
+  createThreadId,
   createExperimentId,
   createMemoryEntryId,
   createMemoryRetrievalId
@@ -34,6 +35,25 @@ function addProject(repository: WorkspaceRepository) {
   return repository.addProject(projectRoot);
 }
 
+function addLearningAssistant(repository: WorkspaceRepository) {
+  const now = new Date().toISOString();
+  return repository.saveAssistant({
+    id: createAssistantId(),
+    name: "Learning helper",
+    scope: "global",
+    personalityPrompt: "Remember useful facts.",
+    jobPrompt: "Track durable learnings.",
+    agentId: "pi",
+    runState: "active",
+    bootstrapState: "completed",
+    failureStreakCount: 0,
+    circuitBreakerState: "closed",
+    unreadQuestionCount: 0,
+    createdAt: now,
+    updatedAt: now
+  });
+}
+
 describe("workspace repository", () => {
   test("loads empty workspace on fresh database", () => {
     const repository = createRepository();
@@ -54,6 +74,128 @@ describe("workspace repository", () => {
     repository.appendMessage(project.id, "user", "hello memory");
 
     expect(repository.loadWorkspace().projects[0]?.session.messages[0]?.content).toBe("hello memory");
+  });
+
+  test("persists and hydrates agent run runtime budgets", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    const runProject = repository.createAgentRun(project.id, "budgeted work", "openai/gpt-5.4", project.activeThreadId, 3);
+    const run = runProject.activeRun;
+
+    expect(run?.runtimeBudget).toEqual({
+      maxTurns: 3,
+      turnsUsed: 0,
+      currentTurn: 1,
+      remainingTurns: 3,
+      exhausted: false
+    });
+
+    const first = repository.reserveAgentRunTurn(project.id, run!.id);
+    expect(first).toEqual({
+      maxTurns: 3,
+      turnsUsed: 1,
+      currentTurn: 1,
+      remainingTurns: 2,
+      exhausted: false
+    });
+
+    const hydrated = repository.getRun(project.id, run!.id);
+    expect(hydrated?.runtimeBudget).toMatchObject({
+      maxTurns: 3,
+      turnsUsed: 1,
+      currentTurn: 2,
+      remainingTurns: 2,
+      exhausted: false
+    });
+  });
+
+  test("agent run turn reservation stops at max", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    const run = repository.createAgentRun(project.id, "budgeted work", "openai/gpt-5.4", project.activeThreadId, 1).activeRun!;
+
+    expect(repository.reserveAgentRunTurn(project.id, run.id)?.exhausted).toBe(true);
+    expect(() => repository.reserveAgentRunTurn(project.id, run.id)).toThrow("turn-budget-exhausted");
+    expect(repository.getRun(project.id, run.id)?.runtimeBudget?.turnsUsed).toBe(1);
+  });
+
+  test("unbudgeted agent runs keep current reservation behavior", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    const run = repository.createAgentRun(project.id, "unbudgeted work", "openai/gpt-5.4", project.activeThreadId).activeRun!;
+
+    expect(repository.reserveAgentRunTurn(project.id, run.id)).toBeUndefined();
+    expect(repository.getRun(project.id, run.id)?.runtimeBudget).toBeUndefined();
+  });
+
+  test("terminal status preserves completed time", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    const run = repository.createAgentRun(project.id, "complete work", "openai/gpt-5.4", project.activeThreadId, 2).activeRun!;
+
+    repository.setAgentRunStatus(project.id, run.id, "completed");
+    const completedAt = repository.getRun(project.id, run.id)?.completedAt;
+    repository.setAgentRunStatus(project.id, run.id, "completed");
+
+    expect(repository.getRun(project.id, run.id)?.completedAt).toBe(completedAt);
+  });
+
+  test("persists background run heartbeats and scheduler queue metadata", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    const now = new Date().toISOString();
+    const job = repository.saveBackgroundJob({
+      id: createBackgroundJobId(),
+      projectId: project.id,
+      automationThreadId: createThreadId(),
+      kind: "ai-routine",
+      name: "Heartbeat job",
+      status: "enabled",
+      riskLevel: "safe",
+      definition: {
+        kind: "ai-routine",
+        prompt: "Check heartbeat."
+      },
+      schedule: {
+        type: "interval",
+        intervalSeconds: 600,
+        nextRunAt: now,
+        sourceText: "10m"
+      },
+      scheduleInput: "10m",
+      nextRunAt: now,
+      createdAt: now,
+      updatedAt: now
+    }).jobs[0]!;
+    const run = repository.createBackgroundJobRun({
+      jobId: job.id,
+      projectId: project.id,
+      automationThreadId: job.automationThreadId,
+      triggerSource: "manual",
+      status: "queued",
+      riskLevel: "safe",
+      approvalStatus: "approved"
+    });
+
+    repository.touchBackgroundJobRun(run.id, { stage: "execution", detail: "progress" });
+    repository.updateBackgroundJobSchedulerState(job.id, {
+      schedulerStatus: "blocked",
+      schedulerDetail: "Assistant busy",
+      schedulerQueuePosition: 2,
+      schedulerQueueReason: "Queue #2: waiting behind active job",
+      schedulerActiveRunId: run.id,
+      schedulerLastProgressAt: now,
+      schedulerOverloaded: true
+    });
+
+    const hydratedRun = repository.getBackgroundJobRun(run.id);
+    const hydratedJob = repository.getBackgroundJob(job.id);
+    expect(hydratedRun?.lastHeartbeatAt).toBeTruthy();
+    expect(hydratedRun?.heartbeatStage).toBe("execution");
+    expect(hydratedJob?.schedulerQueuePosition).toBe(2);
+    expect(hydratedJob?.schedulerQueueReason).toContain("Queue #2");
+    expect(hydratedJob?.schedulerActiveRunId).toBe(run.id);
+    expect(hydratedJob?.schedulerOverloaded).toBe(true);
   });
 
   test("persists added project history without default bootstrap", () => {
@@ -444,7 +586,8 @@ describe("workspace repository", () => {
       confidence: "medium",
       createdAt: now
     });
-    expect(saved.source).toHaveLength(256);
+    expect(saved).toBeDefined();
+    expect(saved?.source).toHaveLength(256);
 
     const legacyDb = new Database(dbPath, { strict: true });
     legacyDb
@@ -465,6 +608,311 @@ describe("workspace repository", () => {
     const learnings = repository.loadAssistantsState().learnings;
     expect(learnings).toHaveLength(2);
     expect(learnings.every((learning) => learning.source.length <= 256)).toBe(true);
+    expect(learnings.every((learning) => learning.kind === "fact")).toBe(true);
+  });
+
+  test("rejects garbage assistant learning summaries", () => {
+    const repository = createRepository();
+    const assistant = addLearningAssistant(repository);
+    const now = new Date().toISOString();
+
+    expect(
+      repository.saveAssistantLearning({
+        id: createAssistantLearningId(),
+        assistantId: assistant.id,
+        summary: "merged durable assistant guidance",
+        source: "compaction:test",
+        confidence: "high",
+        createdAt: now
+      })
+    ).toBeUndefined();
+    expect(
+      repository.saveAssistantLearning({
+        id: createAssistantLearningId(),
+        assistantId: assistant.id,
+        summary: "Compacted summary\nmerged durable assistant guidance",
+        source: "compaction:test",
+        confidence: "high",
+        createdAt: now
+      })
+    ).toBeUndefined();
+    expect(repository.getAssistantLearnings(assistant.id)).toHaveLength(0);
+  });
+
+  test("startup cleanup removes garbage assistant learning rows", () => {
+    const tempRoot = createTempDir();
+    const dbPath = path.join(tempRoot, `workspace-${crypto.randomUUID()}.sqlite`);
+    const repository = new WorkspaceRepository(dbPath, process.cwd(), { durability: "test-fast" });
+    const assistant = addLearningAssistant(repository);
+    const now = new Date().toISOString();
+    const legacyDb = new Database(dbPath, { strict: true });
+    legacyDb
+      .query(
+        `INSERT INTO assistant_learnings (id, assistant_id, summary, source, confidence, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)`
+      )
+      .run(createAssistantLearningId(), assistant.id, "Compacted summary!!!", "legacy", "high", now);
+    legacyDb
+      .query(
+        `INSERT INTO assistant_learnings (id, assistant_id, summary, source, confidence, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)`
+      )
+      .run(createAssistantLearningId(), assistant.id, "Keep real launch guidance.", "legacy", "medium", now);
+    legacyDb.close();
+
+    const repairedRepository = new WorkspaceRepository(dbPath, process.cwd(), { durability: "test-fast" });
+
+    expect(repairedRepository.getAssistantLearnings(assistant.id).map((learning) => learning.summary)).toEqual([
+      "Keep real launch guidance."
+    ]);
+  });
+
+  test("dedupes exact and fuzzy assistant learnings per assistant", () => {
+    const repository = createRepository();
+    const assistant = addLearningAssistant(repository);
+    const otherAssistant = addLearningAssistant(repository);
+    const now = new Date().toISOString();
+
+    repository.saveAssistantLearningDeduped({
+      id: createAssistantLearningId(),
+      assistantId: assistant.id,
+      summary: "User prefers fundamentals first during assistant learning sessions.",
+      source: "bootstrap",
+      confidence: "medium",
+      createdAt: now
+    });
+    repository.saveAssistantLearningDeduped({
+      id: createAssistantLearningId(),
+      assistantId: assistant.id,
+      summary: " user prefers fundamentals first during assistant learning sessions ",
+      source: "question:test",
+      confidence: "high",
+      createdAt: new Date(Date.now() + 1000).toISOString()
+    });
+    repository.saveAssistantLearningDeduped({
+      id: createAssistantLearningId(),
+      assistantId: assistant.id,
+      summary: "User prefers fundamentals first during assistant learning sessions now",
+      source: "reprioritize:test",
+      confidence: "high",
+      createdAt: new Date(Date.now() + 2000).toISOString()
+    });
+    repository.saveAssistantLearningDeduped({
+      id: createAssistantLearningId(),
+      assistantId: otherAssistant.id,
+      summary: "User prefers fundamentals first.",
+      source: "bootstrap",
+      confidence: "medium",
+      createdAt: now
+    });
+
+    const learnings = repository.getAssistantLearnings(assistant.id);
+    expect(learnings).toHaveLength(1);
+    expect(learnings[0]?.confidence).toBe("high");
+    expect(learnings[0]?.createdAt).toBe(now);
+    expect(repository.getAssistantLearnings(otherAssistant.id)).toHaveLength(1);
+  });
+
+  test("skips similar HUD guidance instead of saving another active learning", () => {
+    const repository = createRepository();
+    const assistant = addLearningAssistant(repository);
+    const now = new Date().toISOString();
+
+    repository.saveAssistantLearningDeduped({
+      id: createAssistantLearningId(),
+      assistantId: assistant.id,
+      summary: "HUD text should stay dense and readable during combat.",
+      source: "question:test",
+      confidence: "medium",
+      createdAt: now
+    });
+    repository.saveAssistantLearningDeduped({
+      id: createAssistantLearningId(),
+      assistantId: assistant.id,
+      summary: "HUD texts need denser readable combat displays.",
+      source: "reprioritize:test",
+      confidence: "high",
+      createdAt: new Date(Date.now() + 1000).toISOString()
+    });
+
+    const learnings = repository.getAssistantLearnings(assistant.id);
+    expect(learnings).toHaveLength(1);
+    expect(learnings[0]?.summary).toBe("HUD text should stay dense and readable during combat.");
+  });
+
+  test("merges shared-premise guidance while preserving identity and stronger confidence", () => {
+    const repository = createRepository();
+    const assistant = addLearningAssistant(repository);
+    const now = new Date().toISOString();
+    const first = repository.saveAssistantLearningDeduped({
+      id: createAssistantLearningId(),
+      assistantId: assistant.id,
+      summary: "Arcade games need tight controls.",
+      source: "question:test",
+      confidence: "medium",
+      createdAt: now
+    });
+    if (!first) {
+      throw new Error("Expected initial shared-premise learning to save");
+    }
+    const secondCreatedAt = new Date(Date.now() + 1000).toISOString();
+
+    repository.saveAssistantLearningDeduped({
+      id: createAssistantLearningId(),
+      assistantId: assistant.id,
+      summary: "Arcade games need fluid physics.",
+      source: "reprioritize:test",
+      confidence: "high",
+      createdAt: secondCreatedAt
+    });
+
+    const learnings = repository.getAssistantLearnings(assistant.id);
+    expect(learnings).toHaveLength(1);
+    expect(learnings[0]?.id).toBe(first.id);
+    expect(learnings[0]?.createdAt).toBe(now);
+    expect(learnings[0]?.confidence).toBe("high");
+    expect(learnings[0]?.summary).toBe("Arcade games need tight controls and fluid physics.");
+  });
+
+  test("compacts assistant learnings while preserving active summary row", () => {
+    const repository = createRepository();
+    const assistant = addLearningAssistant(repository);
+    const now = new Date().toISOString();
+    const first = repository.saveAssistantLearning({
+      id: createAssistantLearningId(),
+      assistantId: assistant.id,
+      summary: "Old low-value fact.",
+      source: "bootstrap",
+      confidence: "low",
+      createdAt: now
+    });
+    const second = repository.saveAssistantLearning({
+      id: createAssistantLearningId(),
+      assistantId: assistant.id,
+      summary: "Another medium fact.",
+      source: "reprioritize",
+      confidence: "medium",
+      createdAt: now
+    });
+    if (!first || !second) {
+      throw new Error("Expected source learnings to save");
+    }
+
+    repository.compactAssistantLearnings(
+      assistant.id,
+      {
+        id: createAssistantLearningId(),
+        assistantId: assistant.id,
+        summary: "Merged assistant guidance.",
+        source: "compaction:test",
+        confidence: "high",
+        createdAt: now,
+        kind: "summary",
+        compactedAt: now
+      },
+      [first.id, second.id]
+    );
+
+    const learnings = repository.getAssistantLearnings(assistant.id);
+    expect(learnings).toHaveLength(1);
+    expect(learnings[0]?.kind).toBe("summary");
+    expect(learnings[0]?.summary).toBe("Merged assistant guidance.");
+    expect(learnings[0]?.supersedesLearningIds).toEqual([first.id, second.id]);
+    expect(repository.getAssistantLearningStats(assistant.id)).toMatchObject({
+      activeLearningCount: 1,
+      activeFactLearningCount: 0
+    });
+  });
+
+  test("deletes assistant todos and learnings by assistant scope", () => {
+    const repository = createRepository();
+    const assistant = addLearningAssistant(repository);
+    const otherAssistant = addLearningAssistant(repository);
+    const now = new Date().toISOString();
+    const todo = repository.saveAssistantTodo({
+      id: createAssistantTodoId(),
+      assistantId: assistant.id,
+      title: "Remove stale todo",
+      state: "pending",
+      sortOrder: 0,
+      createdAt: now,
+      updatedAt: now
+    });
+    repository.saveAssistantTodo({
+      ...todo,
+      id: createAssistantTodoId(),
+      assistantId: otherAssistant.id,
+      title: "Keep other todo"
+    });
+    const learning = repository.saveAssistantLearning({
+      id: createAssistantLearningId(),
+      assistantId: assistant.id,
+      summary: "Remove stale learning.",
+      source: "test",
+      confidence: "medium",
+      createdAt: now
+    });
+    if (!learning) {
+      throw new Error("Expected assistant learning to save");
+    }
+    repository.saveAssistantLearning({
+      ...learning,
+      id: createAssistantLearningId(),
+      assistantId: otherAssistant.id,
+      summary: "Keep other learning."
+    });
+
+    repository.deleteAssistantTodo(assistant.id, todo.id);
+    repository.deleteAssistantLearning(assistant.id, learning.id);
+
+    expect(repository.getAssistantTodos(assistant.id)).toHaveLength(0);
+    expect(repository.getAssistantLearnings(assistant.id)).toHaveLength(0);
+    expect(repository.getAssistantTodos(otherAssistant.id).map((entry) => entry.title)).toEqual(["Keep other todo"]);
+    expect(repository.getAssistantLearnings(otherAssistant.id).map((entry) => entry.summary)).toEqual(["Keep other learning."]);
+  });
+
+  test("drops completed assistant todos after retention window", () => {
+    const repository = createRepository();
+    const assistant = addLearningAssistant(repository);
+    const now = new Date("2026-04-30T12:00:00.000Z");
+    const staleCompletedAt = new Date("2026-04-10T12:00:00.000Z").toISOString();
+    const recentCompletedAt = new Date("2026-04-25T12:00:00.000Z").toISOString();
+    repository.saveAssistantTodo({
+      id: createAssistantTodoId(),
+      assistantId: assistant.id,
+      title: "Drop old done todo",
+      state: "completed",
+      sortOrder: 0,
+      createdAt: staleCompletedAt,
+      updatedAt: staleCompletedAt,
+      completedAt: staleCompletedAt
+    });
+    repository.saveAssistantTodo({
+      id: createAssistantTodoId(),
+      assistantId: assistant.id,
+      title: "Keep recent done todo",
+      state: "completed",
+      sortOrder: 1,
+      createdAt: recentCompletedAt,
+      updatedAt: recentCompletedAt,
+      completedAt: recentCompletedAt
+    });
+    repository.saveAssistantTodo({
+      id: createAssistantTodoId(),
+      assistantId: assistant.id,
+      title: "Keep active todo",
+      state: "pending",
+      sortOrder: 2,
+      createdAt: staleCompletedAt,
+      updatedAt: staleCompletedAt
+    });
+
+    repository.pruneCompletedAssistantTodos(now);
+
+    expect(repository.getAssistantTodos(assistant.id).map((entry) => entry.title)).toEqual([
+      "Keep recent done todo",
+      "Keep active todo"
+    ]);
   });
 
   test("repairs recoverable assistant persisted field violations during load", () => {
@@ -727,6 +1175,69 @@ describe("workspace repository", () => {
     expect(memories[0]?.pathGlobs).toEqual([]);
     expect(memories[0]?.hitCount).toBe(0);
     expect(memories[0]?.sourceCommitSha).toHaveLength(256);
+  });
+
+  test("keeps cleared background notifications cleared when same status is re-saved", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    const now = "2026-04-29T12:00:00.000Z";
+    const jobId = createBackgroundJobId();
+    repository.saveBackgroundJob({
+      id: jobId,
+      projectId: project.id,
+      automationThreadId: project.activeThreadId,
+      kind: "ai-routine",
+      name: "Routine",
+      status: "enabled",
+      riskLevel: "safe",
+      definition: {
+        kind: "ai-routine",
+        prompt: "Review."
+      },
+      schedule: { type: "one-off", runAt: now, sourceText: "manual" },
+      scheduleInput: "manual",
+      createdAt: now,
+      updatedAt: now
+    });
+    const run = repository.createBackgroundJobRun({
+      jobId,
+      projectId: project.id,
+      automationThreadId: project.activeThreadId,
+      triggerSource: "manual",
+      status: "succeeded",
+      riskLevel: "safe",
+      approvalStatus: "not-needed"
+    });
+    const notification = {
+      id: `background-run-status:${run.id}`,
+      kind: "background-run-status" as const,
+      interactive: false as const,
+      createdAt: now,
+      backgroundRunId: run.id,
+      jobId,
+      projectId: project.id,
+      threadId: project.activeThreadId,
+      title: "Background task done",
+      summary: "Finished",
+      severity: "info" as const
+    };
+
+    repository.saveNotification(notification);
+    expect(repository.loadNotificationInboxState().unreadCount).toBe(1);
+
+    repository.markAllPassiveNotificationsRead();
+    expect(repository.loadNotificationInboxState()).toMatchObject({
+      items: [],
+      unreadCount: 0,
+      passiveUnreadCount: 0
+    });
+
+    repository.saveNotification(notification);
+    expect(repository.loadNotificationInboxState()).toMatchObject({
+      items: [],
+      unreadCount: 0,
+      passiveUnreadCount: 0
+    });
   });
 
   test("preserves recurring job next run when only last run changes", () => {
@@ -1152,6 +1663,188 @@ describe("workspace repository", () => {
     expect(restoredProject.activeRun?.plan?.contracts[0]?.effortPoints).toBe(8);
   });
 
+  test("reports repeated prompt hashes, owner prompt sizes, and failure categories", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    const now = new Date().toISOString();
+
+    repository.appendMessage(project.id, "user", "diagnostic run");
+    const createdRun = repository.createAgentRun(project.id, "diagnostic run", "openai/gpt-5.4");
+    const agentRunId = createdRun.activeRun?.id;
+    expect(agentRunId).toBeDefined();
+    repository.setAgentRunPromptStats(project.id, agentRunId!, {
+      promptChars: 1200,
+      promptHash: "prompt-hash-agent",
+      transcriptChars: 600,
+      latestTaskChars: 80
+    });
+    repository.setAgentRunStatus(project.id, agentRunId!, "failed", "Planner returned empty response", "empty-response");
+
+    const assistant = repository.saveAssistant({
+      id: createAssistantId(),
+      name: "Diagnostics helper",
+      scope: "project",
+      projectId: project.id,
+      description: "Tracks run health",
+      personalityPrompt: "Be direct.",
+      jobPrompt: "Watch jobs.",
+      agentId: "pi",
+      runState: "active",
+      bootstrapState: "completed",
+      failureStreakCount: 0,
+      circuitBreakerState: "closed",
+      unreadQuestionCount: 0,
+      createdAt: now,
+      updatedAt: now
+    });
+    const savedJob = repository.saveBackgroundJob({
+      id: createBackgroundJobId(),
+      projectId: project.id,
+      assistantId: assistant.id,
+      automationThreadId: createThreadId(),
+      kind: "ai-routine",
+      name: "Diagnostics job",
+      status: "enabled",
+      riskLevel: "safe",
+      definition: {
+        kind: "ai-routine",
+        prompt: "Inspect recurring failures."
+      },
+      schedule: {
+        type: "interval",
+        intervalSeconds: 600,
+        nextRunAt: now,
+        sourceText: "10m"
+      },
+      scheduleInput: "10m",
+      nextRunAt: now,
+      createdAt: now,
+      updatedAt: now
+    }).jobs[0]!;
+    const firstJobRun = repository.createBackgroundJobRun({
+      jobId: savedJob.id,
+      projectId: project.id,
+      assistantId: assistant.id,
+      automationThreadId: savedJob.automationThreadId,
+      triggerSource: "schedule",
+      status: "queued",
+      riskLevel: "safe",
+      approvalStatus: "approved"
+    });
+    repository.setBackgroundJobRunPromptStats(firstJobRun.id, {
+      promptChars: 2100,
+      promptHash: "prompt-hash-job",
+      transcriptChars: 1400,
+      latestTaskChars: 120
+    });
+    repository.setBackgroundJobRunStatus(firstJobRun.id, "failed", {
+      failureMessage: "Background run interrupted before completion",
+      failureCategory: "controller-lost"
+    });
+
+    const secondJobRun = repository.createBackgroundJobRun({
+      jobId: savedJob.id,
+      projectId: project.id,
+      assistantId: assistant.id,
+      automationThreadId: savedJob.automationThreadId,
+      triggerSource: "retry",
+      status: "queued",
+      riskLevel: "safe",
+      approvalStatus: "approved"
+    });
+    repository.setBackgroundJobRunPromptStats(secondJobRun.id, {
+      promptChars: 2200,
+      promptHash: "prompt-hash-job",
+      transcriptChars: 1500,
+      latestTaskChars: 120
+    });
+    repository.setBackgroundJobRunStatus(secondJobRun.id, "failed", {
+      failureMessage: "Background run interrupted before completion",
+      failureCategory: "controller-lost"
+    });
+
+    const report = repository.getRunDiagnosticsReport(30);
+
+    expect(report.topPromptHashes.some((entry) => entry.promptHash === "prompt-hash-job" && entry.runCount === 2)).toBe(true);
+    expect(report.promptSizeByOwner.some((entry) => entry.jobId === savedJob.id && entry.assistantId === assistant.id)).toBe(true);
+    expect(report.failureRows.some((entry) => entry.failureCategory === "controller-lost" && entry.jobId === savedJob.id && entry.count === 2)).toBe(true);
+    expect(report.failureRows.some((entry) => entry.failureCategory === "empty-response" && entry.sourceType === "agent-run")).toBe(true);
+  });
+
+  test("renews background run leases only for the active running owner", () => {
+    const repository = createRepository();
+    const dbPath = (repository as any).dbPath as string;
+    const project = addProject(repository);
+    const now = new Date().toISOString();
+    const job = repository.saveBackgroundJob({
+      id: createBackgroundJobId(),
+      projectId: project.id,
+      automationThreadId: createThreadId(),
+      kind: "ai-routine",
+      name: "Lease renew",
+      status: "enabled",
+      riskLevel: "safe",
+      definition: {
+        kind: "ai-routine",
+        prompt: "Renew lease."
+      },
+      schedule: {
+        type: "interval",
+        intervalSeconds: 600,
+        nextRunAt: now,
+        sourceText: "10m"
+      },
+      scheduleInput: "10m",
+      createdAt: now,
+      updatedAt: now
+    }).jobs[0]!;
+    const run = repository.createBackgroundJobRun({
+      jobId: job.id,
+      projectId: project.id,
+      automationThreadId: job.automationThreadId,
+      triggerSource: "manual",
+      status: "queued",
+      riskLevel: "safe",
+      approvalStatus: "approved"
+    });
+
+    repository.setBackgroundJobRunStatus(run.id, "running", {
+      controllerLeaseId: "lease-1",
+      controllerLeaseExpiresAt: "2026-05-01T15:00:00.000Z"
+    });
+
+    repository.renewBackgroundJobRunLease(run.id, "lease-1", "2026-05-01T15:15:00.000Z");
+    let db = new Database(dbPath, { readonly: true, strict: true });
+    expect(
+      db.query<{ controller_lease_expires_at: string | null }, [string]>(
+        `SELECT controller_lease_expires_at FROM background_job_runs WHERE id = ?1`
+      ).get(run.id)?.controller_lease_expires_at
+    ).toBe("2026-05-01T15:15:00.000Z");
+    db.close(false);
+
+    repository.renewBackgroundJobRunLease(run.id, "lease-2", "2026-05-01T15:30:00.000Z");
+    db = new Database(dbPath, { readonly: true, strict: true });
+    expect(
+      db.query<{ controller_lease_expires_at: string | null }, [string]>(
+        `SELECT controller_lease_expires_at FROM background_job_runs WHERE id = ?1`
+      ).get(run.id)?.controller_lease_expires_at
+    ).toBe("2026-05-01T15:15:00.000Z");
+    db.close(false);
+
+    repository.setBackgroundJobRunStatus(run.id, "failed", {
+      failureMessage: "Background run interrupted before completion",
+      failureCategory: "controller-lost"
+    });
+    repository.renewBackgroundJobRunLease(run.id, "lease-1", "2026-05-01T15:45:00.000Z");
+    db = new Database(dbPath, { readonly: true, strict: true });
+    expect(
+      db.query<{ controller_lease_expires_at: string | null }, [string]>(
+        `SELECT controller_lease_expires_at FROM background_job_runs WHERE id = ?1`
+      ).get(run.id)?.controller_lease_expires_at
+    ).toBe("2026-05-01T15:15:00.000Z");
+    db.close(false);
+  });
+
   test("scopes repeated planner question ids per run", () => {
     const repository = createRepository();
     const project = addProject(repository);
@@ -1224,8 +1917,8 @@ describe("workspace repository", () => {
       required: true
     });
 
-    expect(firstQuestion.activeRun?.questions[0]?.id).toBe(`${firstRunId}:question-1`);
-    expect(secondQuestion.activeRun?.questions[0]?.id).toBe(`${secondRunId}:question-1`);
+    expect(firstQuestion.activeRun?.questions[0]?.logicalQuestionId).toBe("question-1");
+    expect(secondQuestion.activeRun?.questions[0]?.logicalQuestionId).toBe("question-1");
     expect(firstQuestion.activeRun?.questions[0]?.id).not.toBe(secondQuestion.activeRun?.questions[0]?.id);
   });
 
@@ -1252,9 +1945,10 @@ describe("workspace repository", () => {
     });
 
     const questionIds = second.activeRun?.questions.map((question) => question.id) ?? [];
+    const logicalQuestionIds = second.activeRun?.questions.map((question) => question.logicalQuestionId) ?? [];
     expect(questionIds).toHaveLength(2);
-    expect(questionIds[0]).toBe(`${runId}:question-1`);
-    expect(questionIds[1]).toBe(`${runId}:question-1:2`);
+    expect(logicalQuestionIds).toEqual(["question-1", "question-1"]);
+    expect(questionIds[0]).not.toBe(questionIds[1]);
     expect(questionIds[1]).not.toBe(first.activeRun?.questions[0]?.id);
   });
 

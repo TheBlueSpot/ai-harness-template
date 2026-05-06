@@ -77,7 +77,7 @@ function syncShell(frameState) {
   ringsValue.textContent = `${frameState.rings?.collected ?? 0} / ${frameState.rings?.total ?? 0}`;
   speedValue.textContent = `${Math.round(frameState.speed ?? 0)}`;
   timerValue.textContent = `${(frameState.timer ?? 0).toFixed(1)}s`;
-  healthValue.textContent = `${frameState.health ?? 0}`;
+  healthValue.textContent = frameState.guard ?? "Exposed";
   statusValue.textContent = frameState.status ?? "Ready";
 
   if (state === "win") {

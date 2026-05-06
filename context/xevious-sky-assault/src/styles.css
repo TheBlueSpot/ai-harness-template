@@ -1,0 +1,111 @@
+:root {
+  color-scheme: dark;
+  --bg: #050b12;
+  --panel: rgba(6, 16, 25, 0.72);
+  --text: #eef7ff;
+  --muted: #a7bfd5;
+  --accent: #ffd05a;
+  --accent-2: #79ebff;
+}
+
+* { box-sizing: border-box; }
+html, body { width: 100%; height: 100%; margin: 0; }
+body {
+  overflow: hidden;
+  color: var(--text);
+  font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+  background:
+    radial-gradient(circle at top, rgba(121, 235, 255, 0.16), transparent 30%),
+    radial-gradient(circle at 80% 20%, rgba(255, 208, 90, 0.11), transparent 24%),
+    linear-gradient(180deg, #09111b 0%, var(--bg) 100%);
+}
+
+.shell, .frame { width: 100%; height: 100%; }
+.frame { position: relative; }
+.game-canvas { display: block; width: 100%; height: 100%; }
+
+.hud {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.7rem 0.8rem;
+  border-radius: 999px;
+  background: var(--panel);
+  border: 1px solid rgba(121, 235, 255, 0.16);
+  backdrop-filter: blur(10px);
+}
+
+.hud__chip {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.6rem;
+  min-width: 8.5rem;
+  font-size: 0.82rem;
+}
+
+.hud__label {
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+.hud__alert {
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-size: 0.72rem;
+}
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1.25rem;
+  text-align: center;
+  background: linear-gradient(180deg, rgba(5, 11, 18, 0.22), rgba(5, 11, 18, 0.76));
+}
+
+.overlay[hidden] {
+  display: none;
+}
+
+.overlay__eyebrow,
+.overlay__copy { margin: 0; color: var(--muted); }
+.overlay__eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.22em;
+  font-size: 0.76rem;
+}
+.overlay__title {
+  margin: 0.4rem 0 0.6rem;
+  font-size: clamp(2.1rem, 5vw, 4.8rem);
+  line-height: 0.95;
+}
+.overlay__copy {
+  max-width: 34rem;
+  line-height: 1.5;
+}
+.overlay__button {
+  margin-top: 1rem;
+  padding: 0.8rem 1.2rem;
+  border: 0;
+  border-radius: 999px;
+  color: #08111a;
+  background: linear-gradient(180deg, var(--accent), #ffbe2b);
+  font: inherit;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+@media (max-width: 720px) {
+  .hud {
+    left: 0.75rem;
+    right: 0.75rem;
+    top: 0.75rem;
+    border-radius: 20px;
+  }
+}

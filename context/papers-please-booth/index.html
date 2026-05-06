@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Papers Please Booth</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="booth-shell" aria-label="Border inspection booth">
+        <header class="topbar">
+          <div class="brand">
+            <span class="eyebrow">Inspection Desk</span>
+            <h1>Papers Please Booth</h1>
+          </div>
+          <div class="topbar-meta" id="meta"></div>
+        </header>
+
+        <div class="booth-grid">
+          <section class="panel docs-panel" aria-label="Presented documents">
+            <div class="panel-title">Documents</div>
+            <div id="documents" class="doc-stack"></div>
+          </section>
+
+          <section class="panel decision-panel" aria-label="Decision desk">
+            <div class="panel-title">Decision</div>
+            <div id="decision" class="decision-body"></div>
+            <div class="action-row">
+              <button id="approve" type="button">Approve</button>
+              <button id="reject" type="button">Reject</button>
+            </div>
+            <div class="hint-row" id="hint"></div>
+          </section>
+
+          <aside class="panel hud-panel" aria-label="Status information">
+            <div id="hud"></div>
+          </aside>
+        </div>
+
+        <section class="panel rule-panel" aria-label="Rule cards">
+          <div class="panel-title">Rule Cards</div>
+          <div id="rules" class="rule-grid"></div>
+        </section>
+
+        <div class="overlay" id="overlay" aria-live="polite"></div>
+      </section>
+    </main>
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

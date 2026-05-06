@@ -33,7 +33,11 @@ stats.subscribe(() => {
 function setMode(next) {
   mode = next;
   shell.dataset.state = next;
-  for (const [name, screen] of Object.entries(screens)) screen.hidden = name !== next;
+  for (const [name, screen] of Object.entries(screens)) {
+    const active = name === next;
+    screen.hidden = !active;
+    screen.classList.toggle("is-active", active);
+  }
   render();
 }
 
@@ -60,8 +64,18 @@ function render() {
   const s = stats.getSnapshot();
   nodes.playerSummary.innerHTML = `<div class="hud-pill"><span>Speed</span><strong>${s.swingSpeed.toFixed(2)}x</strong></div><div class="hud-pill"><span>Crit</span><strong>${Math.round(s.critChance * 100)}%</strong></div><div class="hud-pill"><span>Acc</span><strong>${Math.round(s.accuracy * 100)}%</strong></div>`;
   renderStats(nodes.liveStats);
-  nodes.trainingCards.innerHTML = training.cards.map((card) => `<article class="card"><h3>${card.title}</h3><p>${card.description}</p><button type="button" data-train="${card.id}">Train</button></article>`).join("");
-  nodes.encounterList.innerHTML = combat.encounters.map((encounter) => `<article class="encounter"><h3>${encounter.name}</h3><p>${encounter.note}</p><p>Threat: ${encounter.threat} | Reward: ${encounter.reward}</p><button type="button" data-encounter="${encounter.id}">Select</button></article>`).join("");
+  nodes.trainingCards.innerHTML = training.cards.map((card) => {
+    const lastCompleted = training.lastResult?.gameType === card.id;
+    const buttonLabel = lastCompleted ? "Train Again" : "Train";
+    const resultCopy = lastCompleted
+      ? `<p class="card__result">Last gain: +${Math.max(1, Math.round(training.lastResult.score / 12))} training</p>`
+      : '<p class="card__result">One click runs a full drill and updates the forge immediately.</p>';
+    return `<article class="card${lastCompleted ? " card--recent" : ""}"><h3>${card.title}</h3><p>${card.description}</p>${resultCopy}<button type="button" data-train="${card.id}">${buttonLabel}</button></article>`;
+  }).join("");
+  nodes.encounterList.innerHTML = combat.encounters.map((encounter) => {
+    const selected = selectedEncounter.id === encounter.id;
+    return `<article class="encounter${selected ? " encounter--selected" : ""}"><h3>${encounter.name}</h3><p>${encounter.note}</p><p>Threat: ${encounter.threat} | Reward: ${encounter.reward}</p><button type="button" data-encounter="${encounter.id}">${selected ? "Selected" : "Select"}</button></article>`;
+  }).join("");
   nodes.arenaSummary.innerHTML = `<div class="summary-item"><span>Selected</span><strong>${selectedEncounter.name}</strong></div><div class="summary-item"><span>Speed</span><strong>${s.swingSpeed.toFixed(2)}x</strong></div><div class="summary-item"><span>Crit</span><strong>${Math.round(s.critChance * 100)}%</strong></div><div class="summary-item"><span>Attack</span><strong>${s.attack}</strong></div><div class="summary-item"><span>Defense</span><strong>${s.defense}</strong></div>`;
   if (combatState) {
     nodes.combatHud.innerHTML = `<div class="hud-pill"><span>Enemy</span><strong>${combatState.encounter.name}</strong></div><div class="hud-pill"><span>HP</span><strong>${combatState.enemyHp}</strong></div><div class="hud-pill"><span>Player</span><strong>${combatState.playerHp}</strong></div>`;

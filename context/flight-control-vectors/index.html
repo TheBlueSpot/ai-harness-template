@@ -221,6 +221,10 @@
         return list[Math.floor(Math.random() * list.length)];
       }
 
+      function angleDifference(a, b) {
+        return Math.atan2(Math.sin(a - b), Math.cos(a - b));
+      }
+
       function spawnPlane() {
         const side = Math.floor(Math.random() * 4);
         const runway = pick(runways);
@@ -364,7 +368,11 @@
           const runway = runways.find((item) => item.color === plane.targetRunway);
           const runwayDistance = Math.hypot(plane.x - runway.x, plane.y - runway.y);
           if (runwayDistance < 34 && plane.altitude < 550) {
-            if (plane.path.length > 0 || Math.abs(Math.atan2(plane.vy, plane.vx) - runway.angle) < 0.95) {
+            const routeEnd = plane.path[plane.path.length - 1];
+            const routeEndsOnRunway =
+              plane.path.length > 0 && Math.hypot(routeEnd.x - runway.x, routeEnd.y - runway.y) < 30;
+            const alignedApproach = plane.path.length === 0 && Math.abs(angleDifference(Math.atan2(plane.vy, plane.vx), runway.angle)) < 0.95;
+            if (routeEndsOnRunway || alignedApproach) {
               plane.landed = true;
               state.score += 1;
               burst(plane.x, plane.y, colors[plane.targetRunway]);

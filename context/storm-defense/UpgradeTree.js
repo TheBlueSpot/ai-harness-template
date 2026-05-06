@@ -1,3 +1,4 @@
+(() => {
 const OFFER_CATALOG = [
   {
     id: "reload-speed",
@@ -76,7 +77,7 @@ const cloneOffer = (offer, purchasedCount, context = {}) => {
   };
 };
 
-export class UpgradeTree {
+class UpgradeTree {
   constructor() {
     this.reset();
   }
@@ -143,3 +144,6 @@ export class UpgradeTree {
     return modifiers;
   }
 }
+
+globalThis.UpgradeTree = UpgradeTree;
+})();

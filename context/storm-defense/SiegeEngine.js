@@ -1,6 +1,7 @@
+(() => {
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
-export class DamageBuffer {
+class DamageBuffer {
   constructor() {
     this.byTarget = new Map();
     this.total = 0;
@@ -45,7 +46,7 @@ const createHouse = () => ({
   maxHealth: 300,
 });
 
-export class SiegeEngine {
+class SiegeEngine {
   constructor({ canvas, economyManager, enemySpawner, upgradeTree, assets } = {}) {
     this.canvas = canvas ?? null;
     this.economyManager = economyManager;
@@ -424,3 +425,7 @@ export class SiegeEngine {
     };
   }
 }
+
+globalThis.DamageBuffer = DamageBuffer;
+globalThis.SiegeEngine = SiegeEngine;
+})();

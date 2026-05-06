@@ -71,7 +71,14 @@
       box-shadow: 0 10px 24px rgba(0, 0, 0, 0.26);
     }
 
-    .top-left { top: 0; left: 0; }
+    .top-left { top: 0; left: 0; max-width: 340px; }
+    .top-center {
+      top: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      min-width: 260px;
+      text-align: center;
+    }
     .top-right { top: 0; right: 0; text-align: right; }
     .bottom-left { left: 0; bottom: 0; max-width: 320px; }
 
@@ -95,6 +102,29 @@
       color: var(--soft);
     }
 
+    .progress-dots {
+      display: flex;
+      justify-content: center;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .progress-dots span {
+      width: 28px;
+      height: 8px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.16);
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+    }
+
+    .progress-dots span.active {
+      background: linear-gradient(90deg, #ffd86b, #ff9e54);
+    }
+
+    .progress-dots span.complete {
+      background: linear-gradient(90deg, #7fe3ff, #74eca5);
+    }
+
     .overlay {
       position: absolute;
       inset: 0;
@@ -111,6 +141,14 @@
       border-radius: 22px;
       background: rgba(8, 13, 20, 0.9);
       text-align: center;
+    }
+
+    .eyebrow {
+      margin-bottom: 10px;
+      font-size: 12px;
+      letter-spacing: 0.28em;
+      text-transform: uppercase;
+      color: var(--gold);
     }
 
     .card h1, .card h2 {
@@ -146,14 +184,24 @@
       <canvas id="game" width="960" height="640" aria-label="Bomberman Fuse"></canvas>
       <div class="hud">
         <div class="panel top-left">
-          <div class="label">Arena Status</div>
+          <div class="label">Objective</div>
           <div class="value" id="objectiveText">Break a lane</div>
           <div class="subline" id="objectiveSubtext">Plant your first bomb beside the marked crate.</div>
+        </div>
+        <div class="panel top-center">
+          <div class="label">District Route</div>
+          <div class="value" id="zoneText">1 / 3</div>
+          <div class="subline" id="zoneSubtext">Foundry Entry</div>
+          <div class="progress-dots" id="progressDots" aria-hidden="true">
+            <span class="active"></span>
+            <span></span>
+            <span></span>
+          </div>
         </div>
         <div class="panel top-right">
           <div class="label">Loadout</div>
           <div class="value"><span id="bombCount">1</span> bomb / <span id="blastCount">2</span> tiles</div>
-          <div class="subline" id="enemyText">3 roamers active</div>
+          <div class="subline" id="enemyText">2 roamers active</div>
         </div>
         <div class="panel bottom-left">
           <div class="label">Controls</div>
@@ -162,14 +210,16 @@
       </div>
       <div class="overlay" id="menuOverlay">
         <div class="card">
+          <div class="eyebrow">Three-District Run</div>
           <h1>Bomberman Fuse</h1>
-          <p>Crack open the maze with careful bomb spacing. Blow up crates to reveal the key, remove the roamers, and escape through the unlocked gate.</p>
-          <p>The first lesson sits on the nearest crate: plant, retreat, then watch the cross-shaped blast path before you commit deeper into the arena.</p>
-          <button class="cta" id="startButton">Start Round</button>
+          <p id="menuSummary">Push through three themed fuse districts. Open each maze, recover its route key, clear the roamers, and slip out before the blast lanes trap you.</p>
+          <p id="menuDetail">The first lesson sits on the nearest crate: plant, retreat, then watch the full cross-shaped blast path before you commit deeper into the arena.</p>
+          <button class="cta" id="startButton">Start Run</button>
         </div>
       </div>
       <div class="overlay hidden" id="endOverlay">
         <div class="card">
+          <div class="eyebrow" id="endEyebrow">Sector Report</div>
           <h2 id="endTitle">Round Over</h2>
           <p id="endSummary">Run it back.</p>
           <button class="cta" id="restartButton">Retry</button>
@@ -187,10 +237,16 @@
     const bombCount = document.getElementById("bombCount");
     const blastCount = document.getElementById("blastCount");
     const enemyText = document.getElementById("enemyText");
+    const zoneText = document.getElementById("zoneText");
+    const zoneSubtext = document.getElementById("zoneSubtext");
+    const progressDots = document.getElementById("progressDots");
     const menuOverlay = document.getElementById("menuOverlay");
     const endOverlay = document.getElementById("endOverlay");
+    const endEyebrow = document.getElementById("endEyebrow");
     const endTitle = document.getElementById("endTitle");
     const endSummary = document.getElementById("endSummary");
+    const menuSummary = document.getElementById("menuSummary");
+    const menuDetail = document.getElementById("menuDetail");
     const startButton = document.getElementById("startButton");
     const restartButton = document.getElementById("restartButton");
 
@@ -213,8 +269,117 @@
       { x: 0, y: -1 }
     ];
 
+    const zones = [
+      {
+        name: "Foundry Entry",
+        subtitle: "Easy lanes and one marked teaching crate.",
+        summary: "Fuse Foundry starts simple: one marked crate teaches the blast path before the maze widens into safer chase routes.",
+        detail: "Plant beside the glowing crate, back out of the cross, then keep cutting open lanes until the key and gate both read cleanly.",
+        skyTop: "#20354a",
+        skyBottom: "#0a1016",
+        floorA: "#17232f",
+        floorB: "#1a2a38",
+        pillar: "#334a60",
+        wall: "#27303c",
+        crate: "#8d6232",
+        accent: "#ffd86b",
+        introCrate: { x: 2, y: 1 },
+        keyItem: { x: 9, y: 3 },
+        exit: { x: 13, y: 9 },
+        openCells: [
+          [1, 1], [1, 2], [1, 3], [2, 1], [2, 3], [3, 1],
+          [13, 9], [13, 8], [13, 7], [12, 9], [11, 9],
+          [9, 3], [9, 2], [10, 3]
+        ],
+        pickups: [
+          { x: 5, y: 5, type: "blast" },
+          { x: 11, y: 3, type: "bomb" }
+        ],
+        enemies: [
+          { x: 11, y: 1, color: "#ff8b6b", role: "chaser" },
+          { x: 13, y: 5, color: "#7fe3ff", role: "patroller" }
+        ],
+        pattern(x, y) {
+          return (x + y) % 3 === 0 || (x === 3 && y === 3) || (x === 11 && y === 7);
+        }
+      },
+      {
+        name: "Relay Depot",
+        subtitle: "Longer lanes, more patrol crossings, faster route pressure.",
+        summary: "Relay Depot stretches the lane puzzle. More crates force detours, patrol crossings happen earlier, and upgrades sit deeper in the route.",
+        detail: "Use open side lanes to kite roamers apart. This district rewards clearing safe escape channels before you chase the key.",
+        skyTop: "#2b1d44",
+        skyBottom: "#0f0b18",
+        floorA: "#21192d",
+        floorB: "#271f36",
+        pillar: "#4a3c63",
+        wall: "#382a4d",
+        crate: "#8a4d52",
+        accent: "#ff9ec8",
+        introCrate: { x: 3, y: 1 },
+        keyItem: { x: 11, y: 5 },
+        exit: { x: 1, y: 9 },
+        openCells: [
+          [1, 1], [1, 2], [1, 3], [2, 1], [3, 1], [3, 2],
+          [1, 9], [1, 8], [2, 9], [3, 9],
+          [11, 5], [10, 5], [11, 4], [11, 6]
+        ],
+        pickups: [
+          { x: 9, y: 1, type: "blast" },
+          { x: 7, y: 7, type: "bomb" }
+        ],
+        enemies: [
+          { x: 13, y: 1, color: "#ff9ec8", role: "patroller" },
+          { x: 13, y: 7, color: "#7fe3ff", role: "ambusher" },
+          { x: 9, y: 9, color: "#ffd86b", role: "chaser" }
+        ],
+        pattern(x, y) {
+          return (x * 2 + y) % 4 === 0 || (y === 5 && x > 4 && x < 11) || (x === 5 && y > 2 && y < 9);
+        }
+      },
+      {
+        name: "Reactor Vault",
+        subtitle: "Tight boxwork, denser chasers, and the longest blast payoffs.",
+        summary: "Reactor Vault is the payoff pass: denser crate boxes, mixed enemy roles, and enough upgrade reach to turn the late run into a fast demolition escape.",
+        detail: "Bombs can solve crowding here, but only if you open your retreat path first. Use the first side pocket to stage a clean collapse.",
+        skyTop: "#17352a",
+        skyBottom: "#08110d",
+        floorA: "#12231d",
+        floorB: "#162a22",
+        pillar: "#315346",
+        wall: "#20382f",
+        crate: "#7a6332",
+        accent: "#74eca5",
+        introCrate: { x: 2, y: 3 },
+        keyItem: { x: 7, y: 5 },
+        exit: { x: 13, y: 1 },
+        openCells: [
+          [1, 1], [1, 2], [1, 3], [2, 1], [2, 3], [3, 1],
+          [13, 1], [12, 1], [13, 2], [11, 1],
+          [7, 5], [7, 4], [7, 6], [6, 5], [8, 5]
+        ],
+        pickups: [
+          { x: 3, y: 9, type: "bomb" },
+          { x: 11, y: 7, type: "blast" }
+        ],
+        enemies: [
+          { x: 11, y: 9, color: "#7fe3ff", role: "ambusher" },
+          { x: 13, y: 7, color: "#ff8b6b", role: "chaser" },
+          { x: 9, y: 1, color: "#ffd86b", role: "patroller" },
+          { x: 5, y: 9, color: "#74eca5", role: "skittish" }
+        ],
+        pattern(x, y) {
+          if (x > 2 && x < 12 && y > 1 && y < 9 && (x + y) % 2 === 1) return true;
+          return (x === 3 || x === 11) && y > 2 && y < 9;
+        }
+      }
+    ];
+
     const state = {
       phase: "menu",
+      continueMode: "restart",
+      zoneIndex: 0,
+      zone: zones[0],
       player: null,
       enemies: [],
       bombs: [],
@@ -233,7 +398,10 @@
       return `${x},${y}`;
     }
 
-    function createLevel() {
+    function createLevel(index, playerSeed = null) {
+      const zone = zones[index];
+      state.zoneIndex = index;
+      state.zone = zone;
       state.map = Array.from({ length: rows }, (_, y) =>
         Array.from({ length: cols }, (_, x) => {
           if (x === 0 || y === 0 || x === cols - 1 || y === rows - 1) return "wall";
@@ -247,20 +415,17 @@
       state.hintQueue = [];
       state.bombs = [];
       state.flames = [];
-      state.exit = { x: 13, y: 9, unlocked: false, revealed: false };
-      state.keyItem = { x: 9, y: 3, revealed: false, collected: false };
-      state.introCrate = { x: 2, y: 1 };
+      state.exit = { x: zone.exit.x, y: zone.exit.y, unlocked: false, revealed: false };
+      state.keyItem = { x: zone.keyItem.x, y: zone.keyItem.y, revealed: false, collected: false };
+      state.introCrate = { x: zone.introCrate.x, y: zone.introCrate.y };
 
-      const openCells = new Set([
-        tileKey(1, 1), tileKey(1, 2), tileKey(2, 1), tileKey(1, 3), tileKey(2, 3), tileKey(3, 1),
-        tileKey(13, 9), tileKey(13, 8), tileKey(12, 9), tileKey(11, 9), tileKey(13, 7), tileKey(9, 3)
-      ]);
+      const openCells = new Set(zone.openCells.map(([x, y]) => tileKey(x, y)));
 
       for (let y = 1; y < rows - 1; y += 1) {
         for (let x = 1; x < cols - 1; x += 1) {
           if (state.map[y][x] !== "floor") continue;
           if (openCells.has(tileKey(x, y))) continue;
-          if ((x + y) % 3 === 0 || (x === 3 && y === 3) || (x === 11 && y === 7)) {
+          if (zone.pattern(x, y)) {
             state.destructibles.add(tileKey(x, y));
           }
         }
@@ -271,8 +436,9 @@
       state.destructibles.add(tileKey(state.exit.x, state.exit.y));
       state.pickups.set(tileKey(state.keyItem.x, state.keyItem.y), { type: "key" });
       state.pickups.set(tileKey(state.exit.x, state.exit.y), { type: "exit" });
-      state.pickups.set(tileKey(5, 5), { type: "blast" });
-      state.pickups.set(tileKey(11, 3), { type: "bomb" });
+      for (const pickup of zone.pickups) {
+        state.pickups.set(tileKey(pickup.x, pickup.y), { type: pickup.type });
+      }
 
       state.player = {
         x: 1,
@@ -283,41 +449,55 @@
         targetY: 1,
         speed: 5.8,
         moveCooldown: 0,
-        maxBombs: 1,
-        blastRadius: 2,
+        maxBombs: playerSeed?.maxBombs ?? 1,
+        blastRadius: playerSeed?.blastRadius ?? 2,
         alive: true
       };
 
-      state.enemies = [
-        createEnemy(11, 1, "#ff8b6b"),
-        createEnemy(13, 5, "#7fe3ff"),
-        createEnemy(9, 9, "#ffd86b")
-      ];
+      state.enemies = zone.enemies.map((enemy) => createEnemy(enemy));
 
       queueHint({
         x: state.introCrate.x,
         y: state.introCrate.y,
-        text: "Plant here, then back up. The blast follows the full cross path.",
-        color: "#ffd86b",
+        text: index === 0
+          ? "Plant here, then back up. The blast follows the full cross path."
+          : "Open this first pocket before you chase deeper crates.",
+        color: zone.accent,
         until: () => !state.destructibles.has(tileKey(state.introCrate.x, state.introCrate.y))
       });
+
+      zoneText.textContent = `${index + 1} / ${zones.length}`;
+      zoneSubtext.textContent = zone.name;
+      renderProgress();
     }
 
-    function createEnemy(x, y, color) {
+    function createEnemy(config) {
       return {
-        x,
-        y,
-        px: x,
-        py: y,
-        targetX: x,
-        targetY: y,
-        speed: 3.4 + Math.random() * 0.4,
+        x: config.x,
+        y: config.y,
+        px: config.x,
+        py: config.y,
+        targetX: config.x,
+        targetY: config.y,
+        speed: config.role === "skittish" ? 4.1 : config.role === "chaser" ? 3.9 : 3.4,
         moveCooldown: 0.15 + Math.random() * 0.25,
-        nextDecision: 0.1 + Math.random() * 0.4,
+        nextDecision: 0.1 + Math.random() * 0.35,
         direction: { x: 0, y: 1 },
         alive: true,
-        color
+        color: config.color,
+        role: config.role
       };
+    }
+
+    function renderProgress() {
+      Array.from(progressDots.children).forEach((dot, index) => {
+        dot.className = "";
+        if (index < state.zoneIndex) {
+          dot.classList.add("complete");
+        } else if (index === state.zoneIndex) {
+          dot.classList.add("active");
+        }
+      });
     }
 
     function queueHint(config) {
@@ -395,27 +575,64 @@
         updateActor(enemy, dt);
         enemy.nextDecision -= dt;
         if (enemy.nextDecision > 0) continue;
-        enemy.nextDecision = 0.18 + Math.random() * 0.28;
+        enemy.nextDecision = 0.16 + Math.random() * 0.22;
 
         const options = DIRS.filter((dir) => canWalkTo(enemy.x + dir.x, enemy.y + dir.y));
         if (!options.length) continue;
 
         let best = options[Math.floor(Math.random() * options.length)];
         const playerDistance = Math.abs(state.player.x - enemy.x) + Math.abs(state.player.y - enemy.y);
-        if (playerDistance <= 5) {
-          best = options.reduce((chosen, dir) => {
-            const next = Math.abs(state.player.x - (enemy.x + dir.x)) + Math.abs(state.player.y - (enemy.y + dir.y));
-            const current = Math.abs(state.player.x - (enemy.x + chosen.x)) + Math.abs(state.player.y - (enemy.y + chosen.y));
-            return next < current ? dir : chosen;
-          }, best);
-        } else if (Math.random() < 0.65) {
-          const forward = options.find((dir) => dir.x === enemy.direction.x && dir.y === enemy.direction.y);
-          if (forward) best = forward;
+
+        if (enemy.role === "chaser") {
+          if (playerDistance <= 6) {
+            best = chooseClosestMove(enemy, options, state.player.x, state.player.y);
+          } else {
+            best = preferForward(enemy, options, best);
+          }
+        } else if (enemy.role === "ambusher") {
+          const focus = state.keyItem.collected ? state.exit : state.keyItem;
+          best = chooseClosestMove(enemy, options, focus.x, focus.y);
+          if (playerDistance <= 4 && Math.random() < 0.5) {
+            best = chooseClosestMove(enemy, options, state.player.x, state.player.y);
+          }
+        } else if (enemy.role === "skittish") {
+          if (playerDistance <= 3) {
+            best = options.reduce((chosen, dir) => {
+              const next = distanceTo(state.player.x, state.player.y, enemy.x + dir.x, enemy.y + dir.y);
+              const current = distanceTo(state.player.x, state.player.y, enemy.x + chosen.x, enemy.y + chosen.y);
+              return next > current ? dir : chosen;
+            }, best);
+          } else {
+            best = preferForward(enemy, options, best);
+          }
+        } else {
+          if (playerDistance <= 5 && Math.random() < 0.4) {
+            best = chooseClosestMove(enemy, options, state.player.x, state.player.y);
+          } else {
+            best = preferForward(enemy, options, best);
+          }
         }
 
         enemy.direction = best;
         tryMoveActor(enemy, best.x, best.y);
       }
+    }
+
+    function chooseClosestMove(enemy, options, targetX, targetY) {
+      return options.reduce((chosen, dir) => {
+        const next = distanceTo(targetX, targetY, enemy.x + dir.x, enemy.y + dir.y);
+        const current = distanceTo(targetX, targetY, enemy.x + chosen.x, enemy.y + chosen.y);
+        return next < current ? dir : chosen;
+      }, options[0]);
+    }
+
+    function preferForward(enemy, options, fallback) {
+      const forward = options.find((dir) => dir.x === enemy.direction.x && dir.y === enemy.direction.y);
+      return forward ?? fallback;
+    }
+
+    function distanceTo(ax, ay, bx, by) {
+      return Math.abs(ax - bx) + Math.abs(ay - by);
     }
 
     function blastCells(bomb) {
@@ -496,10 +713,10 @@
         state.keyItem.collected = true;
         state.pickups.delete(playerKey);
       } else if (pickup.type === "bomb" && !state.destructibles.has(playerKey)) {
-        state.player.maxBombs = Math.min(3, state.player.maxBombs + 1);
+        state.player.maxBombs = Math.min(4, state.player.maxBombs + 1);
         state.pickups.delete(playerKey);
       } else if (pickup.type === "blast" && !state.destructibles.has(playerKey)) {
-        state.player.blastRadius = Math.min(4, state.player.blastRadius + 1);
+        state.player.blastRadius = Math.min(5, state.player.blastRadius + 1);
         state.pickups.delete(playerKey);
       } else if (pickup.type === "exit" && !state.destructibles.has(playerKey)) {
         state.exit.revealed = true;
@@ -533,10 +750,12 @@
 
       if (!state.keyItem.revealed) {
         objectiveText.textContent = "Break a lane";
-        objectiveSubtext.textContent = "Open the marked crate first, then keep searching for the key.";
+        objectiveSubtext.textContent = state.zoneIndex === 0
+          ? "Open the marked crate first, then keep searching for the key."
+          : "Open one safe pocket before you commit to the deeper route.";
       } else if (!state.keyItem.collected) {
         objectiveText.textContent = "Recover the key";
-        objectiveSubtext.textContent = "Step onto the green key before the next fuse seals the route.";
+        objectiveSubtext.textContent = "Step onto the revealed key before the next fuse seals the route.";
       } else if (aliveEnemies > 0) {
         objectiveText.textContent = "Clear the roamers";
         objectiveSubtext.textContent = "The gate unlocks only after the last patrol drops.";
@@ -545,7 +764,9 @@
         objectiveSubtext.textContent = "One last crate still covers the exit tile.";
       } else {
         objectiveText.textContent = "Escape now";
-        objectiveSubtext.textContent = "Reach the unlocked gate before the maze closes back around you.";
+        objectiveSubtext.textContent = state.zoneIndex === zones.length - 1
+          ? "Reach the vault gate and finish the whole route cleanly."
+          : "Reach the live gate to carry your loadout into the next district.";
       }
 
       bombCount.textContent = String(state.player.maxBombs);
@@ -553,31 +774,75 @@
       enemyText.textContent = `${aliveEnemies} roamer${aliveEnemies === 1 ? "" : "s"} active`;
 
       if (state.exit.unlocked && state.player.x === state.exit.x && state.player.y === state.exit.y) {
-        finishRound(true, "You opened safe lanes, recovered the key, and escaped through the live gate.");
+        finishRound(true, state.zoneIndex === zones.length - 1
+          ? "You cut through every district, held your upgrades, and escaped the reactor vault."
+          : `${state.zone.name} is clear. Keep your loadout and push into the next district.`);
       }
     }
 
     function finishRound(win, summary) {
       if (state.phase !== "playing") return;
       state.phase = "ended";
-      endTitle.textContent = win ? "Gate Cleared" : "Fuse Misread";
-      endSummary.textContent = summary;
       endOverlay.classList.remove("hidden");
+
+      if (win && state.zoneIndex < zones.length - 1) {
+        endEyebrow.textContent = "District Cleared";
+        endTitle.textContent = zones[state.zoneIndex + 1].name;
+        endSummary.textContent = summary;
+        restartButton.textContent = "Next District";
+        state.continueMode = "advance";
+      } else if (win) {
+        endEyebrow.textContent = "Route Complete";
+        endTitle.textContent = "Fuse Run Cleared";
+        endSummary.textContent = summary;
+        restartButton.textContent = "Restart Run";
+        state.continueMode = "restart";
+      } else {
+        endEyebrow.textContent = "Fuse Misread";
+        endTitle.textContent = state.zone.name;
+        endSummary.textContent = summary;
+        restartButton.textContent = "Retry District";
+        state.continueMode = "retry";
+      }
     }
 
-    function resetGame() {
-      createLevel();
+    function launchRun() {
+      createLevel(0);
       state.phase = "playing";
+      state.continueMode = "restart";
       endOverlay.classList.add("hidden");
       menuOverlay.classList.add("hidden");
+      updateObjectives();
+    }
+
+    function continueRun() {
+      const playerSeed = {
+        maxBombs: state.player.maxBombs,
+        blastRadius: state.player.blastRadius
+      };
+      createLevel(state.zoneIndex + 1, playerSeed);
+      state.phase = "playing";
+      state.continueMode = "restart";
+      endOverlay.classList.add("hidden");
+      updateObjectives();
+    }
+
+    function retryDistrict() {
+      createLevel(state.zoneIndex, {
+        maxBombs: Math.max(1, state.player.maxBombs),
+        blastRadius: Math.max(2, state.player.blastRadius)
+      });
+      state.phase = "playing";
+      state.continueMode = "restart";
+      endOverlay.classList.add("hidden");
       updateObjectives();
     }
 
     function drawBackground() {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       const sky = ctx.createLinearGradient(0, 0, 0, canvas.height);
-      sky.addColorStop(0, "#20354a");
-      sky.addColorStop(1, "#0a1016");
+      sky.addColorStop(0, state.zone.skyTop);
+      sky.addColorStop(1, state.zone.skyBottom);
       ctx.fillStyle = sky;
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -610,11 +875,11 @@
           const tile = state.map[y][x];
 
           if (tile === "wall") {
-            ctx.fillStyle = "#27303c";
+            ctx.fillStyle = state.zone.wall;
           } else if (tile === "pillar") {
-            ctx.fillStyle = "#334a60";
+            ctx.fillStyle = state.zone.pillar;
           } else {
-            ctx.fillStyle = (x + y) % 2 === 0 ? "#17232f" : "#1a2a38";
+            ctx.fillStyle = (x + y) % 2 === 0 ? state.zone.floorA : state.zone.floorB;
           }
           ctx.fillRect(px, py, tileSize, tileSize);
 
@@ -632,7 +897,7 @@
         const [x, y] = key.split(",").map(Number);
         const px = boardOffsetX + x * tileSize;
         const py = boardOffsetY + y * tileSize;
-        ctx.fillStyle = key === tileKey(state.introCrate.x, state.introCrate.y) ? "#8d6232" : "#7a5633";
+        ctx.fillStyle = key === tileKey(state.introCrate.x, state.introCrate.y) ? state.zone.accent : state.zone.crate;
         ctx.fillRect(px + 4, py + 4, tileSize - 8, tileSize - 8);
         ctx.fillStyle = "rgba(255, 233, 182, 0.15)";
         ctx.fillRect(px + 10, py + 10, tileSize - 20, 8);
@@ -704,7 +969,6 @@
         const preview = blastCells(bomb);
 
         if (bomb.fuse < 0.9) {
-          ctx.fillStyle = "rgba(255, 120, 90, 0.14)";
           for (const cell of preview) {
             drawTile(cell.x, cell.y, "rgba(255, 120, 90, 0.14)");
           }
@@ -767,7 +1031,7 @@
         if (hint.until()) continue;
         const px = boardOffsetX + hint.x * tileSize + tileSize / 2;
         const py = boardOffsetY + hint.y * tileSize - 12;
-        const width = 200;
+        const width = 208;
         const height = 48;
         ctx.fillStyle = "rgba(7, 11, 16, 0.88)";
         ctx.strokeStyle = "rgba(255,255,255,0.12)";
@@ -777,7 +1041,7 @@
         ctx.fill();
         ctx.stroke();
         ctx.fillStyle = hint.color;
-        wrapText(hint.text, px, py - 29, 176, 15);
+        wrapText(hint.text, px, py - 29, 184, 15);
       }
     }
 
@@ -836,8 +1100,16 @@
       requestAnimationFrame(frame);
     }
 
-    startButton.addEventListener("click", resetGame);
-    restartButton.addEventListener("click", resetGame);
+    startButton.addEventListener("click", launchRun);
+    restartButton.addEventListener("click", () => {
+      if (state.continueMode === "advance") {
+        continueRun();
+      } else if (state.continueMode === "retry") {
+        retryDistrict();
+      } else {
+        launchRun();
+      }
+    });
 
     window.addEventListener("keydown", (event) => {
       const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
@@ -849,10 +1121,16 @@
         placeBomb();
       }
       if (state.phase === "menu" && event.key === "Enter") {
-        resetGame();
+        launchRun();
       }
       if (state.phase === "ended" && event.key === "Enter") {
-        resetGame();
+        if (state.continueMode === "advance") {
+          continueRun();
+        } else if (state.continueMode === "retry") {
+          retryDistrict();
+        } else {
+          launchRun();
+        }
       }
     });
 
@@ -861,7 +1139,9 @@
       keys.delete(key);
     });
 
-    createLevel();
+    menuSummary.textContent = zones[0].summary;
+    menuDetail.textContent = zones[0].detail;
+    createLevel(0);
     render();
     requestAnimationFrame(frame);
   </script>

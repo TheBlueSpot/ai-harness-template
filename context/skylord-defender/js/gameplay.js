@@ -27,6 +27,11 @@ const TURRET_MAX_HEALTH = 80;
 const CIVILIAN_SPAWN_MARGIN = 120;
 const MAX_WAVES = 5;
 
+const openingEnemyCount = (wave) => 5 + wave * 2 + Math.max(0, wave - 3);
+const bomberShareForWave = (wave) => 0.12 + wave * 0.04;
+const deployDelayForWave = (wave) => Math.max(0.48, 1.08 - wave * 0.08);
+const spawnDelayForWave = (wave) => Math.max(0.34, 1.02 - wave * 0.07);
+
 const makeBullet = ({ owner, x, y, vx, vy, damage, radius = BULLET_RADIUS, life = 1.8, color = "player", explosive = false }) => ({
   owner,
   x,
@@ -209,9 +214,9 @@ export class GameSession {
     this.intermissionTimer = 0;
     this.waveFlash = 1.2;
     this.bonusBanner = "";
-    this.turretCharges = 2 + Math.floor(wave / 2);
+    this.turretCharges = 3 + Math.floor((wave - 1) / 2);
     this.player.turretCharges = this.turretCharges;
-    this.player.health = clamp(this.player.health + 16, 28, this.player.maxHealth);
+    this.player.health = clamp(this.player.health + 24, 42, this.player.maxHealth);
     this.player.x = WIDTH * 0.48;
     this.player.y = HEIGHT * 0.58;
     this.player.vx = 0;
@@ -221,7 +226,7 @@ export class GameSession {
     this.enemies = [];
     this.spawnCiviliansForWave(wave);
     this.buildSpawnQueue(wave);
-    this.spawnTimer = 0.9;
+    this.spawnTimer = deployDelayForWave(wave);
     this.waveEnemyTotal = this.spawnQueue.length;
     this.waveEnemiesSpawned = 0;
     this.rescuedThisWave = 0;
@@ -244,8 +249,8 @@ export class GameSession {
   }
 
   buildSpawnQueue(wave) {
-    const enemyCount = 6 + wave * 3;
-    const bomberCount = Math.max(1, Math.floor(enemyCount * (0.18 + wave * 0.06)));
+    const enemyCount = openingEnemyCount(wave);
+    const bomberCount = Math.max(1, Math.floor(enemyCount * bomberShareForWave(wave)));
     const raiderCount = enemyCount - bomberCount;
     this.spawnQueue = [];
     for (let index = 0; index < raiderCount; index += 1) {
@@ -296,7 +301,7 @@ export class GameSession {
       if (this.spawnTimer <= 0) {
         this.waveState = "active";
         this.phaseLabel = "active";
-        this.spawnTimer = Math.max(0.36, 0.98 - this.wave * 0.08);
+        this.spawnTimer = spawnDelayForWave(this.wave);
       }
     }
 
@@ -611,7 +616,7 @@ export class GameSession {
       if (this.spawnQueue.length > 0 && this.spawnTimer <= 0) {
         this.spawnEnemy(this.spawnQueue.shift());
         this.waveEnemiesSpawned += 1;
-        this.spawnTimer = Math.max(0.28, 0.88 - this.wave * 0.08);
+        this.spawnTimer = spawnDelayForWave(this.wave);
       }
 
       if (this.spawnQueue.length === 0 && this.enemies.length === 0) {

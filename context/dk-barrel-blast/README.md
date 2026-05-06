@@ -1,6 +1,6 @@
 # DK Barrel-Blast
 
-DK Barrel-Blast is a self-contained browser entry in the catalog. It plays directly from the folder `index.html` and keeps its own run state, drawing, and input bridge inside the game folder.
+DK Barrel-Blast is a browser-playable platform run about ladder routing, blast-barrel shortcuts, and rolling hazard pressure.
 
 ## Loop
 
@@ -18,12 +18,10 @@ DK Barrel-Blast is a self-contained browser entry in the catalog. It plays direc
 - `Up` inside a blast barrel also triggers the launch
 - `Enter` starts play
 - `R` restarts from any state
-- The start button in the overlay also begins the run
 
-## File Roles
+## Notes
 
-- `index.html` holds the shell, HUD, and overlay
-- `src/Game.js` owns the run state and frame snapshot
-- `src/render.js` draws the playfield and actors
-- `src/main.js` bridges DOM input, animation, HUD text, and restart flow
-- `src/styles.css` handles the entry styling
+- Open [index.html](./index.html) in a browser to play.
+- Stickiness comes from choosing when to climb safely and when to cash in a blast-barrel shortcut through active barrel traffic.
+- Fresh May 5, 2026 review pass answered the vague `not good at all` note with a stronger live objective layer: the hero copy now calls the next concrete goal, and the playfield pulses the next banana or finish zone so first-run routing does not depend on guessing the intended climb order.
+- Re-review whether the new target beacon is enough on the upper-right finish route, or if the late ladders still need one more in-world route cue once barrel pressure stacks.

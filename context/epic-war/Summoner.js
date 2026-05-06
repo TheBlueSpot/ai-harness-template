@@ -207,6 +207,18 @@ function createButton(label, disabled, onClick) {
   return button;
 }
 
+function spellLabel(spell, laneIndex) {
+  return `${spell.label} [${laneIndex + 1}]`;
+}
+
+function spellHotkey(id) {
+  if (id === "arrows") return "A";
+  if (id === "heal") return "S";
+  if (id === "rally") return "D";
+  if (id === "meteor") return "F";
+  return "?";
+}
+
 export class SummonerGame {
   constructor() {
     this.canvas = document.getElementById("game-canvas");
@@ -225,6 +237,7 @@ export class SummonerGame {
     this.upgradeHud = document.getElementById("upgrade-hud");
     this.laneStatus = document.getElementById("lane-status");
     this.battleStatus = document.getElementById("battle-status");
+    this.battleObjective = document.getElementById("battle-objective");
     this.victoryCopy = document.getElementById("victory-copy");
 
     this.images = loadAssetImages();
@@ -514,6 +527,10 @@ export class SummonerGame {
     this.castleHealthValue.textContent = Math.max(0, Math.ceil(this.state.castles.player.hp)).toString();
     this.enemyCastleHealthValue.textContent = Math.max(0, Math.ceil(this.state.castles.enemy.hp)).toString();
     this.battleStatus.textContent = this.state.statusText;
+    if (this.battleObjective) {
+      this.battleObjective.textContent =
+        `Lane ${this.state.selectedLane + 1} focused. Keep pressure on that lane, spend mana before the next enemy wave, and protect your castle.`;
+    }
     this.renderSpells();
     this.renderUpgradeHud();
     this.renderLaneStatus();
@@ -527,8 +544,8 @@ export class SummonerGame {
       button.type = "button";
       button.className = "spell-card";
       button.disabled = disabled;
-      button.setAttribute("aria-pressed", String(this.state.selectedLane >= 0));
-      button.innerHTML = `<strong>${spell.label}</strong><span>Lane ${this.state.selectedLane + 1} | ${spell.cost} mana</span><span>${spell.ready ? spell.description : `CD ${spell.cooldownRemaining.toFixed(1)}s`}</span>`;
+      button.setAttribute("aria-pressed", String(this.state.selectedLane >= 0 && spell.ready));
+      button.innerHTML = `<strong>${spellLabel(spell, this.state.selectedLane)}</strong><span>Hotkey ${spellHotkey(spell.id)} | Lane ${this.state.selectedLane + 1} | ${spell.cost} mana</span><span>${spell.ready ? spell.description : `CD ${spell.cooldownRemaining.toFixed(1)}s`}</span>`;
       button.addEventListener("click", () => this.castSpell(spell.id));
       this.spellBar.append(button);
     }
@@ -590,8 +607,8 @@ export class SummonerGame {
       const pressure = clamp((playerFront + (BASE_LANE_LENGTH - enemyFront)) / (BASE_LANE_LENGTH * 1.3), 0, 1);
       const rallyLeft = Math.max(0, laneState.rallyUntil - this.state.time);
       row.innerHTML = `
-        <strong>Lane ${laneState.lane + 1}${this.state.selectedLane === laneState.lane ? " - Focused" : ""}</strong>
-        <span>Allies ${laneState.playerUnits.length} | Enemies ${laneState.enemyUnits.length}${rallyLeft > 0 ? ` | Rally ${rallyLeft.toFixed(1)}s` : ""}</span>
+        <strong>Lane ${laneState.lane + 1}${this.state.selectedLane === laneState.lane ? " - Focused" : ""} [${laneState.lane + 1}]</strong>
+        <span>Hotkey ${laneState.lane + 1} | Allies ${laneState.playerUnits.length} | Enemies ${laneState.enemyUnits.length}${rallyLeft > 0 ? ` | Rally ${rallyLeft.toFixed(1)}s` : ""}</span>
         <div class="meter" aria-hidden="true"><i style="width:${(pressure * 100).toFixed(0)}%"></i></div>
       `;
       row.append(

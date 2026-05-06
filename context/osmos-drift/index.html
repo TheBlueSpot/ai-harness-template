@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Osmos Drift Pool</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell" id="app" data-mode="menu">
+      <section class="hud" id="hud" aria-hidden="true">
+        <div class="hud__chip"><span>Stage</span><strong id="stage-value">1 / 3</strong></div>
+        <div class="hud__chip"><span>Mass</span><strong id="mass-value">0</strong></div>
+        <div class="hud__chip"><span>Target</span><strong id="target-value">0</strong></div>
+        <div class="hud__chip"><span>Bloom</span><strong id="bloom-value">0 / 0</strong></div>
+        <div class="hud__chip"><span>Integrity</span><strong id="health-value">100%</strong></div>
+      </section>
+
+      <div class="stage">
+        <canvas id="game" width="1280" height="720" aria-label="Osmos Drift Pool"></canvas>
+        <aside class="focus-card" id="focus-card" aria-live="polite">
+          <p class="focus-card__label">Route</p>
+          <p class="focus-card__headline" id="focus-headline">Grow before you cross</p>
+          <p class="focus-card__copy" id="focus-copy">Eat smaller teal and lime cells first. Fill the meter, then cut right through the bloom gate.</p>
+          <div class="focus-progress" aria-hidden="true">
+            <div class="focus-progress__meta">
+              <span id="focus-progress-label">Grow 78 more mass</span>
+              <strong id="focus-progress-value">54%</strong>
+            </div>
+            <div class="focus-progress__track">
+              <span class="focus-progress__fill" id="focus-progress-fill"></span>
+            </div>
+          </div>
+          <div class="focus-steps" aria-hidden="true">
+            <section class="focus-step" id="focus-step-grow" data-state="active">
+              <span class="focus-step__index">1</span>
+              <div>
+                <strong>Grow</strong>
+                <p>Eat smaller teal or lime cells.</p>
+              </div>
+            </section>
+            <section class="focus-step" id="focus-step-avoid" data-state="watch">
+              <span class="focus-step__index">2</span>
+              <div>
+                <strong>Charge blooms</strong>
+                <p>Touch the cyan anchors so the gate can stabilize.</p>
+              </div>
+            </section>
+            <section class="focus-step" id="focus-step-exit" data-state="locked">
+              <span class="focus-step__index">3</span>
+              <div>
+                <strong>Exit right</strong>
+                <p>The bloom gate opens after both stage goals fill.</p>
+              </div>
+            </section>
+          </div>
+        </aside>
+
+        <section class="overlay" id="overlay" aria-hidden="false">
+          <p class="overlay__eyebrow" id="overlay-eyebrow">fluid predator playground</p>
+          <h1 id="overlay-title">Osmos Drift Pool</h1>
+          <p id="overlay-copy">
+            Step 1: eat smaller teal and lime cells. Step 2: charge each cyan bloom anchor. Step 3: stay away from larger orange hunters and current wells. Step 4: once mass and bloom goals fill, follow the bright bloom gate on the far right.
+          </p>
+          <button id="overlay-button" type="button">Start Drift</button>
+          <p class="overlay__hint">Move with `WASD` or arrow keys. Hold `Space` for a burst pulse. `Enter` starts. `R` restarts.</p>
+        </section>
+      </div>
+    </main>
+
+    <script src="./game.js"></script>
+  </body>
+</html>

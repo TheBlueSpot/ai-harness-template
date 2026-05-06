@@ -1,6 +1,9 @@
 // src/entities/Enemy.ts
 import { Level, LevelData } from './Level'; // Assuming Level is in the same directory
 
+const TILE_SIZE = 32;
+const SOLID_TILE_IDS = new Set([1]);
+
 // Define base Entity properties
 interface BaseEntity {
   id: string;
@@ -52,6 +55,7 @@ export class Enemy implements BaseEntity {
   update(dt: number, level: Level): void {
     // Basic patrolling AI: move back and forth within patrolRange
     if (this.state === EnemyState.PATROLLING) {
+      const previousX = this.x;
       this.x += this.direction * this.speed * dt;
 
       // Check patrol boundaries
@@ -69,10 +73,31 @@ export class Enemy implements BaseEntity {
         this.direction = 1;
       }
 
-      // TODO: Add collision detection with level tiles and dynamic adjustments
-      // For now, assume simple movement without obstacles
+      const blocked = this.hitsLevelSolid(level);
+      if (blocked) {
+        this.x = previousX;
+        this.direction *= -1;
+      }
     }
     // More AI states would be implemented here (chasing player, attacking, etc.)
+  }
+
+  private hitsLevelSolid(level: Level): boolean {
+    const probeX = this.direction === 1 ? this.x + this.width : this.x - 1;
+    const footY = this.y + this.height - 1;
+    const midY = this.y + this.height / 2;
+    const probePoints = [footY, midY];
+
+    for (const probeY of probePoints) {
+      const tileX = Math.floor(probeX / TILE_SIZE);
+      const tileY = Math.floor(probeY / TILE_SIZE);
+      const tileId = level.getTile(tileX, tileY);
+      if (tileId !== null && SOLID_TILE_IDS.has(tileId)) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   // Basic render representation (will be handled by a renderer component)

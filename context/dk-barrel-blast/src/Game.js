@@ -26,6 +26,12 @@ function distance(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
+function describeDirection(fromX, toX) {
+  const delta = toX - fromX;
+  if (Math.abs(delta) < 80) return "straight up";
+  return delta > 0 ? "up-right" : "up-left";
+}
+
 function getPlatformSurfaceY(platform, x) {
   const centerX = platform.x + platform.width / 2;
   const offset = x - centerX;
@@ -295,6 +301,25 @@ export class Game {
     this.stormGlow = this.elapsed % 3.6 < 0.22;
   }
 
+  getObjectiveState() {
+    const remainingBananas = this.bananas.filter((banana) => !banana.collected);
+    if (remainingBananas.length > 0) {
+      const nextBanana = remainingBananas.reduce((best, banana) => (banana.y > best.y ? banana : best));
+      return {
+        objective: `Next goal: grab the ${describeDirection(this.player.x, nextBanana.x)} banana.`,
+        detail: "Use ladders for the safe route. Tap Up or jump inside a blast barrel when a shortcut line opens.",
+        beacon: { x: nextBanana.x, y: nextBanana.y, label: "NEXT BANANA", kind: "banana" },
+      };
+    }
+
+    const goal = this.landingZones[0];
+    return {
+      objective: `Next goal: finish at the ${describeDirection(this.player.x, goal.x + goal.width * 0.5)} goal zone.`,
+      detail: "All bananas secured. Climb the last lane and land inside the gold finish box to cash out the run.",
+      beacon: { x: goal.x + goal.width * 0.5, y: goal.y + goal.height * 0.5, label: goal.label ?? "GOAL", kind: "goal" },
+    };
+  }
+
   checkCollisions() {
     if (this.barrels.some((barrel) => distance(this.player, barrel) < barrel.radius + 18)) {
       this.loseLife("Barrel hit. Resetting the climb.");
@@ -355,6 +380,14 @@ export class Game {
   getFrameState() {
     const collectedBananas = this.bananas.filter((banana) => banana.collected).length;
     const activeBananas = this.bananas.filter((banana) => !banana.collected);
+    const objectiveState =
+      this.state === "playing"
+        ? this.getObjectiveState()
+        : {
+            objective: "Next goal: collect every banana, then finish at the top-right goal zone.",
+            detail: "Warm amber barrels roll the girders, blue rings mark zingers, and the bright gold box is the final landing zone.",
+            beacon: null,
+          };
 
     return {
       state: this.state,
@@ -364,11 +397,14 @@ export class Game {
       bananas: collectedBananas,
       bananaTarget: BANANA_TARGET,
       progress: this.progress,
+      objective: objectiveState.objective,
+      detail: objectiveState.detail,
       status: this.message,
       hint:
         this.state === "playing"
-          ? "Climb ladders with Up or Down. Tap jump inside blast barrels."
+          ? `${objectiveState.objective} Climb ladders with Up or Down.`
           : "Press Enter or click Start Game.",
+      targetBeacon: objectiveState.beacon,
       appState: {
         state: this.state,
         status: this.message,

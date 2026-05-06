@@ -37,6 +37,8 @@ window.addEventListener("keydown", (event) => {
   if (event.code === "Enter" || event.code === "Space") {
     if (game.mode === "menu") {
       game.start();
+    } else if (game.mode === "stage-intro") {
+      game.beginStage();
     } else if (game.mode === "win" || game.mode === "lose") {
       game.restart();
     }
@@ -53,6 +55,8 @@ window.addEventListener("keyup", (event) => {
 overlayButton.addEventListener("click", () => {
   if (game.mode === "menu") {
     game.start();
+  } else if (game.mode === "stage-intro") {
+    game.beginStage();
   } else {
     game.restart();
   }
@@ -68,8 +72,14 @@ function syncUi(frame) {
     overlay.hidden = false;
     overlayKicker.textContent = "Marble Madness Gyro";
     overlayTitle.textContent = "Tilt Into The Course";
-    overlayBody.textContent = "Clear three stages of checkpoints, collect enough gems to unlock each exit ring, and survive the rotating gyro arms.";
-    overlayButton.textContent = "Start Run";
+    overlayBody.textContent = "Clear six stages of checkpoints, collect enough gems to unlock each exit ring, and survive the rotating gyro arms.";
+    overlayButton.textContent = "View Stage 1";
+  } else if (frame.mode === "stage-intro") {
+    overlay.hidden = false;
+    overlayKicker.textContent = `Stage ${frame.stageNumber} / ${frame.stageCount}`;
+    overlayTitle.textContent = frame.stageName;
+    overlayBody.textContent = `${frame.stageBriefing} Collect ${frame.gemsRequired} gems, lock every checkpoint, and finish with time left for bonus score.`;
+    overlayButton.textContent = "Drop In";
   } else if (frame.mode === "win") {
     overlay.hidden = false;
     overlayKicker.textContent = "Course Clear";

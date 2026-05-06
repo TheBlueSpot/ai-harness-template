@@ -1,8 +1,11 @@
 import { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import { mkdirSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { resolveModeExecutionAccess } from "../../shared/modes";
 import { createStableBoundedId } from "./notification-ids";
+import { isBackgroundRunPastLeaseGrace } from "./background-run-leases";
+import { classifyRunFailure } from "./run-failure-classification";
 import {
   assistantsStateSchema,
   agentRunStateSchema,
@@ -45,6 +48,7 @@ import {
   notificationInboxStateSchema,
   planningChoiceSchema,
   planningQuestionIntentSchema,
+  runFailureCategorySchema,
   type Assistant,
   type AssistantAssetRef,
   type AssistantLearning,
@@ -63,6 +67,7 @@ import {
   type BackgroundJobApprovalPolicy,
   type BackgroundJobRun,
   type BackgroundJobRunStatus,
+  type BackgroundJobSchedulerStatus,
   type BackgroundJobSchedule,
   type BackgroundJobsState,
   type BackgroundJobTemplate,
@@ -97,12 +102,17 @@ import {
   type ProjectRootPath,
   type ProjectThreadSummary,
   type QuestionId,
+  type RunFailureCategory,
+  type RunPromptStats,
   type SessionId,
   type SubagentWorktreeStrategy,
   type SubagentTaskState,
   type ThreadBadgeState,
   type ThreadId,
   type RunExecutionTarget,
+  type RunDiagnosticsOwnerPrompt,
+  type RunDiagnosticsPromptHash,
+  type RunDiagnosticsWindowDays,
   type WorkspaceRuleSource,
   type WorkspaceProjectState,
   type WorkspaceState
@@ -115,6 +125,7 @@ const ACTIVE_THREAD_STATUS = "active";
 const ACTIVE_PROJECT_KEY = "active_project_id";
 const OPENAI_API_KEY = "openai_api_key";
 const GOOGLE_API_KEY = "google_api_key";
+const ANTHROPIC_API_KEY = "anthropic_api_key";
 const PROVIDER_BRAND_KEY = "provider_brand";
 const DEBUG_ENABLED_KEY = "debug_enabled";
 const TRACE_PANEL_DEFAULT_OPEN_KEY = "trace_panel_default_open";
@@ -126,6 +137,8 @@ const PLAN_EXECUTION_MODE_DEFAULT_KEY = "plan_execution_mode_default";
 const PLAN_EXECUTION_DELAY_SECONDS_DEFAULT_KEY = "plan_execution_delay_seconds_default";
 const CORRECTNESS_ITERATION_MODE_DEFAULT_KEY = "correctness_iteration_mode_default";
 const BACKGROUND_JOB_APPROVAL_POLICY_DEFAULT_KEY = "background_job_approval_policy_default";
+const AUTO_ARCHIVE_COMPLETED_THREADS_DEFAULT_KEY = "auto_archive_completed_threads_default";
+const BACKGROUND_SCHEDULER_HEARTBEAT_KEY = "background_scheduler_heartbeat_at";
 const MEMORY_BANK_ENABLED_DEFAULT_KEY = "memory_bank_enabled_default";
 const GLOBAL_EXECUTION_PAUSED_KEY = "global_execution_paused";
 const WORKSPACE_RULES_CONTENT_KEY = "workspace_rules_content";
@@ -197,12 +210,19 @@ type AgentRunRow = {
   status: AgentRunStatus;
   execution_target: RunExecutionTarget | null;
   latest_user_prompt: string;
+  prompt_chars: number | null;
+  prompt_hash: string | null;
+  transcript_chars: number | null;
+  latest_task_chars: number | null;
   planning_model_id: string | null;
   execution_model_id: string | null;
   difficulty_score: number | null;
   summary: string | null;
   final_execution_brief: string | null;
   failure_message: string | null;
+  failure_category: RunFailureCategory | null;
+  max_turns: number | null;
+  turns_used: number;
   plan_json: string | null;
   correctness_review_json: string | null;
   browser_sessions_json: string | null;
@@ -216,6 +236,9 @@ type AgentRunQuestionRow = {
   id: string;
   run_id: string;
   ordinal: number;
+  logical_question_id: string | null;
+  planner_turn_id: string | null;
+  prompt_hash: string | null;
   prompt: string;
   placeholder: string | null;
   response_kind: "choice" | "freeform";
@@ -315,6 +338,21 @@ type BackgroundJobRow = {
   next_run_at: string | null;
   last_run_at: string | null;
   last_enqueued_at: string | null;
+  scheduler_status: BackgroundJobSchedulerStatus | null;
+  scheduler_detail: string | null;
+  scheduler_queue_position: number | null;
+  scheduler_queue_reason: string | null;
+  scheduler_blocked_since_at: string | null;
+  scheduler_active_run_id: string | null;
+  scheduler_active_run_started_at: string | null;
+  scheduler_last_progress_at: string | null;
+  scheduler_overloaded: number | null;
+  consecutive_failure_count: number | null;
+  backoff_until: string | null;
+  last_failure_category: RunFailureCategory | null;
+  last_scheduler_check_at: string | null;
+  last_blocked_at: string | null;
+  blocked_reason: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -333,6 +371,19 @@ type BackgroundJobRunRow = {
   linked_agent_run_id: string | null;
   summary: string | null;
   failure_message: string | null;
+  failure_category: RunFailureCategory | null;
+  prompt_chars: number | null;
+  prompt_hash: string | null;
+  transcript_chars: number | null;
+  latest_task_chars: number | null;
+  controller_instance_id: string | null;
+  controller_lease_id: string | null;
+  controller_lease_expires_at: string | null;
+  resume_attempt_count: number | null;
+  last_heartbeat_at: string | null;
+  heartbeat_stage: string | null;
+  heartbeat_detail: string | null;
+  timed_out_at: string | null;
   queued_at: string;
   started_at: string | null;
   completed_at: string | null;
@@ -356,6 +407,26 @@ type ChatAttachmentUploadRow = {
   thread_id: string | null;
   attachment_json: string;
   created_at: string;
+};
+
+export type GeminiCachedContentRecord = {
+  projectId: ProjectId;
+  modelId: string;
+  attachmentSetHash: string;
+  cachedContentName: string;
+  expiresAt: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type GeminiCachedContentRow = {
+  project_id: string;
+  model_id: string;
+  attachment_set_hash: string;
+  cached_content_name: string;
+  expires_at: string;
+  created_at: string;
+  updated_at: string;
 };
 
 type NotificationRow = {
@@ -449,10 +520,42 @@ type AssistantLearningRow = {
   source: string;
   confidence: "low" | "medium" | "high";
   created_at: string;
+  kind: "fact" | "summary" | null;
+  supersedes_learning_ids_json: string | null;
+  compacted_at: string | null;
 };
 
 const ASSISTANT_LEARNING_SOURCE_MAX_LENGTH = 256;
 const ASSISTANT_LEARNING_SOURCE_FALLBACK = "unknown";
+const ASSISTANT_LEARNING_FUZZY_DUPLICATE_THRESHOLD = 0.86;
+const ASSISTANT_LEARNING_SIMILAR_SENTIMENT_THRESHOLD = 0.58;
+const ASSISTANT_COMPLETED_TODO_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
+const GARBAGE_ASSISTANT_LEARNING_SUMMARIES = new Set([
+  "merged durable assistant guidance",
+  "compacted summary",
+  "compacted summary merged durable assistant guidance"
+]);
+const ASSISTANT_LEARNING_STOP_WORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "are",
+  "as",
+  "be",
+  "for",
+  "from",
+  "in",
+  "into",
+  "is",
+  "it",
+  "of",
+  "on",
+  "or",
+  "that",
+  "the",
+  "to",
+  "with"
+]);
 
 export function normalizeAssistantLearningSource(source: string) {
   return normalizeRequiredString(source, ASSISTANT_LEARNING_SOURCE_MAX_LENGTH, ASSISTANT_LEARNING_SOURCE_FALLBACK);
@@ -523,6 +626,17 @@ function normalizeBooleanNumber(value: unknown) {
   return value === true || value === 1;
 }
 
+function normalizeBackgroundJobSchedulerStatus(value: unknown) {
+  return value === "idle" ||
+    value === "due" ||
+    value === "queued" ||
+    value === "blocked" ||
+    value === "running" ||
+    value === "stale"
+    ? value
+    : undefined;
+}
+
 function normalizeArray<T>(value: T[], max: number) {
   return value.slice(0, max);
 }
@@ -551,6 +665,13 @@ function parseJsonArrayOrEmpty(input: string | null): unknown[] {
   } catch {
     return [];
   }
+}
+
+function normalizeStringArray(input: string | null, maxItems: number, maxItemLength: number) {
+  return parseJsonArrayOrEmpty(input)
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => normalizeRequiredString(value, maxItemLength, "Recovered"))
+    .slice(0, maxItems);
 }
 
 function safeParsePersisted<T>(
@@ -776,6 +897,19 @@ type OpenProjectResult = {
 
 type WorkspaceRepositoryOptions = {
   durability?: "production" | "test-fast";
+};
+
+export type RunDiagnosticsQueryReport = {
+  topPromptHashes: RunDiagnosticsPromptHash[];
+  promptSizeByOwner: RunDiagnosticsOwnerPrompt[];
+  failureRows: Array<{
+    sourceType: "agent-run" | "background-job-run";
+    day: string;
+    failureCategory: RunFailureCategory;
+    assistantId?: string;
+    jobId?: string;
+    count: number;
+  }>;
 };
 
 export class WorkspaceRepository {
@@ -1007,6 +1141,67 @@ export class WorkspaceRepository {
     return this.readProjectSnapshot(projectId);
   }
 
+  archiveThread(projectId: ProjectId, threadId: ThreadId) {
+    const thread = this.readThreadRow(projectId, threadId);
+    if (thread.kind !== "user") {
+      throw new Error("Automation threads cannot be archived");
+    }
+    if (thread.status === "archived") {
+      return this.readProjectSnapshot(projectId);
+    }
+    const project = this.getProject(projectId);
+    if (project.activeThreadId === threadId) {
+      throw new Error("Active thread cannot be archived");
+    }
+    const activeUserThreadCount =
+      this.db
+        .query<{ count: number }, [string]>(
+          `SELECT COUNT(*) AS count
+           FROM project_threads
+           WHERE project_id = ?1 AND kind = 'user' AND status = 'active'`
+        )
+        .get(projectId)?.count ?? 0;
+    if (activeUserThreadCount <= 1) {
+      throw new Error("At least one usable user thread must remain");
+    }
+    const now = new Date().toISOString();
+    const updated = this.db
+      .query(
+        `UPDATE project_threads
+         SET status = 'archived', archived_at = COALESCE(archived_at, ?3), updated_at = ?3
+         WHERE id = ?1 AND project_id = ?2 AND kind = 'user' AND status = 'active'`
+      )
+      .run(threadId, projectId, now);
+    if (updated.changes === 0) {
+      throw new Error(`Unknown thread: ${threadId}`);
+    }
+    this.touchProject(projectId, now);
+    return this.readProjectSnapshot(projectId);
+  }
+
+  restoreThread(projectId: ProjectId, threadId: ThreadId) {
+    const thread = this.readThreadRow(projectId, threadId);
+    if (thread.kind !== "user") {
+      throw new Error("Automation threads cannot be restored");
+    }
+    if (thread.status === "active") {
+      return this.readProjectSnapshot(projectId);
+    }
+    const now = new Date().toISOString();
+    const updated = this.db
+      .query(
+        `UPDATE project_threads
+         SET status = 'active', archived_at = NULL, updated_at = ?3
+         WHERE id = ?1 AND project_id = ?2 AND kind = 'user' AND status = 'archived'`
+      )
+      .run(threadId, projectId, now);
+    if (updated.changes === 0) {
+      throw new Error(`Unknown thread: ${threadId}`);
+    }
+    this.touchProject(projectId, now);
+    return this.readProjectSnapshot(projectId);
+  }
+
   listThreadSummaries(projectId: ProjectId) {
     this.assertProjectExists(projectId);
     return this.readThreadSummaries(projectId);
@@ -1146,7 +1341,7 @@ export class WorkspaceRepository {
     return this.readProjectSnapshot(projectId);
   }
 
-  createAgentRun(projectId: ProjectId, latestUserPrompt: string, planningModelId?: string, threadId?: ThreadId) {
+  createAgentRun(projectId: ProjectId, latestUserPrompt: string, planningModelId?: string, threadId?: ThreadId, maxTurns?: number) {
     const resolvedThreadId = this.resolveThreadId(projectId, threadId);
     this.readThreadRow(projectId, resolvedThreadId);
     const runId = createRunId();
@@ -1161,12 +1356,19 @@ export class WorkspaceRepository {
           status,
           execution_target,
           latest_user_prompt,
+          prompt_chars,
+          prompt_hash,
+          transcript_chars,
+          latest_task_chars,
           planning_model_id,
           execution_model_id,
           difficulty_score,
           summary,
           final_execution_brief,
           failure_message,
+          failure_category,
+          max_turns,
+          turns_used,
           plan_json,
           correctness_review_json,
           browser_sessions_json,
@@ -1174,9 +1376,20 @@ export class WorkspaceRepository {
           created_at,
           updated_at,
           completed_at
-        ) VALUES (?1, ?2, ?3, ?4, 'current-project', ?5, ?6, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?7, ?7, NULL)`
+        ) VALUES (?1, ?2, ?3, ?4, 'current-project', ?5, ?6, ?7, NULL, NULL, ?8, NULL, NULL, NULL, NULL, NULL, NULL, ?9, 0, NULL, NULL, NULL, NULL, ?10, ?10, NULL)`
       )
-      .run(runId, projectId, resolvedThreadId, "planning", latestUserPrompt, planningModelId ?? null, now);
+      .run(
+        runId,
+        projectId,
+        resolvedThreadId,
+        "planning",
+        latestUserPrompt,
+        latestUserPrompt.length,
+        hashPromptText(latestUserPrompt),
+        planningModelId ?? null,
+        maxTurns ?? null,
+        now
+      );
 
     this.db.query(`UPDATE project_threads SET updated_at = ?2 WHERE id = ?1`).run(resolvedThreadId, now);
     this.touchProject(projectId, now);
@@ -1188,46 +1401,90 @@ export class WorkspaceRepository {
     runId: string,
     question: Pick<PlanningQuestion, "id" | "prompt" | "placeholder" | "choices" | "required" | "intent"> &
       Partial<Pick<PlanningQuestion, "responseKind">>,
-    status: Extract<PlanningQuestion["status"], "pending" | "deferred"> = "pending"
+    status: Extract<PlanningQuestion["status"], "pending" | "deferred"> = "pending",
+    plannerTurnId?: string
   ) {
-    const now = new Date().toISOString();
+    return this.appendPlanningQuestions(
+      projectId,
+      runId,
+      [question],
+      status,
+      plannerTurnId ?? createStableBoundedId(["legacy-planner-turn", runId, question.id, hashPromptText(question.prompt)])
+    );
+  }
 
+  appendPlanningQuestions(
+    projectId: ProjectId,
+    runId: string,
+    questions: Array<
+      Pick<PlanningQuestion, "id" | "prompt" | "placeholder" | "choices" | "required" | "intent"> &
+      Partial<Pick<PlanningQuestion, "responseKind">>
+    >,
+    status: Extract<PlanningQuestion["status"], "pending" | "deferred"> = "pending",
+    plannerTurnId: string
+  ) {
+    if (questions.length === 0) {
+      return this.readProjectSnapshot(projectId);
+    }
+
+    const now = new Date().toISOString();
     const tx = this.db.transaction(() => {
       this.assertRunExists(projectId, runId);
-      const ordinal =
-        (this.db
-          .query<{ count: number }, [string]>(`SELECT COUNT(*) AS count FROM agent_run_questions WHERE run_id = ?1`)
-          .get(runId)?.count ?? 0) + 1;
-      const questionId = this.createAvailablePlanningQuestionId(runId, question.id, ordinal);
-      this.db
-        .query(
-          `INSERT INTO agent_run_questions (
-            id,
-            run_id,
+      let ordinal =
+        this.db.query<{ count: number }, [string]>(`SELECT COUNT(*) AS count FROM agent_run_questions WHERE run_id = ?1`).get(runId)?.count ?? 0;
+      const existingQuery = this.db.query<{ id: string }, [string, string, string, string]>(
+        `SELECT id
+         FROM agent_run_questions
+         WHERE run_id = ?1
+           AND planner_turn_id = ?2
+           AND (logical_question_id = ?3 OR prompt_hash = ?4)
+         LIMIT 1`
+      );
+
+      for (const question of questions) {
+        const promptHash = hashPromptText(question.prompt);
+        const existing = existingQuery.get(runId, plannerTurnId, question.id, promptHash);
+        if (existing) {
+          continue;
+        }
+
+        ordinal += 1;
+        this.db
+          .query(
+            `INSERT INTO agent_run_questions (
+              id,
+              run_id,
+              ordinal,
+              logical_question_id,
+              planner_turn_id,
+              prompt_hash,
+              prompt,
+              placeholder,
+              response_kind,
+              choices_json,
+              intent_json,
+              status,
+              answer_text,
+              asked_at,
+              answered_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL, ?13, NULL)`
+          )
+          .run(
+            crypto.randomUUID(),
+            runId,
             ordinal,
-            prompt,
-            placeholder,
-            response_kind,
-            choices_json,
-            intent_json,
+            question.id,
+            plannerTurnId,
+            promptHash,
+            question.prompt,
+            question.placeholder ?? null,
+            question.responseKind ?? "choice",
+            question.choices ? JSON.stringify(question.choices) : null,
+            question.intent ? JSON.stringify(question.intent) : null,
             status,
-            answer_text,
-            asked_at,
-            answered_at
-          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, NULL)`
-        )
-        .run(
-          questionId,
-          runId,
-          ordinal,
-          question.prompt,
-          question.placeholder ?? null,
-          question.responseKind ?? "choice",
-          question.choices ? JSON.stringify(question.choices) : null,
-          question.intent ? JSON.stringify(question.intent) : null,
-          status,
-          now
-        );
+            now
+          );
+      }
 
       this.db
         .query(
@@ -1235,28 +1492,11 @@ export class WorkspaceRepository {
            SET status = 'awaiting-user-input', summary = ?3, updated_at = ?4
            WHERE id = ?1 AND project_id = ?2`
         )
-        .run(runId, projectId, question.prompt, now);
+        .run(runId, projectId, questions[0]?.prompt ?? null, now);
     });
     tx();
 
     return this.readProjectSnapshot(projectId);
-  }
-
-  private createAvailablePlanningQuestionId(runId: string, questionId: string, ordinal: number) {
-    const idQuery = this.db.query<{ id: string }, [string]>(`SELECT id FROM agent_run_questions WHERE id = ?1`);
-    const idExists = (id: string) => Boolean(idQuery.get(id));
-    const baseId = scopePlanningQuestionId(runId, questionId);
-    if (!idExists(baseId)) {
-      return baseId;
-    }
-
-    let suffix = ordinal;
-    let candidate = scopePlanningQuestionId(runId, `${questionId}:${suffix}`);
-    while (idExists(candidate)) {
-      suffix += 1;
-      candidate = scopePlanningQuestionId(runId, `${questionId}:${suffix}`);
-    }
-    return candidate;
   }
 
   promoteDeferredPlanningQuestions() {
@@ -1437,7 +1677,13 @@ export class WorkspaceRepository {
     return this.readProjectSnapshot(projectId);
   }
 
-  setAgentRunStatus(projectId: ProjectId, runId: string, status: AgentRunStatus, failureMessage?: string) {
+  setAgentRunStatus(
+    projectId: ProjectId,
+    runId: string,
+    status: AgentRunStatus,
+    failureMessage?: string,
+    failureCategory?: RunFailureCategory
+  ) {
     const now = new Date().toISOString();
     const completedAt = isTerminalAgentRunStatus(status) ? now : null;
     const updated = this.db
@@ -1445,17 +1691,89 @@ export class WorkspaceRepository {
         `UPDATE agent_runs
          SET status = ?3,
              failure_message = ?4,
-             updated_at = ?5,
-             completed_at = CASE WHEN ?6 IS NULL THEN completed_at ELSE COALESCE(completed_at, ?6) END
+             failure_category = ?5,
+             updated_at = ?6,
+             completed_at = CASE WHEN ?7 IS NULL THEN completed_at ELSE COALESCE(completed_at, ?7) END
          WHERE id = ?1 AND project_id = ?2`
       )
-      .run(runId, projectId, status, failureMessage ?? null, now, completedAt);
+      .run(runId, projectId, status, failureMessage ?? null, failureCategory ?? null, now, completedAt);
 
     if (updated.changes === 0) {
       throw new Error(`Unknown agent run: ${runId}`);
     }
 
     return this.readProjectSnapshot(projectId);
+  }
+
+  setAgentRunRuntimeBudget(projectId: ProjectId, runId: string, maxTurns: number | undefined) {
+    if (maxTurns === undefined) {
+      return this.readProjectSnapshot(projectId);
+    }
+    if (!Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > 1000) {
+      throw new Error("Runtime budget maxTurns must be an integer from 1 to 1000");
+    }
+    const now = new Date().toISOString();
+    const updated = this.db
+      .query(
+        `UPDATE agent_runs
+         SET max_turns = ?3,
+             turns_used = MIN(turns_used, ?3),
+             updated_at = ?4
+         WHERE id = ?1 AND project_id = ?2`
+      )
+      .run(runId, projectId, maxTurns, now);
+
+    if (updated.changes === 0) {
+      throw new Error(`Unknown agent run: ${runId}`);
+    }
+
+    return this.readProjectSnapshot(projectId);
+  }
+
+  reserveAgentRunTurn(projectId: ProjectId, runId: string) {
+    const tx = this.db.transaction(() => {
+      const before = this.db
+        .query<{ max_turns: number | null; turns_used: number }, [string, string]>(
+          `SELECT max_turns, turns_used
+           FROM agent_runs
+           WHERE id = ?1 AND project_id = ?2`
+        )
+        .get(runId, projectId);
+      if (!before) {
+        throw new Error(`Unknown agent run: ${runId}`);
+      }
+      if (before.max_turns === null) {
+        return undefined;
+      }
+
+      const updated = this.db
+        .query(
+          `UPDATE agent_runs
+           SET turns_used = turns_used + 1,
+               updated_at = ?3
+           WHERE id = ?1 AND project_id = ?2
+             AND max_turns IS NOT NULL
+             AND turns_used < max_turns`
+        )
+        .run(runId, projectId, new Date().toISOString());
+
+      if (updated.changes === 0) {
+        throw new Error("Run turn budget exhausted [category=turn-budget-exhausted]");
+      }
+
+      const after = this.db
+        .query<{ max_turns: number; turns_used: number }, [string, string]>(
+          `SELECT max_turns, turns_used
+           FROM agent_runs
+           WHERE id = ?1 AND project_id = ?2`
+        )
+        .get(runId, projectId);
+      if (!after) {
+        throw new Error(`Unknown agent run: ${runId}`);
+      }
+      return buildRunRuntimeBudget(after.max_turns, after.turns_used, true);
+    });
+    return tx();
   }
 
   setAgentRunExecutionTarget(projectId: ProjectId, runId: string, target: RunExecutionTarget) {
@@ -1535,6 +1853,35 @@ export class WorkspaceRepository {
          WHERE id = ?1 AND project_id = ?2`
       )
       .run(runId, projectId, JSON.stringify(browserSessions), now);
+
+    if (updated.changes === 0) {
+      throw new Error(`Unknown agent run: ${runId}`);
+    }
+
+    return this.readProjectSnapshot(projectId);
+  }
+
+  setAgentRunPromptStats(projectId: ProjectId, runId: string, promptStats: RunPromptStats) {
+    const now = new Date().toISOString();
+    const updated = this.db
+      .query(
+        `UPDATE agent_runs
+         SET prompt_chars = ?3,
+             prompt_hash = ?4,
+             transcript_chars = ?5,
+             latest_task_chars = ?6,
+             updated_at = ?7
+         WHERE id = ?1 AND project_id = ?2`
+      )
+      .run(
+        runId,
+        projectId,
+        promptStats.promptChars,
+        promptStats.promptHash,
+        promptStats.transcriptChars ?? null,
+        promptStats.latestTaskChars ?? null,
+        now
+      );
 
     if (updated.changes === 0) {
       throw new Error(`Unknown agent run: ${runId}`);
@@ -1871,8 +2218,8 @@ export class WorkspaceRepository {
     const row = this.db
       .query<AgentRunRow, [string, string]>(
         `SELECT
-          id, project_id, thread_id, status, execution_target, latest_user_prompt, planning_model_id, execution_model_id,
-          difficulty_score, summary, final_execution_brief, failure_message, plan_json, correctness_review_json,
+          id, project_id, thread_id, status, execution_target, latest_user_prompt, prompt_chars, prompt_hash, transcript_chars, latest_task_chars,
+          planning_model_id, execution_model_id, difficulty_score, summary, final_execution_brief, failure_message, failure_category, max_turns, turns_used, plan_json, correctness_review_json,
           browser_sessions_json, tool_activities_json,
           created_at, updated_at, completed_at
          FROM agent_runs
@@ -1883,6 +2230,7 @@ export class WorkspaceRepository {
   }
 
   loadAssistantsState(): AssistantsState {
+    this.pruneCompletedAssistantTodos();
     return assistantsStateSchema.parse({
       assistants: this.readAssistants().slice(0, 512),
       threads: this.readAssistantThreads().slice(0, 512),
@@ -2087,24 +2435,139 @@ export class WorkspaceRepository {
     this.touchAssistant(assistantId, now);
   }
 
+  deleteAssistantTodo(assistantId: string, todoId: string) {
+    this.assertAssistantExists(assistantId);
+    const now = new Date().toISOString();
+    this.db.query(`DELETE FROM assistant_todos WHERE id = ?1 AND assistant_id = ?2`).run(todoId, assistantId);
+    this.touchAssistant(assistantId, now);
+  }
+
   saveAssistantLearning(learning: AssistantLearning) {
     this.assertAssistantExists(learning.assistantId);
     const parsed = assistantLearningSchema.parse({
       ...learning,
       source: normalizeAssistantLearningSource(learning.source)
     });
+    if (isGarbageAssistantLearningSummary(parsed.summary)) {
+      return undefined;
+    }
     this.db
       .query(
-        `INSERT INTO assistant_learnings (id, assistant_id, summary, source, confidence, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        `INSERT INTO assistant_learnings (
+           id, assistant_id, summary, source, confidence, created_at, kind, supersedes_learning_ids_json, compacted_at
+         )
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          ON CONFLICT(id) DO UPDATE SET
            summary = excluded.summary,
            source = excluded.source,
-           confidence = excluded.confidence`
+           confidence = excluded.confidence,
+           kind = excluded.kind,
+           supersedes_learning_ids_json = excluded.supersedes_learning_ids_json,
+           compacted_at = excluded.compacted_at`
       )
-      .run(parsed.id, parsed.assistantId, parsed.summary, parsed.source, parsed.confidence, parsed.createdAt);
+      .run(
+        parsed.id,
+        parsed.assistantId,
+        parsed.summary,
+        parsed.source,
+        parsed.confidence,
+        parsed.createdAt,
+        parsed.kind ?? "fact",
+        parsed.supersedesLearningIds ? JSON.stringify(parsed.supersedesLearningIds) : null,
+        parsed.compactedAt ?? null
+      );
     this.touchAssistant(parsed.assistantId, parsed.createdAt);
-    return this.getAssistantLearning(parsed.id)!;
+    return this.getAssistantLearning(parsed.id);
+  }
+
+  saveAssistantLearningDeduped(learning: AssistantLearning) {
+    this.assertAssistantExists(learning.assistantId);
+    const parsed = assistantLearningSchema.parse({
+      ...learning,
+      source: normalizeAssistantLearningSource(learning.source)
+    });
+    if (isGarbageAssistantLearningSummary(parsed.summary)) {
+      return undefined;
+    }
+    const sharedPremise = this.findAssistantLearningSharedPremise(parsed);
+    if (sharedPremise) {
+      const merged = mergeAssistantLearningSummaries(sharedPremise, parsed);
+      if (!merged) {
+        return sharedPremise;
+      }
+      return this.saveAssistantLearning(merged);
+    }
+    const duplicate = this.findAssistantLearningDuplicate(parsed);
+    if (!duplicate) {
+      return this.saveAssistantLearning(parsed);
+    }
+
+    if (isAssistantQuestionPolicyFollowup(duplicate.source, parsed.source)) {
+      return this.saveAssistantLearning(parsed);
+    }
+    if (shouldSkipSimilarAssistantLearning(duplicate, parsed)) {
+      return duplicate;
+    }
+    const shouldReplace = shouldReplaceAssistantLearning(duplicate, parsed);
+    return this.saveAssistantLearning({
+      ...duplicate,
+      summary: shouldReplace ? parsed.summary : duplicate.summary,
+      source: shouldReplace ? parsed.source : duplicate.source,
+      confidence: strongerAssistantLearningConfidence(duplicate.confidence, parsed.confidence),
+      kind: duplicate.kind ?? parsed.kind ?? "fact",
+      supersedesLearningIds: mergeUniqueStrings([
+        ...(duplicate.supersedesLearningIds ?? []),
+        ...(parsed.supersedesLearningIds ?? [])
+      ]),
+      compactedAt: duplicate.compactedAt,
+      createdAt: duplicate.createdAt
+    });
+  }
+
+  getAssistantLearningStats(assistantId: string) {
+    const learnings = this.getAssistantLearnings(assistantId);
+    const activeFactLearnings = learnings.filter((learning) => (learning.kind ?? "fact") === "fact");
+    return {
+      activeLearningCount: learnings.length,
+      activeFactLearningCount: activeFactLearnings.length,
+      activeSummaryCharCount: learnings.reduce((total, learning) => total + learning.summary.length, 0)
+    };
+  }
+
+  compactAssistantLearnings(assistantId: string, compactedLearning: AssistantLearning, supersededIds: string[]) {
+    this.assertAssistantExists(assistantId);
+    const now = compactedLearning.compactedAt ?? new Date().toISOString();
+    const uniqueSupersededIds = mergeUniqueStrings(supersededIds);
+    const saved = this.saveAssistantLearningDeduped({
+      ...compactedLearning,
+      assistantId,
+      kind: "summary",
+      supersedesLearningIds: uniqueSupersededIds,
+      compactedAt: now
+    });
+    if (!saved) {
+      return undefined;
+    }
+    const tx = this.db.transaction(() => {
+      for (const learningId of uniqueSupersededIds) {
+        if (learningId === saved.id) {
+          continue;
+        }
+        this.db
+          .query(`UPDATE assistant_learnings SET compacted_at = ?3 WHERE id = ?1 AND assistant_id = ?2 AND compacted_at IS NULL`)
+          .run(learningId, assistantId, now);
+      }
+    });
+    tx();
+    this.touchAssistant(assistantId, now);
+    return this.getAssistantLearning(saved.id)!;
+  }
+
+  deleteAssistantLearning(assistantId: string, learningId: string) {
+    this.assertAssistantExists(assistantId);
+    const now = new Date().toISOString();
+    this.db.query(`DELETE FROM assistant_learnings WHERE id = ?1 AND assistant_id = ?2`).run(learningId, assistantId);
+    this.touchAssistant(assistantId, now);
   }
 
   saveAssistantQuestion(question: AssistantQuestion) {
@@ -2498,12 +2961,183 @@ export class WorkspaceRepository {
     tx();
   }
 
+  pruneCompletedAssistantTodos(now: Date = new Date()) {
+    const cutoff = new Date(now.getTime() - ASSISTANT_COMPLETED_TODO_RETENTION_MS).toISOString();
+    this.db
+      .query(
+        `DELETE FROM assistant_todos
+         WHERE state = 'completed'
+           AND completed_at IS NOT NULL
+           AND completed_at < ?1`
+      )
+      .run(cutoff);
+  }
+
   loadBackgroundJobsState(): BackgroundJobsState {
     return backgroundJobsStateSchema.parse({
       jobs: this.readBackgroundJobs().slice(0, 512),
       runs: this.readBackgroundJobRuns().slice(0, 2048),
-      templates: this.readBackgroundJobTemplates().slice(0, 64)
+      templates: this.readBackgroundJobTemplates().slice(0, 64),
+      schedulerHeartbeatAt: this.getBackgroundSchedulerHeartbeatAt()
     });
+  }
+
+  getRunDiagnosticsReport(windowDays: RunDiagnosticsWindowDays = 7): RunDiagnosticsQueryReport {
+    const normalizedWindowDays = windowDays;
+    const since = new Date(Date.now() - normalizedWindowDays * 24 * 60 * 60 * 1000).toISOString();
+    const topPromptHashes = this.db
+      .query<
+        {
+          source_type: "agent-run" | "background-job-run";
+          prompt_hash: string;
+          assistant_id: string | null;
+          job_id: string | null;
+          run_count: number;
+          average_prompt_chars: number;
+          latest_seen_at: string;
+        },
+        [string]
+      >(
+        `WITH prompt_rows AS (
+           SELECT
+             'agent-run' AS source_type,
+             prompt_hash,
+             prompt_chars,
+             updated_at AS seen_at,
+             NULL AS assistant_id,
+             NULL AS job_id
+           FROM agent_runs
+           WHERE prompt_hash IS NOT NULL
+             AND prompt_chars IS NOT NULL
+             AND updated_at >= ?1
+           UNION ALL
+           SELECT
+             'background-job-run' AS source_type,
+             background_job_runs.prompt_hash,
+             background_job_runs.prompt_chars,
+             background_job_runs.updated_at AS seen_at,
+             background_jobs.assistant_id,
+             background_job_runs.job_id
+           FROM background_job_runs
+           LEFT JOIN background_jobs ON background_jobs.id = background_job_runs.job_id
+           WHERE background_job_runs.prompt_hash IS NOT NULL
+             AND background_job_runs.prompt_chars IS NOT NULL
+             AND background_job_runs.updated_at >= ?1
+         )
+         SELECT
+           source_type,
+           prompt_hash,
+           assistant_id,
+           job_id,
+           COUNT(*) AS run_count,
+           AVG(prompt_chars) AS average_prompt_chars,
+           MAX(seen_at) AS latest_seen_at
+         FROM prompt_rows
+         GROUP BY source_type, prompt_hash, assistant_id, job_id
+         HAVING COUNT(*) > 1
+         ORDER BY run_count DESC, latest_seen_at DESC
+         LIMIT 25`
+      )
+      .all(since)
+      .map((row) => ({
+        sourceType: row.source_type,
+        promptHash: normalizeRequiredString(row.prompt_hash, 64, "unknown-prompt"),
+        assistantId: normalizeOptionalString(row.assistant_id, 128),
+        jobId: normalizeOptionalString(row.job_id, 128),
+        runCount: normalizeInteger(row.run_count, 0, 100000, 0),
+        averagePromptChars: normalizeInteger(row.average_prompt_chars, 0, 2_000_000, 0),
+        latestSeenAt: normalizeRequiredString(row.latest_seen_at, 256, since)
+      }));
+
+    const promptSizeByOwner = this.db
+      .query<
+        {
+          assistant_id: string | null;
+          job_id: string | null;
+          run_count: number;
+          average_prompt_chars: number;
+          latest_seen_at: string;
+        },
+        [string]
+      >(
+        `SELECT
+           background_jobs.assistant_id,
+           background_job_runs.job_id,
+           COUNT(*) AS run_count,
+           AVG(background_job_runs.prompt_chars) AS average_prompt_chars,
+           MAX(background_job_runs.updated_at) AS latest_seen_at
+         FROM background_job_runs
+         INNER JOIN background_jobs ON background_jobs.id = background_job_runs.job_id
+         WHERE background_job_runs.prompt_chars IS NOT NULL
+           AND background_job_runs.updated_at >= ?1
+         GROUP BY background_jobs.assistant_id, background_job_runs.job_id
+         ORDER BY average_prompt_chars DESC, latest_seen_at DESC
+         LIMIT 50`
+      )
+      .all(since)
+      .map((row) => ({
+        assistantId: normalizeOptionalString(row.assistant_id, 128),
+        jobId: normalizeOptionalString(row.job_id, 128),
+        runCount: normalizeInteger(row.run_count, 0, 100000, 0),
+        averagePromptChars: normalizeInteger(row.average_prompt_chars, 0, 2_000_000, 0),
+        latestSeenAt: normalizeRequiredString(row.latest_seen_at, 256, since)
+      }));
+
+    const failureRows = this.db
+      .query<
+        {
+          source_type: "agent-run" | "background-job-run";
+          day: string;
+          failure_category: string;
+          assistant_id: string | null;
+          job_id: string | null;
+          count: number;
+        },
+        [string]
+      >(
+        `SELECT
+           'agent-run' AS source_type,
+           substr(updated_at, 1, 10) AS day,
+           failure_category,
+           NULL AS assistant_id,
+           NULL AS job_id,
+           COUNT(*) AS count
+         FROM agent_runs
+         WHERE status = 'failed'
+           AND failure_category IS NOT NULL
+           AND updated_at >= ?1
+         GROUP BY day, failure_category
+         UNION ALL
+         SELECT
+           'background-job-run' AS source_type,
+           substr(background_job_runs.updated_at, 1, 10) AS day,
+           background_job_runs.failure_category,
+           background_jobs.assistant_id,
+           background_job_runs.job_id,
+           COUNT(*) AS count
+         FROM background_job_runs
+         LEFT JOIN background_jobs ON background_jobs.id = background_job_runs.job_id
+         WHERE background_job_runs.status = 'failed'
+           AND background_job_runs.failure_category IS NOT NULL
+           AND background_job_runs.updated_at >= ?1
+         GROUP BY day, background_job_runs.failure_category, background_jobs.assistant_id, background_job_runs.job_id
+         ORDER BY day DESC, count DESC`
+      )
+      .all(since)
+      .map((row) => ({
+        sourceType: row.source_type,
+        day: normalizeRequiredString(row.day, 32, since.slice(0, 10)),
+        failureCategory: classifyRunFailure({ explicitCategory: row.failure_category }),
+        assistantId: normalizeOptionalString(row.assistant_id, 128),
+        jobId: normalizeOptionalString(row.job_id, 128),
+        count: normalizeInteger(row.count, 0, 100000, 0)
+      }));
+
+    return {
+      topPromptHashes,
+      promptSizeByOwner,
+      failureRows
+    };
   }
 
   loadNotificationInboxState(): NotificationInboxState {
@@ -2539,8 +3173,14 @@ export class WorkspaceRepository {
           job_id = excluded.job_id,
           payload_json = excluded.payload_json,
           created_at = excluded.created_at,
-          read_at = excluded.read_at,
-          archived_at = excluded.archived_at`
+          read_at = CASE
+            WHEN notifications.created_at = excluded.created_at THEN COALESCE(notifications.read_at, excluded.read_at)
+            ELSE excluded.read_at
+          END,
+          archived_at = CASE
+            WHEN notifications.created_at = excluded.created_at THEN COALESCE(notifications.archived_at, excluded.archived_at)
+            ELSE excluded.archived_at
+          END`
       )
       .run(
         item.id,
@@ -2609,8 +3249,11 @@ export class WorkspaceRepository {
         `INSERT INTO background_jobs (
           id, project_id, assistant_id, automation_thread_id, template_id, created_from_run_id, kind, name, description,
           definition_json, schedule_json, schedule_input, timezone, status, risk_level, next_run_at,
-          last_run_at, last_enqueued_at, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+          last_run_at, last_enqueued_at, scheduler_status, scheduler_detail, last_scheduler_check_at,
+          last_blocked_at, blocked_reason, scheduler_queue_position, scheduler_queue_reason, scheduler_blocked_since_at,
+          scheduler_active_run_id, scheduler_active_run_started_at, scheduler_last_progress_at, scheduler_overloaded,
+          consecutive_failure_count, backoff_until, last_failure_category, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35)
         ON CONFLICT(id) DO UPDATE SET
           project_id = excluded.project_id,
           assistant_id = excluded.assistant_id,
@@ -2650,6 +3293,21 @@ export class WorkspaceRepository {
         job.nextRunAt ?? null,
         job.lastRunAt ?? null,
         job.lastEnqueuedAt ?? null,
+        job.schedulerStatus ?? "idle",
+        job.schedulerDetail ?? null,
+        job.lastSchedulerCheckAt ?? null,
+        job.lastBlockedAt ?? null,
+        job.blockedReason ?? null,
+        job.schedulerQueuePosition ?? null,
+        job.schedulerQueueReason ?? null,
+        job.schedulerBlockedSinceAt ?? null,
+        job.schedulerActiveRunId ?? null,
+        job.schedulerActiveRunStartedAt ?? null,
+        job.schedulerLastProgressAt ?? null,
+        job.schedulerOverloaded ? 1 : 0,
+        job.consecutiveFailureCount ?? 0,
+        job.backoffUntil ?? null,
+        job.lastFailureCategory ?? null,
         job.createdAt,
         now
       );
@@ -2670,13 +3328,195 @@ export class WorkspaceRepository {
     return this.loadBackgroundJobsState();
   }
 
+  clearBackgroundJobFailureTracking(jobId: string) {
+    const now = new Date().toISOString();
+    this.db
+      .query(
+        `UPDATE background_jobs
+         SET consecutive_failure_count = 0,
+             backoff_until = NULL,
+             last_failure_category = NULL,
+             updated_at = ?2
+         WHERE id = ?1`
+      )
+      .run(jobId, now);
+    return this.getBackgroundJob(jobId);
+  }
+
+  repairBackgroundJobReferences(jobId: string) {
+    const row = this.db
+      .query<{ id: string; project_id: string; assistant_id: string | null; automation_thread_id: string; name: string }, [string]>(
+        `SELECT id, project_id, assistant_id, automation_thread_id, name
+         FROM background_jobs
+         WHERE id = ?1`
+      )
+      .get(jobId);
+    if (!row) {
+      return undefined;
+    }
+
+    const now = new Date().toISOString();
+    const project = this.db.query<{ id: string }, [string]>(`SELECT id FROM projects WHERE id = ?1`).get(row.project_id);
+    if (!project) {
+      this.db
+        .query(
+          `UPDATE background_jobs
+           SET status = 'disabled',
+               scheduler_status = 'blocked',
+               scheduler_detail = ?2,
+               blocked_reason = ?2,
+               last_scheduler_check_at = ?3,
+               last_blocked_at = ?3,
+               updated_at = ?3
+           WHERE id = ?1`
+        )
+        .run(jobId, `Missing project ${row.project_id}`, now);
+      return this.getBackgroundJob(jobId);
+    }
+
+    let assistantId = row.assistant_id;
+    if (assistantId && !this.assistantExists(assistantId)) {
+      this.db
+        .query(
+          `UPDATE background_jobs
+           SET assistant_id = NULL,
+               scheduler_status = 'blocked',
+               scheduler_detail = ?2,
+               blocked_reason = ?2,
+               last_scheduler_check_at = ?3,
+               last_blocked_at = ?3,
+               updated_at = ?3
+           WHERE id = ?1`
+        )
+        .run(jobId, `Detached missing assistant ${assistantId}`, now);
+      assistantId = null;
+    }
+
+    const automationThreadId = this.ensureAutomationThread(row.project_id as ProjectId, row.automation_thread_id as ThreadId, row.name, now);
+    if (automationThreadId !== row.automation_thread_id || assistantId !== row.assistant_id) {
+      this.db
+        .query(
+          `UPDATE background_jobs
+           SET automation_thread_id = ?2,
+               updated_at = ?3
+           WHERE id = ?1`
+        )
+        .run(jobId, automationThreadId, now);
+    }
+
+    return this.getBackgroundJob(jobId);
+  }
+
+  recordBackgroundJobFailure(jobId: string, failureCategory: RunFailureCategory, now: Date = new Date()) {
+    const job = this.getBackgroundJob(jobId);
+    if (!job) {
+      return undefined;
+    }
+
+    const nextCount = (job.consecutiveFailureCount ?? 0) + 1;
+    const nextBackoffUntil = resolveBackgroundBackoffUntil(now, nextCount);
+    this.db
+      .query(
+        `UPDATE background_jobs
+         SET consecutive_failure_count = ?2,
+             backoff_until = ?3,
+             last_failure_category = ?4,
+             updated_at = ?5
+         WHERE id = ?1`
+      )
+      .run(jobId, nextCount, nextBackoffUntil, failureCategory, now.toISOString());
+    return this.getBackgroundJob(jobId);
+  }
+
+  updateBackgroundJobSchedulerState(
+    jobId: string,
+    input: {
+      schedulerStatus: BackgroundJobSchedulerStatus;
+      schedulerDetail?: string;
+      schedulerQueuePosition?: number;
+      schedulerQueueReason?: string;
+      schedulerBlockedSinceAt?: string;
+      schedulerActiveRunId?: string;
+      schedulerActiveRunStartedAt?: string;
+      schedulerLastProgressAt?: string;
+      schedulerOverloaded?: boolean;
+      consecutiveFailureCount?: number;
+      backoffUntil?: string | null;
+      lastFailureCategory?: RunFailureCategory;
+      blockedReason?: string;
+      lastSchedulerCheckAt?: string;
+      lastBlockedAt?: string;
+    }
+  ) {
+    const now = new Date().toISOString();
+    const lastSchedulerCheckAt = input.lastSchedulerCheckAt ?? now;
+    const lastBlockedAt = input.schedulerStatus === "blocked" ? input.lastBlockedAt ?? now : undefined;
+    this.db
+      .query(
+        `UPDATE background_jobs
+         SET scheduler_status = ?2,
+             scheduler_detail = ?3,
+             last_scheduler_check_at = ?4,
+             last_blocked_at = CASE WHEN ?5 IS NULL THEN last_blocked_at ELSE ?5 END,
+             blocked_reason = ?6,
+             scheduler_queue_position = ?7,
+             scheduler_queue_reason = ?8,
+             scheduler_blocked_since_at = CASE
+               WHEN ?2 = 'blocked' THEN COALESCE(scheduler_blocked_since_at, ?9)
+               ELSE NULL
+             END,
+             scheduler_active_run_id = ?10,
+             scheduler_active_run_started_at = ?11,
+             scheduler_last_progress_at = ?12,
+             scheduler_overloaded = ?13,
+             consecutive_failure_count = COALESCE(?14, consecutive_failure_count),
+             backoff_until = ?15,
+             last_failure_category = ?16,
+             updated_at = ?17
+         WHERE id = ?1`
+      )
+      .run(
+        jobId,
+        input.schedulerStatus,
+        input.schedulerDetail ?? null,
+        lastSchedulerCheckAt,
+        lastBlockedAt ?? null,
+        input.blockedReason ?? null,
+        input.schedulerQueuePosition ?? null,
+        input.schedulerQueueReason ?? null,
+        input.schedulerBlockedSinceAt ?? lastBlockedAt ?? now,
+        input.schedulerActiveRunId ?? null,
+        input.schedulerActiveRunStartedAt ?? null,
+        input.schedulerLastProgressAt ?? null,
+        input.schedulerOverloaded === undefined ? null : input.schedulerOverloaded ? 1 : 0,
+        input.consecutiveFailureCount ?? null,
+        input.backoffUntil ?? null,
+        input.lastFailureCategory ?? null,
+        now
+      );
+    return this.getBackgroundJob(jobId);
+  }
+
+  setBackgroundSchedulerHeartbeat(now: Date = new Date()) {
+    const timestamp = now.toISOString();
+    this.setWorkspaceMetaValue(BACKGROUND_SCHEDULER_HEARTBEAT_KEY, timestamp);
+    return timestamp;
+  }
+
+  getBackgroundSchedulerHeartbeatAt() {
+    return this.getWorkspaceMetaValue(BACKGROUND_SCHEDULER_HEARTBEAT_KEY);
+  }
+
   getBackgroundJob(jobId: string) {
     const row = this.db
       .query<BackgroundJobRow, [string]>(
         `SELECT
           id, project_id, assistant_id, automation_thread_id, template_id, created_from_run_id, kind, name, description,
           definition_json, schedule_json, schedule_input, timezone, status, risk_level, next_run_at,
-          last_run_at, last_enqueued_at, created_at, updated_at
+          last_run_at, last_enqueued_at, scheduler_status, scheduler_detail, scheduler_queue_position, scheduler_queue_reason,
+          scheduler_blocked_since_at, scheduler_active_run_id, scheduler_active_run_started_at, scheduler_last_progress_at,
+          scheduler_overloaded, consecutive_failure_count, backoff_until, last_failure_category,
+          last_scheduler_check_at, last_blocked_at, blocked_reason, created_at, updated_at
          FROM background_jobs
          WHERE id = ?1`
       )
@@ -2689,7 +3529,10 @@ export class WorkspaceRepository {
       .query<BackgroundJobRunRow, [string]>(
         `SELECT
           id, job_id, project_id, assistant_id, automation_thread_id, trigger_source, status, risk_level, approval_status,
-          skipped_occurrence_count, linked_agent_run_id, summary, failure_message, queued_at, started_at,
+          skipped_occurrence_count, linked_agent_run_id, summary, failure_message, failure_category,
+          prompt_chars, prompt_hash, transcript_chars, latest_task_chars,
+          controller_instance_id, controller_lease_id, controller_lease_expires_at, resume_attempt_count,
+          last_heartbeat_at, heartbeat_stage, heartbeat_detail, timed_out_at, queued_at, started_at,
           completed_at, created_at, updated_at
          FROM background_job_runs
          WHERE id = ?1`
@@ -2703,7 +3546,10 @@ export class WorkspaceRepository {
       .query<BackgroundJobRunRow, [string]>(
         `SELECT
           id, job_id, project_id, assistant_id, automation_thread_id, trigger_source, status, risk_level, approval_status,
-          skipped_occurrence_count, linked_agent_run_id, summary, failure_message, queued_at, started_at,
+          skipped_occurrence_count, linked_agent_run_id, summary, failure_message, failure_category,
+          prompt_chars, prompt_hash, transcript_chars, latest_task_chars,
+          controller_instance_id, controller_lease_id, controller_lease_expires_at, resume_attempt_count,
+          last_heartbeat_at, heartbeat_stage, heartbeat_detail, timed_out_at, queued_at, started_at,
           completed_at, created_at, updated_at
          FROM background_job_runs
          WHERE linked_agent_run_id = ?1
@@ -2727,6 +3573,197 @@ export class WorkspaceRepository {
       .filter(Boolean);
   }
 
+  getActiveBackgroundJobRuns(jobId?: string) {
+    const rows = jobId
+      ? this.db
+        .query<BackgroundJobRunRow, [string]>(
+          `SELECT
+            id, job_id, project_id, assistant_id, automation_thread_id, trigger_source, status, risk_level, approval_status,
+            skipped_occurrence_count, linked_agent_run_id, summary, failure_message, failure_category,
+            prompt_chars, prompt_hash, transcript_chars, latest_task_chars,
+            controller_instance_id, controller_lease_id, controller_lease_expires_at, resume_attempt_count,
+            last_heartbeat_at, heartbeat_stage, heartbeat_detail, timed_out_at, queued_at, started_at,
+            completed_at, created_at, updated_at
+           FROM background_job_runs
+           WHERE job_id = ?1 AND status IN ('queued', 'awaiting-approval', 'awaiting-user-input', 'running')
+           ORDER BY updated_at DESC, created_at DESC`
+        )
+        .all(jobId)
+      : this.db
+        .query<BackgroundJobRunRow, []>(
+          `SELECT
+            id, job_id, project_id, assistant_id, automation_thread_id, trigger_source, status, risk_level, approval_status,
+            skipped_occurrence_count, linked_agent_run_id, summary, failure_message, failure_category,
+            prompt_chars, prompt_hash, transcript_chars, latest_task_chars,
+            controller_instance_id, controller_lease_id, controller_lease_expires_at, resume_attempt_count,
+            last_heartbeat_at, heartbeat_stage, heartbeat_detail, timed_out_at, queued_at, started_at,
+            completed_at, created_at, updated_at
+           FROM background_job_runs
+           WHERE status IN ('queued', 'awaiting-approval', 'awaiting-user-input', 'running')
+           ORDER BY updated_at DESC, created_at DESC`
+        )
+        .all();
+    return rows.map((row) => this.hydrateBackgroundJobRun(row)).filter((run): run is BackgroundJobRun => run !== undefined);
+  }
+
+  getActiveBackgroundJobRunsByAssistant(assistantId: string) {
+    return this.db
+      .query<BackgroundJobRunRow, [string]>(
+        `SELECT
+          id, job_id, project_id, assistant_id, automation_thread_id, trigger_source, status, risk_level, approval_status,
+          skipped_occurrence_count, linked_agent_run_id, summary, failure_message, failure_category,
+          prompt_chars, prompt_hash, transcript_chars, latest_task_chars,
+          controller_instance_id, controller_lease_id, controller_lease_expires_at, resume_attempt_count,
+          last_heartbeat_at, heartbeat_stage, heartbeat_detail, timed_out_at, queued_at, started_at,
+          completed_at, created_at, updated_at
+         FROM background_job_runs
+         WHERE assistant_id = ?1 AND status IN ('queued', 'awaiting-approval', 'awaiting-user-input', 'running')
+         ORDER BY updated_at DESC, created_at DESC`
+      )
+      .all(assistantId)
+      .map((row) => this.hydrateBackgroundJobRun(row))
+      .filter((run): run is BackgroundJobRun => run !== undefined);
+  }
+
+  getRecentSuccessfulBackgroundJobRunDurationsMs(jobId: string, limit = 10) {
+    return this.db
+      .query<{ started_at: string | null; completed_at: string | null }, [string, number]>(
+        `SELECT started_at, completed_at
+         FROM background_job_runs
+         WHERE job_id = ?1 AND status = 'succeeded' AND started_at IS NOT NULL AND completed_at IS NOT NULL
+         ORDER BY completed_at DESC
+         LIMIT ?2`
+      )
+      .all(jobId, limit)
+      .map((row) => {
+        const startedAt = Date.parse(row.started_at ?? "");
+        const completedAt = Date.parse(row.completed_at ?? "");
+        return Number.isFinite(startedAt) && Number.isFinite(completedAt) ? Math.max(0, completedAt - startedAt) : undefined;
+      })
+      .filter((duration): duration is number => duration !== undefined);
+  }
+
+  repairInterruptedBackgroundJobRuns(
+    options: {
+      jobId?: string;
+      isRunLive?: (run: BackgroundJobRun) => boolean;
+      now?: Date;
+      readyGraceMs?: number;
+      maxRunMs?: number;
+      noProgressMs?: number;
+    } = {}
+  ) {
+    const now = options.now ?? new Date();
+    const readyGraceMs = options.readyGraceMs ?? 2 * 60 * 1000;
+    const maxRunMs = options.maxRunMs ?? 30 * 60 * 1000;
+    const noProgressMs = options.noProgressMs ?? 10 * 60 * 1000;
+    const repairedRuns: BackgroundJobRun[] = [];
+    for (const run of this.getActiveBackgroundJobRuns(options.jobId)) {
+      if (run.linkedAgentRunId) {
+        const linkedRun = this.getRun(run.projectId, run.linkedAgentRunId);
+        const terminalStatus = linkedRun ? mapAgentRunStatusToBackgroundRunStatus(linkedRun.status) : undefined;
+        if (terminalStatus) {
+          const failureMessage =
+            terminalStatus === "succeeded"
+              ? undefined
+              : linkedRun?.failureMessage ?? `Linked agent run ended with status ${linkedRun?.status ?? "missing"}`;
+          const repairedRun = this.setBackgroundJobRunStatus(run.id, terminalStatus, {
+            summary: linkedRun?.summary,
+            failureMessage,
+            failureCategory:
+              terminalStatus === "failed"
+                ? classifyRunFailure({
+                    explicitCategory: linkedRun?.failureCategory,
+                    message: failureMessage
+                  })
+                : undefined
+          });
+          this.appendBackgroundJobRunEvent(
+            run.id,
+            terminalStatus === "succeeded" ? "done" : "failed",
+            "Reconciled linked agent run",
+            failureMessage ?? linkedRun?.summary
+          );
+          repairedRuns.push(this.getBackgroundJobRun(repairedRun.id) ?? repairedRun);
+          continue;
+        }
+        if (
+          linkedRun?.status === "ready" &&
+          options.isRunLive &&
+          !options.isRunLive(run) &&
+          isBackgroundRunPastLeaseGrace(run, now, readyGraceMs)
+        ) {
+          const failureMessage = "Linked agent run was ready but no background controller resumed execution";
+          const repairedRun = this.setBackgroundJobRunStatus(run.id, "failed", {
+            summary: linkedRun.summary,
+            failureMessage,
+            failureCategory: "controller-lost"
+          });
+          this.appendBackgroundJobRunEvent(run.id, "failed", "Background run repaired: no live controller", failureMessage);
+          repairedRuns.push(this.getBackgroundJobRun(repairedRun.id) ?? repairedRun);
+          continue;
+        }
+      }
+
+      if (
+        run.status === "running" &&
+        options.isRunLive &&
+        !options.isRunLive(run) &&
+        isBackgroundRunPastLeaseGrace(run, now, readyGraceMs)
+      ) {
+        const repairedRun = this.setBackgroundJobRunStatus(run.id, "failed", {
+          failureMessage: "Background run interrupted before completion",
+          failureCategory: "controller-lost"
+        });
+        this.appendBackgroundJobRunEvent(
+          run.id,
+          "failed",
+          "Background run repaired: no live controller",
+          "No live background controller owns this running row."
+        );
+        repairedRuns.push(this.getBackgroundJobRun(repairedRun.id) ?? repairedRun);
+        continue;
+      }
+
+      if (run.status === "running" && getBackgroundRunAgeMs(run, now) >= maxRunMs) {
+        const detail = formatBackgroundRunTimeoutDetail(run, now, "max runtime");
+        const repairedRun = this.setBackgroundJobRunStatus(run.id, "failed", {
+          failureMessage: "Timed out: background run exceeded max runtime",
+          failureCategory: "max-runtime-timeout",
+          timedOutAt: now.toISOString()
+        });
+        this.appendBackgroundJobRunEvent(run.id, "failed", "Background run timed out", detail);
+        repairedRuns.push(this.getBackgroundJobRun(repairedRun.id) ?? repairedRun);
+        continue;
+      }
+
+      if (run.status === "running" && getBackgroundRunLastProgressAgeMs(run, now) >= noProgressMs) {
+        const detail = formatBackgroundRunTimeoutDetail(run, now, "no progress heartbeat");
+        const repairedRun = this.setBackgroundJobRunStatus(run.id, "failed", {
+          failureMessage: "Timed out: no background progress heartbeat",
+          failureCategory: "heartbeat-timeout",
+          timedOutAt: now.toISOString()
+        });
+        this.appendBackgroundJobRunEvent(run.id, "failed", "Background run timed out", detail);
+        repairedRuns.push(this.getBackgroundJobRun(repairedRun.id) ?? repairedRun);
+      }
+    }
+    return repairedRuns;
+  }
+
+  repairStaleRunningBackgroundJobRuns(
+    options: {
+      jobId?: string;
+      isRunLive?: (run: BackgroundJobRun) => boolean;
+      now?: Date;
+      readyGraceMs?: number;
+      maxRunMs?: number;
+      noProgressMs?: number;
+    } = {}
+  ) {
+    return this.repairInterruptedBackgroundJobRuns(options);
+  }
+
   createBackgroundJobRun(
     input: Pick<
       BackgroundJobRun,
@@ -2735,22 +3772,28 @@ export class WorkspaceRepository {
       skippedOccurrenceCount?: number;
     }
   ) {
+    const job = this.repairBackgroundJobReferences(input.jobId);
+    if (!job || job.status === "disabled") {
+      throw new Error(`Background job ${input.jobId} cannot be queued`);
+    }
     const now = new Date().toISOString();
     const runId = createBackgroundJobRunId();
     this.db
       .query(
         `INSERT INTO background_job_runs (
           id, job_id, project_id, assistant_id, automation_thread_id, trigger_source, status, risk_level, approval_status,
-          skipped_occurrence_count, linked_agent_run_id, summary, failure_message, queued_at, started_at,
-          completed_at, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, NULL, NULL, ?11, NULL, NULL, ?11, ?11)`
+          skipped_occurrence_count, linked_agent_run_id, summary, failure_message, failure_category,
+          prompt_chars, prompt_hash, transcript_chars, latest_task_chars,
+          controller_instance_id, controller_lease_id, controller_lease_expires_at, resume_attempt_count,
+          last_heartbeat_at, heartbeat_stage, heartbeat_detail, timed_out_at, queued_at, started_at, completed_at, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, ?11, 'queued', NULL, NULL, ?11, NULL, NULL, ?11, ?11)`
       )
       .run(
         runId,
         input.jobId,
-        input.projectId,
-        input.assistantId ?? null,
-        input.automationThreadId,
+        job.projectId,
+        job.assistantId ?? null,
+        job.automationThreadId,
         input.triggerSource,
         input.status,
         input.riskLevel,
@@ -2776,14 +3819,62 @@ export class WorkspaceRepository {
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`
       )
       .run(crypto.randomUUID(), runId, ordinal, stage, message, detail ?? null, now);
-    this.db.query(`UPDATE background_job_runs SET updated_at = ?2 WHERE id = ?1`).run(runId, now);
+    this.db
+      .query(
+        `UPDATE background_job_runs
+         SET last_heartbeat_at = ?2,
+             heartbeat_stage = ?3,
+             heartbeat_detail = ?4,
+             updated_at = ?2
+         WHERE id = ?1`
+      )
+      .run(runId, now, stage, (detail ?? message).slice(0, 1024));
     return this.getBackgroundJobRun(runId)!;
+  }
+
+  touchBackgroundJobRun(runId: string, input: { stage: string; detail?: string; now?: Date }) {
+    const now = (input.now ?? new Date()).toISOString();
+    this.db
+      .query(
+        `UPDATE background_job_runs
+         SET last_heartbeat_at = ?2,
+             heartbeat_stage = ?3,
+             heartbeat_detail = ?4,
+             updated_at = ?2
+         WHERE id = ?1`
+      )
+      .run(runId, now, input.stage, input.detail ? input.detail.slice(0, 1024) : null);
+    return this.getBackgroundJobRun(runId);
+  }
+
+  renewBackgroundJobRunLease(runId: string, controllerLeaseId: string, expiresAt: string) {
+    this.db
+      .query(
+        `UPDATE background_job_runs
+         SET controller_lease_expires_at = ?3
+         WHERE id = ?1
+           AND status = 'running'
+           AND controller_lease_id = ?2`
+      )
+      .run(runId, controllerLeaseId, expiresAt);
+    return this.getBackgroundJobRun(runId);
   }
 
   setBackgroundJobRunStatus(
     runId: string,
     status: BackgroundJobRunStatus,
-    input: { summary?: string; failureMessage?: string; linkedAgentRunId?: string; approvalStatus?: BackgroundJobRun["approvalStatus"] } = {}
+    input: {
+      summary?: string;
+      failureMessage?: string;
+      failureCategory?: RunFailureCategory;
+      linkedAgentRunId?: string;
+      approvalStatus?: BackgroundJobRun["approvalStatus"];
+      timedOutAt?: string;
+      controllerInstanceId?: string | null;
+      controllerLeaseId?: string | null;
+      controllerLeaseExpiresAt?: string | null;
+      resumeAttemptCount?: number;
+    } = {}
   ) {
     const now = new Date().toISOString();
     this.db
@@ -2792,14 +3883,62 @@ export class WorkspaceRepository {
          SET status = ?2,
              summary = COALESCE(?3, summary),
              failure_message = ?4,
-             linked_agent_run_id = COALESCE(?5, linked_agent_run_id),
-             approval_status = COALESCE(?6, approval_status),
-             started_at = CASE WHEN ?2 = 'running' AND started_at IS NULL THEN ?7 ELSE started_at END,
-             completed_at = CASE WHEN ?2 IN ('succeeded', 'failed', 'cancelled', 'skipped') THEN ?7 ELSE completed_at END,
-             updated_at = ?7
+             failure_category = ?5,
+             linked_agent_run_id = COALESCE(?6, linked_agent_run_id),
+             approval_status = COALESCE(?7, approval_status),
+             started_at = CASE WHEN ?2 = 'running' AND started_at IS NULL THEN ?8 ELSE started_at END,
+             completed_at = CASE WHEN ?2 IN ('succeeded', 'failed', 'cancelled', 'skipped') THEN ?8 ELSE completed_at END,
+             last_heartbeat_at = ?8,
+             heartbeat_stage = ?2,
+             heartbeat_detail = COALESCE(?9, ?3, heartbeat_detail),
+             timed_out_at = COALESCE(?10, timed_out_at),
+             controller_instance_id = COALESCE(?11, controller_instance_id),
+             controller_lease_id = COALESCE(?12, controller_lease_id),
+             controller_lease_expires_at = CASE WHEN ?13 = 1 THEN ?14 ELSE controller_lease_expires_at END,
+             resume_attempt_count = COALESCE(?15, resume_attempt_count),
+             updated_at = ?8
          WHERE id = ?1`
       )
-      .run(runId, status, input.summary ?? null, input.failureMessage ?? null, input.linkedAgentRunId ?? null, input.approvalStatus ?? null, now);
+      .run(
+        runId,
+        status,
+        input.summary ?? null,
+        input.failureMessage ?? null,
+        input.failureCategory ?? null,
+        input.linkedAgentRunId ?? null,
+        input.approvalStatus ?? null,
+        now,
+        input.failureMessage ?? null,
+        input.timedOutAt ?? null,
+        input.controllerInstanceId ?? null,
+        input.controllerLeaseId ?? null,
+        input.controllerLeaseExpiresAt !== undefined ? 1 : 0,
+        input.controllerLeaseExpiresAt ?? null,
+        input.resumeAttemptCount ?? null
+      );
+    return this.getBackgroundJobRun(runId)!;
+  }
+
+  setBackgroundJobRunPromptStats(runId: string, promptStats: RunPromptStats) {
+    const now = new Date().toISOString();
+    this.db
+      .query(
+        `UPDATE background_job_runs
+         SET prompt_chars = ?2,
+             prompt_hash = ?3,
+             transcript_chars = ?4,
+             latest_task_chars = ?5,
+             updated_at = ?6
+         WHERE id = ?1`
+      )
+      .run(
+        runId,
+        promptStats.promptChars,
+        promptStats.promptHash,
+        promptStats.transcriptChars ?? null,
+        promptStats.latestTaskChars ?? null,
+        now
+      );
     return this.getBackgroundJobRun(runId)!;
   }
 
@@ -2885,6 +4024,10 @@ export class WorkspaceRepository {
     return this.getWorkspaceMetaValue(GOOGLE_API_KEY);
   }
 
+  getStoredAnthropicApiKey() {
+    return this.getWorkspaceMetaValue(ANTHROPIC_API_KEY);
+  }
+
   setStoredOpenAiApiKey(apiKey: string) {
     const normalizedKey = apiKey.trim();
     if (!normalizedKey) {
@@ -2911,9 +4054,58 @@ export class WorkspaceRepository {
     this.deleteWorkspaceMetaValue(GOOGLE_API_KEY);
   }
 
+  setStoredAnthropicApiKey(apiKey: string) {
+    const normalizedKey = apiKey.trim();
+    if (!normalizedKey) {
+      throw new Error("Anthropic API key is required");
+    }
+
+    this.setWorkspaceMetaValue(ANTHROPIC_API_KEY, normalizedKey);
+  }
+
+  clearStoredAnthropicApiKey() {
+    this.deleteWorkspaceMetaValue(ANTHROPIC_API_KEY);
+  }
+
+  getGeminiCachedContent(input: { projectId: ProjectId; modelId: string; attachmentSetHash: string }) {
+    const row = this.db
+      .query<GeminiCachedContentRow, [string, string, string]>(
+        `SELECT project_id, model_id, attachment_set_hash, cached_content_name, expires_at, created_at, updated_at
+         FROM gemini_cached_contents
+         WHERE project_id = ?1 AND model_id = ?2 AND attachment_set_hash = ?3`
+      )
+      .get(input.projectId, input.modelId, input.attachmentSetHash);
+    return row ? mapGeminiCachedContentRow(row) : undefined;
+  }
+
+  saveGeminiCachedContent(input: {
+    projectId: ProjectId;
+    modelId: string;
+    attachmentSetHash: string;
+    cachedContentName: string;
+    expiresAt: string;
+    now: string;
+  }) {
+    this.db
+      .query(
+        `INSERT INTO gemini_cached_contents (
+           project_id, model_id, attachment_set_hash, cached_content_name, expires_at, created_at, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+         ON CONFLICT(project_id, model_id, attachment_set_hash) DO UPDATE SET
+           cached_content_name = excluded.cached_content_name,
+           expires_at = excluded.expires_at,
+           updated_at = excluded.updated_at`
+      )
+      .run(input.projectId, input.modelId, input.attachmentSetHash, input.cachedContentName, input.expiresAt, input.now);
+    return this.getGeminiCachedContent(input)!;
+  }
+
   getProviderBrand() {
     const value = this.getWorkspaceMetaValue(PROVIDER_BRAND_KEY);
-    return value === "gemini" ? "gemini" : "gpt";
+    if (value === "gemini" || value === "claude") {
+      return value;
+    }
+    return "gpt";
   }
 
   setProviderBrand(providerBrand: ProviderBrand) {
@@ -3019,6 +4211,14 @@ export class WorkspaceRepository {
 
   setBackgroundJobApprovalPolicyDefault(value: BackgroundJobApprovalPolicy) {
     this.setWorkspaceMetaValue(BACKGROUND_JOB_APPROVAL_POLICY_DEFAULT_KEY, value);
+  }
+
+  getAutoArchiveCompletedThreadsDefault() {
+    return this.getWorkspaceMetaValue(AUTO_ARCHIVE_COMPLETED_THREADS_DEFAULT_KEY) === "true";
+  }
+
+  setAutoArchiveCompletedThreadsDefault(value: boolean) {
+    this.setWorkspaceMetaValue(AUTO_ARCHIVE_COMPLETED_THREADS_DEFAULT_KEY, String(value));
   }
 
   getMemoryBankEnabledDefault() {
@@ -3283,6 +4483,21 @@ export class WorkspaceRepository {
         created_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS gemini_cached_contents (
+        project_id TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        attachment_set_hash TEXT NOT NULL,
+        cached_content_name TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(project_id, model_id, attachment_set_hash),
+        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS gemini_cached_contents_expiry_idx
+      ON gemini_cached_contents(expires_at);
+
       CREATE TABLE IF NOT EXISTS agent_runs (
         id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL,
@@ -3301,12 +4516,19 @@ export class WorkspaceRepository {
         )),
         execution_target TEXT NULL CHECK(execution_target IN ('current-project', 'ephemeral-experiment')),
         latest_user_prompt TEXT NOT NULL,
+        prompt_chars INTEGER NULL,
+        prompt_hash TEXT NULL,
+        transcript_chars INTEGER NULL,
+        latest_task_chars INTEGER NULL,
         planning_model_id TEXT NULL,
         execution_model_id TEXT NULL,
         difficulty_score INTEGER NULL,
         summary TEXT NULL,
         final_execution_brief TEXT NULL,
         failure_message TEXT NULL,
+        failure_category TEXT NULL,
+        max_turns INTEGER NULL,
+        turns_used INTEGER NOT NULL DEFAULT 0,
         plan_json TEXT NULL,
         correctness_review_json TEXT NULL,
         browser_sessions_json TEXT NULL,
@@ -3325,6 +4547,9 @@ export class WorkspaceRepository {
         id TEXT PRIMARY KEY,
         run_id TEXT NOT NULL,
         ordinal INTEGER NOT NULL,
+        logical_question_id TEXT NULL,
+        planner_turn_id TEXT NULL,
+        prompt_hash TEXT NULL,
         prompt TEXT NOT NULL,
         placeholder TEXT NULL,
         response_kind TEXT NOT NULL DEFAULT 'choice' CHECK(response_kind IN ('choice', 'freeform')),
@@ -3339,6 +4564,12 @@ export class WorkspaceRepository {
 
       CREATE INDEX IF NOT EXISTS agent_run_questions_run_ordinal_idx
       ON agent_run_questions(run_id, ordinal ASC);
+
+      CREATE UNIQUE INDEX IF NOT EXISTS agent_run_questions_run_turn_logical_idx
+      ON agent_run_questions(run_id, planner_turn_id, logical_question_id);
+
+      CREATE UNIQUE INDEX IF NOT EXISTS agent_run_questions_run_turn_prompt_idx
+      ON agent_run_questions(run_id, planner_turn_id, prompt_hash);
 
       CREATE TABLE IF NOT EXISTS agent_run_subtasks (
         id TEXT PRIMARY KEY,
@@ -3467,6 +4698,21 @@ export class WorkspaceRepository {
         next_run_at TEXT NULL,
         last_run_at TEXT NULL,
         last_enqueued_at TEXT NULL,
+        scheduler_status TEXT NULL CHECK(scheduler_status IN ('idle', 'due', 'queued', 'blocked', 'running', 'stale')),
+        scheduler_detail TEXT NULL,
+        scheduler_queue_position INTEGER NULL,
+        scheduler_queue_reason TEXT NULL,
+        scheduler_blocked_since_at TEXT NULL,
+        scheduler_active_run_id TEXT NULL,
+        scheduler_active_run_started_at TEXT NULL,
+        scheduler_last_progress_at TEXT NULL,
+        scheduler_overloaded INTEGER NULL CHECK(scheduler_overloaded IN (0, 1)),
+        consecutive_failure_count INTEGER NULL,
+        backoff_until TEXT NULL,
+        last_failure_category TEXT NULL,
+        last_scheduler_check_at TEXT NULL,
+        last_blocked_at TEXT NULL,
+        blocked_reason TEXT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
@@ -3491,6 +4737,19 @@ export class WorkspaceRepository {
         linked_agent_run_id TEXT NULL,
         summary TEXT NULL,
         failure_message TEXT NULL,
+        failure_category TEXT NULL,
+        prompt_chars INTEGER NULL,
+        prompt_hash TEXT NULL,
+        transcript_chars INTEGER NULL,
+        latest_task_chars INTEGER NULL,
+        controller_instance_id TEXT NULL,
+        controller_lease_id TEXT NULL,
+        controller_lease_expires_at TEXT NULL,
+        resume_attempt_count INTEGER NULL,
+        last_heartbeat_at TEXT NULL,
+        heartbeat_stage TEXT NULL,
+        heartbeat_detail TEXT NULL,
+        timed_out_at TEXT NULL,
         queued_at TEXT NOT NULL,
         started_at TEXT NULL,
         completed_at TEXT NULL,
@@ -3566,7 +4825,7 @@ export class WorkspaceRepository {
         personality_prompt TEXT NOT NULL,
         job_prompt TEXT NOT NULL,
         agent_id TEXT NOT NULL CHECK(agent_id IN ('pi', 'copilot-cli', 'codex-cli')),
-        provider_brand TEXT NULL CHECK(provider_brand IN ('gpt', 'gemini')),
+        provider_brand TEXT NULL CHECK(provider_brand IN ('gpt', 'gemini', 'claude')),
         mode_id TEXT NULL,
         execution_model_id TEXT NULL,
         fast_mode INTEGER NULL CHECK(fast_mode IN (0, 1)),
@@ -3643,6 +4902,9 @@ export class WorkspaceRepository {
         source TEXT NOT NULL,
         confidence TEXT NOT NULL CHECK(confidence IN ('low', 'medium', 'high')),
         created_at TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'fact' CHECK(kind IN ('fact', 'summary')),
+        supersedes_learning_ids_json TEXT NULL,
+        compacted_at TEXT NULL,
         FOREIGN KEY(assistant_id) REFERENCES assistants(id) ON DELETE CASCADE
       );
 
@@ -3721,16 +4983,58 @@ export class WorkspaceRepository {
     this.addColumnIfMissing("agent_run_questions", "choices_json", "TEXT NULL");
     this.addColumnIfMissing("agent_run_questions", "response_kind", "TEXT NOT NULL DEFAULT 'choice' CHECK(response_kind IN ('choice', 'freeform'))");
     this.addColumnIfMissing("agent_run_questions", "intent_json", "TEXT NULL");
+    this.addColumnIfMissing("agent_run_questions", "logical_question_id", "TEXT NULL");
+    this.addColumnIfMissing("agent_run_questions", "planner_turn_id", "TEXT NULL");
+    this.addColumnIfMissing("agent_run_questions", "prompt_hash", "TEXT NULL");
     this.addColumnIfMissing("agent_run_subtasks", "commit_sha", "TEXT NULL");
     this.addColumnIfMissing("agent_run_subtasks", "worktree_path", "TEXT NULL");
     this.addColumnIfMissing("agent_run_subtasks", "mount_path", "TEXT NULL");
     this.addColumnIfMissing("agent_runs", "execution_target", "TEXT NULL");
+    this.addColumnIfMissing("agent_runs", "prompt_chars", "INTEGER NULL");
+    this.addColumnIfMissing("agent_runs", "prompt_hash", "TEXT NULL");
+    this.addColumnIfMissing("agent_runs", "transcript_chars", "INTEGER NULL");
+    this.addColumnIfMissing("agent_runs", "latest_task_chars", "INTEGER NULL");
     this.addColumnIfMissing("agent_runs", "plan_json", "TEXT NULL");
     this.addColumnIfMissing("agent_runs", "correctness_review_json", "TEXT NULL");
     this.addColumnIfMissing("agent_runs", "browser_sessions_json", "TEXT NULL");
     this.addColumnIfMissing("agent_runs", "tool_activities_json", "TEXT NULL");
+    this.addColumnIfMissing("agent_runs", "failure_category", "TEXT NULL");
+    this.addColumnIfMissing("agent_runs", "max_turns", "INTEGER NULL");
+    this.addColumnIfMissing("agent_runs", "turns_used", "INTEGER NOT NULL DEFAULT 0");
     this.addColumnIfMissing("background_jobs", "assistant_id", "TEXT NULL");
+    this.addColumnIfMissing(
+      "background_jobs",
+      "scheduler_status",
+      "TEXT NULL CHECK(scheduler_status IN ('idle', 'due', 'queued', 'blocked', 'running', 'stale'))"
+    );
+    this.addColumnIfMissing("background_jobs", "scheduler_detail", "TEXT NULL");
+    this.addColumnIfMissing("background_jobs", "scheduler_queue_position", "INTEGER NULL");
+    this.addColumnIfMissing("background_jobs", "scheduler_queue_reason", "TEXT NULL");
+    this.addColumnIfMissing("background_jobs", "scheduler_blocked_since_at", "TEXT NULL");
+    this.addColumnIfMissing("background_jobs", "scheduler_active_run_id", "TEXT NULL");
+    this.addColumnIfMissing("background_jobs", "scheduler_active_run_started_at", "TEXT NULL");
+    this.addColumnIfMissing("background_jobs", "scheduler_last_progress_at", "TEXT NULL");
+    this.addColumnIfMissing("background_jobs", "scheduler_overloaded", "INTEGER NULL CHECK(scheduler_overloaded IN (0, 1))");
+    this.addColumnIfMissing("background_jobs", "consecutive_failure_count", "INTEGER NULL");
+    this.addColumnIfMissing("background_jobs", "backoff_until", "TEXT NULL");
+    this.addColumnIfMissing("background_jobs", "last_failure_category", "TEXT NULL");
+    this.addColumnIfMissing("background_jobs", "last_scheduler_check_at", "TEXT NULL");
+    this.addColumnIfMissing("background_jobs", "last_blocked_at", "TEXT NULL");
+    this.addColumnIfMissing("background_jobs", "blocked_reason", "TEXT NULL");
     this.addColumnIfMissing("background_job_runs", "assistant_id", "TEXT NULL");
+    this.addColumnIfMissing("background_job_runs", "failure_category", "TEXT NULL");
+    this.addColumnIfMissing("background_job_runs", "prompt_chars", "INTEGER NULL");
+    this.addColumnIfMissing("background_job_runs", "prompt_hash", "TEXT NULL");
+    this.addColumnIfMissing("background_job_runs", "transcript_chars", "INTEGER NULL");
+    this.addColumnIfMissing("background_job_runs", "latest_task_chars", "INTEGER NULL");
+    this.addColumnIfMissing("background_job_runs", "controller_instance_id", "TEXT NULL");
+    this.addColumnIfMissing("background_job_runs", "controller_lease_id", "TEXT NULL");
+    this.addColumnIfMissing("background_job_runs", "controller_lease_expires_at", "TEXT NULL");
+    this.addColumnIfMissing("background_job_runs", "resume_attempt_count", "INTEGER NULL");
+    this.addColumnIfMissing("background_job_runs", "last_heartbeat_at", "TEXT NULL");
+    this.addColumnIfMissing("background_job_runs", "heartbeat_stage", "TEXT NULL");
+    this.addColumnIfMissing("background_job_runs", "heartbeat_detail", "TEXT NULL");
+    this.addColumnIfMissing("background_job_runs", "timed_out_at", "TEXT NULL");
     this.addColumnIfMissing("assistants", "provider_brand", "TEXT NULL CHECK(provider_brand IN ('gpt', 'gemini'))");
     this.addColumnIfMissing("assistants", "fast_mode", "INTEGER NULL CHECK(fast_mode IN (0, 1))");
     this.addColumnIfMissing("assistants", "bootstrap_attempt_id", "TEXT NULL");
@@ -3738,6 +5042,9 @@ export class WorkspaceRepository {
     this.addColumnIfMissing("assistants", "bootstrap_finished_at", "TEXT NULL");
     this.addColumnIfMissing("assistants", "pending_reprioritize_reason", "TEXT NULL");
     this.addColumnIfMissing("assistants", "pending_reprioritize_requested_at", "TEXT NULL");
+    this.addColumnIfMissing("assistant_learnings", "kind", "TEXT NOT NULL DEFAULT 'fact' CHECK(kind IN ('fact', 'summary'))");
+    this.addColumnIfMissing("assistant_learnings", "supersedes_learning_ids_json", "TEXT NULL");
+    this.addColumnIfMissing("assistant_learnings", "compacted_at", "TEXT NULL");
     this.addColumnIfMissing("assistant_asset_refs", "canonical_value", "TEXT NULL");
     this.addColumnIfMissing("assistant_asset_refs", "scope", "TEXT NULL CHECK(scope IN ('workspace', 'project'))");
     this.addColumnIfMissing(
@@ -3753,6 +5060,14 @@ export class WorkspaceRepository {
     this.addColumnIfMissing("assistant_asset_refs", "resolution_error", "TEXT NULL");
 
     this.db.exec(`DROP INDEX IF EXISTS project_threads_active_project_idx;`);
+    this.db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS agent_run_questions_run_turn_logical_idx ON agent_run_questions(run_id, planner_turn_id, logical_question_id);`);
+    this.db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS agent_run_questions_run_turn_prompt_idx ON agent_run_questions(run_id, planner_turn_id, prompt_hash);`);
+    this.db.exec(`CREATE INDEX IF NOT EXISTS agent_runs_updated_failure_idx ON agent_runs(updated_at, failure_category);`);
+    this.db.exec(`CREATE INDEX IF NOT EXISTS agent_runs_prompt_updated_idx ON agent_runs(prompt_hash, updated_at);`);
+    this.db.exec(`CREATE INDEX IF NOT EXISTS background_job_runs_updated_failure_job_idx ON background_job_runs(updated_at, failure_category, job_id);`);
+    this.db.exec(`CREATE INDEX IF NOT EXISTS background_job_runs_prompt_updated_job_idx ON background_job_runs(prompt_hash, updated_at, job_id);`);
+    this.db.exec(`CREATE INDEX IF NOT EXISTS background_job_runs_status_lease_idx ON background_job_runs(status, controller_lease_expires_at);`);
+    this.db.exec(`CREATE INDEX IF NOT EXISTS background_jobs_status_backoff_idx ON background_jobs(status, backoff_until);`);
     this.db.exec(`UPDATE project_threads SET status = 'active' WHERE status = 'archived';`);
 
     this.rebuildAgentRunQuestionsTableIfNeeded();
@@ -3765,6 +5080,7 @@ export class WorkspaceRepository {
     this.backfillThreadMetadata();
     this.backfillQuestionChoices();
     this.backfillExecutionTargets();
+    this.deleteGarbageAssistantLearnings();
     this.seedBackgroundJobTemplates();
   }
 
@@ -3937,6 +5253,7 @@ export class WorkspaceRepository {
         return createProjectThreadSummary({
           id: thread.id as ThreadId,
           kind: thread.kind,
+          status: thread.status === "archived" ? "archived" : "active",
           title: normalizeRequiredTrimmedString(thread.title, 256, "Recovered thread"),
           titleSource: thread.title_source,
           badgeState: getThreadBadgeState(latestRun),
@@ -3944,6 +5261,7 @@ export class WorkspaceRepository {
           lastMessagePreview: preview ? summarizeMessagePreview(preview) : undefined,
           createdAt: normalizeOptionalString(thread.created_at, 256),
           lastUserMessageAt: normalizeOptionalString(lastUserMessageAt, 256),
+          archivedAt: normalizeOptionalString(thread.archived_at, 256),
           updatedAt: normalizeRequiredString(thread.updated_at, 256, new Date().toISOString()),
           forkedFromThreadId: (thread.forked_from_thread_id ?? undefined) as ThreadId | undefined
         });
@@ -4102,9 +5420,10 @@ export class WorkspaceRepository {
   private readAssistantLearnings() {
     return this.db
       .query<AssistantLearningRow, []>(
-        `SELECT id, assistant_id, summary, source, confidence, created_at
+        `SELECT id, assistant_id, summary, source, confidence, created_at, kind, supersedes_learning_ids_json, compacted_at
          FROM assistant_learnings
          WHERE assistant_id IN (SELECT id FROM assistants WHERE deleted_at IS NULL)
+           AND (compacted_at IS NULL OR kind = 'summary')
          ORDER BY created_at DESC`
       )
       .all()
@@ -4115,14 +5434,29 @@ export class WorkspaceRepository {
   private readAssistantLearningsByAssistantId(assistantId: string) {
     return this.db
       .query<AssistantLearningRow, [string]>(
-        `SELECT id, assistant_id, summary, source, confidence, created_at
+        `SELECT id, assistant_id, summary, source, confidence, created_at, kind, supersedes_learning_ids_json, compacted_at
          FROM assistant_learnings
          WHERE assistant_id = ?1
+           AND (compacted_at IS NULL OR kind = 'summary')
          ORDER BY created_at DESC`
       )
       .all(assistantId)
       .map((row) => this.hydrateAssistantLearning(row))
       .filter((learning): learning is AssistantLearning => learning !== undefined);
+  }
+
+  private deleteGarbageAssistantLearnings() {
+    const rows = this.db.query<{ id: string; summary: string }, []>(`SELECT id, summary FROM assistant_learnings`).all();
+    const garbageIds = rows.filter((row) => isGarbageAssistantLearningSummary(row.summary)).map((row) => row.id);
+    if (garbageIds.length === 0) {
+      return;
+    }
+    const tx = this.db.transaction(() => {
+      for (const id of garbageIds) {
+        this.db.query(`DELETE FROM assistant_learnings WHERE id = ?1`).run(id);
+      }
+    });
+    tx();
   }
 
   private readAssistantQuestions() {
@@ -4182,12 +5516,66 @@ export class WorkspaceRepository {
   private getAssistantLearning(learningId: string) {
     const row = this.db
       .query<AssistantLearningRow, [string]>(
-        `SELECT id, assistant_id, summary, source, confidence, created_at
+        `SELECT id, assistant_id, summary, source, confidence, created_at, kind, supersedes_learning_ids_json, compacted_at
          FROM assistant_learnings
          WHERE id = ?1`
       )
       .get(learningId);
     return row ? this.hydrateAssistantLearning(row) : undefined;
+  }
+
+  private findAssistantLearningDuplicate(candidate: AssistantLearning) {
+    const candidateKind = candidate.kind ?? "fact";
+    const candidateKey = normalizeAssistantLearningText(candidate.summary);
+    const candidateTokens = tokenizeAssistantLearning(candidate.summary);
+    return this.readAssistantLearningsByAssistantId(candidate.assistantId).find((learning) => {
+      if ((learning.kind ?? "fact") !== candidateKind) {
+        return false;
+      }
+      if (learning.id === candidate.id) {
+        return true;
+      }
+      const learningKey = normalizeAssistantLearningText(learning.summary);
+      if (learningKey === candidateKey) {
+        return true;
+      }
+      if (learningKey.includes(candidateKey) || candidateKey.includes(learningKey)) {
+        return true;
+      }
+      const learningTokens = tokenizeAssistantLearning(learning.summary);
+      if (tokenSmallerSetOverlap(candidateTokens, learningTokens) >= ASSISTANT_LEARNING_SIMILAR_SENTIMENT_THRESHOLD) {
+        return true;
+      }
+      return tokenJaccardSimilarity(candidateTokens, learningTokens) >= ASSISTANT_LEARNING_FUZZY_DUPLICATE_THRESHOLD;
+    });
+  }
+
+  private findAssistantLearningSharedPremise(candidate: AssistantLearning) {
+    const candidateKind = candidate.kind ?? "fact";
+  const candidatePremise = parseNormativeAssistantLearning(candidate.summary);
+    if (!candidatePremise) {
+      return undefined;
+    }
+    const candidatePremiseTokens = tokenizeAssistantLearning(candidatePremise.premise);
+    return this.readAssistantLearningsByAssistantId(candidate.assistantId).find((learning) => {
+      if ((learning.kind ?? "fact") !== candidateKind || learning.id === candidate.id) {
+        return false;
+      }
+      const existingPremise = parseNormativeAssistantLearning(learning.summary);
+      if (!existingPremise) {
+        return false;
+      }
+      if (existingPremise.verb !== candidatePremise.verb) {
+        return false;
+      }
+      const existingKey = normalizeAssistantLearningText(existingPremise.premise);
+      const candidateKey = normalizeAssistantLearningText(candidatePremise.premise);
+      return (
+        existingKey === candidateKey ||
+        tokenSmallerSetOverlap(candidatePremiseTokens, tokenizeAssistantLearning(existingPremise.premise)) >=
+          ASSISTANT_LEARNING_SIMILAR_SENTIMENT_THRESHOLD
+      );
+    });
   }
 
   private getAssistantQuestion(questionId: string) {
@@ -4314,7 +5702,10 @@ export class WorkspaceRepository {
       summary: normalizeRequiredString(row.summary, 4000, "Recovered learning"),
       source: normalizeAssistantLearningSource(row.source),
       confidence: row.confidence,
-      createdAt: normalizeRequiredString(row.created_at, 256, new Date().toISOString())
+      createdAt: normalizeRequiredString(row.created_at, 256, new Date().toISOString()),
+      kind: row.kind ?? "fact",
+      supersedesLearningIds: normalizeStringArray(row.supersedes_learning_ids_json, 512, 128),
+      compactedAt: normalizeOptionalString(row.compacted_at, 256)
       },
       { table: "assistant_learnings", rowId: row.id }
     );
@@ -4402,12 +5793,15 @@ export class WorkspaceRepository {
   }
 
   private assertAssistantExists(assistantId: string) {
-    const assistant = this.db
-      .query<{ id: string }, [string]>(`SELECT id FROM assistants WHERE id = ?1 AND deleted_at IS NULL`)
-      .get(assistantId);
-    if (!assistant) {
+    if (!this.assistantExists(assistantId)) {
       throw new Error(`Unknown assistant: ${assistantId}`);
     }
+  }
+
+  private assistantExists(assistantId: string) {
+    return Boolean(
+      this.db.query<{ id: string }, [string]>(`SELECT id FROM assistants WHERE id = ?1 AND deleted_at IS NULL`).get(assistantId)
+    );
   }
 
   private assertRunExists(projectId: ProjectId, runId: string) {
@@ -4447,8 +5841,8 @@ export class WorkspaceRepository {
     const run = this.db
       .query<AgentRunRow, [string, string]>(
         `SELECT
-          id, project_id, thread_id, status, execution_target, latest_user_prompt, planning_model_id, execution_model_id,
-          difficulty_score, summary, final_execution_brief, failure_message, plan_json, correctness_review_json,
+          id, project_id, thread_id, status, execution_target, latest_user_prompt, prompt_chars, prompt_hash, transcript_chars, latest_task_chars,
+          planning_model_id, execution_model_id, difficulty_score, summary, final_execution_brief, failure_message, failure_category, max_turns, turns_used, plan_json, correctness_review_json,
           browser_sessions_json, tool_activities_json,
           created_at, updated_at, completed_at
          FROM agent_runs
@@ -4465,8 +5859,8 @@ export class WorkspaceRepository {
     return this.db
       .query<AgentRunRow, [string, string, string]>(
         `SELECT
-          id, project_id, thread_id, status, execution_target, latest_user_prompt, planning_model_id, execution_model_id,
-          difficulty_score, summary, final_execution_brief, failure_message, plan_json, correctness_review_json,
+          id, project_id, thread_id, status, execution_target, latest_user_prompt, prompt_chars, prompt_hash, transcript_chars, latest_task_chars,
+          planning_model_id, execution_model_id, difficulty_score, summary, final_execution_brief, failure_message, failure_category, max_turns, turns_used, plan_json, correctness_review_json,
           browser_sessions_json, tool_activities_json,
           created_at, updated_at, completed_at
          FROM agent_runs
@@ -4479,8 +5873,8 @@ export class WorkspaceRepository {
     return this.db
       .query<AgentRunRow, [string, string]>(
         `SELECT
-          id, project_id, thread_id, status, execution_target, latest_user_prompt, planning_model_id, execution_model_id,
-          difficulty_score, summary, final_execution_brief, failure_message, plan_json, correctness_review_json,
+          id, project_id, thread_id, status, execution_target, latest_user_prompt, prompt_chars, prompt_hash, transcript_chars, latest_task_chars,
+          planning_model_id, execution_model_id, difficulty_score, summary, final_execution_brief, failure_message, failure_category, max_turns, turns_used, plan_json, correctness_review_json,
           browser_sessions_json, tool_activities_json,
           created_at, updated_at, completed_at
          FROM agent_runs
@@ -4497,8 +5891,8 @@ export class WorkspaceRepository {
     const run = this.db
       .query<AgentRunRow, [string, string]>(
         `SELECT
-          id, project_id, thread_id, status, execution_target, latest_user_prompt, planning_model_id, execution_model_id,
-          difficulty_score, summary, final_execution_brief, failure_message, plan_json, correctness_review_json,
+          id, project_id, thread_id, status, execution_target, latest_user_prompt, prompt_chars, prompt_hash, transcript_chars, latest_task_chars,
+          planning_model_id, execution_model_id, difficulty_score, summary, final_execution_brief, failure_message, failure_category, max_turns, turns_used, plan_json, correctness_review_json,
           browser_sessions_json, tool_activities_json,
           created_at, updated_at, completed_at
          FROM agent_runs
@@ -4514,7 +5908,7 @@ export class WorkspaceRepository {
   private hydrateRunState(run: AgentRunRow): AgentRunState | undefined {
     const questions = this.db
       .query<AgentRunQuestionRow, [string]>(
-        `SELECT id, run_id, ordinal, prompt, placeholder, response_kind, choices_json, intent_json, status, answer_text, asked_at, answered_at
+        `SELECT id, run_id, ordinal, logical_question_id, planner_turn_id, prompt_hash, prompt, placeholder, response_kind, choices_json, intent_json, status, answer_text, asked_at, answered_at
          FROM agent_run_questions
          WHERE run_id = ?1
          ORDER BY ordinal ASC`
@@ -4522,6 +5916,7 @@ export class WorkspaceRepository {
       .all(run.id)
       .map((question) => ({
         id: question.id,
+        logicalQuestionId: normalizeOptionalString(question.logical_question_id, 128) ?? question.id,
         prompt: normalizeRequiredString(question.prompt, 1000000, "Recovered planning question"),
         placeholder: normalizeOptionalString(question.placeholder, 32000),
         responseKind: question.response_kind,
@@ -4604,12 +5999,20 @@ export class WorkspaceRepository {
       status: run.status,
       executionTarget: run.execution_target ?? "current-project",
       latestUserPrompt: normalizeRequiredString(run.latest_user_prompt, 1000000, "Recovered prompt"),
+      promptStats: buildRunPromptStats({
+        promptChars: run.prompt_chars,
+        promptHash: run.prompt_hash,
+        transcriptChars: run.transcript_chars,
+        latestTaskChars: run.latest_task_chars
+      }),
       planningModelId: normalizeOptionalString(run.planning_model_id, 256),
       executionModelId: normalizeOptionalString(run.execution_model_id, 256),
       difficultyScore: normalizeOptionalInteger(run.difficulty_score, 0, 100),
       summary: normalizeOptionalString(run.summary, 1000000),
       finalExecutionBrief: normalizeOptionalString(run.final_execution_brief, 1000000),
       failureMessage: normalizeOptionalString(run.failure_message, 1000000),
+      failureCategory: normalizeRunFailureCategory(run.failure_category),
+      runtimeBudget: run.max_turns === null ? undefined : buildRunRuntimeBudget(run.max_turns, run.turns_used, false),
       plan: parseExecutionPlan(run.plan_json),
       correctnessReview: parseCorrectnessReview(run.correctness_review_json),
       questions,
@@ -4876,6 +6279,9 @@ export class WorkspaceRepository {
         id TEXT PRIMARY KEY,
         run_id TEXT NOT NULL,
         ordinal INTEGER NOT NULL,
+        logical_question_id TEXT NULL,
+        planner_turn_id TEXT NULL,
+        prompt_hash TEXT NULL,
         prompt TEXT NOT NULL,
         placeholder TEXT NULL,
         response_kind TEXT NOT NULL DEFAULT 'choice' CHECK(response_kind IN ('choice', 'freeform')),
@@ -4888,14 +6294,18 @@ export class WorkspaceRepository {
         FOREIGN KEY(run_id) REFERENCES agent_runs(id) ON DELETE CASCADE
       );
       INSERT INTO agent_run_questions (
-        id, run_id, ordinal, prompt, placeholder, response_kind, choices_json, intent_json, status, answer_text, asked_at, answered_at
+        id, run_id, ordinal, logical_question_id, planner_turn_id, prompt_hash, prompt, placeholder, response_kind, choices_json, intent_json, status, answer_text, asked_at, answered_at
       )
       SELECT
-        id, run_id, ordinal, prompt, placeholder, 'choice', choices_json, NULL, status, answer_text, asked_at, answered_at
+        id, run_id, ordinal, id, NULL, NULL, prompt, placeholder, 'choice', choices_json, NULL, status, answer_text, asked_at, answered_at
       FROM agent_run_questions_legacy;
       DROP TABLE agent_run_questions_legacy;
       CREATE INDEX IF NOT EXISTS agent_run_questions_run_ordinal_idx
       ON agent_run_questions(run_id, ordinal ASC);
+      CREATE UNIQUE INDEX IF NOT EXISTS agent_run_questions_run_turn_logical_idx
+      ON agent_run_questions(run_id, planner_turn_id, logical_question_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS agent_run_questions_run_turn_prompt_idx
+      ON agent_run_questions(run_id, planner_turn_id, prompt_hash);
     `);
   }
 
@@ -4983,6 +6393,15 @@ export class WorkspaceRepository {
         linked_agent_run_id TEXT NULL,
         summary TEXT NULL,
         failure_message TEXT NULL,
+        failure_category TEXT NULL,
+        prompt_chars INTEGER NULL,
+        prompt_hash TEXT NULL,
+        transcript_chars INTEGER NULL,
+        latest_task_chars INTEGER NULL,
+        controller_instance_id TEXT NULL,
+        controller_lease_id TEXT NULL,
+        controller_lease_expires_at TEXT NULL,
+        resume_attempt_count INTEGER NULL,
         queued_at TEXT NOT NULL,
         started_at TEXT NULL,
         completed_at TEXT NULL,
@@ -4995,11 +6414,15 @@ export class WorkspaceRepository {
       );
       INSERT INTO background_job_runs (
         id, job_id, project_id, assistant_id, automation_thread_id, trigger_source, status, risk_level, approval_status,
-        skipped_occurrence_count, linked_agent_run_id, summary, failure_message, queued_at, started_at, completed_at, created_at, updated_at
+        skipped_occurrence_count, linked_agent_run_id, summary, failure_message, failure_category,
+        prompt_chars, prompt_hash, transcript_chars, latest_task_chars,
+        controller_instance_id, controller_lease_id, controller_lease_expires_at, resume_attempt_count,
+        queued_at, started_at, completed_at, created_at, updated_at
       )
       SELECT
         id, job_id, project_id, assistant_id, automation_thread_id, trigger_source, status, risk_level, approval_status,
-        skipped_occurrence_count, linked_agent_run_id, summary, failure_message, queued_at, started_at, completed_at, created_at, updated_at
+        skipped_occurrence_count, linked_agent_run_id, summary, failure_message, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0,
+        queued_at, started_at, completed_at, created_at, updated_at
       FROM background_job_runs_legacy;
       DROP TABLE background_job_runs_legacy;
       CREATE INDEX IF NOT EXISTS background_job_runs_job_updated_idx
@@ -5166,7 +6589,10 @@ export class WorkspaceRepository {
         `SELECT
           id, project_id, assistant_id, automation_thread_id, template_id, created_from_run_id, kind, name, description,
           definition_json, schedule_json, schedule_input, timezone, status, risk_level, next_run_at,
-          last_run_at, last_enqueued_at, created_at, updated_at
+          last_run_at, last_enqueued_at, scheduler_status, scheduler_detail, scheduler_queue_position, scheduler_queue_reason,
+          scheduler_blocked_since_at, scheduler_active_run_id, scheduler_active_run_started_at, scheduler_last_progress_at,
+          scheduler_overloaded, consecutive_failure_count, backoff_until, last_failure_category,
+          last_scheduler_check_at, last_blocked_at, blocked_reason, created_at, updated_at
          FROM background_jobs
          ORDER BY updated_at DESC, created_at DESC`
       )
@@ -5180,7 +6606,10 @@ export class WorkspaceRepository {
       .query<BackgroundJobRunRow, []>(
         `SELECT
           id, job_id, project_id, assistant_id, automation_thread_id, trigger_source, status, risk_level, approval_status,
-          skipped_occurrence_count, linked_agent_run_id, summary, failure_message, queued_at, started_at,
+          skipped_occurrence_count, linked_agent_run_id, summary, failure_message, failure_category,
+          prompt_chars, prompt_hash, transcript_chars, latest_task_chars,
+          controller_instance_id, controller_lease_id, controller_lease_expires_at, resume_attempt_count,
+          last_heartbeat_at, heartbeat_stage, heartbeat_detail, timed_out_at, queued_at, started_at,
           completed_at, created_at, updated_at
          FROM background_job_runs
          ORDER BY updated_at DESC, created_at DESC
@@ -5252,6 +6681,23 @@ export class WorkspaceRepository {
       nextRunAt: normalizeOptionalString(row.next_run_at, 256),
       lastRunAt: normalizeOptionalString(row.last_run_at, 256),
       lastEnqueuedAt: normalizeOptionalString(row.last_enqueued_at, 256),
+      schedulerStatus: normalizeBackgroundJobSchedulerStatus(row.scheduler_status),
+      schedulerDetail: normalizeOptionalString(row.scheduler_detail, 1024),
+      schedulerQueuePosition: row.scheduler_queue_position
+        ? normalizeInteger(row.scheduler_queue_position, 1, 100000, 1)
+        : undefined,
+      schedulerQueueReason: normalizeOptionalString(row.scheduler_queue_reason, 1024),
+      schedulerBlockedSinceAt: normalizeOptionalString(row.scheduler_blocked_since_at, 256),
+      schedulerActiveRunId: normalizeOptionalString(row.scheduler_active_run_id, 128),
+      schedulerActiveRunStartedAt: normalizeOptionalString(row.scheduler_active_run_started_at, 256),
+      schedulerLastProgressAt: normalizeOptionalString(row.scheduler_last_progress_at, 256),
+      schedulerOverloaded: row.scheduler_overloaded === null ? undefined : Boolean(row.scheduler_overloaded),
+      consecutiveFailureCount: normalizeOptionalInteger(row.consecutive_failure_count, 0, 100000) ?? 0,
+      backoffUntil: normalizeOptionalString(row.backoff_until, 256),
+      lastFailureCategory: normalizeRunFailureCategory(row.last_failure_category),
+      lastSchedulerCheckAt: normalizeOptionalString(row.last_scheduler_check_at, 256),
+      lastBlockedAt: normalizeOptionalString(row.last_blocked_at, 256),
+      blockedReason: normalizeOptionalString(row.blocked_reason, 1024),
       createdAt: normalizeRequiredString(row.created_at, 256, new Date().toISOString()),
       updatedAt: normalizeRequiredString(row.updated_at, 256, new Date().toISOString())
       },
@@ -5293,6 +6739,18 @@ export class WorkspaceRepository {
       linkedAgentRunId: normalizeOptionalString(row.linked_agent_run_id, 128),
       summary: normalizeOptionalString(row.summary, 4000),
       failureMessage: normalizeOptionalString(row.failure_message, 4000),
+      failureCategory: normalizeRunFailureCategory(row.failure_category),
+      promptStats: buildRunPromptStats({
+        promptChars: row.prompt_chars,
+        promptHash: row.prompt_hash,
+        transcriptChars: row.transcript_chars,
+        latestTaskChars: row.latest_task_chars
+      }),
+      lastHeartbeatAt: normalizeOptionalString(row.last_heartbeat_at, 256),
+      heartbeatStage: normalizeOptionalString(row.heartbeat_stage, 64),
+      heartbeatDetail: normalizeOptionalString(row.heartbeat_detail, 1024),
+      timedOutAt: normalizeOptionalString(row.timed_out_at, 256),
+      resumeAttemptCount: normalizeOptionalInteger(row.resume_attempt_count, 0, 1000),
       queuedAt: normalizeRequiredString(row.queued_at, 256, new Date().toISOString()),
       startedAt: normalizeOptionalString(row.started_at, 256),
       completedAt: normalizeOptionalString(row.completed_at, 256),
@@ -5662,6 +7120,20 @@ function parseCorrectnessReview(input: string | null): CorrectnessReview | undef
   }
 }
 
+function buildRunRuntimeBudget(maxTurns: number, turnsUsed: number, reservedCurrentTurn: boolean) {
+  const boundedMaxTurns = normalizeInteger(maxTurns, 1, 1000, 1);
+  const boundedTurnsUsed = normalizeInteger(turnsUsed, 0, boundedMaxTurns, 0);
+  const remainingTurns = Math.max(0, boundedMaxTurns - boundedTurnsUsed);
+  const exhausted = remainingTurns === 0;
+  return {
+    maxTurns: boundedMaxTurns,
+    turnsUsed: boundedTurnsUsed,
+    currentTurn: reservedCurrentTurn ? boundedTurnsUsed : exhausted ? boundedTurnsUsed : boundedTurnsUsed + 1,
+    remainingTurns,
+    exhausted
+  };
+}
+
 function parseBrowserSessions(input: string | null): BrowserSession[] | undefined {
   if (!input) {
     return undefined;
@@ -5831,6 +7303,215 @@ function summarizeMessagePreview(content: string) {
   return compact.length <= 80 ? compact : `${compact.slice(0, 77)}...`;
 }
 
+function normalizeAssistantLearningText(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function tokenizeAssistantLearning(value: string) {
+  return new Set(
+    normalizeAssistantLearningText(value)
+      .split(" ")
+      .map((token) => normalizeAssistantLearningToken(token))
+      .filter((token) => token.length > 1 && !ASSISTANT_LEARNING_STOP_WORDS.has(token))
+  );
+}
+
+function isGarbageAssistantLearningSummary(summary: string) {
+  return GARBAGE_ASSISTANT_LEARNING_SUMMARIES.has(normalizeAssistantLearningText(summary));
+}
+
+function normalizeAssistantLearningToken(token: string) {
+  if (token.length > 5 && token.endsWith("ies")) {
+    return `${token.slice(0, -3)}y`;
+  }
+  if (token.length > 5 && token.endsWith("ied")) {
+    return `${token.slice(0, -3)}y`;
+  }
+  if (token.length > 4 && token.endsWith("ed")) {
+    const base = token.slice(0, -2);
+    return base.endsWith("s") ? `${base}e` : base;
+  }
+  if (token.length > 5 && token.endsWith("er")) {
+    const base = token.slice(0, -2);
+    return base.endsWith("s") ? `${base}e` : base;
+  }
+  if (token.length > 5 && token.endsWith("est")) {
+    return token.slice(0, -3);
+  }
+  if (token.length > 4 && token.endsWith("s")) {
+    return token.slice(0, -1);
+  }
+  return token;
+}
+
+function tokenSmallerSetOverlap(left: Set<string>, right: Set<string>) {
+  const smallerSize = Math.min(left.size, right.size);
+  if (smallerSize === 0) {
+    return left.size === right.size ? 1 : 0;
+  }
+  let intersection = 0;
+  for (const token of left) {
+    if (right.has(token)) {
+      intersection += 1;
+    }
+  }
+  return intersection / smallerSize;
+}
+
+function parseNormativeAssistantLearning(summary: string) {
+  const normalized = summary.replace(/\s+/g, " ").trim();
+  const match = /^(?<premise>.+?)\s+(?<verb>needs?|should|must|requires?)\s+(?<guidance>.+?)\.?$/iu.exec(normalized);
+  const premise = match?.groups?.premise?.trim();
+  const verb = normalizeNormativeAssistantLearningVerb(match?.groups?.verb?.trim().toLowerCase() ?? "");
+  const guidance = match?.groups?.guidance?.replace(/[.?!]+$/u, "").trim();
+  if (!premise || !verb || !guidance) {
+    return undefined;
+  }
+  if (/[":;?]/u.test(premise) || /[":;?]/u.test(guidance)) {
+    return undefined;
+  }
+  return { premise, verb, guidance };
+}
+
+function normalizeNormativeAssistantLearningVerb(verb: string) {
+  if (verb === "needs") {
+    return "need";
+  }
+  if (verb === "requires") {
+    return "require";
+  }
+  return verb;
+}
+
+function mergeAssistantLearningSummaries(existing: AssistantLearning, candidate: AssistantLearning) {
+  const existingNormative = parseNormativeAssistantLearning(existing.summary);
+  const candidateNormative = parseNormativeAssistantLearning(candidate.summary);
+  if (!existingNormative || !candidateNormative) {
+    return undefined;
+  }
+  const guidance = mergeAssistantLearningGuidance(existingNormative.guidance, candidateNormative.guidance);
+  if (!guidance) {
+    return undefined;
+  }
+  const summary = `${existingNormative.premise} ${existingNormative.verb} ${guidance}.`;
+  if (summary.length > 4000) {
+    return undefined;
+  }
+  return {
+    ...existing,
+    summary,
+    source: normalizeAssistantLearningSource(
+      mergeUniqueStrings([existing.source, candidate.source]).join("; ")
+    ),
+    confidence: strongerAssistantLearningConfidence(existing.confidence, candidate.confidence),
+    supersedesLearningIds: mergeUniqueStrings([
+      ...(existing.supersedesLearningIds ?? []),
+      ...(candidate.supersedesLearningIds ?? [])
+    ]),
+    compactedAt: existing.compactedAt,
+    createdAt: existing.createdAt
+  };
+}
+
+function mergeAssistantLearningGuidance(existingGuidance: string, candidateGuidance: string) {
+  const phrases = new Map<string, string>();
+  for (const phrase of splitAssistantLearningGuidance(existingGuidance)) {
+    phrases.set(normalizeAssistantLearningText(phrase), phrase);
+  }
+  let added = false;
+  for (const phrase of splitAssistantLearningGuidance(candidateGuidance)) {
+    const key = normalizeAssistantLearningText(phrase);
+    if (!phrases.has(key)) {
+      phrases.set(key, phrase);
+      added = true;
+    }
+  }
+  if (!added) {
+    return existingGuidance;
+  }
+  return [...phrases.values()].join(" and ");
+}
+
+function splitAssistantLearningGuidance(guidance: string) {
+  return guidance
+    .split(/\s+(?:and|,)\s+/iu)
+    .map((part) => part.replace(/[.?!]+$/u, "").trim())
+    .filter(Boolean);
+}
+
+function shouldSkipSimilarAssistantLearning(existing: AssistantLearning, candidate: AssistantLearning) {
+  const existingKey = normalizeAssistantLearningText(existing.summary);
+  const candidateKey = normalizeAssistantLearningText(candidate.summary);
+  if (existingKey === candidateKey || existing.id === candidate.id) {
+    return false;
+  }
+  if (isAssistantQuestionPolicyFollowup(existing.source, candidate.source)) {
+    return false;
+  }
+  const existingTokens = tokenizeAssistantLearning(existing.summary);
+  const candidateTokens = tokenizeAssistantLearning(candidate.summary);
+  return (
+    existingKey.includes(candidateKey) ||
+    candidateKey.includes(existingKey) ||
+    tokenSmallerSetOverlap(existingTokens, candidateTokens) >= ASSISTANT_LEARNING_SIMILAR_SENTIMENT_THRESHOLD
+  );
+}
+
+function isAssistantQuestionPolicyFollowup(left: string, right: string) {
+  const families = new Set([left, right].map((source) => source.split(":")[0]?.toLowerCase() ?? source.toLowerCase()));
+  return families.has("question") && families.has("question-policy");
+}
+
+function tokenJaccardSimilarity(left: Set<string>, right: Set<string>) {
+  if (left.size === 0 && right.size === 0) {
+    return 1;
+  }
+  let intersection = 0;
+  for (const token of left) {
+    if (right.has(token)) {
+      intersection += 1;
+    }
+  }
+  return intersection / (left.size + right.size - intersection);
+}
+
+function assistantLearningConfidenceRank(confidence: AssistantLearning["confidence"]) {
+  switch (confidence) {
+    case "high":
+      return 3;
+    case "medium":
+      return 2;
+    case "low":
+      return 1;
+  }
+}
+
+function strongerAssistantLearningConfidence(
+  left: AssistantLearning["confidence"],
+  right: AssistantLearning["confidence"]
+) {
+  return assistantLearningConfidenceRank(right) > assistantLearningConfidenceRank(left) ? right : left;
+}
+
+function shouldReplaceAssistantLearning(existing: AssistantLearning, candidate: AssistantLearning) {
+  const confidenceImproved =
+    assistantLearningConfidenceRank(candidate.confidence) > assistantLearningConfidenceRank(existing.confidence);
+  if (confidenceImproved) {
+    return true;
+  }
+  const candidateCreatedAt = new Date(candidate.createdAt).getTime();
+  const existingCreatedAt = new Date(existing.createdAt).getTime();
+  return Number.isFinite(candidateCreatedAt) && Number.isFinite(existingCreatedAt) && candidateCreatedAt >= existingCreatedAt;
+}
+
+function mergeUniqueStrings(values: string[]) {
+  return [...new Set(values.filter((value) => value.trim().length > 0))];
+}
+
 function normalizeThreadTitle(title: string) {
   const normalized = title.replace(/\s+/g, " ").trim();
   if (!normalized) {
@@ -5875,6 +7556,42 @@ function isTerminalAgentRunStatus(status: AgentRunStatus) {
   return status === "completed" || status === "partial-complete" || status === "stopped" || status === "failed";
 }
 
+function mapAgentRunStatusToBackgroundRunStatus(status: AgentRunStatus): BackgroundJobRunStatus | undefined {
+  switch (status) {
+    case "completed":
+      return "succeeded";
+    case "partial-complete":
+    case "failed":
+      return "failed";
+    case "stopped":
+      return "cancelled";
+    default:
+      return undefined;
+  }
+}
+
+function getBackgroundRunAgeMs(run: BackgroundJobRun, now: Date) {
+  const startedAt = Date.parse(run.startedAt ?? run.queuedAt);
+  if (!Number.isFinite(startedAt)) {
+    return 0;
+  }
+  return Math.max(0, now.getTime() - startedAt);
+}
+
+function getBackgroundRunLastProgressAgeMs(run: BackgroundJobRun, now: Date) {
+  const timestamp = Date.parse(run.lastHeartbeatAt ?? run.updatedAt ?? run.startedAt ?? run.queuedAt);
+  if (!Number.isFinite(timestamp)) {
+    return 0;
+  }
+  return Math.max(0, now.getTime() - timestamp);
+}
+
+function formatBackgroundRunTimeoutDetail(run: BackgroundJobRun, now: Date, reason: string) {
+  const ageMs = getBackgroundRunAgeMs(run, now);
+  const progressAgeMs = getBackgroundRunLastProgressAgeMs(run, now);
+  return `${reason}; active ${Math.floor(ageMs / 1000)}s; last progress ${Math.floor(progressAgeMs / 1000)}s ago.`;
+}
+
 function isRunResumable(status: AgentRunStatus, hasExecutionState: boolean) {
   if (status === "partial-complete" || status === "stopped") {
     return true;
@@ -5897,11 +7614,74 @@ function toAgentRunSummary(run: AgentRunState): AgentRunSummary {
     threadId: run.threadId,
     status: run.status,
     failureMessage: run.failureMessage,
+    failureCategory: run.failureCategory,
+    promptStats: run.promptStats,
     resumable: run.resumable,
     retryable: run.retryable,
     updatedAt: run.updatedAt,
     completedAt: run.completedAt
   };
+}
+
+function hashPromptText(value: string) {
+  return createHash("sha256").update(value).digest("hex").slice(0, 16);
+}
+
+function buildRunPromptStats(input: {
+  promptChars: number | null | undefined;
+  promptHash: string | null | undefined;
+  transcriptChars?: number | null | undefined;
+  latestTaskChars?: number | null | undefined;
+}): RunPromptStats | undefined {
+  if (!input.promptHash || !Number.isFinite(input.promptChars ?? Number.NaN)) {
+    return undefined;
+  }
+
+  return {
+    promptChars: normalizeInteger(input.promptChars ?? 0, 0, 2_000_000, 0),
+    promptHash: normalizeRequiredString(input.promptHash, 64, "recovered-prompt"),
+    transcriptChars: normalizeOptionalInteger(input.transcriptChars ?? null, 0, 2_000_000),
+    latestTaskChars: normalizeOptionalInteger(input.latestTaskChars ?? null, 0, 2_000_000)
+  };
+}
+
+function normalizeRunFailureCategory(value: unknown) {
+  if (typeof value !== "string" || value.length === 0) {
+    return undefined;
+  }
+
+  return safeParsePersisted(runFailureCategorySchema, value, {
+    table: "runtime",
+    rowId: "failure-category"
+  });
+}
+
+function mapGeminiCachedContentRow(row: GeminiCachedContentRow): GeminiCachedContentRecord {
+  return {
+    projectId: row.project_id as ProjectId,
+    modelId: row.model_id,
+    attachmentSetHash: row.attachment_set_hash,
+    cachedContentName: row.cached_content_name,
+    expiresAt: row.expires_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function resolveBackgroundBackoffUntil(now: Date, consecutiveFailureCount: number) {
+  if (consecutiveFailureCount < 3) {
+    return null;
+  }
+
+  const backoffMinutes =
+    consecutiveFailureCount === 3
+      ? 5
+      : consecutiveFailureCount === 4
+        ? 15
+        : consecutiveFailureCount === 5
+          ? 60
+          : 360;
+  return new Date(now.getTime() + backoffMinutes * 60_000).toISOString();
 }
 
 export function normalizeProjectRootPath(rootPath: string) {

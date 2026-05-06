@@ -2,6 +2,10 @@
 
 Browser-playable delivery arcade about holding a neighborhood route together under timing pressure.
 
+## Play
+
+Open [index.html](./index.html) in a browser to play.
+
 ## Why It Exists
 
 This catalog entry covers lane-based delivery timing instead of combat or pure racing. The run is about reading curb hazards, lining up quick throws, and preserving control clarity while the street keeps pushing forward.

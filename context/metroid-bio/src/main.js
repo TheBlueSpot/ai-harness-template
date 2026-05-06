@@ -125,10 +125,21 @@ window.addEventListener("keyup", (event) => {
 });
 
 startButton.addEventListener("click", () => {
+  if (game.getFrameState().appState === "menu") {
+    game.start();
+    updateUi(game.getFrameState());
+    return;
+  }
   input.pressed.start = true;
 });
 
 restartButton.addEventListener("click", () => {
+  const appState = game.getFrameState().appState;
+  if (appState === "win" || appState === "lose") {
+    game.restart();
+    updateUi(game.getFrameState());
+    return;
+  }
   input.pressed.restart = true;
 });
 

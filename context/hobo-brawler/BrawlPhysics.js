@@ -1,6 +1,6 @@
-export const LaunchForce = 9.6;
-export const PLAYER_SPEED = 4.5;
-export const DEPTH_SPEED = 3.1;
+const LaunchForce = 9.6;
+const PLAYER_SPEED = 4.5;
+const DEPTH_SPEED = 3.1;
 
 const WORLD = {
   xMin: -5.2,
@@ -14,6 +14,40 @@ const WORLD = {
 const GRAVITY = 24;
 const ENEMY_SPEED_X = 2.8;
 const ENEMY_SPEED_Z = 2.2;
+const ROUND_LAYOUTS = [
+  [
+    [3.2, -0.9],
+    [4.6, 0.7],
+    [2.4, 1.5]
+  ],
+  [
+    [3.6, -1.5],
+    [5.0, -0.2],
+    [2.6, 1.2],
+    [4.4, 2.0]
+  ],
+  [
+    [2.8, -1.8],
+    [4.4, -0.5],
+    [5.1, 0.9],
+    [2.2, 1.6],
+    [3.8, 0.3],
+    [4.9, 2.3]
+  ]
+];
+const ROUND_INTRO_TEXT = [
+  "Round 1: read the lane",
+  "Round 2: crowd tightens",
+  "Round 3: alley collapse"
+];
+const ROUND_BREAK_TEXT = [
+  "",
+  "Round clear. Catch your breath.",
+  "Round clear. Last push coming."
+];
+const ROUND_INTRO_DURATION = 1.1;
+const ROUND_BREAK_DURATION = 1.3;
+const ROUND_MESSAGE_DURATION = 1.6;
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -103,7 +137,7 @@ function overlapsAttack(target, hitboxX, hitboxZ, rangeX, rangeZ) {
     && Math.abs(target.z - hitboxZ) <= rangeZ + target.radiusZ;
 }
 
-export class GrabState {
+class GrabState {
   constructor() {
     this.reset();
   }
@@ -151,7 +185,7 @@ export class GrabState {
   }
 }
 
-export class BrawlEngine {
+class BrawlEngine {
   constructor(config = {}) {
     this.canvas = config.canvas ?? null;
     this.ctx = config.ctx ?? this.canvas?.getContext?.("2d") ?? null;
@@ -208,6 +242,11 @@ export class BrawlEngine {
     this.score = 0;
     this.bestCombo = 0;
     this.kills = 0;
+    this.roundIndex = 0;
+    this.totalRounds = ROUND_LAYOUTS.length;
+    this.roundIntroTimer = 0;
+    this.roundBreakTimer = 0;
+    this.statusMessageTimer = 0;
     this.statusText = "Waiting";
     this.results = null;
     this.player = makeEntity("player", "player", -1.4, 0);
@@ -217,19 +256,34 @@ export class BrawlEngine {
     this.grab.reset();
     this.previousInput = this.createInputState();
     this.input = this.createInputState();
-    this.spawnWave();
+    this.startRound(0);
     this.snapshot = null;
   }
 
-  spawnWave() {
-    const template = [
-      [2.8, -1.6],
-      [4.4, 0.1],
-      [5.2, 1.4],
-      [1.8, 1.9],
-      [3.6, -0.3],
-      [4.8, -2.1]
-    ];
+  setStatusMessage(text, duration = ROUND_MESSAGE_DURATION) {
+    this.statusText = text;
+    this.statusMessageTimer = Math.max(duration, 0);
+  }
+
+  startRound(roundIndex) {
+    const safeIndex = clamp(roundIndex, 0, ROUND_LAYOUTS.length - 1);
+    this.roundIndex = safeIndex;
+    this.roundIntroTimer = ROUND_INTRO_DURATION;
+    this.roundBreakTimer = 0;
+    this.spawnWave(safeIndex);
+    this.player.x = -1.4;
+    this.player.z = 0;
+    this.player.vx = 0;
+    this.player.vy = 0;
+    this.player.vz = 0;
+    this.player.stun = 0;
+    this.player.invuln = Math.max(this.player.invuln, 0.45);
+    this.player.state = "idle";
+    this.setStatusMessage(ROUND_INTRO_TEXT[safeIndex] ?? `Round ${safeIndex + 1}`);
+  }
+
+  spawnWave(roundIndex = this.roundIndex) {
+    const template = ROUND_LAYOUTS[roundIndex] ?? ROUND_LAYOUTS[0];
     this.enemies = template.map(([x, z], index) => {
       const enemy = makeEntity(`enemy-${index}`, "enemy", x, z);
       enemy.facing = -1;
@@ -267,13 +321,26 @@ export class BrawlEngine {
     }
 
     this.time += frameDt;
+    if (this.statusMessageTimer > 0) {
+      this.statusMessageTimer = Math.max(0, this.statusMessageTimer - frameDt);
+    }
     const timeMs = this.time * 1000;
 
     this.comboSystem?.update(timeMs, { facing: this.player.facing });
     this.consumeMatchedMoves();
     this.updatePlayer(frameDt, timeMs);
-    this.updateEnemyIntents(timeMs);
-    this.updateEnemies(frameDt, timeMs);
+    if (this.roundBreakTimer > 0) {
+      this.roundBreakTimer = Math.max(0, this.roundBreakTimer - frameDt);
+      if (this.roundBreakTimer === 0) {
+        this.startRound(this.roundIndex + 1);
+      }
+    }
+    if (this.roundIntroTimer > 0) {
+      this.roundIntroTimer = Math.max(0, this.roundIntroTimer - frameDt);
+    } else if (this.roundBreakTimer <= 0) {
+      this.updateEnemyIntents(timeMs);
+      this.updateEnemies(frameDt, timeMs);
+    }
     this.updateGrab(frameDt);
     this.updateAttackEvents(frameDt, timeMs);
     this.updateProjectileCollisions(timeMs);
@@ -282,11 +349,26 @@ export class BrawlEngine {
 
     if (this.player.health <= 0) {
       this.endRun(false);
-    } else if (this.enemies.every((enemy) => enemy.dead || enemy.health <= 0)) {
-      this.endRun(true);
+    } else if (this.enemies.length > 0 && this.enemies.every((enemy) => enemy.dead || enemy.health <= 0)) {
+      if (this.roundIndex + 1 < this.totalRounds) {
+        this.queueNextRound(timeMs);
+      } else {
+        this.endRun(true);
+      }
     }
 
     return this.emitSnapshot();
+  }
+
+  queueNextRound(timeMs) {
+    if (this.roundBreakTimer > 0 || this.roundIndex + 1 >= this.totalRounds) return;
+    this.enemies = [];
+    this.attackEvents = this.attackEvents.filter((event) => event.owner !== "enemy");
+    this.pendingEnemyIntents.clear();
+    this.comboSystem?.dropCombo(timeMs, "Reset");
+    this.player.health = clamp(this.player.health + 2, 0, this.player.maxHealth);
+    this.roundBreakTimer = ROUND_BREAK_DURATION;
+    this.setStatusMessage(ROUND_BREAK_TEXT[this.roundIndex + 1] ?? "Round clear.");
   }
 
   consumeMatchedMoves() {
@@ -683,8 +765,8 @@ export class BrawlEngine {
     this.results = {
       title: win ? "Wanted Dead" : "Wanted: Retry",
       summary: win
-        ? "The alley is clear. Even the barrels are nervous."
-        : "The crowd closed in before the combo could snowball.",
+        ? "Three waves folded. The alley finally stayed quiet."
+        : `The alley cracked in round ${this.roundIndex + 1} before the route stabilized.`,
       score: this.score,
       bestCombo: this.bestCombo,
       enemiesDefeated: this.kills,
@@ -696,15 +778,19 @@ export class BrawlEngine {
   emitSnapshot() {
     const aliveEnemies = this.enemies.filter((enemy) => !enemy.dead && enemy.health > 0).length;
     const recentInputs = this.comboSystem?.getRecentInputs?.(this.time * 1000) ?? [];
+    const comboStatus = this.comboSystem?.statusText ?? "Waiting";
     const snapshot = {
       state: this.state,
       score: Math.round(this.score),
       comboCount: this.comboSystem?.comboCount ?? 0,
-      statusText: this.comboSystem?.statusText ?? this.statusText,
+      statusText: this.statusMessageTimer > 0 ? this.statusText : comboStatus,
       recentInputText: recentInputs.map((entry) => entry.token).join(" "),
       playerHealth: Math.round(this.player.health),
       bestCombo: this.bestCombo,
       enemiesLeft: aliveEnemies,
+      round: this.roundIndex + 1,
+      roundsTotal: this.totalRounds,
+      introActive: this.roundIntroTimer > 0,
       results: this.state === "results" ? this.results : null
     };
     this.snapshot = snapshot;
@@ -770,6 +856,20 @@ export class BrawlEngine {
     ctx.font = "600 18px Georgia";
     ctx.fillText(`HP ${Math.round(this.player.health)}`, 32, 36);
     ctx.fillText(`Threats ${this.enemies.filter((enemy) => !enemy.dead && enemy.health > 0).length}`, width - 150, 36);
+    ctx.textAlign = "center";
+    ctx.fillStyle = "rgba(247, 240, 230, 0.92)";
+    ctx.font = "700 20px Georgia";
+    ctx.fillText(`Round ${this.roundIndex + 1} / ${this.totalRounds}`, width * 0.5, 38);
+    if (this.statusMessageTimer > 0) {
+      ctx.fillStyle = "rgba(11, 14, 19, 0.78)";
+      ctx.fillRect(width * 0.5 - 180, 58, 360, 42);
+      ctx.strokeStyle = "rgba(242, 184, 76, 0.45)";
+      ctx.strokeRect(width * 0.5 - 180, 58, 360, 42);
+      ctx.fillStyle = "#f2b84c";
+      ctx.font = "700 19px Georgia";
+      ctx.fillText(this.statusText, width * 0.5, 86);
+    }
+    ctx.textAlign = "start";
   }
 
   drawEntity(ctx, entity) {
@@ -825,3 +925,9 @@ export class BrawlEngine {
     );
   }
 }
+
+window.LaunchForce = LaunchForce;
+window.PLAYER_SPEED = PLAYER_SPEED;
+window.DEPTH_SPEED = DEPTH_SPEED;
+window.GrabState = GrabState;
+window.BrawlEngine = BrawlEngine;

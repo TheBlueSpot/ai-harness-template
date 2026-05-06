@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Galaga Clone</title>
+    <title>Galgia</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: black; }
         canvas { display: block; }
@@ -50,17 +50,44 @@
             background: #00cc00;
             box-shadow: 0 0 25px #00ff00;
         }
-        #score-display, #high-score-display {
+        #score-display, #high-score-display, #controls-display {
             position: absolute;
-            top: 20px;
-            left: 20px;
-            font-size: 1.5em;
-            color: #00ff00;
-            text-shadow: 0 0 5px #00ff00;
+            font-size: 1.1rem;
+            color: #d8ffe9;
+            text-shadow: 0 0 6px rgba(0, 255, 140, 0.45);
             pointer-events: none;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 10px 14px;
+            border: 1px solid rgba(0, 255, 0, 0.35);
+            border-radius: 12px;
         }
         #high-score-display {
-            top: 60px;
+            top: 68px;
+        }
+        #controls-display {
+            top: 20px;
+            right: 20px;
+            text-align: right;
+            line-height: 1.35;
+            max-width: 16rem;
+        }
+        #tip-display {
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            text-align: center;
+            line-height: 1.35;
+            max-width: 24rem;
+        }
+        #score-display {
+            top: 20px;
+            left: 20px;
+        }
+        .menu-copy {
+            max-width: 28rem;
+            margin: 0 0 10px;
+            line-height: 1.5;
+            color: #d8ffe9;
         }
     </style>
 </head>
@@ -68,6 +95,9 @@
     <div id="overlay">
         <div id="menu" style="display: block;">
             <h1>GALAGIA</h1>
+            <p class="menu-copy">Slide across the bottom lane, keep firing, and pick off the brighter swarm before their return shots trap your space.</p>
+            <p class="menu-copy">Controls: <strong>A/D</strong> or <strong>Left/Right</strong> to move, <strong>Space</strong> to fire.</p>
+            <p class="menu-copy">First goal: break the nearest bright formation fast so the rest of the wave stays open.</p>
             <button id="start-button">START GAME</button>
         </div>
         <div id="game-over" style="display: none;">
@@ -77,18 +107,9 @@
         </div>
         <div id="score-display">SCORE: 0</div>
         <div id="high-score-display">HIGH SCORE: 0</div>
+        <div id="tip-display">MOVE: A/D OR ARROWS | FIRE: SPACE | TARGET BRIGHT SHIPS FIRST</div>
+        <div id="controls-display">MOVE: A/D OR ARROWS<br>FIRE: SPACE</div>
     </div>
-
-    <!-- Three.js CDN -->
-    <script async src="/https://unpkg.com/es-module-shims@1.6.3/dist/es-module-shims.js"></script>
-    <script type="importmap">
-        {
-            "imports": {
-                "three": "/https://unpkg.com/three@0.163.0/build/three.module.js",
-                "three/addons/": "https://unpkg.com/three@0.163.0/examples/jsm/"
-            }
-        }
-    </script>
 
     <!-- Game Scripts -->
     <script type="module" src="./js/utils.js"></script>

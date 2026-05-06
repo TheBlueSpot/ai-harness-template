@@ -21,6 +21,9 @@ const comboValue = document.getElementById("combo-value");
 const queueValue = document.getElementById("queue-value");
 const shopStatus = document.getElementById("shop-status");
 const shopList = document.getElementById("shop-list");
+const coachCard = document.getElementById("coach-card");
+const coachTitle = document.getElementById("coach-title");
+const coachCopy = document.getElementById("coach-copy");
 const resultEyebrow = document.getElementById("result-eyebrow");
 const resultTitle = document.getElementById("result-title");
 const resultCopy = document.getElementById("result-copy");
@@ -44,6 +47,9 @@ function bindEvents() {
   slamButton.addEventListener("click", () => { input.slam = true; });
   window.addEventListener("resize", resizeCanvas);
   window.addEventListener("keydown", onKeyDown);
+  window.addEventListener("blur", onVisibilityInterrupt);
+  document.addEventListener("visibilitychange", onVisibilityChange);
+  window.addEventListener("pagehide", onVisibilityInterrupt);
 }
 
 function resizeCanvas() {
@@ -85,6 +91,10 @@ function syncUi(frameState) {
   comboValue.textContent = `x${Math.round((frameState.combo || 0) * 10) / 10}`;
   queueValue.textContent = `${frameState.queue?.index || 0} / ${frameState.queue?.total || 0}`;
   shopStatus.textContent = frameState.status || "Start a run to build coins for upgrades.";
+  coachCard.dataset.tone = frameState.coach?.tone || "wait";
+  coachTitle.textContent = frameState.coach?.title || "Track the lane";
+  coachCopy.textContent = frameState.coach?.copy || "Stay over the glowing target and use slam on descent.";
+  slamButton.dataset.ready = String(frameState.coach?.tone === "slam");
 
   if (frameState.overlay) {
     resultEyebrow.textContent = frameState.overlay.eyebrow || "Result";
@@ -97,13 +107,14 @@ function syncUi(frameState) {
 }
 
 function syncShop(items) {
+  const canBuy = game.getFrameState().state !== "playing";
   const nextButtons = new Map();
   for (const item of items) {
     const current = shopButtons.get(item.id) || document.createElement("button");
     current.type = "button";
     current.className = "shop-card";
-    current.disabled = item.owned && item.level >= item.maxLevel;
-    current.innerHTML = `<strong>${item.label}</strong><span>${item.desc}</span><em>${item.owned ? `Lv ${item.level}/${item.maxLevel}` : `Buy ${item.cost}`}</em>`;
+    current.disabled = !canBuy || (item.owned && item.level >= item.maxLevel);
+    current.innerHTML = `<strong>${item.label}</strong><span>${item.desc}</span><em>${item.owned ? `Lv ${item.level}/${item.maxLevel}` : `Buy ${item.cost}`}${!canBuy ? " - after run" : ""}</em>`;
     current.onclick = () => {
       const bought = game.buy(item.id);
       if (bought) syncUi(game.getFrameState());
@@ -124,6 +135,22 @@ function onKeyDown(event) {
     input.pause = true;
   } else if (event.code === "KeyR") {
     input.restart = true;
+  }
+}
+
+function onVisibilityChange() {
+  if (!document.hidden) {
+    lastTime = 0;
+    return;
+  }
+  onVisibilityInterrupt();
+}
+
+function onVisibilityInterrupt() {
+  const paused = game.pause("Run paused while the tab was out of focus.");
+  if (paused) {
+    lastTime = 0;
+    syncUi(game.getFrameState());
   }
 }
 

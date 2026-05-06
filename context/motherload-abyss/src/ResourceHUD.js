@@ -6,7 +6,9 @@ const THEME = {
   fuel: "#ff9d4a",
   hull: "#73d7ff",
   pressure: "#ff6f7c",
-  cargo: "#9ee86f"
+  cargo: "#9ee86f",
+  amber: "#ffbf69",
+  danger: "#ff6f7c"
 };
 
 export const formatRunTime = (seconds) => {

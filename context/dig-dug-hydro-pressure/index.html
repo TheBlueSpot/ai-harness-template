@@ -279,20 +279,45 @@
           this.manifest = manifest;
           this.images = new Map();
           this.audio = new Map();
-          this.summary = { total: 0, loaded: 0, failed: 0 };
+          this.summary = { total: 0, loaded: 0, failed: 0, skipped: 0 };
         }
 
-        load() {
+        async load() {
           const jobs = [];
-          for (const [key, entry] of Object.entries(this.manifest.images)) {
-            this.summary.total += 1;
-            jobs.push(this.loadImage(key, entry.path));
+
+          const imageEntries = Object.entries(this.manifest.images);
+          if (await this.probePath(imageEntries[0]?.[1]?.path)) {
+            for (const [key, entry] of imageEntries) {
+              this.summary.total += 1;
+              jobs.push(this.loadImage(key, entry.path));
+            }
+          } else {
+            this.summary.skipped += imageEntries.length;
           }
-          for (const [key, entry] of Object.entries(this.manifest.audio)) {
-            this.summary.total += 1;
-            jobs.push(this.loadAudio(key, entry.path));
+
+          const audioEntries = Object.entries(this.manifest.audio);
+          if (await this.probePath(audioEntries[0]?.[1]?.path)) {
+            for (const [key, entry] of audioEntries) {
+              this.summary.total += 1;
+              jobs.push(this.loadAudio(key, entry.path));
+            }
+          } else {
+            this.summary.skipped += audioEntries.length;
           }
+
           return Promise.allSettled(jobs);
+        }
+
+        async probePath(path) {
+          if (!path) {
+            return false;
+          }
+          try {
+            const response = await fetch(path, { method: "HEAD", cache: "no-store" });
+            return response.ok;
+          } catch {
+            return false;
+          }
         }
 
         loadImage(key, path) {
@@ -1011,8 +1036,14 @@
 
         async boot() {
           await this.assets.load();
-          const { loaded, total, failed } = this.assets.summary;
-          this.assetNotice = failed ? `${loaded}/${total} Kenney assets ready. Missing files use fallback art/audio.` : `${loaded}/${total} Kenney assets ready.`;
+          const { loaded, total, failed, skipped } = this.assets.summary;
+          if (!total && skipped) {
+            this.assetNotice = "Local Kenney packs not present. Using built-in fallback art/audio.";
+          } else if (failed) {
+            this.assetNotice = `${loaded}/${total} Kenney assets ready. Missing files use fallback art/audio.`;
+          } else {
+            this.assetNotice = `${loaded}/${total} Kenney assets ready.`;
+          }
           this.resetRun();
           requestAnimationFrame((stamp) => this.frame(stamp));
         }

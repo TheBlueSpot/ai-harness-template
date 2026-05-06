@@ -1,13 +1,12 @@
 # Contra Boss Engine
 
-Contra Boss Engine is a standalone browser action entry focused on short boss-rush encounters. The run is built around 8-way aiming, part-by-part damage, and fast restarts instead of a long stage campaign.
+Contra Boss Engine is a short browser boss-rush game built around 8-way aiming, part-by-part damage, and quick restarts.
 
 ## Concept
 
-- Short arena fights against composite bosses with separate weakpoints
-- Multi-phase escalation that changes attack weights and movement pressure
-- Strong hit feedback through screen shake, flashes, and debris bursts
-- Direct browser play from a single self-contained catalog folder
+- Short arena fights against composite bosses with separate weak points
+- Escalating attack patterns that shift movement pressure over time
+- Strong hit feedback with flashes, shake, and debris bursts
 
 ## Controls
 
@@ -18,8 +17,6 @@ Contra Boss Engine is a standalone browser action entry focused on short boss-ru
 - `Space` fire
 - `Enter` start or restart
 
-## Local Notes
+## Launch
 
-- Open `contra-boss/index.html` in a browser to play
-- The entry stays isolated inside `contra-boss/`
-- HUD tracks player health, active boss, current phase, and score
+Open [index.html](./index.html) in a browser to play.

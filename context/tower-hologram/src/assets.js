@@ -1,13 +1,26 @@
 export const ASSET_MANIFEST = Object.freeze({
   hologramCore: {
     kind: "image",
-    src: "../assets/images/hologram-core.png",
+    src: "assets/images/hologram-core.png",
   },
   place: {
     kind: "audio",
-    src: "../assets/sfx/place.wav",
+    src: "assets/sfx/place.wav",
   },
 });
+
+function getAssetBaseUrl() {
+  const currentScript = typeof document !== "undefined" ? document.currentScript : null;
+  if (currentScript?.src) {
+    return new URL("./", currentScript.src);
+  }
+
+  if (typeof document !== "undefined" && document.baseURI) {
+    return new URL("./", document.baseURI);
+  }
+
+  return new URL("./", "http://localhost/");
+}
 
 function loadImage(source) {
   return new Promise((resolve, reject) => {
@@ -48,7 +61,7 @@ function loadAudio(source) {
 }
 
 async function loadAsset(definition) {
-  const resolvedSource = new URL(definition.src, import.meta.url).href;
+  const resolvedSource = new URL(definition.src, getAssetBaseUrl()).href;
   if (definition.kind === "image") {
     return loadImage(resolvedSource);
   }

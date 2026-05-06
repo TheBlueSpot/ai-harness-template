@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hexcells Logic Grid</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hud">
+        <div class="hud__group">
+          <span class="hud__label">Board</span>
+          <strong id="boardLabel">1 / 3</strong>
+        </div>
+        <div class="hud__group">
+          <span class="hud__label">Safe</span>
+          <strong id="safeLabel">0 / 0</strong>
+        </div>
+        <div class="hud__group">
+          <span class="hud__label">Flags</span>
+          <strong id="flagLabel">0</strong>
+        </div>
+        <div class="hud__group">
+          <span class="hud__label">Shields</span>
+          <strong id="shieldLabel">2</strong>
+        </div>
+      </section>
+      <canvas id="gameCanvas" width="960" height="640" aria-label="Hexcells Logic Grid"></canvas>
+      <section class="panel">
+        <p id="messageLine">Reveal every safe hex. Right click flags mines. Click revealed clues to chord nearby cells.</p>
+        <div class="controls">
+          <button id="startButton" type="button">Start Run</button>
+          <button id="restartButton" type="button">Restart</button>
+          <button id="flagModeButton" type="button">Flag Mode: Off</button>
+        </div>
+        <p class="controls__hint">Controls: `Left Click` reveal, `Right Click` flag, `F` toggle flag mode, `R` restart.</p>
+      </section>
+      <section id="overlay" class="overlay overlay--visible">
+        <div class="overlay__card">
+          <h1 id="overlayTitle">Hexcells Logic Grid</h1>
+          <p id="overlayText">Clear three authored hex boards. You can survive two mine mistakes, but clean deduction is faster than guessing.</p>
+          <button id="overlayButton" type="button">Begin</button>
+        </div>
+      </section>
+    </main>
+    <script src="./game.js"></script>
+  </body>
+</html>

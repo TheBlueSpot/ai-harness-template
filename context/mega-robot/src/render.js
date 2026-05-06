@@ -1,13 +1,14 @@
 export function renderFrame(ctx, frame) {
   const { width, height } = frame.view;
   ctx.save();
+  const camera = frame.camera || { x: 0, y: 0 };
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = "#0f1118";
   ctx.fillRect(0, 0, width, height);
-
+  ctx.translate(-camera.x, -camera.y);
   const groundY = frame.groundY;
   ctx.fillStyle = "#1f2734";
-  ctx.fillRect(0, groundY, width, height - groundY);
+  ctx.fillRect(-400, groundY, width + 800, height - groundY + 320);
 
   ctx.fillStyle = "#2d3950";
   for (const wall of frame.walls) {

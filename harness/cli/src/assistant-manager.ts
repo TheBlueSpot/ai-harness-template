@@ -1,4 +1,5 @@
 import { modeUsesReadOnlyExecution, resolveModeById } from "../../shared/modes";
+import { z } from "zod";
 import {
   createAssistantLearningId,
   createAssistantLogEntryId,
@@ -12,6 +13,8 @@ import {
   type AssistantThread,
   type ChatMessage,
   type ModeDefinition,
+  type ProviderBrand,
+  type ProjectId,
   type WorkspaceProjectState
 } from "../../shared/protocol";
 import { getDefaultExecutionModelId } from "./pi-planner";
@@ -19,8 +22,15 @@ import { type AgentRuntimeRegistry } from "./agent-runtimes/runtime-registry";
 import { type PiAgentAdapter } from "./pi-agent-adapter";
 import { normalizeAssistantLearningSource, WorkspaceRepository } from "./workspace-repository";
 import { debugLog } from "./logging";
+import { assembleDeterministicPrompt } from "./deterministic-prompt";
+import { buildWorkspaceConfigHash, type PromptCacheIdentity } from "./prompt-cache";
 import { assertAssistantRunnableForLaunch } from "./assistant-launch-gate";
-import { evaluateAssistantQuestionPolicy, type AssistantQuestionDecision } from "./assistant-question-policy";
+import {
+  classifyAssistantQuestion,
+  evaluateAssistantQuestionPolicy,
+  normalizeQuestionText,
+  type AssistantQuestionDecision
+} from "./assistant-question-policy";
 
 type AssistantManagerCallbacks = {
   onAssistantsUpdated: () => void;
@@ -34,6 +44,10 @@ type AssistantManagerCallbacks = {
   onAssistantChatComplete: (input: { assistantId: string; sessionId: string; assistantMessage: ChatMessage; thread: AssistantThread }) => void;
   onAssistantLogAppended: (entry: AssistantLogEntry) => void;
   onAssistantCreatedCard: (assistant: Assistant) => void;
+};
+
+type AssistantManagerOptions = {
+  reprioritizeDebounceMs?: number;
 };
 
 type ReprioritizeProposal = {
@@ -77,6 +91,36 @@ type BootstrapProposal = {
   remainIdle?: boolean;
 };
 
+const ASSISTANT_LEARNING_COMPACTION_FACT_THRESHOLD = 40;
+const ASSISTANT_LEARNING_COMPACTION_CHAR_THRESHOLD = 24000;
+const MAX_PROMPT_ANSWERED_QUESTIONS = 3;
+const MAX_PROMPT_LEARNINGS = 6;
+const OPERATIONAL_PROMPT_QUESTION_CATEGORIES = new Set([
+  "schedule-or-job-selection",
+  "todo-or-question-selection",
+  "recovery-or-safety",
+  "access-environment"
+]);
+
+const assistantLearningCompactionSchema = z.object({
+  summary: z
+    .string()
+    .trim()
+    .min(1)
+    .max(4000)
+    .refine((summary) => !isGarbageAssistantCompactionSummary(summary), "summary must be real durable guidance"),
+  retainedFacts: z
+    .array(
+      z.object({
+        summary: z.string().trim().min(1).max(4000),
+        source: z.string().trim().min(1).max(256).optional(),
+        confidence: z.enum(["low", "medium", "high"]).optional()
+      })
+    )
+    .max(40)
+    .optional()
+});
+
 type ReprioritizeState = {
   timer?: ReturnType<typeof setTimeout>;
   running: boolean;
@@ -87,12 +131,16 @@ type ReprioritizeState = {
 export class AssistantManager {
   private readonly reprioritizeStates = new Map<string, ReprioritizeState>();
   private readonly bootstrapFlights = new Map<string, Promise<void>>();
+  private readonly reprioritizeDebounceMs: number;
 
   constructor(
     private readonly repository: WorkspaceRepository,
     private readonly runtimeRegistry: AgentRuntimeRegistry,
-    private readonly callbacks: AssistantManagerCallbacks
-  ) {}
+    private readonly callbacks: AssistantManagerCallbacks,
+    options: AssistantManagerOptions = {}
+  ) {
+    this.reprioritizeDebounceMs = Math.max(0, options.reprioritizeDebounceMs ?? 800);
+  }
 
   bootstrapAssistant(assistantId: string, options: { force?: boolean } = {}) {
     const existingFlight = this.bootstrapFlights.get(assistantId);
@@ -184,7 +232,7 @@ export class AssistantManager {
       }
 
       if (proposal?.researchSummary) {
-        this.repository.saveAssistantLearning({
+        this.repository.saveAssistantLearningDeduped({
           id: createAssistantLearningId(),
           assistantId,
           summary: proposal.researchSummary,
@@ -195,7 +243,7 @@ export class AssistantManager {
       }
 
       for (const learning of proposal?.learnings ?? []) {
-        this.repository.saveAssistantLearning({
+        this.repository.saveAssistantLearningDeduped({
           id: createAssistantLearningId(),
           assistantId,
           summary: learning.summary.trim(),
@@ -204,6 +252,7 @@ export class AssistantManager {
           createdAt: new Date().toISOString()
         });
       }
+      await this.maybeCompactAssistantLearnings(assistantId, "bootstrap");
 
       const todos = (proposal?.initialTodos ?? []).filter((todo) => todo.title.trim().length > 0).slice(0, 8);
       todos.forEach((todo, index) => {
@@ -271,7 +320,7 @@ export class AssistantManager {
       thread
     });
     const runtime = await this.resolveRuntime(assistant);
-    const prompt = await this.buildAssistantChatPrompt(assistant);
+    const prompt = await this.buildAssistantChatPrompt(assistant, content.trim());
     let deltaBuffer = "";
 
     try {
@@ -279,9 +328,10 @@ export class AssistantManager {
         kind: "executor",
         cwd: runtime.cwd,
         modelId: runtime.modelId,
-        prompt: `${prompt}\n\nLatest user message:\n${content.trim()}`,
+        prompt,
         readOnly: runtime.readOnly,
         fastMode: runtime.fastMode,
+        promptCacheIdentity: runtime.promptCacheIdentity,
         onTextDelta: (delta) => {
           deltaBuffer += delta;
           this.callbacks.onAssistantChatDelta({
@@ -354,7 +404,7 @@ export class AssistantManager {
       summary: "Question answered",
       detail: summarize(content)
     });
-    this.repository.saveAssistantLearning({
+    this.repository.saveAssistantLearningDeduped({
       id: createAssistantLearningId(),
       assistantId,
       summary: `User answered assistant question "${summarize(question.prompt, 120)}" with "${summarize(content, 120)}"; treat this as durable guidance and do not ask the same thing again unless context changes.`,
@@ -362,6 +412,7 @@ export class AssistantManager {
       confidence: "high",
       createdAt: new Date().toISOString()
     });
+    await this.maybeCompactAssistantLearnings(assistantId, "question-answer");
     this.callbacks.onAssistantsUpdated();
     this.scheduleReprioritize(assistantId, "question-answer");
     return question;
@@ -415,13 +466,24 @@ export class AssistantManager {
       });
       this.callbacks.onAssistantsUpdated();
       this.scheduleReprioritize(input.assistantId, "job-succeeded");
-      return;
+      return { blocked: false };
     }
 
     const message = input.failureMessage ?? input.summary ?? "Assistant job failed";
     const questionPrompt = extractQuestionPrompt(message);
     if (input.status === "awaiting-user-input" || questionPrompt) {
-      this.saveBlockingQuestion(input.assistantId, questionPrompt ?? message);
+      const savedQuestion = this.saveBlockingQuestion(input.assistantId, questionPrompt ?? message);
+      if (!savedQuestion) {
+        this.appendLog({
+          assistantId: input.assistantId,
+          level: "info",
+          summary: "Assistant job input auto-resolved",
+          detail: questionPrompt ?? message
+        });
+        this.callbacks.onAssistantsUpdated();
+        this.scheduleReprioritize(input.assistantId, "job-question-auto-resolved");
+        return { blocked: false };
+      }
       this.appendLog({
         assistantId: input.assistantId,
         level: "warning",
@@ -430,7 +492,7 @@ export class AssistantManager {
       });
       this.callbacks.onAssistantsUpdated();
       this.scheduleReprioritize(input.assistantId, "job-question");
-      return;
+      return { blocked: true };
     }
 
     this.appendLog({
@@ -442,6 +504,7 @@ export class AssistantManager {
     await this.recordFailure(input.assistantId, message, true);
     this.callbacks.onAssistantsUpdated();
     this.scheduleReprioritize(input.assistantId, `job-${input.status}`);
+    return { blocked: false };
   }
 
   scheduleReprioritize(assistantId: string, reason: string) {
@@ -472,10 +535,17 @@ export class AssistantManager {
       clearTimeout(state.timer);
     }
 
+    if (this.reprioritizeDebounceMs === 0) {
+      state.timer = undefined;
+      this.reprioritizeStates.set(assistantId, state);
+      void this.runReprioritize(assistantId, state.lastReason ?? "unknown");
+      return;
+    }
+
     state.timer = setTimeout(() => {
       state.timer = undefined;
       void this.runReprioritize(assistantId, state.lastReason ?? "unknown");
-    }, 800);
+    }, this.reprioritizeDebounceMs);
     this.reprioritizeStates.set(assistantId, state);
   }
 
@@ -590,22 +660,12 @@ export class AssistantManager {
         }
       }
 
-      const existingLearningKeys = new Set(
-        this.repository
-          .getAssistantLearnings(assistantId)
-          .map((learning) => normalizeLearningKey(learning.summary, learning.source))
-      );
       for (const learning of proposal?.newLearnings ?? []) {
         if (!learning.summary.trim()) {
           continue;
         }
         const learningSource = normalizeAssistantLearningSource(learning.source?.trim() || `reprioritize:${reason}`);
-        const learningKey = normalizeLearningKey(learning.summary, learningSource);
-        if (existingLearningKeys.has(learningKey)) {
-          continue;
-        }
-        existingLearningKeys.add(learningKey);
-        this.repository.saveAssistantLearning({
+        this.repository.saveAssistantLearningDeduped({
           id: createAssistantLearningId(),
           assistantId,
           summary: learning.summary.trim(),
@@ -614,6 +674,7 @@ export class AssistantManager {
           createdAt: new Date().toISOString()
         });
       }
+      await this.maybeCompactAssistantLearnings(assistantId, `reprioritize:${reason}`);
 
       const proposedQuestions = [
         ...(proposal?.questions ?? []),
@@ -711,7 +772,8 @@ export class AssistantManager {
       modelId: runtime.modelId,
       prompt: buildThreadSummaryPrompt(assistant, thread),
       readOnly: true,
-      fastMode: runtime.fastMode
+      fastMode: runtime.fastMode,
+      promptCacheIdentity: runtime.promptCacheIdentity
     });
     this.repository.setAssistantThreadMemorySummary(assistant.id, result.text.trim());
     this.appendLog({
@@ -723,56 +785,50 @@ export class AssistantManager {
     this.callbacks.onAssistantsUpdated();
   }
 
-  private async buildAssistantChatPrompt(assistant: Assistant) {
+  private async buildAssistantChatPrompt(assistant: Assistant, activeMission: string) {
     const state = this.getAssistantOperatingState(assistant.id);
-    return [
-      `Assistant name: ${assistant.name}`,
-      `Personality prompt:\n${assistant.personalityPrompt}`,
-      `Job prompt:\n${assistant.jobPrompt}`,
-      state.summary ? `Thread summary:\n${state.summary}` : undefined,
-      state.assetRefs.length > 0
-        ? `Linked assets:\n${state.assetRefs.map((asset) => `- [${asset.kind}] ${asset.label}: ${asset.canonicalValue ?? asset.value}`).join("\n")}`
-        : undefined,
-      state.activeTodos.length > 0
-        ? `Active todos:\n${state.activeTodos.map((todo) => `- (${todo.id}) ${todo.state}: ${todo.title}${todo.blockerReason ? ` | blocker: ${todo.blockerReason}` : ""}`).join("\n")}`
-        : "Active todos: none",
-      state.pendingQuestions.length > 0
-        ? `Pending questions:\n${state.pendingQuestions.map((question) => `- (${question.id}) ${question.prompt}`).join("\n")}`
-        : "Pending questions: none",
-      state.learnings.length > 0
-        ? `Relevant learnings:\n${state.learnings.map((learning) => `- ${learning.summary}`).join("\n")}`
-        : "Relevant learnings: none",
-      `Recent transcript:\n${renderMessages(state.recentMessages)}`,
-      "Reply directly to the user. Keep answer grounded in the assistant role and current priorities.",
-      "Ask questions only when missing information blocks useful progress. If multiple questions are necessary, batch them in one response."
-    ]
-      .filter(Boolean)
-      .join("\n\n");
+    return assembleDeterministicPrompt([
+      {
+        kind: "system",
+        content: [
+          renderAssistantPromptContext(assistant, activeMission),
+          "Reply directly to the user. Keep answer grounded in the assistant role and current priorities.",
+          "Ask questions only when missing information blocks useful progress. If multiple questions are necessary, batch them in one response."
+        ]
+      },
+      {
+        kind: "workspace",
+        content: [
+          state.summary ? `Thread summary:\n${state.summary}` : undefined,
+          state.assetRefs.length > 0
+            ? `Linked assets:\n${state.assetRefs.map((asset) => `- [${asset.kind}] ${asset.label}: ${asset.canonicalValue ?? asset.value}`).join("\n")}`
+            : undefined,
+          state.activeTodos.length > 0
+            ? `Active todos:\n${state.activeTodos.map((todo) => `- (${todo.id}) ${todo.state}: ${todo.title}${todo.blockerReason ? ` | blocker: ${todo.blockerReason}` : ""}`).join("\n")}`
+            : "Active todos: none",
+          state.pendingQuestions.length > 0
+            ? `Pending questions:\n${state.pendingQuestions.map((question) => `- (${question.id}) ${question.prompt}`).join("\n")}`
+            : "Pending questions: none",
+          renderAssistantPromptMemoryBlock(state.answeredQuestions, state.learnings)
+        ]
+      },
+      {
+        kind: "dynamic",
+        content: `Recent transcript:\n${renderMessages(state.recentMessages)}`
+      }
+    ]);
   }
 
   private async buildReprioritizePrompt(assistant: Assistant, reason: string) {
     const state = this.getAssistantOperatingState(assistant.id);
-    return [
-      "Return only JSON.",
-      `Assistant name: ${assistant.name}`,
-      `Reason: ${reason}`,
-      `Personality prompt:\n${assistant.personalityPrompt}`,
-      `Job prompt:\n${assistant.jobPrompt}`,
-      state.summary ? `Thread summary:\n${state.summary}` : undefined,
-      state.activeTodos.length > 0
-        ? `Current active todos:\n${state.activeTodos.map((todo) => `- id=${todo.id} state=${todo.state} title=${todo.title}${todo.blockerReason ? ` blocker=${todo.blockerReason}` : ""}`).join("\n")}`
-        : "Current active todos: none",
-      state.pendingQuestions.length > 0
-        ? `Pending questions:\n${state.pendingQuestions.map((question) => `- id=${question.id} prompt=${question.prompt}`).join("\n")}`
-        : undefined,
-      state.answeredQuestions.length > 0
-        ? `Recently answered questions. Treat these answers as durable guidance and do not ask equivalent questions again unless the user changes context:\n${state.answeredQuestions.map((question) => `- prompt=${question.prompt} answer=${question.answerText ?? ""}`).join("\n")}`
-        : undefined,
-      state.learnings.length > 0
-        ? `Relevant learnings:\n${state.learnings.map((learning) => `- ${learning.summary}`).join("\n")}`
-        : undefined,
-      `Recent transcript:\n${renderMessages(state.recentMessages.slice(-8))}`,
-      `Respond with JSON object:
+    return assembleDeterministicPrompt([
+      {
+        kind: "system",
+        content: [
+          "Return only JSON.",
+          `Reason: ${reason}`,
+          renderAssistantPromptContext(assistant, `Reprioritize assistant operating state because: ${reason}`),
+          `Respond with JSON object:
 {
   "summary": "short summary",
   "todoOrder": ["todo-id"],
@@ -781,11 +837,33 @@ export class AssistantManager {
   "newLearnings": [{"summary":"learning","source":"optional","confidence":"low|medium|high"}],
   "questions": [{"prompt":"optional blocking question","linkedTodoIds":["todo-id"]}]
 }`,
-      "Ask questions only when missing information blocks useful progress. If multiple questions are necessary, batch them in questions. Prefer no questions when a reasonable default exists.",
-      "Do not include completed, failed, or cancelled todos unless you are explicitly changing a currently active todo into one of those states."
-    ]
-      .filter(Boolean)
-      .join("\n\n");
+          "Ask questions only when missing information blocks useful progress. If multiple questions are necessary, batch them in questions. Prefer no questions when a reasonable default exists.",
+          "Do not include completed, failed, or cancelled todos unless you are explicitly changing a currently active todo into one of those states."
+        ]
+      },
+      {
+        kind: "workspace",
+        content: [
+          state.summary ? `Thread summary:\n${state.summary}` : undefined,
+          state.activeTodos.length > 0
+            ? `Current active todos:\n${state.activeTodos.map((todo) => `- id=${todo.id} state=${todo.state} title=${todo.title}${todo.blockerReason ? ` blocker=${todo.blockerReason}` : ""}`).join("\n")}`
+            : "Current active todos: none",
+          state.pendingQuestions.length > 0
+            ? `Pending questions:\n${state.pendingQuestions.map((question) => `- id=${question.id} prompt=${question.prompt}`).join("\n")}`
+            : undefined,
+          renderAssistantPromptMemoryBlock(state.answeredQuestions, state.learnings),
+          state.recentLogs.length > 0
+            ? `Recent assistant logs:\n${state.recentLogs
+                .map((log) => `- ${log.createdAt} ${log.summary}${log.detail ? `: ${summarize(log.detail, 300)}` : ""}`)
+                .join("\n")}`
+            : undefined
+        ]
+      },
+      {
+        kind: "dynamic",
+        content: `Recent transcript:\n${renderMessages(state.recentMessages.slice(-8))}`
+      }
+    ]);
   }
 
   private getAssistantOperatingState(assistantId: string) {
@@ -795,8 +873,9 @@ export class AssistantManager {
       .filter((todo) => ["pending", "in-progress", "blocked"].includes(todo.state));
     const allQuestions = this.repository.getAssistantQuestions(assistantId);
     const questions = allQuestions.filter((question) => question.status === "pending");
-    const answeredQuestions = allQuestions.filter((question) => question.status === "answered").slice(0, 8);
-    const learnings = this.repository.getAssistantLearnings(assistantId).slice(0, 12);
+    const answeredQuestions = selectAssistantPromptQuestions(allQuestions);
+    const learnings = selectAssistantPromptLearnings(this.repository.getAssistantLearnings(assistantId));
+    const recentLogs = this.repository.getAssistantLogEntries(assistantId).slice(0, 8);
     const assetRefs = this.repository.getAssistantAssetRefs(assistantId).filter((assetRef) => assetRef.resolutionStatus === "resolved");
 
     return {
@@ -805,9 +884,122 @@ export class AssistantManager {
       pendingQuestions: questions,
       answeredQuestions,
       learnings,
+      recentLogs,
       assetRefs,
       recentMessages: thread.messages.slice(-16)
     };
+  }
+
+  private async maybeCompactAssistantLearnings(assistantId: string, reason: string) {
+    const stats = this.repository.getAssistantLearningStats(assistantId);
+    if (
+      stats.activeFactLearningCount <= ASSISTANT_LEARNING_COMPACTION_FACT_THRESHOLD &&
+      stats.activeSummaryCharCount <= ASSISTANT_LEARNING_COMPACTION_CHAR_THRESHOLD
+    ) {
+      return;
+    }
+
+    const assistant = this.repository.getAssistant(assistantId);
+    if (!assistant) {
+      return;
+    }
+
+    try {
+      const runtime = await this.resolveRuntime(assistant);
+      const learnings = this.repository.getAssistantLearnings(assistantId);
+      const compaction = await this.runAssistantLearningCompaction(runtime.adapter, {
+        assistant,
+        prompt: buildAssistantLearningCompactionPrompt(assistant, reason, learnings),
+        readOnly: runtime.readOnly
+      });
+      const now = new Date().toISOString();
+      const retainedKeys = new Set((compaction.retainedFacts ?? []).map((learning) => normalizeLearningKey(learning.summary)));
+      const supersededIds = learnings
+        .filter((learning) => (learning.kind ?? "fact") === "fact")
+        .filter((learning) => {
+          if (learning.confidence !== "high") {
+            return true;
+          }
+          const source = learning.source.toLowerCase();
+          const isUserGuidance = source.startsWith("question:") || source.startsWith("question-policy:") || source.startsWith("user");
+          return !isUserGuidance || retainedKeys.has(normalizeLearningKey(learning.summary));
+        })
+        .map((learning) => learning.id);
+
+      this.repository.compactAssistantLearnings(
+        assistantId,
+        {
+          id: createAssistantLearningId(),
+          assistantId,
+          summary: compaction.summary,
+          source: normalizeAssistantLearningSource(`compaction:${reason}`),
+          confidence: "high",
+          createdAt: now,
+          kind: "summary",
+          supersedesLearningIds: supersededIds,
+          compactedAt: now
+        },
+        supersededIds
+      );
+
+      for (const learning of compaction.retainedFacts ?? []) {
+        this.repository.saveAssistantLearningDeduped({
+          id: createAssistantLearningId(),
+          assistantId,
+          summary: learning.summary,
+          source: normalizeAssistantLearningSource(learning.source ?? `compaction:${reason}:retained`),
+          confidence: learning.confidence ?? "medium",
+          createdAt: now,
+          kind: "fact"
+        });
+      }
+      this.appendLog({
+        assistantId,
+        level: "info",
+        summary: "Compacted assistant learnings",
+        detail: `Merged ${supersededIds.length} learning rows.`
+      });
+    } catch (error) {
+      this.appendLog({
+        assistantId,
+        level: "warning",
+        summary: "Assistant learning compaction skipped",
+        detail: normalizeErrorMessage(error),
+        detailsJson: serializeError(error)
+      });
+    }
+  }
+
+  private async runAssistantLearningCompaction(
+    adapter: PiAgentAdapter,
+    input: { assistant: Assistant; prompt: string; readOnly: boolean }
+  ) {
+    const firstPayload = await this.runCompactionAttempt(adapter, input);
+    const first = assistantLearningCompactionSchema.safeParse(firstPayload);
+    if (first.success) {
+      return first.data;
+    }
+
+    const repairedPayload = await this.runCompactionAttempt(adapter, {
+      ...input,
+      prompt: `${input.prompt}\n\nPrevious response failed schema validation. Return only valid JSON with summary and retainedFacts.`
+    });
+    const repaired = assistantLearningCompactionSchema.safeParse(repairedPayload);
+    if (repaired.success) {
+      return repaired.data;
+    }
+    throw new Error("Assistant learning compaction payload invalid");
+  }
+
+  private async runCompactionAttempt(
+    adapter: PiAgentAdapter,
+    input: { assistant: Assistant; prompt: string; readOnly: boolean }
+  ) {
+    try {
+      return await this.runJsonPrompt<unknown>(adapter, input);
+    } catch {
+      return undefined;
+    }
   }
 
   private async runJsonPrompt<T>(
@@ -825,7 +1017,8 @@ export class AssistantManager {
       modelId: runtime.modelId,
       prompt: input.prompt,
       readOnly: input.readOnly,
-      fastMode: runtime.fastMode
+      fastMode: runtime.fastMode,
+      promptCacheIdentity: runtime.promptCacheIdentity
     });
     return extractJsonPayload<T>(result.text);
   }
@@ -860,7 +1053,16 @@ export class AssistantManager {
       cwd,
       modelId,
       readOnly,
-      fastMode: assistant.fastMode
+      fastMode: assistant.fastMode,
+      promptCacheIdentity: project
+        ? buildAssistantPromptCacheIdentity({
+            repository: this.repository,
+            projectId: project.id,
+            projectRootPath: project.rootPath,
+            providerBrand,
+            mode
+          })
+        : undefined
     };
   }
 
@@ -946,7 +1148,7 @@ export class AssistantManager {
         ? `Auto-answered assistant question: ${summarize(prompt, 120)}`
         : `Did not ask assistant question: ${summarize(prompt, 120)}`;
     const detail = decision.kind === "auto-answer" ? decision.answerText : decision.note;
-    this.repository.saveAssistantLearning({
+    this.repository.saveAssistantLearningDeduped({
       id: createAssistantLearningId(),
       assistantId,
       summary: `${summary}. ${detail}`,
@@ -954,6 +1156,7 @@ export class AssistantManager {
       confidence: "high",
       createdAt: new Date().toISOString()
     });
+    void this.maybeCompactAssistantLearnings(assistantId, `question-policy:${decision.category}`);
     this.appendLog({
       assistantId,
       level: "info",
@@ -997,16 +1200,105 @@ function extractQuestionPrompt(message: string) {
   return directQuestion.trim();
 }
 
-function normalizeLearningKey(summary: string, source?: string) {
-  return `${source ?? ""}:${summary.replace(/\s+/g, " ").trim().toLowerCase()}`;
+function normalizeLearningKey(summary: string) {
+  return summary.replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function isOperationalPromptQuestion(question: AssistantQuestion) {
+  return OPERATIONAL_PROMPT_QUESTION_CATEGORIES.has(classifyAssistantQuestion(question.prompt));
+}
+
+export function selectAssistantPromptQuestions(questions: AssistantQuestion[]) {
+  const selected: AssistantQuestion[] = [];
+  const seenKeys = new Set<string>();
+  for (const question of questions.filter((entry) => entry.status === "answered").sort((left, right) => {
+    const leftAt = left.answeredAt ?? left.askedAt;
+    const rightAt = right.answeredAt ?? right.askedAt;
+    return rightAt.localeCompare(leftAt);
+  })) {
+    if (!question.answerText || isOperationalPromptQuestion(question)) {
+      continue;
+    }
+    const key = `${classifyAssistantQuestion(question.prompt)}:${normalizeQuestionText(question.prompt)}:${normalizeQuestionText(question.answerText)}`;
+    if (seenKeys.has(key)) {
+      continue;
+    }
+    seenKeys.add(key);
+    selected.push(question);
+    if (selected.length >= MAX_PROMPT_ANSWERED_QUESTIONS) {
+      break;
+    }
+  }
+  return selected;
+}
+
+export function selectAssistantPromptLearnings(learnings: AssistantLearning[]) {
+  const summaryLearnings = learnings
+    .filter((learning) => (learning.kind ?? "fact") === "summary")
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  const durableGuidance = learnings
+    .filter((learning) => (learning.kind ?? "fact") === "fact")
+    .filter((learning) => {
+      const source = learning.source.toLowerCase();
+      return (
+        learning.confidence === "high" &&
+        (source.startsWith("question:") || source.startsWith("question-policy:") || source.startsWith("user"))
+      );
+    })
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  const recentFacts = learnings
+    .filter((learning) => (learning.kind ?? "fact") === "fact")
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  const selected: AssistantLearning[] = [];
+  const seenKeys = new Set<string>();
+  for (const learning of [...summaryLearnings, ...durableGuidance, ...recentFacts]) {
+    const key = normalizeLearningKey(learning.summary);
+    if (seenKeys.has(key) || selected.some((entry) => entry.id === learning.id)) {
+      continue;
+    }
+    seenKeys.add(key);
+    selected.push(learning);
+    if (selected.length >= MAX_PROMPT_LEARNINGS) {
+      break;
+    }
+  }
+  return selected;
+}
+
+export function renderAssistantPromptMemoryBlock(answeredQuestions: AssistantQuestion[], learnings: AssistantLearning[]) {
+  const lines = [
+    answeredQuestions.length > 0
+      ? `Recent durable answers:\n${answeredQuestions.map((question) => `- ${summarize(question.prompt, 120)} => ${summarize(question.answerText ?? "", 120)}`).join("\n")}`
+      : undefined,
+    learnings.length > 0 ? `Relevant learnings:\n${learnings.map((learning) => `- ${learning.summary}`).join("\n")}` : undefined
+  ].filter(Boolean);
+  if (lines.length === 0) {
+    return "# Durable Guidance\nnone";
+  }
+  return ["# Durable Guidance", ...lines].join("\n");
+}
+
+export function renderAssistantPromptContext(
+  assistant: Pick<Assistant, "name" | "description" | "personalityPrompt" | "jobPrompt">,
+  activeMission?: string
+) {
+  return [
+    `# IDENTITY: ${assistant.name}`,
+    `Personality: ${assistant.personalityPrompt.trim() || "No personality provided."}`,
+    `Description: ${assistant.description?.trim() || "No description provided."}`,
+    "",
+    "# OPERATIONAL LOGIC (The Job)",
+    assistant.jobPrompt.trim() || "No job prompt provided.",
+    activeMission?.trim() ? ["", "# ACTIVE MISSION (The Request)", activeMission.trim()].join("\n") : undefined
+  ]
+    .filter((part) => part !== undefined)
+    .join("\n");
 }
 
 function buildBootstrapPrompt(assistant: Assistant) {
   return [
     "Return only JSON.",
-    `Assistant name: ${assistant.name}`,
-    `Personality prompt:\n${assistant.personalityPrompt}`,
-    `Job prompt:\n${assistant.jobPrompt}`,
+    renderAssistantPromptContext(assistant, "Bootstrap assistant operating state and propose initial durable guidance."),
     `Respond with JSON object:
 {
   "researchSummary": "what role success looks like",
@@ -1019,12 +1311,81 @@ function buildBootstrapPrompt(assistant: Assistant) {
   ].join("\n\n");
 }
 
-function buildThreadSummaryPrompt(assistant: Assistant, thread: AssistantThread) {
+function buildAssistantLearningCompactionPrompt(assistant: Assistant, reason: string, learnings: AssistantLearning[]) {
+  const summaryLearning = learnings.find((learning) => (learning.kind ?? "fact") === "summary");
+  const highConfidenceGuidance = learnings.filter((learning) => {
+    const source = learning.source.toLowerCase();
+    return (
+      learning.confidence === "high" &&
+      (source.startsWith("question:") || source.startsWith("question-policy:") || source.startsWith("user"))
+    );
+  });
+  const recentLearnings = learnings
+    .filter((learning) => (learning.kind ?? "fact") === "fact")
+    .slice(0, 40);
+  const compactInput = [...(summaryLearning ? [summaryLearning] : []), ...highConfidenceGuidance, ...recentLearnings]
+    .filter((learning, index, source) => source.findIndex((entry) => entry.id === learning.id) === index)
+    .slice(0, 80);
+
   return [
-    `Summarize the assistant memory for ${assistant.name}.`,
-    "Preserve user commitments, unresolved blockers, active priorities, and open loops.",
-    renderMessages(thread.messages.slice(-80))
+    "Return only JSON.",
+    `Compaction reason: ${reason}`,
+    renderAssistantPromptContext(assistant, `Compact assistant learnings because: ${reason}`),
+    "Merge assistant learnings into compact durable guidance. Remove duplicates and stale phrasing. Preserve user/question guidance unless contradicted.",
+    "Never return placeholder labels such as merged durable assistant guidance or compacted summary; summary must contain the actual durable guidance.",
+    `Current learnings:\n${compactInput.map((learning) => `- id=${learning.id} kind=${learning.kind ?? "fact"} confidence=${learning.confidence} source=${learning.source}: ${learning.summary}`).join("\n")}`,
+    `Respond with JSON object:
+{
+  "summary": "Prefer concise durable guidance and preserve user constraints.",
+  "retainedFacts": [{"summary":"important fact","source":"source","confidence":"low|medium|high"}]
+}`
   ].join("\n\n");
+}
+
+function buildThreadSummaryPrompt(assistant: Assistant, thread: AssistantThread) {
+  return assembleDeterministicPrompt([
+    {
+      kind: "system",
+      content: [
+        `Summarize the assistant memory for ${assistant.name}.`,
+        "Preserve user commitments, unresolved blockers, active priorities, and open loops."
+      ]
+    },
+    {
+      kind: "dynamic",
+      content: renderMessages(thread.messages.slice(-80))
+    }
+  ]);
+}
+
+function isGarbageAssistantCompactionSummary(summary: string) {
+  return ASSISTANT_COMPACTION_GARBAGE_SUMMARIES.has(normalizeLearningKey(summary));
+}
+
+const ASSISTANT_COMPACTION_GARBAGE_SUMMARIES = new Set([
+  "merged durable assistant guidance",
+  "compacted summary",
+  "compacted summary merged durable assistant guidance"
+]);
+
+function buildAssistantPromptCacheIdentity(input: {
+  repository: WorkspaceRepository;
+  projectId: ProjectId;
+  projectRootPath: string;
+  providerBrand: ProviderBrand;
+  mode?: ModeDefinition;
+}): PromptCacheIdentity {
+  return {
+    projectId: input.projectId,
+    workspaceConfigHash: buildWorkspaceConfigHash({
+      projectId: input.projectId,
+      projectRootPath: input.projectRootPath,
+      providerBrand: input.providerBrand,
+      selectedModeId: input.mode?.id,
+      mode: input.mode,
+      memoryBankEnabledDefault: input.repository.getMemoryBankEnabledDefault()
+    })
+  };
 }
 
 function resolveAssistantMode(modeId: string | undefined, workspaceModes: ModeDefinition[], project?: WorkspaceProjectState) {

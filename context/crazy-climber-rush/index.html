@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Crazy Climber Rush</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <main class="shell" id="app" data-mode="menu">
+      <section class="hud" id="hud" aria-hidden="true">
+        <div class="hud__chip"><span>Altitude</span><strong id="altitude-value">0 m</strong></div>
+        <div class="hud__chip"><span>Stamina</span><strong id="stamina-value">100%</strong></div>
+        <div class="hud__chip"><span>Lives</span><strong id="lives-value">3</strong></div>
+        <div class="hud__chip"><span>Time</span><strong id="time-value">132.0</strong></div>
+        <div class="hud__chip"><span>Next Ledge</span><strong id="ledge-value">600 m</strong></div>
+        <div class="hud__chip"><span>Stage</span><strong id="stage-value">Lobby Face</strong></div>
+      </section>
+
+      <section class="stage" id="play-surface" tabindex="0" aria-label="Crazy Climber Rush play surface">
+        <canvas id="game" width="960" height="640" aria-label="Crazy Climber Rush"></canvas>
+
+        <section class="overlay overlay--menu" id="menu-screen" aria-hidden="false">
+          <p class="eyebrow">Vertical arcade climb</p>
+          <h1>Crazy Climber Rush</h1>
+          <p>
+            Sprint up a glass tower by alternating hand pulls, dodging falling flowerpots, banking checkpoint time, and surviving a four-stage rooftop climb.
+          </p>
+          <button id="start-button" type="button">Start Climb</button>
+          <p class="hint">Move with `A/D` or arrows. Alternate `Q` and `E` to climb. `R` restarts instantly.</p>
+        </section>
+
+        <section class="overlay overlay--result" id="result-screen" aria-hidden="true" hidden>
+          <p class="eyebrow" id="result-eyebrow">run over</p>
+          <h2 id="result-title">You fell off the tower.</h2>
+          <p id="result-copy">Keep your rhythm and use ledges to refill stamina.</p>
+          <button id="restart-button" type="button">Climb Again</button>
+        </section>
+      </section>
+    </main>
+
+    <script src="./game.js"></script>
+  </body>
+</html>

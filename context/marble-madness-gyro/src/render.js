@@ -219,6 +219,38 @@ export function render(ctx, frame) {
   ctx.font = "700 20px Arial";
   ctx.fillText(frame.message || "Tilt steady. Keep speed for the next line.", 42, 670);
 
+  drawRoundedPanel(ctx, 1032, 612, 226, 86, 18);
+  ctx.fillStyle = "rgba(6, 12, 20, 0.82)";
+  ctx.fill();
+  ctx.strokeStyle = "rgba(133, 212, 255, 0.28)";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  ctx.fillStyle = "#9ac6e8";
+  ctx.font = "16px Arial";
+  ctx.fillText("Course Progress", 1052, 640);
+
+  const laneY = 670;
+  const startX = 1060;
+  const spacing = 40;
+  for (let index = 0; index < frame.stageCount; index += 1) {
+    const isPast = index < frame.stageNumber - 1;
+    const isCurrent = index === frame.stageNumber - 1;
+    const x = startX + spacing * index;
+    ctx.fillStyle = isPast ? "#74ffb1" : isCurrent ? "#f9ff7f" : "rgba(255,255,255,0.18)";
+    ctx.beginPath();
+    ctx.arc(x, laneY, isCurrent ? 11 : 9, 0, Math.PI * 2);
+    ctx.fill();
+    if (index < frame.stageCount - 1) {
+      ctx.strokeStyle = "rgba(255,255,255,0.16)";
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(x + 12, laneY);
+      ctx.lineTo(x + spacing - 12, laneY);
+      ctx.stroke();
+    }
+  }
+
   if (frame.mode === "lose" || frame.mode === "win") {
     ctx.fillStyle = "rgba(0, 0, 0, 0.42)";
     ctx.fillRect(0, 0, VIEW_W, VIEW_H);

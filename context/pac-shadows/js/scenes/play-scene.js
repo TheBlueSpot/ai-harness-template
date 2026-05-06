@@ -42,13 +42,13 @@ export const createPlayScene = ({ assets, config }) => {
       if (event.code === "Escape") {
         runtime.go("menu");
       }
-      if (event.code === "Digit1") {
+      if (config.debug.enabled && event.code === "Digit1") {
         runtime.go("win");
       }
-      if (event.code === "Digit2") {
+      if (config.debug.enabled && event.code === "Digit2") {
         runtime.go("lose");
       }
-      if (event.code === "KeyP") {
+      if (config.debug.enabled && event.code === "KeyP") {
         fx.spawnSpiritDeath(player.x, player.y, 12);
       }
     },
@@ -127,6 +127,7 @@ const drawScene = (ctx, maze, player, lighting, ghosts, fx, assets, config) => {
   drawPlayer(ctx, player, assets);
   drawBeamGuide(ctx, lighting, player, config);
   lighting.render(ctx, player, maze);
+  drawDangerSense(ctx, player, ghosts, maze, config);
   drawHud(ctx, lighting, ghosts, fx, assets, config);
 };
 
@@ -209,6 +210,13 @@ const drawExit = (ctx, maze, config) => {
 const drawPlayer = (ctx, player, assets) => {
   const sprite = assets.images.player;
   ctx.save();
+  ctx.fillStyle = "rgba(126,248,255,0.2)";
+  ctx.beginPath();
+  ctx.arc(player.x, player.y, player.radius * 2.4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  ctx.save();
   ctx.translate(player.x, player.y);
   ctx.rotate(player.facingAngle);
   if (sprite) {
@@ -218,6 +226,126 @@ const drawPlayer = (ctx, player, assets) => {
     ctx.fillStyle = "#7ef8ff";
     ctx.beginPath();
     ctx.arc(0, 0, player.radius, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+};
+
+const drawDangerSense = (ctx, player, ghosts, maze, config) => {
+  const senseRadius = config.player.dangerSenseRadius ?? 160;
+  let strongestThreat = 0;
+  const threatSamples = [];
+
+  for (const ghost of ghosts.ghosts) {
+    const dx = ghost.x - player.x;
+    const dy = ghost.y - player.y;
+    const distance = Math.hypot(dx, dy);
+    if (distance > senseRadius) {
+      continue;
+    }
+
+    const distanceFactor = 1 - distance / senseRadius;
+    const hasLineOfSight = maze.hasLineOfSight(player.x, player.y, ghost.x, ghost.y);
+    const lineOfSightFactor = hasLineOfSight ? 1 : 0.55;
+    const stateFactor = ghost.state === "hunt" ? 1 : ghost.state === "search" ? 0.74 : 0.48;
+    const threat = clamp(distanceFactor * lineOfSightFactor * Math.max(stateFactor, ghost.awareness), 0, 1);
+    strongestThreat = Math.max(strongestThreat, threat);
+    threatSamples.push({
+      angle: Math.atan2(dy, dx),
+      threat,
+      distanceFactor,
+      hasLineOfSight,
+      state: ghost.state
+    });
+  }
+
+  const pulse = 0.5 + 0.5 * Math.sin(performance.now() * (8 + strongestThreat * 8) * 0.001);
+  const orbRadius = player.radius * 4.1 + strongestThreat * 18;
+
+  ctx.save();
+  ctx.fillStyle =
+    strongestThreat > 0.45
+      ? "rgba(255,123,123,0.14)"
+      : strongestThreat > 0.15
+        ? "rgba(255,180,107,0.12)"
+        : "rgba(126,248,255,0.1)";
+  ctx.beginPath();
+  ctx.arc(player.x, player.y, player.radius * 1.75 + strongestThreat * 4, 0, Math.PI * 2);
+  ctx.fill();
+
+  const orb = ctx.createRadialGradient(player.x, player.y, player.radius * 0.65, player.x, player.y, orbRadius);
+  orb.addColorStop(0, strongestThreat > 0.45 ? "rgba(255,123,123,0.2)" : "rgba(126,248,255,0.18)");
+  orb.addColorStop(0.68, strongestThreat > 0.45 ? "rgba(255,123,123,0.12)" : "rgba(126,248,255,0.08)");
+  orb.addColorStop(1, "rgba(255,123,123,0)");
+  ctx.fillStyle = orb;
+  ctx.beginPath();
+  ctx.arc(player.x, player.y, orbRadius, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.lineWidth = 2.5 + strongestThreat * 1.5;
+  ctx.strokeStyle =
+    strongestThreat > 0.6
+      ? `rgba(255,123,123,${0.48 + pulse * 0.24})`
+      : strongestThreat > 0.25
+        ? `rgba(255,180,107,${0.36 + pulse * 0.18})`
+        : "rgba(126,248,255,0.38)";
+  ctx.beginPath();
+  ctx.arc(player.x, player.y, player.radius * 2.9 + strongestThreat * 10, 0, Math.PI * 2);
+  ctx.stroke();
+
+  const ringRadius = player.radius * 3.5 + strongestThreat * 12;
+  const topThreats = threatSamples
+    .filter((sample) => sample.threat > 0.1)
+    .sort((left, right) => right.threat - left.threat)
+    .slice(0, 3);
+
+  for (const sample of topThreats) {
+    const arcHalfSpan = 0.16 + sample.distanceFactor * 0.22;
+    const alpha = 0.18 + sample.threat * 0.56 + pulse * 0.08;
+    ctx.beginPath();
+    ctx.lineWidth = 4 + sample.threat * 3;
+    ctx.strokeStyle =
+      sample.state === "hunt"
+        ? `rgba(255,123,123,${alpha})`
+        : sample.state === "search"
+          ? `rgba(255,180,107,${alpha * 0.92})`
+          : `rgba(126,248,255,${alpha * 0.72})`;
+    ctx.arc(player.x, player.y, ringRadius, sample.angle - arcHalfSpan, sample.angle + arcHalfSpan);
+    ctx.stroke();
+
+    if (sample.hasLineOfSight && sample.threat > 0.32) {
+      const pipRadius = ringRadius + 6 + sample.threat * 4;
+      const pipX = player.x + Math.cos(sample.angle) * pipRadius;
+      const pipY = player.y + Math.sin(sample.angle) * pipRadius;
+      ctx.fillStyle =
+        sample.state === "hunt"
+          ? `rgba(255,123,123,${0.4 + sample.threat * 0.35})`
+          : `rgba(255,180,107,${0.32 + sample.threat * 0.28})`;
+      ctx.beginPath();
+      ctx.arc(pipX, pipY, 2.2 + sample.threat * 2.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  if (strongestThreat > 0.2) {
+    const arrowRadius = player.radius * 2.2 + strongestThreat * 10;
+    const arrowX = player.x + Math.cos(topThreats[0]?.angle ?? 0) * arrowRadius;
+    const arrowY = player.y + Math.sin(topThreats[0]?.angle ?? 0) * arrowRadius;
+    ctx.strokeStyle =
+      strongestThreat > 0.6
+        ? `rgba(255,123,123,${0.56 + pulse * 0.2})`
+        : `rgba(255,180,107,${0.46 + pulse * 0.15})`;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(player.x, player.y);
+    ctx.lineTo(arrowX, arrowY);
+    ctx.stroke();
+    ctx.fillStyle =
+      strongestThreat > 0.6
+        ? `rgba(255,123,123,${0.52 + strongestThreat * 0.18})`
+        : `rgba(255,180,107,${0.42 + strongestThreat * 0.16})`;
+    ctx.beginPath();
+    ctx.arc(arrowX, arrowY, 4 + strongestThreat * 2, 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.restore();
@@ -251,6 +379,21 @@ const drawBeamGuide = (ctx, lighting, player, config) => {
 const drawHud = (ctx, lighting, ghosts, fx, assets, config) => {
   const width = ctx.canvas.clientWidth;
   const panel = assets.images["ui-panel"];
+  const huntCount = ghosts.ghosts.filter((ghost) => ghost.state === "hunt").length;
+  const searchCount = ghosts.ghosts.filter((ghost) => ghost.state === "search").length;
+  const patrolCount = ghosts.ghosts.filter((ghost) => ghost.state === "patrol").length;
+  const beamState =
+    lighting.lastVisibleRatio > 0.38
+      ? "Bright beam"
+      : lighting.lastVisibleRatio > 0.2
+        ? "Half-hidden beam"
+        : "Tight beam";
+  const threatState =
+    huntCount > 0
+      ? "Red ring means hunt pressure is on top of you."
+      : searchCount > 0
+        ? "Amber ring means ghosts are tracking the light."
+        : "Cyan ring means your lane is still calm.";
   ctx.save();
   if (panel) {
     ctx.globalAlpha = 0.92;
@@ -268,16 +411,16 @@ const drawHud = (ctx, lighting, ghosts, fx, assets, config) => {
   ctx.fillText("Pac Shadows", width - 398, 48);
   ctx.font = "400 13px Trebuchet MS";
   ctx.fillStyle = "rgba(247,244,234,0.8)";
-  ctx.fillText(`Flashlight rays: ${lighting.lastSampleCount}`, width - 398, 74);
-  ctx.fillText(`Beam visible ratio: ${lighting.lastVisibleRatio.toFixed(2)}`, width - 398, 94);
-  ctx.fillText(`Ghost threat: ${(ghosts.threatLevel * 100).toFixed(0)}%`, width - 398, 114);
-  ctx.fillText(`Particles alive: ${fx.particles.length}`, width - 398, 134);
-  ctx.fillText(`Assets present: ${Object.keys(assets.images).length} image slots`, width - 398, 154);
-  ctx.fillText("Digit1 win, Digit2 lose, P burst, Escape menu.", width - 398, 174);
+  ctx.fillText("Goal: reach the green exit without waking the room.", width - 398, 74);
+  ctx.fillText(`${beamState}. Keep ghosts outside the cone when you can.`, width - 398, 94);
+  ctx.fillText(`Ghost states: ${huntCount} hunt | ${searchCount} search | ${patrolCount} patrol`, width - 398, 114);
+  ctx.fillText(threatState, width - 398, 134);
+  ctx.fillText("Move: WASD or arrows. Escape returns to menu.", width - 398, 154);
+  ctx.fillText("Light up the route, then cut the beam before ghosts commit.", width - 398, 174);
 
   if (config.debug.enabled) {
     ctx.fillStyle = "#9be564";
-    ctx.fillText("Debug hooks active via window.__PAC_SHADOWS__", width - 398, 194);
+    ctx.fillText(`Debug hooks active via window.__PAC_SHADOWS__ | FX ${fx.particles.length}`, width - 398, 194);
   }
 
   ctx.restore();
@@ -287,3 +430,5 @@ const reachedExit = (player, maze, exitCell) => {
   const playerCell = maze.cellFromWorld(player.x, player.y);
   return playerCell.col === exitCell.col && playerCell.row === exitCell.row;
 };
+
+const clamp = (value, min, max) => Math.max(min, Math.min(max, value));

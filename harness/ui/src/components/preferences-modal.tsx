@@ -1,4 +1,4 @@
-import { createRequestId } from "../../../shared/protocol";
+import { createRequestId, type ProviderBrand } from "../../../shared/protocol";
 import { ClipboardList, FolderOpen, Orbit, Play, RefreshCcw } from "lucide-solid";
 import { canSelectProviderBrand, harnessStore, persistMergedLocalPreferences } from "../harness-store";
 import { pushToast } from "../toast-store";
@@ -8,6 +8,16 @@ import { Dialog } from "./primitives/dialog";
 import { DropdownControl } from "./primitives/dropdown";
 import { Input } from "./primitives/input";
 import { Textarea } from "./primitives/textarea";
+
+function getProviderBrandLabel(providerBrand: ProviderBrand) {
+  if (providerBrand === "gemini") {
+    return "Gemini";
+  }
+  if (providerBrand === "claude") {
+    return "Claude";
+  }
+  return "GPT";
+}
 
 export function PreferencesModal() {
   const state = harnessStore.state;
@@ -19,7 +29,8 @@ export function PreferencesModal() {
   const workspaceMemoryDraft = () => state.workspace.workspaceMemorySummary?.content ?? "";
   const activeBrandOptions = () => [
     { value: "gpt", label: "GPT", description: "Use OpenAI-hosted model family.", disabled: !canSelectProviderBrand(state, "gpt") },
-    { value: "gemini", label: "Gemini", description: "Use Google-hosted model family.", disabled: !canSelectProviderBrand(state, "gemini") }
+    { value: "gemini", label: "Gemini", description: "Use Google-hosted model family.", disabled: !canSelectProviderBrand(state, "gemini") },
+    { value: "claude", label: "Claude", description: "Use Anthropic-hosted model family.", disabled: !canSelectProviderBrand(state, "claude") }
   ];
   const subagentWorktreeOptions = () => [
     { value: "same-worktree", label: "Same checkout", description: "Subagents edit inside current working tree." },
@@ -49,20 +60,22 @@ export function PreferencesModal() {
   function handleSave() {
     const openAiApiKey = state.openAiApiKeyDraft.trim() || undefined;
     const googleApiKey = state.googleApiKeyDraft.trim() || undefined;
+    const anthropicApiKey = state.anthropicApiKeyDraft.trim() || undefined;
 
-    if (!openAiApiKey && !googleApiKey && !state.hasUsableApiKey && !state.hasStoredApiKey) {
+    if (!openAiApiKey && !googleApiKey && !anthropicApiKey && !state.hasUsableApiKey && !state.hasStoredApiKey) {
       pushToast("API key required", "Enter provider key before sending chat.", "error");
       return;
     }
 
     if (!canSelectProviderBrand(state, state.providerBrand)) {
-      pushToast("Provider key required", `Saved ${state.providerBrand === "gemini" ? "Gemini" : "GPT"} key required.`, "error");
+      pushToast("Provider key required", `Saved ${getProviderBrandLabel(state.providerBrand)} key required.`, "error");
       return;
     }
 
     persistMergedLocalPreferences({
       openAiApiKey,
       googleApiKey,
+      anthropicApiKey,
       providerBrand: state.providerBrand,
       debugEnabled: state.debugEnabled,
       tracePanelDefaultOpen: state.tracePanelDefaultOpen,
@@ -79,6 +92,7 @@ export function PreferencesModal() {
     harnessStore.commitLocalPreferences({
       openAiApiKey,
       googleApiKey,
+      anthropicApiKey,
       providerBrand: state.providerBrand,
       debugEnabled: state.debugEnabled,
       tracePanelDefaultOpen: state.tracePanelDefaultOpen,
@@ -99,6 +113,7 @@ export function PreferencesModal() {
       payload: {
         openAiApiKey,
         googleApiKey,
+        anthropicApiKey,
         providerBrand: state.providerBrand,
         debugEnabled: state.debugEnabled,
         tracePanelDefaultOpen: state.tracePanelDefaultOpen,
@@ -121,6 +136,7 @@ export function PreferencesModal() {
     persistMergedLocalPreferences({
       openAiApiKey: undefined,
       googleApiKey: undefined,
+      anthropicApiKey: undefined,
       providerBrand: state.providerBrand,
       debugEnabled: state.debugEnabled,
       tracePanelDefaultOpen: state.tracePanelDefaultOpen,
@@ -137,6 +153,7 @@ export function PreferencesModal() {
     harnessStore.commitLocalPreferences({
       openAiApiKey: undefined,
       googleApiKey: undefined,
+      anthropicApiKey: undefined,
       providerBrand: state.providerBrand,
       debugEnabled: state.debugEnabled,
       tracePanelDefaultOpen: state.tracePanelDefaultOpen,
@@ -190,7 +207,7 @@ export function PreferencesModal() {
 
     try {
       const parsed = JSON.parse(await file.text()) as Partial<{
-        providerBrand: "gpt" | "gemini";
+        providerBrand: ProviderBrand;
         debugEnabled: boolean;
         tracePanelDefaultOpen: boolean;
         subagentWorktreeStrategyDefault: "same-worktree" | "separate-worktrees";
@@ -221,6 +238,7 @@ export function PreferencesModal() {
       persistMergedLocalPreferences({
         openAiApiKey: state.openAiApiKeyDraft.trim() || undefined,
         googleApiKey: state.googleApiKeyDraft.trim() || undefined,
+        anthropicApiKey: state.anthropicApiKeyDraft.trim() || undefined,
         providerBrand: parsed.providerBrand ?? state.providerBrand,
         debugEnabled: parsed.debugEnabled ?? state.debugEnabled,
         tracePanelDefaultOpen: parsed.tracePanelDefaultOpen ?? state.tracePanelDefaultOpen,
@@ -257,13 +275,18 @@ export function PreferencesModal() {
     pushToast("Workspace context saved", "Rules and workspace memory updated.");
   }
 
+  function handleResetPanelSizes() {
+    harnessStore.resetMainPanelSizes();
+    pushToast("Panel sizes reset", "Main panel widths restored to defaults.");
+  }
+
   return (
     <Dialog
       open={state.preferencesModalOpen}
       onClose={() => harnessStore.closePreferencesModal()}
       title="Workspace preferences"
       eyebrow="Preferences"
-      description="Manage local GPT and Gemini keys plus default workspace preferences."
+      description="Manage local GPT, Gemini, and Claude keys plus default workspace preferences."
       footer={
         <>
           <Button variant="ghost" onClick={() => harnessStore.closePreferencesModal()}>
@@ -296,7 +319,7 @@ export function PreferencesModal() {
             class="w-full"
             value={state.providerBrand}
             options={activeBrandOptions()}
-            onChange={(value) => harnessStore.setProviderBrand(value as "gpt" | "gemini")}
+            onChange={(value) => harnessStore.setProviderBrand(value as ProviderBrand)}
           />
           <p class="text-[0.675rem] leading-5 text-(--muted)">Brand switch stays disabled until matching key exists or you type one here.</p>
         </label>
@@ -325,6 +348,20 @@ export function PreferencesModal() {
             placeholder="AIza..."
             onInput={(event: InputEvent & { currentTarget: HTMLInputElement; target: Element }) =>
               harnessStore.setGoogleApiKeyDraft(event.currentTarget.value)
+            }
+          />
+        </label>
+
+        <label class="space-y-2">
+          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">
+            Anthropic API key
+          </span>
+          <Input
+            type="password"
+            value={state.anthropicApiKeyDraft}
+            placeholder="sk-ant-..."
+            onInput={(event: InputEvent & { currentTarget: HTMLInputElement; target: Element }) =>
+              harnessStore.setAnthropicApiKeyDraft(event.currentTarget.value)
             }
           />
         </label>
@@ -361,6 +398,16 @@ export function PreferencesModal() {
           </div>
         </label>
       </div>
+
+      <section class="flex items-center justify-between gap-3 rounded-[1.25rem] border border-(--border) bg-white/55 px-4 py-3">
+        <div>
+          <div class="text-[0.675rem] font-semibold text-(--foreground)">Panel layout</div>
+          <div class="mt-1 text-[0.675rem] leading-5 text-(--muted)">Restore the Projects, chat, and trace panel widths.</div>
+        </div>
+        <Button variant="secondary" onClick={handleResetPanelSizes}>
+          Restore panel sizes
+        </Button>
+      </section>
 
       <div class="grid gap-3 md:grid-cols-2">
         <label class="space-y-2 rounded-[1.25rem] border border-(--border) bg-white/55 px-4 py-3">

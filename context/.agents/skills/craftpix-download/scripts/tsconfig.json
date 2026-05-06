@@ -9,5 +9,5 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["./download_asset.ts"]
+  "include": ["./craftpix.ts", "./download_asset.ts", "./download_plan.ts"]
 }

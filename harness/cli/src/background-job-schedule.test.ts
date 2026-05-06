@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { getDueScheduleAdvance, previewBackgroundJobSchedule } from "./background-job-schedule";
+import { getDueScheduleAdvance, getPostRunScheduleAdvance, previewBackgroundJobSchedule } from "./background-job-schedule";
 
 describe("background job schedule", () => {
   test("parses relative intervals", () => {
@@ -59,6 +59,40 @@ describe("background job schedule", () => {
       consumedAt: "2026-04-16T12:00:00.000Z",
       sourceText: "2026-04-16 11:00"
     });
+  });
+
+  test("moves stale interval next run after long-running completion", () => {
+    const advance = getPostRunScheduleAdvance(
+      {
+        type: "interval",
+        intervalSeconds: 300,
+        nextRunAt: "2026-04-16T12:00:00.000Z",
+        sourceText: "5m"
+      },
+      new Date("2026-04-16T12:06:00.000Z")
+    );
+
+    expect(advance?.nextRunAt).toBe("2026-04-16T12:11:00.000Z");
+    expect(advance?.schedule).toEqual({
+      type: "interval",
+      intervalSeconds: 300,
+      nextRunAt: "2026-04-16T12:11:00.000Z",
+      sourceText: "5m"
+    });
+  });
+
+  test("keeps future interval next run after quick completion", () => {
+    const advance = getPostRunScheduleAdvance(
+      {
+        type: "interval",
+        intervalSeconds: 300,
+        nextRunAt: "2026-04-16T12:10:00.000Z",
+        sourceText: "5m"
+      },
+      new Date("2026-04-16T12:06:00.000Z")
+    );
+
+    expect(advance).toBeUndefined();
   });
 
   test("rejects ambiguous input", () => {

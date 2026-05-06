@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Xevious Sky Assault</title>
+    <meta
+      name="description"
+      content="Direct-boot Xevious-style shooter with air and ground targeting, trench radar pressure, and fast retry flow."
+    />
+    <link rel="stylesheet" href="./src/styles.css" />
+    <script defer src="./game.js"></script>
+  </head>
+  <body>
+    <main class="shell">
+      <section class="frame" aria-label="Xevious Sky Assault">
+        <canvas id="gameCanvas" class="game-canvas" aria-label="Game view"></canvas>
+        <section id="hud" class="hud" aria-live="polite">
+          <div class="hud__chip"><span class="hud__label">Score</span><span id="hudScore">0</span></div>
+          <div class="hud__chip"><span class="hud__label">Lives</span><span id="hudLives">0</span></div>
+          <div class="hud__chip"><span class="hud__label">Radar</span><span id="hudRadar">0%</span></div>
+          <div id="hudAlert" class="hud__alert" hidden></div>
+        </section>
+        <section id="overlay" class="overlay" hidden>
+          <p id="overlayEyebrow" class="overlay__eyebrow">Mission</p>
+          <h1 id="overlayTitle" class="overlay__title">Xevious Sky Assault</h1>
+          <p id="overlayCopy" class="overlay__copy"></p>
+          <button id="overlayButton" class="overlay__button" type="button">Start</button>
+        </section>
+      </section>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,132 @@
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: #100d08;
+  color: #f3e6c2;
+  font-family: Georgia, "Times New Roman", serif;
+}
+
+body {
+  overflow: hidden;
+}
+
+.shell {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  background:
+    radial-gradient(circle at top, rgba(233, 181, 81, 0.16), transparent 35%),
+    linear-gradient(180deg, #2a1b11 0%, #120d08 100%);
+}
+
+canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.hud {
+  position: absolute;
+  inset: 18px 22px auto 22px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  pointer-events: none;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.hud > div {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border: 1px solid rgba(244, 212, 133, 0.28);
+  background: rgba(26, 17, 10, 0.72);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.22);
+}
+
+.hud div div {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.hud span {
+  color: #caaa68;
+}
+
+.hud strong {
+  color: #fff4d7;
+  font-size: 18px;
+}
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(10, 8, 6, 0.56);
+}
+
+.overlay.is-hidden {
+  display: none;
+}
+
+.card {
+  width: min(560px, calc(100vw - 40px));
+  padding: 28px 30px 30px;
+  border: 1px solid rgba(244, 212, 133, 0.4);
+  background:
+    linear-gradient(180deg, rgba(66, 42, 20, 0.95), rgba(28, 18, 10, 0.96));
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.42);
+}
+
+.eyebrow {
+  margin: 0 0 10px;
+  color: #f3be68;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 12px;
+}
+
+.card h1 {
+  margin: 0 0 12px;
+  font-size: clamp(28px, 4vw, 44px);
+  line-height: 1;
+}
+
+.card p {
+  margin: 0 0 18px;
+  line-height: 1.45;
+}
+
+button {
+  border: 0;
+  padding: 12px 18px;
+  font: inherit;
+  color: #201109;
+  background: linear-gradient(180deg, #ffd98a, #d58e2b);
+  cursor: pointer;
+}
+
+button:hover {
+  filter: brightness(1.05);
+}
+
+@media (max-width: 900px) {
+  .hud {
+    grid-template-columns: 1fr;
+    inset: 12px 12px auto 12px;
+  }
+
+  .hud > div {
+    padding: 10px 12px;
+  }
+
+  .hud strong {
+    font-size: 16px;
+  }
+}

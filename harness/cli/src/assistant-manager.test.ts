@@ -1,10 +1,18 @@
 import { describe, expect, test } from "bun:test";
 import path from "node:path";
 import { mkdirSync } from "node:fs";
-import { createAssistantId, createAssistantQuestionId, type AgentRuntimeCapability, type Assistant, type ProviderBrand } from "../../shared/protocol";
+import {
+  createAssistantId,
+  createAssistantLearningId,
+  createAssistantQuestionId,
+  type AgentRuntimeCapability,
+  type Assistant,
+  type AssistantLearning,
+  type ProviderBrand
+} from "../../shared/protocol";
 import { AgentRuntimeRegistry } from "./agent-runtimes/runtime-registry";
 import type { AgentRuntime } from "./agent-runtimes/agent-runtime";
-import { AssistantManager } from "./assistant-manager";
+import { AssistantManager, renderAssistantPromptMemoryBlock, selectAssistantPromptLearnings, selectAssistantPromptQuestions } from "./assistant-manager";
 import type { PiAgentAdapter, PiAgentExecutionController, PiAgentPromptRequest, PiAgentPromptResult } from "./pi-agent-adapter";
 import { WorkspaceRepository } from "./workspace-repository";
 
@@ -126,6 +134,8 @@ function createManager(
     onAssistantLogAppended() {},
     onAssistantCreatedCard() {},
     ...callbacks
+  }, {
+    reprioritizeDebounceMs: 0
   });
 }
 
@@ -141,6 +151,15 @@ function bootstrapResult(title: string) {
 async function waitForCalls(adapter: DeferredAdapter, count: number) {
   for (let index = 0; index < 100; index += 1) {
     if (adapter.calls.length >= count) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+async function waitForCondition(predicate: () => boolean) {
+  for (let index = 0; index < 100; index += 1) {
+    if (predicate()) {
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -232,6 +251,42 @@ describe("assistant manager chat", () => {
 
     expect(events).toEqual(["appended:user:Need status", "delta:Working", "complete:Ready"]);
   });
+
+  test("assistant chat prompt renders cleaned profile context", async () => {
+    const repository = createRepository();
+    const assistant = createAssistant(repository, {
+      bootstrapState: "completed",
+      description: "Tracks release risk.",
+      personalityPrompt: "Be direct.",
+      jobPrompt: "Watch release blockers."
+    });
+    repository.saveAssistantLearning({
+      id: createAssistantLearningId(),
+      assistantId: assistant.id,
+      summary: "Prioritize smoke-test failures before polish.",
+      source: "test",
+      confidence: "high",
+      createdAt: new Date().toISOString()
+    });
+    const adapter = new DeferredAdapter();
+    const manager = createManager(repository, adapter);
+
+    const sent = manager.sendAssistantChat(assistant.id, "Need status");
+    await waitForCalls(adapter, 1);
+
+    expect(adapter.calls[0]?.prompt).toContain("# IDENTITY: Bootstrap tester");
+    expect(adapter.calls[0]?.prompt).toContain("Personality: Be direct.");
+    expect(adapter.calls[0]?.prompt).toContain("Description: Tracks release risk.");
+    expect(adapter.calls[0]?.prompt).toContain("# OPERATIONAL LOGIC (The Job)\nWatch release blockers.");
+    expect(adapter.calls[0]?.prompt).toContain("# ACTIVE MISSION (The Request)\nNeed status");
+    expect(adapter.calls[0]?.prompt).not.toContain("Role:");
+    expect(adapter.calls[0]?.prompt).not.toContain("First assistant message requirement:");
+    expect(adapter.calls[0]?.prompt).not.toContain("Concise learnings report:");
+    expect(adapter.calls[0]?.prompt).toContain("Prioritize smoke-test failures before polish.");
+
+    adapter.resolvers[0]?.({ text: "Ready" });
+    await sent;
+  });
 });
 
 describe("assistant manager background jobs", () => {
@@ -252,6 +307,8 @@ describe("assistant manager background jobs", () => {
     await waitForCalls(adapter, 1);
 
     expect(adapter.calls[0]?.readOnly).toBe(false);
+    expect(adapter.calls[0]?.prompt).toContain("Recent assistant logs:");
+    expect(adapter.calls[0]?.prompt).toContain("Built next catalog entry.");
     adapter.resolvers[0]?.({ text: JSON.stringify({ summary: "Queue updated." }) });
   });
 
@@ -294,12 +351,217 @@ describe("assistant manager background jobs", () => {
     expect(learnings[0]?.source).toBe(`question:${question.id}`);
   });
 
+  test("dedupes bootstrap learnings before appending", async () => {
+    const repository = createRepository();
+    const assistant = createAssistant(repository);
+    const adapter = new DeferredAdapter();
+    const manager = createManager(repository, adapter);
+
+    const bootstrapped = manager.retryBootstrap(assistant.id);
+    await waitForCalls(adapter, 1);
+    adapter.resolvers[0]?.({
+      text: JSON.stringify({
+        researchSummary: "Preserve durable user guidance.",
+        learnings: [
+          {
+            summary: "Preserve durable user guidance.",
+            source: "bootstrap",
+            confidence: "medium"
+          }
+        ]
+      })
+    });
+    await bootstrapped;
+
+    expect(repository.getAssistantLearnings(assistant.id)).toHaveLength(1);
+  });
+
+  test("compacts assistant learnings once thresholds are crossed", async () => {
+    const repository = createRepository();
+    const assistant = createAssistant(repository, { bootstrapState: "completed" });
+    const adapter = new DeferredAdapter();
+    const manager = createManager(repository, adapter);
+    const now = new Date().toISOString();
+    for (let index = 0; index < 41; index += 1) {
+      repository.saveAssistantLearning({
+        id: createAssistantLearningId(),
+        assistantId: assistant.id,
+        summary: `Low-value repeated patrol note ${index}`,
+        source: "test",
+        confidence: "low",
+        createdAt: now
+      });
+    }
+
+    const outcome = manager.handleBackgroundJobRunOutcome({
+      assistantId: assistant.id,
+      status: "succeeded",
+      summary: "Trigger reprioritize."
+    });
+    await waitForCalls(adapter, 1);
+    adapter.resolvers[0]?.({ text: JSON.stringify({ summary: "Queue updated." }) });
+    await waitForCalls(adapter, 2);
+    expect(adapter.calls[1]?.prompt).toContain("Merge assistant learnings into compact durable guidance.");
+    expect(adapter.calls[1]?.prompt).not.toContain('"summary": "merged durable assistant guidance"');
+    expect(adapter.calls[1]?.prompt).toContain("Never return placeholder labels");
+    adapter.resolvers[1]?.({
+      text: JSON.stringify({
+        summary: "Keep patrol guidance compact.",
+        retainedFacts: []
+      })
+    });
+    await outcome;
+    await waitForCondition(() => repository.getAssistantLearnings(assistant.id).length === 1);
+
+    const learnings = repository.getAssistantLearnings(assistant.id);
+    expect(learnings).toHaveLength(1);
+    expect(learnings[0]?.kind).toBe("summary");
+    expect(learnings[0]?.summary).toBe("Keep patrol guidance compact.");
+  });
+
+  test("keeps facts when AI compaction payload cannot be repaired", async () => {
+    const repository = createRepository();
+    const assistant = createAssistant(repository, { bootstrapState: "completed" });
+    const adapter = new DeferredAdapter();
+    const logSummaries: string[] = [];
+    const manager = createManager(repository, adapter, {
+      onAssistantLogAppended(entry) {
+        logSummaries.push(entry.summary);
+      }
+    });
+    const now = new Date().toISOString();
+    for (let index = 0; index < 41; index += 1) {
+      repository.saveAssistantLearning({
+        id: createAssistantLearningId(),
+        assistantId: assistant.id,
+        summary: `Compaction fallback note ${index}`,
+        source: "test",
+        confidence: "low",
+        createdAt: now
+      });
+    }
+
+    const outcome = manager.handleBackgroundJobRunOutcome({
+      assistantId: assistant.id,
+      status: "succeeded",
+      summary: "Trigger reprioritize."
+    });
+    await waitForCalls(adapter, 1);
+    adapter.resolvers[0]?.({ text: JSON.stringify({ summary: "Queue updated." }) });
+    await waitForCalls(adapter, 2);
+    adapter.resolvers[1]?.({ text: "not json" });
+    await waitForCalls(adapter, 3);
+    adapter.resolvers[2]?.({ text: JSON.stringify({ retainedFacts: [] }) });
+    await outcome;
+    await waitForCondition(() => logSummaries.includes("Assistant learning compaction skipped"));
+
+    expect(repository.getAssistantLearningStats(assistant.id).activeFactLearningCount).toBe(41);
+    expect(logSummaries).toContain("Assistant learning compaction skipped");
+  });
+
+  test("rejects garbage compaction output and keeps facts when repair is garbage", async () => {
+    const repository = createRepository();
+    const assistant = createAssistant(repository, { bootstrapState: "completed" });
+    const adapter = new DeferredAdapter();
+    const logSummaries: string[] = [];
+    const manager = createManager(repository, adapter, {
+      onAssistantLogAppended(entry) {
+        logSummaries.push(entry.summary);
+      }
+    });
+    const now = new Date().toISOString();
+    for (let index = 0; index < 41; index += 1) {
+      repository.saveAssistantLearning({
+        id: createAssistantLearningId(),
+        assistantId: assistant.id,
+        summary: `Garbage compaction guard note ${index}`,
+        source: "test",
+        confidence: "low",
+        createdAt: now
+      });
+    }
+
+    const outcome = manager.handleBackgroundJobRunOutcome({
+      assistantId: assistant.id,
+      status: "succeeded",
+      summary: "Trigger reprioritize."
+    });
+    await waitForCalls(adapter, 1);
+    adapter.resolvers[0]?.({ text: JSON.stringify({ summary: "Queue updated." }) });
+    await waitForCalls(adapter, 2);
+    adapter.resolvers[1]?.({ text: JSON.stringify({ summary: "merged durable assistant guidance", retainedFacts: [] }) });
+    await waitForCalls(adapter, 3);
+    adapter.resolvers[2]?.({ text: JSON.stringify({ summary: "Compacted summary", retainedFacts: [] }) });
+    await outcome;
+    await waitForCondition(() => logSummaries.includes("Assistant learning compaction skipped"));
+
+    expect(repository.getAssistantLearningStats(assistant.id).activeFactLearningCount).toBe(41);
+    expect(repository.getAssistantLearnings(assistant.id).some((learning) => learning.kind === "summary")).toBe(false);
+  });
+
+  test("prompt learning context prefers summary and high-confidence guidance", async () => {
+    const repository = createRepository();
+    const assistant = createAssistant(repository, { bootstrapState: "completed" });
+    const adapter = new DeferredAdapter();
+    const manager = createManager(repository, adapter);
+    const now = new Date().toISOString();
+    repository.saveAssistantLearning({
+      id: createAssistantLearningId(),
+      assistantId: assistant.id,
+      summary: "Compacted release guidance comes first.",
+      source: "compaction:test",
+      confidence: "high",
+      createdAt: now,
+      kind: "summary",
+      compactedAt: now
+    });
+    repository.saveAssistantLearning({
+      id: createAssistantLearningId(),
+      assistantId: assistant.id,
+      summary: "merged durable assistant guidance",
+      source: "compaction:test",
+      confidence: "high",
+      createdAt: new Date(Date.now() + 1).toISOString(),
+      kind: "summary",
+      compactedAt: now
+    });
+    repository.saveAssistantLearning({
+      id: createAssistantLearningId(),
+      assistantId: assistant.id,
+      summary: "User wants blocker questions avoided.",
+      source: "question:test",
+      confidence: "high",
+      createdAt: now
+    });
+    for (let index = 0; index < 20; index += 1) {
+      repository.saveAssistantLearning({
+        id: createAssistantLearningId(),
+        assistantId: assistant.id,
+        summary: `Recent fact ${index}`,
+        source: "test",
+        confidence: "medium",
+        createdAt: new Date(Date.now() + index).toISOString()
+      });
+    }
+
+    const sent = manager.sendAssistantChat(assistant.id, "Need status");
+    await waitForCalls(adapter, 1);
+
+    expect(adapter.calls[0]?.prompt).toContain("Compacted release guidance comes first.");
+    expect(adapter.calls[0]?.prompt).not.toContain("merged durable assistant guidance");
+    expect(adapter.calls[0]?.prompt).toContain("User wants blocker questions avoided.");
+    expect(adapter.calls[0]?.prompt).not.toContain("Recent fact 0");
+
+    adapter.resolvers[0]?.({ text: "Ready" });
+    await sent;
+  });
+
   test("turns soft question-like job failures into durable notes without tripping failures", async () => {
     const repository = createRepository();
     const assistant = createAssistant(repository);
     const manager = createManager(repository, new DeferredAdapter());
 
-    await manager.handleBackgroundJobRunOutcome({
+    const outcome = await manager.handleBackgroundJobRunOutcome({
       assistantId: assistant.id,
       status: "failed",
       failureMessage:
@@ -309,6 +571,7 @@ describe("assistant manager background jobs", () => {
     const questions = repository.getAssistantQuestions(assistant.id);
     const updatedAssistant = repository.getAssistant(assistant.id);
     expect(questions).toHaveLength(0);
+    expect(outcome?.blocked).toBe(false);
     expect(repository.getAssistantLearnings(assistant.id)[0]?.summary).toContain("Make a reasonable assumption");
     expect(updatedAssistant?.failureStreakCount).toBe(0);
     expect(updatedAssistant?.circuitBreakerState).toBe("closed");
@@ -319,18 +582,20 @@ describe("assistant manager background jobs", () => {
     const assistant = createAssistant(repository);
     const manager = createManager(repository, new DeferredAdapter());
 
-    await manager.handleBackgroundJobRunOutcome({
+    const firstOutcome = await manager.handleBackgroundJobRunOutcome({
       assistantId: assistant.id,
       status: "awaiting-user-input",
       summary: "Which project should this assistant inspect first?"
     });
-    await manager.handleBackgroundJobRunOutcome({
+    const secondOutcome = await manager.handleBackgroundJobRunOutcome({
       assistantId: assistant.id,
       status: "awaiting-user-input",
       summary: "Which project should this assistant inspect first?"
     });
 
     expect(repository.getAssistantQuestions(assistant.id)).toHaveLength(0);
+    expect(firstOutcome?.blocked).toBe(false);
+    expect(secondOutcome?.blocked).toBe(false);
     expect(repository.getAssistantLearnings(assistant.id).length).toBeGreaterThan(0);
     expect(repository.getAssistant(assistant.id)?.failureStreakCount).toBe(0);
   });
@@ -389,5 +654,76 @@ describe("assistant manager background jobs", () => {
     expect(manager.cleanupStaleAssistantQuestions()).toBe(1);
 
     expect(repository.getAssistantQuestions(assistant.id).find((entry) => entry.id === stale.id)?.status).toBe("dismissed");
+  });
+
+  test("selectAssistantPromptQuestions keeps only durable non-operational answers", () => {
+    const assistantId = createAssistantId();
+    const now = new Date().toISOString();
+    const selected = selectAssistantPromptQuestions([
+      {
+        id: createAssistantQuestionId(),
+        assistantId,
+        prompt: "Which background job should I run now?",
+        status: "answered",
+        answerText: "Use the hourly job.",
+        askedAt: now,
+        answeredAt: now
+      },
+      {
+        id: createAssistantQuestionId(),
+        assistantId,
+        prompt: "Which release area should this patrol inspect?",
+        status: "answered",
+        answerText: "Inspect release blockers first.",
+        askedAt: now,
+        answeredAt: now
+      },
+      {
+        id: createAssistantQuestionId(),
+        assistantId,
+        prompt: "Which release area should this patrol inspect?",
+        status: "answered",
+        answerText: "Inspect release blockers first.",
+        askedAt: now,
+        answeredAt: now
+      }
+    ]);
+
+    expect(selected).toHaveLength(1);
+    expect(selected[0]?.answerText).toBe("Inspect release blockers first.");
+  });
+
+  test("assistant prompt memory block dedupes learnings and caps output", () => {
+    const assistantId = createAssistantId();
+    const learnings: AssistantLearning[] = Array.from({ length: 12 }, (_, index) => ({
+      id: createAssistantLearningId(),
+      assistantId,
+      summary: index < 2 ? "Prioritize smoke tests first." : `Learning ${index}`,
+      source: index < 2 ? "question:test" : "test",
+      confidence: index < 2 ? "high" : "medium",
+      createdAt: new Date(Date.now() + index).toISOString()
+    }));
+
+    const selectedLearnings = selectAssistantPromptLearnings(learnings);
+    const block = renderAssistantPromptMemoryBlock(
+      [
+        {
+          id: createAssistantQuestionId(),
+          assistantId,
+          prompt: "Which release area should this patrol inspect?",
+          status: "answered",
+          answerText: "Inspect release blockers first.",
+          askedAt: new Date().toISOString(),
+          answeredAt: new Date().toISOString()
+        }
+      ],
+      selectedLearnings
+    );
+
+    expect(selectedLearnings).toHaveLength(6);
+    expect(selectedLearnings.filter((learning) => learning.summary === "Prioritize smoke tests first.")).toHaveLength(1);
+    expect(block).toContain("# Durable Guidance");
+    expect(block).toContain("Recent durable answers:");
+    expect(block).toContain("Relevant learnings:");
   });
 });

@@ -24,3 +24,4 @@ Tetris Night Shift is a browser-playable falling-block puzzle entry about keepin
 - Entry is isolated inside `tetris-night-shift/`
 - Open `tetris-night-shift/index.html` in a browser to play
 - HUD stays edge-anchored so the board remains readable under pressure
+- The in-play prompt uses inline code styling so the rotation hint stays legible at a glance

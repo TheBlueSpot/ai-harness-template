@@ -1,6 +1,6 @@
 // galgia/js/enemies.js
 
-import * as THREE from 'three';
+import * as THREE from 'https://esm.sh/three@0.163.0';
 import { Bullets } from './bullets.js';
 import { Animations } from './animations.js';
 import { ClusterGeometry } from './geometry.js';
@@ -8,7 +8,8 @@ import { randFloat, randInt } from './utils.js';
 
 const ENEMY_FIRE_RATE_MIN = 3; // Seconds
 const ENEMY_FIRE_RATE_MAX = 7; // Seconds
-const ENEMY_SPEED = 1.5; // Base movement speed
+const ENEMY_SPEED = 1.35; // Base movement speed
+const ENEMY_SCALE = 2.15;
 
 export const Enemies = {
     enemies: [],
@@ -24,10 +25,13 @@ export const Enemies = {
         let mesh;
         if (type === 'basic') {
             const clusterGeo = new ClusterGeometry();
-            mesh = clusterGeo.createAsteroidCluster(position, 0.7, 5, 0.05, 0.15);
+            mesh = clusterGeo.createAsteroidCluster(position, ENEMY_SCALE, 8, 0.14, 0.3);
             mesh.traverse((child) => {
                 if (child.isMesh) {
-                    child.material.color.set(new THREE.Color(randFloat(0.1, 0.4), randFloat(0.1, 0.4), randFloat(0.6, 1.0)));
+                    const color = new THREE.Color(randFloat(0.18, 0.42), randFloat(0.3, 0.62), randFloat(0.78, 1.0));
+                    child.material.color.copy(color);
+                    child.material.emissive = color.clone().multiplyScalar(0.45);
+                    child.material.emissiveIntensity = 1.1;
                 }
             });
             mesh.name = 'enemy';
@@ -63,6 +67,8 @@ export const Enemies = {
             if (enemy.type === 'basic') {
                 enemy.mesh.rotation.x += enemy.rotationSpeed * deltaTime;
                 enemy.mesh.rotation.y += enemy.rotationSpeed * 0.5 * deltaTime;
+                const pulse = 1 + Math.sin(currentTime * 5 + enemy.rotationSpeed) * 0.05;
+                enemy.mesh.scale.setScalar(ENEMY_SCALE * pulse);
             }
 
             // Enemy firing

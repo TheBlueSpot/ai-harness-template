@@ -44,6 +44,33 @@ body {
   color: var(--foreground);
 }
 
+/* .app-zoom-shell {
+  --app-zoom: 0.7;
+  width: calc(100vw / var(--app-zoom));
+  height: calc(100vh / var(--app-zoom));
+  transform: scale(var(--app-zoom));
+  transform-origin: top left;
+}
+
+.app-zoom-portal-content {
+  --app-zoom: 0.7;
+  transform: scale(var(--app-zoom));
+  transform-origin: top left;
+}
+
+.app-zoom-portal-dialog {
+  --app-zoom: 0.7;
+  transform: scale(var(--app-zoom));
+  transform-origin: center;
+} */
+
+.app-zoom-shell {
+  width: 100vw;
+  height: 100vh;
+  /* transform: scale(0.7); */
+  /* transform-origin: top left; */
+}
+
 /* button,
 input,
 textarea {
@@ -84,6 +111,10 @@ textarea {
   padding: 0 1rem;
 }
 
+.left-tabbed-pane {
+  container-type: inline-size;
+}
+
 .surface-tab {
   position: relative;
   height: 1.75rem !important;
@@ -103,6 +134,26 @@ textarea {
   align-items: center;
   font-size: 0.66rem;
   cursor: pointer;
+}
+
+.surface-tab-label {
+  min-width: 0;
+}
+
+@container (max-width: 21rem) {
+  .left-tabbed-pane .surface-tab-strip {
+    padding-inline: 0.75rem;
+  }
+
+  .left-tabbed-pane .surface-tab {
+    width: 2rem !important;
+    padding-inline: 0 !important;
+    justify-content: center;
+  }
+
+  .left-tabbed-pane .surface-tab-label {
+    display: none;
+  }
 }
 
 .surface-tab::after {

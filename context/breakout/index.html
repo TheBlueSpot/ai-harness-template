@@ -93,32 +93,115 @@
         inset 0 1px 0 rgba(255, 255, 255, 0.05);
     }
 
-    .caption {
+    .hud-dock {
       position: absolute;
-      top: 26px;
-      left: 26px;
-      padding: 12px 14px;
-      max-width: min(360px, calc(100vw - 64px));
+      right: 26px;
+      bottom: 26px;
+      display: grid;
+      justify-items: end;
+      gap: 10px;
+      z-index: 2;
+      opacity: 0.94;
+      transition: opacity 150ms ease;
+    }
+
+    .hud-dock.is-collapsed {
+      opacity: 0.56;
+    }
+
+    .hud-dock.is-collapsed:hover {
+      opacity: 1;
+    }
+
+    .help-toggle {
+      min-width: 82px;
+      height: 42px;
+      padding: 0 16px;
       border: 1px solid var(--line);
-      border-radius: 16px;
+      border-radius: 999px;
+      background: rgba(8, 18, 30, 0.88);
+      color: var(--ink);
+      font: 700 12px/1 "Trebuchet MS", "Segoe UI", sans-serif;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      cursor: pointer;
+      box-shadow: 0 14px 40px var(--shadow);
+    }
+
+    .help-toggle[aria-pressed="true"] {
+      background: rgba(20, 62, 82, 0.92);
+    }
+
+    .caption {
+      width: min(340px, calc(100vw - 64px));
+      padding: 16px 18px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
       background: var(--panel);
       backdrop-filter: blur(14px);
       box-shadow: 0 14px 40px var(--shadow);
-      pointer-events: none;
+    }
+
+    .caption[hidden] {
+      display: none;
     }
 
     .caption h1 {
       margin: 0 0 6px;
-      font-size: 15px;
+      font-size: 14px;
       letter-spacing: 0.16em;
       text-transform: uppercase;
     }
 
-    .caption p {
-      margin: 0;
+    .caption p,
+    .caption li {
       color: var(--muted);
       font-size: 13px;
       line-height: 1.5;
+    }
+
+    .caption p {
+      margin: 0 0 10px;
+    }
+
+    .caption ul {
+      margin: 0;
+      padding-left: 18px;
+    }
+
+    .caption li + li {
+      margin-top: 4px;
+    }
+
+    .caption-close {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      width: 30px;
+      height: 30px;
+      border: 0;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--ink);
+      font: 700 16px/1 "Trebuchet MS", "Segoe UI", sans-serif;
+      cursor: pointer;
+    }
+
+    .caption-close:hover {
+      background: rgba(255, 255, 255, 0.14);
+    }
+
+    @media (max-width: 720px) {
+      .hud-dock {
+        left: 14px;
+        right: 14px;
+        bottom: 14px;
+        justify-items: stretch;
+      }
+
+      .caption {
+        width: 100%;
+      }
     }
 
     #asset-bin {
@@ -130,10 +213,20 @@
   <main class="shell">
     <section class="stage">
       <canvas id="game" width="1280" height="720" aria-label="Breakout Gravity Well game canvas"></canvas>
-      <aside class="caption">
-        <h1>Breakout: Gravity Well</h1>
-        <p>Move mouse to bend ball path. Hold mouse button for denser pull. Press space or click to launch and restart.</p>
-      </aside>
+      <div class="hud-dock" id="helpDock">
+        <button class="help-toggle" id="helpToggle" type="button" aria-pressed="true">Help</button>
+        <aside class="caption" id="helpPanel">
+          <button class="caption-close" id="helpClose" type="button" aria-label="Close help">X</button>
+          <h1>Breakout: Gravity Well</h1>
+          <p>Gravity aim is the whole trick. Live play keeps the HUD thin, so the reminder stays in this quick-help panel instead of on the field.</p>
+          <ul>
+            <li>Move mouse to bend the ball toward openings.</li>
+            <li>Hold mouse for stronger pull and extra side-spin.</li>
+            <li>Click, space, or enter launches and restarts.</li>
+            <li>Press <strong>H</strong> for help, or <strong>Esc</strong> / click away to close it.</li>
+          </ul>
+        </aside>
+      </div>
       <div id="asset-bin" aria-hidden="true"></div>
     </section>
   </main>
@@ -242,6 +335,10 @@
       const canvas = document.getElementById("game");
       const ctx = canvas.getContext("2d");
       const assetBin = document.getElementById("asset-bin");
+      const helpDock = document.getElementById("helpDock");
+      const helpToggle = document.getElementById("helpToggle");
+      const helpPanel = document.getElementById("helpPanel");
+      const helpClose = document.getElementById("helpClose");
 
       const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
       const lerp = (from, to, t) => from + (to - from) * t;
@@ -528,12 +625,18 @@
           this.state = STATES.MENU;
           this.score = 0;
           this.wave = 1;
-          this.message = "Guide ball with gravity.";
+          this.hudHint = "";
+          this.hudHintTimer = 0;
+          this.hudHintDuration = 0;
+          this.helpOpen = false;
           this.resetStage();
           this.attachInput();
+          this.syncHelpPanel();
         }
 
         attachInput() {
+          const pointerHitsHelpUi = (target) => target === helpToggle || helpPanel.contains(target);
+
           const updatePointer = (event) => {
             const rect = canvas.getBoundingClientRect();
             const scaleX = CONFIG.width / rect.width;
@@ -546,6 +649,13 @@
           window.addEventListener("pointermove", updatePointer);
           window.addEventListener("pointerdown", (event) => {
             updatePointer(event);
+            if (this.helpOpen) {
+              if (!pointerHitsHelpUi(event.target)) {
+                this.helpOpen = false;
+                this.syncHelpPanel();
+              }
+              return;
+            }
             this.pointer.down = true;
             this.pointer.justPressed = true;
             this.soundboard.unlock();
@@ -562,7 +672,25 @@
               event.preventDefault();
               this.soundboard.unlock();
               this.handlePrimaryAction();
+            } else if (event.code === "Escape") {
+              if (this.helpOpen) {
+                event.preventDefault();
+                this.helpOpen = false;
+                this.syncHelpPanel();
+              }
+            } else if (event.code === "KeyH") {
+              event.preventDefault();
+              this.helpOpen = !this.helpOpen;
+              this.syncHelpPanel();
             }
+          });
+          helpToggle.addEventListener("click", () => {
+            this.helpOpen = !this.helpOpen;
+            this.syncHelpPanel();
+          });
+          helpClose.addEventListener("click", () => {
+            this.helpOpen = false;
+            this.syncHelpPanel();
           });
         }
 
@@ -571,6 +699,26 @@
           this.lives = CONFIG.lives;
           this.combo = 0;
           this.resetBall(true);
+        }
+
+        setHudHint(message, duration = 2.8) {
+          this.hudHint = message;
+          this.hudHintTimer = duration;
+          this.hudHintDuration = duration;
+        }
+
+        getHudHintAlpha() {
+          if (!this.hudHint || this.hudHintDuration <= 0 || this.hudHintTimer <= 0) {
+            return 0;
+          }
+          if (this.hudHintTimer > 0.45) {
+            return 1;
+          }
+          return clamp(this.hudHintTimer / 0.45, 0, 1);
+        }
+
+        remainingBricks() {
+          return this.level.bricks.reduce((count, brick) => count + (brick.hp > 0 ? 1 : 0), 0);
         }
 
         resetBall(withMessage) {
@@ -585,7 +733,7 @@
           };
           this.lastGravity = 0;
           if (withMessage) {
-            this.message = "Curve around moving gates. Click to launch.";
+            this.setHudHint("Click to relaunch.", 1.4);
           }
         }
 
@@ -599,6 +747,8 @@
             this.score = 0;
             this.wave = 1;
             this.flash = 0;
+            this.helpOpen = false;
+            this.syncHelpPanel();
             this.resetStage();
             return;
           }
@@ -612,6 +762,8 @@
           this.score = 0;
           this.wave = 1;
           this.flash = 0;
+          this.helpOpen = false;
+          this.syncHelpPanel();
           this.resetStage();
           this.launchBall();
         }
@@ -621,7 +773,9 @@
           this.ball.waiting = false;
           this.ball.vx = Math.sin(angle) * 260;
           this.ball.vy = -510;
-          this.message = "Hold mouse for heavier pull.";
+          this.hudHint = "";
+          this.hudHintTimer = 0;
+          this.hudHintDuration = 0;
           this.soundboard.play("ping");
         }
 
@@ -629,7 +783,7 @@
           this.lives -= 1;
           this.flash = 1;
           this.combo = 0;
-          this.message = reason;
+          this.setHudHint(reason, 2.8);
           this.soundboard.play("alert");
           this.particles.burst(this.ball.x, this.ball.y, 22, ["#ff9db0", "#ffd16b", "#ffffff"], 250);
           if (this.lives <= 0) {
@@ -641,7 +795,6 @@
 
         winRun() {
           this.state = STATES.WIN;
-          this.message = "Every brick cracked. Gravity line held.";
           this.soundboard.play("fanfare");
           this.particles.burst(CONFIG.width * 0.5, 180, 90, ["#7cf3c9", "#8ff3ff", "#ffd36a"], 320);
         }
@@ -649,6 +802,7 @@
         update(dt) {
           this.elapsed += dt;
           this.flash = Math.max(0, this.flash - dt * 1.8);
+          this.hudHintTimer = Math.max(0, this.hudHintTimer - dt);
           this.particles.update(dt);
           for (const star of this.stars) {
             star.y += star.drift * dt * 18;
@@ -821,7 +975,6 @@
             rect.hp -= 1;
             this.combo += 1;
             this.score += 120 + this.combo * 12;
-            this.message = rect.hp <= 0 ? "Brick shattered." : "Armor cracked.";
             this.soundboard.play(rect.hp <= 0 ? "crack" : "ping");
             this.particles.burst(
               this.ball.x,
@@ -877,21 +1030,97 @@
         }
 
         drawHud() {
-          this.ctx.fillStyle = "rgba(10, 20, 32, 0.84)";
-          roundRectPath(this.ctx, 24, 20, 340, 66, 18);
-          this.ctx.fill();
-          this.ctx.strokeStyle = "rgba(151, 220, 255, 0.24)";
-          this.ctx.stroke();
+          if (this.state !== STATES.PLAYING) {
+            return;
+          }
 
-          this.ctx.fillStyle = "#f4fbff";
-          this.ctx.font = "700 18px Trebuchet MS, sans-serif";
-          this.ctx.fillText(`Score ${this.score.toString().padStart(5, "0")}`, 42, 48);
-          this.ctx.fillText(`Lives ${Math.max(0, this.lives)}`, 182, 48);
-          this.ctx.fillText(`Wave ${this.wave}`, 284, 48);
+          this.ctx.textBaseline = "middle";
+          this.drawStatStrip();
 
-          this.ctx.fillStyle = "#9ec7da";
-          this.ctx.font = "14px Trebuchet MS, sans-serif";
-          this.ctx.fillText(this.message, 42, 69);
+          const hintAlpha = this.getHudHintAlpha();
+          if (hintAlpha > 0) {
+            this.ctx.font = "14px Trebuchet MS, sans-serif";
+            const hintWidth = Math.min(520, Math.max(220, this.ctx.measureText(this.hudHint).width + 32));
+            this.ctx.save();
+            this.ctx.globalAlpha = hintAlpha;
+            this.ctx.fillStyle = "rgba(10, 20, 32, 0.84)";
+            roundRectPath(this.ctx, 24, 68, hintWidth, 28, 14);
+            this.ctx.fill();
+            this.ctx.strokeStyle = "rgba(151, 220, 255, 0.18)";
+            this.ctx.stroke();
+            this.ctx.fillStyle = "#d9f4ff";
+            this.ctx.fillText(this.hudHint, 40, 82);
+            this.ctx.restore();
+          }
+
+          this.drawControlStrip();
+          this.ctx.textBaseline = "alphabetic";
+        }
+
+        drawStatStrip() {
+          const stats = [
+            { label: "Score", value: this.score.toString().padStart(5, "0"), minWidth: 132 },
+            { label: "Lives", value: String(Math.max(0, this.lives)), minWidth: 92 },
+            { label: "Wave", value: String(this.wave), minWidth: 92 },
+            { label: "Bricks Left", value: String(this.remainingBricks()), minWidth: 128, accent: true }
+          ];
+          const gap = 10;
+          const chipH = 38;
+          const y = 20;
+          let x = 24;
+
+          this.ctx.font = "700 11px Trebuchet MS, sans-serif";
+          const widths = stats.map((stat) => Math.max(stat.minWidth, this.ctx.measureText(`${stat.label} ${stat.value}`).width + 38));
+
+          stats.forEach((stat, index) => {
+            const width = widths[index];
+            this.ctx.fillStyle = stat.accent ? "rgba(56, 41, 12, 0.86)" : "rgba(10, 20, 32, 0.74)";
+            roundRectPath(this.ctx, x, y, width, chipH, 15);
+            this.ctx.fill();
+            this.ctx.strokeStyle = stat.accent ? "rgba(255, 211, 106, 0.28)" : "rgba(151, 220, 255, 0.2)";
+            this.ctx.stroke();
+
+            this.ctx.fillStyle = stat.accent ? "#ffd36a" : "#9ec7da";
+            this.ctx.fillText(stat.label.toUpperCase(), x + 14, y + 14);
+
+            this.ctx.fillStyle = "#f4fbff";
+            this.ctx.font = "700 16px Trebuchet MS, sans-serif";
+            this.ctx.fillText(stat.value, x + 14, y + 28);
+            this.ctx.font = "700 11px Trebuchet MS, sans-serif";
+            x += width + gap;
+          });
+        }
+
+        drawControlStrip() {
+          const chips = this.ball.waiting
+            ? [
+                { label: "Relaunch ready", ink: "#ffd36a", fill: "rgba(56, 41, 12, 0.9)" },
+                { label: "Click / Space / Enter = launch", ink: "#fff1c0", fill: "rgba(71, 47, 11, 0.88)" },
+                { label: "Mouse sets first bend", ink: "#dff7ff", fill: "rgba(10, 20, 32, 0.82)" }
+              ]
+            : [
+                { label: "No paddle", ink: "#ffd36a", fill: "rgba(56, 41, 12, 0.82)" },
+                { label: "Mouse bends ball", ink: "#dff7ff", fill: "rgba(10, 20, 32, 0.82)" },
+                { label: "Hold = stronger pull", ink: "#dff7ff", fill: "rgba(10, 20, 32, 0.82)" }
+              ];
+          this.ctx.font = "700 12px Trebuchet MS, sans-serif";
+          const gap = 10;
+          const chipH = 30;
+          const widths = chips.map((chip) => Math.max(110, this.ctx.measureText(chip.label).width + 26));
+          let x = 24;
+          const y = CONFIG.height - 46;
+
+          chips.forEach((chip, index) => {
+            const width = widths[index];
+            this.ctx.fillStyle = chip.fill;
+            roundRectPath(this.ctx, x, y, width, chipH, 15);
+            this.ctx.fill();
+            this.ctx.strokeStyle = index === 0 ? "rgba(255, 211, 106, 0.3)" : "rgba(151, 220, 255, 0.16)";
+            this.ctx.stroke();
+            this.ctx.fillStyle = chip.ink;
+            this.ctx.fillText(chip.label, x + 13, y + 19);
+            x += width + gap;
+          });
         }
 
         drawGravityWell() {
@@ -1076,13 +1305,14 @@
 
           const bullets = isMenu
             ? [
-                "Move mouse to pull ball trajectory inside cyan radius.",
-                "Hold mouse button for stronger gravity and side-spin.",
-                "Avoid patrol drones and their falling pulse shots.",
+                "Move the mouse to pull the ball inside the cyan radius.",
+                "Hold the button for a stronger pull and tighter side-spin.",
+                "Avoid patrol drones and the pulse shots they drop.",
                 "Break every brick before all four lives are gone."
               ]
             : [
                 `Score ${this.score.toString().padStart(5, "0")}   Lives left ${Math.max(0, this.lives)}`,
+                `Wave ${this.wave} stays live until the last brick falls.`,
                 "Click, press space, or press enter to restart.",
                 "Fallback art and sound stay playable if remote CC0 assets fail."
               ];
@@ -1118,6 +1348,14 @@
           this.drawHud();
           this.drawOverlay();
           this.drawFlash();
+        }
+
+        syncHelpPanel() {
+          helpPanel.hidden = !this.helpOpen;
+          helpToggle.setAttribute("aria-pressed", this.helpOpen ? "true" : "false");
+          helpToggle.textContent = this.helpOpen ? "Close" : "Help";
+          helpToggle.setAttribute("aria-label", this.helpOpen ? "Hide help" : "Show help");
+          helpDock.classList.toggle("is-collapsed", !this.helpOpen);
         }
       }
 

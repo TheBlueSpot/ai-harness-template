@@ -6,11 +6,22 @@
   const AIR_DRAG = 0.0007;
   const BLOCK_FRICTION = 0.86;
   const RESTITUTION = 0.16;
-  const SUPPORT_GAP = 18;
+  const SUPPORT_GAP = 12;
+  const SUPPORT_OVERLAP_RATIO = 0.28;
+  const SUPPORT_RELEASE_TIME = 0.18;
+  const GROUND_DAMAGE_SPEED = 250;
+  const COLLISION_DAMAGE_SPEED = 240;
   const PROJECTILE_RADIUS = 16;
+  const SPLASH_FORCE_X = 0.032;
+  const SPLASH_FORCE_Y = 0.022;
+  const SPLASH_WAKE_THRESHOLD = 120;
+  const SPLASH_INFLUENCE_RATIO = 0.58;
+  const LATERAL_PUSH_LIMIT = 10;
+  const BLOCK_MAX_LATERAL_SPEED = 140;
   const FORTS = [
     {
       name: "Gatehouse",
+      hint: "Break the front support legs instead of shaving roof bricks for cleaner collapses.",
       ammo: 7,
       king: { x: 1005, y: 412, r: 18 },
       blocks: [
@@ -30,18 +41,19 @@
     },
     {
       name: "Twin Towers",
+      hint: "Reinforced bases shrug off glancing hits. Crack the bridge or upper joints before the towers tip.",
       ammo: 8,
       king: { x: 1042, y: 332, r: 20 },
       blocks: [
-        { x: 950, y: 586, w: 36, h: 92, type: "stone" },
+        { x: 950, y: 586, w: 36, h: 92, type: "reinforced" },
         { x: 990, y: 586, w: 36, h: 92, type: "stone" },
         { x: 1094, y: 586, w: 36, h: 92, type: "stone" },
-        { x: 1134, y: 586, w: 36, h: 92, type: "stone" },
+        { x: 1134, y: 586, w: 36, h: 92, type: "reinforced" },
         { x: 970, y: 498, w: 76, h: 24, type: "roof" },
         { x: 1114, y: 498, w: 76, h: 24, type: "roof" },
         { x: 970, y: 426, w: 36, h: 86, type: "stone" },
         { x: 1114, y: 426, w: 36, h: 86, type: "stone" },
-        { x: 1042, y: 566, w: 84, h: 24, type: "wood" },
+        { x: 1042, y: 566, w: 84, h: 24, type: "reinforced" },
         { x: 1042, y: 534, w: 84, h: 24, type: "wood" },
         { x: 1042, y: 464, w: 34, h: 88, type: "stone" },
         { x: 1042, y: 376, w: 34, h: 88, type: "stone" },
@@ -50,15 +62,16 @@
     },
     {
       name: "Royal Keep",
+      hint: "The keep mixes reinforced legs and weaker crossbeams. Open a side, then let the center fall through it.",
       ammo: 9,
       king: { x: 1048, y: 292, r: 22 },
       blocks: [
-        { x: 920, y: 590, w: 34, h: 96, type: "stone" },
+        { x: 920, y: 590, w: 34, h: 96, type: "reinforced" },
         { x: 962, y: 590, w: 34, h: 96, type: "stone" },
         { x: 1004, y: 590, w: 34, h: 96, type: "stone" },
         { x: 1046, y: 590, w: 34, h: 96, type: "stone" },
         { x: 1088, y: 590, w: 34, h: 96, type: "stone" },
-        { x: 1130, y: 590, w: 34, h: 96, type: "stone" },
+        { x: 1130, y: 590, w: 34, h: 96, type: "reinforced" },
         { x: 941, y: 516, w: 64, h: 24, type: "roof" },
         { x: 1005, y: 516, w: 64, h: 24, type: "roof" },
         { x: 1069, y: 516, w: 64, h: 24, type: "roof" },
@@ -74,9 +87,10 @@
   ];
 
   const MATERIALS = {
-    stone: { hp: 110, density: 1, color: "#91837c", stroke: "#5d534f", points: 120, debris: "#d6c4b4" },
-    wood: { hp: 70, density: 0.72, color: "#8d6031", stroke: "#55361a", points: 95, debris: "#d0a269" },
-    roof: { hp: 60, density: 0.54, color: "#ab3b3b", stroke: "#662020", points: 140, debris: "#ed9183" },
+    stone: { hp: 126, density: 1, color: "#91837c", stroke: "#5d534f", points: 120, debris: "#d6c4b4", impactResistance: 1.15 },
+    wood: { hp: 70, density: 0.72, color: "#8d6031", stroke: "#55361a", points: 95, debris: "#d0a269", impactResistance: 0.92 },
+    roof: { hp: 60, density: 0.54, color: "#ab3b3b", stroke: "#662020", points: 140, debris: "#ed9183", impactResistance: 0.82 },
+    reinforced: { hp: 180, density: 1.12, color: "#6e6a70", stroke: "#3f3c42", points: 160, debris: "#c2bcc3", impactResistance: 1.7 },
   };
 
   const canvas = document.getElementById("game");
@@ -104,6 +118,10 @@
     return Math.abs(a.x - b.x) * 2 < a.w + b.w - 4;
   }
 
+  function overlapWidth(a, b) {
+    return a.w / 2 + b.w / 2 - Math.abs(a.x - b.x);
+  }
+
   function rectCirclePenetration(circle, block) {
     const dx = circle.x - clamp(circle.x, block.x - block.w / 2, block.x + block.w / 2);
     const dy = circle.y - clamp(circle.y, block.y - block.h / 2, block.y + block.h / 2);
@@ -126,6 +144,7 @@
       stroke: material.stroke,
       points: material.points,
       debris: material.debris,
+      impactResistance: material.impactResistance,
       vx: 0,
       vy: 0,
       dynamic: false,
@@ -178,7 +197,7 @@
       this.fortCleared = false;
       this.collapseBonus = 0;
       this.settleTimer = 0;
-      this.message = `Fort ${index + 1}: ${fort.name}. Break support columns for bigger collapse score.`;
+      this.message = `Fort ${index + 1}: ${fort.name}. ${fort.hint}`;
     }
 
     start() {
@@ -249,7 +268,7 @@
 
       if (projectile.y + projectile.r >= GROUND_Y) {
         projectile.y = GROUND_Y - projectile.r;
-        this.splashImpact(projectile.x, projectile.y, Math.abs(projectile.vy) * 0.7 + Math.abs(projectile.vx) * 0.22, 88);
+        this.groundImpact(projectile.x, projectile.y, Math.abs(projectile.vy) * 0.7 + Math.abs(projectile.vx) * 0.22);
         this.projectile = null;
         return;
       }
@@ -261,11 +280,11 @@
         const penetration = rectCirclePenetration(projectile, block);
         if (penetration > 0) {
           const impact = Math.hypot(projectile.vx, projectile.vy);
-          this.damageBlock(block, 36 + impact * 0.05, "projectile");
+          this.damageBlock(block, 32 + impact * 0.048, "projectile");
           block.dynamic = true;
-          block.vx += projectile.vx * 0.05;
-          block.vy += projectile.vy * 0.03;
-          this.splashImpact(projectile.x, projectile.y, impact, 108);
+          block.vx += projectile.vx * 0.03;
+          block.vy += projectile.vy * 0.02;
+          this.splashImpact(projectile.x, projectile.y, impact, 56);
           this.projectile = null;
           return;
         }
@@ -294,14 +313,19 @@
 
       for (const block of activeBlocks) {
         block.impactLock = Math.max(0, block.impactLock - dt);
-        const grounded = this.isBlockGrounded(block, activeBlocks);
+        const supportY = this.findSupportSurfaceY(block, activeBlocks);
+        const grounded = supportY !== null;
         if (!grounded) {
           block.supportMissingTime += dt;
-          if (block.supportMissingTime > 0.08) {
+          if (block.supportMissingTime > SUPPORT_RELEASE_TIME) {
             block.dynamic = true;
           }
         } else {
           block.supportMissingTime = 0;
+          if (block.vy >= 0 && Math.abs(block.y - supportY) <= SUPPORT_GAP + 2) {
+            block.y = supportY;
+            block.vy = 0;
+          }
           if (Math.abs(block.vx) < 8 && Math.abs(block.vy) < 12) {
             block.restTime += dt;
             if (block.restTime > 0.2) {
@@ -321,16 +345,17 @@
         block.vy += GRAVITY * dt * (0.74 + block.density * 0.36);
         block.x += block.vx * dt;
         block.y += block.vy * dt;
-        block.vx *= 0.996;
+        block.vx = clamp(block.vx * 0.94, -BLOCK_MAX_LATERAL_SPEED, BLOCK_MAX_LATERAL_SPEED);
 
         if (block.y + block.h / 2 >= GROUND_Y) {
           const fallSpeed = Math.abs(block.vy);
           block.y = GROUND_Y - block.h / 2;
           block.vy = -block.vy * RESTITUTION;
           block.vx *= BLOCK_FRICTION;
-          if (fallSpeed > 210) {
-            this.damageBlock(block, fallSpeed * 0.07, "ground");
-            this.score += Math.round(fallSpeed * 0.12);
+          const crushSpeed = Math.max(0, fallSpeed - GROUND_DAMAGE_SPEED);
+          if (crushSpeed > 0) {
+            this.damageBlock(block, (crushSpeed * 0.05) / block.impactResistance, "ground");
+            this.score += Math.round(crushSpeed * 0.14);
             this.message = "Ground impact scored collapse points.";
             this.spawnBurst(block.x, GROUND_Y - 10, block.debris, 7, 120);
           }
@@ -344,23 +369,37 @@
           if (!this.blocksOverlap(block, other)) {
             continue;
           }
-          const overlapY = block.y + block.h / 2 - (other.y - other.h / 2);
-          if (overlapY > 0 && block.y < other.y) {
+          const overlapX = overlapWidth(block, other);
+          const overlapY = block.h / 2 + other.h / 2 - Math.abs(block.y - other.y);
+          const verticalCollision = overlapY <= overlapX && block.y < other.y;
+
+          if (verticalCollision) {
             block.y -= overlapY;
-            const impact = Math.abs(block.vy - other.vy);
-            const lateral = (block.x - other.x) * 0.5;
-            block.vy = Math.min(0, -block.vy * 0.12);
-            other.vy += impact * 0.1;
+            const downwardImpact = Math.max(0, block.vy - other.vy);
+            const lateral = (block.x - other.x) * 0.14;
+            block.vy = Math.min(0, other.vy - downwardImpact * 0.18);
+            other.vy += downwardImpact * 0.06;
             other.vx -= lateral;
-            block.vx += lateral * 0.3;
-            if (impact > 190 && block.impactLock === 0) {
+            block.vx += lateral * 0.55;
+
+            const crushSpeed = downwardImpact - COLLISION_DAMAGE_SPEED;
+            if (crushSpeed > 0 && block.impactLock === 0 && other.impactLock === 0) {
               block.impactLock = 0.12;
               other.impactLock = 0.12;
-              this.damageBlock(other, impact * 0.05, "collapse");
-              this.damageBlock(block, impact * 0.035, "collapse");
-              this.score += Math.round(impact * 0.18);
+              this.damageBlock(other, (crushSpeed * 0.042) / other.impactResistance, "collapse");
+              this.damageBlock(block, (crushSpeed * 0.026) / block.impactResistance, "collapse");
+              this.score += Math.round(crushSpeed * 0.18);
               this.spawnBurst(block.x, block.y, block.debris, 5, 96);
             }
+          } else {
+            const pushDirection = block.x < other.x ? -1 : 1;
+            const push = Math.min(overlapX * 0.5, LATERAL_PUSH_LIMIT);
+            block.x += pushDirection * push;
+            if (other.dynamic) {
+              other.x -= pushDirection * push;
+            }
+            block.vx *= -0.05;
+            other.vx += pushDirection * Math.min(push * 0.28, 1.8);
           }
         }
       }
@@ -377,8 +416,9 @@
         const kingBottom = this.king.y + this.king.r;
         const blockTop = block.y - block.h / 2;
         return (
-          Math.abs(kingBottom - blockTop) < 26 &&
-          Math.abs(this.king.x - block.x) < block.w / 2 + this.king.r + 4
+          Math.abs(kingBottom - blockTop) < 18 &&
+          this.king.x + this.king.r > block.x - block.w / 2 + 8 &&
+          this.king.x - this.king.r < block.x + block.w / 2 - 8
         );
       });
       if (!support) {
@@ -445,19 +485,30 @@
     }
 
     isBlockGrounded(block, blocks) {
+      return this.findSupportSurfaceY(block, blocks) !== null;
+    }
+
+    findSupportSurfaceY(block, blocks) {
       if (block.y + block.h / 2 >= GROUND_Y - 2) {
-        return true;
+        return GROUND_Y - block.h / 2;
       }
+      let supportY = null;
       for (const other of blocks) {
         if (other === block || other.removed) {
           continue;
         }
-        const touchingTop = Math.abs(block.y + block.h / 2 - (other.y - other.h / 2)) < SUPPORT_GAP;
-        if (touchingTop && overlapsHorizontally(block, other)) {
-          return true;
+        const verticalGap = other.y - other.h / 2 - (block.y + block.h / 2);
+        const contactWidth = overlapWidth(block, other);
+        const minSupportWidth = Math.min(block.w, other.w) * SUPPORT_OVERLAP_RATIO;
+        const touchingTop = verticalGap >= -2 && verticalGap <= SUPPORT_GAP;
+        if (touchingTop && contactWidth >= minSupportWidth && overlapsHorizontally(block, other)) {
+          const candidateY = other.y - other.h / 2 - block.h / 2;
+          if (supportY === null || candidateY < supportY) {
+            supportY = candidateY;
+          }
         }
       }
-      return false;
+      return supportY;
     }
 
     damageBlock(block, amount, source) {
@@ -488,14 +539,38 @@
         const dx = block.x - x;
         const dy = block.y - y;
         const distance = Math.hypot(dx, dy) || 1;
-        if (distance > radius + Math.max(block.w, block.h)) {
+        const influenceRadius = radius * SPLASH_INFLUENCE_RATIO + Math.max(block.w, block.h) * 0.35;
+        if (distance > influenceRadius) {
           continue;
         }
-        const force = (1 - distance / (radius + Math.max(block.w, block.h))) * impact;
-        block.dynamic = true;
-        block.vx += (dx / distance) * force * 0.16;
-        block.vy += (dy / distance) * force * 0.1;
-        this.damageBlock(block, force * 0.06, "projectile");
+        const force = (1 - distance / influenceRadius) * impact;
+        if (force >= SPLASH_WAKE_THRESHOLD) {
+          block.dynamic = true;
+        }
+        if (block.dynamic) {
+          block.vx += (dx / distance) * force * SPLASH_FORCE_X;
+          block.vy += (dy / distance) * force * SPLASH_FORCE_Y;
+        }
+      }
+    }
+
+    groundImpact(x, y, impact) {
+      this.spawnBurst(x, y, "#f4e2bf", 14, 180);
+      this.shake = Math.max(this.shake, 4);
+      for (const block of this.blocks) {
+        if (block.removed || !block.dynamic) {
+          continue;
+        }
+        const dx = block.x - x;
+        const dy = block.y - y;
+        const distance = Math.hypot(dx, dy) || 1;
+        const radius = 72 + Math.max(block.w, block.h);
+        if (distance > radius) {
+          continue;
+        }
+        const force = (1 - distance / radius) * impact;
+        block.vx += (dx / distance) * force * 0.035;
+        block.vy += (dy / distance) * force * 0.018;
       }
     }
 

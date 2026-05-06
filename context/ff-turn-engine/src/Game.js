@@ -1,4 +1,4 @@
-import { COMMANDS, ENEMY_TEMPLATES, PARTY_TEMPLATES } from "./data.js";
+import { COMMAND_DETAILS, COMMANDS, ENEMY_TEMPLATES, PARTY_TEMPLATES } from "./data.js";
 import { createBattleState, createResultState, createUiState } from "./state.js";
 import { renderGame } from "./render.js";
 
@@ -23,6 +23,9 @@ export class Game {
       this.mode = "battle";
       this.ui.overlay = "battle";
       this.ui.message = "Battle start";
+      this.ui.selectionMode = "command";
+      this.ui.commandIndex = 0;
+      this.ui.targetIndex = 0;
       this.pushLog("Battle start");
     }
   }
@@ -118,6 +121,11 @@ export class Game {
         this.turnOwner = actor.id;
         this.ui.selectionMode = "target";
         this.ui.message = `${COMMANDS[this.ui.commandIndex]} ready`;
+        this.ui.targetIndex = normalizeIndex(this.ui.targetIndex, livingEnemies.length);
+      } else if (input.confirm) {
+        const leader = this.getLeadingActor();
+        const charge = Math.round((leader?.gauge ?? 0));
+        this.ui.message = leader ? `${leader.name} charging ${charge}%` : "ATB charging";
       }
       return;
     }
@@ -135,6 +143,7 @@ export class Game {
         this.pendingAction = this.createAction(actor, livingEnemies);
         this.ui.selectionMode = "queue";
         this.ui.message = "Action queued";
+        this.ui.targetIndex = normalizeIndex(this.ui.targetIndex, livingEnemies.length);
       }
     }
   }
@@ -197,33 +206,40 @@ export class Game {
 
     if (command === "Attack") {
       this.applyDamage(actor, target, 18);
+      actor.gauge = 20;
       this.pushLog(`${actor.name} hits ${target.name} for 18`);
       return;
     }
 
     if (command === "Skill") {
-      this.applyDamage(actor, target, 28, { pierceGuard: true });
-      this.pushLog(`${actor.name} casts a skill on ${target.name}`);
+      const dealt = this.applyDamage(actor, target, 28, { pierceGuard: true });
+      const splashTargets = this.getAliveEnemies().filter((enemy) => enemy.id !== target?.id);
+      for (const splashTarget of splashTargets) {
+        this.applyDamage(actor, splashTarget, 8, { pierceGuard: true });
+      }
+      const splashLabel = splashTargets.length ? ` + ${splashTargets.length} splash` : "";
+      this.pushLog(`${actor.name} casts on ${target.name} for ${dealt}${splashLabel}`);
       return;
     }
 
     if (command === "Guard") {
       actor.status.guard = true;
       actor.statusTimers.guard = 6;
+      actor.gauge = 35;
       this.pushLog(`${actor.name} guards`);
       return;
     }
 
     if (command === "Item") {
-      const healed = this.healParty(24);
-      this.pushLog(`${actor.name} uses an item for ${healed} HP`);
+      const healed = this.healLowestParty(24);
+      this.pushLog(`${actor.name} uses an item for ${healed.amount} HP on ${healed.targetName}`);
       return;
     }
   }
 
   executeEnemyTurn(enemy) {
     if (!enemy.alive) return;
-    const target = this.getAliveParty()[0];
+    const target = this.chooseEnemyTarget(enemy);
     if (!target) return;
 
     enemy.gauge = 0;
@@ -248,13 +264,15 @@ export class Game {
     return mitigated;
   }
 
-  healParty(amount) {
+  healLowestParty(amount) {
     const alive = this.getAliveParty();
-    if (!alive.length) return 0;
-    const target = alive[0];
+    if (!alive.length) return { amount: 0, targetName: "nobody" };
+    const target = [...alive].sort(
+      (left, right) => left.hp / Math.max(1, left.maxHp) - right.hp / Math.max(1, right.maxHp),
+    )[0];
     const before = target.hp;
     target.hp = Math.min(target.maxHp, target.hp + amount);
-    return target.hp - before;
+    return { amount: target.hp - before, targetName: target.name };
   }
 
   checkVictoryDefeat() {
@@ -335,7 +353,17 @@ export class Game {
   buildFrameState() {
     const overlay = this.mode === "menu" ? "menu" : this.mode === "victory" || this.mode === "defeat" ? "result" : "battle";
     const command = COMMANDS[this.ui.commandIndex] ?? COMMANDS[0];
-    const target = this.getAliveEnemies()[this.ui.targetIndex] ?? this.getAliveEnemies()[0] ?? null;
+    const livingEnemies = this.getAliveEnemies();
+    const target = livingEnemies[normalizeIndex(this.ui.targetIndex, livingEnemies.length)] ?? livingEnemies[0] ?? null;
+    const readyActor = this.getReadyActor();
+    const readyEnemy = this.getReadyEnemy();
+    const leadingActor = this.getLeadingActor();
+    const activePrompt = this.buildPrompt(command, readyActor, target, leadingActor);
+    const battleProgress = this.pendingAction
+      ? this.turnTimer / PLAYER_TURN_DELAY
+      : readyEnemy
+        ? this.enemyTimer / ENEMY_TURN_DELAY
+        : (leadingActor?.gauge ?? 0) / 100;
 
     return {
       state: this.mode,
@@ -343,14 +371,15 @@ export class Game {
       time: this.time,
       log: this.log[0] ?? this.ui.message,
       logs: [...this.log],
-      command,
+      command: activePrompt,
+      prompt: activePrompt,
       cursor: this.ui.cursor,
       selectionMode: this.ui.selectionMode,
       selectedCommand: this.ui.commandIndex,
       selectedTarget: this.ui.targetIndex,
       battle: {
         phase: this.pendingAction ? "player-turn" : this.getReadyEnemy() ? "enemy-turn" : "atb",
-        progress: this.pendingAction ? this.turnTimer / PLAYER_TURN_DELAY : this.getReadyEnemy() ? this.enemyTimer / ENEMY_TURN_DELAY : 0,
+        progress: battleProgress,
       },
       party: this.battle.party.map((member) => ({
         id: member.id,
@@ -377,16 +406,21 @@ export class Game {
       menus: {
         commands: COMMANDS.map((name, index) => ({
           name,
+          detail: COMMAND_DETAILS[name]?.summary ?? "",
+          hint: COMMAND_DETAILS[name]?.hint ?? "",
           index,
           active: index === this.ui.commandIndex,
         })),
-        targets: this.getAliveEnemies().map((enemy, index) => ({
+        targets: livingEnemies.map((enemy, index) => ({
           id: enemy.id,
           name: enemy.name,
           index,
           active: enemy.id === target?.id,
         })),
       },
+      enemyIntents: this.battle.enemies
+        .filter((enemy) => enemy.alive)
+        .map((enemy) => this.buildEnemyIntent(enemy)),
       combatants: [
         ...this.battle.party.map((member) => this.mapCombatant(member, "party")),
         ...this.battle.enemies.map((enemy) => this.mapCombatant(enemy, "enemy")),
@@ -400,18 +434,81 @@ export class Game {
   }
 
   mapCombatant(entity, side) {
+    const targetEnemy = this.getAliveEnemies()[normalizeIndex(this.ui.targetIndex, this.getAliveEnemies().length)] ?? null;
     return {
       id: entity.id,
       name: entity.name,
       side,
+      role: entity.role ?? "",
+      roleHint: entity.roleHint ?? "",
       hp: entity.hp,
       maxHp: entity.maxHp,
       alive: entity.alive,
       row: entity.row,
       gauge: entity.gauge / 100,
       status: { ...entity.status },
-      cursor: side === "enemy" ? entity.id === this.getAliveEnemies()[this.ui.targetIndex]?.id : entity.id === this.turnOwner,
+      ready: entity.alive && entity.gauge >= 100,
+      cursor: side === "enemy" ? entity.id === targetEnemy?.id : entity.id === this.turnOwner,
     };
+  }
+
+  getLeadingActor() {
+    return [...this.battle.party]
+      .filter((member) => member.alive)
+      .sort((left, right) => (right.gauge ?? 0) - (left.gauge ?? 0))[0] ?? null;
+  }
+
+  buildEnemyIntent(enemy) {
+    const target = this.chooseEnemyTarget(enemy);
+    return {
+      id: enemy.id,
+      name: enemy.name,
+      role: enemy.role ?? "",
+      roleHint: enemy.roleHint ?? "",
+      targetName: target?.name ?? "nobody",
+      damage: enemy.power,
+      ready: enemy.alive && enemy.gauge >= 100,
+      gauge: enemy.gauge / 100,
+    };
+  }
+
+  buildPrompt(command, readyActor, target, leadingActor) {
+    if (this.mode === "menu") return "Press Start Battle";
+    if (this.mode === "victory") return "Victory";
+    if (this.mode === "defeat") return "Party down";
+    const readyEnemy = this.getReadyEnemy();
+    if (readyEnemy) {
+      const targetMember = this.chooseEnemyTarget(readyEnemy);
+      return `${readyEnemy.name} pressuring ${targetMember?.name ?? "party"} | ${readyEnemy.power} dmg incoming`;
+    }
+    if (this.pendingAction && this.turnOwner) {
+      const actor = this.getPartyMemberById(this.turnOwner);
+      return `${actor?.name ?? "Party"} queued ${this.pendingAction.command}`;
+    }
+    if (this.ui.selectionMode === "target") {
+      return `${command} -> ${target?.name ?? "target"} | ${COMMAND_DETAILS[command]?.summary ?? "Left/Right target"}`;
+    }
+    if (readyActor) {
+      return `${readyActor.name} ready | ${command}: ${COMMAND_DETAILS[command]?.summary ?? "Choose action"}`;
+    }
+    return `${leadingActor?.name ?? "Party"} charging ${Math.round(leadingActor?.gauge ?? 0)}%`;
+  }
+
+  chooseEnemyTarget(enemy) {
+    const aliveParty = this.getAliveParty();
+    if (!aliveParty.length) return null;
+
+    switch (enemy?.targetRule) {
+      case "weakest":
+        return [...aliveParty].sort(
+          (left, right) => left.hp / Math.max(1, left.maxHp) - right.hp / Math.max(1, right.maxHp),
+        )[0];
+      case "highestGauge":
+        return [...aliveParty].sort((left, right) => (right.gauge ?? 0) - (left.gauge ?? 0))[0];
+      case "front":
+      default:
+        return aliveParty[0];
+    }
   }
 }
 
@@ -422,4 +519,9 @@ function clamp(value, min, max) {
 function wrapIndex(value, size) {
   if (size <= 0) return 0;
   return ((value % size) + size) % size;
+}
+
+function normalizeIndex(value, size) {
+  if (size <= 0) return 0;
+  return wrapIndex(value, size);
 }

@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pinball Reactor</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hud" aria-label="Pinball Reactor status">
+        <div>
+          <span class="label">Score</span>
+          <strong id="score">0</strong>
+        </div>
+        <div>
+          <span class="label">Balls</span>
+          <strong id="balls">3</strong>
+        </div>
+        <div>
+          <span class="label">Combo</span>
+          <strong id="combo">x1</strong>
+        </div>
+        <div>
+          <span class="label">Reactor</span>
+          <strong id="reactor">0/3</strong>
+        </div>
+      </section>
+      <section class="playfield-wrap">
+        <canvas id="game" width="720" height="960" aria-label="Pinball Reactor table"></canvas>
+        <div class="overlay" id="overlay">
+          <h1 id="overlay-title">Pinball Reactor</h1>
+          <p id="overlay-body">Charge the reactor with ramp shots, lock two balls for multiball, and survive the drain.</p>
+          <p class="overlay-controls">Left/Right Arrow or A/D: Flippers. Space: Launch. Shift: Nudge.</p>
+          <button id="overlay-button" type="button">Start Run</button>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

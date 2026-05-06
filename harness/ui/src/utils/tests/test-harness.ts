@@ -1,5 +1,4 @@
 import { afterEach, beforeAll, describe } from "bun:test";
-import { cleanup } from "@solidjs/testing-library";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { mountTestUiProviders } from "./test-ui-providers";
 
@@ -15,6 +14,7 @@ function ensureHappyDom() {
 }
 
 ensureHappyDom();
+const { cleanup } = await import("@solidjs/testing-library");
 
 export const createUiTest = (componentName: string, suite: () => void) => {
   beforeAll(() => {

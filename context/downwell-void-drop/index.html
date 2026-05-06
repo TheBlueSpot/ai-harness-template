@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Downwell Void Drop</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <main class="shell" id="app" data-mode="menu">
+      <section class="hud" id="hud" aria-hidden="true">
+        <div class="hud__chip"><span>Health</span><strong id="health-value">5</strong></div>
+        <div class="hud__chip"><span>Ammo</span><strong id="ammo-value">8</strong></div>
+        <div class="hud__chip"><span>Depth</span><strong id="depth-value">0 m</strong></div>
+        <div class="hud__chip"><span>Score</span><strong id="score-value">0</strong></div>
+        <div class="hud__chip"><span>Zone</span><strong id="zone-value">Surface</strong></div>
+        <div class="hud__chip"><span>Relays</span><strong id="relay-value">0 / 3</strong></div>
+      </section>
+
+      <div class="stage">
+        <canvas id="game" width="960" height="540" aria-label="Downwell Void Drop"></canvas>
+
+        <section class="overlay" id="overlay" aria-hidden="false">
+          <p class="overlay__eyebrow" id="overlay-eyebrow">gunboots primed</p>
+          <h1 id="overlay-title">Downwell Void Drop</h1>
+          <p id="overlay-copy">
+            Drop through a hostile maintenance shaft, refill gunboot ammo on each ledge, wake all three relays on the way down, and read enemy telegraphs early enough to stay in control all the way to extraction depth.
+          </p>
+          <button id="overlay-button" type="button">Start Dive</button>
+          <p class="overlay__hint">Move with `A/D` or arrows. `Space` jumps. Hold `J` to fire downward. `R` restarts.</p>
+        </section>
+      </div>
+    </main>
+
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

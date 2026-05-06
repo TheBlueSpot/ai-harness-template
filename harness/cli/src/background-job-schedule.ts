@@ -164,6 +164,45 @@ export function getDueScheduleAdvance(schedule: BackgroundJobSchedule, now: Date
   }
 }
 
+export function getPostRunScheduleAdvance(schedule: BackgroundJobSchedule, completedAt: Date = new Date()) {
+  switch (schedule.type) {
+    case "one-off":
+      return undefined;
+    case "interval": {
+      const nextRun = new Date(schedule.nextRunAt);
+      if (nextRun.getTime() > completedAt.getTime()) {
+        return undefined;
+      }
+      const nextRunAt = new Date(completedAt.getTime() + schedule.intervalSeconds * 1000).toISOString();
+      return {
+        schedule: {
+          ...schedule,
+          nextRunAt
+        } satisfies BackgroundJobSchedule,
+        nextRunAt
+      };
+    }
+    case "cron": {
+      const nextRun = new Date(schedule.nextRunAt);
+      if (nextRun.getTime() > completedAt.getTime()) {
+        return undefined;
+      }
+      const nextFutureRun = computeNextCronOccurrence(schedule.expression, completedAt);
+      if (!nextFutureRun) {
+        return undefined;
+      }
+      const nextRunAt = nextFutureRun.toISOString();
+      return {
+        schedule: {
+          ...schedule,
+          nextRunAt
+        } satisfies BackgroundJobSchedule,
+        nextRunAt
+      };
+    }
+  }
+}
+
 function parseRelativeInterval(input: string, now: Date) {
   const match = input.match(RELATIVE_INTERVAL_RE);
   if (!match) {

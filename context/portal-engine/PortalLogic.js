@@ -3,6 +3,7 @@
 
   var EPSILON = 0.0001;
   var ENTRY_PADDING = 6;
+  var ENTRY_TANGENT_GRACE = 12;
   var DEFAULT_PORTAL_LENGTH = 108;
   var DEFAULT_PORTAL_THICKNESS = 14;
 
@@ -177,13 +178,13 @@
         hit.surface.y + portalLength * 0.5 + 2,
         Math.min(hit.point.y, hit.surface.y + hit.surface.height - portalLength * 0.5 - 2)
       );
-      center.x = normal.x > 0 ? hit.surface.x : hit.surface.x + hit.surface.width;
+      center.x = normal.x > 0 ? hit.surface.x + hit.surface.width : hit.surface.x;
     } else {
       center.x = Math.max(
         hit.surface.x + portalLength * 0.5 + 2,
         Math.min(hit.point.x, hit.surface.x + hit.surface.width - portalLength * 0.5 - 2)
       );
-      center.y = normal.y > 0 ? hit.surface.y : hit.surface.y + hit.surface.height;
+      center.y = normal.y > 0 ? hit.surface.y + hit.surface.height : hit.surface.y;
     }
 
     return {
@@ -259,6 +260,37 @@
     return { placed: true, portal: clonePortal(placement) };
   };
 
+  PortalSystem.prototype.previewPortalPlacement = function previewPortalPlacement(color, origin, direction, levelState) {
+    var state = levelState || this.levelState;
+    var hit;
+    var placement;
+
+    this.levelState = state;
+    this.raycaster.levelState = state;
+    hit = this.raycaster.cast(origin, direction);
+
+    if (!hit) {
+      return { placed: false, reason: "no-surface", hit: null, portal: null };
+    }
+
+    placement = buildPortalPlacement(color, hit);
+    if (!placement) {
+      return { placed: false, reason: "surface-too-small", hit: hit, portal: null };
+    }
+
+    return {
+      placed: true,
+      reason: null,
+      hit: {
+        surfaceId: hit.surface.id,
+        isPortalable: hit.surface.isPortalable,
+        point: vec(hit.point.x, hit.point.y),
+        normal: vec(hit.normal.x, hit.normal.y)
+      },
+      portal: clonePortal(placement)
+    };
+  };
+
   PortalSystem.prototype.resolveEntityMovement = function resolveEntityMovement(entity, fromBounds, toBounds) {
     var activePortals = [this.pair.blue, this.pair.orange];
     var i;
@@ -287,7 +319,7 @@
       entity.bounds = toBounds.clone();
       toState = getPortalStateForEntity(entity, entry);
 
-      tangentLimit = entry.length * 0.5 + toState.halfTangent - 4;
+      tangentLimit = entry.length * 0.5 + toState.halfTangent + ENTRY_TANGENT_GRACE;
       if (Math.abs(toState.tangentDistance) > tangentLimit) {
         continue;
       }

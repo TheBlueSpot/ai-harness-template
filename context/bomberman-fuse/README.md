@@ -17,3 +17,8 @@ This catalog slot covers grid-based territory control instead of lane pressure, 
 The first teaching moment sits on the nearest crate so the player learns bomb spacing at the exact obstacle that needs it. Later pressure comes from patrol crossings and longer blast lines, so danger stays readable through in-world telegraphs instead of a front-loaded rules dump.
 
 Open [index.html](./index.html) in a browser to play.
+
+## Sweep learnings
+
+- Run shape: the one-room prototype had a good base lesson but stopped before the mechanic stack could get sticky. This pass turns the run into a short three-district push so bomb spacing, loadout growth, and patrol pressure can build on each other instead of ending right after first contact.
+- Variety: for arcade maze-bomb games, variety reads better from new route shapes and enemy behaviors than from a larger rules dump. Distinct districts and patrol roles deepen the loop without making the first minute harder to parse.

@@ -99,7 +99,7 @@ input {
 }
 
 .panel {
-  pointer-events: auto;
+  pointer-events: none;
   width: min(1080px, 100%);
   border: 1px solid var(--line);
   border-radius: 28px;
@@ -408,6 +408,11 @@ h1 {
 .game-shell[data-state="playing"] #hud {
   opacity: 1;
   transform: translateY(0) scale(1);
+  pointer-events: auto;
+}
+
+.game-shell[data-state="menu"] #menu-screen .panel,
+.game-shell[data-state="gameover"] #gameover-screen .panel {
   pointer-events: auto;
 }
 

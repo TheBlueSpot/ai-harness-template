@@ -1,7 +1,14 @@
 import { createReplayRecorder } from "./ReplayRecorder.js";
 
 export class GhostEngine {
-  constructor({ frameStride = 4, renderLimit = 24, cullMargin = 720, scanLimit = null } = {}) {
+  constructor({
+    frameStride = 4,
+    renderLimit = 24,
+    cullMargin = 720,
+    scanLimit = null,
+    maxRunsPerLevel = 18,
+    maxTotalRuns = 54,
+  } = {}) {
     this.runs = [];
     this.currentRecorder = null;
     this.currentRun = null;
@@ -12,6 +19,8 @@ export class GhostEngine {
     this.renderLimit = Math.max(1, renderLimit | 0);
     this.cullMargin = cullMargin;
     this.scanLimit = Math.max(this.renderLimit, scanLimit ?? this.renderLimit * 8);
+    this.maxRunsPerLevel = Math.max(this.renderLimit, maxRunsPerLevel | 0);
+    this.maxTotalRuns = Math.max(this.maxRunsPerLevel, maxTotalRuns | 0);
   }
 
   beginRun(levelId) {
@@ -46,9 +55,30 @@ export class GhostEngine {
       cause: run.cause,
       timestamp: run.timestamp,
     });
+    this.pruneRuns(run.levelId);
     this.currentRecorder = null;
     this.currentRun = null;
     return run;
+  }
+
+  pruneRuns(levelId = null) {
+    if (levelId) {
+      const kept = [];
+      let levelRuns = 0;
+      for (let index = this.runs.length - 1; index >= 0; index -= 1) {
+        const run = this.runs[index];
+        if (run.levelId === levelId) {
+          levelRuns += 1;
+          if (levelRuns > this.maxRunsPerLevel) continue;
+        }
+        kept.push(run);
+      }
+      this.runs = kept.reverse();
+    }
+
+    if (this.runs.length > this.maxTotalRuns) {
+      this.runs = this.runs.slice(this.runs.length - this.maxTotalRuns);
+    }
   }
 
   update(frameIndex = this.frameIndex, levelId = null) {

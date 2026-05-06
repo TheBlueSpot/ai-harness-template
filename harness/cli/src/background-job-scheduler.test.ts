@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { createAssistantId, createBackgroundJobId, createThreadId, type BackgroundJob } from "../../shared/protocol";
@@ -17,10 +18,46 @@ function createRepository() {
   return new WorkspaceRepository(dbPath, process.cwd());
 }
 
+function createRepositoryWithPath() {
+  const tempRoot = createTempDir();
+  const dbPath = path.join(tempRoot, `background-jobs-${crypto.randomUUID()}.sqlite`);
+  return { repository: new WorkspaceRepository(dbPath, process.cwd()), dbPath };
+}
+
 function addProject(repository: WorkspaceRepository) {
   const projectRoot = path.join(createTempDir(), `repo-${crypto.randomUUID()}`);
   mkdirSync(projectRoot, { recursive: true });
   return repository.addProject(projectRoot);
+}
+
+function saveAssistant(repository: WorkspaceRepository, projectId: string, overrides: Partial<Parameters<WorkspaceRepository["saveAssistant"]>[0]> = {}) {
+  const now = new Date().toISOString();
+  const assistant = {
+    id: createAssistantId(),
+    name: "Background assistant",
+    scope: "project" as const,
+    projectId,
+    description: undefined,
+    personalityPrompt: "Direct.",
+    jobPrompt: "Review.",
+    agentId: "pi" as const,
+    modeId: undefined,
+    executionModelId: undefined,
+    runState: "active" as const,
+    bootstrapState: "completed" as const,
+    clonedFromAssistantId: undefined,
+    failureStreakCount: 0,
+    circuitBreakerState: "closed" as const,
+    circuitBreakerReason: undefined,
+    deletedAt: undefined,
+    latestActivityAt: now,
+    unreadQuestionCount: 0,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides
+  };
+  repository.saveAssistant(assistant);
+  return assistant;
 }
 
 function saveDueJob(
@@ -168,8 +205,9 @@ describe("background job scheduler", () => {
   test("does not advance due schedules while global execution is paused", async () => {
     const repository = createRepository();
     const project = addProject(repository);
+    const assistant = saveAssistant(repository, project.id);
     repository.setBackgroundJobApprovalPolicyDefault("allow-all");
-    const job = saveDueJob(repository, project.id);
+    const job = saveDueJob(repository, project.id, { assistantId: assistant.id });
     repository.setGlobalExecutionPaused(true);
 
     const scheduler = new BackgroundJobScheduler({ repository });
@@ -222,6 +260,471 @@ describe("background job scheduler", () => {
     await scheduler.tick(false);
 
     expect(repository.loadBackgroundJobsState().runs).toHaveLength(1);
+  });
+
+  test("tick does not await launched background execution", async () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    repository.setBackgroundJobApprovalPolicyDefault("allow-all");
+    saveDueJob(repository, project.id);
+    const scheduler = new BackgroundJobScheduler({
+      repository,
+      onRunQueued() {
+        return new Promise<void>(() => undefined);
+      }
+    });
+
+    const startedAt = performance.now();
+    await scheduler.tick(false);
+    const elapsedMs = performance.now() - startedAt;
+
+    const state = repository.loadBackgroundJobsState();
+    expect(elapsedMs).toBeLessThan(500);
+    expect(state.runs).toHaveLength(1);
+    expect(state.runs[0]?.status).toBe("queued");
+  });
+
+  test("marks due same-job requeues blocked without advancing schedule", async () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    repository.setBackgroundJobApprovalPolicyDefault("allow-all");
+    const job = saveDueJob(repository, project.id);
+    repository.createBackgroundJobRun({
+      jobId: job.id,
+      projectId: job.projectId,
+      assistantId: job.assistantId,
+      automationThreadId: job.automationThreadId,
+      triggerSource: "schedule",
+      status: "running",
+      riskLevel: job.riskLevel,
+      approvalStatus: "approved"
+    });
+
+    const scheduler = new BackgroundJobScheduler({ repository });
+    await scheduler.tick(false);
+
+    const blockedJob = repository.getBackgroundJob(job.id)!;
+    expect(blockedJob.nextRunAt).toBe(job.nextRunAt);
+    expect(blockedJob.schedulerStatus).toBe("running");
+    expect(blockedJob.blockedReason).toContain("Job already has running run");
+  });
+
+  test("queues due assistant jobs while another assistant job is active", async () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    repository.setBackgroundJobApprovalPolicyDefault("allow-all");
+    const assistant = saveAssistant(repository, project.id);
+    const activeJob = saveDueJob(repository, project.id, { assistantId: assistant.id, name: "Active assistant job" });
+    const blockedJob = saveDueJob(repository, project.id, { assistantId: assistant.id, name: "Blocked assistant job" });
+    repository.updateBackgroundJobSchedule(activeJob.id, {
+      schedule: {
+        type: "interval",
+        intervalSeconds: 3600,
+        nextRunAt: new Date(Date.now() + 3600 * 1000).toISOString(),
+        sourceText: "1h"
+      },
+      nextRunAt: new Date(Date.now() + 3600 * 1000).toISOString()
+    });
+    repository.createBackgroundJobRun({
+      jobId: activeJob.id,
+      projectId: activeJob.projectId,
+      assistantId: assistant.id,
+      automationThreadId: activeJob.automationThreadId,
+      triggerSource: "schedule",
+      status: "running",
+      riskLevel: activeJob.riskLevel,
+      approvalStatus: "approved"
+    });
+
+    const scheduler = new BackgroundJobScheduler({ repository });
+    await scheduler.tick(false);
+
+    const nextJob = repository.getBackgroundJob(blockedJob.id)!;
+    expect(nextJob.schedulerStatus).toBe("queued");
+    expect(repository.getActiveBackgroundJobRuns(blockedJob.id)).toHaveLength(1);
+    expect(repository.getActiveBackgroundJobRunsByAssistant(assistant.id)).toHaveLength(2);
+  });
+
+  test("repairs interrupted running rows before deciding a due job is blocked", async () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    repository.setBackgroundJobApprovalPolicyDefault("allow-all");
+    const job = saveDueJob(repository, project.id);
+    repository.createAgentRun(project.id, "plan work", "openai/gpt-5.4", job.automationThreadId);
+    const linkedRunId = repository.getLatestThreadRun(project.id, job.automationThreadId)!.id;
+    repository.setAgentRunReady(
+      project.id,
+      linkedRunId,
+      {
+        type: "ready",
+        summary: "Ready but no executor owns it.",
+        difficultyScore: 1,
+        executionModelId: "openai/gpt-5.4",
+        subtasks: [],
+        usesSubagents: false,
+        finalExecutionBrief: "Run main executor."
+      },
+      undefined,
+      [],
+      "openai/gpt-5.4"
+    );
+    const interruptedRun = repository.createBackgroundJobRun({
+      jobId: job.id,
+      projectId: job.projectId,
+      assistantId: job.assistantId,
+      automationThreadId: job.automationThreadId,
+      triggerSource: "schedule",
+      status: "running",
+      riskLevel: job.riskLevel,
+      approvalStatus: "approved"
+    });
+    repository.setBackgroundJobRunStatus(interruptedRun.id, "running", { linkedAgentRunId: linkedRunId });
+
+    const scheduler = new BackgroundJobScheduler({
+      repository,
+      repairActiveRuns(now) {
+        return repository.repairInterruptedBackgroundJobRuns({
+          isRunLive: () => false,
+          now: new Date(now.getTime() + 3 * 60 * 1000)
+        });
+      }
+    });
+    await scheduler.tick(false);
+
+    const state = repository.loadBackgroundJobsState();
+    expect(state.runs.some((run) => run.id === interruptedRun.id && run.status === "failed")).toBe(true);
+    expect(state.runs.some((run) => run.id !== interruptedRun.id && run.jobId === job.id && run.status === "queued")).toBe(true);
+  });
+
+  test("does not repair ready linked runs while a live controller owns the background run", async () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    repository.setBackgroundJobApprovalPolicyDefault("allow-all");
+    const job = saveDueJob(repository, project.id);
+    repository.createAgentRun(project.id, "plan work", "openai/gpt-5.4", job.automationThreadId);
+    const linkedRunId = repository.getLatestThreadRun(project.id, job.automationThreadId)!.id;
+    repository.setAgentRunReady(
+      project.id,
+      linkedRunId,
+      {
+        type: "ready",
+        summary: "Ready and still live.",
+        difficultyScore: 1,
+        executionModelId: "openai/gpt-5.4",
+        subtasks: [],
+        usesSubagents: false,
+        finalExecutionBrief: "Run main executor."
+      },
+      undefined,
+      [],
+      "openai/gpt-5.4"
+    );
+    const activeRun = repository.createBackgroundJobRun({
+      jobId: job.id,
+      projectId: job.projectId,
+      assistantId: job.assistantId,
+      automationThreadId: job.automationThreadId,
+      triggerSource: "schedule",
+      status: "running",
+      riskLevel: job.riskLevel,
+      approvalStatus: "approved"
+    });
+    repository.setBackgroundJobRunStatus(activeRun.id, "running", { linkedAgentRunId: linkedRunId });
+
+    const scheduler = new BackgroundJobScheduler({
+      repository,
+      repairActiveRuns(now) {
+        return repository.repairInterruptedBackgroundJobRuns({
+          isRunLive: () => true,
+          now: new Date(now.getTime() + 3 * 60 * 1000)
+        });
+      }
+    });
+    await scheduler.tick(false);
+
+    const state = repository.loadBackgroundJobsState();
+    expect(state.runs.find((run) => run.id === activeRun.id)?.status).toBe("running");
+    expect(state.runs.filter((run) => run.jobId === job.id)).toHaveLength(1);
+  });
+
+  test("repairs stale running rows even when linked agent run is still running", async () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    repository.setBackgroundJobApprovalPolicyDefault("allow-all");
+    const job = saveDueJob(repository, project.id);
+    repository.createAgentRun(project.id, "plan work", "openai/gpt-5.4", job.automationThreadId);
+    const linkedRunId = repository.getLatestThreadRun(project.id, job.automationThreadId)!.id;
+    repository.setAgentRunStatus(project.id, linkedRunId, "running-main");
+    const staleRun = repository.createBackgroundJobRun({
+      jobId: job.id,
+      projectId: job.projectId,
+      assistantId: job.assistantId,
+      automationThreadId: job.automationThreadId,
+      triggerSource: "schedule",
+      status: "running",
+      riskLevel: job.riskLevel,
+      approvalStatus: "approved"
+    });
+    repository.setBackgroundJobRunStatus(staleRun.id, "running", { linkedAgentRunId: linkedRunId });
+
+    const scheduler = new BackgroundJobScheduler({
+      repository,
+      repairActiveRuns(now) {
+        return repository.repairStaleRunningBackgroundJobRuns({
+          isRunLive: () => false,
+          now: new Date(now.getTime() + 3 * 60 * 1000)
+        });
+      }
+    });
+    await scheduler.tick(false);
+
+    const state = repository.loadBackgroundJobsState();
+    const repairedRun = state.runs.find((run) => run.id === staleRun.id);
+    expect(repairedRun?.status).toBe("failed");
+    expect(repairedRun?.events.some((event) => event.message === "Background run repaired: no live controller")).toBe(true);
+    expect(state.runs.some((run) => run.id !== staleRun.id && run.jobId === job.id && run.status === "queued")).toBe(true);
+  });
+
+  test("times out live running rows with no progress heartbeat", async () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    const assistant = saveAssistant(repository, project.id);
+    repository.setBackgroundJobApprovalPolicyDefault("allow-all");
+    const job = saveDueJob(repository, project.id, { assistantId: assistant.id });
+    const staleRun = repository.createBackgroundJobRun({
+      jobId: job.id,
+      projectId: job.projectId,
+      assistantId: job.assistantId,
+      automationThreadId: job.automationThreadId,
+      triggerSource: "schedule",
+      status: "running",
+      riskLevel: job.riskLevel,
+      approvalStatus: "approved"
+    });
+    repository.setBackgroundJobRunStatus(staleRun.id, "running");
+    repository.touchBackgroundJobRun(staleRun.id, {
+      stage: "execution",
+      detail: "stale",
+      now: new Date(Date.now() - 11 * 60 * 1000)
+    });
+    const timedOut: string[] = [];
+
+    const scheduler = new BackgroundJobScheduler({
+      repository,
+      isRunLive: () => true,
+      onRunsTimingOut(runs) {
+        timedOut.push(...runs.map((run) => run.id));
+      },
+      repairActiveRuns(now) {
+        return repository.repairInterruptedBackgroundJobRuns({
+          isRunLive: () => true,
+          now
+        });
+      }
+    });
+    await scheduler.tick(false);
+
+    const repairedRun = repository.getBackgroundJobRun(staleRun.id);
+    expect(timedOut).toContain(staleRun.id);
+    expect(repairedRun?.status).toBe("failed");
+    expect(repairedRun?.failureMessage).toBe("Timed out: no background progress heartbeat");
+    expect(repairedRun?.timedOutAt).toBeTruthy();
+    expect(repairedRun?.events.some((event) => event.message === "Background run timed out")).toBe(true);
+    expect(repository.getActiveBackgroundJobRuns(job.id)).toHaveLength(1);
+    expect(repository.getActiveBackgroundJobRuns(job.id)[0]?.status).toBe("queued");
+  });
+
+  test("keeps live running rows with fresh liveness heartbeat", async () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    const assistant = saveAssistant(repository, project.id);
+    repository.setBackgroundJobApprovalPolicyDefault("allow-all");
+    const job = saveDueJob(repository, project.id, { assistantId: assistant.id });
+    const staleRun = repository.createBackgroundJobRun({
+      jobId: job.id,
+      projectId: job.projectId,
+      assistantId: job.assistantId,
+      automationThreadId: job.automationThreadId,
+      triggerSource: "schedule",
+      status: "running",
+      riskLevel: job.riskLevel,
+      approvalStatus: "approved"
+    });
+    repository.setBackgroundJobRunStatus(staleRun.id, "running");
+    repository.touchBackgroundJobRun(staleRun.id, {
+      stage: "execution-running",
+      detail: "Main Codex CLI execution still running",
+      now: new Date(Date.now() - 60_000)
+    });
+    const timedOut: string[] = [];
+
+    const scheduler = new BackgroundJobScheduler({
+      repository,
+      isRunLive: () => true,
+      onRunsTimingOut(runs) {
+        timedOut.push(...runs.map((run) => run.id));
+      },
+      repairActiveRuns(now) {
+        return repository.repairInterruptedBackgroundJobRuns({
+          isRunLive: () => true,
+          now
+        });
+      }
+    });
+    await scheduler.tick(false);
+
+    const activeRun = repository.getBackgroundJobRun(staleRun.id);
+    expect(timedOut).not.toContain(staleRun.id);
+    expect(activeRun?.status).toBe("running");
+    expect(activeRun?.heartbeatStage).toBe("execution-running");
+    expect(repository.getActiveBackgroundJobRuns(job.id)).toHaveLength(1);
+  });
+
+  test("queues all due assistant jobs for concurrent launch", async () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    const assistant = saveAssistant(repository, project.id);
+    repository.setBackgroundJobApprovalPolicyDefault("allow-all");
+    const now = Date.now();
+    const slightlyOverdue = saveDueJob(repository, project.id, {
+      assistantId: assistant.id,
+      name: "Five minute sweep",
+      schedule: {
+        type: "interval",
+        intervalSeconds: 300,
+        nextRunAt: new Date(now - 6 * 60 * 1000).toISOString(),
+        sourceText: "5m"
+      },
+      scheduleInput: "5m",
+      nextRunAt: new Date(now - 6 * 60 * 1000).toISOString()
+    });
+    const veryOverdue = saveDueJob(repository, project.id, {
+      assistantId: assistant.id,
+      name: "Ten minute review",
+      schedule: {
+        type: "interval",
+        intervalSeconds: 600,
+        nextRunAt: new Date(now - 20 * 60 * 1000).toISOString(),
+        sourceText: "10m"
+      },
+      scheduleInput: "10m",
+      nextRunAt: new Date(now - 20 * 60 * 1000).toISOString()
+    });
+
+    const scheduler = new BackgroundJobScheduler({ repository });
+    await scheduler.tick(false);
+
+    const reviewRuns = repository.getActiveBackgroundJobRuns(veryOverdue.id);
+    const sweepRuns = repository.getActiveBackgroundJobRuns(slightlyOverdue.id);
+    expect(reviewRuns).toHaveLength(1);
+    expect(reviewRuns[0]?.status).toBe("queued");
+    expect(sweepRuns).toHaveLength(1);
+    expect(sweepRuns[0]?.status).toBe("queued");
+    expect(repository.getActiveBackgroundJobRunsByAssistant(assistant.id)).toHaveLength(2);
+  });
+
+  test("repairs stale assistant and automation-thread refs before queuing due jobs", async () => {
+    const { repository, dbPath } = createRepositoryWithPath();
+    const project = addProject(repository);
+    const assistant = saveAssistant(repository, project.id);
+    repository.setBackgroundJobApprovalPolicyDefault("allow-all");
+    const staleThreadId = createThreadId();
+    const job = saveDueJob(repository, project.id, {
+      assistantId: assistant.id,
+      automationThreadId: staleThreadId
+    });
+
+    const db = new Database(dbPath);
+    db.exec("PRAGMA foreign_keys = OFF;");
+    db.query(`DELETE FROM assistants WHERE id = ?1`).run(assistant.id);
+    db.query(`DELETE FROM project_threads WHERE id = ?1`).run(staleThreadId);
+    db.close();
+
+    const scheduler = new BackgroundJobScheduler({ repository });
+    await scheduler.tick(false);
+
+    const queuedRun = repository.getActiveBackgroundJobRuns(job.id)[0];
+    const repairedJob = repository.getBackgroundJob(job.id);
+    expect(queuedRun?.status).toBe("queued");
+    expect(queuedRun?.assistantId).toBeUndefined();
+    expect(queuedRun?.automationThreadId).toBe(staleThreadId);
+    expect(repairedJob?.assistantId).toBeUndefined();
+    expect(repository.getProject(project.id).threads.some((thread) => thread.id === staleThreadId && thread.kind === "automation")).toBe(true);
+  });
+
+  test("marks assistant schedules overloaded when runtime exceeds interval", async () => {
+    const { repository, dbPath } = createRepositoryWithPath();
+    const project = addProject(repository);
+    const assistant = saveAssistant(repository, project.id);
+    repository.setBackgroundJobApprovalPolicyDefault("allow-all");
+    const job = saveDueJob(repository, project.id, {
+      assistantId: assistant.id,
+      schedule: {
+        type: "interval",
+        intervalSeconds: 300,
+        nextRunAt: new Date(Date.now() - 60_000).toISOString(),
+        sourceText: "5m"
+      },
+      scheduleInput: "5m"
+    });
+    const db = new Database(dbPath);
+    const startedAt = new Date(Date.now() - 11 * 60 * 1000).toISOString();
+    const completedAt = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    db.query(
+      `UPDATE background_job_runs
+       SET started_at = ?2, completed_at = ?3, status = 'succeeded'
+       WHERE id = ?1`
+    ).run(
+      repository.createBackgroundJobRun({
+        jobId: job.id,
+        projectId: job.projectId,
+        assistantId: assistant.id,
+        automationThreadId: job.automationThreadId,
+        triggerSource: "manual",
+        status: "succeeded",
+        riskLevel: job.riskLevel,
+        approvalStatus: "approved"
+      }).id,
+      startedAt,
+      completedAt
+    );
+    db.close();
+
+    const scheduler = new BackgroundJobScheduler({ repository });
+    await scheduler.tick(false);
+
+    expect(repository.getBackgroundJob(job.id)?.schedulerOverloaded).toBe(true);
+  });
+
+  test("reconciles active background runs when linked agent runs already failed", async () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    repository.setBackgroundJobApprovalPolicyDefault("allow-all");
+    const job = saveDueJob(repository, project.id);
+    repository.createAgentRun(project.id, "plan work", "openai/gpt-5.4", job.automationThreadId);
+    const linkedRunId = repository.getLatestThreadRun(project.id, job.automationThreadId)!.id;
+    repository.setAgentRunStatus(project.id, linkedRunId, "failed", "empty response");
+    const staleRun = repository.createBackgroundJobRun({
+      jobId: job.id,
+      projectId: job.projectId,
+      assistantId: job.assistantId,
+      automationThreadId: job.automationThreadId,
+      triggerSource: "schedule",
+      status: "running",
+      riskLevel: job.riskLevel,
+      approvalStatus: "approved"
+    });
+    repository.setBackgroundJobRunStatus(staleRun.id, "running", { linkedAgentRunId: linkedRunId });
+
+    const scheduler = new BackgroundJobScheduler({ repository });
+    await scheduler.tick(false);
+
+    const state = repository.loadBackgroundJobsState();
+    const repairedRun = state.runs.find((run) => run.id === staleRun.id);
+    expect(repairedRun?.status).toBe("failed");
+    expect(repairedRun?.failureMessage).toBe("empty response");
+    expect(repairedRun?.events.some((event) => event.stage === "failed" && event.message === "Reconciled linked agent run")).toBe(true);
+    expect(state.runs.some((run) => run.id !== staleRun.id && run.jobId === job.id && run.status === "queued")).toBe(true);
   });
 
   test("skips assistant-linked jobs when assistant is paused", async () => {
@@ -281,5 +784,57 @@ describe("background job scheduler", () => {
     expect(state.runs[0]?.status).toBe("failed");
     expect(state.runs[0]?.failureMessage).toBe("launch failed");
     expect(state.runs[0]?.events.some((event) => event.stage === "failed" && event.detail === "launch failed")).toBe(true);
+  });
+
+  test("does not overwrite heartbeat timeout when launch callback rejects after timeout repair", async () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    repository.setBackgroundJobApprovalPolicyDefault("allow-all");
+    const job = saveDueJob(repository, project.id);
+
+    const scheduler = new BackgroundJobScheduler({
+      repository,
+      async onRunQueued(run) {
+        repository.setBackgroundJobRunStatus(run.id, "failed", {
+          failureMessage: "Timed out: no background progress heartbeat",
+          failureCategory: "heartbeat-timeout",
+          timedOutAt: new Date().toISOString()
+        });
+        throw new Error("generic launch failure");
+      }
+    });
+
+    await scheduler.tick(false);
+
+    const state = repository.loadBackgroundJobsState();
+    expect(state.runs).toHaveLength(1);
+    expect(state.runs[0]?.status).toBe("failed");
+    expect(state.runs[0]?.failureMessage).toBe("Timed out: no background progress heartbeat");
+    expect(state.runs[0]?.failureCategory).toBe("heartbeat-timeout");
+    expect(state.runs[0]?.timedOutAt).toBeTruthy();
+    expect(state.runs[0]?.events.some((event) => event.detail === "generic launch failure")).toBe(false);
+  });
+
+  test("reports asynchronous tick failures from the scheduler loop", async () => {
+    const repository = createRepository();
+    const failures: unknown[] = [];
+    Object.defineProperty(repository, "loadBackgroundJobsState", {
+      value() {
+        throw new Error("tick failed");
+      }
+    });
+    const scheduler = new BackgroundJobScheduler({
+      repository,
+      onTickFailed(error) {
+        failures.push(error);
+      }
+    });
+
+    scheduler.start();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    scheduler.stop();
+
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toBeInstanceOf(Error);
   });
 });

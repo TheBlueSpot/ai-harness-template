@@ -16,15 +16,86 @@ const overlayCtaEl = document.getElementById("overlayCta");
 const view = { width: 1280, height: 720 };
 const battlefield = { leftBase: 120, rightBase: 1160 };
 const lanes = [200, 360, 520];
+const laneLabels = ["Top", "Mid", "Bot"];
+const campaignBeats = [
+  "Opening clash: hold 2 lanes to earn tribute and accelerate your first age jump.",
+  "Mid-war pivot: use the new roster to break one lane instead of flooding every front.",
+  "Final siege: reach the future age, then stack lane pressure into one finishing collapse.",
+];
+const warActs = [
+  {
+    name: "Border Raid",
+    playerBaseBonus: 0,
+    enemyBaseBonus: 0,
+    playerGrant: 0,
+    enemyGrant: 0,
+    playerRepair: 0,
+    enemyMinEra: 0,
+    beat: "Break the border wall, then use the spoils to reach Bronze before the enemy settles in.",
+  },
+  {
+    name: "Citadel Push",
+    playerBaseBonus: 24,
+    enemyBaseBonus: 62,
+    playerGrant: 118,
+    enemyGrant: 126,
+    playerRepair: 48,
+    enemyMinEra: 1,
+    beat: "Outer wall down. Keep your tech lead and crack the citadel before Iron cannons stall the run.",
+  },
+  {
+    name: "Capital Siege",
+    playerBaseBonus: 48,
+    enemyBaseBonus: 108,
+    playerGrant: 156,
+    enemyGrant: 168,
+    playerRepair: 62,
+    enemyMinEra: 2,
+    beat: "Final push. Preserve two lanes, hit Future fast, and finish the capital with stacked pressure.",
+  },
+];
+
+const aiWaveFormations = [
+  {
+    name: "probe",
+    minAct: 0,
+    roles: ["frontline", "ranged", "frontline"],
+    weights: { steady: 3, behind: 4, ahead: 1 },
+  },
+  {
+    name: "counterline",
+    minAct: 0,
+    roles: ["counter", "ranged", "frontline"],
+    weights: { steady: 3, behind: 3, ahead: 2 },
+  },
+  {
+    name: "shieldwall",
+    minAct: 1,
+    roles: ["frontline", "frontline", "ranged", "counter"],
+    weights: { steady: 3, behind: 4, ahead: 2 },
+  },
+  {
+    name: "breaker",
+    minAct: 1,
+    roles: ["frontline", "ranged", "siege", "support"],
+    weights: { steady: 2, behind: 4, ahead: 3 },
+  },
+  {
+    name: "flank",
+    minAct: 2,
+    roles: ["counter", "ranged", "siege", "support"],
+    weights: { steady: 2, behind: 2, ahead: 4 },
+  },
+];
 
 const eras = [
   {
     name: "Stone",
     cost: 0,
-    income: 7,
+    income: 12.8,
     tint: "#6f8c8c",
     enemyTint: "#8d5f3f",
-    baseHp: 100,
+    baseHp: 150,
     note: "Stone age favors cheap rushes, slingers, brute beasts.",
     units: [
       { key: "Q", name: "Clubber", role: "swarm", cost: 30, hp: 34, speed: 42, range: 18, damage: 8, cooldown: 0.74, color: "#8fd29a" },
@@ -34,11 +105,11 @@ const eras = [
   },
   {
     name: "Bronze",
-    cost: 170,
-    income: 8.8,
+    cost: 118,
+    income: 15.2,
     tint: "#7798c9",
     enemyTint: "#a56b48",
-    baseHp: 120,
+    baseHp: 182,
     note: "Bronze age adds shield walls, bows, chariot counters.",
     units: [
       { key: "Q", name: "Spearman", role: "anti-cavalry", cost: 44, hp: 46, speed: 34, range: 22, damage: 10, cooldown: 0.72, color: "#b6dc9a" },
@@ -48,11 +119,11 @@ const eras = [
   },
   {
     name: "Iron",
-    cost: 260,
-    income: 10.4,
+    cost: 186,
+    income: 17.8,
     tint: "#9ba2b1",
     enemyTint: "#89535c",
-    baseHp: 145,
+    baseHp: 220,
     note: "Iron age leans on armored knights, muskets, siege cannons.",
     units: [
       { key: "Q", name: "Knight", role: "tank", cost: 60, hp: 74, speed: 40, range: 24, damage: 14, cooldown: 0.7, color: "#dde3f2" },
@@ -62,11 +133,11 @@ const eras = [
   },
   {
     name: "Future",
-    cost: 360,
-    income: 12.6,
+    cost: 258,
+    income: 20.6,
     tint: "#65d8d3",
     enemyTint: "#ff6f66",
-    baseHp: 170,
+    baseHp: 265,
     note: "Future age unlocks mechs, drones, titan push finishers.",
     units: [
       { key: "Q", name: "Mech", role: "tank", cost: 82, hp: 104, speed: 38, range: 28, damage: 19, cooldown: 0.62, color: "#98fff2" },
@@ -78,6 +149,7 @@ const eras = [
 
 const game = {
   state: "ready",
+  actIndex: 0,
   selectedLane: 1,
   player: createSide("player"),
   enemy: createSide("enemy"),
@@ -85,9 +157,18 @@ const game = {
   projectiles: [],
   particles: [],
   message: "",
+  objective: campaignBeats[0],
+  runTime: 0,
   lastTime: performance.now(),
   aiSpawnTimer: 1,
   aiTechTimer: 8,
+  aiWaveTimer: 0,
+  aiWaveLane: 1,
+  aiPlan: [],
+  aiRecentSlots: [],
+  controlTimer: 0,
+  storyTimer: 14,
+  lastBeatIndex: 0,
   lanePulse: 0,
 };
 
@@ -95,17 +176,48 @@ function createSide(side) {
   return {
     side,
     era: 0,
-    gold: side === "player" ? 95 : 105,
+    gold: side === "player" ? 168 : 176,
     incomeBank: 0,
+    tributeBank: 0,
     hp: eras[0].baseHp,
     maxHp: eras[0].baseHp,
     cooldowns: [0, 0, 0],
     flash: 0,
+    storyIndex: 0,
   };
+}
+
+function getAct() {
+  return warActs[game.actIndex];
+}
+
+function getBaseBonus(sideName, actIndex = game.actIndex) {
+  const act = warActs[actIndex];
+  return sideName === "player" ? act.playerBaseBonus : act.enemyBaseBonus;
+}
+
+function syncBaseStats(sideName, options = {}) {
+  const side = game[sideName];
+  const era = eras[side.era];
+  side.maxHp = era.baseHp + getBaseBonus(sideName);
+  if (options.fullHeal) {
+    side.hp = side.maxHp;
+  } else {
+    const heal = options.heal ?? 0;
+    side.hp = Math.min(side.maxHp, side.hp + heal);
+  }
+}
+
+function updateObjective() {
+  const act = getAct();
+  const beatIndex = Math.min(campaignBeats.length - 1, Math.max(game.player.era, game.actIndex));
+  const beat = game.player.era >= eras.length - 1 && game.actIndex < warActs.length - 1 ? act.beat : campaignBeats[beatIndex];
+  game.objective = `Act ${game.actIndex + 1}/${warActs.length} ${act.name}. ${beat}`;
 }
 
 function resetGame() {
   game.state = "ready";
+  game.actIndex = 0;
   game.selectedLane = 1;
   game.player = createSide("player");
   game.enemy = createSide("enemy");
@@ -113,9 +225,21 @@ function resetGame() {
   game.projectiles = [];
   game.particles = [];
   game.message = "Space or tap starts war.";
+  game.objective = "";
+  game.runTime = 0;
   game.aiSpawnTimer = 0.9;
   game.aiTechTimer = 8;
+  game.aiWaveTimer = 1.8;
+  game.aiWaveLane = 1;
+  game.aiPlan = [];
+  game.aiRecentSlots = [];
+  game.controlTimer = 2.6;
+  game.storyTimer = 12;
+  game.lastBeatIndex = 0;
   game.lanePulse = 0;
+  syncBaseStats("player", { fullHeal: true });
+  syncBaseStats("enemy", { fullHeal: true });
+  updateObjective();
   syncOverlay();
   refreshButtons();
   refreshHud();
@@ -173,9 +297,13 @@ function tryAdvanceEra(sideName) {
   if (side.gold < nextEra.cost) return false;
   side.gold -= nextEra.cost;
   side.era += 1;
-  side.maxHp = nextEra.baseHp;
-  side.hp = Math.min(side.maxHp, side.hp + 18);
+  syncBaseStats(sideName, { heal: 28 });
+  side.gold += sideName === "player" ? 42 : 32;
+  side.storyIndex = Math.min(campaignBeats.length - 1, side.era);
   game.message = `${sideName === "player" ? "Player" : "Enemy"} reached ${nextEra.name} age.`;
+  if (sideName === "player") {
+    updateObjective();
+  }
   burst(sideName === "player" ? battlefield.leftBase : battlefield.rightBase, lanes[1], sideName === "player" ? nextEra.tint : nextEra.enemyTint, 20);
   return true;
 }
@@ -183,6 +311,7 @@ function tryAdvanceEra(sideName) {
 function update(dt) {
   if (game.state !== "playing") return;
 
+  game.runTime += dt;
   updateEconomy(game.player, dt);
   updateEconomy(game.enemy, dt);
   game.lanePulse += dt;
@@ -195,6 +324,8 @@ function update(dt) {
     }
   }
 
+  updateControlIncome(dt);
+  updateStoryBeat(dt);
   updateAI(dt);
   updateUnits(dt);
   updateProjectiles(dt);
@@ -213,9 +344,85 @@ function updateEconomy(side, dt) {
   }
 }
 
+function updateControlIncome(dt) {
+  game.controlTimer -= dt;
+  if (game.controlTimer > 0) return;
+  game.controlTimer = 2.6;
+  awardTribute(game.player);
+  awardTribute(game.enemy);
+}
+
+function awardTribute(side) {
+  const heldLanes = countControlledLanes(side.side);
+  if (heldLanes <= 0) return;
+  const bonus = heldLanes * 16 + side.era * 7 + game.actIndex * 5;
+  side.gold += bonus;
+  side.tributeBank += bonus;
+  if (side.side === "player") {
+    const laneWord = heldLanes === 1 ? "lane" : "lanes";
+    game.message = `Front tribute +${bonus} gold for holding ${heldLanes} ${laneWord}.`;
+  }
+}
+
+function countControlledLanes(sideName) {
+  let held = 0;
+  for (let lane = 0; lane < lanes.length; lane++) {
+    const margin = lanePressure(sideName, lane) - lanePressure(sideName === "player" ? "enemy" : "player", lane);
+    if (margin >= 22) held += 1;
+  }
+  return held;
+}
+
+function updateStoryBeat(dt) {
+  game.storyTimer -= dt;
+  const playerBeat = Math.min(campaignBeats.length - 1, Math.max(game.player.era, game.actIndex, Math.floor(game.runTime / 55)));
+  if (playerBeat !== game.lastBeatIndex) {
+    game.lastBeatIndex = playerBeat;
+    updateObjective();
+  }
+  if (game.storyTimer <= 0 && game.player.era < eras.length - 1) {
+    game.storyTimer = 12;
+    const heldLanes = countControlledLanes("player");
+    if (heldLanes === 0) {
+      game.message = "You need 2 strong lanes to farm tribute and unlock the next age.";
+    } else if (heldLanes === 1) {
+      game.message = "One lane is yours. Take a second lane for bigger tribute bursts.";
+    } else {
+      game.message = "Two-lane control is live. Bank tribute, then spend into the next age.";
+    }
+  }
+}
+
+function advanceAct() {
+  game.actIndex += 1;
+  game.units = [];
+  game.projectiles = [];
+  game.particles = [];
+
+  const act = getAct();
+  const playerMinEra = Math.min(eras.length - 2, game.actIndex);
+  game.player.era = Math.max(game.player.era, playerMinEra);
+  game.enemy.era = Math.max(game.enemy.era, act.enemyMinEra);
+  game.player.gold += act.playerGrant;
+  game.enemy.gold += act.enemyGrant;
+  syncBaseStats("player", { heal: act.playerRepair });
+  syncBaseStats("enemy", { fullHeal: true });
+  game.storyTimer = 9;
+  game.aiSpawnTimer = 0.85;
+  game.aiTechTimer = 5.4;
+  game.aiWaveTimer = 1.4;
+  game.aiPlan = [];
+  updateObjective();
+  game.message = `Act ${game.actIndex + 1} ${act.name}. ${act.beat}`;
+  burst(battlefield.leftBase, lanes[1], eras[game.player.era].tint, 18);
+  burst(battlefield.rightBase, lanes[1], eras[game.enemy.era].enemyTint, 22);
+}
+
 function updateAI(dt) {
   game.aiSpawnTimer -= dt;
   game.aiTechTimer -= dt;
+  game.aiWaveTimer = Math.max(0, game.aiWaveTimer - dt);
+  const director = getAiDirector();
   if (game.aiTechTimer <= 0) {
     const need = eras[Math.min(game.enemy.era + 1, eras.length - 1)];
     if (game.enemy.era < eras.length - 1 && game.enemy.gold >= need.cost + 28) {
@@ -225,10 +432,35 @@ function updateAI(dt) {
   }
 
   if (game.aiSpawnTimer > 0) return;
-  const laneIndex = chooseAiLane();
-  const slotIndex = chooseAiSlot(laneIndex);
+  if (!game.aiPlan.length) {
+    if (game.aiWaveTimer > 0) {
+      game.aiSpawnTimer = 0.18;
+      return;
+    }
+    buildAiWavePlan();
+  }
+
+  const order = game.aiPlan[0];
+  const slotIndex = order.slotIndex;
+  const laneIndex = order.laneIndex;
+  const laneCrowd = countLaneUnits("enemy", laneIndex);
+  if (laneCrowd >= director.maxLaneCrowd && lanePressure("enemy", laneIndex) > lanePressure("player", laneIndex) + director.crowdPressureLead) {
+    game.aiPlan = [];
+    game.aiWaveTimer = 0.8 + Math.random() * 0.5;
+    game.aiSpawnTimer = 0.24;
+    return;
+  }
+
   const spawned = spawnUnit("enemy", laneIndex, slotIndex);
-  game.aiSpawnTimer = spawned ? 0.48 + Math.random() * 0.55 : 0.28;
+  if (spawned) {
+    game.aiRecentSlots.push(slotIndex);
+    if (game.aiRecentSlots.length > 6) game.aiRecentSlots.shift();
+    game.aiPlan.shift();
+  }
+  game.aiSpawnTimer = getAiSpawnDelay(spawned, laneIndex, slotIndex);
+  if (!game.aiPlan.length) {
+    game.aiWaveTimer = director.waveReset + Math.random() * director.waveResetVariance;
+  }
 }
 
 function chooseAiLane() {
@@ -237,7 +469,9 @@ function chooseAiLane() {
   for (let lane = 0; lane < lanes.length; lane++) {
     const pressure = lanePressure("player", lane) - lanePressure("enemy", lane);
     const nearBase = nearestThreat("player", lane, "enemy");
-    const score = pressure * 1.1 + nearBase * 0.018 + Math.random() * 8;
+    const enemyCount = countLaneUnits("enemy", lane);
+    const playerCount = countLaneUnits("player", lane);
+    const score = pressure * 1.1 + nearBase * 0.018 + playerCount * 12 - enemyCount * 16 + Math.random() * 6;
     if (score > bestScore) {
       bestScore = score;
       bestLane = lane;
@@ -246,16 +480,199 @@ function chooseAiLane() {
   return bestLane;
 }
 
-function chooseAiSlot(laneIndex) {
+function chooseAiSlot(laneIndex, excluded = []) {
   const roster = eras[game.enemy.era].units;
   const dominant = dominantPlayerRole(laneIndex);
-  if (dominant === "cavalry") return findRoleIndex(roster, "anti-cavalry", 0);
-  if (dominant === "tank") return findRoleIndex(roster, "ranged", 1);
-  if (dominant === "ranged") return findRoleIndex(roster, "cavalry", 2);
-  if (dominant === "siege") return findRoleIndex(roster, "tank", 0);
-  return lanePressure("enemy", laneIndex) + 10 < lanePressure("player", laneIndex)
-    ? findRoleIndex(roster, "tank", 0)
-    : findRoleIndex(roster, "ranged", 1);
+  let wanted = lanePressure("enemy", laneIndex) + 10 < lanePressure("player", laneIndex) ? "tank" : "ranged";
+  if (dominant === "cavalry") wanted = "anti-cavalry";
+  if (dominant === "tank") wanted = "ranged";
+  if (dominant === "ranged") wanted = "cavalry";
+  if (dominant === "siege") wanted = "tank";
+  return chooseRoleIndex(roster, wanted, excluded, findAvailableSlot(roster, excluded, 0));
+}
+
+function buildAiWavePlan() {
+  const laneIndex = chooseAiLane();
+  const formation = chooseAiFormation(laneIndex);
+  const plan = buildAiOrders(laneIndex, formation.roles);
+  game.aiWaveLane = laneIndex;
+  game.aiPlan = diversifyAiPlan(plan, eras[game.enemy.era].units.length);
+}
+
+function chooseAiFormation(laneIndex) {
+  const deficit = lanePressure("enemy", laneIndex) + 18 < lanePressure("player", laneIndex);
+  const surplus = lanePressure("enemy", laneIndex) > lanePressure("player", laneIndex) + 24;
+  const phase = deficit ? "behind" : surplus ? "ahead" : "steady";
+  const formations = aiWaveFormations.filter((formation) => formation.minAct <= game.actIndex);
+  let totalWeight = 0;
+  for (const formation of formations) {
+    totalWeight += formation.weights[phase] ?? 1;
+  }
+  let roll = Math.random() * totalWeight;
+  for (const formation of formations) {
+    roll -= formation.weights[phase] ?? 1;
+    if (roll <= 0) return formation;
+  }
+  return formations[0];
+}
+
+function buildAiOrders(primaryLane, roles) {
+  const roster = eras[game.enemy.era].units;
+  const excluded = [];
+  const orders = [];
+  const alternateLane = chooseHarassLane(primaryLane);
+  roles.forEach((role, index) => {
+    const laneIndex = alternateLane !== -1 && index === roles.length - 1 ? alternateLane : primaryLane;
+    const fallback = chooseAiSlot(laneIndex, excluded);
+    const slotIndex = chooseRoleIndex(roster, resolveAiWantedRole(role, laneIndex), excluded, fallback);
+    excluded.push(slotIndex);
+    orders.push({ slotIndex, laneIndex });
+  });
+  return orders;
+}
+
+function chooseHarassLane(primaryLane) {
+  if (game.actIndex < 1) return -1;
+  if (Math.random() > (game.actIndex === 1 ? 0.22 : 0.36)) return -1;
+  const options = [];
+  for (let lane = 0; lane < lanes.length; lane++) {
+    if (lane === primaryLane) continue;
+    const enemyPressure = lanePressure("enemy", lane);
+    const playerPressure = lanePressure("player", lane);
+    if (enemyPressure + 24 >= playerPressure) {
+      options.push({ lane, score: playerPressure - enemyPressure + Math.random() * 10 });
+    }
+  }
+  if (!options.length) return -1;
+  options.sort((a, b) => b.score - a.score);
+  return options[0].lane;
+}
+
+function resolveAiWantedRole(role, laneIndex) {
+  const dominant = dominantPlayerRole(laneIndex);
+  if (role === "counter") {
+    if (dominant === "cavalry") return "anti-cavalry";
+    if (dominant === "tank") return "ranged";
+    if (dominant === "ranged") return "cavalry";
+    if (dominant === "siege") return "tank";
+    return "tank";
+  }
+  if (role === "frontline") {
+    return lanePressure("enemy", laneIndex) + 8 < lanePressure("player", laneIndex) ? "tank" : "cavalry";
+  }
+  if (role === "support") {
+    return game.enemy.era >= 2 ? "ranged" : "cavalry";
+  }
+  return role;
+}
+
+function diversifyAiPlan(plan, rosterLength) {
+  const diversified = [];
+  for (const order of plan) {
+    let nextSlot = order.slotIndex;
+    const previous = diversified[diversified.length - 1];
+    const recent = game.aiRecentSlots.slice(-2);
+    const repeatedRecent = recent.length === 2 && recent.every((recentSlot) => recentSlot === order.slotIndex);
+    if ((previous && previous.slotIndex === order.slotIndex) || repeatedRecent) {
+      if (rosterLength > 1) {
+        nextSlot = findAvailableSlot([], diversified.map((item) => item.slotIndex).concat(recent), (order.slotIndex + 1) % rosterLength, rosterLength);
+      }
+    }
+    diversified.push({ ...order, slotIndex: nextSlot });
+  }
+  return diversified;
+}
+
+function chooseRoleIndex(roster, wanted, excluded, fallback) {
+  const direct = roster.findIndex((unit, index) => unit.role === wanted && !excluded.includes(index));
+  if (direct !== -1) return direct;
+  return findAvailableSlot(roster, excluded, fallback);
+}
+
+function findAvailableSlot(roster, excluded, fallback, explicitLength) {
+  const length = explicitLength ?? roster.length;
+  const recent = game.aiRecentSlots.slice(-2);
+  for (let offset = 0; offset < length; offset++) {
+    const index = (fallback + offset) % length;
+    if (excluded.includes(index)) continue;
+    if (recent.includes(index) && length > recent.length) continue;
+    return index;
+  }
+  for (let offset = 0; offset < length; offset++) {
+    const index = (fallback + offset) % length;
+    if (!excluded.includes(index)) return index;
+  }
+  return Math.max(0, Math.min(length - 1, fallback));
+}
+
+function getAiSpawnDelay(spawned, laneIndex, slotIndex) {
+  const director = getAiDirector();
+  if (!spawned) return 0.28;
+  const laneCrowd = countLaneUnits("enemy", laneIndex);
+  const pressureLead = lanePressure("enemy", laneIndex) - lanePressure("player", laneIndex);
+  const unit = eras[game.enemy.era].units[slotIndex];
+  let delay = director.baseSpawn + Math.random() * director.baseSpawnVariance;
+  if (game.runTime < director.openingGrace) delay += director.openingSlowdown;
+  delay += Math.min(director.crowdDelayCap, laneCrowd * director.crowdDelayStep);
+  if (pressureLead > 24) delay += Math.min(director.leadDelayCap, pressureLead * director.leadDelayFactor);
+  if (unit.role === "tank" || unit.role === "siege") delay += director.heavyUnitDelay;
+  if (!game.aiPlan.length) delay += director.endWaveDelay;
+  return delay;
+}
+
+function getAiDirector() {
+  if (game.actIndex === 0) {
+    return {
+      openingGrace: 26,
+      openingSlowdown: 0.28,
+      baseSpawn: 0.86,
+      baseSpawnVariance: 0.24,
+      crowdDelayStep: 0.13,
+      crowdDelayCap: 0.72,
+      crowdPressureLead: 28,
+      leadDelayFactor: 0.0032,
+      leadDelayCap: 0.44,
+      heavyUnitDelay: 0.18,
+      endWaveDelay: 0.46,
+      waveReset: 1.55,
+      waveResetVariance: 0.72,
+      maxLaneCrowd: 5,
+    };
+  }
+  if (game.actIndex === 1) {
+    return {
+      openingGrace: 18,
+      openingSlowdown: 0.18,
+      baseSpawn: 0.72,
+      baseSpawnVariance: 0.22,
+      crowdDelayStep: 0.1,
+      crowdDelayCap: 0.58,
+      crowdPressureLead: 34,
+      leadDelayFactor: 0.0024,
+      leadDelayCap: 0.34,
+      heavyUnitDelay: 0.14,
+      endWaveDelay: 0.36,
+      waveReset: 1.18,
+      waveResetVariance: 0.52,
+      maxLaneCrowd: 6,
+    };
+  }
+  return {
+    openingGrace: 12,
+    openingSlowdown: 0.12,
+    baseSpawn: 0.62,
+    baseSpawnVariance: 0.18,
+    crowdDelayStep: 0.08,
+    crowdDelayCap: 0.42,
+    crowdPressureLead: 42,
+    leadDelayFactor: 0.0016,
+    leadDelayCap: 0.22,
+    heavyUnitDelay: 0.1,
+    endWaveDelay: 0.24,
+    waveReset: 0.9,
+    waveResetVariance: 0.38,
+    maxLaneCrowd: 7,
+  };
 }
 
 function dominantPlayerRole(laneIndex) {
@@ -432,9 +849,13 @@ function updateParticles(dt) {
 
 function resolveBaseEnds() {
   if (game.enemy.hp <= 0) {
-    game.state = "won";
-    game.message = "Enemy base collapsed.";
-    syncOverlay();
+    if (game.actIndex < warActs.length - 1) {
+      advanceAct();
+    } else {
+      game.state = "won";
+      game.message = "Enemy capital collapsed.";
+      syncOverlay();
+    }
   } else if (game.player.hp <= 0) {
     game.state = "lost";
     game.message = "Base ruined.";
@@ -602,17 +1023,22 @@ function drawLaneMarkers() {
 function refreshHud() {
   const playerEra = eras[game.player.era];
   const enemyEra = eras[game.enemy.era];
-  const laneName = ["Top", "Mid", "Bot"][game.selectedLane];
-  summaryEl.textContent = `Gold ${Math.floor(game.player.gold)} | Era ${game.player.era + 1} ${playerEra.name} | ${laneName} lane`;
+  const act = getAct();
+  const laneName = laneLabels[game.selectedLane];
+  summaryEl.textContent = `Act ${game.actIndex + 1}/${warActs.length} ${act.name} | Gold ${Math.floor(game.player.gold)} | Era ${game.player.era + 1} ${playerEra.name} | ${laneName} lane`;
   const pressureDelta = lanePressure("player", game.selectedLane) - lanePressure("enemy", game.selectedLane);
   const pressureText = pressureDelta > 20 ? "pressure yours" : pressureDelta < -20 ? "pressure enemy" : "pressure even";
-  resourcesEl.textContent = `Base ${Math.max(0, Math.ceil(game.player.hp))}/${game.player.maxHp} | Enemy ${Math.max(0, Math.ceil(game.enemy.hp))}/${game.enemy.maxHp} | ${pressureText}`;
-  eraInfoEl.textContent = `${playerEra.name} age live. ${playerEra.note} Enemy age: ${enemyEra.name}.`;
-  helpEl.textContent = "1-3 lane. Q/W/E spawn roster. F tech up. Click panels works too.";
+  const heldLanes = countControlledLanes("player");
+  resourcesEl.textContent = `Base ${Math.max(0, Math.ceil(game.player.hp))}/${game.player.maxHp} | Enemy ${Math.max(0, Math.ceil(game.enemy.hp))}/${game.enemy.maxHp} | ${pressureText} | Tribute ${game.player.tributeBank}`;
+  eraInfoEl.textContent = `${playerEra.name} age live. ${playerEra.note} Enemy age: ${enemyEra.name}. Held lanes: ${heldLanes}/3. Current act: ${act.name}.`;
+  helpEl.textContent = "Keys 1-3 pick a lane. Q/W/E spawn the current roster. F techs up. Hold lanes for tribute, then convert each fallen wall into a bigger war chest.";
+  if (game.state === "playing") {
+    helpEl.textContent = "Keys 1-3 pick a lane. Q/W/E spawn the current roster. F techs up. Enemy pushes now arrive in short waves, so use the reset window to tech or reinforce a weak lane.";
+  }
   const nextEra = eras[game.player.era + 1];
   techTextEl.textContent = nextEra
-    ? `Next era: ${nextEra.name}. Cost ${nextEra.cost}. ${nextEra.note}`
-    : "Max era reached. Spend gold on final push and lane counters.";
+    ? `Objective: ${game.objective} Next era: ${nextEra.name}. Cost ${nextEra.cost}. ${nextEra.note}`
+    : `Objective: ${game.objective} Max era reached. Spend gold on final push and lane counters.`;
 }
 
 function refreshButtons() {
@@ -625,7 +1051,7 @@ function buildLaneButtons() {
   laneControlsEl.innerHTML = "";
   for (let i = 0; i < lanes.length; i++) {
     const button = document.createElement("button");
-    button.textContent = `${i + 1} ${["Top", "Mid", "Bot"][i]}`;
+    button.textContent = `${i + 1} ${laneLabels[i]}`;
     if (i === game.selectedLane) button.classList.add("active");
     button.addEventListener("click", () => {
       game.selectedLane = i;
@@ -675,10 +1101,10 @@ function syncOverlay() {
   overlayTitleEl.textContent = game.state === "won" ? "Victory" : game.state === "lost" ? "Defeat" : "Age Evolution";
   overlayTextEl.textContent =
     game.state === "won"
-      ? "Enemy fortress shattered. Restart for new tech race."
+      ? "Enemy capital shattered after a three-act siege. Restart for another tech race."
       : game.state === "lost"
         ? "Your base fell first. Rebuild, counter lanes earlier, tech cleaner."
-        : "Lane-war siege. Spawn counters, time era jumps, crack enemy fortress before theirs outscales yours.";
+        : "Three-act lane-war siege. Spawn counters, hold lanes for tribute, cash in each broken wall, then time era jumps before the enemy snowballs.";
   overlayCtaEl.textContent = game.state === "ready" ? "Press Space, Enter, or tap to begin." : "Press Space, Enter, or tap to restart.";
 }
 

@@ -1,0 +1,124 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(circle at top, rgba(125, 211, 252, 0.12), transparent 28%),
+    linear-gradient(180deg, #030712 0%, #0f172a 55%, #111827 100%);
+  color: #f8fafc;
+  font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+}
+
+.shell {
+  width: min(100vw, 1060px);
+  padding: 20px;
+}
+
+.hud {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.hud__chip {
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(8, 15, 28, 0.74);
+  border-radius: 14px;
+}
+
+.hud__chip span {
+  display: block;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #94a3b8;
+}
+
+.hud__chip strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 1.1rem;
+}
+
+.stage {
+  position: relative;
+  border-radius: 24px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.5);
+}
+
+canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  background: #020617;
+}
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  gap: 14px;
+  padding: 28px;
+  text-align: center;
+  background: rgba(2, 6, 23, 0.84);
+}
+
+.overlay[hidden] {
+  display: none;
+}
+
+.overlay__eyebrow {
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  color: #7dd3fc;
+}
+
+.overlay h1,
+.overlay p {
+  margin: 0 auto;
+  max-width: 42rem;
+}
+
+.overlay button {
+  justify-self: center;
+  padding: 12px 24px;
+  border: 0;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #38bdf8, #818cf8);
+  color: #04111f;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.overlay__hint {
+  color: #cbd5e1;
+  font-size: 0.95rem;
+}
+
+@media (max-width: 900px) {
+  .shell {
+    padding: 12px;
+  }
+
+  .hud {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 620px) {
+  .hud {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

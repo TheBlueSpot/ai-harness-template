@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Tony Hawk Combo Lines</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+    <script defer src="./game.js"></script>
+  </head>
+  <body>
+    <main class="shell" id="app" data-state="boot">
+      <section class="stage">
+        <canvas id="gameCanvas" aria-label="Tony Hawk Combo Lines"></canvas>
+      </section>
+
+      <section class="hud" id="hud" aria-live="polite">
+        <div class="hud__row">
+          <span class="hud__label">Score</span>
+          <strong id="hudScore">0</strong>
+        </div>
+        <div class="hud__row">
+          <span class="hud__label">Speed</span>
+          <strong id="hudSpeed">0</strong>
+        </div>
+        <div class="hud__row">
+          <span class="hud__label">Combo</span>
+          <strong id="hudCombo">x1</strong>
+        </div>
+        <div class="hud__row">
+          <span class="hud__label">Line</span>
+          <strong id="hudLine">Idle</strong>
+        </div>
+        <div class="hud__row">
+          <span class="hud__label">Goal</span>
+          <strong id="hudGoal">Warmup flow</strong>
+        </div>
+      </section>
+
+      <section class="overlay" id="overlay" aria-live="polite">
+        <p class="overlay__eyebrow" id="overlayEyebrow">Skate line</p>
+        <h1 class="overlay__title" id="overlayTitle">Combo Lines</h1>
+        <p class="overlay__copy" id="overlayCopy">Press Start or Enter to drop in.</p>
+        <div class="overlay__actions">
+          <button class="button button--primary" id="overlayStart">Start</button>
+          <button class="button button--ghost" id="overlayRestart">Restart</button>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

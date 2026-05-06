@@ -9,7 +9,8 @@ import type {
   PiAgentExecutionController,
   PiAgentExecutionEvent,
   PiAgentPromptRequest,
-  PiAgentPromptResult
+  PiAgentPromptResult,
+  PiApiKeyProvider
 } from "../pi-agent-adapter";
 
 const CODEX_TOOL_GUIDANCE = [
@@ -93,6 +94,12 @@ type CodexSdkAgentMessageEvent = {
   text: string;
 };
 
+type CodexSdkUsage = {
+  input_tokens?: number;
+  cached_input_tokens?: number;
+  output_tokens?: number;
+};
+
 function createDefaultClient(options: CodexOptions) {
   return new Codex(options);
 }
@@ -100,9 +107,9 @@ function createDefaultClient(options: CodexOptions) {
 export class CodexSdkAdapter implements PiAgentAdapter {
   constructor(private readonly options: CodexSdkAdapterOptions) {}
 
-  setApiKey(_provider: "openai" | "google", _apiKey: string | undefined) {}
+  setApiKey(_provider: PiApiKeyProvider, _apiKey: string | undefined) {}
 
-  hasApiKey(_provider: "openai" | "google") {
+  hasApiKey(_provider: PiApiKeyProvider) {
     return false;
   }
 
@@ -178,12 +185,14 @@ class CodexSdkExecutionController implements PiAgentExecutionController {
     });
     const messageState = new Map<string, string>();
     let finalText = "";
+    const usage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 };
 
     try {
       const signal = mergeAbortSignals(request.abortSignal, abortController.signal);
       const streamed = await runThreadWithCodexControls(this.thread, request, imageInput.input, signal);
       for await (const rawEvent of streamed.events) {
         request.onExecutionEvent?.({ type: "activity" });
+        accumulateCodexUsage(rawEvent, usage);
         finalText = handleCodexSdkEvent(rawEvent, request, messageState, finalText);
       }
 
@@ -192,7 +201,8 @@ class CodexSdkExecutionController implements PiAgentExecutionController {
       }
 
       return {
-        text: finalText.trim()
+        text: finalText.trim(),
+        contextUsage: createCodexContextUsage(request.modelId, usage)
       };
     } finally {
       this.running = false;
@@ -325,6 +335,59 @@ function handleCodexSdkEvent(
   }
 
   return priorFinalText;
+}
+
+function accumulateCodexUsage(rawEvent: unknown, usage: { inputTokens: number; cachedInputTokens: number; outputTokens: number }) {
+  const event = rawEvent as { type?: string; usage?: CodexSdkUsage };
+  if (event.type !== "turn.completed" || !event.usage) {
+    return;
+  }
+
+  usage.inputTokens += event.usage.input_tokens ?? 0;
+  usage.cachedInputTokens += event.usage.cached_input_tokens ?? 0;
+  usage.outputTokens += event.usage.output_tokens ?? 0;
+}
+
+function createCodexContextUsage(
+  modelId: string,
+  usage: { inputTokens: number; cachedInputTokens: number; outputTokens: number }
+): NonNullable<PiAgentPromptResult["contextUsage"]> | undefined {
+  const totalProcessedTokens = usage.inputTokens + usage.outputTokens;
+  if (totalProcessedTokens <= 0 && usage.cachedInputTokens <= 0) {
+    return undefined;
+  }
+
+  const contextWindow = getCodexContextWindow(modelId);
+  const sessionStats = {
+    sessionFile: undefined,
+    sessionId: "codex-sdk",
+    userMessages: 1,
+    assistantMessages: 1,
+    toolCalls: 0,
+    toolResults: 0,
+    totalMessages: 2,
+    contextUsage: {
+      tokens: usage.inputTokens,
+      contextWindow,
+      percent: contextWindow > 0 ? Math.min(100, (usage.inputTokens / contextWindow) * 100) : 0
+    },
+    tokens: {
+      input: usage.inputTokens,
+      output: usage.outputTokens,
+      cacheRead: usage.cachedInputTokens,
+      cacheWrite: 0,
+      total: totalProcessedTokens
+    },
+    cost: 0
+  };
+
+  return {
+    tokens: usage.inputTokens,
+    contextWindow,
+    usagePercent: contextWindow > 0 ? Math.min(100, (usage.inputTokens / contextWindow) * 100) : undefined,
+    sessionStats,
+    cachedInputTokens: usage.cachedInputTokens
+  };
 }
 
 async function runThreadWithCodexControls(
@@ -528,6 +591,14 @@ function toCliModelName(modelId: string | undefined) {
   return modelId.includes("/") ? modelId.split("/", 2)[1] : modelId;
 }
 
+function getCodexContextWindow(modelId: string) {
+  const normalized = toCliModelName(modelId) ?? "";
+  if (normalized.includes("mini")) {
+    return 400000;
+  }
+  return 400000;
+}
+
 export const testExports = {
   buildThreadOptions,
   materializeSdkInput,
@@ -537,5 +608,7 @@ export const testExports = {
   buildCodexCommandPrelude,
   buildCodexPromptWithPrelude,
   isCodexControlConfigurationError,
+  accumulateCodexUsage,
+  createCodexContextUsage,
   CODEX_TOOL_GUIDANCE
 };

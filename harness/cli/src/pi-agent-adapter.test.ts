@@ -7,17 +7,27 @@ import {
 } from "./pi-agent-adapter";
 
 describe("pi sdk adapter", () => {
-  test("rejects non-openai model ids before invoking pi", async () => {
+  test("rejects unsupported provider model ids before invoking pi", async () => {
     const adapter = new PiSdkAgentAdapter();
 
     await expect(
       adapter.runPrompt({
         kind: "planner",
         cwd: process.cwd(),
-        modelId: "anthropic/claude-opus-4-5",
+        modelId: "mistral/codestral",
         prompt: "test"
       })
     ).rejects.toThrow("Unsupported provider");
+  });
+
+  test("stores Anthropic runtime API key", () => {
+    const adapter = new PiSdkAgentAdapter();
+
+    expect(adapter.hasApiKey("anthropic")).toBe(false);
+    adapter.setApiKey("anthropic", " sk-ant-test ");
+    expect(adapter.hasApiKey("anthropic")).toBe(true);
+    adapter.setApiKey("anthropic", undefined);
+    expect(adapter.hasApiKey("anthropic")).toBe(false);
   });
 
   test("clamps threshold and derives compaction settings from context window", () => {

@@ -114,6 +114,14 @@
     const HEIGHT = canvas.height;
     const TILE = 48;
     const GRAVITY = 2200;
+    const COYOTE_TIME = 0.16;
+    const JUMP_BUFFER_TIME = 0.18;
+    const SKELETON_ATTACK_TIME = 0.56;
+    const SKELETON_ATTACK_SWIPE_START = 0.32;
+    const SKELETON_ATTACK_SWIPE_END = 0.22;
+    const SKELETON_ATTACK_COOLDOWN = 1.16;
+    const SKELETON_ATTACK_RECOVERY_TIME = 0.18;
+    const SKELETON_ATTACK_READY_TIME = 0.16;
     const keys = new Set();
 
     const mapRows = [
@@ -127,7 +135,7 @@
       "......................M.",
       "....T..........T........",
       "..####....R....####.....",
-      "..............S.........",
+      "..................S.....",
       ".........#####..........",
       "...R....................",
       "......S.........T.......",
@@ -164,7 +172,7 @@
       mortar: "#48354e",
       torch: "#ffbf78",
       torchGlow: "rgba(255, 191, 120, 0.34)",
-      shadow: "rgba(4, 2, 8, 0.78)",
+      shadow: "rgba(4, 2, 8, 0.66)",
       player: "#ddd8ff",
       playerCoat: "#7a2f42",
       whip: "#ffda8f",
@@ -206,7 +214,9 @@
       };
       const phase = clamp(player.attackTimer / player.attackDuration, 0, 1);
       const swing = Math.sin(phase * Math.PI);
-      const angle = -0.85 + player.facing * 0.95 + Math.sin(phase * Math.PI * 1.2) * 0.4 * player.facing;
+      const followThrough = Math.sin(phase * Math.PI * 1.2) * 0.26;
+      const forwardTilt = 0.28 + followThrough;
+      const angle = player.facing > 0 ? -forwardTilt : Math.PI + forwardTilt;
       const distance = 40 + swing * 92;
       const target = {
         x: origin.x + Math.cos(angle) * distance,
@@ -256,7 +266,13 @@
           const px = x * TILE;
           const py = y * TILE;
           if (cell === "#") {
-            state.solids.push({ x: px, y: py, w: TILE, h: TILE });
+            state.solids.push({
+              x: px,
+              y: py,
+              w: TILE,
+              h: TILE,
+              topSurface: tileAt(x, y - 1) !== "#"
+            });
           } else if (cell === "P") {
             state.player = {
               x: px + 8,
@@ -266,9 +282,11 @@
               vx: 0,
               vy: 0,
               speed: 280,
-              jumpVelocity: -760,
+              jumpVelocity: -810,
               facing: 1,
               onGround: false,
+              coyoteTimer: 0,
+              jumpBufferTimer: 0,
               health: 5,
               maxHealth: 5,
               invuln: 0,
@@ -311,7 +329,8 @@
               attackTimer: 0,
               cooldown: Math.random() * 0.4,
               stun: 0,
-              homeX: px + 8
+              homeX: px + 8,
+              chaseRange: x === 18 && y === 10 ? 152 : 220
             });
           } else if (cell === "M") {
             state.mirror = {
@@ -400,13 +419,26 @@
         player.facing = move;
       }
 
-      if (keys.has("Space") && player.onGround && !keys.has("_jumpLock")) {
-        player.vy = player.jumpVelocity;
-        player.onGround = false;
+      if (player.onGround) {
+        player.coyoteTimer = COYOTE_TIME;
+      } else {
+        player.coyoteTimer = Math.max(0, player.coyoteTimer - dt);
+      }
+
+      if (keys.has("Space") && !keys.has("_jumpLock")) {
+        player.jumpBufferTimer = JUMP_BUFFER_TIME;
         keys.add("_jumpLock");
       }
       if (!keys.has("Space")) {
         keys.delete("_jumpLock");
+      }
+      player.jumpBufferTimer = Math.max(0, player.jumpBufferTimer - dt);
+
+      if (player.jumpBufferTimer > 0 && (player.onGround || player.coyoteTimer > 0)) {
+        player.vy = player.jumpVelocity;
+        player.onGround = false;
+        player.coyoteTimer = 0;
+        player.jumpBufferTimer = 0;
       }
 
       if (keys.has("KeyJ") && player.attackCooldown <= 0 && player.attackTimer <= 0) {
@@ -465,6 +497,55 @@
       }
     }
 
+    function getThreatLaneOwner(skeleton, player = state.player) {
+      if (!player) {
+        return null;
+      }
+
+      const recoveryThreshold = SKELETON_ATTACK_COOLDOWN - (SKELETON_ATTACK_TIME + SKELETON_ATTACK_RECOVERY_TIME);
+      const playerCenterX = player.x + player.w * 0.5;
+      const skeletonCenterX = skeleton.x + skeleton.w * 0.5;
+      const skeletonDistance = Math.abs(skeletonCenterX - playerCenterX);
+      const skeletonSide = Math.sign(skeletonCenterX - playerCenterX);
+      let owner = null;
+
+      for (const other of state.skeletons) {
+        if (other === skeleton || other.health <= 0) {
+          continue;
+        }
+
+        const sameBand = Math.abs(skeleton.y - other.y) < 56;
+        const closeLane = Math.abs(skeleton.x - other.x) < 132;
+        if (!sameBand || !closeLane) {
+          continue;
+        }
+
+        if (!(other.attackTimer > 0 || other.cooldown > recoveryThreshold)) {
+          continue;
+        }
+
+        const otherCenterX = other.x + other.w * 0.5;
+        const otherDistance = Math.abs(otherCenterX - playerCenterX);
+        const otherSide = Math.sign(otherCenterX - playerCenterX);
+        if ((skeletonSide !== 0 && otherSide !== 0 && otherSide !== skeletonSide) || otherDistance >= skeletonDistance) {
+          continue;
+        }
+
+        if (!owner || otherDistance < owner.distance) {
+          owner = { skeleton: other, distance: otherDistance };
+        }
+      }
+
+      return owner?.skeleton ?? null;
+    }
+
+    function nearbySkeletonOwnsThreatLane(skeleton) {
+      if (getThreatLaneOwner(skeleton)) {
+        return true;
+      }
+      return false;
+    }
+
     function updateSkeletons() {
       const player = state.player;
       for (let i = state.skeletons.length - 1; i >= 0; i -= 1) {
@@ -482,9 +563,11 @@
         const distance = Math.abs(dx);
         const sameBand = Math.abs(player.y - skeleton.y) < 90;
         const closeToHome = Math.abs(skeleton.x - skeleton.homeX) < 180;
+        const playerCenterX = player.x + player.w * 0.5;
+        const skeletonCenterX = skeleton.x + skeleton.w * 0.5;
 
         if (skeleton.think <= 0) {
-          if (distance < 220 && sameBand) {
+          if (distance < skeleton.chaseRange && sameBand) {
             skeleton.state = "chase";
           } else if (!closeToHome) {
             skeleton.state = "return";
@@ -502,6 +585,19 @@
             desired = Math.sign(skeleton.homeX - skeleton.x) * 90;
           } else {
             desired = Math.sin(state.time * 1.4 + skeleton.homeX * 0.01) > 0 ? 65 : -65;
+          }
+
+          const laneOwner = skeleton.state === "chase" ? getThreatLaneOwner(skeleton, player) : null;
+          if (laneOwner) {
+            const ownerCenterX = laneOwner.x + laneOwner.w * 0.5;
+            const laneGap = skeletonCenterX - ownerCenterX;
+            const holdDirection = Math.sign(laneGap || (skeletonCenterX - playerCenterX) || skeleton.facing || 1);
+            const followBuffer = 84;
+            if (Math.abs(laneGap) < followBuffer) {
+              desired = holdDirection * 86;
+            } else if (Math.abs(laneGap) < followBuffer + 34) {
+              desired = 0;
+            }
           }
 
           const lookAhead = skeleton.x + skeleton.w * 0.5 + Math.sign(desired || skeleton.facing) * 28;
@@ -524,9 +620,9 @@
             }
           }
 
-          if (distance < 64 && sameBand && skeleton.cooldown <= 0) {
-            skeleton.attackTimer = 0.28;
-            skeleton.cooldown = 1;
+          if (distance < 64 && sameBand && skeleton.cooldown <= 0 && !nearbySkeletonOwnsThreatLane(skeleton)) {
+            skeleton.attackTimer = SKELETON_ATTACK_TIME;
+            skeleton.cooldown = SKELETON_ATTACK_COOLDOWN;
           }
 
           if (skeleton.attackTimer > 0) {
@@ -540,7 +636,7 @@
         }
 
         skeleton.attackTimer = Math.max(0, skeleton.attackTimer - dt);
-        if (skeleton.attackTimer > 0.12 && skeleton.attackTimer < 0.18) {
+        if (skeleton.attackTimer > SKELETON_ATTACK_SWIPE_END && skeleton.attackTimer < SKELETON_ATTACK_SWIPE_START) {
           const swipe = {
             x: skeleton.facing > 0 ? skeleton.x + skeleton.w - 4 : skeleton.x - 22,
             y: skeleton.y + 14,
@@ -557,10 +653,43 @@
       }
     }
 
+    function getRouteRevealCameraTarget() {
+      const objective = getCurrentObjective();
+      const waypoint = objective ? getVerticalRouteWaypoint(objective) : null;
+      const strip = waypoint ? getWaypointLandingStrip(waypoint) : null;
+      const player = state.player;
+      if (!player || !waypoint || !strip || waypoint.direction >= 0) {
+        return null;
+      }
+
+      const playerCenterX = player.x + player.w * 0.5;
+      const stripCenterX = strip.left + strip.width * 0.5;
+      const revealMargin = 168;
+
+      if (stripCenterX < playerCenterX - 10) {
+        return stripCenterX - revealMargin;
+      }
+      if (stripCenterX > playerCenterX + 10) {
+        return stripCenterX - (WIDTH - revealMargin);
+      }
+      return null;
+    }
+
     function updateCamera() {
       const player = state.player;
-      const target = clamp(player.x - WIDTH * 0.35, 0, mapRows[0].length * TILE - WIDTH);
-      state.cameraX = lerp(state.cameraX, target, 0.08);
+      const maxCameraX = mapRows[0].length * TILE - WIDTH;
+      const baseTarget = player.x - WIDTH * 0.35;
+      const routeRevealTarget = getRouteRevealCameraTarget();
+      const target = clamp(
+        routeRevealTarget === null
+          ? baseTarget
+          : (routeRevealTarget < baseTarget
+            ? Math.min(baseTarget, routeRevealTarget)
+            : Math.max(baseTarget, routeRevealTarget)),
+        0,
+        maxCameraX
+      );
+      state.cameraX = lerp(state.cameraX, target, routeRevealTarget === null ? 0.08 : 0.11);
     }
 
     function updateScene() {
@@ -696,14 +825,31 @@
       const y = mirror.y;
       ctx.fillStyle = "#6a546d";
       ctx.fillRect(x - 10, y + 10, mirror.w + 20, mirror.h + 18);
-      ctx.fillStyle = mirror.active ? "rgba(165, 223, 255, 0.8)" : "rgba(95, 110, 132, 0.46)";
+      const glass = ctx.createLinearGradient(x, y, x, y + mirror.h);
+      if (mirror.active) {
+        glass.addColorStop(0, "rgba(196, 236, 255, 0.86)");
+        glass.addColorStop(1, "rgba(118, 178, 235, 0.7)");
+      } else {
+        glass.addColorStop(0, "rgba(142, 156, 186, 0.72)");
+        glass.addColorStop(1, "rgba(74, 84, 104, 0.56)");
+      }
+      ctx.fillStyle = glass;
       ctx.fillRect(x, y, mirror.w, mirror.h);
-      ctx.strokeStyle = mirror.active ? "#e8fbff" : "#7d7387";
+      ctx.strokeStyle = mirror.active ? "#e8fbff" : "#b0abc0";
       ctx.lineWidth = 4;
       ctx.strokeRect(x, y, mirror.w, mirror.h);
-      if (mirror.active) {
-        ctx.fillStyle = "rgba(255,255,255,0.26)";
-        ctx.fillRect(x + 6, y + 6, 10, mirror.h - 12);
+      if (!mirror.active) {
+        ctx.strokeStyle = "rgba(213, 226, 255, 0.34)";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x + 4, y + 4, mirror.w - 8, mirror.h - 8);
+      }
+      ctx.fillStyle = mirror.active ? "rgba(255,255,255,0.26)" : "rgba(214, 228, 255, 0.18)";
+      ctx.fillRect(x + 6, y + 6, 12, mirror.h - 12);
+      if (!mirror.active) {
+        ctx.fillStyle = "rgba(192, 215, 255, 0.1)";
+        ctx.fillRect(x + mirror.w - 18, y + 12, 7, mirror.h - 24);
+        ctx.fillStyle = "rgba(232, 239, 255, 0.12)";
+        ctx.fillRect(x + 8, y + 8, mirror.w - 16, 4);
       }
     }
 
@@ -762,15 +908,145 @@
         ctx.fillRect(x + 10, y + 9, 2, 2);
         ctx.fillRect(x + 16, y + 9, 2, 2);
         if (skeleton.attackTimer > 0) {
-          ctx.strokeStyle = palette.danger;
-          ctx.lineWidth = 4;
-          ctx.beginPath();
-          const startX = x + (skeleton.facing > 0 ? 22 : 6);
-          ctx.moveTo(startX, y + 28);
-          ctx.lineTo(startX + skeleton.facing * 22, y + 18);
-          ctx.stroke();
+          drawSkeletonThreatTelegraph(skeleton, cameraX, 0.9);
         }
       }
+    }
+
+    function drawSkeletonThreatTelegraph(skeleton, cameraX, alphaMultiplier = 1) {
+      const x = skeleton.x - cameraX;
+      const y = skeleton.y;
+      const attackProgress = 1 - clamp(skeleton.attackTimer / SKELETON_ATTACK_TIME, 0, 1);
+      const windupPulse = 0.4 + Math.sin(state.time * 22 + skeleton.x * 0.03) * 0.18;
+      const windupRead = 1 - clamp(attackProgress * 1.2, 0, 1);
+      const sweepReach = 26 + attackProgress * 10;
+      const sweepStartX = x + (skeleton.facing > 0 ? 22 : 6);
+      const sweepEndX = sweepStartX + skeleton.facing * sweepReach;
+      const floorLeft = skeleton.facing > 0 ? x + skeleton.w - 4 : x - sweepReach - 4;
+      const floorWidth = sweepReach + 8;
+      const markerX = x + skeleton.w * 0.5 + skeleton.facing * (7 + attackProgress * 4);
+      const markerY = y - 14 - windupRead * 8;
+      const markerWidth = 24;
+      const markerHeight = 16;
+      const railTopX = markerX + skeleton.facing * (markerWidth * 0.5 - 2);
+      const railTopY = markerY + 2;
+      const railBottomX = skeleton.facing > 0 ? floorLeft + floorWidth - 9 : floorLeft + 9;
+      const railBottomY = y + skeleton.h + 1;
+
+      ctx.save();
+      ctx.globalAlpha *= alphaMultiplier;
+      ctx.fillStyle = `rgba(239, 127, 147, ${0.12 + attackProgress * 0.16 + windupPulse * 0.08})`;
+      ctx.fillRect(floorLeft, y + skeleton.h - 2, floorWidth, 8);
+      ctx.strokeStyle = `rgba(255, 214, 222, ${0.34 + attackProgress * 0.24})`;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(floorLeft, y + skeleton.h - 2, floorWidth, 8);
+
+      ctx.strokeStyle = `rgba(239, 127, 147, ${0.58 + attackProgress * 0.22})`;
+      ctx.lineWidth = 5;
+      ctx.beginPath();
+      ctx.moveTo(sweepStartX, y + 28);
+      ctx.lineTo(sweepEndX, y + 18);
+      ctx.stroke();
+
+      const railGlow = ctx.createLinearGradient(railTopX, railTopY, railBottomX, railBottomY);
+      railGlow.addColorStop(0, `rgba(255, 226, 234, ${0.34 + windupRead * 0.14})`);
+      railGlow.addColorStop(1, `rgba(239, 127, 147, ${0.18 + attackProgress * 0.12})`);
+      ctx.fillStyle = railGlow;
+      ctx.strokeStyle = railGlow;
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(railTopX, railTopY);
+      ctx.lineTo(railBottomX, railBottomY);
+      ctx.stroke();
+      ctx.strokeStyle = `rgba(255, 232, 238, ${0.18 + windupRead * 0.2})`;
+      ctx.lineWidth = 1.25;
+      ctx.beginPath();
+      ctx.moveTo(railTopX, railTopY);
+      ctx.lineTo(railBottomX, railBottomY);
+      ctx.stroke();
+
+      ctx.fillStyle = `rgba(255, 226, 234, ${0.5 + attackProgress * 0.16})`;
+      ctx.beginPath();
+      ctx.arc(sweepEndX, y + 18, 4 + attackProgress * 2.5, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = `rgba(10, 8, 14, ${0.44 + windupRead * 0.2})`;
+      ctx.fillRect(markerX - markerWidth * 0.5, markerY - markerHeight * 0.5, markerWidth, markerHeight);
+      ctx.strokeStyle = `rgba(255, 220, 228, ${0.28 + windupRead * 0.34})`;
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(markerX - markerWidth * 0.5, markerY - markerHeight * 0.5, markerWidth, markerHeight);
+      ctx.fillStyle = `rgba(239, 127, 147, ${0.58 + windupRead * 0.24})`;
+      ctx.fillRect(markerX - 1.5, markerY - 5, 3, 8);
+      ctx.fillRect(markerX - 1.5, markerY + 5, 3, 3);
+      ctx.beginPath();
+      ctx.moveTo(markerX + skeleton.facing * (markerWidth * 0.5 + 6), markerY);
+      ctx.lineTo(markerX + skeleton.facing * (markerWidth * 0.5 - 1), markerY - 5);
+      ctx.lineTo(markerX + skeleton.facing * (markerWidth * 0.5 - 1), markerY + 5);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.fillStyle = `rgba(239, 127, 147, ${0.42 + windupPulse * 0.24})`;
+      ctx.beginPath();
+      const arrowX = skeleton.facing > 0 ? floorLeft + floorWidth - 6 : floorLeft + 6;
+      ctx.moveTo(arrowX, y + skeleton.h + 10);
+      ctx.lineTo(arrowX - skeleton.facing * 14, y + skeleton.h + 4);
+      ctx.lineTo(arrowX - skeleton.facing * 14, y + skeleton.h + 16);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+
+    function lightStrengthAt(worldX, worldY) {
+      let strength = 0.16;
+
+      for (const torch of state.torches) {
+        const dx = worldX - torch.x;
+        const dy = worldY - torch.y;
+        const distance = Math.hypot(dx, dy);
+        const radius = 148;
+        if (distance < radius) {
+          strength += (1 - distance / radius) * 0.48;
+        }
+      }
+
+      const player = state.player;
+      const playerDx = worldX - (player.x + player.w * 0.5);
+      const playerDy = worldY - (player.y + 22);
+      const playerDistance = Math.hypot(playerDx, playerDy);
+      if (playerDistance < 112) {
+        strength += (1 - playerDistance / 112) * 0.38;
+      }
+
+      if (state.mirror.active) {
+        const mirrorX = state.mirror.x + state.mirror.w * 0.5;
+        const mirrorY = state.mirror.y + state.mirror.h * 0.5;
+        const mirrorDistance = Math.hypot(worldX - mirrorX, worldY - mirrorY);
+        if (mirrorDistance < 150) {
+          strength += (1 - mirrorDistance / 150) * 0.28;
+        }
+      }
+
+      return clamp(strength, 0, 0.84);
+    }
+
+    function readabilityStrengthAt(worldX, worldY, floor = 0.34) {
+      return Math.max(floor, lightStrengthAt(worldX, worldY));
+    }
+
+    function footholdReadabilityFloor(solid) {
+      const exposedTop = !solidAtPixel(solid.x + solid.w * 0.5, solid.y - 8);
+      if (!exposedTop) {
+        return 0.56;
+      }
+
+      let sideExposure = 0;
+      if (!solidAtPixel(solid.x - 8, solid.y + solid.h * 0.5)) {
+        sideExposure += 1;
+      }
+      if (!solidAtPixel(solid.x + solid.w + 8, solid.y + solid.h * 0.5)) {
+        sideExposure += 1;
+      }
+      return 0.64 + sideExposure * 0.04;
     }
 
     function drawLighting(cameraX) {
@@ -781,10 +1057,10 @@
 
       for (const torch of state.torches) {
         const x = torch.x - cameraX;
-        const radius = 90 + Math.sin(state.time * 7 + torch.flicker) * 8;
+        const radius = 104 + Math.sin(state.time * 7 + torch.flicker) * 9;
         const glow = ctx.createRadialGradient(x, torch.y, 8, x, torch.y, radius);
-        glow.addColorStop(0, "rgba(0,0,0,0.94)");
-        glow.addColorStop(0.36, "rgba(0,0,0,0.65)");
+        glow.addColorStop(0, "rgba(0,0,0,0.9)");
+        glow.addColorStop(0.34, "rgba(0,0,0,0.58)");
         glow.addColorStop(1, "rgba(0,0,0,0)");
         ctx.fillStyle = glow;
         ctx.beginPath();
@@ -818,8 +1094,1358 @@
       ctx.restore();
     }
 
+    function drawReadabilityPass(cameraX) {
+      ctx.save();
+      ctx.globalCompositeOperation = "source-over";
+
+      for (const relic of state.relics) {
+        if (relic.collected) {
+          continue;
+        }
+
+        const light = readabilityStrengthAt(relic.x + relic.w * 0.5, relic.y + relic.h * 0.5, 0.8);
+        const x = relic.x - cameraX + relic.w * 0.5;
+        const y = relic.y + relic.h * 0.5;
+        const halo = ctx.createRadialGradient(x, y, 4, x, y, 34);
+        halo.addColorStop(0, `rgba(152, 240, 212, ${0.18 + light * 0.12})`);
+        halo.addColorStop(0.72, `rgba(92, 158, 138, ${0.08 + light * 0.08})`);
+        halo.addColorStop(1, "rgba(92, 158, 138, 0)");
+        ctx.fillStyle = halo;
+        ctx.beginPath();
+        ctx.ellipse(x, y, 26, 26, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      for (const skeleton of state.skeletons) {
+        const light = readabilityStrengthAt(skeleton.x + skeleton.w * 0.5, skeleton.y + skeleton.h * 0.42, 0.68);
+        const x = skeleton.x - cameraX + skeleton.w * 0.5;
+        const y = skeleton.y + skeleton.h * 0.44;
+        const halo = ctx.createRadialGradient(x, y, 6, x, y, 36);
+        halo.addColorStop(0, `rgba(118, 92, 150, ${0.12 + light * 0.08})`);
+        halo.addColorStop(0.68, `rgba(66, 44, 84, ${0.09 + light * 0.04})`);
+        halo.addColorStop(1, "rgba(66, 44, 84, 0)");
+        ctx.fillStyle = halo;
+        ctx.beginPath();
+        ctx.ellipse(x, y, 28, 38, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      const mirror = state.mirror;
+      const mirrorLight = readabilityStrengthAt(
+        mirror.x + mirror.w * 0.5,
+        mirror.y + mirror.h * 0.5,
+        mirror.active ? 0.4 : 0.36
+      );
+      const mirrorX = mirror.x - cameraX;
+      const mirrorY = mirror.y;
+      const mirrorGlow = ctx.createRadialGradient(
+        mirrorX + mirror.w * 0.5,
+        mirrorY + mirror.h * 0.5,
+        12,
+        mirrorX + mirror.w * 0.5,
+        mirrorY + mirror.h * 0.5,
+        mirror.active ? 84 : 76
+      );
+      mirrorGlow.addColorStop(0, `rgba(144, 198, 255, ${mirror.active ? 0.14 : 0.12})`);
+      mirrorGlow.addColorStop(0.72, `rgba(80, 112, 156, ${mirror.active ? 0.06 + mirrorLight * 0.04 : 0.1 + mirrorLight * 0.05})`);
+      mirrorGlow.addColorStop(1, "rgba(80, 112, 156, 0)");
+      ctx.fillStyle = mirrorGlow;
+      ctx.beginPath();
+      ctx.ellipse(mirrorX + mirror.w * 0.5, mirrorY + mirror.h * 0.5, 42, 66, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.globalCompositeOperation = "screen";
+
+      for (const relic of state.relics) {
+        if (relic.collected) {
+          continue;
+        }
+
+        const light = readabilityStrengthAt(relic.x + relic.w * 0.5, relic.y + relic.h * 0.5, 0.84);
+        const x = relic.x - cameraX;
+        const y = relic.y;
+        ctx.fillStyle = `rgba(214, 255, 240, ${0.22 + light * 0.2})`;
+        ctx.beginPath();
+        ctx.moveTo(x + 14, y - 2);
+        ctx.lineTo(x + 30, y + 14);
+        ctx.lineTo(x + 14, y + 30);
+        ctx.lineTo(x - 2, y + 14);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = `rgba(230, 255, 246, ${0.4 + light * 0.28})`;
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.moveTo(x + 14, y - 3);
+        ctx.lineTo(x + 31, y + 14);
+        ctx.lineTo(x + 14, y + 31);
+        ctx.lineTo(x - 3, y + 14);
+        ctx.closePath();
+        ctx.stroke();
+      }
+
+      for (const solid of state.solids) {
+        const floor = footholdReadabilityFloor(solid);
+        const light = readabilityStrengthAt(solid.x + solid.w * 0.5, solid.y + solid.h * 0.28, floor);
+        const x = solid.x - cameraX;
+        const y = solid.y;
+        if (floor > 0.56) {
+          const bodyLift = ctx.createLinearGradient(0, y + 2, 0, y + solid.h - 2);
+          bodyLift.addColorStop(0, `rgba(255, 232, 196, ${0.16 + light * 0.18})`);
+          bodyLift.addColorStop(0.42, `rgba(166, 125, 188, ${0.08 + light * 0.08})`);
+          bodyLift.addColorStop(1, "rgba(166, 125, 188, 0)");
+          ctx.fillStyle = bodyLift;
+          ctx.fillRect(x + 2, y + 2, solid.w - 4, solid.h - 4);
+        }
+        ctx.fillStyle = `rgba(255, 224, 182, ${0.16 + light * 0.2})`;
+        ctx.fillRect(x + 3, y + 3, solid.w - 6, solid.h * 0.22);
+        ctx.fillStyle = `rgba(134, 101, 153, ${0.1 + light * 0.12})`;
+        ctx.fillRect(x + 4, y + solid.h * 0.24, solid.w - 8, solid.h * 0.18);
+        ctx.strokeStyle = `rgba(255, 234, 198, ${0.36 + light * 0.34})`;
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.moveTo(x + 4, y + 3);
+        ctx.lineTo(x + solid.w - 4, y + 3);
+        ctx.stroke();
+        ctx.strokeStyle = `rgba(255, 234, 198, ${0.12 + light * 0.16})`;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x + 5, y + 5, solid.w - 10, solid.h - 10);
+      }
+
+      for (const skeleton of state.skeletons) {
+        const light = readabilityStrengthAt(skeleton.x + skeleton.w * 0.5, skeleton.y + skeleton.h * 0.42, 0.76);
+        const x = skeleton.x - cameraX;
+        const y = skeleton.y;
+        ctx.fillStyle = `rgba(235, 240, 248, ${0.22 + light * 0.22})`;
+        ctx.fillRect(x + 7, y + 3, 14, 16);
+        ctx.fillRect(x + 9, y + 18, 10, 18);
+        ctx.fillRect(x + 3, y + 19, 6, 22);
+        ctx.fillRect(x + 19, y + 19, 6, 22);
+        ctx.strokeStyle = `rgba(241, 248, 255, ${0.44 + light * 0.36})`;
+        ctx.lineWidth = 3;
+        ctx.strokeRect(x + 7, y + 3, 14, 16);
+        ctx.strokeRect(x + 9, y + 18, 10, 18);
+        ctx.strokeStyle = `rgba(255, 245, 224, ${0.18 + light * 0.18})`;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x + 3, y + 2, 22, 44);
+        ctx.strokeStyle = `rgba(239, 127, 147, ${0.22 + light * 0.16})`;
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(x + 4, y + 2, 22, 44);
+        if (skeleton.attackTimer > 0) {
+          drawSkeletonThreatTelegraph(skeleton, cameraX, 0.78 + light * 0.18);
+        }
+      }
+
+      const player = state.player;
+      const playerLight = readabilityStrengthAt(player.x + player.w * 0.5, player.y + player.h * 0.42, 0.74);
+      const playerX = player.x - cameraX;
+      const playerY = player.y;
+      const playerHalo = ctx.createRadialGradient(
+        playerX + player.w * 0.5,
+        playerY + player.h * 0.46,
+        8,
+        playerX + player.w * 0.5,
+        playerY + player.h * 0.46,
+        40
+      );
+      playerHalo.addColorStop(0, `rgba(122, 104, 164, ${0.16 + playerLight * 0.08})`);
+      playerHalo.addColorStop(0.72, `rgba(60, 43, 84, ${0.08 + playerLight * 0.04})`);
+      playerHalo.addColorStop(1, "rgba(60, 43, 84, 0)");
+      ctx.fillStyle = playerHalo;
+      ctx.beginPath();
+      ctx.ellipse(playerX + player.w * 0.5, playerY + player.h * 0.46, 30, 40, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = `rgba(226, 220, 255, ${0.18 + playerLight * 0.18})`;
+      ctx.fillRect(playerX + 7, playerY + 4, 16, 18);
+      ctx.fillStyle = `rgba(168, 90, 115, ${0.16 + playerLight * 0.16})`;
+      ctx.fillRect(playerX + 5, playerY + 18, 18, 30);
+      ctx.fillStyle = `rgba(226, 214, 198, ${0.16 + playerLight * 0.14})`;
+      ctx.fillRect(playerX + 2, playerY + 22, 8, 11);
+      ctx.fillRect(playerX + 18, playerY + 22, 8, 11);
+      ctx.fillRect(playerX + 8, playerY + 46, 6, 10);
+      ctx.fillRect(playerX + 16, playerY + 46, 6, 10);
+      ctx.strokeStyle = `rgba(246, 238, 255, ${0.34 + playerLight * 0.3})`;
+      ctx.lineWidth = 2.5;
+      ctx.strokeRect(playerX + 7, playerY + 3, 16, 18);
+      ctx.strokeRect(playerX + 5, playerY + 18, 18, 30);
+      ctx.strokeStyle = `rgba(255, 226, 190, ${0.18 + playerLight * 0.18})`;
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(playerX + 2, playerY + 3, 24, 53);
+
+      if (player.chain.length > 1) {
+        ctx.strokeStyle = `rgba(255, 223, 158, ${0.26 + playerLight * 0.24})`;
+        ctx.lineWidth = 4;
+        ctx.lineJoin = "round";
+        ctx.beginPath();
+        ctx.moveTo(player.chain[0].x - cameraX, player.chain[0].y);
+        for (let i = 1; i < player.chain.length; i += 1) {
+          ctx.lineTo(player.chain[i].x - cameraX, player.chain[i].y);
+        }
+        ctx.stroke();
+      }
+
+      ctx.strokeStyle = mirror.active
+        ? `rgba(232, 251, 255, ${0.32 + mirrorLight * 0.3})`
+        : `rgba(208, 230, 255, ${0.24 + mirrorLight * 0.18})`;
+      ctx.lineWidth = mirror.active ? 3 : 2;
+      ctx.strokeRect(mirrorX - 3, mirrorY - 3, mirror.w + 6, mirror.h + 6);
+      if (!mirror.active) {
+        ctx.fillStyle = `rgba(177, 206, 255, ${0.1 + mirrorLight * 0.06})`;
+        ctx.fillRect(mirrorX + 4, mirrorY + 10, mirror.w - 8, mirror.h - 20);
+      }
+
+      ctx.restore();
+    }
+
+    function getMirrorDestination() {
+      if (!state.mirror) {
+        return null;
+      }
+
+      return {
+        kind: "mirror",
+        label: state.mirror.active ? "Exit mirror" : "Sealed mirror",
+        detail: state.mirror.active ? "Escape route open" : "Return after 3 sigils",
+        x: state.mirror.x + state.mirror.w * 0.5,
+        y: state.mirror.y + state.mirror.h * 0.5,
+        accent: state.mirror.active ? "165, 223, 255" : "188, 199, 232",
+        active: state.mirror.active
+      };
+    }
+
+    function getCurrentObjective() {
+      const player = state.player;
+      if (!player) {
+        return null;
+      }
+
+      const remainingRelics = state.relics.filter((relic) => !relic.collected);
+      if (remainingRelics.length > 0) {
+        let target = remainingRelics[0];
+        let bestDistance = Infinity;
+        for (const relic of remainingRelics) {
+          const dx = relic.x - player.x;
+          const dy = relic.y - player.y;
+          const distance = Math.hypot(dx, dy);
+          if (distance < bestDistance) {
+            bestDistance = distance;
+            target = relic;
+          }
+        }
+
+        return {
+          kind: "sigil",
+          label: "Next sigil",
+          detail: `${remainingRelics.length} remain in the keep`,
+          x: target.x + target.w * 0.5,
+          y: target.y + target.h * 0.5,
+          accent: "152, 240, 212"
+        };
+      }
+
+      return getMirrorDestination();
+    }
+
+    function getObjectiveHudDetail(objective) {
+      const player = state.player;
+      if (!player || !objective) {
+        return "";
+      }
+
+      const playerCenterX = player.x + player.w * 0.5;
+      const playerCenterY = player.y + player.h * 0.5;
+      const deltaX = objective.x - playerCenterX;
+      const deltaY = objective.y - playerCenterY;
+      const horizontalSpans = Math.max(1, Math.round(Math.abs(deltaX) / TILE));
+      const direction = deltaX < 0 ? "left" : "right";
+      const verticalTiers = Math.round(Math.abs(deltaY) / TILE);
+
+      if (verticalTiers >= 1) {
+        return `${verticalTiers} ${verticalTiers === 1 ? "tier" : "tiers"} ${deltaY < 0 ? "up" : "down"}, ${horizontalSpans} ${horizontalSpans === 1 ? "span" : "spans"} ${direction}`;
+      }
+
+      return `${horizontalSpans} ${horizontalSpans === 1 ? "span" : "spans"} ${direction} on this tier`;
+    }
+
+    function getImminentSkeletonThreat() {
+      const player = state.player;
+      if (!player) {
+        return null;
+      }
+
+      const playerCenterX = player.x + player.w * 0.5;
+      const playerCenterY = player.y + player.h * 0.5;
+      let bestThreat = null;
+
+      for (const skeleton of state.skeletons) {
+        if (skeleton.health <= 0 || skeleton.attackTimer <= 0) {
+          continue;
+        }
+
+        const skeletonCenterX = skeleton.x + skeleton.w * 0.5;
+        const skeletonCenterY = skeleton.y + skeleton.h * 0.5;
+        const sameBand = Math.abs(playerCenterY - skeletonCenterY) < 108;
+        const horizontalGap = skeletonCenterX - playerCenterX;
+        const threatDistance = Math.abs(horizontalGap);
+        const playerAhead = skeleton.facing > 0
+          ? playerCenterX >= skeletonCenterX - 6
+          : playerCenterX <= skeletonCenterX + 6;
+
+        if (!sameBand || !playerAhead || threatDistance > 124) {
+          continue;
+        }
+
+        const timeUntilSwipe = Math.max(0, skeleton.attackTimer - SKELETON_ATTACK_SWIPE_START);
+        const swipeLive = skeleton.attackTimer <= SKELETON_ATTACK_SWIPE_START && skeleton.attackTimer > SKELETON_ATTACK_SWIPE_END;
+        const phaseRank = swipeLive ? 0 : timeUntilSwipe < SKELETON_ATTACK_READY_TIME ? 1 : 2;
+        const score = phaseRank * 1000 + timeUntilSwipe + threatDistance * 0.003;
+        if (!bestThreat || score < bestThreat.score) {
+          const windupDuration = Math.max(0.001, SKELETON_ATTACK_TIME - SKELETON_ATTACK_SWIPE_START);
+          bestThreat = {
+            side: horizontalGap < 0 ? "left" : "right",
+            score,
+            swipeLive,
+            timeUntilSwipe,
+            windupProgress: clamp(1 - timeUntilSwipe / windupDuration, 0, 1)
+          };
+        }
+      }
+
+      return bestThreat;
+    }
+
+    function getWaypointCueCopy(direction) {
+      if (direction < 0) {
+        return {
+          title: "UPPER LEDGE",
+          detail: "First reachable foothold"
+        };
+      }
+
+      return {
+        title: "LOWER LANDING",
+        detail: "First safe drop"
+      };
+    }
+
+    function drawMarkerPlaque(screenX, screenY, title, detail, accentStrong, accentSoft, compact = false, options = {}) {
+      const width = compact ? 156 : 172;
+      const height = detail ? 46 : (compact ? 32 : 30);
+      const offsetX = options.offsetX ?? 0;
+      const plaqueX = clamp(screenX - width * 0.5 + offsetX, 24, WIDTH - width - 24);
+      const plaqueY = Math.max(30, screenY - (detail ? 84 : (compact ? 72 : 68)));
+
+      ctx.fillStyle = "rgba(9, 6, 14, 0.82)";
+      ctx.fillRect(plaqueX, plaqueY, width, height);
+      ctx.strokeStyle = accentSoft;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(plaqueX, plaqueY, width, height);
+
+      if (options.anchorX !== undefined && options.anchorY !== undefined) {
+        const plaqueCenterX = plaqueX + width * 0.5;
+        const connectLeft = options.anchorX <= plaqueCenterX;
+        const startX = connectLeft ? plaqueX : plaqueX + width;
+        const startY = clamp(options.anchorY, plaqueY + 10, plaqueY + height - 10);
+        const elbowX = startX + (connectLeft ? -16 : 16);
+
+        ctx.strokeStyle = accentSoft;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(startX, startY);
+        ctx.lineTo(elbowX, startY);
+        ctx.lineTo(options.anchorX, options.anchorY);
+        ctx.stroke();
+      }
+
+      ctx.textAlign = "center";
+      ctx.fillStyle = accentStrong;
+      ctx.font = "15px Georgia";
+      ctx.fillText(title, plaqueX + width * 0.5, plaqueY + 19);
+      if (detail) {
+        ctx.fillStyle = "rgba(246, 236, 216, 0.84)";
+        ctx.font = "13px Georgia";
+        ctx.fillText(detail, plaqueX + width * 0.5, plaqueY + 36);
+      }
+      ctx.textAlign = "left";
+    }
+
+    function drawAnchoredObjectiveChip(targetX, targetY, title, accentStrong, accentSoft) {
+      const placeRight = targetX < WIDTH * 0.5;
+      const width = 120;
+      const height = 34;
+      const offsetX = placeRight ? 58 : -58;
+      const preferAbove = targetY > 132;
+      const chipX = clamp(
+        targetX + offsetX - (placeRight ? 0 : width),
+        18,
+        WIDTH - width - 18
+      );
+      const chipY = preferAbove
+        ? Math.max(24, targetY - 70)
+        : Math.min(HEIGHT - height - 24, targetY + 34);
+      const anchorX = placeRight ? chipX : chipX + width;
+      const anchorY = chipY + height * 0.5;
+      const elbowX = placeRight ? anchorX - 18 : anchorX + 18;
+      const tipY = preferAbove ? targetY - 18 : targetY + 18;
+
+      ctx.strokeStyle = accentSoft;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(anchorX, anchorY);
+      ctx.lineTo(elbowX, anchorY);
+      ctx.lineTo(targetX, tipY);
+      ctx.stroke();
+
+      ctx.fillStyle = "rgba(9, 6, 14, 0.86)";
+      ctx.fillRect(chipX, chipY, width, height);
+      ctx.strokeStyle = accentStrong;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(chipX, chipY, width, height);
+
+      ctx.textAlign = "center";
+      ctx.fillStyle = accentStrong;
+      ctx.font = "14px Georgia";
+      ctx.fillText(title, chipX + width * 0.5, chipY + 22);
+      ctx.textAlign = "left";
+    }
+
+    function drawEdgeLipPreview(previewX, previewY, previewWidth, lipSide, lipLabel, verticalDirection, accentStrong, accentSoft) {
+      const previewHeight = 60;
+      const lipBadgeText = lipSide === "left"
+        ? "LEFT EDGE"
+        : lipSide === "right"
+          ? "RIGHT EDGE"
+          : lipLabel;
+      const badgeHeight = lipBadgeText ? 20 : 0;
+      const laneX = previewX + 16;
+      const laneY = previewY + 20 + badgeHeight;
+      const laneWidth = previewWidth - 32;
+      const laneHeight = 10;
+      const segmentWidth = laneWidth * 0.36;
+      const wallWidth = 24;
+      const wallHeight = 16;
+      let segmentX = laneX + (laneWidth - segmentWidth) * 0.5;
+      let wallX = segmentX;
+
+      if (lipSide === "left") {
+        segmentX = laneX;
+        wallX = segmentX;
+      } else if (lipSide === "right") {
+        segmentX = laneX + laneWidth - segmentWidth;
+        wallX = segmentX + segmentWidth - wallWidth;
+      } else {
+        wallX = segmentX + (segmentWidth - wallWidth) * 0.5;
+      }
+
+      ctx.fillStyle = "rgba(246, 236, 216, 0.07)";
+      ctx.fillRect(previewX, previewY, previewWidth, previewHeight);
+      ctx.strokeStyle = accentSoft;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(previewX, previewY, previewWidth, previewHeight);
+
+      if (lipBadgeText) {
+        const badgeWidth = lipSide === "center" ? Math.min(previewWidth - 28, 118) : 92;
+        const badgeX = lipSide === "right"
+          ? previewX + previewWidth - badgeWidth - 12
+          : lipSide === "left"
+            ? previewX + 12
+            : previewX + (previewWidth - badgeWidth) * 0.5;
+        ctx.fillStyle = "rgba(10, 8, 14, 0.88)";
+        ctx.fillRect(badgeX, previewY + 8, badgeWidth, badgeHeight);
+        ctx.strokeStyle = accentStrong;
+        ctx.strokeRect(badgeX, previewY + 8, badgeWidth, badgeHeight);
+        ctx.fillStyle = accentStrong;
+        ctx.font = "12px Georgia";
+        ctx.textAlign = "center";
+        ctx.fillText(lipBadgeText, badgeX + badgeWidth * 0.5, previewY + 22);
+
+        if (lipSide === "left" || lipSide === "right") {
+          const pointerBaseX = lipSide === "left" ? badgeX + badgeWidth : badgeX;
+          const pointerTipX = lipSide === "left" ? pointerBaseX + 12 : pointerBaseX - 12;
+          const pointerY = previewY + 18;
+          ctx.beginPath();
+          ctx.moveTo(pointerBaseX, pointerY - 5);
+          ctx.lineTo(pointerBaseX, pointerY + 5);
+          ctx.lineTo(pointerTipX, pointerY);
+          ctx.closePath();
+          ctx.fill();
+        }
+      }
+
+      ctx.fillStyle = "rgba(246, 236, 216, 0.08)";
+      ctx.fillRect(laneX - 4, laneY - 10, laneWidth + 8, 30);
+      ctx.strokeStyle = accentSoft;
+      ctx.strokeRect(laneX - 4, laneY - 10, laneWidth + 8, 30);
+      ctx.fillStyle = "rgba(246, 236, 216, 0.16)";
+      ctx.fillRect(laneX, laneY, laneWidth, laneHeight);
+      ctx.fillStyle = accentStrong;
+      ctx.fillRect(segmentX, laneY, segmentWidth, laneHeight);
+      ctx.fillStyle = "rgba(246, 236, 216, 0.12)";
+      ctx.fillRect(wallX, laneY + laneHeight, wallWidth, wallHeight);
+      ctx.strokeStyle = accentStrong;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(wallX, laneY + laneHeight, wallWidth, wallHeight);
+
+      ctx.beginPath();
+      ctx.moveTo(wallX, laneY + laneHeight);
+      ctx.lineTo(wallX, laneY);
+      ctx.lineTo(wallX + wallWidth, laneY);
+      ctx.lineTo(wallX + wallWidth, laneY + laneHeight);
+      ctx.stroke();
+
+      const pointerX = segmentX + segmentWidth * 0.5;
+      const pointerBaseY = verticalDirection < 0 ? laneY - 6 : laneY + laneHeight + wallHeight + 2;
+      const pointerTipY = verticalDirection < 0 ? pointerBaseY - 12 : pointerBaseY + 12;
+      ctx.beginPath();
+      ctx.moveTo(pointerX, pointerTipY);
+      ctx.lineTo(pointerX - 10, pointerBaseY);
+      ctx.lineTo(pointerX + 10, pointerBaseY);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    function getWaypointLipInfo(waypoint, strip) {
+      if (!waypoint?.solid || !strip) {
+        return { lipSide: null, lipLabel: "" };
+      }
+
+      const usableLeft = waypoint.solid.x + 4;
+      const usableRight = waypoint.solid.x + waypoint.solid.w - 4;
+      const stripRight = strip.left + strip.width;
+      const leftGap = strip.left - usableLeft;
+      const rightGap = usableRight - stripRight;
+      if (leftGap + 1.5 < rightGap) {
+        return { lipSide: "left", lipLabel: "USE LEFT LIP" };
+      }
+      if (rightGap + 1.5 < leftGap) {
+        return { lipSide: "right", lipLabel: "USE RIGHT LIP" };
+      }
+      return { lipSide: "center", lipLabel: "CENTER LEDGE" };
+    }
+
+    function drawWaypointLipMarker(landingLeft, landingWidth, waypointY, lipInfo, accentStrong, accentSoft) {
+      if (!lipInfo || lipInfo.lipSide === null || lipInfo.lipSide === "center") {
+        return;
+      }
+
+      const markerWidth = 18;
+      const markerLeft = lipInfo.lipSide === "left"
+        ? landingLeft + 4
+        : landingLeft + landingWidth - markerWidth - 4;
+      const markerTop = waypointY - 18;
+
+      ctx.fillStyle = accentSoft;
+      ctx.fillRect(markerLeft - 3, markerTop - 2, markerWidth + 6, 18);
+      ctx.fillStyle = "rgba(246, 236, 216, 0.18)";
+      ctx.fillRect(markerLeft, markerTop, markerWidth, 9);
+      ctx.fillStyle = accentStrong;
+      ctx.fillRect(markerLeft, markerTop + 5, markerWidth, 4);
+      ctx.fillRect(markerLeft + (lipInfo.lipSide === "left" ? 2 : markerWidth - 6), markerTop + 4, 4, 12);
+    }
+
+    function drawWaypointEdgePreview(previewX, previewY, previewWidth, lipInfo, accentStrong, accentSoft) {
+      const previewHeight = 46;
+      const lipBadgeText = lipInfo?.lipSide === "left"
+        ? "LEFT EDGE"
+        : lipInfo?.lipSide === "right"
+          ? "RIGHT EDGE"
+          : lipInfo?.lipLabel;
+      const badgeHeight = lipBadgeText ? 18 : 0;
+      const laneX = previewX + 12;
+      const laneY = previewY + 12 + badgeHeight;
+      const laneWidth = previewWidth - 24;
+      const laneHeight = 8;
+      const segmentWidth = laneWidth * 0.34;
+      const markerWidth = 16;
+      let segmentX = laneX + (laneWidth - segmentWidth) * 0.5;
+      let markerX = segmentX + (segmentWidth - markerWidth) * 0.5;
+
+      if (lipInfo?.lipSide === "left") {
+        segmentX = laneX;
+        markerX = segmentX + 2;
+      } else if (lipInfo?.lipSide === "right") {
+        segmentX = laneX + laneWidth - segmentWidth;
+        markerX = segmentX + segmentWidth - markerWidth - 2;
+      }
+
+      ctx.fillStyle = "rgba(246, 236, 216, 0.06)";
+      ctx.fillRect(previewX, previewY, previewWidth, previewHeight);
+      ctx.strokeStyle = accentSoft;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(previewX, previewY, previewWidth, previewHeight);
+
+      if (lipBadgeText) {
+        const badgeWidth = lipInfo?.lipSide === "center" ? Math.min(previewWidth - 24, 104) : 86;
+        const badgeX = lipInfo?.lipSide === "right"
+          ? previewX + previewWidth - badgeWidth - 10
+          : lipInfo?.lipSide === "left"
+            ? previewX + 10
+            : previewX + (previewWidth - badgeWidth) * 0.5;
+        const badgeY = previewY + 6;
+        ctx.fillStyle = "rgba(10, 8, 14, 0.88)";
+        ctx.fillRect(badgeX, badgeY, badgeWidth, badgeHeight);
+        ctx.strokeStyle = accentStrong;
+        ctx.strokeRect(badgeX, badgeY, badgeWidth, badgeHeight);
+        ctx.fillStyle = accentStrong;
+        ctx.font = "11px Georgia";
+        ctx.textAlign = "center";
+        ctx.fillText(lipBadgeText, badgeX + badgeWidth * 0.5, badgeY + 13);
+
+        if (lipInfo?.lipSide === "left" || lipInfo?.lipSide === "right") {
+          const pointerBaseX = lipInfo.lipSide === "left" ? badgeX + badgeWidth : badgeX;
+          const pointerTipX = lipInfo.lipSide === "left" ? pointerBaseX + 10 : pointerBaseX - 10;
+          const pointerY = badgeY + badgeHeight * 0.5;
+          ctx.beginPath();
+          ctx.moveTo(pointerBaseX, pointerY - 4);
+          ctx.lineTo(pointerBaseX, pointerY + 4);
+          ctx.lineTo(pointerTipX, pointerY);
+          ctx.closePath();
+          ctx.fill();
+        }
+      }
+
+      ctx.fillStyle = "rgba(246, 236, 216, 0.12)";
+      ctx.fillRect(laneX, laneY, laneWidth, laneHeight);
+      ctx.fillStyle = accentStrong;
+      ctx.fillRect(segmentX, laneY, segmentWidth, laneHeight);
+
+      if (lipInfo?.lipSide && lipInfo.lipSide !== "center") {
+        ctx.fillStyle = "rgba(246, 236, 216, 0.16)";
+        ctx.fillRect(markerX, laneY - 4, markerWidth, 16);
+        ctx.fillStyle = accentStrong;
+        ctx.fillRect(markerX + (lipInfo.lipSide === "left" ? 2 : markerWidth - 6), laneY - 2, 4, 12);
+      }
+
+      if (lipInfo?.lipLabel) {
+        ctx.fillStyle = lipInfo.lipSide === "left" || lipInfo.lipSide === "right"
+          ? "rgba(246, 236, 216, 0.76)"
+          : accentStrong;
+        ctx.font = "10px Georgia";
+        ctx.textAlign = "center";
+        ctx.fillText(lipInfo.lipLabel, previewX + previewWidth * 0.5, previewY + 41);
+        ctx.textAlign = "left";
+      }
+    }
+
+    function drawWaypointEdgeCue(screenX, cueY, waypoint, lipInfo, accentStrong, accentSoft) {
+      const cueCopy = getWaypointCueCopy(waypoint.direction);
+      const verticalOffscreen =
+        (waypoint.direction < 0 && cueY < 320)
+        || (waypoint.direction > 0 && cueY > HEIGHT - 96);
+      const panelWidth = 164;
+      const panelHeight = 112;
+      let panelX = 24;
+      let panelY = 24;
+      let arrowPoints = [];
+
+      if (verticalOffscreen) {
+        panelX = clamp(screenX - panelWidth * 0.5, 24, WIDTH - panelWidth - 24);
+        panelY = waypoint.direction < 0 ? 24 : HEIGHT - panelHeight - 24;
+        const arrowX = clamp(screenX, panelX + 24, panelX + panelWidth - 24);
+        if (waypoint.direction < 0) {
+          arrowPoints = [
+            [arrowX, panelY - 18],
+            [arrowX - 14, panelY + 2],
+            [arrowX + 14, panelY + 2]
+          ];
+        } else {
+          const baseY = panelY + panelHeight - 2;
+          arrowPoints = [
+            [arrowX, panelY + panelHeight + 18],
+            [arrowX - 14, baseY],
+            [arrowX + 14, baseY]
+          ];
+        }
+      } else {
+        const offscreenLeft = screenX < 0;
+        const edgeX = offscreenLeft ? 108 : WIDTH - 108;
+        panelX = offscreenLeft ? 24 : WIDTH - panelWidth - 24;
+        panelY = clamp(cueY - 54, 78, HEIGHT - panelHeight - 90);
+        const arrowTipX = offscreenLeft ? edgeX - 42 : edgeX + 42;
+        const arrowBaseX = offscreenLeft ? edgeX - 10 : edgeX + 10;
+        const arrowY = panelY + 56;
+        arrowPoints = [
+          [arrowTipX, arrowY],
+          [arrowBaseX, arrowY - 18],
+          [arrowBaseX, arrowY + 18]
+        ];
+      }
+
+      ctx.save();
+      ctx.fillStyle = "rgba(9, 6, 14, 0.86)";
+      ctx.fillRect(panelX, panelY, panelWidth, panelHeight);
+      ctx.strokeStyle = accentStrong;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(panelX, panelY, panelWidth, panelHeight);
+
+      ctx.fillStyle = accentStrong;
+      ctx.beginPath();
+      ctx.moveTo(arrowPoints[0][0], arrowPoints[0][1]);
+      ctx.lineTo(arrowPoints[1][0], arrowPoints[1][1]);
+      ctx.lineTo(arrowPoints[2][0], arrowPoints[2][1]);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.textAlign = "center";
+      ctx.fillStyle = accentStrong;
+      ctx.font = "15px Georgia";
+      ctx.fillText(cueCopy.title, panelX + panelWidth * 0.5, panelY + 22);
+      ctx.fillStyle = "rgba(246, 236, 216, 0.82)";
+      ctx.font = "12px Georgia";
+      ctx.fillText(cueCopy.detail, panelX + panelWidth * 0.5, panelY + 38);
+      ctx.textAlign = "left";
+
+      drawWaypointEdgePreview(panelX + 14, panelY + 50, panelWidth - 28, lipInfo, accentStrong, accentSoft);
+      ctx.restore();
+    }
+
+    function drawMirrorDestinationCue(cameraX) {
+      const mirror = getMirrorDestination();
+      const objective = getCurrentObjective();
+      if (!mirror || !objective || objective.kind === "mirror") {
+        return;
+      }
+
+      const screenX = mirror.x - cameraX;
+      if (screenX < -72 || screenX > WIDTH + 72) {
+        return;
+      }
+
+      const pulse = 0.5 + Math.sin(state.time * 2.6 + 1.4) * 0.5;
+      const accentStrong = `rgba(${mirror.accent}, ${0.54 + pulse * 0.1})`;
+      const accentSoft = `rgba(${mirror.accent}, ${0.16 + pulse * 0.06})`;
+      const markerY = mirror.y - 16;
+
+      ctx.save();
+      ctx.strokeStyle = accentStrong;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.ellipse(screenX, markerY, 28, 10, 0, 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.fillStyle = accentStrong;
+      ctx.fillRect(screenX - 2, markerY - 18, 4, 12);
+      ctx.fillRect(screenX - 14, markerY - 8, 28, 4);
+
+      drawAnchoredObjectiveChip(screenX, markerY, "SEALED EXIT", accentStrong, accentSoft);
+      ctx.restore();
+    }
+
+    function getObjectiveEdgeCopy(objective) {
+      const player = state.player;
+      if (!player || !objective) {
+        return null;
+      }
+
+      const playerCenterX = player.x + player.w * 0.5;
+      const playerCenterY = player.y + player.h * 0.5;
+      const deltaX = objective.x - playerCenterX;
+      const deltaY = objective.y - playerCenterY;
+      const directionLabel = deltaX < 0 ? "GO LEFT" : "GO RIGHT";
+      const distance = Math.max(1, Math.round(Math.abs(deltaX) / TILE));
+      const distanceLabel = `${distance} ${distance === 1 ? "span" : "spans"} away`;
+      const verticalDistance = Math.round(Math.abs(deltaY) / TILE);
+      const waypoint = getVerticalRouteWaypoint(objective);
+      const strip = waypoint ? getWaypointLandingStrip(waypoint) : null;
+      let routeLabel = "HOLD LEVEL";
+      let routeDetail = "Same floor band";
+      let verticalDirection = 0;
+      let lipSide = null;
+      let lipLabel = "";
+
+      if (verticalDistance >= 1) {
+        verticalDirection = deltaY < 0 ? -1 : 1;
+        routeLabel = verticalDirection < 0 ? "CLIMB UP" : "DROP DOWN";
+        routeDetail = `${verticalDistance} ${verticalDistance === 1 ? "tier" : "tiers"} ${verticalDirection < 0 ? "up" : "down"}`;
+        if (waypoint?.solid && strip) {
+          const lipInfo = getWaypointLipInfo(waypoint, strip);
+          lipSide = lipInfo.lipSide;
+          lipLabel = lipInfo.lipLabel;
+        }
+      }
+
+      const targetLabel = objective.kind === "sigil"
+        ? "Next sigil"
+        : (objective.active ? "Exit mirror" : "Sealed mirror");
+      const detail = objective.kind === "sigil"
+        ? distanceLabel
+        : `${objective.active ? "Escape now" : "Need 3 sigils"} - ${distanceLabel}`;
+
+      return {
+        directionLabel,
+        routeDetail,
+        routeLabel,
+        targetLabel,
+        detail,
+        verticalDirection,
+        lipSide,
+        lipLabel
+      };
+    }
+
+    function getPlayerSupportSurfaceY(player) {
+      const feetY = player.y + player.h;
+      const left = player.x + 4;
+      const right = player.x + player.w - 4;
+      let supportY = null;
+
+      for (const solid of state.solids) {
+        if (!solid.topSurface) {
+          continue;
+        }
+
+        if (right <= solid.x + 4 || left >= solid.x + solid.w - 4) {
+          continue;
+        }
+
+        const verticalGap = solid.y - feetY;
+        if (verticalGap < -16 || verticalGap > 10) {
+          continue;
+        }
+
+        if (supportY === null || solid.y < supportY) {
+          supportY = solid.y;
+        }
+      }
+
+      return supportY;
+    }
+
+    function getVerticalRouteWaypoint(objective) {
+      const player = state.player;
+      if (!player || !objective) {
+        return null;
+      }
+
+      const playerCenterX = player.x + player.w * 0.5;
+      const playerCenterY = player.y + player.h * 0.5;
+      const playerFeetY = player.y + player.h;
+      const verticalDelta = objective.y - playerCenterY;
+      if (Math.abs(verticalDelta) < TILE * 1.25) {
+        return null;
+      }
+
+      const movingUp = verticalDelta < 0;
+      const jumpReach = Math.round((Math.abs(player.jumpVelocity) * Math.abs(player.jumpVelocity)) / (2 * GRAVITY)) + 28;
+      const horizontalWindow = TILE * 4.5;
+      const objectiveDirection = Math.sign(objective.x - playerCenterX);
+      const supportSurfaceY = getPlayerSupportSurfaceY(player);
+      let best = null;
+      let bestScore = Infinity;
+
+      for (const solid of state.solids) {
+        if (!solid.topSurface) {
+          continue;
+        }
+
+        const landingX = solid.x + solid.w * 0.5;
+        const landingY = solid.y;
+        const horizontalFromPlayer = Math.abs(landingX - playerCenterX);
+        if (horizontalFromPlayer > horizontalWindow) {
+          continue;
+        }
+
+        if (movingUp) {
+          const climbHeight = playerFeetY - landingY;
+          if (climbHeight < 28 || climbHeight > jumpReach) {
+            continue;
+          }
+          if (supportSurfaceY !== null && landingY >= supportSurfaceY - TILE * 0.75) {
+            continue;
+          }
+        } else {
+          const dropHeight = landingY - playerFeetY;
+          if (dropHeight < 28 || dropHeight > TILE * 4.75) {
+            continue;
+          }
+        }
+
+        const landingDirection = Math.sign(landingX - playerCenterX);
+        const directionPenalty =
+          objectiveDirection !== 0 && landingDirection !== 0 && landingDirection !== objectiveDirection
+            ? TILE * 1.35
+            : 0;
+        const score =
+          Math.abs(objective.y - landingY) * 0.82
+          + Math.abs(objective.x - landingX) * 0.3
+          + horizontalFromPlayer * 0.68
+          + directionPenalty;
+
+        if (score < bestScore) {
+          bestScore = score;
+          best = {
+            x: landingX,
+            y: landingY,
+            direction: movingUp ? -1 : 1,
+            objectiveDirection,
+            solid
+          };
+        }
+      }
+
+      return best;
+    }
+
+    function getWaypointLandingStrip(waypoint) {
+      const player = state.player;
+      if (!player || !waypoint?.solid) {
+        return null;
+      }
+
+      const solid = waypoint.solid;
+      const usableWidth = Math.max(24, solid.w - 12);
+      const stripWidth = Math.min(Math.max(26, usableWidth * 0.6), usableWidth);
+      const inset = 6;
+      const playerCenterX = player.x + player.w * 0.5;
+      const approachDirection = Math.sign(solid.x + solid.w * 0.5 - playerCenterX);
+      let left = solid.x + (solid.w - stripWidth) * 0.5;
+
+      if (waypoint.direction < 0) {
+        if (approachDirection > 0) {
+          left = solid.x + inset;
+        } else if (approachDirection < 0) {
+          left = solid.x + solid.w - stripWidth - inset;
+        }
+      } else if (waypoint.objectiveDirection > 0) {
+        left = solid.x + solid.w - stripWidth - inset;
+      } else if (waypoint.objectiveDirection < 0) {
+        left = solid.x + inset;
+      }
+
+      return {
+        left: clamp(left, solid.x + 4, solid.x + solid.w - stripWidth - 4),
+        width: stripWidth
+      };
+    }
+
+    function drawRouteWaypointCue(cameraX, objective, accentStrong, accentSoft) {
+      const waypoint = getVerticalRouteWaypoint(objective);
+      if (!waypoint) {
+        return;
+      }
+      const cueCopy = getWaypointCueCopy(waypoint.direction);
+
+      const strip = getWaypointLandingStrip(waypoint);
+      if (!strip) {
+        return;
+      }
+
+      const cueX = strip.left + strip.width * 0.5;
+      const screenX = cueX - cameraX;
+      const cueY = waypoint.y - 8;
+      const lipInfo = getWaypointLipInfo(waypoint, strip);
+      if (
+        screenX < -72
+        || screenX > WIDTH + 72
+        || (waypoint.direction < 0 && cueY < 320)
+        || (waypoint.direction > 0 && cueY > HEIGHT - 96)
+      ) {
+        if (
+          screenX > -220
+          && screenX < WIDTH + 220
+          && cueY > -220
+          && cueY < HEIGHT + 220
+        ) {
+          drawWaypointEdgeCue(screenX, cueY, waypoint, lipInfo, accentStrong, accentSoft);
+        }
+        return;
+      }
+
+      const landingLeft = strip.left - cameraX;
+      const landingWidth = strip.width;
+      const landingPulse = 0.5 + Math.sin(state.time * 4.2 + waypoint.x * 0.01) * 0.5;
+
+      ctx.save();
+      ctx.fillStyle = "rgba(8, 6, 12, 0.68)";
+      ctx.fillRect(landingLeft - 4, waypoint.y - 14, landingWidth + 8, 18);
+      ctx.strokeStyle = accentSoft;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(landingLeft - 4, waypoint.y - 14, landingWidth + 8, 18);
+      ctx.fillStyle = `rgba(246, 236, 216, ${0.1 + landingPulse * 0.08})`;
+      ctx.fillRect(landingLeft, waypoint.y - 10, landingWidth, 10);
+      ctx.fillStyle = accentStrong;
+      ctx.fillRect(landingLeft, waypoint.y - 6, landingWidth, 4);
+      drawWaypointLipMarker(landingLeft, landingWidth, waypoint.y, lipInfo, accentStrong, accentSoft);
+
+      ctx.strokeStyle = accentStrong;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(screenX - 28, cueY);
+      ctx.lineTo(screenX + 28, cueY);
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(screenX, cueY + (waypoint.direction < 0 ? 18 : -18));
+      ctx.lineTo(screenX - 10, cueY + (waypoint.direction < 0 ? 4 : -4));
+      ctx.lineTo(screenX + 10, cueY + (waypoint.direction < 0 ? 4 : -4));
+      ctx.closePath();
+      ctx.fillStyle = accentStrong;
+      ctx.fill();
+
+      const laneBias = waypoint.objectiveDirection !== 0
+        ? waypoint.objectiveDirection
+        : (screenX < WIDTH * 0.5 ? 1 : -1);
+      drawMarkerPlaque(
+        screenX,
+        cueY + (waypoint.direction < 0 ? -10 : 28),
+        cueCopy.title,
+        cueCopy.detail,
+        accentStrong,
+        accentSoft,
+        true,
+        {
+          offsetX: laneBias * 108,
+          anchorX: screenX + laneBias * 24,
+          anchorY: cueY + (waypoint.direction < 0 ? -2 : 20)
+        }
+      );
+      ctx.restore();
+    }
+
+    function drawObjectiveBeacon(cameraX) {
+      const objective = getCurrentObjective();
+      if (!objective) {
+        return;
+      }
+
+      const screenX = objective.x - cameraX;
+      const visible = screenX > 56 && screenX < WIDTH - 56;
+      const pulse = 0.5 + Math.sin(state.time * 3.8) * 0.5;
+      const accentStrong = `rgba(${objective.accent}, ${0.84 + pulse * 0.08})`;
+      const accentSoft = `rgba(${objective.accent}, ${0.14 + pulse * 0.08})`;
+
+      ctx.save();
+
+      if (visible) {
+        ctx.strokeStyle = accentStrong;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(screenX, objective.y - 34);
+        ctx.lineTo(screenX - 15, objective.y - 58);
+        ctx.lineTo(screenX + 15, objective.y - 58);
+        ctx.closePath();
+        ctx.stroke();
+
+        ctx.fillStyle = accentStrong;
+        ctx.beginPath();
+        ctx.arc(screenX, objective.y - 12, 8 + pulse * 3, 0, Math.PI * 2);
+        ctx.fill();
+
+        if (objective.kind === "sigil") {
+          ctx.strokeStyle = accentStrong;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(screenX, objective.y - 24);
+          ctx.lineTo(screenX - 12, objective.y - 12);
+          ctx.lineTo(screenX, objective.y);
+          ctx.lineTo(screenX + 12, objective.y - 12);
+          ctx.closePath();
+          ctx.stroke();
+          drawAnchoredObjectiveChip(screenX, objective.y - 12, "NEXT SIGIL", accentStrong, accentSoft);
+        } else {
+          ctx.strokeStyle = accentStrong;
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.ellipse(screenX, objective.y + 8, 34 + pulse * 5, 12 + pulse * 3, 0, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.fillStyle = accentSoft;
+          ctx.fillRect(screenX - 18, objective.y - 10, 36, 32);
+          drawAnchoredObjectiveChip(screenX, objective.y - 8, "MIRROR AWAKE", accentStrong, accentSoft);
+        }
+      } else {
+        const edgeX = screenX < WIDTH * 0.5 ? 96 : WIDTH - 96;
+        const direction = screenX < WIDTH * 0.5 ? -1 : 1;
+        const edgeCopy = getObjectiveEdgeCopy(objective);
+        const panelX = edgeX - 92;
+        const panelY = 244;
+        const panelHeight = 234;
+        const routeBandY = 286;
+        const routeBandHeight = 106;
+        const targetBandY = 410;
+        const targetBandHeight = 42;
+
+        ctx.fillStyle = "rgba(10, 8, 14, 0.84)";
+        ctx.fillRect(panelX, panelY, 184, panelHeight);
+        ctx.strokeStyle = accentStrong;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(panelX, panelY, 184, panelHeight);
+
+        ctx.fillStyle = accentStrong;
+        ctx.beginPath();
+        ctx.moveTo(edgeX + direction * 34, 324);
+        ctx.lineTo(edgeX - direction * 2, 298);
+        ctx.lineTo(edgeX - direction * 2, 350);
+        ctx.closePath();
+        ctx.fill();
+
+        if (edgeCopy && edgeCopy.verticalDirection !== 0) {
+          const routeY = edgeCopy.verticalDirection < 0 ? 276 : 374;
+          const routeTipY = edgeCopy.verticalDirection < 0 ? routeY - 18 : routeY + 18;
+          ctx.beginPath();
+          ctx.moveTo(edgeX - 52, routeTipY);
+          ctx.lineTo(edgeX - 66, routeY);
+          ctx.lineTo(edgeX - 38, routeY);
+          ctx.closePath();
+          ctx.fill();
+
+          ctx.fillRect(edgeX - 54, 298, 4, 56);
+        }
+
+        ctx.font = "14px Georgia";
+        ctx.textAlign = "center";
+        ctx.fillText(edgeCopy ? edgeCopy.directionLabel : "MOVE", edgeX, 280);
+
+        ctx.fillStyle = "rgba(246, 236, 216, 0.08)";
+        ctx.fillRect(panelX + 12, routeBandY, 160, routeBandHeight);
+        ctx.strokeStyle = accentSoft;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(panelX + 12, routeBandY, 160, routeBandHeight);
+        ctx.fillStyle = accentStrong;
+        ctx.font = "16px Georgia";
+        ctx.fillText(edgeCopy ? edgeCopy.routeLabel : "HOLD LEVEL", edgeX, routeBandY + 19);
+        ctx.fillStyle = "rgba(246, 236, 216, 0.88)";
+        ctx.font = "14px Georgia";
+        ctx.fillText(edgeCopy ? edgeCopy.routeDetail : "", edgeX, routeBandY + 39);
+        if (edgeCopy?.verticalDirection) {
+          drawEdgeLipPreview(
+            panelX + 12,
+            routeBandY + 44,
+            160,
+            edgeCopy.lipSide,
+            edgeCopy.lipLabel,
+            edgeCopy.verticalDirection,
+            accentStrong,
+            accentSoft
+          );
+        }
+
+        ctx.fillStyle = "rgba(246, 236, 216, 0.06)";
+        ctx.fillRect(panelX + 12, targetBandY, 160, targetBandHeight);
+        ctx.strokeStyle = accentSoft;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(panelX + 12, targetBandY, 160, targetBandHeight);
+        ctx.fillStyle = accentStrong;
+        ctx.font = "19px Georgia";
+        ctx.fillText(edgeCopy ? edgeCopy.targetLabel : objective.label, edgeX, targetBandY + 26);
+        ctx.fillStyle = "rgba(246, 236, 216, 0.78)";
+        ctx.font = "14px Georgia";
+        ctx.fillText(edgeCopy ? edgeCopy.detail : objective.detail, edgeX, 438);
+        ctx.textAlign = "left";
+      }
+
+      drawRouteWaypointCue(cameraX, objective, accentStrong, accentSoft);
+      drawMirrorDestinationCue(cameraX);
+      ctx.restore();
+    }
+
+    function drawThreatFocusCue(cameraX) {
+      const player = state.player;
+      const threat = getImminentSkeletonThreat();
+      if (!player || !threat) {
+        return;
+      }
+
+      const playerCenterX = player.x - cameraX + player.w * 0.5;
+      const playerTopY = player.y;
+      const bannerWidth = 188;
+      const bannerHeight = 78;
+      const threatDirection = threat.side === "left" ? -1 : 1;
+      const bannerX = clamp(
+        playerCenterX + threatDirection * (bannerWidth * 0.5 + 80) - bannerWidth * 0.5,
+        24,
+        WIDTH - bannerWidth - 24
+      );
+      const bannerY = clamp(playerTopY - 60, 72, HEIGHT - 152);
+      const arrowDirection = threat.side === "left" ? -1 : 1;
+      const arrowBaseX = threat.side === "left" ? bannerX + 18 : bannerX + bannerWidth - 18;
+      const connectorStartX = threat.side === "left" ? bannerX + bannerWidth - 6 : bannerX + 6;
+      const connectorEndX = clamp(playerCenterX + arrowDirection * 20, bannerX + 24, bannerX + bannerWidth - 24);
+      const connectorEndY = clamp(playerTopY + 12, bannerY + 8, bannerY + bannerHeight + 34);
+      const pulse = 0.5 + Math.sin(state.time * 9.5) * 0.5;
+      const sideBadgeWidth = 62;
+      const sideBadgeX = threat.side === "left" ? bannerX + 8 : bannerX + bannerWidth - sideBadgeWidth - 8;
+      const sideTextX = sideBadgeX + sideBadgeWidth * 0.5;
+      const actionPanelX = threat.side === "left" ? bannerX + sideBadgeWidth + 8 : bannerX + 8;
+      const actionPanelWidth = bannerWidth - sideBadgeWidth - 16;
+      const actionTextX = actionPanelX + actionPanelWidth * 0.5;
+      const actionText = "DODGE";
+      const sideBadgeLabel = threat.swipeLive ? "DANGER" : "THREAT";
+      const safeDirection = threat.side === "left" ? 1 : -1;
+      const timingBarX = bannerX + 12;
+      const timingDockY = bannerY + bannerHeight - 26;
+      const timingDockHeight = 14;
+      const timingBarY = timingDockY + 5;
+      const timingBarWidth = bannerWidth - 24;
+      const timingBarHeight = 4;
+      const timingFillWidth = timingBarWidth * threat.windupProgress;
+      const contactMarkerX = timingBarX + timingFillWidth;
+      const readyTickX = timingBarX + timingBarWidth * 0.68;
+      const phasePillX = threat.side === "left" ? bannerX + sideBadgeWidth + 12 : bannerX + 12;
+      const phasePillY = bannerY + 35;
+      const phasePillWidth = bannerWidth - sideBadgeWidth - 24;
+      const phasePillHeight = 18;
+      const activePhaseLabel = threat.swipeLive
+        ? "LIVE"
+        : threat.timeUntilSwipe < SKELETON_ATTACK_READY_TIME
+          ? "READY"
+          : "WINDUP";
+      const activePhaseFill = threat.swipeLive
+        ? `rgba(255, 245, 247, ${0.92 + pulse * 0.04})`
+        : threat.timeUntilSwipe < SKELETON_ATTACK_READY_TIME
+          ? `rgba(239, 127, 147, ${0.88 + pulse * 0.08})`
+          : `rgba(255, 208, 218, ${0.66 + pulse * 0.08})`;
+      const activePhaseText = threat.swipeLive ? "rgba(18, 7, 10, 0.98)" : "rgba(22, 9, 12, 0.96)";
+      const liveZoneWidth = Math.max(24, timingBarWidth * 0.18);
+      const readyZoneStartX = readyTickX;
+      const liveZoneX = timingBarX + timingBarWidth - liveZoneWidth;
+      const liveZonePulse = threat.swipeLive ? 0.78 + pulse * 0.18 : 0.28 + pulse * 0.08;
+      const contactRadius = threat.swipeLive ? 6 : 4;
+
+      ctx.save();
+      ctx.fillStyle = `rgba(239, 127, 147, ${0.12 + pulse * 0.12})`;
+      ctx.fillRect(bannerX - 4, bannerY - 4, bannerWidth + 8, bannerHeight + 8);
+      ctx.fillStyle = "rgba(20, 8, 14, 0.94)";
+      ctx.fillRect(bannerX, bannerY, bannerWidth, bannerHeight);
+      ctx.strokeStyle = `rgba(255, 214, 222, ${0.52 + pulse * 0.18})`;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(bannerX, bannerY, bannerWidth, bannerHeight);
+
+      ctx.fillStyle = `rgba(239, 127, 147, ${0.82 + pulse * 0.12})`;
+      ctx.fillRect(sideBadgeX, bannerY + 6, sideBadgeWidth, bannerHeight - 12);
+      ctx.strokeStyle = "rgba(255, 232, 236, 0.62)";
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(sideBadgeX, bannerY + 6, sideBadgeWidth, bannerHeight - 12);
+
+      ctx.strokeStyle = `rgba(239, 127, 147, ${0.84 + pulse * 0.12})`;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(connectorStartX, bannerY + bannerHeight * 0.58);
+      ctx.lineTo(connectorEndX, connectorEndY);
+      ctx.stroke();
+
+      ctx.fillStyle = `rgba(239, 127, 147, ${0.94 + pulse * 0.04})`;
+      ctx.beginPath();
+      ctx.moveTo(arrowBaseX, bannerY + bannerHeight * 0.5);
+      ctx.lineTo(arrowBaseX - arrowDirection * 14, bannerY + 6);
+      ctx.lineTo(arrowBaseX - arrowDirection * 14, bannerY + bannerHeight - 6);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.fillStyle = "rgba(18, 8, 12, 0.84)";
+      ctx.fillRect(
+        threat.side === "left" ? sideBadgeX + sideBadgeWidth + 10 : bannerX + 10,
+        bannerY + 8,
+        bannerWidth - sideBadgeWidth - 28,
+        bannerHeight - 16
+      );
+
+      ctx.fillStyle = "rgba(35, 20, 27, 0.9)";
+      ctx.fillRect(
+        actionPanelX,
+        bannerY + 8,
+        actionPanelWidth,
+        bannerHeight - 16
+      );
+
+      const actionArrowInset = 12;
+      const actionArrowStartX = safeDirection > 0 ? actionPanelX + actionArrowInset : actionPanelX + actionPanelWidth - actionArrowInset;
+      const actionArrowEndX = safeDirection > 0 ? actionPanelX + actionPanelWidth - actionArrowInset : actionPanelX + actionArrowInset;
+      const actionArrowCenterY = bannerY + 19;
+      const actionArrowHalfHeight = 12;
+      const actionArrowHead = 22;
+      const actionArrowShaftHalf = 6;
+      ctx.fillStyle = threat.swipeLive
+        ? `rgba(255, 245, 247, ${0.24 + pulse * 0.12})`
+        : `rgba(255, 210, 220, ${0.14 + pulse * 0.08})`;
+      ctx.beginPath();
+      if (safeDirection > 0) {
+        ctx.moveTo(actionArrowStartX, actionArrowCenterY - actionArrowShaftHalf);
+        ctx.lineTo(actionArrowEndX - actionArrowHead, actionArrowCenterY - actionArrowShaftHalf);
+        ctx.lineTo(actionArrowEndX - actionArrowHead, actionArrowCenterY - actionArrowHalfHeight);
+        ctx.lineTo(actionArrowEndX, actionArrowCenterY);
+        ctx.lineTo(actionArrowEndX - actionArrowHead, actionArrowCenterY + actionArrowHalfHeight);
+        ctx.lineTo(actionArrowEndX - actionArrowHead, actionArrowCenterY + actionArrowShaftHalf);
+        ctx.lineTo(actionArrowStartX, actionArrowCenterY + actionArrowShaftHalf);
+      } else {
+        ctx.moveTo(actionArrowStartX, actionArrowCenterY - actionArrowShaftHalf);
+        ctx.lineTo(actionArrowEndX + actionArrowHead, actionArrowCenterY - actionArrowShaftHalf);
+        ctx.lineTo(actionArrowEndX + actionArrowHead, actionArrowCenterY - actionArrowHalfHeight);
+        ctx.lineTo(actionArrowEndX, actionArrowCenterY);
+        ctx.lineTo(actionArrowEndX + actionArrowHead, actionArrowCenterY + actionArrowHalfHeight);
+        ctx.lineTo(actionArrowEndX + actionArrowHead, actionArrowCenterY + actionArrowShaftHalf);
+        ctx.lineTo(actionArrowStartX, actionArrowCenterY + actionArrowShaftHalf);
+      }
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.fillStyle = palette.ui;
+      ctx.font = "bold 15px Georgia";
+      ctx.textAlign = "center";
+      ctx.fillText(sideBadgeLabel, sideTextX, bannerY + 35);
+      ctx.fillStyle = palette.ui;
+      ctx.font = "bold 20px Georgia";
+      ctx.fillText(actionText, actionTextX, bannerY + 32);
+
+      ctx.fillStyle = "rgba(255, 236, 240, 0.08)";
+      ctx.fillRect(phasePillX, phasePillY, phasePillWidth, phasePillHeight);
+      ctx.strokeStyle = "rgba(255, 232, 236, 0.2)";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(phasePillX, phasePillY, phasePillWidth, phasePillHeight);
+      ctx.fillStyle = activePhaseFill;
+      ctx.fillRect(phasePillX + 2, phasePillY + 2, phasePillWidth - 4, phasePillHeight - 4);
+      ctx.strokeStyle = threat.swipeLive ? "rgba(255, 245, 247, 0.7)" : "rgba(255, 232, 236, 0.34)";
+      ctx.strokeRect(phasePillX + 2, phasePillY + 2, phasePillWidth - 4, phasePillHeight - 4);
+      ctx.fillStyle = activePhaseText;
+      ctx.font = "bold 15px Georgia";
+      ctx.fillText(activePhaseLabel, phasePillX + phasePillWidth * 0.5, phasePillY + 14);
+
+      ctx.fillStyle = "rgba(12, 7, 10, 0.86)";
+      ctx.fillRect(timingBarX, timingDockY, timingBarWidth, timingDockHeight);
+      ctx.strokeStyle = "rgba(255, 232, 236, 0.18)";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(timingBarX, timingDockY, timingBarWidth, timingDockHeight);
+      ctx.fillStyle = `rgba(239, 127, 147, ${liveZonePulse * 0.42})`;
+      ctx.fillRect(liveZoneX, timingDockY + 1, liveZoneWidth, timingDockHeight - 2);
+      ctx.fillStyle = "rgba(255, 236, 240, 0.18)";
+      ctx.fillRect(timingBarX, timingBarY, timingBarWidth, timingBarHeight);
+      ctx.fillStyle = "rgba(255, 236, 240, 0.12)";
+      ctx.fillRect(readyZoneStartX, timingBarY, Math.max(0, liveZoneX - readyZoneStartX), timingBarHeight);
+      ctx.fillStyle = `rgba(255, 232, 236, ${threat.swipeLive ? 0.78 + pulse * 0.16 : 0.32 + pulse * 0.08})`;
+      ctx.fillRect(liveZoneX, timingBarY - 1, liveZoneWidth, timingBarHeight + 2);
+      ctx.fillStyle = `rgba(255, 248, 250, ${liveZonePulse * 0.34})`;
+      ctx.fillRect(liveZoneX + 2, timingBarY - 3, Math.max(0, liveZoneWidth - 4), timingBarHeight + 6);
+      ctx.fillStyle = "rgba(255, 236, 240, 0.2)";
+      ctx.fillRect(readyTickX - 1, timingBarY - 3, 2, timingBarHeight + 6);
+      ctx.fillRect(liveZoneX - 1, timingBarY - 3, 2, timingBarHeight + 6);
+      ctx.fillStyle = `rgba(239, 127, 147, ${0.78 + pulse * 0.12})`;
+      ctx.fillRect(timingBarX, timingBarY, timingFillWidth, timingBarHeight);
+      ctx.fillStyle = threat.swipeLive ? "rgba(255, 245, 247, 0.98)" : "rgba(255, 232, 236, 0.92)";
+      ctx.beginPath();
+      ctx.arc(contactMarkerX, timingBarY + timingBarHeight * 0.5, contactRadius, 0, Math.PI * 2);
+      ctx.fill();
+      if (threat.swipeLive) {
+        ctx.strokeStyle = `rgba(255, 248, 250, ${0.7 + pulse * 0.16})`;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(contactMarkerX, timingBarY + timingBarHeight * 0.5, contactRadius + 3, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.strokeStyle = "rgba(255, 232, 236, 0.34)";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(timingBarX, timingBarY, timingBarWidth, timingBarHeight);
+      ctx.textAlign = "left";
+      ctx.restore();
+    }
+
     function drawHUD() {
       const player = state.player;
+      const objective = getCurrentObjective();
+      const objectiveHudDetail = getObjectiveHudDetail(objective);
+      const liveNote = state.message;
+      const objectiveCardX = WIDTH - 336;
+      const objectiveCardY = 20;
+      const objectiveCardWidth = 312;
+      const objectiveCardHeight = liveNote ? 136 : 92;
       ctx.fillStyle = "rgba(12, 8, 16, 0.72)";
       ctx.fillRect(24, 20, 360, 84);
       ctx.strokeStyle = "rgba(255, 236, 200, 0.12)";
@@ -839,15 +2465,40 @@
       ctx.fillText(`Sigils ${player.relics}/${state.relics.length}`, 40, 98);
       ctx.fillText(state.mirror.active ? "Mirror awake" : "Mirror sealed", 166, 98);
 
-      if (state.message) {
-        ctx.fillStyle = "rgba(12, 8, 16, 0.76)";
-        ctx.fillRect(WIDTH * 0.5 - 160, 24, 320, 40);
-        ctx.strokeStyle = "rgba(255, 236, 200, 0.1)";
-        ctx.strokeRect(WIDTH * 0.5 - 160, 24, 320, 40);
+      ctx.fillStyle = "rgba(12, 8, 16, 0.8)";
+      ctx.fillRect(objectiveCardX, objectiveCardY, objectiveCardWidth, objectiveCardHeight);
+      ctx.strokeStyle = state.mirror.active ? "rgba(165, 223, 255, 0.34)" : "rgba(152, 240, 212, 0.28)";
+      ctx.strokeRect(objectiveCardX, objectiveCardY, objectiveCardWidth, objectiveCardHeight);
+
+      ctx.fillStyle = "rgba(246, 236, 216, 0.68)";
+      ctx.font = "14px Georgia";
+      ctx.fillText("CURRENT OBJECTIVE", WIDTH - 314, 46);
+      ctx.fillStyle = palette.ui;
+      ctx.font = "24px Georgia";
+      ctx.fillText(objective ? objective.label : "Hold the line", WIDTH - 314, 76);
+      ctx.font = "16px Georgia";
+      ctx.fillStyle = state.mirror.active ? "rgba(165, 223, 255, 0.9)" : "rgba(152, 240, 212, 0.9)";
+      ctx.fillText(objectiveHudDetail, WIDTH - 314, 98);
+
+      if (liveNote) {
+        ctx.fillStyle = "rgba(246, 236, 216, 0.58)";
+        ctx.font = "13px Georgia";
+        ctx.fillText("LIVE NOTE", WIDTH - 314, 120);
         ctx.fillStyle = palette.ui;
-        ctx.textAlign = "center";
-        ctx.fillText(state.message, WIDTH * 0.5, 50);
-        ctx.textAlign = "left";
+        ctx.font = "15px Georgia";
+        ctx.fillText(liveNote, WIDTH - 314, 141);
+      }
+
+      for (let i = 0; i < state.relics.length; i += 1) {
+        const filled = i < player.relics;
+        ctx.fillStyle = filled ? palette.relic : "rgba(255, 255, 255, 0.12)";
+        ctx.beginPath();
+        ctx.moveTo(WIDTH - 86 + i * 18, 48);
+        ctx.lineTo(WIDTH - 78 + i * 18, 56);
+        ctx.lineTo(WIDTH - 86 + i * 18, 64);
+        ctx.lineTo(WIDTH - 94 + i * 18, 56);
+        ctx.closePath();
+        ctx.fill();
       }
     }
 
@@ -891,6 +2542,9 @@
       drawSkeletons(cameraX);
       drawPlayer(cameraX);
       drawLighting(cameraX);
+      drawReadabilityPass(cameraX);
+      drawObjectiveBeacon(cameraX);
+      drawThreatFocusCue(cameraX);
       drawHUD();
 
       if (state.scene === "win") {

@@ -15,19 +15,19 @@ Roles: `user`, `developer`, `reviewer`.
 | Area | Count |
 |------|------:|
 | WORKSPACE | 9 |
-| THREADS | 9 |
+| THREADS | 10 |
 | PLANNING | 10 |
-| RUNS | 13 |
+| RUNS | 16 |
 | PROVIDERS | 7 |
 | RUNTIMES | 6 |
-| WORKTREE | 8 |
+| WORKTREE | 10 |
 | ATTACHMENTS | 4 |
 | MODES | 7 |
 | ASSISTANTS | 4 |
 | JOBS | 4 |
 | NOTIFICATIONS | 3 |
 | BROWSER | 3 |
-| ACTIVATION | 6 |
+| ACTIVATION | 7 |
 | UI | 19 |
 | PERSISTENCE | 15 |
 | PREFERENCES | 3 |
@@ -44,9 +44,9 @@ Roles: `user`, `developer`, `reviewer`.
 | PREFERENCES-ROADMAP | 1 |
 | SEARCH-ROADMAP | 1 |
 | UI-ROADMAP | 4 |
-| RUNS-ROADMAP | 3 |
+| RUNS-ROADMAP | 4 |
 | WORKTREE-ROADMAP | 1 |
-| PROVIDERS-ROADMAP | 13 |
+| PROVIDERS-ROADMAP | 14 |
 | JOBS-ROADMAP | 7 |
 | RUNTIMES-ROADMAP | 5 |
 | BROWSER-ROADMAP | 5 |
@@ -54,7 +54,7 @@ Roles: `user`, `developer`, `reviewer`.
 | MARKDOWN-ROADMAP | 1 |
 | PERSISTENCE-ROADMAP | 4 |
 | MODES-ROADMAP | 4 |
-| PLANNING-ROADMAP | 4 |
+| PLANNING-ROADMAP | 5 |
 | WORKSPACE-ROADMAP | 4 |
 
 ---
@@ -100,6 +100,8 @@ US-THREADS-007: As a user, I switch projects and threads while another thread ke
 US-THREADS-008: As a user, I see high-signal lifecycle run milestones stream through one live tail message during active work and then persist as compact phase rows before the final assistant answer, with raw tool chatter hidden, so that run history is readable in context. (README L67)
 
 US-THREADS-009: As a user, I see thread badges summarize status as purple User Input, orange Planning, yellow Executing, red Error, green Done so that I can scan a project at a glance. (README L66)
+
+US-THREADS-010: As a user, I archive and restore threads with optional auto-archive preferences so stale threads leave the active surface without losing history. (README L65)
 
 ### PLANNING
 
@@ -147,11 +149,15 @@ US-RUNS-010: As a user, I see workspace-global execution pause and resume propag
 
 US-RUNS-011: As a user, I get a post-merge correctness review that checks the delivered workspace against the frozen plan, catches obvious runnable or quality gaps, and can queue a corrective plan-first follow-up iteration. (README L180)
 
-US-RUNS-012: As a user, I see a live context usage meter sourced from pi session context stats so that I know how close I am to compaction. (README L51)
+US-RUNS-012: As a user, I see a live context usage meter sourced from runtime stats, including cached input tokens when providers expose them, so that I know how close I am to compaction and when repeated context is being reused. (README L51)
 
 US-RUNS-013: As a user, I get deferred planner questions, assistant questions, and browser approvals queued during global pause and released on resume so that nothing gets dropped. (README L21)
 
 US-RUNS-014: As a user, I get a clear non-git repair choice before dirty-git-protected runs so that I can initialize git, disable the preference, or cancel instead of hitting a hidden failure. (README L50)
+
+US-RUNS-015: As a user, I can launch runs with a typed runtime turn budget that tracks used and remaining turns and fails hard on exhaustion so long work stops predictably. (runtime budget)
+
+US-RUNS-016: As a developer, I complete runs through a typed `run.complete` lifecycle command that persists the final assistant message and emits the normal completion events so finalization is structured. (run lifecycle)
 
 ### PROVIDERS
 
@@ -159,13 +165,13 @@ US-PROVIDERS-001: As a user, I see capability-aware model metadata so the UI exp
 
 US-PROVIDERS-002: As a user, I get runtime-aware model selection so Codex CLI sticks to Codex-compatible GPT choices for planning and execution, and stale unsupported picks fall back before a run starts. (README L18)
 
-US-PROVIDERS-003: As a user, I get brand-aware defaults for GPT or Gemini execution so first-run behavior matches the provider I selected. (README L27)
+US-PROVIDERS-003: As a user, I get brand-aware defaults for GPT, Gemini, or Claude execution so first-run behavior matches the provider I selected. (README L27)
 
 US-PROVIDERS-004: As a user, I get Gemini planning defaulting to `google/gemini-3-flash-preview` so planning stays fast on that provider. (README L28)
 
 US-PROVIDERS-005: As a user, I get spawned subagents dropping to the cheapest runtime-compatible sibling in the same model family and inheriting fast mode when supported so parallel work stays aligned with the chosen model while keeping cost in check. (README L29)
 
-US-PROVIDERS-006: As a user, I persist OpenAI and Google API keys plus provider brand preference locally for this machine so that setup survives restart. (README L69)
+US-PROVIDERS-006: As a user, I persist OpenAI, Google, and Anthropic API keys plus provider brand preference locally for this machine so that setup survives restart. (README L69)
 
 US-PROVIDERS-007: As a user, I see provider brand switching gated by matching saved key presence so that I cannot enter a broken state. (README L150)
 
@@ -191,7 +197,7 @@ US-WORKTREE-002: As a user, I rely on isolated BranchFS subagent mounts so that 
 
 US-WORKTREE-003: As a developer, I replay isolated subagent results inside a separate BranchFS integration mount, verify there, and flush only after success so that failed integration does not dirty the host checkout. (README L33)
 
-US-WORKTREE-004: As a user, I default to same-worktree subagent mode when contracts path-split cleanly, fan those subtasks out in parallel until owned paths overlap, and serialize ambiguous same-worktree work so execution speed matches real path safety. (README L172)
+US-WORKTREE-004: As a user, I default to same-worktree subagent mode when contracts path-split cleanly, fan those subtasks out in parallel until owned paths overlap, and upgrade overlapping or unknown ownership to isolated worktrees so execution speed matches real path safety. (README L172)
 
 US-WORKTREE-005: As a user, I drive subagent work with contracts (prerequisites, owned paths, scoped verification, merge notes) instead of freeform subtask text so that parallel or serialized same-worktree work is enforceable. (README L169)
 
@@ -235,9 +241,9 @@ US-MODES-007: As a developer, I see the UI send typed project and chat commands 
 
 US-ASSISTANTS-001: As a user, I use local assistant operators with named personas, role prompts, project or global scope, synced routing defaults, chat-addressable actions from project chat, assistant-owned background job creation, pause and resume controls, chat, todo lists, learnings, open questions, clone-to-project flow, and high-level plus deep-debug logs. (README L24)
 
-US-ASSISTANTS-002: As a user, I get a dedicated Assistants surface that keeps assistant chat, todos, questions, learnings, logs, and assistant-owned jobs inspectable outside normal project chat. (README L103)
+US-ASSISTANTS-002: As a user, I get a dedicated Assistants surface with search and filters so assistant chat, todos, questions, bounded learnings, logs, and assistant-owned jobs stay inspectable outside normal project chat. (README L103)
 
-US-ASSISTANTS-003: As a developer, I see assistant state persist locally in SQLite, including canonical thread memory summaries, active todo list, learnings, pending questions, structured logs, and assistant-linked background jobs. (README L144)
+US-ASSISTANTS-003: As a developer, I see assistant state persist locally in SQLite, including canonical thread memory summaries, active todo list, deduped and compacted learnings, pending questions, structured logs, and assistant-linked background jobs. (README L144)
 
 US-ASSISTANTS-004: As a user, I see assistant-owned jobs share the same scheduler path while assistant circuit breakers can auto-pause failing assistants and surface blocking questions for user intervention. (README L179)
 
@@ -245,9 +251,9 @@ US-ASSISTANTS-005: As a user, assistant operators make reasonable assumptions, s
 
 ### JOBS
 
-US-JOBS-001: As a user, I use local scheduled tasks and background jobs with durable SQLite history, startup catch-up, approval policy defaults, hidden automation threads, and a dedicated inbox surface. (README L22)
+US-JOBS-001: As a user, I use local scheduled tasks and background jobs with durable SQLite history, startup catch-up, approval policy defaults, hidden automation threads, renewable ownership leases, visible due, blocked, stale, concurrent launch, timeout, progress, overload scheduler state, and a dedicated health view for recent reliability. (README L22)
 
-US-JOBS-002: As a user, I use the Jobs tab to inspect scheduled work, approval-needed runs, failures, and concise execution milestones outside normal project chat threads. (README L102)
+US-JOBS-002: As a user, I use searchable and filterable Jobs, Runs, and Health tabs to inspect scheduled work, approval-needed runs, failures, concise execution milestones, backoff-blocked jobs, dominant failure classes, and prompt repetition outside normal project chat threads. (README L102)
 
 US-JOBS-003: As a user, I see background AI runs that need clarification pause in awaiting-user-input instead of failing and surface their prompts through the shared inbox flow. (README L177)
 
@@ -255,7 +261,7 @@ US-JOBS-004: As a user, I see scheduled jobs persist separately from user chat a
 
 ### NOTIFICATIONS
 
-US-NOTIFICATIONS-001: As a user, I use a header-level notification inbox for deferred planner questions, assistant questions, browser approvals, and passive background-run status updates. (README L23, L89)
+US-NOTIFICATIONS-001: As a user, I use a header-level notification inbox for deferred planner questions, assistant questions, browser approvals, and passive background-run status updates that route to the matching run status view. (README L23, L89)
 
 US-NOTIFICATIONS-002: As a developer, I see notification inbox state travel as a typed websocket payload with durable local persistence, unread counts, and explicit read or archive commands. (README L164)
 
@@ -273,9 +279,9 @@ US-BROWSER-003: As a developer, I see browser approval decisions use a typed web
 
 US-ACTIVATION-001: As a user, I get a bootstrap-first startup path for source users plus portable Bun launcher packaging for release users. (README L12)
 
-US-ACTIVATION-002: As a user, I see runtime health visibility so install, auth, and degraded interactive support show before a run starts. (README L13)
+US-ACTIVATION-002: As a user, I see runtime health visibility so install, auth, browser-tool repair, and degraded interactive support show before a run starts. (README L13)
 
-US-ACTIVATION-003: As a user, I use a shared activation checklist that keeps first-run setup inside the main chat cockpit instead of a blocking wizard. (README L14, L86, L87)
+US-ACTIVATION-003: As a user, I use a shared activation checklist that keeps first-run setup inside the main chat cockpit instead of a blocking wizard, including repair actions for missing project, provider, runtime, git, and browser requirements. (README L14, L86, L87)
 
 US-ACTIVATION-004: As a user, I open guided help tutorials with spotlight overlays for opening a project, connecting provider/runtime, sending the first task, and reviewing plans. (README L15, L104)
 
@@ -297,9 +303,9 @@ US-UI-004: As a user, I see lucide-solid icons across project actions and worksp
 
 US-UI-005: As a user, I see tooltips render through a body-level portal so that panel overflow does not clip them. (README L96)
 
-US-UI-006: As a user, I use left workspace tabs for Projects, Assistants, and Jobs so the selected tab controls both left list content and center detail content. (README L98)
+US-UI-006: As a user, I use left workspace tabs for Projects, Assistants, Jobs, and Runs so the selected tab controls both left list content and center detail content. (README L98)
 
-US-UI-007: As a user, I see project chat keep transcript first and expose plan, run, memory, and events through a compact local pane strip instead of a larger cockpit card. (README L99)
+US-UI-007: As a user, I see project chat keep transcript first, expose fast project-title and active-thread transcript search, and show plan, run, memory, and events through a compact local pane strip instead of a larger cockpit card. (README L99)
 
 US-UI-008: As a user, I see the chat transcript auto-stick only when already at bottom and expose an explicit Scroll to latest affordance when I scroll away. (README L100)
 
@@ -322,6 +328,8 @@ US-UI-016: As a user, I see all in-flight status and assistant text stay in one 
 US-UI-017: As a user, I see run cockpit expose virtual-branch experiment review, promote, and discard actions plus a shared memory tab for local reusable learnings. (README L101)
 
 US-UI-020: As a user, I inspect shell tool activity from a run pane with command status, concise output previews, classified failure detail, and copyable summaries while chat keeps only interpreted progress and blocking failures. (README L68)
+
+US-UI-021: As a user, I see the trace panel follow the selected project thread, assistant, or background job and show unified execution evidence with current and total running-agent counts.
 
 US-UI-018: As a user, I see shared popovers render through portal-backed primitives so that compact overlays (inbox, quick replies, interaction panels) stay well-positioned. (README L93)
 
@@ -391,7 +399,7 @@ US-DEV-010: As a developer, I run `bun run test` to execute the Bun test suite i
 
 US-DEV-011: As a developer, I run `bun run typecheck` to validate TypeScript contracts. (README L124)
 
-US-DEV-012: As a developer, I see development startup auto-purge broken local SQLite artifacts, retry delete on transient Windows file locks, then retry boot once if legacy migration drift makes the dev DB unloadable. (README L125)
+US-DEV-012: As a developer, I see development startup back up then purge broken local SQLite artifacts, retry delete on transient Windows file locks, then retry boot once if legacy migration drift makes the dev DB unloadable. (README L125)
 
 US-DEV-013: As a developer, I see dev DB recovery log the triggering startup error first and only auto-purge on concrete corruption or schema-drift signatures instead of generic SQLite failures. (README L126)
 
@@ -445,7 +453,7 @@ US-ACTIVATION-ROADMAP-001: As a user, I install and update the harness through s
 
 US-ACTIVATION-ROADMAP-002: As a user, I repair stale auth, broken local config, and launcher drift through deeper doctor and reset flows after the first successful run. (todo.md L22)
 
-US-ACTIVATION-ROADMAP-003: As a user, I see typed setup and repair coverage for browser tools and MCP servers so unsupported placeholders become real health surfaces. (todo.md L23)
+US-ACTIVATION-ROADMAP-003: As a user, I see typed setup and repair coverage for MCP servers, remote targets, and local scripts so unsupported placeholders become real health surfaces. (todo.md L23)
 
 US-ACTIVATION-ROADMAP-004: As a user, I keep first-task activation centered on project-open plus task-send flow instead of a separate blocking wizard. (todo.md L24)
 
@@ -453,7 +461,7 @@ US-ACTIVATION-ROADMAP-005: As a user, I keep current approval and autonomy defau
 
 ### THREADS-ROADMAP
 
-US-THREADS-ROADMAP-001: As a user, I archive and restore threads with optional auto-archive preferences so stale threads leave the active surface without losing history. (todo.md L29)
+US-THREADS-ROADMAP-001: As a user, I archive and restore threads, with optional auto-archive preferences for stale threads, so the active surface stays focused without losing history. (todo.md Daily Coding Loop)
 
 US-THREADS-ROADMAP-002: As a user, I rely on strong thread sorting and recent-thread trimming so long-lived projects stay navigable. (todo.md L39)
 
@@ -482,6 +490,8 @@ US-RUNS-ROADMAP-001: As a user, I review step-level diffs, incremental change vi
 US-RUNS-ROADMAP-002: As a user, I keep durable proof bundles per run or checkpoint so diffs, tests, review notes, browser evidence, and follow-up prompts stay inspectable after refresh or restart. (todo.md L36)
 
 US-RUNS-ROADMAP-003: As a user, I see run heartbeats, stale-run detection, and explicit `last verified`, `next step`, and `waiting on` summaries so quiet agents feel inspectable instead of broken. (todo.md L38)
+
+US-RUNS-ROADMAP-004: As a user, I inspect a thread or run ledger with progress, broken states, next steps, learned rules, context used, and notable token or cost spikes so continuity survives across sessions. (todo.md Daily Coding Loop)
 
 ### WORKTREE-ROADMAP
 
@@ -514,6 +524,8 @@ US-PROVIDERS-ROADMAP-011: As a user, I see lightweight burn-rate and remaining-h
 US-PROVIDERS-ROADMAP-012: As a user, I understand model speed, cost, and capability tradeoffs in selection flows without cluttering the main chat surface. (todo.md L76)
 
 US-PROVIDERS-ROADMAP-013: As a user, I still get a usable experience when providers do not expose usage details. (todo.md L77)
+
+US-PROVIDERS-ROADMAP-014: As a user, I compare local usage across bundled CLI runtimes and provider-backed runs in one place where session files or providers expose enough data. (todo.md Usage And Quota Visibility)
 
 ### JOBS-ROADMAP
 
@@ -600,6 +612,8 @@ US-PLANNING-ROADMAP-002: As a user, I share an execution cache across planner, m
 US-PLANNING-ROADMAP-003: As a user, I inspect that shared cache with source links, freshness markers, hit history, pin or expire controls, and easy clear or rebuild actions. (todo.md L112)
 
 US-PLANNING-ROADMAP-004: As a user, I keep memory lightweight, inspectable, and editable instead of opaque long-term agent state. (todo.md L115)
+
+US-PLANNING-ROADMAP-005: As a user, I get recommendations to compress, pin, or evict stale files and old turns before context bloat becomes cost or quality loss. (todo.md Memory And Skill Platform)
 
 ### WORKSPACE-ROADMAP
 

@@ -90,6 +90,7 @@ export class Game {
       mode: s.mode,
       score: s.score,
       view: s.view,
+      camera: { ...s.camera },
       player: { ...s.player },
       core: { ...s.core },
       enemies: s.enemies.map((enemy) => ({ ...enemy })),
@@ -115,7 +116,7 @@ export class Game {
       },
       message:
         s.mode === "menu"
-          ? { title: "Ready", body: "Press Enter to deploy. Hold jump for height, kick off walls, fire with J or Ctrl." }
+          ? { title: "Ready", body: "Press Enter to deploy. Hold jump for height, kick off walls, and use the first wall as your opening route. Fire with J or Ctrl." }
           : s.mode === "win"
             ? { title: "Win", body: "Fortress cleared. Press Enter to retry with your new weapon." }
             : s.mode === "lose"

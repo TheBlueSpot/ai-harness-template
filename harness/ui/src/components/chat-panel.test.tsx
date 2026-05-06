@@ -2,7 +2,7 @@
 import { beforeEach, expect, it } from "bun:test";
 import { createUiTest } from "../utils/tests/test-harness";
 import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
-import { ChatPanel } from "./chat-panel";
+import { ChatPanel, buildProjectChatSearchResults } from "./chat-panel";
 import { createInitialViewState, harnessStore, readBrowserUiSession } from "../harness-store";
 import { toastStore } from "../toast-store";
 import { formatShortTimestamp } from "../lib/time-format";
@@ -55,6 +55,42 @@ createUiTest("ChatPanel", () => {
     render(() => <ChatPanel />);
 
     expect(screen.getByRole("button", { name: "Open events pane" }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("orders project chat search by project title hits before active thread transcript", () => {
+    const projectAlpha = createViewProjectFixture({
+      id: "project-alpha-search",
+      name: "Alpha dashboard",
+      activeThreadId: "thread-alpha",
+      session: {
+        ...createEmptySession("thread-alpha"),
+        messages: [createChatMessage("user", "Find billing regression")]
+      },
+      threads: [
+        {
+          id: "thread-alpha",
+          title: "Alpha thread",
+          kind: "user",
+          titleSource: "custom",
+          status: "active",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          messageCount: 1,
+          lastMessagePreview: "Find billing regression",
+          badgeState: "idle"
+        }
+      ]
+    });
+    const projectBilling = createViewProjectFixture({
+      id: "project-billing-search",
+      name: "Billing api",
+      activeThreadId: "thread-billing",
+      session: createEmptySession("thread-billing")
+    });
+    const results = buildProjectChatSearchResults([projectAlpha, projectBilling], "billing");
+
+    expect(results[0]).toMatchObject({ projectId: projectBilling.id, title: "Billing api" });
+    expect(results[1]).toMatchObject({ projectId: projectAlpha.id, threadId: "thread-alpha" });
   });
 
   it("submits planner answers when a planning question is pending", () => {
@@ -462,6 +498,8 @@ createUiTest("ChatPanel", () => {
           hasStoredOpenAiApiKey: state.hasStoredOpenAiApiKey,
           hasUsableGoogleApiKey: state.hasUsableGoogleApiKey,
           hasStoredGoogleApiKey: state.hasStoredGoogleApiKey,
+          hasUsableAnthropicApiKey: state.hasUsableAnthropicApiKey,
+          hasStoredAnthropicApiKey: state.hasStoredAnthropicApiKey,
           providerBrand: state.providerBrand,
           debugEnabledDefault: state.debugEnabled,
           tracePanelDefaultOpen: state.tracePanelDefaultOpen,
@@ -625,6 +663,62 @@ createUiTest("ChatPanel", () => {
         modeLocked: true
       }
     });
+  });
+
+  it("sends auto mode unlocked so server can classify each prompt", () => {
+    const commands: unknown[] = [];
+    const project = createViewProjectFixture({
+      id: "project-send-auto",
+      draft: "simple task"
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        hasUsableApiKey: true,
+        hasUsableOpenAiApiKey: true,
+        selectedModeId: "auto",
+        hasGlobalSelectedModeId: true,
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    captureDispatchedCommands(commands as never[]);
+    render(() => <ChatPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "Send task to Pi" }));
+
+    expect(commands[0]).toMatchObject({
+      type: "chat.send",
+      payload: {
+        modeId: "auto",
+        modeLocked: false
+      }
+    });
+  });
+
+  it("keeps Auto selected in the mode dropdown", async () => {
+    const project = createViewProjectFixture({
+      id: "project-select-auto"
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        hasUsableApiKey: true,
+        hasUsableOpenAiApiKey: true,
+        selectedModeId: "auto",
+        hasGlobalSelectedModeId: true,
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ChatPanel />);
+
+    expect(harnessStore.state.selectedModeId).toBe("auto");
+    expect(harnessStore.state.hasGlobalSelectedModeId).toBe(true);
+    await screen.findByText("Auto");
   });
 
 it("updates composer effort label and sends reasoning plus fast mode", () => {
@@ -861,6 +955,7 @@ it("updates composer effort label and sends reasoning plus fast mode", () => {
           kind: "user",
           title: "Thread 1",
           titleSource: "generated",
+          status: "active",
           badgeState: "executing",
           messageCount: 1,
           updatedAt: new Date().toISOString()
@@ -1386,7 +1481,7 @@ it("updates composer effort label and sends reasoning plus fast mode", () => {
     expect(screen.getByRole("link", { name: "docs" }).getAttribute("target")).toBe("_blank");
   });
 
-  it("caps long transcript lists and exposes recovery control", () => {
+  it("virtualizes long transcript lists at the latest rows", () => {
     const project = createViewProjectFixture({
       id: "project-long-transcript",
       session: {
@@ -1408,7 +1503,7 @@ it("updates composer effort label and sends reasoning plus fast mode", () => {
     expect(screen.queryByText("message 0")).toBeNull();
     expect(screen.getByText("message 124")).not.toBeNull();
 
-    expect(screen.getByRole("button", { name: "Show every transcript row" })).not.toBeNull();
+    expect(screen.queryByRole("button", { name: "Show every transcript row" })).toBeNull();
   });
 
   it("renders system transcript rows as harness messages", () => {

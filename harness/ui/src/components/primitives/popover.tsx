@@ -1,6 +1,6 @@
 import { Show, createEffect, createSignal, onCleanup, type JSX } from "solid-js";
-import { Portal } from "solid-js/web";
 import { cn } from "../../lib/utils";
+import { PrimitivePortal } from "./primitive-portal";
 
 type PopoverProps = {
   open: boolean;
@@ -153,7 +153,7 @@ export function Popover(props: PopoverProps) {
         ref={contentRef}
         data-test-popover-content=""
         class={cn(
-          "fixed z-[130] w-max rounded-[1.25rem] border border-(--border) bg-(--panel) p-3 shadow-2xl",
+          "app-zoom-portal-content fixed z-[130] w-max rounded-[1.25rem] border border-(--border) bg-(--panel) p-3 shadow-2xl",
           props.contentClass
         )}
         style={{
@@ -171,7 +171,9 @@ export function Popover(props: PopoverProps) {
   return (
     <div ref={triggerRef} data-test-popover="" class={cn("relative inline-flex", props.class)}>
       {props.children}
-      <Portal>{content}</Portal>
+      <PrimitivePortal active={props.open} layer="popover">
+        {content}
+      </PrimitivePortal>
     </div>
   );
 }

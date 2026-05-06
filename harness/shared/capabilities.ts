@@ -78,5 +78,44 @@ export const defaultProviderCapabilities: ProviderCapability[] = [
         supportsFastMode: false
       }
     ]
+  },
+  {
+    providerBrand: "claude",
+    label: "Claude",
+    defaultPlanningModelId: "anthropic/claude-opus-4-6",
+    defaultExecutionModelId: "anthropic/claude-sonnet-4-6",
+    defaultSubagentModelId: "anthropic/claude-haiku-4-5",
+    models: [
+      {
+        modelId: "anthropic/claude-opus-4-6",
+        providerBrand: "claude",
+        label: "Claude Opus 4.6",
+        tags: ["tools", "vision", "long-context", "expensive"],
+        contextWindow: 1000000,
+        summary: "Strong Claude planner for difficult architecture and implementation work.",
+        supportedReasoningStrengths: ["low", "medium", "high", "extra-high"],
+        supportsFastMode: false
+      },
+      {
+        modelId: "anthropic/claude-sonnet-4-6",
+        providerBrand: "claude",
+        label: "Claude Sonnet 4.6",
+        tags: ["tools", "vision", "long-context"],
+        contextWindow: 1000000,
+        summary: "Balanced Claude execution model with large context and tool support.",
+        supportedReasoningStrengths: ["low", "medium", "high"],
+        supportsFastMode: false
+      },
+      {
+        modelId: "anthropic/claude-haiku-4-5",
+        providerBrand: "claude",
+        label: "Claude Haiku 4.5",
+        tags: ["tools", "vision", "fast"],
+        contextWindow: 200000,
+        summary: "Lower-cost Claude subagent model for focused parallel work.",
+        supportedReasoningStrengths: ["low", "medium", "high"],
+        supportsFastMode: false
+      }
+    ]
   }
 ];

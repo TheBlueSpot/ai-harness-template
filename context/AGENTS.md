@@ -1,26 +1,40 @@
 # Agent Rules
 
+/caveman ultra
 These rules define how AI contributors should work in this game-catalog repository.
 
-- Start all conversations in `/caveman ultra`.
 - Always clarify ambiguous tasks before making shared or structural changes.
 - Start from catalog mindset. This repo is a collection of game entries, not one unified app.
 - Treat each top-level game folder as an independent item unless shared docs say otherwise.
 - Preserve direct browser playability where an entry already has it.
 - Keep one reachable next goal visible during active play; progress cues should reinforce mastery, not replace it.
+- Add depth through readable new choices or escalating pressure, not just bigger numbers or bailout rewards.
+- When a loop is solid but thin, add threat or stage variation before bigger systems.
 - For action or arcade entries, teach mechanics in play right before use; avoid front-loaded tutorials when safe play can teach the loop.
 - Do not rely on one-shot instructions for critical play knowledge; keep essential controls and objectives visible or easy to reopen.
+- Keep non-urgent tutorial or state prompts edge-anchored so they do not compete with focal play space.
 - For action or arcade entries, keep persistent HUDs minimal and edge-anchored so the main play space stays readable.
+- In fast arcade play, make peripheral HUD cues readable from shape and contrast before text.
+- Treat HUD clutter as gameplay difficulty, not cosmetic debt.
 - Keep difficulty control player-legible and low-friction; prefer in-run presets or assists over opaque adaptation.
+- Treat retry cost as difficulty design, not punishment flavor.
 - In failure-heavy arcade entries, keep retry near-instant so failure stays inside the learning loop.
+- In hard arcade movement, use small consistent forgiveness windows that preserve player intent without erasing mastery.
 - In fast arcade play, fix input certainty and response latency before adding more FX or retuning balance.
+- In twitch-heavy action, prioritize stable response timing over shaving tiny average latency.
+- Critical gameplay states should read from shape, contrast, and position, not color or tiny detail alone.
+- Treat unreadable HUD or prompt text as a gameplay blocker, not cosmetic debt.
 - Put must-react prompts and essential feedback near the focal action; do not rely on audio alone for critical gameplay information.
 - If critical cue must live on edge, duplicate it with earlier in-play telegraph or second channel.
 - Keep danger telegraphs readable early enough to preserve player choice under pressure.
+- In fast threat-driven play, telegraphs should reveal the required response early, not just announce danger.
 - Show dodge telegraphs as future collision paths, not just danger flashes.
+- In fast arcade encounters, add pressure through sequencing before stacking simultaneous must-read threats.
+- Prefer mastery-first replay feedback; keep leaderboards optional seasoning, not the only proof of progress.
 - Avoid cross-game coupling, shared abstractions, or repo-wide refactors unless multiple entries clearly need same structure.
 - Keep game-specific notes, assets, and implementation detail inside the game's own folder.
 - Keep markdown high-level. Prefer concepts and links to other markdown docs over code-heavy explanation.
+- User review data lives in SQLite; use the catalog review scripts for inspection and targeted edits.
 - Always store repo-local Codex skills in the generic `.agents/skills/` folder, not provider-specific directories, unless the user explicitly asks otherwise.
 - Keep skill-specific helpers and support files under that generic `.agents/skills/<skill-name>/` tree unless the user explicitly asks for another layout.
 - Use TypeScript for helper, automation, downloader, and skill scripts across the entire repository.
@@ -31,3 +45,4 @@ These rules define how AI contributors should work in this game-catalog reposito
 - If a task is ambiguous about whether a change is local or shared, ask before restructuring multiple entries.
 - Do not make edits to the harness.
 - when linking to files use relative root (ie `./src/main.js`)
+- Avoid using python use bun and typescript for all scripts

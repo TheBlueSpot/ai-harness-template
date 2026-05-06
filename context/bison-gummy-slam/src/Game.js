@@ -18,6 +18,9 @@ export default class Game {
 
   start() {
     if (this.run.phase === "playing") return;
+    if (this.run.phase === "result") {
+      this.restart();
+    }
     this.run.phase = "playing";
     this.run.message = "Launcher live. Auto-charge, then time the first slam into the gummy lane.";
     this.run.slamReady = false;
@@ -37,6 +40,9 @@ export default class Game {
     this.run.world.width = this.run.width;
     this.run.world.height = this.run.height;
     this.run.world.groundY = Math.min(height - 120, GAME_CONSTANTS.groundY);
+    if (this.run.totalLaunches === 0 && this.run.queueIndex === 0) {
+      this.syncQueue();
+    }
     this.syncEntities();
   }
 
@@ -62,11 +68,20 @@ export default class Game {
     else if (this.run.phase === "paused") this.run.phase = "playing";
   }
 
+  pause(message = "Run paused.") {
+    if (this.run.phase !== "playing") return false;
+    this.run.phase = "paused";
+    this.run.message = message;
+    this.syncFrame();
+    return true;
+  }
+
   slam() {
     this.triggerSlam();
   }
 
   buy(id) {
+    if (this.run.phase === "playing") return false;
     const upgrade = this.upgrades.find((item) => item.id === id);
     if (!upgrade || upgrade.level >= upgrade.maxLevel) return false;
     const cost = this.upgradeCost(upgrade);
@@ -105,13 +120,17 @@ export default class Game {
     const queueBonus = this.upgradeLevel("queue");
     const total = 8 + queueBonus * 2;
     const entities = [];
+    const groundY = this.run.world.groundY;
+    const startX = Math.max(this.run.player.x + 360, Math.min(this.run.world.width - 220, 760));
+    const spacing = this.run.world.width < 1100 ? 92 : 104;
+    const openingTargetY = this.run.world.width >= 1000 && this.run.world.width < 1400 ? groundY - 78 : groundY - 100;
     for (let i = 0; i < total; i += 1) {
       const boss = i % 4 === 3;
       entities.push({
         id: `g-${i}`,
         type: boss ? "boss" : "gummy",
-        x: 620 + i * 104,
-        y: boss ? 500 : 560 - (i % 2) * 48,
+        x: startX + i * spacing,
+        y: i === 0 ? openingTargetY : boss ? groundY - 160 : groundY - 100 - (i % 2) * 48,
         vx: 0,
         vy: 0,
         radius: boss ? 26 : 18,
@@ -169,14 +188,24 @@ export default class Game {
       this.run.slamReady = false;
       return;
     }
+    if (this.run.player.vy <= 0 && !this.run.player.grounded) {
+      this.run.message = "Too early. Let the arc fall, then slam through the lane.";
+      this.run.slamReady = false;
+      return;
+    }
     const slamBoost = this.getUpgradeEffects().slam;
     const charged = this.run.launchCharge > 0.35 || this.run.slamReady;
-    const windowOpen = this.run.slamTimer <= GAME_CONSTANTS.slamWindow;
+    const slamWindow = this.run.queueIndex === 0 ? GAME_CONSTANTS.openingSlamWindow : GAME_CONSTANTS.slamWindow;
+    const windowOpen = this.run.slamTimer <= slamWindow;
     if (charged && windowOpen) {
       this.run.player.vy = Math.max(this.run.player.vy + GAME_CONSTANTS.slamBoost * 0.72 * slamBoost, 220);
       this.run.player.vx += GAME_CONSTANTS.slamBoost * 0.44 * slamBoost;
       this.run.slamActive = true;
-      this.run.message = "Slam primed. Follow the glowing lane through the queue.";
+      this.run.openingSlamCommitted = this.run.queueIndex === 0;
+      this.setCallout(this.run.queueIndex === 0 ? "Slam for burst" : "Slam primed", this.run.queueIndex === 0 ? "opening" : "slam");
+      this.run.message = this.run.queueIndex === 0
+        ? "Slam primed. Hit the first glowing gummy now for a burst rebound."
+        : "Slam primed. Follow the glowing lane through the queue.";
     } else {
       this.run.combo = 0;
       this.run.message = "Missed slam window. Wait for the ring, then drive down the lane.";
@@ -232,6 +261,10 @@ export default class Game {
     this.run.maxSpeed = Math.max(this.run.maxSpeed, hypot(this.run.player.vx, this.run.player.vy));
     this.run.slamTimer += dt;
     this.run.launchCooldown = Math.max(0, this.run.launchCooldown - dt);
+    if (this.run.callout) {
+      this.run.callout.timer = Math.max(0, this.run.callout.timer - dt);
+      if (this.run.callout.timer === 0) this.run.callout = null;
+    }
   }
 
   stepContacts(dt) {
@@ -274,8 +307,20 @@ export default class Game {
           this.run.score += Math.round(20 * slamBoost + this.run.combo * 3);
           this.run.coins += Math.max(1, Math.round(2 * slamBoost));
           this.run.message = "Slam hit. Ride the rebound and keep the lane alive.";
+          this.setCallout("Slam hit", "slam");
           this.run.slamActive = false;
           this.persist();
+        }
+        if (openingTarget && this.run.queueIndex === 0 && this.run.openingSlamCommitted) {
+          player.vx += GAME_CONSTANTS.openingSlamBonusSpeed * slamBoost;
+          this.run.score += Math.round(GAME_CONSTANTS.openingSlamBonusScore * slamBoost);
+          this.run.coins += GAME_CONSTANTS.openingSlamBonusCoins;
+          this.run.message = "Perfect opener. Cash the rebound before the lane closes.";
+          this.setCallout("Opener burst", "opening");
+          this.run.openingSlamCommitted = false;
+        } else if (openingTarget && this.run.queueIndex === 0 && cleanDrop && !slamContact) {
+          this.run.message = "Clean drop, but slam gives the big opener burst.";
+          this.setCallout("Clean drop", "soft");
         }
         if (entity.health <= 0) {
           entity.alive = false;
@@ -284,6 +329,7 @@ export default class Game {
         }
       } else if (requiresCommittedDrop) {
         this.run.message = "Soft graze. Drop deeper or slam through the glowing target.";
+        this.run.openingSlamCommitted = false;
       }
       this.run.slamReady = true;
       this.run.slamTimer = 0;
@@ -300,6 +346,11 @@ export default class Game {
   }
 
   stepQueue() {
+    const nextTarget = this.run.entities.find((entity) => entity.alive);
+    if (nextTarget && this.run.totalLaunches > 0 && this.run.player.x > nextTarget.x + 120) {
+      this.endRun("Missed the gummy lane. Restart and stay over the glowing target.");
+      return;
+    }
     if (this.run.queueIndex >= this.run.queueTotal) {
       this.run.phase = "result";
       this.run.overlay = {
@@ -322,6 +373,14 @@ export default class Game {
     };
     this.bestBank += this.run.coins;
     this.persist();
+  }
+
+  setCallout(text, tone) {
+    this.run.callout = {
+      text,
+      tone,
+      timer: 1.15,
+    };
   }
 }
 

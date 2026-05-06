@@ -2,8 +2,13 @@ import { createUiAssetManager } from "./ui-build";
 import { clearDevHarnessServerSingleton, getDevHarnessServerSingleton, setDevHarnessServerSingleton } from "./dev-server-singleton";
 import { defaultAgentCatalog } from "../../shared/agent-catalog";
 import { defaultProviderCapabilities } from "../../shared/capabilities";
-import { modeUsesReadOnlyExecution, resolveModeById, resolveModeCatalog, resolveModeExecutionAccess } from "../../shared/modes";
-import { detectAutoMode, isDirectWorkspaceImplementTask } from "../../shared/mode-intent";
+import { modeUsesReadOnlyExecution, resolveModeById, resolveModeCatalog } from "../../shared/modes";
+import {
+  PLANNER_DIFFICULTY_THRESHOLD,
+  detectAutoMode,
+  estimateTaskDifficulty,
+  isDirectWorkspaceImplementTask
+} from "../../shared/mode-intent";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { createRouteHandler } from "uploadthing/server";
@@ -55,6 +60,7 @@ import {
   type PreferencesState,
   type ProjectContextUsage,
   type ProjectId,
+  type ProviderBrand,
   type QuestionId,
   type ServerEvent,
   type SetupLaunchMode,
@@ -71,6 +77,7 @@ import {
   requireBackgroundRunForProject
 } from "./background-job-command-guards";
 import { previewBackgroundJobSchedule } from "./background-job-schedule";
+import { isBackgroundRunPastLeaseGrace } from "./background-run-leases";
 import { BackgroundJobScheduler } from "./background-job-scheduler";
 import { BranchfsManager, type BranchfsExperimentLease } from "./branchfs-manager";
 import { pickProjectFolder } from "./folder-picker";
@@ -104,6 +111,9 @@ import {
 } from "./pi-orchestrator";
 import { getDefaultExecutionModelId, getDefaultPlanningModelId } from "./pi-planner";
 import { formatRunProgressHeartbeat, shouldDelayDerivedProgressHeartbeat } from "./run-progress-heartbeats";
+import { buildRunDiagnosticsReport } from "./run-diagnostics";
+import { classifyRunFailure, isBackoffEligibleFailureCategory } from "./run-failure-classification";
+import { RunBudgetAgentAdapter } from "./run-budget-agent-adapter";
 import { resolveSubagentModelId, resolveSubagentReasoningStrength } from "./subagent-defaults";
 import {
   createMilestoneDeltaParser,
@@ -116,6 +126,8 @@ import { normalizeWorkspaceRelativePaths } from "./workspace-path-intent";
 import type { SubagentResult } from "./pi-subagents";
 import { WorkspaceRepository } from "./workspace-repository";
 import { WorkspaceRuntimeStore } from "./workspace-runtime-store";
+import { buildWorkspaceConfigHash, type PromptCacheIdentity } from "./prompt-cache";
+import { prepareGeminiCachedAttachmentContext, type GeminiCachedAttachmentContext } from "./gemini-cached-contents";
 import { createHarnessUploadRouter } from "./uploadthing-router";
 import { buildSetupState, detectSetupLaunchMode } from "./setup-health";
 import { StreamPump } from "./stream-pump";
@@ -131,7 +143,9 @@ import {
 import { detectAssistantChatIntent } from "./assistant-intent";
 import { resolveAssistantChatAction, type AssistantActionIntentDraft, type AssistantChatActionResolution } from "./assistant-chat-actions";
 import { assertAssistantRunnableForLaunch } from "./assistant-launch-gate";
+import { evaluateAssistantQuestionPolicy } from "./assistant-question-policy";
 import { type StartupPhaseId, type StartupTelemetrySink } from "./startup-telemetry";
+import { HARNESS_APP_VERSION } from "../../shared/app-version";
 import {
   isSubagentBlockedVerificationCommand,
   recordToolEnd,
@@ -157,10 +171,28 @@ const DEV_UI_LIVE_RELOAD_ENDPOINT = "/__dev/ui-reload-state";
 const STREAM_DELTA_FLUSH_MS = 50;
 const STREAM_DELTA_MAX_BUFFERED_BYTES = 8 * 1024;
 const STREAM_PERSIST_INTERVAL_MS = 1000;
+const BACKGROUND_RUN_CONTROLLER_LEASE_MS = 15 * 60 * 1000;
+const BACKGROUND_RUN_CONTROLLER_RENEW_MS = 60 * 1000;
+const BACKGROUND_RUN_STARTUP_GRACE_MS = 2 * 60 * 1000;
 
 type TimerApi = {
   setTimeout: typeof globalThis.setTimeout;
   clearTimeout: typeof globalThis.clearTimeout;
+};
+
+export type HarnessBranchfsManager = Pick<
+  BranchfsManager,
+  "prepareExperimentLease" | "readInspection" | "flushExperiment" | "discardExperiment" | "unmountExperiment"
+>;
+
+export type HarnessServerOsAdapters = {
+  searchProjectFolders: typeof searchProjectFolders;
+  runGitPreflight: typeof runGitPreflight;
+  runCorrectnessReview: typeof runCorrectnessReview;
+  branchfsManagerFactory: (
+    context: ConstructorParameters<typeof BranchfsManager>[0],
+    callbacks?: ConstructorParameters<typeof BranchfsManager>[1]
+  ) => HarnessBranchfsManager;
 };
 
 type HarnessServerOptions = {
@@ -169,6 +201,7 @@ type HarnessServerOptions = {
   adapter?: PiAgentAdapter;
   repository?: WorkspaceRepository;
   runtimeRegistry?: AgentRuntimeRegistry;
+  osAdapters?: Partial<HarnessServerOsAdapters>;
   pickFolder?: typeof pickProjectFolder;
   serverOnly?: boolean;
   openBrowser?: boolean;
@@ -192,6 +225,9 @@ type PendingBrowserApproval = {
 
 type BackgroundRunControl = {
   abortController: AbortController;
+  controllerInstanceId: string;
+  controllerLeaseId: string;
+  renewTimer?: ReturnType<typeof setInterval>;
 };
 
 type BunServeOptions = Parameters<typeof Bun.serve<HarnessConnection>>[0];
@@ -232,6 +268,7 @@ type HarnessServerState = {
   assistantManager: AssistantManager;
   cliSessionManager: CliSessionManager;
   scheduler: BackgroundJobScheduler;
+  osAdapters: HarnessServerOsAdapters;
 };
 
 type HarnessHandlerRefs = {
@@ -246,12 +283,25 @@ type HarnessHandlerRefs = {
 
 const LOG_COMMAND_ERRORS = process.env.NODE_ENV !== "production";
 
+function resolveHarnessServerOsAdapters(overrides: Partial<HarnessServerOsAdapters> | undefined): HarnessServerOsAdapters {
+  return {
+    searchProjectFolders,
+    runGitPreflight,
+    runCorrectnessReview,
+    branchfsManagerFactory(context, callbacks) {
+      return new BranchfsManager(context, callbacks);
+    },
+    ...overrides
+  };
+}
+
 export async function startHarnessServer({
   port,
   hostname,
   adapter = new PiSdkAgentAdapter(),
   repository: providedRepository,
   runtimeRegistry: providedRuntimeRegistry,
+  osAdapters,
   pickFolder = pickProjectFolder,
   serverOnly = false,
   openBrowser = false,
@@ -277,6 +327,7 @@ export async function startHarnessServer({
       adapter,
       repository: providedRepository,
       runtimeRegistry: providedRuntimeRegistry,
+      osAdapters,
       pickFolder,
       serverOnly,
       openBrowser,
@@ -295,6 +346,7 @@ export async function startHarnessServer({
     adapter,
     repository: providedRepository,
     runtimeRegistry: providedRuntimeRegistry,
+    osAdapters,
     pickFolder,
     serverOnly,
     launchMode,
@@ -311,7 +363,7 @@ export async function startHarnessServer({
     handlerRefs
   });
 
-  decorateHarnessServerStop(server, state);
+  decorateHarnessServerStop(server, () => state);
   return finalizeHarnessServerStartup({
     server,
     state,
@@ -344,7 +396,10 @@ async function startHotReloadableHarnessServer(
       | "timerApi"
     >
   > &
-    Pick<HarnessServerOptions, "hostname" | "adapter" | "repository" | "runtimeRegistry" | "pickFolder" | "startupTelemetry">
+    Pick<
+      HarnessServerOptions,
+      "hostname" | "adapter" | "repository" | "runtimeRegistry" | "osAdapters" | "pickFolder" | "startupTelemetry"
+    >
 ) {
   let singleton = getDevHarnessServerSingleton<
     HarnessServerState,
@@ -369,6 +424,7 @@ async function startHotReloadableHarnessServer(
     adapter: singleton?.state.adapter ?? options.adapter ?? new PiSdkAgentAdapter(),
     repository: options.repository,
     runtimeRegistry: options.runtimeRegistry,
+    osAdapters: options.osAdapters,
     pickFolder: options.pickFolder ?? pickProjectFolder,
     serverOnly: options.serverOnly,
     launchMode: options.launchMode,
@@ -435,7 +491,15 @@ async function startHotReloadableHarnessServer(
     pendingHandlerRefs: undefined,
     pendingApplyTimer: undefined
   });
-  decorateHarnessServerStop(server, state, () => {
+  decorateHarnessServerStop(server, () => {
+    const currentSingleton = getDevHarnessServerSingleton<
+      HarnessServerState,
+      HarnessHandlerRefs,
+      Awaited<ReturnType<typeof Bun.serve<HarnessConnection>>>,
+      HarnessWebSocketOptions
+    >();
+    return currentSingleton?.state ?? state;
+  }, () => {
     const currentSingleton = getDevHarnessServerSingleton<
       HarnessServerState,
       HarnessHandlerRefs,
@@ -462,6 +526,7 @@ async function initializeHarnessServerState(input: {
   adapter: PiAgentAdapter;
   repository?: WorkspaceRepository;
   runtimeRegistry?: AgentRuntimeRegistry;
+  osAdapters?: Partial<HarnessServerOsAdapters>;
   pickFolder: typeof pickProjectFolder;
   serverOnly: boolean;
   launchMode: SetupLaunchMode;
@@ -471,6 +536,7 @@ async function initializeHarnessServerState(input: {
   hotReloadDebounceMs: number;
   existingState?: HarnessServerState;
 }) {
+  const osAdapters = resolveHarnessServerOsAdapters(input.osAdapters);
   const initialRepository = input.existingState?.repository ?? input.repository ?? new WorkspaceRepository(Bun.env.HARNESS_DB_PATH);
   const baseServices = await runStartupPhase(
     input.startupTelemetry,
@@ -483,6 +549,7 @@ async function initializeHarnessServerState(input: {
         input.existingState?.runtimeRegistry ??
         input.runtimeRegistry ??
         new AgentRuntimeRegistry([new PiRuntime(input.adapter), new CopilotCliRuntime(), new CodexCliRuntime()]),
+      osAdapters: input.existingState?.osAdapters ?? osAdapters,
       pendingBrowserApprovals: input.existingState?.pendingBrowserApprovals ?? new Map<string, PendingBrowserApproval>(),
       backgroundRunControllers: input.existingState?.backgroundRunControllers ?? new Map<string, BackgroundRunControl>(),
       projectSearchControllers: input.existingState?.projectSearchControllers ?? new Map<string, { requestId: string; abortController: AbortController }>(),
@@ -555,11 +622,20 @@ async function initializeHarnessServerState(input: {
         for (const run of repository.loadBackgroundJobsState().runs) {
           saveBackgroundRunStatusNotification(repository, run);
         }
+        const assistantManager = input.existingState.assistantManager;
+        const scheduler = createBackgroundJobScheduler({
+          repository,
+          runtime,
+          runtimeRegistry: baseServices.runtimeRegistry,
+          assistantManager,
+          connections: baseServices.connections,
+          backgroundRunControllers: baseServices.backgroundRunControllers
+        });
         return {
           currentSetupState,
-          assistantManager: input.existingState.assistantManager,
+          assistantManager,
           cliSessionManager: input.existingState.cliSessionManager,
-          scheduler: input.existingState.scheduler
+          scheduler
         };
       }
 
@@ -646,23 +722,13 @@ async function initializeHarnessServerState(input: {
         }
       });
 
-      const scheduler = new BackgroundJobScheduler({
+      const scheduler = createBackgroundJobScheduler({
         repository,
-        onRunQueued(run, job) {
-          emitBackgroundJobsUpdatedToAll(baseServices.connections, repository.loadBackgroundJobsState());
-          void emitBackgroundJobRunUpdatedToAll(baseServices.connections, run);
-          if (run.status === "queued") {
-            return launchBackgroundJobRun(
-              baseServices.connections,
-              repository,
-              baseServices.runtimeRegistry,
-              runtime,
-              baseServices.backgroundRunControllers,
-              assistantManager,
-              run.id
-            );
-          }
-        }
+        runtime,
+        runtimeRegistry: baseServices.runtimeRegistry,
+        assistantManager,
+        connections: baseServices.connections,
+        backgroundRunControllers: baseServices.backgroundRunControllers
       });
 
       return {
@@ -690,6 +756,7 @@ async function initializeHarnessServerState(input: {
     connections: baseServices.connections,
     uploadthingHandler: baseServices.uploadthingHandler,
     ui: baseServices.ui,
+    osAdapters: baseServices.osAdapters,
     currentSetupState: setupResult.currentSetupState,
     assistantManager: setupResult.assistantManager,
     cliSessionManager: setupResult.cliSessionManager,
@@ -712,6 +779,79 @@ async function runUiStartupPhase(startupTelemetry: StartupTelemetrySink | undefi
       ui.uiAssets.startWatching();
     }
   );
+}
+
+function createBackgroundJobScheduler(input: {
+  repository: WorkspaceRepository;
+  runtime: WorkspaceRuntimeStore;
+  runtimeRegistry: AgentRuntimeRegistry;
+  assistantManager: AssistantManager;
+  connections: Set<Bun.ServerWebSocket<HarnessConnection>>;
+  backgroundRunControllers: Map<string, BackgroundRunControl>;
+}) {
+  const { repository, runtime, runtimeRegistry, assistantManager, connections, backgroundRunControllers } = input;
+  return new BackgroundJobScheduler({
+    repository,
+    isRunLive(run) {
+      return isBackgroundRunLive(backgroundRunControllers, runtime, run);
+    },
+    onRunsTimingOut(runs) {
+      for (const run of runs) {
+        backgroundRunControllers.get(run.id)?.abortController.abort();
+      }
+    },
+    repairActiveRuns(now) {
+      return resumeAndRepairBackgroundJobRuns(
+        repository,
+        connections,
+        runtimeRegistry,
+        runtime,
+        backgroundRunControllers,
+        assistantManager,
+        now
+      );
+    },
+    async onRunsRepaired(runs) {
+      for (const run of runs) {
+        syncBackgroundJobFailureTracking(repository, run);
+        saveBackgroundRunStatusNotification(repository, run);
+        await emitBackgroundJobRunUpdatedToAll(connections, run);
+      }
+      emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
+      emitNotificationsUpdatedToAll(connections, `bg:auto:${crypto.randomUUID()}`, repository.loadNotificationInboxState());
+    },
+    onRunQueued(run, job) {
+      emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
+      void emitBackgroundJobRunUpdatedToAll(connections, run);
+      if (run.status === "queued") {
+        return launchBackgroundJobRun(
+          connections,
+          repository,
+          runtimeRegistry,
+          runtime,
+          backgroundRunControllers,
+          assistantManager,
+          run.id
+        );
+      }
+    },
+    onTickFailed(error) {
+      const failureMessage = error instanceof Error ? error.message : "Unknown background scheduler failure";
+      if (process.env.NODE_ENV !== "production") {
+        console.error(error);
+      }
+      const now = new Date().toISOString();
+      for (const job of repository.loadBackgroundJobsState().jobs.filter((entry) => entry.status === "enabled")) {
+        repository.updateBackgroundJobSchedulerState(job.id, {
+          schedulerStatus: "stale",
+          schedulerDetail: failureMessage,
+          blockedReason: failureMessage,
+          lastSchedulerCheckAt: now
+        });
+      }
+      emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
+    }
+  });
 }
 
 function createHarnessHandlerRefs(
@@ -887,6 +1027,7 @@ function createHarnessHandlerRefs(
           state.backgroundRunControllers,
           state.projectSearchControllers,
           state.scheduler,
+          state.osAdapters,
           options.derivedProgressHeartbeatMs
         ).catch((error) => {
           if (error instanceof PreflightDecisionRequiredError) {
@@ -924,11 +1065,13 @@ function createHarnessBunServer(input: {
 
 function decorateHarnessServerStop(
   server: Awaited<ReturnType<typeof Bun.serve<HarnessConnection>>>,
-  state: HarnessServerState,
+  getState: () => HarnessServerState,
   onStopped?: () => void
 ) {
   const stop = server.stop.bind(server);
   server.stop = ((closeActiveConnections?: boolean) => {
+    const state = getState();
+    failLiveBackgroundRunsOnShutdown(state.repository, state.backgroundRunControllers);
     if (state.ui.mode === "static-dist") {
       state.ui.uiAssets.dispose();
     }
@@ -948,16 +1091,17 @@ function finalizeHarnessServerStartup(input: {
     browserOpenedOnce: boolean;
   };
 }) {
+  input.state.scheduler.stop();
   input.state.scheduler.start();
   const serverUrl = `http://${input.server.hostname ?? "localhost"}:${input.server.port}`;
   if (process.env.NODE_ENV !== "test") {
-    console.log(`Harness server listening on ${serverUrl}`);
+    console.log(`Harness ${HARNESS_APP_VERSION} server listening on ${serverUrl}`);
   }
   input.startupTelemetry?.phaseComplete("server listeners ready", {
     port: input.server.port,
     serverUrl
   });
-  input.startupTelemetry?.complete(`Harness server listening on ${serverUrl}`, {
+  input.startupTelemetry?.complete(`Harness ${HARNESS_APP_VERSION} server listening on ${serverUrl}`, {
     port: input.server.port,
     serverUrl
   });
@@ -1045,6 +1189,7 @@ function applyHotReloadUpdate(
     return;
   }
 
+  const previousState = singleton.state;
   singleton.state = singleton.pendingState;
   singleton.handlerRefs = singleton.pendingHandlerRefs;
   singleton.pendingState = undefined;
@@ -1055,6 +1200,11 @@ function applyHotReloadUpdate(
     websocket: singleton.websocketShell
   });
   setDevHarnessServerSingleton(singleton);
+  if (previousState.scheduler !== singleton.state.scheduler) {
+    previousState.scheduler.stop();
+  }
+  singleton.state.scheduler.stop();
+  singleton.state.scheduler.start();
 }
 
 function clearPendingHotReloadUpdate(
@@ -1093,6 +1243,47 @@ async function createUiAssetResponse(assetPath: string, liveReload: UiLiveReload
   });
 }
 
+function failLiveBackgroundRunsOnShutdown(
+  repository: WorkspaceRepository,
+  backgroundRunControllers: Map<string, BackgroundRunControl>
+) {
+  for (const [runId, control] of backgroundRunControllers.entries()) {
+    const run = repository.getBackgroundJobRun(runId);
+    if (run?.status === "running") {
+      repository.setBackgroundJobRunStatus(run.id, "failed", {
+        failureMessage: "Local harness process shut down before completion",
+        failureCategory: "shutdown-interrupt"
+      });
+      repository.appendBackgroundJobRunEvent(
+        run.id,
+        "failed",
+        "Background run interrupted by shutdown",
+        "The local harness process shut down before completion."
+      );
+    }
+    abortBackgroundRunControl(control);
+  }
+  backgroundRunControllers.clear();
+}
+
+function disposeBackgroundRunControl(control: BackgroundRunControl | undefined) {
+  if (!control) {
+    return;
+  }
+  if (control.renewTimer) {
+    clearInterval(control.renewTimer);
+    control.renewTimer = undefined;
+  }
+}
+
+function abortBackgroundRunControl(control: BackgroundRunControl | undefined) {
+  if (!control) {
+    return;
+  }
+  disposeBackgroundRunControl(control);
+  control.abortController.abort();
+}
+
 function injectDevLiveReloadScript(html: string) {
   const script = `<script>
 (() => {
@@ -1128,6 +1319,7 @@ function injectDevLiveReloadScript(html: string) {
 function hydrateAdapterFromRepository(adapter: PiAgentAdapter, repository: WorkspaceRepository) {
   const storedOpenAiApiKey = repository.getStoredOpenAiApiKey();
   const storedGoogleApiKey = repository.getStoredGoogleApiKey();
+  const storedAnthropicApiKey = repository.getStoredAnthropicApiKey();
 
   if (storedOpenAiApiKey) {
     adapter.setApiKey("openai", storedOpenAiApiKey);
@@ -1135,6 +1327,10 @@ function hydrateAdapterFromRepository(adapter: PiAgentAdapter, repository: Works
 
   if (storedGoogleApiKey) {
     adapter.setApiKey("google", storedGoogleApiKey);
+  }
+
+  if (storedAnthropicApiKey) {
+    adapter.setApiKey("anthropic", storedAnthropicApiKey);
   }
 
   applyAdapterAutoCompactionThreshold(adapter, repository.getAutoCompactContextThresholdPercentDefault());
@@ -1190,6 +1386,7 @@ async function handleCommand(
   backgroundRunControllers: Map<string, BackgroundRunControl>,
   projectSearchControllers: Map<string, { requestId: string; abortController: AbortController }>,
   scheduler: BackgroundJobScheduler,
+  osAdapters: HarnessServerOsAdapters,
   derivedProgressHeartbeatMs: number
 ) {
   switch (command.type) {
@@ -1424,7 +1621,7 @@ async function handleCommand(
         abortController
       });
       try {
-        const results = await searchProjectFolders({
+        const results = await osAdapters.searchProjectFolders({
           query: command.payload.query,
           workspaceProjectPaths: runtime.getWorkspace().projects.map((project) => project.rootPath),
           signal: abortController.signal
@@ -1519,6 +1716,18 @@ async function handleCommand(
       });
       return;
     }
+    case "thread.archive": {
+      const nextProject = repository.archiveThread(command.payload.projectId, command.payload.threadId);
+      runtime.upsertPersistedProject(nextProject);
+      emitProjectUpdated(ws, command.requestId, command.payload.projectId, nextProject);
+      return;
+    }
+    case "thread.restore": {
+      const nextProject = repository.restoreThread(command.payload.projectId, command.payload.threadId);
+      runtime.upsertPersistedProject(nextProject);
+      emitProjectUpdated(ws, command.requestId, command.payload.projectId, nextProject);
+      return;
+    }
     case "session.reset": {
       const activeProject = runtime.getProject(command.payload.projectId);
       if (activeProject.session.isStreaming) {
@@ -1588,7 +1797,7 @@ async function handleCommand(
       assertActiveThread(project, command.payload.threadId);
       assertProjectCanStartRun(repository, runtime, projectId, command.payload.threadId);
       assertRuntimeAvailable(agentRuntime, agentCapability);
-      await enforceExecutionPreflight(ws, command.requestId, runtime, repository, project);
+      await enforceExecutionPreflight(ws, command.requestId, runtime, repository, project, osAdapters);
       const attachments = validatePromptAttachments(repository, projectId, command.payload.threadId, command.payload.attachments);
       const capturedCliContext = runtime.consumeThreadCapturedCliContext(projectId, command.payload.threadId);
       const promptContent = appendCapturedCliContext(command.payload.content, capturedCliContext);
@@ -1617,13 +1826,14 @@ async function handleCommand(
         }))
       };
       const detectedMode = detectAutoMode(command.payload.content, resolvedModes, modeIntentContext);
+      const autoModeRequested = command.payload.modeId === "auto";
       const effectiveModeId =
-        command.payload.modeLocked && command.payload.modeId
+        command.payload.modeLocked && command.payload.modeId && !autoModeRequested
           ? command.payload.modeId
-          : detectedMode?.modeId ?? command.payload.modeId ?? project.selectedModeId;
+          : detectedMode?.modeId ?? (autoModeRequested ? undefined : command.payload.modeId) ?? project.selectedModeId;
       const effectiveMode = resolveModeById(effectiveModeId, runtime.getWorkspace().workspaceModes, project.projectModes);
 
-      if (effectiveModeId && effectiveModeId !== project.selectedModeId) {
+      if (!autoModeRequested && effectiveModeId && effectiveModeId !== project.selectedModeId) {
         const modeProject = repository.setProjectSelectedMode(projectId, effectiveModeId);
         runtime.upsertPersistedProject(modeProject);
         emitProjectUpdated(ws, command.requestId, projectId, modeProject);
@@ -1676,7 +1886,8 @@ async function handleCommand(
           projectId,
           promptContent,
           agentRuntime.getDefaultPlanningModelId(providerBrand),
-          command.payload.threadId
+          command.payload.threadId,
+          command.payload.runtimeBudget?.maxTurns
         );
         const createdRun = runProject.activeRun ?? repository.getLatestThreadRun(projectId, command.payload.threadId);
         if (!createdRun) {
@@ -1740,7 +1951,8 @@ async function handleCommand(
         projectId,
         promptContent,
         agentRuntime.getDefaultPlanningModelId(providerBrand),
-        command.payload.threadId
+        command.payload.threadId,
+        command.payload.runtimeBudget?.maxTurns
       );
       const createdRun = runProject.activeRun ?? repository.getLatestThreadRun(projectId, command.payload.threadId);
       if (!createdRun) {
@@ -1788,10 +2000,11 @@ async function handleCommand(
       runtime.setProjectError(projectId, undefined, command.payload.threadId);
       runtime.setProjectStreaming(projectId, true, command.payload.threadId);
       runtime.clearStreaming(projectId, command.payload.threadId);
+      const estimatedDifficulty = estimateTaskDifficulty(command.payload.content, modeIntentContext);
       const quickTaskBypassEligible =
-        (attachments?.length ?? 0) === 0 &&
-        resolveModeExecutionAccess(effectiveMode) === "workspace-write" &&
-        isDirectWorkspaceImplementTask(command.payload.content, modeIntentContext);
+        effectiveMode?.id !== "plan" &&
+        (estimatedDifficulty <= PLANNER_DIFFICULTY_THRESHOLD ||
+          isDirectWorkspaceImplementTask(command.payload.content, modeIntentContext));
       if (resolvedExecutionModel.requestedModelRejected) {
         appendSystemStatus(
           ws,
@@ -1816,6 +2029,7 @@ async function handleCommand(
             executionModelId: effectiveExecutionModelId,
             latestUserPrompt: promptContent,
             mode: effectiveMode,
+            difficultyScore: estimatedDifficulty,
             threadId: command.payload.threadId,
             reasoningStrength: command.payload.reasoningStrength,
             fastMode: command.payload.fastMode
@@ -1823,7 +2037,7 @@ async function handleCommand(
           return;
         }
 
-        await continueRunLifecycle(ws, command.requestId, runtime, repository, agentRuntime.getAdapter(), pendingBrowserApprovals, connections, {
+        await continueRunLifecycle(ws, command.requestId, runtime, repository, createRunBudgetAdapter(agentRuntime.getAdapter(), repository, projectId, createdRun.id), pendingBrowserApprovals, connections, {
           projectId,
           threadId: command.payload.threadId,
           runId: createdRun.id,
@@ -1833,6 +2047,7 @@ async function handleCommand(
           executionModelId: effectiveExecutionModelId,
           reasoningStrength: command.payload.reasoningStrength,
           fastMode: command.payload.fastMode,
+          enableGeminiAttachmentCaching: true,
           abortSignal: abortController.signal,
           derivedProgressHeartbeatMs
         });
@@ -1871,7 +2086,7 @@ async function handleCommand(
       }
 
       assertRuntimeAvailable(agentRuntime);
-      await enforceExecutionPreflight(ws, command.requestId, runtime, repository, project);
+      await enforceExecutionPreflight(ws, command.requestId, runtime, repository, project, osAdapters);
       const attachments = validatePromptAttachments(repository, projectId, command.payload.threadId, command.payload.attachments);
       const capturedCliContext = runtime.consumeThreadCapturedCliContext(projectId, command.payload.threadId);
       const promptContent = appendCapturedCliContext(command.payload.content, capturedCliContext);
@@ -1898,7 +2113,8 @@ async function handleCommand(
         projectId,
         promptContent,
         agentRuntime.getDefaultPlanningModelId(providerBrand),
-        command.payload.threadId
+        command.payload.threadId,
+        command.payload.runtimeBudget?.maxTurns
       );
       const createdRun = runProject.activeRun ?? repository.getLatestThreadRun(projectId, command.payload.threadId);
       if (!createdRun) {
@@ -1910,12 +2126,13 @@ async function handleCommand(
       runtime.setProjectError(projectId, undefined, command.payload.threadId);
       runtime.setProjectStreaming(projectId, true, command.payload.threadId);
       runtime.clearStreaming(projectId, command.payload.threadId);
+      repository.setAgentRunRuntimeBudget(projectId, activeRun.id, command.payload.runtimeBudget?.maxTurns);
 
       const abortController = new AbortController();
       runtime.setAbortController(projectId, createdRun.id, abortController);
 
       try {
-        await continueRunLifecycle(ws, command.requestId, runtime, repository, agentRuntime.getAdapter(), pendingBrowserApprovals, connections, {
+        await continueRunLifecycle(ws, command.requestId, runtime, repository, createRunBudgetAdapter(agentRuntime.getAdapter(), repository, projectId, createdRun.id), pendingBrowserApprovals, connections, {
           projectId,
           threadId: command.payload.threadId,
           runId: createdRun.id,
@@ -2009,12 +2226,13 @@ async function handleCommand(
       runtime.setProjectError(projectId, undefined, command.payload.threadId);
       runtime.setProjectStreaming(projectId, true, command.payload.threadId);
       runtime.clearStreaming(projectId, command.payload.threadId);
+      repository.setAgentRunRuntimeBudget(projectId, targetRun.id, command.payload.runtimeBudget?.maxTurns);
 
       const abortController = new AbortController();
       runtime.setAbortController(projectId, targetRun.id, abortController);
 
       try {
-        await continueRunLifecycle(ws, command.requestId, runtime, repository, agentRuntime.getAdapter(), pendingBrowserApprovals, connections, {
+        await continueRunLifecycle(ws, command.requestId, runtime, repository, createRunBudgetAdapter(agentRuntime.getAdapter(), repository, projectId, targetRun.id), pendingBrowserApprovals, connections, {
           projectId,
           threadId: command.payload.threadId,
           runId: targetRun.id,
@@ -2221,12 +2439,13 @@ async function handleCommand(
       runtime.setProjectError(projectId, undefined, command.payload.threadId);
       runtime.setProjectStreaming(projectId, true, command.payload.threadId);
       runtime.clearStreaming(projectId, command.payload.threadId);
+      repository.setAgentRunRuntimeBudget(projectId, targetRun.id, command.payload.runtimeBudget?.maxTurns);
 
       const abortController = new AbortController();
       runtime.setAbortController(projectId, targetRun.id, abortController);
 
       try {
-        await continueRunLifecycle(ws, command.requestId, runtime, repository, agentRuntime.getAdapter(), pendingBrowserApprovals, connections, {
+        await continueRunLifecycle(ws, command.requestId, runtime, repository, createRunBudgetAdapter(agentRuntime.getAdapter(), repository, projectId, targetRun.id), pendingBrowserApprovals, connections, {
           projectId,
           threadId: command.payload.threadId,
           runId: targetRun.id,
@@ -2279,7 +2498,7 @@ async function handleCommand(
       if (activeRun.status !== "ready") {
         throw new Error(`Run status ${activeRun.status} is not executable`);
       }
-      await enforceExecutionPreflight(ws, command.requestId, runtime, repository, project);
+      await enforceExecutionPreflight(ws, command.requestId, runtime, repository, project, osAdapters);
 
       const providerBrand = repository.getProviderBrand();
       runtime.setProjectError(projectId, undefined, command.payload.threadId);
@@ -2290,7 +2509,7 @@ async function handleCommand(
       runtime.setAbortController(projectId, activeRun.id, abortController);
 
       try {
-        await executeRunLifecycle(ws, command.requestId, runtime, repository, agentRuntime.getAdapter(), pendingBrowserApprovals, connections, {
+        await executeRunLifecycle(ws, command.requestId, runtime, repository, createRunBudgetAdapter(agentRuntime.getAdapter(), repository, projectId, activeRun.id), pendingBrowserApprovals, connections, osAdapters, {
           projectId,
           agentId: agentRuntime.id,
           providerBrand,
@@ -2329,6 +2548,19 @@ async function handleCommand(
 
       return;
     }
+    case "run.complete": {
+      const projectId = command.payload.projectId;
+      const project = runtime.getProject(projectId);
+      assertActiveThread(project, command.payload.threadId);
+      await completeRunWithAssistantMessage(ws, command.requestId, runtime, repository, connections, {
+        projectId,
+        threadId: command.payload.threadId,
+        runId: command.payload.runId,
+        assistantMessageContent: command.payload.assistantMessageContent,
+        partialReason: command.payload.partialReason
+      });
+      return;
+    }
     case "experiment.inspect": {
       const project = runtime.getProject(command.payload.projectId);
       const run = requireRunById(project, command.payload.runId);
@@ -2336,7 +2568,7 @@ async function handleCommand(
         throw new Error("Experiment not found");
       }
 
-      const manager = new BranchfsManager({ rootPath: project.rootPath, runId: run.id });
+      const manager = osAdapters.branchfsManagerFactory({ rootPath: project.rootPath, runId: run.id });
       const inspection = await manager.readInspection(createExperimentLease(project.rootPath, run.experiment));
       const updatedProject = repository.saveExperimentRun(command.payload.projectId, run.id, inspection.experiment);
       runtime.upsertPersistedProject(updatedProject);
@@ -2360,7 +2592,7 @@ async function handleCommand(
       }
 
       await assertExperimentPromotionPreconditions(project.rootPath, run.experiment);
-      const manager = new BranchfsManager({ rootPath: project.rootPath, runId: run.id });
+      const manager = osAdapters.branchfsManagerFactory({ rootPath: project.rootPath, runId: run.id });
       const lease = createExperimentLease(project.rootPath, run.experiment);
       const inspection = await manager.flushExperiment(lease);
       await createExperimentCommit(project.rootPath, run.id);
@@ -2385,7 +2617,7 @@ async function handleCommand(
       }
 
       const now = new Date().toISOString();
-      const manager = new BranchfsManager({ rootPath: project.rootPath, runId: run.id });
+      const manager = osAdapters.branchfsManagerFactory({ rootPath: project.rootPath, runId: run.id });
       await manager.discardExperiment(createExperimentLease(project.rootPath, run.experiment));
       const updatedProject = repository.saveExperimentRun(command.payload.projectId, run.id, {
         ...run.experiment,
@@ -2459,6 +2691,16 @@ async function handleCommand(
       });
       return;
     }
+    case "run-diagnostics.inspect": {
+      sendEvent(ws, {
+        type: "run-diagnostics.inspected",
+        requestId: command.requestId,
+        payload: {
+          report: buildRunDiagnosticsReport(repository, command.payload?.windowDays ?? 7)
+        }
+      });
+      return;
+    }
     case "run.resume": {
       assertGlobalExecutionNotPaused(repository);
       const projectId = command.payload.projectId;
@@ -2470,7 +2712,7 @@ async function handleCommand(
       if (!activeRun.resumable) {
         throw new Error("Run is not resumable");
       }
-      await enforceExecutionPreflight(ws, command.requestId, runtime, repository, project);
+      await enforceExecutionPreflight(ws, command.requestId, runtime, repository, project, osAdapters);
 
       const providerBrand = repository.getProviderBrand();
       if (command.payload.guidanceText?.trim()) {
@@ -2482,6 +2724,7 @@ async function handleCommand(
       runtime.setProjectError(projectId, undefined, command.payload.threadId);
       runtime.setProjectStreaming(projectId, true, command.payload.threadId);
       runtime.clearStreaming(projectId, command.payload.threadId);
+      repository.setAgentRunRuntimeBudget(projectId, activeRun.id, command.payload.runtimeBudget?.maxTurns);
 
       const abortController = new AbortController();
       runtime.setAbortController(projectId, activeRun.id, abortController);
@@ -2492,9 +2735,10 @@ async function handleCommand(
           command.requestId,
           runtime,
           repository,
-          agentRuntime.getAdapter(),
+          createRunBudgetAdapter(agentRuntime.getAdapter(), repository, projectId, activeRun.id),
           pendingBrowserApprovals,
           connections,
+          osAdapters,
           {
             projectId,
             agentId: agentRuntime.id,
@@ -2541,7 +2785,7 @@ async function handleCommand(
       const agentRuntime = resolveProjectAgentRuntime(runtimeRegistry, project);
       assertActiveThread(project, command.payload.threadId);
       assertProjectCanStartRetry(repository, runtime, projectId, command.payload.threadId, command.payload.runId);
-      await enforceExecutionPreflight(ws, command.requestId, runtime, repository, project);
+      await enforceExecutionPreflight(ws, command.requestId, runtime, repository, project, osAdapters);
 
       const retryRun = requireRetryablePersistedRun(repository, projectId, command.payload.threadId, command.payload.runId);
       const providerBrand = repository.getProviderBrand();
@@ -2566,7 +2810,8 @@ async function handleCommand(
             projectId,
             retryRun.latestUserPrompt,
             retryRun.planningModelId ?? agentRuntime.getDefaultPlanningModelId(providerBrand),
-            command.payload.threadId
+            command.payload.threadId,
+            command.payload.runtimeBudget?.maxTurns ?? retryRun.runtimeBudget?.maxTurns
           );
           const nextRunId = runProject.activeRun?.id;
           if (!nextRunId) {
@@ -2578,7 +2823,7 @@ async function handleCommand(
           emitRunUpdated(ws, command.requestId, runtime.getProject(projectId));
           runtime.setProjectExecutionModel(projectId, executionModelId);
 
-          await continueRunLifecycle(ws, command.requestId, runtime, repository, agentRuntime.getAdapter(), pendingBrowserApprovals, connections, {
+          await continueRunLifecycle(ws, command.requestId, runtime, repository, createRunBudgetAdapter(agentRuntime.getAdapter(), repository, projectId, nextRunId), pendingBrowserApprovals, connections, {
             projectId,
             threadId: command.payload.threadId,
             runId: nextRunId,
@@ -2602,7 +2847,8 @@ async function handleCommand(
             projectId,
             retryRun.latestUserPrompt,
             retryRun.planningModelId ?? agentRuntime.getDefaultPlanningModelId(providerBrand),
-            command.payload.threadId
+            command.payload.threadId,
+            command.payload.runtimeBudget?.maxTurns ?? retryRun.runtimeBudget?.maxTurns
           );
           const nextRunId = runProject.activeRun?.id;
           if (!nextRunId) {
@@ -2660,7 +2906,7 @@ async function handleCommand(
             command.requestId,
             runtime,
             repository,
-            agentRuntime.getAdapter(),
+            createRunBudgetAdapter(agentRuntime.getAdapter(), repository, projectId, nextRunId),
             pendingBrowserApprovals,
             connections,
             {
@@ -2761,12 +3007,23 @@ async function handleCommand(
     }
     case "background-job.run-now": {
       assertGlobalExecutionNotPaused(repository);
-      const job = requireBackgroundJobForProject(repository, command.payload.projectId, command.payload.jobId);
+      const loadedJob = requireBackgroundJobForProject(repository, command.payload.projectId, command.payload.jobId);
+      const job = repository.repairBackgroundJobReferences(loadedJob.id) ?? loadedJob;
       if (job.status === "disabled") {
         throw new Error(`Background job ${job.id} is disabled`);
       }
       if (job.assistantId) {
         assertAssistantRunnableForLaunch(repository, job.assistantId);
+      }
+      await repairBackgroundJobRunsForJob(
+        repository,
+        connections,
+        command.payload.jobId,
+        (run) => isBackgroundRunLive(backgroundRunControllers, runtime, run)
+      );
+      const activeRun = repository.getActiveBackgroundJobRuns(command.payload.jobId)[0];
+      if (activeRun) {
+        throw new Error(formatActiveBackgroundRunError(activeRun));
       }
       const queuedRun = repository.createBackgroundJobRun({
         jobId: job.id,
@@ -2796,12 +3053,23 @@ async function handleCommand(
       const existingRun = requireBackgroundRunForProject(repository, command.payload.projectId, command.payload.runId);
       assertBackgroundRunTransition(existingRun, "stop");
       const control = backgroundRunControllers.get(existingRun.id);
-      control?.abortController.abort();
       const updatedRun = repository.setBackgroundJobRunStatus(existingRun.id, "cancelled", {
-        failureMessage: "Stopped by user"
+        failureMessage: "Stopped by user",
+        failureCategory: "manual-abort"
       });
+      if (existingRun.linkedAgentRunId) {
+        const stoppedProject = repository.setAgentRunStatus(
+          existingRun.projectId,
+          existingRun.linkedAgentRunId,
+          "stopped",
+          "Background run stopped by user"
+        );
+        runtime.upsertPersistedProject(stoppedProject);
+        emitRunUpdatedById(ws, command.requestId, repository, existingRun.projectId, existingRun.linkedAgentRunId, connections);
+      }
       repository.appendBackgroundJobRunEvent(existingRun.id, "cancelled", "Background run cancelled", "Stopped by user");
       saveBackgroundRunStatusNotification(repository, updatedRun);
+      abortBackgroundRunControl(control);
       backgroundRunControllers.delete(existingRun.id);
       await emitBackgroundJobRunUpdatedToAll(connections, updatedRun);
       emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
@@ -2866,7 +3134,8 @@ async function handleCommand(
       assertBackgroundRunTransition(existingRun, "reject");
       const updatedRun = repository.setBackgroundJobRunStatus(existingRun.id, "cancelled", {
         approvalStatus: "rejected",
-        failureMessage: "Rejected before execution"
+        failureMessage: "Rejected before execution",
+        failureCategory: "manual-abort"
       });
       repository.appendBackgroundJobRunEvent(existingRun.id, "cancelled", "Background run rejected");
       saveBackgroundRunStatusNotification(repository, updatedRun);
@@ -2930,7 +3199,7 @@ async function handleCommand(
       for (const [runId, control] of backgroundRunControllers.entries()) {
         const run = repository.getBackgroundJobRun(runId);
         if (run?.assistantId === command.payload.assistantId) {
-          control.abortController.abort();
+          abortBackgroundRunControl(control);
           backgroundRunControllers.delete(runId);
         }
       }
@@ -3062,10 +3331,22 @@ async function handleCommand(
       assistantManager.scheduleReprioritize(command.payload.todo.assistantId, "manual-todo-update");
       return;
     }
+    case "assistant.todo.delete": {
+      repository.deleteAssistantTodo(command.payload.assistantId, command.payload.todoId);
+      emitAssistantsUpdatedToAll(connections, repository.loadAssistantsState());
+      assistantManager.scheduleReprioritize(command.payload.assistantId, "manual-todo-delete");
+      return;
+    }
     case "assistant.todo.reorder": {
       repository.reorderAssistantTodos(command.payload.assistantId, command.payload.todoIds);
       emitAssistantsUpdatedToAll(connections, repository.loadAssistantsState());
       assistantManager.scheduleReprioritize(command.payload.assistantId, "manual-todo-reorder");
+      return;
+    }
+    case "assistant.learning.delete": {
+      repository.deleteAssistantLearning(command.payload.assistantId, command.payload.learningId);
+      emitAssistantsUpdatedToAll(connections, repository.loadAssistantsState());
+      assistantManager.scheduleReprioritize(command.payload.assistantId, "manual-learning-delete");
       return;
     }
     case "browser.approval.resolve": {
@@ -3180,6 +3461,11 @@ async function handleCommand(
         adapter.setApiKey("google", command.payload.googleApiKey);
       }
 
+      if (command.payload.anthropicApiKey) {
+        repository.setStoredAnthropicApiKey(command.payload.anthropicApiKey);
+        adapter.setApiKey("anthropic", command.payload.anthropicApiKey);
+      }
+
       repository.setProviderBrand(command.payload.providerBrand);
       repository.setDebugEnabledDefault(command.payload.debugEnabled);
       repository.setTracePanelDefaultOpen(command.payload.tracePanelDefaultOpen);
@@ -3191,6 +3477,7 @@ async function handleCommand(
       repository.setPlanExecutionDelaySecondsDefault(command.payload.planExecutionDelaySecondsDefault);
       repository.setCorrectnessIterationModeDefault(command.payload.correctnessIterationModeDefault);
       repository.setBackgroundJobApprovalPolicyDefault(command.payload.backgroundJobApprovalPolicyDefault);
+      setRepositoryAutoArchiveCompletedThreadsDefault(repository, command.payload.autoArchiveCompletedThreadsDefault ?? false);
       repository.setMemoryBankEnabledDefault(
         command.payload.memoryBankEnabledDefault ?? repository.getMemoryBankEnabledDefault()
       );
@@ -3212,8 +3499,10 @@ async function handleCommand(
     case "preferences.clearApiKey": {
       repository.clearStoredOpenAiApiKey();
       repository.clearStoredGoogleApiKey();
+      repository.clearStoredAnthropicApiKey();
       adapter.setApiKey("openai", undefined);
       adapter.setApiKey("google", undefined);
+      adapter.setApiKey("anthropic", undefined);
       await runtimeRegistry.refreshAll();
       const preferences = getCurrentPreferencesState();
       const setup = await emitSetupRefresh(command.requestId);
@@ -3267,11 +3556,12 @@ async function continueRunLifecycle(
     threadId: ThreadId;
     runId: string;
     agentId: "pi" | "copilot-cli" | "codex-cli";
-    providerBrand: "gpt" | "gemini";
+    providerBrand: ProviderBrand;
     debugEnabled: boolean;
     executionModelId: string;
     reasoningStrength?: ComposerReasoningStrength;
     fastMode?: boolean;
+    enableGeminiAttachmentCaching?: boolean;
     abortSignal: AbortSignal;
     derivedProgressHeartbeatMs: number;
   }
@@ -3310,6 +3600,24 @@ async function continueRunLifecycle(
         queryText: activeRun.latestUserPrompt
       })
       : { memorySummaries: [] as MemorySummary[] };
+  const plannerMemorySummaries = [...memorySummaries, ...memoryBank.memorySummaries];
+  const promptCacheIdentity = buildProjectPromptCacheIdentity({
+    repository,
+    projectId: options.projectId,
+    projectRootPath: project.rootPath,
+    providerBrand: options.providerBrand,
+    selectedModeId: project.selectedModeId,
+    mode,
+    ruleSources,
+    memorySummaries: plannerMemorySummaries
+  });
+  const geminiCachedAttachmentContext = await prepareRunGeminiAttachmentCache({
+    repository,
+    projectId: options.projectId,
+    modelId: activeRun.planningModelId ?? getDefaultPlanningModelId(options.providerBrand),
+    messages: threadSession.messages,
+    enabled: options.enableGeminiAttachmentCaching && options.providerBrand === "gemini"
+  });
   const plannerTurn = await runPlannerTurn(adapter, {
     cwd: project.rootPath,
     sessionId: threadSession.sessionId,
@@ -3326,10 +3634,12 @@ async function continueRunLifecycle(
     correctnessIterationMode,
     mode,
     ruleSources,
-    memorySummaries: [...memorySummaries, ...memoryBank.memorySummaries],
+    memorySummaries: plannerMemorySummaries,
     priorQuestions: activeRun.questions,
     reasoningStrength: options.reasoningStrength,
     fastMode: options.fastMode,
+    promptCacheIdentity,
+    geminiCachedAttachmentContext,
     abortSignal: options.abortSignal,
     callbacks: createExecutionCallbacks(
       ws,
@@ -3346,13 +3656,18 @@ async function continueRunLifecycle(
       options.derivedProgressHeartbeatMs
     )
   });
+  const promptProject = repository.setAgentRunPromptStats(options.projectId, activeRun.id, plannerTurn.promptStats);
+  runtime.upsertPersistedProject(promptProject);
 
   if (plannerTurn.plannerResult.type === "question") {
     const questionStatus = repository.getGlobalExecutionPaused() ? "deferred" : "pending";
-    let questionProject = repository.getProject(options.projectId);
-    for (const question of plannerTurn.plannerResult.questions) {
-      questionProject = repository.appendPlanningQuestion(options.projectId, activeRun.id, question, questionStatus);
-    }
+    const questionProject = repository.appendPlanningQuestions(
+      options.projectId,
+      activeRun.id,
+      plannerTurn.plannerResult.questions,
+      questionStatus,
+      createStableBoundedId(["planner-turn", activeRun.id, plannerTurn.promptStats.promptHash])
+    );
     runtime.upsertPersistedProject(questionProject);
     emitRunUpdatedById(ws, requestId, repository, options.projectId, activeRun.id);
 
@@ -3449,11 +3764,12 @@ async function continueQuickTaskLifecycle(
   projectId: ProjectId,
   options: {
     agentId: "pi" | "copilot-cli" | "codex-cli";
-    providerBrand: "gpt" | "gemini";
+    providerBrand: ProviderBrand;
     runId?: string;
     executionModelId: string;
     latestUserPrompt: string;
     mode?: ModeDefinition;
+    difficultyScore?: number;
     threadId: string;
     reasoningStrength?: ComposerReasoningStrength;
     fastMode?: boolean;
@@ -3486,7 +3802,7 @@ async function continueQuickTaskLifecycle(
   const normalizedLatestUserPrompt = normalizeWorkspaceRelativePaths(options.latestUserPrompt, project.rootPath);
   const plannerReadyTurn: PlannerReadyTurn = {
     type: "ready",
-    difficultyScore: 10,
+    difficultyScore: options.difficultyScore ?? 10,
     summary: "Low-complexity direct workspace task",
     executionModelId: options.executionModelId,
     usesSubagents: false,
@@ -3539,10 +3855,11 @@ async function resumeRunLifecycle(
   adapter: PiAgentAdapter,
   pendingBrowserApprovals: Map<string, PendingBrowserApproval>,
   connections: Set<Bun.ServerWebSocket<HarnessConnection>>,
+  osAdapters: HarnessServerOsAdapters,
   options: {
     projectId: ProjectId;
     agentId: "pi" | "copilot-cli" | "codex-cli";
-    providerBrand: "gpt" | "gemini";
+    providerBrand: ProviderBrand;
     debugEnabled: boolean;
     runId: string;
     sourceRun: AgentRunState;
@@ -3593,7 +3910,7 @@ async function resumeRunLifecycle(
   runtime.upsertPersistedProject(resumingProject);
   emitRunUpdated(ws, requestId, resumingProject);
 
-  await executeRunLifecycle(ws, requestId, runtime, repository, adapter, pendingBrowserApprovals, connections, {
+  await executeRunLifecycle(ws, requestId, runtime, repository, adapter, pendingBrowserApprovals, connections, osAdapters, {
     projectId: options.projectId,
     agentId: options.agentId,
     providerBrand: options.providerBrand,
@@ -3621,10 +3938,11 @@ async function executeRunLifecycle(
   adapter: PiAgentAdapter,
   pendingBrowserApprovals: Map<string, PendingBrowserApproval>,
   connections: Set<Bun.ServerWebSocket<HarnessConnection>>,
+  osAdapters: HarnessServerOsAdapters,
   options: {
     projectId: ProjectId;
     agentId: "pi" | "copilot-cli" | "codex-cli";
-    providerBrand: "gpt" | "gemini";
+    providerBrand: ProviderBrand;
     debugEnabled: boolean;
     runId: string;
     sourceRun: AgentRunState;
@@ -3655,7 +3973,7 @@ async function executeRunLifecycle(
   let effectiveProject = project;
   let experimentLease: BranchfsExperimentLease | undefined;
   if (executionTarget === "ephemeral-experiment") {
-    const manager = new BranchfsManager({ rootPath: project.rootPath, runId: options.runId }, {
+    const manager = osAdapters.branchfsManagerFactory({ rootPath: project.rootPath, runId: options.runId }, {
       onTrace(trace) {
         emitProjectTrace(ws, requestId, runtime, options.projectId, project.activeThreadId, {
           sessionId: project.session.sessionId,
@@ -3690,6 +4008,17 @@ async function executeRunLifecycle(
       : { memorySummaries: [] as MemorySummary[] };
   const status = options.readyPlan.usesSubagents ? "running-subagents" : "running-main";
   const hasPendingPrerequisites = baseExecutionPlan.prerequisites.some((prerequisite) => prerequisite.status !== "completed");
+  const promptCacheIdentity = buildProjectPromptCacheIdentity({
+    repository,
+    projectId: options.projectId,
+    projectRootPath: project.rootPath,
+    providerBrand: options.providerBrand,
+    selectedModeId: project.selectedModeId,
+    mode: baseExecutionPlan.mode,
+    ruleSources: baseExecutionPlan.ruleSources,
+    memorySummaries: baseExecutionPlan.memorySummaries
+  });
+  const geminiCachedAttachmentContext = undefined;
   const startedProject = repository.setAgentRunStatus(
     options.projectId,
     options.runId,
@@ -3725,6 +4054,8 @@ async function executeRunLifecycle(
         executionModelId: options.readyPlan.executionModelId,
         reasoningStrength: options.reasoningStrength,
         fastMode: options.fastMode,
+        promptCacheIdentity,
+        geminiCachedAttachmentContext,
         abortSignal: options.abortSignal,
         callbacks: executionCallbacks,
         async onPrerequisiteComplete(nextExecutionPlan) {
@@ -3747,6 +4078,23 @@ async function executeRunLifecycle(
     ...executionPlan,
     memorySummaries: [...(executionPlan.memorySummaries ?? []), ...retrievedMemory.memorySummaries]
   };
+  const executionPromptCacheIdentity = buildProjectPromptCacheIdentity({
+    repository,
+    projectId: options.projectId,
+    projectRootPath: project.rootPath,
+    providerBrand: options.providerBrand,
+    selectedModeId: project.selectedModeId,
+    mode: executionPlanWithMemory.mode,
+    ruleSources: executionPlanWithMemory.ruleSources,
+    memorySummaries: executionPlanWithMemory.memorySummaries
+  });
+  const executionGeminiCachedAttachmentContext = await prepareRunGeminiAttachmentCache({
+    repository,
+    projectId: options.projectId,
+    modelId: options.readyPlan.executionModelId,
+    messages: effectiveProject.session.messages,
+    enabled: false
+  });
   executionCallbacks.onRunMilestone(
     options.readyPlan.usesSubagents
       ? `Planning done. Spawning ${options.readyPlan.subtasks.length} subagents. Parallel slots: ${Math.min(4, Math.max(1, executionPlan.actualSubagentCount || options.readyPlan.subtasks.length))}.`
@@ -3770,6 +4118,8 @@ async function executeRunLifecycle(
       resumeNote: options.resumeNote,
       reasoningStrength: options.reasoningStrength,
       fastMode: options.fastMode,
+      promptCacheIdentity: executionPromptCacheIdentity,
+      geminiCachedAttachmentContext: executionGeminiCachedAttachmentContext,
       executionPlan: executionPlanWithMemory,
       callbacks: executionCallbacks
     });
@@ -3780,7 +4130,7 @@ async function executeRunLifecycle(
 
   const reviewCwd = experimentLease?.projectMountPath ?? project.rootPath;
   executionCallbacks.onRunMilestone("Checking correctness.");
-  const correctnessReview = await runCorrectnessReview(reviewCwd, executionPlanWithMemory, outcome, options.readyPlan);
+  const correctnessReview = await osAdapters.runCorrectnessReview(reviewCwd, executionPlanWithMemory, outcome, options.readyPlan);
   executionCallbacks.onRunMilestone(
     correctnessReview.status === "pass" ? "Correctness review passed." : `Correctness review needs iteration. ${correctnessReview.summary}`
   );
@@ -3810,7 +4160,7 @@ async function executeRunLifecycle(
       correctnessReview.recommendedPlan.correctnessPolicy === "auto-once" &&
       correctnessReview.recommendedPlan.iteration <= 2
     ) {
-      await executeRunLifecycle(ws, requestId, runtime, repository, adapter, pendingBrowserApprovals, connections, {
+      await executeRunLifecycle(ws, requestId, runtime, repository, adapter, pendingBrowserApprovals, connections, osAdapters, {
         ...options,
         readyPlan: buildReadyPlanFromExecutionPlan(correctnessReview.recommendedPlan),
         executionPlan: correctnessReview.recommendedPlan,
@@ -3823,7 +4173,7 @@ async function executeRunLifecycle(
       correctnessReview.recommendedPlan.correctnessPolicy === "auto-until-clean" &&
       correctnessReview.recommendedPlan.iteration < 5
     ) {
-      await executeRunLifecycle(ws, requestId, runtime, repository, adapter, pendingBrowserApprovals, connections, {
+      await executeRunLifecycle(ws, requestId, runtime, repository, adapter, pendingBrowserApprovals, connections, osAdapters, {
         ...options,
         readyPlan: buildReadyPlanFromExecutionPlan(correctnessReview.recommendedPlan),
         executionPlan: correctnessReview.recommendedPlan,
@@ -3836,14 +4186,8 @@ async function executeRunLifecycle(
   }
 
   const finalStatus = outcome.partial ? "partial-complete" : "completed";
-  const statusProject = repository.setAgentRunStatus(options.projectId, options.runId, finalStatus, outcome.partialReason);
-  runtime.upsertPersistedProject(statusProject);
-  const finalRunState = repository.getRun(options.projectId, options.runId);
-  if (!finalRunState) {
-    throw new Error(`Run ${options.runId} is not available`);
-  }
   if (experimentLease) {
-    const experimentManager = new BranchfsManager({ rootPath: project.rootPath, runId: options.runId });
+    const experimentManager = osAdapters.branchfsManagerFactory({ rootPath: project.rootPath, runId: options.runId });
     const inspection = await experimentManager.readInspection(experimentLease);
     const experimentProject = repository.saveExperimentRun(options.projectId, options.runId, {
       ...inspection.experiment,
@@ -3852,15 +4196,6 @@ async function executeRunLifecycle(
     });
     runtime.upsertPersistedProject(experimentProject);
   }
-  extractRunMemories(repository, {
-    projectId: options.projectId,
-    threadId: activeRun.threadId,
-    run: finalRunState,
-    finalAssistantMessage: outcome.assistantMessage.content,
-    correctnessReview,
-    cwd: reviewCwd
-  });
-  emitRunUpdatedById(ws, requestId, repository, options.projectId, options.runId);
   if (outcome.partial) {
     executionCallbacks.onRunMilestone(`Run partial complete. ${outcome.partialReason ?? "Some subagents failed."}`);
   } else {
@@ -3868,36 +4203,24 @@ async function executeRunLifecycle(
   }
   executionCallbacks.closeRunMilestones();
 
-  const messageProject = executionCallbacks.persistFinalAssistantMessage(outcome.assistantMessage.content);
-  runtime.upsertPersistedProject(messageProject);
-  runtime.clearStreaming(options.projectId, activeRun.threadId);
-  runtime.setProjectStreaming(options.projectId, false, activeRun.threadId);
-  runtime.setProjectError(options.projectId, undefined, activeRun.threadId);
-
-  const threadSession = getThreadSessionState(runtime, repository, options.projectId, activeRun.threadId);
-  const assistantMessage = findLatestAssistantMessage({
-    id: options.projectId,
-    rootPath: project.rootPath,
-    activeThreadId: activeRun.threadId,
-    session: threadSession,
-    activeRun: undefined,
-    lastRun: finalRunState
+  const completed = await completeRunWithAssistantMessage(ws, requestId, runtime, repository, connections, {
+    projectId: options.projectId,
+    threadId: activeRun.threadId,
+    runId: options.runId,
+    assistantMessageContent: outcome.assistantMessage.content,
+    partialReason: outcome.partial ? outcome.partialReason ?? "Some subagents failed." : undefined
   });
-  if (!assistantMessage || assistantMessage.role !== "assistant") {
-    throw new Error("Assistant message was not persisted");
-  }
-
-  emitControlEvent(connections, {
-    type: "chat.complete",
-    requestId,
-    payload: {
+  const finalRunState = completed.run;
+  if (finalRunState) {
+    extractRunMemories(repository, {
       projectId: options.projectId,
       threadId: activeRun.threadId,
-      sessionId: threadSession.sessionId,
-      assistantMessage,
-      state: threadSession
-    }
-  });
+      run: finalRunState,
+      finalAssistantMessage: outcome.assistantMessage.content,
+      correctnessReview,
+      cwd: reviewCwd
+    });
+  }
 }
 
 async function executeInlineSubagentRetryLifecycle(
@@ -3911,7 +4234,7 @@ async function executeInlineSubagentRetryLifecycle(
   options: {
     projectId: ProjectId;
     agentId: "pi" | "copilot-cli" | "codex-cli";
-    providerBrand: "gpt" | "gemini";
+    providerBrand: ProviderBrand;
     runId: string;
     sourceRun: AgentRunState;
     targetTask: PlannerReadyTurn["subtasks"][number];
@@ -4023,13 +4346,6 @@ async function executeInlineSubagentRetryLifecycle(
   );
 
   const partial = mergedResults.some((result) => result.status === "failed");
-  const statusProject = repository.setAgentRunStatus(
-    options.projectId,
-    options.runId,
-    partial ? "partial-complete" : "completed"
-  );
-  runtime.upsertPersistedProject(statusProject);
-  emitRunUpdatedById(ws, requestId, repository, options.projectId, options.runId);
   if (partial) {
     callbacks.onRunMilestone?.("Run partial complete. Some retried subagents still failed.");
   } else {
@@ -4037,35 +4353,12 @@ async function executeInlineSubagentRetryLifecycle(
   }
   callbacks.closeRunMilestones?.();
 
-  const messageProject = repository.appendMessage(options.projectId, "assistant", assistantMessage.content, options.sourceRun.threadId);
-  runtime.upsertPersistedProject(messageProject);
-  runtime.clearStreaming(options.projectId, options.sourceRun.threadId);
-  runtime.setProjectStreaming(options.projectId, false, options.sourceRun.threadId);
-  runtime.setProjectError(options.projectId, undefined, options.sourceRun.threadId);
-
-  const threadSession = getThreadSessionState(runtime, repository, options.projectId, options.sourceRun.threadId);
-  const persistedAssistantMessage = findLatestAssistantMessage({
-    id: options.projectId,
-    rootPath: project.rootPath,
-    activeThreadId: options.sourceRun.threadId,
-    session: threadSession,
-    activeRun: undefined,
-    lastRun: repository.getRun(options.projectId, options.runId)
-  });
-  if (!persistedAssistantMessage || persistedAssistantMessage.role !== "assistant") {
-    throw new Error("Assistant message was not persisted");
-  }
-
-  sendEvent(ws, {
-    type: "chat.complete",
-    requestId,
-    payload: {
-      projectId: options.projectId,
-      threadId: options.sourceRun.threadId,
-      sessionId: threadSession.sessionId,
-      assistantMessage: persistedAssistantMessage,
-      state: threadSession
-    }
+  await completeRunWithAssistantMessage(ws, requestId, runtime, repository, connections, {
+    projectId: options.projectId,
+    threadId: options.sourceRun.threadId,
+    runId: options.runId,
+    assistantMessageContent: assistantMessage.content,
+    partialReason: partial ? "Some retried subagents still failed." : undefined
   });
 }
 
@@ -4195,7 +4488,15 @@ function createExecutionCallbacks(
     }
   };
   const derivedHeartbeat = setInterval(() => {
-    const run = repository.getRun(projectId, runId);
+    let run: ReturnType<WorkspaceRepository["getRun"]>;
+    try {
+      run = repository.getRun(projectId, runId);
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("Unknown agent run:")) {
+        return;
+      }
+      throw error;
+    }
     if (!run || Date.now() - transcriptDraft.getLastAcceptedAt() < derivedProgressHeartbeatMs) {
       return;
     }
@@ -4649,17 +4950,19 @@ async function releaseDeferredExecutionState(
 
   await assistantManager.drainPendingReprioritizes();
 
-  for (const queuedRun of repository.getQueuedBackgroundJobRuns()) {
-    await launchBackgroundJobRun(
-      connections,
-      repository,
-      runtimeRegistry,
-      runtime,
-      backgroundRunControllers,
-      assistantManager,
-      queuedRun.id
-    );
-  }
+  await Promise.all(
+    repository.getQueuedBackgroundJobRuns().map((queuedRun) =>
+      launchBackgroundJobRun(
+        connections,
+        repository,
+        runtimeRegistry,
+        runtime,
+        backgroundRunControllers,
+        assistantManager,
+        queuedRun.id
+      )
+    )
+  );
 
   await scheduler.tick(false);
   emitNotificationsUpdatedToAll(connections, requestId, repository.loadNotificationInboxState());
@@ -4671,7 +4974,7 @@ async function runInlineSubagentRetry(
     runId: string;
     cwd: string;
     agentId: "pi" | "copilot-cli" | "codex-cli";
-    providerBrand: "gpt" | "gemini";
+    providerBrand: ProviderBrand;
     executionModelId: string;
     task: PlannerReadyTurn["subtasks"][number];
     brief: string;
@@ -4810,6 +5113,8 @@ async function runInlineSubagentRetry(
           tokens: response.contextUsage.tokens,
           contextWindow: response.contextUsage.contextWindow,
           usagePercent: response.contextUsage.usagePercent,
+          totalProcessedTokens: response.contextUsage.sessionStats.tokens.total,
+          cachedInputTokens: response.contextUsage.cachedInputTokens,
           updatedAt: new Date().toISOString()
         });
       }
@@ -4889,9 +5194,26 @@ async function handleRunFailure(
 ) {
   const project = runtime.getProject(projectId);
   const failedRun = (runId ? repository.getRun(projectId, runId) : undefined) ?? project.activeRun;
+  const failureCategory = classifyRunFailure({ message });
   if (failedRun) {
     rejectPendingBrowserApprovalsForRun(pendingBrowserApprovals, projectId, failedRun.id, "Run failed");
-    const failedProject = repository.setAgentRunStatus(projectId, failedRun.id, "failed", message);
+    const failedProject = repository.setAgentRunStatus(projectId, failedRun.id, "failed", message, failureCategory);
+    const linkedBackgroundRun = repository.getBackgroundJobRunByLinkedAgentRunId(failedRun.id);
+    if (linkedBackgroundRun && ["queued", "awaiting-approval", "awaiting-user-input", "running"].includes(linkedBackgroundRun.status)) {
+      const failedBackgroundRun = repository.setBackgroundJobRunStatus(linkedBackgroundRun.id, "failed", {
+        failureMessage: message,
+        failureCategory,
+        summary: failedRun.summary
+      });
+      repository.appendBackgroundJobRunEvent(linkedBackgroundRun.id, "failed", "Linked agent run failed", message);
+      const refreshedBackgroundRun = repository.getBackgroundJobRun(failedBackgroundRun.id) ?? failedBackgroundRun;
+      syncBackgroundJobFailureTracking(repository, refreshedBackgroundRun);
+      saveBackgroundRunStatusNotification(repository, refreshedBackgroundRun);
+      if (connections) {
+        await emitBackgroundJobRunUpdatedToAll(connections, refreshedBackgroundRun);
+        emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
+      }
+    }
     if (failedRun.experiment) {
       repository.saveExperimentRun(projectId, failedRun.id, {
         ...failedRun.experiment,
@@ -4941,8 +5263,132 @@ async function handleRunFailure(
   });
 }
 
+async function completeRunWithAssistantMessage(
+  ws: Bun.ServerWebSocket<HarnessConnection>,
+  requestId: string,
+  runtime: WorkspaceRuntimeStore,
+  repository: WorkspaceRepository,
+  connections: Set<Bun.ServerWebSocket<HarnessConnection>> | undefined,
+  input: {
+    projectId: ProjectId;
+    threadId: ThreadId;
+    runId: string;
+    assistantMessageContent: string;
+    partialReason?: string;
+  }
+) {
+  const run = repository.getAgentRun(input.projectId, input.threadId, input.runId);
+  if (!run) {
+    throw new Error(`Unknown agent run: ${input.runId}`);
+  }
+  if (isTerminalRunStatus(run.status)) {
+    throw new Error(`Run ${input.runId} is already terminal`);
+  }
+
+  const messageProject = repository.appendMessage(input.projectId, "assistant", input.assistantMessageContent, input.threadId);
+  runtime.upsertPersistedProject(messageProject);
+  const finalStatus = input.partialReason ? "partial-complete" : "completed";
+  const statusProject = repository.setAgentRunStatus(input.projectId, input.runId, finalStatus, input.partialReason);
+  runtime.upsertPersistedProject(statusProject);
+  emitRunUpdatedById(ws, requestId, repository, input.projectId, input.runId, connections);
+  runtime.clearStreaming(input.projectId, input.threadId);
+  runtime.setProjectStreaming(input.projectId, false, input.threadId);
+  runtime.setProjectError(input.projectId, undefined, input.threadId);
+  runtime.setAbortController(input.projectId, input.runId, undefined);
+
+  const project = runtime.getProject(input.projectId);
+  const threadSession = getThreadSessionState(runtime, repository, input.projectId, input.threadId);
+  const finalRun = repository.getRun(input.projectId, input.runId);
+  const assistantMessage = findLatestAssistantMessage({
+    id: input.projectId,
+    rootPath: project.rootPath,
+    activeThreadId: input.threadId,
+    session: threadSession,
+    activeRun: undefined,
+    lastRun: finalRun
+  });
+  if (!assistantMessage || assistantMessage.role !== "assistant") {
+    throw new Error("Assistant message was not persisted");
+  }
+
+  emitControlEvent(connections, {
+    type: "chat.complete",
+    requestId,
+    payload: {
+      projectId: input.projectId,
+      threadId: input.threadId,
+      sessionId: threadSession.sessionId,
+      assistantMessage,
+      state: threadSession
+    }
+  });
+
+  return {
+    run: finalRun,
+    assistantMessage
+  };
+}
+
+function isTerminalRunStatus(status: AgentRunState["status"]) {
+  return status === "completed" || status === "partial-complete" || status === "stopped" || status === "failed";
+}
+
 function createBrowserApprovalKey(projectId: ProjectId, runId: string, sessionId: string, toolCallId: string) {
   return [projectId, runId, sessionId, toolCallId].join(":");
+}
+
+function createRunBudgetAdapter(
+  adapter: PiAgentAdapter,
+  repository: WorkspaceRepository,
+  projectId: ProjectId,
+  runId: string
+) {
+  return new RunBudgetAgentAdapter(adapter, repository, projectId, runId);
+}
+
+function buildProjectPromptCacheIdentity(input: {
+  repository: WorkspaceRepository;
+  projectId: ProjectId;
+  projectRootPath: string;
+  providerBrand: ProviderBrand;
+  selectedModeId?: string;
+  mode?: ModeDefinition;
+  ruleSources?: WorkspaceRuleSource[];
+  memorySummaries?: MemorySummary[];
+}): PromptCacheIdentity {
+  return {
+    projectId: input.projectId,
+    workspaceConfigHash: buildWorkspaceConfigHash({
+      projectId: input.projectId,
+      projectRootPath: input.projectRootPath,
+      providerBrand: input.providerBrand,
+      selectedModeId: input.selectedModeId,
+      mode: input.mode,
+      ruleSources: input.ruleSources,
+      memorySummaries: input.memorySummaries,
+      memoryBankEnabledDefault: input.repository.getMemoryBankEnabledDefault()
+    })
+  };
+}
+
+async function prepareRunGeminiAttachmentCache(input: {
+  repository: WorkspaceRepository;
+  projectId: ProjectId;
+  modelId: string;
+  messages: ChatMessage[];
+  enabled?: boolean;
+}): Promise<GeminiCachedAttachmentContext | undefined> {
+  if (!input.enabled) {
+    return undefined;
+  }
+
+  return prepareGeminiCachedAttachmentContext({
+    repository: input.repository,
+    projectId: input.projectId,
+    modelId: input.modelId,
+    messages: input.messages,
+    googleApiKey: input.repository.getStoredGoogleApiKey()
+  });
 }
 
 function rejectPendingBrowserApprovalsForRun(
@@ -5936,10 +6382,11 @@ async function enforceExecutionPreflight(
   requestId: string,
   runtime: WorkspaceRuntimeStore,
   repository: WorkspaceRepository,
-  project: ProjectLike
+  project: ProjectLike,
+  osAdapters: HarnessServerOsAdapters
 ) {
   const maxDirtyFileCount = repository.getDirtyGitChangeLimitDefault();
-  const result = await runGitPreflight(project.rootPath, {
+  const result = await osAdapters.runGitPreflight(project.rootPath, {
     enabled: repository.getBlockChatOnDirtyGitDefault(),
     maxDirtyFileCount
   });
@@ -6242,14 +6689,18 @@ function getPreferencesState(
   const hasStoredOpenAiApiKey = Boolean(repository.getStoredOpenAiApiKey());
   const hasUsableGoogleApiKey = adapter.hasApiKey("google");
   const hasStoredGoogleApiKey = Boolean(repository.getStoredGoogleApiKey());
+  const hasUsableAnthropicApiKey = adapter.hasApiKey("anthropic");
+  const hasStoredAnthropicApiKey = Boolean(repository.getStoredAnthropicApiKey());
 
   return {
-    hasUsableApiKey: hasUsableOpenAiApiKey || hasUsableGoogleApiKey,
-    hasStoredApiKey: hasStoredOpenAiApiKey || hasStoredGoogleApiKey,
+    hasUsableApiKey: hasUsableOpenAiApiKey || hasUsableGoogleApiKey || hasUsableAnthropicApiKey,
+    hasStoredApiKey: hasStoredOpenAiApiKey || hasStoredGoogleApiKey || hasStoredAnthropicApiKey,
     hasUsableOpenAiApiKey,
     hasStoredOpenAiApiKey,
     hasUsableGoogleApiKey,
     hasStoredGoogleApiKey,
+    hasUsableAnthropicApiKey,
+    hasStoredAnthropicApiKey,
     providerBrand: repository.getProviderBrand(),
     debugEnabledDefault: repository.getDebugEnabledDefault(),
     tracePanelDefaultOpen: repository.getTracePanelDefaultOpen(),
@@ -6261,11 +6712,32 @@ function getPreferencesState(
     planExecutionDelaySecondsDefault: repository.getPlanExecutionDelaySecondsDefault(),
     correctnessIterationModeDefault: repository.getCorrectnessIterationModeDefault(),
     backgroundJobApprovalPolicyDefault: repository.getBackgroundJobApprovalPolicyDefault(),
+    autoArchiveCompletedThreadsDefault: getRepositoryAutoArchiveCompletedThreadsDefault(repository),
     memoryBankEnabledDefault: repository.getMemoryBankEnabledDefault(),
     attachmentsEnabled: Boolean(Bun.env.UPLOADTHING_TOKEN?.trim()),
     capabilities: defaultProviderCapabilities,
     agentRuntimes: runtimeRegistry.listCapabilities()
   };
+}
+
+function getRepositoryAutoArchiveCompletedThreadsDefault(repository: WorkspaceRepository) {
+  if (
+    "getAutoArchiveCompletedThreadsDefault" in repository &&
+    typeof repository.getAutoArchiveCompletedThreadsDefault === "function"
+  ) {
+    return repository.getAutoArchiveCompletedThreadsDefault();
+  }
+
+  return false;
+}
+
+function setRepositoryAutoArchiveCompletedThreadsDefault(repository: WorkspaceRepository, value: boolean) {
+  if (
+    "setAutoArchiveCompletedThreadsDefault" in repository &&
+    typeof repository.setAutoArchiveCompletedThreadsDefault === "function"
+  ) {
+    repository.setAutoArchiveCompletedThreadsDefault(value);
+  }
 }
 
 function applyAdapterAutoCompactionThreshold(adapter: PiAgentAdapter, thresholdPercent: number) {
@@ -6345,7 +6817,7 @@ function createAssistantFromThreadIntent(input: {
   scope: "project" | "global";
   purpose?: string;
   agentId?: AgentId;
-  providerBrand?: "gpt" | "gemini";
+  providerBrand?: ProviderBrand;
   modeId?: string;
   executionModelId?: string;
   fastMode?: boolean;
@@ -6543,9 +7015,20 @@ async function executeAssistantChatAction(input: {
       if (!action.jobId) {
         throw new Error("Background job is required.");
       }
-      const job = requireBackgroundJobForProject(repository, input.projectId, action.jobId);
+      const loadedJob = requireBackgroundJobForProject(repository, input.projectId, action.jobId);
+      const job = repository.repairBackgroundJobReferences(loadedJob.id) ?? loadedJob;
       if (job.assistantId !== assistant.id) {
         throw new Error("Background job does not belong to assistant.");
+      }
+      await repairBackgroundJobRunsForJob(
+        repository,
+        input.connections,
+        action.jobId,
+        (run) => isBackgroundRunLive(input.backgroundRunControllers, input.runtime, run)
+      );
+      const activeRun = repository.getActiveBackgroundJobRuns(action.jobId)[0];
+      if (activeRun) {
+        throw new Error(formatActiveBackgroundRunError(activeRun));
       }
       const queuedRun = repository.createBackgroundJobRun({
         jobId: job.id,
@@ -7031,6 +7514,210 @@ async function emitBackgroundJobRunUpdatedToAll(
   }
 }
 
+async function repairBackgroundJobRunsForJob(
+  repository: WorkspaceRepository,
+  connections: Set<Bun.ServerWebSocket<HarnessConnection>>,
+  jobId: string,
+  isRunLive: (run: BackgroundJobRun) => boolean
+) {
+  const repairedRuns = reconcileBackgroundJobRunBlockers(repository, isRunLive, { jobId });
+  if (repairedRuns.length === 0) {
+    return;
+  }
+  for (const run of repairedRuns) {
+    syncBackgroundJobFailureTracking(repository, run);
+    saveBackgroundRunStatusNotification(repository, run);
+    await emitBackgroundJobRunUpdatedToAll(connections, run);
+  }
+  emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
+  emitNotificationsUpdatedToAll(connections, `bg:auto:${crypto.randomUUID()}`, repository.loadNotificationInboxState());
+}
+
+function isBackgroundRunLive(
+  backgroundRunControllers: Map<string, BackgroundRunControl>,
+  runtime: WorkspaceRuntimeStore,
+  run: BackgroundJobRun
+) {
+  return (
+    backgroundRunControllers.has(run.id) ||
+    Boolean(run.linkedAgentRunId && runtime.getAbortController(run.projectId, run.linkedAgentRunId))
+  );
+}
+
+async function resumeAndRepairBackgroundJobRuns(
+  repository: WorkspaceRepository,
+  connections: Set<Bun.ServerWebSocket<HarnessConnection>>,
+  runtimeRegistry: AgentRuntimeRegistry,
+  runtime: WorkspaceRuntimeStore,
+  backgroundRunControllers: Map<string, BackgroundRunControl>,
+  assistantManager: AssistantManager,
+  now: Date
+) {
+  for (const run of repository.getActiveBackgroundJobRuns()) {
+    if (backgroundRunControllers.has(run.id) || run.status !== "running" || !run.linkedAgentRunId) {
+      continue;
+    }
+    if ((run.resumeAttemptCount ?? 0) >= 1) {
+      continue;
+    }
+    if (!isBackgroundRunPastLeaseGrace(run, now, BACKGROUND_RUN_STARTUP_GRACE_MS)) {
+      continue;
+    }
+    const linkedRun = repository.getRun(run.projectId, run.linkedAgentRunId);
+    if (linkedRun?.status !== "ready" || !linkedRun.plan) {
+      continue;
+    }
+
+    repository.appendBackgroundJobRunEvent(run.id, "queued", "Retrying orphaned ready run", "Restarting background execution once.");
+    const resumedRun = repository.setBackgroundJobRunStatus(run.id, "queued", {
+      summary: linkedRun.summary,
+      linkedAgentRunId: linkedRun.id,
+      resumeAttemptCount: (run.resumeAttemptCount ?? 0) + 1
+    });
+    await emitBackgroundJobRunUpdatedToAll(connections, resumedRun);
+    await launchBackgroundJobRun(
+      connections,
+      repository,
+      runtimeRegistry,
+      runtime,
+      backgroundRunControllers,
+      assistantManager,
+      resumedRun.id
+    );
+  }
+
+  return reconcileBackgroundJobRunBlockers(
+    repository,
+    (run) => backgroundRunControllers.has(run.id),
+    { now }
+  );
+}
+
+function reconcileBackgroundJobRunBlockers(
+  repository: WorkspaceRepository,
+  isRunLive: (run: BackgroundJobRun) => boolean,
+  options: { jobId?: string; runId?: string; now?: Date } = {}
+) {
+  const repairedRuns = repository.repairInterruptedBackgroundJobRuns({
+    jobId: options.jobId,
+    isRunLive,
+    now: options.now
+  });
+  const repairedIds = new Set(repairedRuns.map((run) => run.id));
+  const activeRuns = options.runId
+    ? repository.getActiveBackgroundJobRuns(options.jobId).filter((run) => run.id === options.runId)
+    : repository.getActiveBackgroundJobRuns(options.jobId);
+
+  for (const run of activeRuns) {
+    if (repairedIds.has(run.id) || run.status !== "awaiting-user-input" || !run.assistantId || !run.linkedAgentRunId) {
+      continue;
+    }
+    const linkedRun = repository.getRun(run.projectId, run.linkedAgentRunId);
+    const pendingQuestions = linkedRun?.questions.filter((question) => question.status === "pending" || question.status === "deferred") ?? [];
+    if (!linkedRun || pendingQuestions.length === 0) {
+      continue;
+    }
+
+    const assistantQuestions = repository.getAssistantQuestions(run.assistantId);
+    const learnings = repository.getAssistantLearnings(run.assistantId);
+    const decisions = pendingQuestions.map((question) => ({
+      question,
+      decision: evaluateAssistantQuestionPolicy({
+        prompt: question.prompt,
+        questions: assistantQuestions,
+        learnings
+      })
+    }));
+    if (decisions.some((entry) => entry.decision.kind === "ask")) {
+      continue;
+    }
+
+    for (const { question, decision } of decisions) {
+      repository.answerPlanningQuestion(
+        run.projectId,
+        linkedRun.id,
+        question.id,
+        resolveAssistantPolicyAnswer(decision)
+      );
+    }
+    repository.appendBackgroundJobRunEvent(
+      run.id,
+      "question-auto-resolved",
+      "Planning question auto-resolved",
+      pendingQuestions.map((question) => question.prompt).join("\n\n")
+    );
+    const skippedRun = repository.setBackgroundJobRunStatus(run.id, "skipped", {
+      summary: "Planning question auto-resolved; run will retry on next cadence"
+    });
+    repository.appendBackgroundJobRunEvent(
+      run.id,
+      "skipped",
+      "Background run skipped after question auto-resolution",
+      "Scheduler will retry this job on the next due cadence."
+    );
+    repairedRuns.push(repository.getBackgroundJobRun(skippedRun.id) ?? skippedRun);
+  }
+
+  return repairedRuns;
+}
+
+function syncBackgroundJobFailureTracking(repository: WorkspaceRepository, run: BackgroundJobRun) {
+  if (run.status === "succeeded" || run.status === "skipped") {
+    repository.clearBackgroundJobFailureTracking(run.jobId);
+    return;
+  }
+  if (run.status !== "failed") {
+    return;
+  }
+  const failureCategory = classifyRunFailure({
+    explicitCategory: run.failureCategory,
+    message: run.failureMessage
+  });
+  if (!isBackoffEligibleFailureCategory(failureCategory)) {
+    repository.clearBackgroundJobFailureTracking(run.jobId);
+    return;
+  }
+  repository.recordBackgroundJobFailure(run.jobId, failureCategory);
+}
+
+function resolveAssistantPolicyAnswer(decision: ReturnType<typeof evaluateAssistantQuestionPolicy>) {
+  switch (decision.kind) {
+    case "auto-answer":
+      return decision.answerText;
+    case "suppress":
+      return decision.note;
+    case "note":
+      return decision.note;
+    case "ask":
+      return decision.reason;
+  }
+}
+
+function formatActiveBackgroundRunError(run: BackgroundJobRun) {
+  const detail = run.summary ?? run.failureMessage;
+  return `Background job already has active run ${run.id} in status ${run.status}${detail ? `: ${detail}` : ""}`;
+}
+
+async function finalizeAutoResolvedAssistantQuestionRun(
+  repository: WorkspaceRepository,
+  connections: Set<Bun.ServerWebSocket<HarnessConnection>>,
+  run: BackgroundJobRun
+) {
+  const resolvedRun = repository.setBackgroundJobRunStatus(run.id, "succeeded", {
+    summary: "Assistant question auto-resolved from durable guidance"
+  });
+  repository.appendBackgroundJobRunEvent(
+    run.id,
+    "done",
+    "Assistant question auto-resolved",
+    run.summary ?? run.failureMessage ?? undefined
+  );
+  saveBackgroundRunStatusNotification(repository, resolvedRun);
+  emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
+  await emitBackgroundJobRunUpdatedToAll(connections, resolvedRun);
+  emitNotificationsUpdatedToAll(connections, `bg:auto:${crypto.randomUUID()}`, repository.loadNotificationInboxState());
+}
+
 function emitNotificationsUpdatedToAll(
   connections: Set<Bun.ServerWebSocket<HarnessConnection>>,
   requestId: string,
@@ -7275,6 +7962,10 @@ function createBackgroundRunStatusNotification(job: BackgroundJob, run: Backgrou
   if (!statusMeta) {
     return undefined;
   }
+  const summary =
+    sanitizeBackgroundNotificationSummary(run.summary) ??
+    sanitizeBackgroundNotificationSummary(run.failureMessage) ??
+    `${job.name} ${statusMeta.fallbackVerb}`;
 
   return {
     id: createBackgroundRunStatusNotificationId(run.id),
@@ -7286,13 +7977,24 @@ function createBackgroundRunStatusNotification(job: BackgroundJob, run: Backgrou
     projectId: run.projectId,
     threadId: run.automationThreadId,
     title: statusMeta.title,
-    summary: run.summary ?? run.failureMessage ?? `${job.name} ${statusMeta.fallbackVerb}`,
+    summary,
     severity: statusMeta.severity
   };
 }
 
 function createBackgroundRunStatusNotificationId(runId: string) {
   return createStableBoundedId(["background-run-status", runId]);
+}
+
+function sanitizeBackgroundNotificationSummary(value: string | undefined) {
+  if (!value?.trim()) {
+    return undefined;
+  }
+  if (/# IDENTITY:|# OPERATIONAL LOGIC \(The Job\)|# ACTIVE MISSION \(The Request\)/i.test(value)) {
+    return undefined;
+  }
+  const sanitized = value.replace(/\/caveman\s+ultra/gi, "").replace(/\s+/g, " ").trim();
+  return sanitized || undefined;
 }
 
 function backgroundRunNotificationMeta(
@@ -7339,8 +8041,10 @@ async function launchBackgroundJobRun(
   const job = repository.getBackgroundJob(run.jobId);
   if (!job) {
     const failedRun = repository.setBackgroundJobRunStatus(backgroundRunId, "failed", {
-      failureMessage: "Background job definition no longer exists."
+      failureMessage: "Background job definition no longer exists.",
+      failureCategory: "launch-failure"
     });
+    syncBackgroundJobFailureTracking(repository, failedRun);
     saveBackgroundRunStatusNotification(repository, failedRun);
     emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
     await emitBackgroundJobRunUpdatedToAll(connections, failedRun);
@@ -7353,7 +8057,14 @@ async function launchBackgroundJobRun(
       assertAssistantRunnableForLaunch(repository, job.assistantId);
     } catch (error) {
       const cancelledRun = repository.setBackgroundJobRunStatus(backgroundRunId, "cancelled", {
-        failureMessage: error instanceof Error ? error.message : "Assistant is not runnable"
+        failureMessage: error instanceof Error ? error.message : "Assistant is not runnable",
+        failureCategory: "launch-failure"
+      });
+      repository.updateBackgroundJobSchedulerState(job.id, {
+        schedulerStatus: "blocked",
+        schedulerDetail: cancelledRun.failureMessage,
+        blockedReason: cancelledRun.failureMessage,
+        lastSchedulerCheckAt: new Date().toISOString()
       });
       saveBackgroundRunStatusNotification(repository, cancelledRun);
       emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
@@ -7364,9 +8075,28 @@ async function launchBackgroundJobRun(
   }
 
   const abortController = new AbortController();
-  backgroundRunControllers.set(backgroundRunId, { abortController });
+  const controllerInstanceId = crypto.randomUUID();
+  const controllerLeaseId = crypto.randomUUID();
+  const controllerLeaseExpiresAt = new Date(Date.now() + BACKGROUND_RUN_CONTROLLER_LEASE_MS).toISOString();
+  const control: BackgroundRunControl = { abortController, controllerInstanceId, controllerLeaseId };
+  backgroundRunControllers.set(backgroundRunId, control);
   try {
-    const startedRun = repository.setBackgroundJobRunStatus(backgroundRunId, "running");
+    const startedRun = repository.setBackgroundJobRunStatus(backgroundRunId, "running", {
+      controllerInstanceId,
+      controllerLeaseId,
+      controllerLeaseExpiresAt
+    });
+    control.renewTimer = setInterval(() => {
+      const persistedRun = repository.renewBackgroundJobRunLease(
+        backgroundRunId,
+        controllerLeaseId,
+        new Date(Date.now() + BACKGROUND_RUN_CONTROLLER_LEASE_MS).toISOString()
+      );
+      if (!persistedRun || persistedRun.status !== "running") {
+        disposeBackgroundRunControl(control);
+        backgroundRunControllers.delete(backgroundRunId);
+      }
+    }, BACKGROUND_RUN_CONTROLLER_RENEW_MS);
     saveBackgroundRunStatusNotification(repository, startedRun);
     await emitBackgroundJobRunUpdatedToAll(connections, startedRun);
     emitNotificationsUpdatedToAll(connections, `bg:auto:${crypto.randomUUID()}`, repository.loadNotificationInboxState());
@@ -7406,7 +8136,7 @@ async function launchBackgroundJobRun(
       }
     });
     if (job.assistantId) {
-      await assistantManager.handleBackgroundJobRunOutcome({
+      const assistantOutcome = await assistantManager.handleBackgroundJobRunOutcome({
         assistantId: job.assistantId,
         status:
           nextRun.status === "succeeded"
@@ -7417,21 +8147,49 @@ async function launchBackgroundJobRun(
         summary: nextRun.summary,
         failureMessage: nextRun.failureMessage
       });
+      if (nextRun.status === "awaiting-user-input" && assistantOutcome?.blocked === false) {
+        await finalizeAutoResolvedAssistantQuestionRun(repository, connections, nextRun);
+        return;
+      }
     }
     saveBackgroundRunStatusNotification(repository, nextRun);
+    syncBackgroundJobFailureTracking(repository, nextRun);
+    repository.updateBackgroundJobSchedulerState(job.id, {
+      schedulerStatus: nextRun.status === "succeeded" || nextRun.status === "skipped" ? "idle" : "blocked",
+      schedulerDetail: nextRun.summary ?? nextRun.failureMessage ?? `${job.name} ${nextRun.status}`,
+      blockedReason:
+        nextRun.status === "succeeded" || nextRun.status === "skipped"
+          ? undefined
+          : nextRun.failureMessage ?? nextRun.summary ?? `${job.name} ${nextRun.status}`,
+      consecutiveFailureCount:
+        nextRun.status === "succeeded" || nextRun.status === "skipped"
+          ? 0
+          : repository.getBackgroundJob(job.id)?.consecutiveFailureCount,
+      backoffUntil: repository.getBackgroundJob(job.id)?.backoffUntil,
+      lastFailureCategory: repository.getBackgroundJob(job.id)?.lastFailureCategory,
+      lastSchedulerCheckAt: new Date().toISOString()
+    });
     emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
     await emitBackgroundJobRunUpdatedToAll(connections, nextRun);
     emitNotificationsUpdatedToAll(connections, `bg:auto:${crypto.randomUUID()}`, repository.loadNotificationInboxState());
   } catch (error) {
+    const currentRun = repository.getBackgroundJobRun(backgroundRunId);
+    if (!currentRun || !["queued", "awaiting-approval", "awaiting-user-input", "running"].includes(currentRun.status)) {
+      return;
+    }
     const failureMessage = error instanceof Error ? error.message : "Unknown background job failure";
     if (job.assistantId) {
       const waitingRun = tryMarkAssistantQuestionRunWaiting(repository, backgroundRunId, failureMessage);
       if (waitingRun) {
-        await assistantManager.handleBackgroundJobRunOutcome({
+        const assistantOutcome = await assistantManager.handleBackgroundJobRunOutcome({
           assistantId: job.assistantId,
           status: "awaiting-user-input",
           summary: failureMessage
         });
+        if (assistantOutcome?.blocked === false) {
+          await finalizeAutoResolvedAssistantQuestionRun(repository, connections, waitingRun);
+          return;
+        }
         saveBackgroundRunStatusNotification(repository, waitingRun);
         emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
         await emitBackgroundJobRunUpdatedToAll(connections, waitingRun);
@@ -7441,10 +8199,21 @@ async function launchBackgroundJobRun(
     }
 
     const failedRun = repository.setBackgroundJobRunStatus(backgroundRunId, "failed", {
-      failureMessage
+      failureMessage,
+      failureCategory: classifyRunFailure({ message: failureMessage })
     });
     repository.appendBackgroundJobRunEvent(backgroundRunId, "failed", "Background run failed", failureMessage);
+    syncBackgroundJobFailureTracking(repository, failedRun);
     saveBackgroundRunStatusNotification(repository, failedRun);
+    repository.updateBackgroundJobSchedulerState(job.id, {
+      schedulerStatus: "blocked",
+      schedulerDetail: failureMessage,
+      blockedReason: failureMessage,
+      consecutiveFailureCount: repository.getBackgroundJob(job.id)?.consecutiveFailureCount,
+      backoffUntil: repository.getBackgroundJob(job.id)?.backoffUntil,
+      lastFailureCategory: repository.getBackgroundJob(job.id)?.lastFailureCategory,
+      lastSchedulerCheckAt: new Date().toISOString()
+    });
     if (job.assistantId) {
       await assistantManager.handleBackgroundJobRunOutcome({
         assistantId: job.assistantId,
@@ -7456,6 +8225,7 @@ async function launchBackgroundJobRun(
     await emitBackgroundJobRunUpdatedToAll(connections, failedRun);
     emitNotificationsUpdatedToAll(connections, `bg:auto:${crypto.randomUUID()}`, repository.loadNotificationInboxState());
   } finally {
+    disposeBackgroundRunControl(control);
     backgroundRunControllers.delete(backgroundRunId);
   }
 }
@@ -7493,7 +8263,7 @@ function isExecutionModelIdAvailableForRuntime(
     }
     | undefined,
   modelId: string | undefined,
-  providerBrand: "gpt" | "gemini"
+  providerBrand: ProviderBrand
 ) {
   if (!modelId) {
     return false;
@@ -7515,7 +8285,7 @@ function resolveExecutionModelIdForRuntime(input: {
     activeModel?: string;
   }
   | undefined;
-  providerBrand: "gpt" | "gemini";
+  providerBrand: ProviderBrand;
   requestedModelId?: string;
   persistedModelId?: string;
 }) {

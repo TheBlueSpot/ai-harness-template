@@ -12,10 +12,13 @@ Last merged targeted assistant surface scan: 2026-04-25.
 Last merged targeted overlay, hotkey, and attachment-affordance scan: 2026-04-25.
 Last merged targeted UI rendering, OS/CLI, websocket continuity, execution, and test-strictness scan: 2026-04-25.
 Last merged targeted UI-magic affordance scan: 2026-04-25.
+Last merged targeted reliability diagnostics and background ownership closeout: 2026-05-01.
 
 Source of truth: [user-stories.md](user-stories.md), [coverage-matrix.md](coverage-matrix.md), [architecture overview](../context/architecture/overview.md), and harness implementation under [harness](../harness).
 
 This review focuses on correctness gaps outside the expected happy path. It does not replace `bun test`; it maps shipped stories to likely edge failures and extraction opportunities.
+
+Recent closeout note: the harness now exposes recent run health in-product, renews background-run ownership leases during execution, and routes reliability categorization through one shared path. That materially lowers the earlier risk of stale ownership or drift between scheduler, repair, and UI diagnostics, while keeping the remaining gaps below focused on broader assistant, overlay, and workflow concerns.
 
 ## Story To Code Map
 
@@ -106,17 +109,17 @@ Edge case: A deleted skill path or deprecated model remains on an assistant. The
 
 Fix direction: Build assistant prompts from structured sections with explicit boundaries and validated resolved assets. Validate linked asset existence and scope at save and launch. Route assistant model selection through the runtime's supported-model fallback before dispatch.
 
-### CR-032: Assistant surface has no workload boundary for todos, learnings, jobs, and logs
+### CR-032: Assistant surface still needs workload boundaries for todos, jobs, and logs
 
 Stories: `US-ASSISTANTS-001`, `US-ASSISTANTS-002`, `US-ASSISTANTS-003`, `US-UI-017`.
 
 Code map: [assistant panel](../harness/ui/src/components/assistants-panel.tsx), [assistant schemas](../harness/shared/protocol.ts), [assistant persistence](../harness/cli/src/workspace-repository.ts).
 
-Impact: The assistant UI renders selected todos, learnings, runs, and logs as full lists with no pagination or row cap. Logs can include raw JSON details and persisted error stacks. The database caps total assistant logs and learnings, but a single assistant can still accumulate enough rows or large detail payloads to freeze the panel when the tab opens.
+Impact: Learnings now dedupe, compact, and render behind a bounded list. Todos, runs, and logs can still render as full lists. Logs can include raw JSON details and persisted error stacks, so a single assistant can still accumulate enough rows or large detail payloads to freeze the panel when the tab opens.
 
 Edge case: A failing assistant loops through reprioritize and job failures, appending many log rows with serialized error details. Opening Log renders every row and stringifies the expanded details payload in the browser.
 
-Fix direction: Add per-tab empty states for todos, learnings, logs, and recent runs, plus list windowing or "show more" caps. Keep raw log details bounded and paged, and store summarized learning memory with compaction instead of appending indefinitely.
+Fix direction: Add per-tab empty states for todos, logs, and recent runs, plus list windowing or "show more" caps. Keep raw log details bounded and paged.
 
 ### CR-033: Overlay dismissal and focus behavior has no stack owner
 

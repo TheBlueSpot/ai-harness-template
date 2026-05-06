@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SkiFree Avalanche</title>
+  <link rel="stylesheet" href="./src/styles.css" />
+</head>
+<body>
+  <div class="shell">
+    <canvas id="game" width="960" height="540" aria-label="SkiFree Avalanche"></canvas>
+    <div class="hud">
+      <div class="hud__left">
+        <span id="distance">Distance 0m</span>
+        <span id="goal">Next gate 0m</span>
+      </div>
+      <div class="hud__right">
+        <span id="speed">Speed 0</span>
+        <span id="health">Wipes 0</span>
+      </div>
+    </div>
+    <div class="overlay" id="overlay">
+      <div class="overlay__card">
+        <h1 id="overlay-title">SkiFree Avalanche</h1>
+        <p id="overlay-text">Thread gates, avoid trees, and stay ahead of the avalanche.</p>
+        <p class="overlay__hint">Arrow keys steer and set pace. Space jumps ramps. Enter starts or restarts.</p>
+      </div>
+    </div>
+  </div>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

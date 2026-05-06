@@ -1,0 +1,288 @@
+:root {
+  color-scheme: dark;
+  --bg-0: #051119;
+  --bg-1: #082a3d;
+  --panel: rgba(6, 18, 26, 0.72);
+  --panel-strong: rgba(5, 16, 23, 0.9);
+  --line: rgba(171, 236, 255, 0.16);
+  --ink: #f2fbff;
+  --muted: #b6d3de;
+  --accent: #7ae0ff;
+  --accent-2: #ffe28a;
+  --danger: #ff7b7b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  color: var(--ink);
+  font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+  background:
+    radial-gradient(circle at 18% 16%, rgba(122, 224, 255, 0.14), transparent 20%),
+    radial-gradient(circle at 82% 20%, rgba(255, 226, 138, 0.1), transparent 20%),
+    linear-gradient(180deg, var(--bg-1), var(--bg-0) 72%);
+}
+
+.shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+}
+
+.game-frame {
+  position: relative;
+  width: min(1440px, 100%);
+  aspect-ratio: 16 / 9;
+  border-radius: 28px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 28px 84px rgba(0, 0, 0, 0.42);
+  background: linear-gradient(180deg, rgba(10, 37, 52, 0.98), rgba(2, 10, 15, 1));
+}
+
+#game-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.overlay-root {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.coach-panel {
+  position: absolute;
+  z-index: 2;
+  top: 88px;
+  right: 14px;
+  width: min(300px, calc(100% - 28px));
+  padding: 14px 14px 12px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(5, 16, 23, 0.82);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.28);
+}
+
+.coach-eyebrow {
+  margin: 0 0 8px;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.coach-row {
+  display: flex;
+  align-items: center;
+  min-height: 36px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 14px;
+  border: 1px solid rgba(171, 236, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.coach-row::before {
+  content: "";
+  width: 9px;
+  height: 9px;
+  margin-right: 10px;
+  border-radius: 999px;
+  background: rgba(255, 226, 138, 0.72);
+  box-shadow: 0 0 0 4px rgba(255, 226, 138, 0.08);
+  flex: 0 0 auto;
+}
+
+.coach-row[data-complete="true"] {
+  color: var(--ink);
+  border-color: rgba(122, 224, 255, 0.22);
+  background: rgba(122, 224, 255, 0.08);
+}
+
+.coach-row[data-complete="true"]::before {
+  background: var(--accent);
+  box-shadow: 0 0 0 4px rgba(122, 224, 255, 0.16);
+}
+
+.hud {
+  position: absolute;
+  z-index: 2;
+  display: flex;
+  gap: 10px;
+  max-width: calc(100% - 28px);
+}
+
+.hud-top {
+  top: 14px;
+  left: 14px;
+  flex-wrap: wrap;
+}
+
+.hud-bottom {
+  left: 14px;
+  right: 14px;
+  bottom: 14px;
+  justify-content: flex-start;
+}
+
+.hud-pill,
+.hud-bottom p,
+.overlay-panel {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  backdrop-filter: blur(14px);
+}
+
+.hud-pill {
+  min-width: 92px;
+  padding: 10px 12px;
+  border-radius: 16px;
+}
+
+.hud-pill-goal {
+  min-width: 142px;
+}
+
+.hud-label {
+  display: block;
+  margin-bottom: 3px;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.hud-pill strong {
+  font-size: 18px;
+  letter-spacing: 0.02em;
+}
+
+.hud-bottom p {
+  margin: 0;
+  width: fit-content;
+  max-width: min(560px, 100%);
+  padding: 10px 14px;
+  border-radius: 999px;
+  color: var(--muted);
+}
+
+.overlay-panel {
+  position: absolute;
+  left: 50%;
+  bottom: 10%;
+  transform: translateX(-50%);
+  width: min(560px, calc(100% - 28px));
+  padding: 22px 24px 18px;
+  border-radius: 24px;
+  box-shadow: 0 18px 56px rgba(0, 0, 0, 0.35);
+  pointer-events: auto;
+}
+
+.overlay-eyebrow {
+  margin: 0 0 8px;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.overlay-title {
+  margin: 0 0 8px;
+  font-family: Georgia, serif;
+  font-size: clamp(28px, 4vw, 48px);
+  line-height: 0.96;
+}
+
+.overlay-copy {
+  margin: 0 0 16px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.overlay-steps {
+  margin: 0 0 12px;
+  padding-left: 18px;
+  color: var(--ink);
+  line-height: 1.5;
+}
+
+.overlay-steps li + li {
+  margin-top: 4px;
+}
+
+.overlay-outcome {
+  margin: 0 0 16px;
+  color: var(--accent-2);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.overlay-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+  padding: 0 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--ink);
+  text-decoration: none;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.button.primary {
+  background: linear-gradient(180deg, rgba(122, 224, 255, 0.96), rgba(61, 154, 186, 0.96));
+  border-color: rgba(170, 237, 255, 0.36);
+}
+
+[hidden] {
+  display: none !important;
+}
+
+@media (max-width: 720px) {
+  .game-frame {
+    aspect-ratio: auto;
+    min-height: 100vh;
+  }
+
+  .hud {
+    max-width: calc(100% - 20px);
+  }
+
+  .coach-panel {
+    top: auto;
+    left: 12px;
+    right: 12px;
+    bottom: 78px;
+    width: auto;
+  }
+
+  .overlay-panel {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    transform: none;
+    width: auto;
+  }
+}

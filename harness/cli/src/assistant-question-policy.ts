@@ -49,6 +49,7 @@ const durableAnswerPatterns = [
   /\bdo not ask(?: me)? again\b/i,
   /\buse (?:your )?(?:best )?judg(?:e)?ment\b/i,
   /\bpick (?:a )?random\b/i,
+  /\b(?:pick|choose|select)\b.*\bbrowser-playable\b/i,
   /\buse existing guidance\b/i,
   /\bcurrent context\b/i,
   /\bthat'?s your job\b/i,
@@ -174,6 +175,9 @@ export function evaluateAssistantQuestionPolicy(input: EvaluateAssistantQuestion
 
 export function classifyAssistantQuestion(prompt: string): AssistantQuestionCategory {
   const text = normalizeQuestionText(prompt);
+  if (/\b(concrete sweep input|sweep input|issue output text block|what should i use as input|what should i use as concrete)\b/.test(text)) {
+    return "target-selection";
+  }
   if (/\b(circuit breaker|repeated failure|recover|recovery|paused itself|retry bootstrap|bootstrap was interrupted|stalled)\b/.test(text)) {
     return "recovery-or-safety";
   }
@@ -258,7 +262,7 @@ function hasTasteGuidance(text: string) {
 }
 
 function hasTargetGuidance(text: string) {
-  return /\b(pick|choose|select).*\b(random|target|game|folder)|\bactive .*target\b|\btarget is already\b/i.test(text);
+  return /\b(pick|choose|select).*\b(random|target|game|folder|browser-playable)|\bactive .*target\b|\btarget is already\b|\buse current context\b/i.test(text);
 }
 
 function isHighRiskQuestion(prompt: string) {

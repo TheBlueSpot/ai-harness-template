@@ -215,10 +215,35 @@ function drawLandingZone(ctx, zone) {
   ctx.restore();
 }
 
+function drawTargetBeacon(ctx, beacon, time = 0) {
+  if (!beacon) return;
+
+  const pulse = 0.5 + 0.5 * Math.sin(time * 4.5);
+  const radius = beacon.kind === "goal" ? 52 : 34;
+
+  ctx.save();
+  ctx.translate(beacon.x ?? 0, beacon.y ?? 0);
+  ctx.strokeStyle = beacon.kind === "goal" ? `rgba(255, 220, 110, ${0.48 + pulse * 0.34})` : `rgba(255, 236, 142, ${0.42 + pulse * 0.3})`;
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.arc(0, 0, radius + pulse * 10, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(0, 0, radius - 10 + pulse * 4, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.fillStyle = "rgba(8, 14, 20, 0.84)";
+  ctx.fillRect(-76, -radius - 38, 152, 28);
+  ctx.fillStyle = "#fff4c4";
+  ctx.font = "700 14px Georgia, serif";
+  ctx.textAlign = "center";
+  ctx.fillText(beacon.label ?? "TARGET", 0, -radius - 18);
+  ctx.restore();
+}
+
 function drawOverlayText(ctx, frameState) {
   const lines = [
-    frameState?.status,
-    frameState?.hint,
+    frameState?.objective ?? frameState?.status,
+    frameState?.detail ?? frameState?.hint,
   ].filter(Boolean);
 
   if (!lines.length) return;
@@ -247,12 +272,14 @@ export function renderGame(ctx, frameState) {
   const actors = frameState?.actors ?? [];
   const ladders = frameState?.ladders ?? [];
   const launchPads = frameState?.launchPads ?? [];
+  const targetBeacon = frameState?.targetBeacon ?? null;
 
   for (const platform of platforms) drawPlatform(ctx, platform);
   for (const ladder of ladders) drawLadder(ctx, ladder);
   for (const zone of landingZones) drawLandingZone(ctx, zone);
   for (const pad of launchPads) drawLaunchPad(ctx, pad);
   for (const banana of bananas) drawBanana(ctx, banana);
+  drawTargetBeacon(ctx, targetBeacon, performance.now() / 1000);
   for (const barrel of barrels) drawBarrel(ctx, barrel);
   for (const zinger of zingers) drawZinger(ctx, zinger);
   for (const actor of actors) drawCharacter(ctx, actor);

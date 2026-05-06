@@ -1,0 +1,1334 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Relic Swarm Arena</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #090811;
+        --panel: rgba(16, 18, 30, 0.86);
+        --panel-strong: rgba(20, 23, 38, 0.96);
+        --line: rgba(202, 206, 255, 0.18);
+        --text: #f5f3e8;
+        --muted: #b7bdd8;
+        --accent: #f8c66a;
+        --accent-2: #7ef0d7;
+        --danger: #ff7272;
+        --shadow: rgba(4, 4, 10, 0.5);
+        font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background:
+          radial-gradient(circle at top, rgba(69, 79, 125, 0.35), transparent 30%),
+          radial-gradient(circle at bottom, rgba(101, 52, 71, 0.28), transparent 35%),
+          linear-gradient(180deg, #14111f 0%, var(--bg) 60%, #050409 100%);
+        color: var(--text);
+      }
+
+      .shell {
+        width: min(1120px, 100vw);
+        padding: 20px;
+      }
+
+      .frame {
+        position: relative;
+        border-radius: 28px;
+        overflow: hidden;
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.01)),
+          rgba(8, 10, 18, 0.95);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        box-shadow:
+          0 32px 60px rgba(0, 0, 0, 0.42),
+          inset 0 1px 0 rgba(255, 255, 255, 0.08);
+      }
+
+      canvas {
+        display: block;
+        width: 100%;
+        aspect-ratio: 16 / 9;
+        background: transparent;
+      }
+
+      .hud {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+      }
+
+      .edge {
+        position: absolute;
+        display: grid;
+        gap: 10px;
+      }
+
+      .top-left {
+        left: 18px;
+        top: 18px;
+      }
+
+      .top-right {
+        right: 18px;
+        top: 18px;
+        justify-items: end;
+      }
+
+      .bottom-left {
+        left: 18px;
+        bottom: 18px;
+      }
+
+      .card {
+        min-width: 208px;
+        max-width: 320px;
+        padding: 12px 14px;
+        border-radius: 18px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        box-shadow: 0 14px 24px var(--shadow);
+        backdrop-filter: blur(12px);
+      }
+
+      .eyebrow {
+        font-size: 0.74rem;
+        text-transform: uppercase;
+        letter-spacing: 0.18em;
+        color: var(--accent);
+        margin: 0 0 6px;
+      }
+
+      .title {
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: 1.1rem;
+        margin: 0 0 4px;
+      }
+
+      .status-line,
+      .microcopy,
+      .control-line {
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.35;
+        font-size: 0.94rem;
+      }
+
+      .stats {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+
+      .stat {
+        min-width: 88px;
+      }
+
+      .stat-label {
+        display: block;
+        font-size: 0.74rem;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        color: var(--muted);
+      }
+
+      .stat strong {
+        display: block;
+        font-size: 1.1rem;
+        margin-top: 3px;
+      }
+
+      .bar {
+        height: 10px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.08);
+        overflow: hidden;
+        margin-top: 8px;
+      }
+
+      .bar-fill {
+        height: 100%;
+        width: 100%;
+        background: linear-gradient(90deg, #f48484, #f8c66a);
+      }
+
+      .overlay {
+        position: absolute;
+        inset: 0;
+        display: none;
+        place-items: center;
+        padding: 20px;
+        background: rgba(5, 7, 12, 0.66);
+        backdrop-filter: blur(8px);
+      }
+
+      .overlay.visible {
+        display: grid;
+      }
+
+      .modal {
+        width: min(920px, 100%);
+        padding: 24px;
+        border-radius: 26px;
+        background: var(--panel-strong);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        box-shadow: 0 24px 50px rgba(0, 0, 0, 0.45);
+      }
+
+      .modal h1,
+      .modal h2 {
+        margin: 0 0 10px;
+        font-family: Georgia, "Times New Roman", serif;
+      }
+
+      .modal p {
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.45;
+      }
+
+      .relic-grid {
+        margin-top: 18px;
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .relic-card {
+        pointer-events: auto;
+        text-align: left;
+        border: 1px solid rgba(248, 198, 106, 0.24);
+        border-radius: 20px;
+        background:
+          linear-gradient(180deg, rgba(248, 198, 106, 0.16), rgba(126, 240, 215, 0.05)),
+          rgba(20, 23, 36, 0.96);
+        color: var(--text);
+        padding: 16px;
+        cursor: pointer;
+        transition: transform 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+      }
+
+      .relic-card:hover,
+      .relic-card:focus-visible {
+        transform: translateY(-3px);
+        border-color: rgba(248, 198, 106, 0.54);
+        box-shadow: 0 12px 26px rgba(0, 0, 0, 0.28);
+        outline: none;
+      }
+
+      .relic-card strong {
+        display: block;
+        font-size: 1rem;
+        margin-bottom: 6px;
+      }
+
+      .relic-card span,
+      .relic-card small {
+        display: block;
+        color: var(--muted);
+        line-height: 1.35;
+      }
+
+      .relic-card small {
+        margin-top: 10px;
+        color: var(--accent);
+      }
+
+      .result-stats {
+        margin-top: 14px;
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .result-stats .card {
+        min-width: 0;
+      }
+
+      @media (max-width: 860px) {
+        .shell {
+          padding: 0;
+        }
+
+        .frame {
+          border-radius: 0;
+          min-height: 100vh;
+        }
+
+        .top-left,
+        .top-right,
+        .bottom-left {
+          position: static;
+        }
+
+        .hud {
+          display: grid;
+          align-content: space-between;
+          padding: 14px;
+        }
+
+        .edge {
+          position: static;
+        }
+
+        .card {
+          max-width: none;
+        }
+
+        .relic-grid,
+        .result-stats {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <div class="frame">
+        <canvas id="game" width="1280" height="720" aria-label="Relic Swarm Arena canvas"></canvas>
+
+        <div class="hud">
+          <div class="edge top-left">
+            <section class="card">
+              <p class="eyebrow">Relic Swarm Arena</p>
+              <h1 class="title" id="phase-title">Wake the vault</h1>
+              <p class="status-line" id="goal-line">Move the warden and clear the first swarm.</p>
+            </section>
+            <section class="card">
+              <div class="stats">
+                <div class="stat">
+                  <span class="stat-label">Wave</span>
+                  <strong id="wave-value">1 / 4</strong>
+                </div>
+                <div class="stat">
+                  <span class="stat-label">Threats Left</span>
+                  <strong id="kills-left-value">0</strong>
+                </div>
+                <div class="stat">
+                  <span class="stat-label">Relics</span>
+                  <strong id="relic-count-value">0</strong>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <div class="edge top-right">
+            <section class="card">
+              <span class="stat-label">Integrity</span>
+              <strong id="health-value">100 / 100</strong>
+              <div class="bar"><div class="bar-fill" id="health-bar"></div></div>
+            </section>
+            <section class="card">
+              <span class="stat-label">Dash</span>
+              <strong id="dash-value">Ready</strong>
+              <p class="microcopy" id="message-line">First goal: survive long enough to earn a relic break.</p>
+            </section>
+          </div>
+
+          <div class="edge bottom-left">
+            <section class="card">
+              <p class="control-line">Move: <strong>WASD</strong> or <strong>Arrows</strong> | Dash: <strong>Space</strong> or <strong>Shift</strong> | Start/Retry: <strong>Enter</strong> | Full reset: <strong>R</strong></p>
+            </section>
+          </div>
+        </div>
+
+        <div class="overlay visible" id="start-overlay">
+          <div class="modal">
+            <p class="eyebrow">Direct browser play</p>
+            <h1>Read the tell. Cut the swarm. Claim the relic.</h1>
+            <p>Guide the vault warden through four short arena waves. Movement is immediate, fire is automatic, and every cleared wave pauses for one of three relic picks. Watch amber dash lines and red aim beams: those telegraphs tell you exactly where the next danger will land.</p>
+            <div class="result-stats">
+              <section class="card">
+                <span class="stat-label">Loop</span>
+                <strong>Move first</strong>
+                <p class="microcopy">Auto-fire keeps the main read on route choice and dodge certainty.</p>
+              </section>
+              <section class="card">
+                <span class="stat-label">Goal</span>
+                <strong>One next task</strong>
+                <p class="microcopy">The left card always shows the current wave target and remaining threats.</p>
+              </section>
+              <section class="card">
+                <span class="stat-label">Breaks</span>
+                <strong>Three relic choices</strong>
+                <p class="microcopy">Each clear offers explicit tradeoffs before the next push begins.</p>
+              </section>
+              <section class="card">
+                <span class="stat-label">Retry</span>
+                <strong>Instant</strong>
+                <p class="microcopy">Enter restarts the run immediately after failure or victory.</p>
+              </section>
+            </div>
+            <p style="margin-top: 18px; color: var(--accent);">Press Enter to start.</p>
+          </div>
+        </div>
+
+        <div class="overlay" id="relic-overlay">
+          <div class="modal">
+            <p class="eyebrow">Relic break</p>
+            <h2 id="relic-title">Choose one relic</h2>
+            <p id="relic-copy">Each relic sharpens one leg of the next wave. Pick the read you trust most.</p>
+            <div class="relic-grid" id="relic-grid"></div>
+          </div>
+        </div>
+
+        <div class="overlay" id="result-overlay">
+          <div class="modal">
+            <p class="eyebrow" id="result-tag">Run ended</p>
+            <h2 id="result-title">The vault closed.</h2>
+            <p id="result-copy">Press Enter to run again or R to rebuild from wave one.</p>
+            <div class="result-stats">
+              <section class="card">
+                <span class="stat-label">Wave Reached</span>
+                <strong id="result-wave">1</strong>
+              </section>
+              <section class="card">
+                <span class="stat-label">Threats Cut</span>
+                <strong id="result-kills">0</strong>
+              </section>
+              <section class="card">
+                <span class="stat-label">Relics Taken</span>
+                <strong id="result-relics">0</strong>
+              </section>
+              <section class="card">
+                <span class="stat-label">Best Goal</span>
+                <strong id="result-goal">Wave 1</strong>
+              </section>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const canvas = document.getElementById("game");
+      const ctx = canvas.getContext("2d");
+
+      const hud = {
+        phaseTitle: document.getElementById("phase-title"),
+        goalLine: document.getElementById("goal-line"),
+        waveValue: document.getElementById("wave-value"),
+        killsLeftValue: document.getElementById("kills-left-value"),
+        relicCountValue: document.getElementById("relic-count-value"),
+        healthValue: document.getElementById("health-value"),
+        healthBar: document.getElementById("health-bar"),
+        dashValue: document.getElementById("dash-value"),
+        messageLine: document.getElementById("message-line"),
+      };
+
+      const overlays = {
+        start: document.getElementById("start-overlay"),
+        relic: document.getElementById("relic-overlay"),
+        relicTitle: document.getElementById("relic-title"),
+        relicCopy: document.getElementById("relic-copy"),
+        relicGrid: document.getElementById("relic-grid"),
+        result: document.getElementById("result-overlay"),
+        resultTag: document.getElementById("result-tag"),
+        resultTitle: document.getElementById("result-title"),
+        resultCopy: document.getElementById("result-copy"),
+        resultWave: document.getElementById("result-wave"),
+        resultKills: document.getElementById("result-kills"),
+        resultRelics: document.getElementById("result-relics"),
+        resultGoal: document.getElementById("result-goal"),
+      };
+
+      const ARENA = { width: canvas.width, height: canvas.height, margin: 82 };
+      const params = new URLSearchParams(window.location.search);
+      const keys = new Set();
+      let dashQueued = false;
+      let lastTimestamp = 0;
+
+      const RELICS = [
+        {
+          id: "sun-coil",
+          name: "Sun Coil",
+          effectText: "22% faster fire cycle.",
+          flavor: "More cuts before the lane closes.",
+          apply(player) {
+            player.fireInterval *= 0.78;
+          },
+        },
+        {
+          id: "gale-thread",
+          name: "Gale Thread",
+          effectText: "13% faster movement.",
+          flavor: "Route first, punishment second.",
+          apply(player) {
+            player.speed *= 1.13;
+          },
+        },
+        {
+          id: "glass-spur",
+          name: "Glass Spur",
+          effectText: "Shots pierce one extra target.",
+          flavor: "Useful when the pack stops pretending.",
+          apply(player) {
+            player.pierce += 1;
+          },
+        },
+        {
+          id: "iron-roots",
+          name: "Iron Roots",
+          effectText: "Gain 30 max integrity and heal 30.",
+          flavor: "Thicker footing for denser waves.",
+          apply(player) {
+            player.maxHp += 30;
+            player.hp = Math.min(player.maxHp, player.hp + 30);
+          },
+        },
+        {
+          id: "pulse-anchor",
+          name: "Pulse Anchor",
+          effectText: "Dash cooldown shortens by 22%.",
+          flavor: "More answers to stacked tells.",
+          apply(player) {
+            player.dashCooldown *= 0.78;
+          },
+        },
+        {
+          id: "twin-fangs",
+          name: "Twin Fangs",
+          effectText: "Fire one extra split shot.",
+          flavor: "Wider lane clear around the main target.",
+          apply(player) {
+            player.burst += 1;
+          },
+        },
+        {
+          id: "ember-crown",
+          name: "Ember Crown",
+          effectText: "Shots burst on impact.",
+          flavor: "Clean finishes punish clumped greed.",
+          apply(player) {
+            player.explosive = true;
+          },
+        },
+        {
+          id: "ward-sigil",
+          name: "Ward Sigil",
+          effectText: "Recover 8 integrity after each clear.",
+          flavor: "Late waves stop snowballing as hard.",
+          apply(player) {
+            player.waveRegen += 8;
+          },
+        },
+      ];
+
+      const WAVE_DEFS = [
+        { quota: 16, durationHint: "Cut 16 husks to earn your first relic.", mix: ["skitter", "skitter", "shooter"] },
+        { quota: 20, durationHint: "Clear 20 threats. Dashers now force lane reads.", mix: ["skitter", "dasher", "shooter", "skitter"] },
+        { quota: 24, durationHint: "Clear 24 threats. Aim beams and dashes start to overlap.", mix: ["shooter", "dasher", "skitter", "dasher"] },
+        { quota: 30, durationHint: "Final seal: cut 30 threats and hold the center.", mix: ["dasher", "shooter", "skitter", "dasher", "shooter"] },
+      ];
+
+      let state = null;
+
+      function rand(min, max) {
+        return min + Math.random() * (max - min);
+      }
+
+      function clamp(value, min, max) {
+        return Math.max(min, Math.min(max, value));
+      }
+
+      function length(x, y) {
+        return Math.hypot(x, y);
+      }
+
+      function normalize(x, y) {
+        const mag = Math.hypot(x, y) || 1;
+        return { x: x / mag, y: y / mag };
+      }
+
+      function lerp(a, b, t) {
+        return a + (b - a) * t;
+      }
+
+      function createPlayer() {
+        return {
+          x: ARENA.width / 2,
+          y: ARENA.height / 2,
+          radius: 16,
+          speed: 285,
+          hp: 100,
+          maxHp: 100,
+          invuln: 0,
+          fireTimer: 0,
+          fireInterval: 0.28,
+          shotSpeed: 610,
+          damage: 18,
+          pierce: 0,
+          burst: 0,
+          explosive: false,
+          waveRegen: 0,
+          dashCooldown: 1.8,
+          dashTimer: 0,
+          dashVector: { x: 0, y: -1 },
+          dashTrail: 0,
+        };
+      }
+
+      function resetRun() {
+        state = {
+          mode: "menu",
+          player: createPlayer(),
+          enemies: [],
+          bullets: [],
+          enemyProjectiles: [],
+          particles: [],
+          shockwaves: [],
+          message: "First goal: survive long enough to earn a relic break.",
+          phaseTitle: "Wake the vault",
+          goalLine: "Move the warden and clear the first swarm.",
+          time: 0,
+          waveIndex: 0,
+          waveKills: 0,
+          totalKills: 0,
+          spawnTimer: 0.5,
+          spawnedInWave: 0,
+          relics: [],
+          relicPool: RELICS.map((relic) => ({ ...relic })),
+          relicChoices: [],
+          bestWave: 1,
+          result: null,
+          screenShake: 0,
+        };
+        prepareWave(0);
+        showOverlay("start");
+        renderHud();
+      }
+
+      function prepareWave(index) {
+        const def = WAVE_DEFS[index];
+        state.waveIndex = index;
+        state.waveKills = 0;
+        state.spawnedInWave = 0;
+        state.spawnTimer = 0.8;
+        state.phaseTitle = index === WAVE_DEFS.length - 1 ? "Seal the last breach" : `Wave ${index + 1} breach`;
+        state.goalLine = def.durationHint;
+        state.message = index === 0 ? "Skitter husks rush first. Keep a clean circle." : "Read the next tell before it becomes contact.";
+        state.player.hp = Math.min(state.player.maxHp, state.player.hp + state.player.waveRegen);
+        state.bestWave = Math.max(state.bestWave, index + 1);
+      }
+
+      function showOverlay(which) {
+        overlays.start.classList.toggle("visible", which === "start");
+        overlays.relic.classList.toggle("visible", which === "relic");
+        overlays.result.classList.toggle("visible", which === "result");
+      }
+
+      function beginRun() {
+        resetRun();
+        state.mode = "playing";
+        showOverlay(null);
+        state.message = "First goal: clear 16 husks for a relic break.";
+        state.phaseTitle = "Wave 1 breach";
+        state.goalLine = WAVE_DEFS[0].durationHint;
+        renderHud();
+      }
+
+      function restartRun() {
+        beginRun();
+      }
+
+      function pickRelicOptions() {
+        const source = [...state.relicPool];
+        const options = [];
+        while (source.length && options.length < 3) {
+          const index = Math.floor(Math.random() * source.length);
+          options.push(source.splice(index, 1)[0]);
+        }
+        return options;
+      }
+
+      function enterRelicBreak() {
+        state.mode = "relic";
+        state.player.fireTimer = 0;
+        state.relicChoices = pickRelicOptions();
+        overlays.relicGrid.replaceChildren();
+        state.relicChoices.forEach((relic, index) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "relic-card";
+          button.innerHTML = `<strong>${relic.name}</strong><span>${relic.effectText}</span><small>${relic.flavor}</small>`;
+          button.addEventListener("click", () => chooseRelic(index));
+          overlays.relicGrid.append(button);
+        });
+        overlays.relicTitle.textContent = `Wave ${state.waveIndex + 1} clear. Choose one relic.`;
+        overlays.relicCopy.textContent = "Each pick names one concrete advantage before the next breach starts.";
+        state.message = "Relic break. Pick the next readable edge.";
+        showOverlay("relic");
+        renderHud();
+      }
+
+      function chooseRelic(index) {
+        if (state.mode !== "relic") {
+          return;
+        }
+        const relic = state.relicChoices[index];
+        if (!relic) {
+          return;
+        }
+        relic.apply(state.player);
+        state.relics.push(relic);
+        state.relicPool = state.relicPool.filter((entry) => entry.id !== relic.id);
+        showOverlay(null);
+        state.mode = "playing";
+        const nextWave = state.waveIndex + 1;
+        prepareWave(nextWave);
+        state.message = `${relic.name} taken. ${WAVE_DEFS[nextWave].durationHint}`;
+        state.enemies.length = 0;
+        state.enemyProjectiles.length = 0;
+        state.bullets.length = 0;
+        state.particles.length = 0;
+      }
+
+      function finishRun(victory) {
+        state.mode = "result";
+        state.result = { victory };
+        overlays.resultTag.textContent = victory ? "Vault sealed" : "Run broken";
+        overlays.resultTitle.textContent = victory ? "The relic swarm collapsed." : "The warden fell before the seal held.";
+        overlays.resultCopy.textContent = victory
+          ? "Press Enter to run the arena again or R to reset immediately."
+          : "Press Enter to retry instantly or R to rebuild the run from the start.";
+        overlays.resultWave.textContent = `${state.waveIndex + 1}`;
+        overlays.resultKills.textContent = `${state.totalKills}`;
+        overlays.resultRelics.textContent = `${state.relics.length}`;
+        overlays.resultGoal.textContent = victory ? "Seal held" : `Reached wave ${state.bestWave}`;
+        state.message = victory ? "Arena sealed. Fast restart is ready." : "Failure stays cheap. Press Enter.";
+        showOverlay("result");
+        renderHud();
+      }
+
+      function spawnEnemy(kind) {
+        const player = state.player;
+        let x = 0;
+        let y = 0;
+        const side = Math.floor(Math.random() * 4);
+        if (side === 0) {
+          x = rand(ARENA.margin, ARENA.width - ARENA.margin);
+          y = -30;
+        } else if (side === 1) {
+          x = ARENA.width + 30;
+          y = rand(ARENA.margin, ARENA.height - ARENA.margin);
+        } else if (side === 2) {
+          x = rand(ARENA.margin, ARENA.width - ARENA.margin);
+          y = ARENA.height + 30;
+        } else {
+          x = -30;
+          y = rand(ARENA.margin, ARENA.height - ARENA.margin);
+        }
+
+        const tooClose = length(x - player.x, y - player.y) < 220;
+        if (tooClose) {
+          x += x < player.x ? -120 : 120;
+          y += y < player.y ? -120 : 120;
+        }
+
+        const base = {
+          x,
+          y,
+          radius: kind === "skitter" ? 14 : kind === "dasher" ? 15 : 16,
+          kind,
+          hp: kind === "skitter" ? 22 : kind === "dasher" ? 34 : 30,
+          speed: kind === "skitter" ? 118 : kind === "dasher" ? 140 : 74,
+          color: kind === "skitter" ? "#b9f6c0" : kind === "dasher" ? "#f8c66a" : "#ff8b8b",
+          telegraph: 0.65,
+          attackTimer: rand(0.4, 1.1),
+          heading: { x: 0, y: 1 },
+          dashWindup: 0,
+          dashBurst: 0,
+          dashAim: { x: 0, y: 0 },
+          shotWindup: 0,
+          shotAim: { x: 0, y: 0 },
+        };
+
+        state.enemies.push(base);
+      }
+
+      function updatePlayer(dt) {
+        const player = state.player;
+        let moveX = 0;
+        let moveY = 0;
+        if (keys.has("ArrowUp") || keys.has("KeyW")) moveY -= 1;
+        if (keys.has("ArrowDown") || keys.has("KeyS")) moveY += 1;
+        if (keys.has("ArrowLeft") || keys.has("KeyA")) moveX -= 1;
+        if (keys.has("ArrowRight") || keys.has("KeyD")) moveX += 1;
+
+        if (moveX !== 0 || moveY !== 0) {
+          player.dashVector = normalize(moveX, moveY);
+          const move = normalize(moveX, moveY);
+          player.x += move.x * player.speed * dt;
+          player.y += move.y * player.speed * dt;
+        }
+
+        player.x = clamp(player.x, ARENA.margin, ARENA.width - ARENA.margin);
+        player.y = clamp(player.y, ARENA.margin, ARENA.height - ARENA.margin);
+        player.fireTimer -= dt;
+        player.invuln = Math.max(0, player.invuln - dt);
+        player.dashTimer = Math.max(0, player.dashTimer - dt);
+        player.dashTrail = Math.max(0, player.dashTrail - dt);
+
+        if (dashQueued && player.dashTimer === 0) {
+          dashQueued = false;
+          player.dashTimer = player.dashCooldown;
+          player.dashTrail = 0.22;
+          player.x += player.dashVector.x * 130;
+          player.y += player.dashVector.y * 130;
+          player.x = clamp(player.x, ARENA.margin, ARENA.width - ARENA.margin);
+          player.y = clamp(player.y, ARENA.margin, ARENA.height - ARENA.margin);
+          state.message = "Dash spent. Read the next tell before re-committing.";
+          for (let i = 0; i < 7; i += 1) {
+            state.particles.push({
+              x: player.x,
+              y: player.y,
+              vx: rand(-90, 90),
+              vy: rand(-90, 90),
+              life: rand(0.18, 0.34),
+              color: "rgba(126, 240, 215, 0.85)",
+              size: rand(2, 4),
+            });
+          }
+        }
+      }
+
+      function fireAutoShot() {
+        const player = state.player;
+        if (player.fireTimer > 0 || state.enemies.length === 0) {
+          return;
+        }
+        let target = null;
+        let bestDistance = Infinity;
+        for (const enemy of state.enemies) {
+          const dist = length(enemy.x - player.x, enemy.y - player.y);
+          if (dist < bestDistance) {
+            bestDistance = dist;
+            target = enemy;
+          }
+        }
+        if (!target) {
+          return;
+        }
+
+        const mainDir = normalize(target.x - player.x, target.y - player.y);
+        const shots = 1 + player.burst;
+        for (let i = 0; i < shots; i += 1) {
+          const spread = shots === 1 ? 0 : lerp(-0.18, 0.18, i / (shots - 1));
+          const dirX = mainDir.x * Math.cos(spread) - mainDir.y * Math.sin(spread);
+          const dirY = mainDir.x * Math.sin(spread) + mainDir.y * Math.cos(spread);
+          state.bullets.push({
+            x: player.x + dirX * 20,
+            y: player.y + dirY * 20,
+            vx: dirX * player.shotSpeed,
+            vy: dirY * player.shotSpeed,
+            life: 1.2,
+            damage: player.damage,
+            pierce: player.pierce,
+            explosive: player.explosive,
+          });
+        }
+        player.fireTimer = player.fireInterval;
+      }
+
+      function updateWave(dt) {
+        const def = WAVE_DEFS[state.waveIndex];
+        const alive = state.enemies.length;
+        const remainingToSpawn = def.quota - state.spawnedInWave;
+        state.spawnTimer -= dt;
+        if (remainingToSpawn > 0 && state.spawnTimer <= 0) {
+          const pressure = Math.max(0, state.waveKills - state.spawnedInWave + 1);
+          const burst = Math.min(2, state.waveIndex);
+          const spawnCount = pressure > 0 ? 2 : 1;
+          for (let i = 0; i < Math.min(spawnCount + burst, remainingToSpawn); i += 1) {
+            const kind = def.mix[(state.spawnedInWave + i) % def.mix.length];
+            spawnEnemy(kind);
+          }
+          state.spawnedInWave += Math.min(spawnCount + burst, remainingToSpawn);
+          state.spawnTimer = Math.max(0.48, 1.22 - state.waveIndex * 0.1 - alive * 0.02);
+        }
+
+        if (state.waveKills >= def.quota && state.enemies.length === 0 && state.enemyProjectiles.length === 0) {
+          if (state.waveIndex === WAVE_DEFS.length - 1) {
+            finishRun(true);
+          } else {
+            enterRelicBreak();
+          }
+        }
+      }
+
+      function hitPlayer(damage, sourceX, sourceY) {
+        const player = state.player;
+        if (player.invuln > 0 || state.mode !== "playing") {
+          return;
+        }
+        player.hp = Math.max(0, player.hp - damage);
+        player.invuln = 0.85;
+        state.screenShake = Math.min(10, state.screenShake + 5);
+        state.message = "Hit taken. Reset your lane before the next tell lands.";
+        for (let i = 0; i < 12; i += 1) {
+          state.particles.push({
+            x: player.x,
+            y: player.y,
+            vx: rand(-150, 150) + (player.x - sourceX) * 0.18,
+            vy: rand(-150, 150) + (player.y - sourceY) * 0.18,
+            life: rand(0.2, 0.42),
+            color: "rgba(255, 114, 114, 0.88)",
+            size: rand(2, 5),
+          });
+        }
+        if (player.hp <= 0) {
+          finishRun(false);
+        }
+      }
+
+      function burstEnemy(enemy) {
+        state.totalKills += 1;
+        state.waveKills += 1;
+        state.screenShake = Math.min(7, state.screenShake + 2.5);
+        state.message = state.waveKills >= WAVE_DEFS[state.waveIndex].quota
+          ? "Wave target met. Clean the last danger."
+          : "Lane cut. Keep the next tell in view.";
+        state.shockwaves.push({ x: enemy.x, y: enemy.y, life: 0.24, radius: enemy.radius * 2, color: enemy.color });
+        for (let i = 0; i < 14; i += 1) {
+          state.particles.push({
+            x: enemy.x,
+            y: enemy.y,
+            vx: rand(-140, 140),
+            vy: rand(-140, 140),
+            life: rand(0.2, 0.46),
+            color: enemy.color,
+            size: rand(2, 5),
+          });
+        }
+      }
+
+      function explodeAt(x, y, radius, damage) {
+        state.shockwaves.push({ x, y, life: 0.28, radius, color: "rgba(248, 198, 106, 0.8)" });
+        for (const enemy of state.enemies) {
+          const dist = length(enemy.x - x, enemy.y - y);
+          if (dist < radius + enemy.radius) {
+            enemy.hp -= damage;
+          }
+        }
+      }
+
+      function updateBullets(dt) {
+        for (let i = state.bullets.length - 1; i >= 0; i -= 1) {
+          const bullet = state.bullets[i];
+          bullet.x += bullet.vx * dt;
+          bullet.y += bullet.vy * dt;
+          bullet.life -= dt;
+          if (
+            bullet.life <= 0 ||
+            bullet.x < -40 ||
+            bullet.x > ARENA.width + 40 ||
+            bullet.y < -40 ||
+            bullet.y > ARENA.height + 40
+          ) {
+            state.bullets.splice(i, 1);
+            continue;
+          }
+
+          for (let j = state.enemies.length - 1; j >= 0; j -= 1) {
+            const enemy = state.enemies[j];
+            if (length(enemy.x - bullet.x, enemy.y - bullet.y) <= enemy.radius + 6) {
+              enemy.hp -= bullet.damage;
+              if (bullet.explosive) {
+                explodeAt(bullet.x, bullet.y, 56, bullet.damage * 0.35);
+              }
+              if (enemy.hp <= 0) {
+                burstEnemy(enemy);
+                state.enemies.splice(j, 1);
+              }
+              if (bullet.pierce > 0) {
+                bullet.pierce -= 1;
+              } else {
+                state.bullets.splice(i, 1);
+              }
+              break;
+            }
+          }
+        }
+      }
+
+      function updateEnemies(dt) {
+        const player = state.player;
+        for (let i = state.enemies.length - 1; i >= 0; i -= 1) {
+          const enemy = state.enemies[i];
+          enemy.telegraph = Math.max(0, enemy.telegraph - dt);
+          if (enemy.telegraph > 0) {
+            continue;
+          }
+
+          const toPlayer = normalize(player.x - enemy.x, player.y - enemy.y);
+          enemy.heading = toPlayer;
+
+          if (enemy.kind === "skitter") {
+            enemy.x += toPlayer.x * enemy.speed * dt;
+            enemy.y += toPlayer.y * enemy.speed * dt;
+          } else if (enemy.kind === "dasher") {
+            if (enemy.dashWindup > 0) {
+              enemy.dashWindup -= dt;
+              if (enemy.dashWindup <= 0) {
+                enemy.dashBurst = 0.18;
+              }
+            } else if (enemy.dashBurst > 0) {
+              enemy.dashBurst -= dt;
+              enemy.x += enemy.dashAim.x * 420 * dt;
+              enemy.y += enemy.dashAim.y * 420 * dt;
+            } else {
+              enemy.x += toPlayer.x * enemy.speed * dt * 0.65;
+              enemy.y += toPlayer.y * enemy.speed * dt * 0.65;
+              enemy.attackTimer -= dt;
+              if (enemy.attackTimer <= 0) {
+                enemy.attackTimer = rand(1.3, 2);
+                enemy.dashWindup = 0.72;
+                enemy.dashAim = normalize(player.x - enemy.x, player.y - enemy.y);
+              }
+            }
+          } else if (enemy.kind === "shooter") {
+            const distanceToPlayer = length(player.x - enemy.x, player.y - enemy.y);
+            const spacing = distanceToPlayer > 230 ? 1 : -0.65;
+            enemy.x += toPlayer.x * enemy.speed * dt * spacing;
+            enemy.y += toPlayer.y * enemy.speed * dt * spacing;
+            enemy.attackTimer -= dt;
+            if (enemy.shotWindup > 0) {
+              enemy.shotWindup -= dt;
+              if (enemy.shotWindup <= 0) {
+                const shot = normalize(player.x - enemy.x, player.y - enemy.y);
+                state.enemyProjectiles.push({
+                  x: enemy.x,
+                  y: enemy.y,
+                  vx: shot.x * 290,
+                  vy: shot.y * 290,
+                  life: 2.7,
+                  radius: 7,
+                });
+              }
+            } else if (enemy.attackTimer <= 0) {
+              enemy.attackTimer = rand(1.8, 2.6);
+              enemy.shotWindup = 0.8;
+              enemy.shotAim = { x: player.x, y: player.y };
+            }
+          }
+
+          if (length(enemy.x - player.x, enemy.y - player.y) < enemy.radius + player.radius - 1) {
+            hitPlayer(enemy.kind === "skitter" ? 10 : enemy.kind === "dasher" ? 16 : 12, enemy.x, enemy.y);
+          }
+        }
+      }
+
+      function updateEnemyProjectiles(dt) {
+        for (let i = state.enemyProjectiles.length - 1; i >= 0; i -= 1) {
+          const shot = state.enemyProjectiles[i];
+          shot.x += shot.vx * dt;
+          shot.y += shot.vy * dt;
+          shot.life -= dt;
+          if (shot.life <= 0 || shot.x < -60 || shot.x > ARENA.width + 60 || shot.y < -60 || shot.y > ARENA.height + 60) {
+            state.enemyProjectiles.splice(i, 1);
+            continue;
+          }
+          if (length(shot.x - state.player.x, shot.y - state.player.y) < shot.radius + state.player.radius) {
+            state.enemyProjectiles.splice(i, 1);
+            hitPlayer(14, shot.x, shot.y);
+          }
+        }
+      }
+
+      function updateEffects(dt) {
+        state.screenShake = Math.max(0, state.screenShake - dt * 18);
+
+        for (let i = state.particles.length - 1; i >= 0; i -= 1) {
+          const particle = state.particles[i];
+          particle.x += particle.vx * dt;
+          particle.y += particle.vy * dt;
+          particle.life -= dt;
+          if (particle.life <= 0) {
+            state.particles.splice(i, 1);
+          }
+        }
+
+        for (let i = state.shockwaves.length - 1; i >= 0; i -= 1) {
+          const pulse = state.shockwaves[i];
+          pulse.life -= dt;
+          pulse.radius += 120 * dt;
+          if (pulse.life <= 0) {
+            state.shockwaves.splice(i, 1);
+          }
+        }
+      }
+
+      function update(dt) {
+        if (!state) {
+          return;
+        }
+        state.time += dt;
+
+        if (state.mode === "playing") {
+          updatePlayer(dt);
+          fireAutoShot();
+          updateWave(dt);
+          updateBullets(dt);
+          updateEnemies(dt);
+          updateEnemyProjectiles(dt);
+          updateEffects(dt);
+          renderHud();
+        }
+      }
+
+      function drawArena() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        const shakeX = state.screenShake > 0 ? rand(-state.screenShake, state.screenShake) : 0;
+        const shakeY = state.screenShake > 0 ? rand(-state.screenShake, state.screenShake) : 0;
+        ctx.save();
+        ctx.translate(shakeX, shakeY);
+
+        const gradient = ctx.createRadialGradient(
+          ARENA.width / 2,
+          ARENA.height / 2,
+          40,
+          ARENA.width / 2,
+          ARENA.height / 2,
+          ARENA.width / 2
+        );
+        gradient.addColorStop(0, "#15172a");
+        gradient.addColorStop(1, "#080912");
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, ARENA.width, ARENA.height);
+
+        ctx.strokeStyle = "rgba(126, 240, 215, 0.12)";
+        ctx.lineWidth = 1;
+        for (let x = 70; x < ARENA.width; x += 70) {
+          ctx.beginPath();
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, ARENA.height);
+          ctx.stroke();
+        }
+        for (let y = 70; y < ARENA.height; y += 70) {
+          ctx.beginPath();
+          ctx.moveTo(0, y);
+          ctx.lineTo(ARENA.width, y);
+          ctx.stroke();
+        }
+
+        const centerGlow = ctx.createRadialGradient(
+          ARENA.width / 2,
+          ARENA.height / 2,
+          0,
+          ARENA.width / 2,
+          ARENA.height / 2,
+          210
+        );
+        centerGlow.addColorStop(0, "rgba(248, 198, 106, 0.18)");
+        centerGlow.addColorStop(1, "rgba(248, 198, 106, 0)");
+        ctx.fillStyle = centerGlow;
+        ctx.fillRect(0, 0, ARENA.width, ARENA.height);
+
+        ctx.strokeStyle = "rgba(248, 198, 106, 0.22)";
+        ctx.lineWidth = 4;
+        ctx.strokeRect(ARENA.margin, ARENA.margin, ARENA.width - ARENA.margin * 2, ARENA.height - ARENA.margin * 2);
+
+        drawShockwaves();
+        drawProjectiles();
+        drawEnemies();
+        drawBullets();
+        drawPlayer();
+        drawParticles();
+
+        ctx.restore();
+      }
+
+      function drawPlayer() {
+        const player = state.player;
+        if (player.dashTrail > 0) {
+          ctx.fillStyle = `rgba(126, 240, 215, ${player.dashTrail * 2.8})`;
+          ctx.beginPath();
+          ctx.arc(
+            player.x - player.dashVector.x * 16,
+            player.y - player.dashVector.y * 16,
+            player.radius + 7,
+            0,
+            Math.PI * 2
+          );
+          ctx.fill();
+        }
+
+        ctx.fillStyle = player.invuln > 0 ? "#fff0c2" : "#7ef0d7";
+        ctx.beginPath();
+        ctx.arc(player.x, player.y, player.radius, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.strokeStyle = "rgba(248, 198, 106, 0.95)";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(player.x, player.y);
+        ctx.lineTo(player.x + player.dashVector.x * 18, player.y + player.dashVector.y * 18);
+        ctx.stroke();
+
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.3)";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(player.x, player.y, player.radius + 6, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      function drawEnemies() {
+        for (const enemy of state.enemies) {
+          if (enemy.telegraph > 0) {
+            ctx.strokeStyle = enemy.kind === "dasher" ? "rgba(248, 198, 106, 0.7)" : "rgba(255, 139, 139, 0.54)";
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.arc(enemy.x, enemy.y, enemy.radius + 12 + Math.sin(state.time * 12) * 3, 0, Math.PI * 2);
+            ctx.stroke();
+          }
+
+          if (enemy.kind === "dasher" && enemy.dashWindup > 0) {
+            ctx.strokeStyle = "rgba(248, 198, 106, 0.9)";
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.moveTo(enemy.x, enemy.y);
+            ctx.lineTo(enemy.x + enemy.dashAim.x * 120, enemy.y + enemy.dashAim.y * 120);
+            ctx.stroke();
+          }
+
+          if (enemy.kind === "shooter" && enemy.shotWindup > 0) {
+            ctx.strokeStyle = "rgba(255, 114, 114, 0.88)";
+            ctx.lineWidth = 3;
+            ctx.setLineDash([10, 10]);
+            ctx.beginPath();
+            ctx.moveTo(enemy.x, enemy.y);
+            ctx.lineTo(enemy.shotAim.x, enemy.shotAim.y);
+            ctx.stroke();
+            ctx.setLineDash([]);
+          }
+
+          ctx.fillStyle = enemy.color;
+          ctx.beginPath();
+          ctx.arc(enemy.x, enemy.y, enemy.radius, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = "rgba(8, 10, 18, 0.44)";
+          ctx.beginPath();
+          ctx.arc(enemy.x + enemy.heading.x * 4, enemy.y + enemy.heading.y * 4, enemy.radius * 0.42, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      function drawBullets() {
+        for (const bullet of state.bullets) {
+          ctx.fillStyle = bullet.explosive ? "#f8c66a" : "#f5f3e8";
+          ctx.beginPath();
+          ctx.arc(bullet.x, bullet.y, 5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      function drawProjectiles() {
+        for (const shot of state.enemyProjectiles) {
+          ctx.fillStyle = "#ff7272";
+          ctx.beginPath();
+          ctx.arc(shot.x, shot.y, shot.radius, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      function drawParticles() {
+        for (const particle of state.particles) {
+          ctx.fillStyle = particle.color;
+          ctx.beginPath();
+          ctx.arc(particle.x, particle.y, particle.size, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      function drawShockwaves() {
+        for (const pulse of state.shockwaves) {
+          ctx.strokeStyle = pulse.color;
+          ctx.lineWidth = 3;
+          ctx.globalAlpha = Math.max(0, pulse.life * 3);
+          ctx.beginPath();
+          ctx.arc(pulse.x, pulse.y, pulse.radius, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.globalAlpha = 1;
+        }
+      }
+
+      function renderHud() {
+        if (!state) {
+          return;
+        }
+        const currentWave = WAVE_DEFS[state.waveIndex];
+        const killsLeft = Math.max(0, currentWave.quota - state.waveKills);
+        hud.phaseTitle.textContent = state.phaseTitle;
+        hud.goalLine.textContent = state.goalLine;
+        hud.waveValue.textContent = `${state.waveIndex + 1} / ${WAVE_DEFS.length}`;
+        hud.killsLeftValue.textContent = `${killsLeft}`;
+        hud.relicCountValue.textContent = `${state.relics.length}`;
+        hud.healthValue.textContent = `${Math.ceil(state.player.hp)} / ${state.player.maxHp}`;
+        hud.healthBar.style.width = `${(state.player.hp / state.player.maxHp) * 100}%`;
+        hud.dashValue.textContent = state.player.dashTimer > 0 ? `${state.player.dashTimer.toFixed(1)}s` : "Ready";
+        hud.messageLine.textContent = state.message;
+      }
+
+      function loop(timestamp) {
+        const dt = Math.min(0.033, (timestamp - lastTimestamp) / 1000 || 0);
+        lastTimestamp = timestamp;
+        update(dt);
+        drawArena();
+        requestAnimationFrame(loop);
+      }
+
+      function handleActionKey(code) {
+        if (code === "Enter") {
+          if (state.mode === "menu") {
+            beginRun();
+          } else if (state.mode === "result") {
+            restartRun();
+          }
+        }
+
+        if (code === "KeyR") {
+          restartRun();
+        }
+
+        if (code === "Space" || code === "ShiftLeft" || code === "ShiftRight") {
+          dashQueued = true;
+        }
+
+        if (state.mode === "relic") {
+          if (code === "Digit1") chooseRelic(0);
+          if (code === "Digit2") chooseRelic(1);
+          if (code === "Digit3") chooseRelic(2);
+        }
+      }
+
+      window.addEventListener("keydown", (event) => {
+        if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"].includes(event.code)) {
+          event.preventDefault();
+        }
+        keys.add(event.code);
+        handleActionKey(event.code);
+      });
+
+      window.addEventListener("keyup", (event) => {
+        keys.delete(event.code);
+      });
+
+      resetRun();
+      if (params.get("autostart") === "1") {
+        beginRun();
+      }
+      requestAnimationFrame(loop);
+    </script>
+  </body>
+</html>

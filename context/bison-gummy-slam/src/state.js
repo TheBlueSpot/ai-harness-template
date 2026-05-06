@@ -24,6 +24,7 @@ export function createRunState(width = GAME_CONSTANTS.arenaWidth, height = GAME_
     chainCount: 0,
     slamReady: false,
     slamActive: false,
+    openingSlamCommitted: false,
     slamTimer: 0,
     launchCharge: 0,
     launchCooldown: 0,
@@ -46,11 +47,20 @@ export function createRunState(width = GAME_CONSTANTS.arenaWidth, height = GAME_
     overlay: null,
     shopOpen: false,
     lastContactAt: 0,
+    callout: null,
   };
 }
 
 export function createFrameState(run, upgrades, shop, overlay) {
+  const activeSlamWindow = run.queueIndex === 0 ? GAME_CONSTANTS.openingSlamWindow : GAME_CONSTANTS.slamWindow;
   const overlayType = run.phase === "menu" ? "menu" : run.phase === "result" ? "result" : null;
+  const slamWindowLive = run.totalLaunches > 0
+    && run.queueIndex === 0
+    && run.slamReady
+    && !run.player.grounded
+    && run.player.vy > 0
+    && run.slamTimer <= activeSlamWindow;
+  const coach = buildCoach(run, slamWindowLive);
   return {
     state: run.phase,
     player: {
@@ -62,6 +72,8 @@ export function createFrameState(run, upgrades, shop, overlay) {
       launcherCharge: run.player.launcherCharge,
       slamReady: run.slamReady,
       slamActive: run.slamActive,
+      slamWindow: activeSlamWindow,
+      slamWindowLive,
       slamTimer: run.slamTimer,
       totalLaunches: run.totalLaunches,
     },
@@ -94,6 +106,8 @@ export function createFrameState(run, upgrades, shop, overlay) {
     shop,
     overlay,
     overlayType,
+    coach,
+    callout: run.callout ? { ...run.callout } : null,
     upgradeEffects: upgrades,
     status: run.message,
     distance: run.distance,
@@ -101,5 +115,62 @@ export function createFrameState(run, upgrades, shop, overlay) {
     coins: run.coins,
     combo: run.combo,
     queue: { index: run.queueIndex, total: run.queueTotal },
+  };
+}
+
+function buildCoach(run, slamWindowLive) {
+  if (run.phase === "menu") {
+    return {
+      title: "Start the launcher",
+      copy: "The ring auto-fires. First lesson is simple: wait for the drop, then slam.",
+      tone: "wait",
+    };
+  }
+  if (run.phase === "paused") {
+    return {
+      title: "Run paused",
+      copy: "Resume when you are ready to rejoin the drop.",
+      tone: "wait",
+    };
+  }
+  if (run.phase === "result") {
+    return {
+      title: "Bank and retry",
+      copy: "Restart fast, then convert the first drop into a rebound chain.",
+      tone: "wait",
+    };
+  }
+  if (run.totalLaunches === 0) {
+    return {
+      title: "Wait for auto-launch",
+      copy: "Stay ready. The slam matters after the bison starts falling.",
+      tone: "wait",
+    };
+  }
+  if (slamWindowLive) {
+    return {
+      title: "Slam now",
+      copy: "Drive through the first glowing gummy for the biggest opener rebound.",
+      tone: "slam",
+    };
+  }
+  if (run.slamActive) {
+    return {
+      title: "Ride the rebound",
+      copy: "Stay in the lane and chain the next gummy before speed bleeds out.",
+      tone: "hit",
+    };
+  }
+  if (!run.player.grounded && run.player.vy <= 0) {
+    return {
+      title: "Hold the slam",
+      copy: "The cue matters on descent. Wait for the fall before you commit.",
+      tone: "wait",
+    };
+  }
+  return {
+    title: "Track the lane",
+    copy: "Stay above the glowing target. The next clean drop resets your chain window.",
+    tone: "wait",
   };
 }
