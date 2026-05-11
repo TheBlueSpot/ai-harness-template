@@ -2216,6 +2216,46 @@ export function registerServerPreferencesAndModesTests(options: ServerTestShardO
         socket.close();
       }, 60000);
 
+      serverTest("chat.send keeps assistant-choice complaints in normal project chat flow", async () => {
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot);
+        const projectId = opened.payload.project.id;
+        const threadId = opened.payload.project.activeThreadId;
+        const readyPromise = waitForEvent(
+          socket,
+          "run.updated",
+          (event) =>
+            event.payload.threadId === threadId &&
+            event.payload.run.status === "ready" &&
+            event.payload.run.latestUserPrompt.includes("I keep running into an issue"),
+          10000
+        );
+
+        socket.send(
+          JSON.stringify(
+            createChatSendCommand({
+              requestId: "req-assistant-complaint-normal-chat",
+              projectId,
+              threadId,
+              content: `I keep running into an issue where this product wants me to choose and assistant but I just want to run the code.
+Thread Id
+'''
+5ea22a55-1dd0-4ec7-9371-129c67f4dd4e
+ec32e89b-08a3-41a5-80bf-6823701343f0
+8e40122a-4916-4f36-b9fc-f883f30801da
+'''`
+            })
+          )
+        );
+
+        const ready = await readyPromise;
+        expect(ready.payload.run.questions).toHaveLength(0);
+        expect(ready.payload.run.plan?.mode?.id).toBe("implement");
+        expect(ready.payload.run.plan?.gating.mode).toBe("immediate");
+        socket.close();
+      }, 60000);
+
       serverTest("ambiguous assistant question answer can create assistant", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");

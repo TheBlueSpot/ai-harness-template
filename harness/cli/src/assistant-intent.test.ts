@@ -64,6 +64,21 @@ describe("assistant chat intent detection", () => {
     });
   });
 
+  test("ignores complaint and run-code requests that mention assistants", () => {
+    expect(
+      detectAssistantChatIntent(`I keep running into an issue where this product wants me to choose and assistant but I just want to run the code.
+Thread Id
+'''
+5ea22a55-1dd0-4ec7-9371-129c67f4dd4e
+ec32e89b-08a3-41a5-80bf-6823701343f0
+8e40122a-4916-4f36-b9fc-f883f30801da
+'''`)
+    ).toEqual({ kind: "none" });
+    expect(detectAssistantChatIntent("Can you run the code instead of asking me to choose an assistant?")).toEqual({
+      kind: "none"
+    });
+  });
+
   test("ignores normal imperatives", () => {
     expect(detectAssistantChatIntent("start executing todos")).toEqual({ kind: "none" });
     expect(detectAssistantChatIntent("create folder catalog-builder")).toEqual({ kind: "none" });

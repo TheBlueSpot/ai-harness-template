@@ -56,6 +56,68 @@ const commonCommandStarts = new Set([
   "update"
 ]);
 
+const nonNameLeadWords = new Set([
+  "a",
+  "an",
+  "the",
+  "this",
+  "that",
+  "these",
+  "those",
+  "i",
+  "i'm",
+  "im",
+  "i've",
+  "ive",
+  "me",
+  "my",
+  "mine",
+  "we",
+  "we're",
+  "were",
+  "our",
+  "ours",
+  "us",
+  "you",
+  "you're",
+  "your",
+  "yours",
+  "he",
+  "she",
+  "it",
+  "its",
+  "they",
+  "their",
+  "them",
+  "there",
+  "here",
+  "what",
+  "when",
+  "where",
+  "which",
+  "who",
+  "why",
+  "how",
+  "can",
+  "could",
+  "would",
+  "should",
+  "will",
+  "won't",
+  "wont",
+  "do",
+  "does",
+  "did",
+  "is",
+  "are",
+  "am",
+  "was",
+  "have",
+  "has",
+  "had",
+  "please"
+]);
+
 export function detectAssistantChatIntent(input: string): AssistantChatIntent {
   const sourcePrompt = input.trim();
   if (!sourcePrompt || sourcePrompt.includes("```")) {
@@ -189,11 +251,19 @@ function detectAmbiguousAssistantName(sourcePrompt: string) {
   }
 
   const candidate = normalizeAssistantName(words.slice(0, verbIndex).join(" "));
-  if (!candidate) {
+  if (!candidate || !isPlausibleAssistantSelector(candidate)) {
     return undefined;
   }
 
   return candidate;
+}
+
+export function isPlausibleAssistantSelector(input: string) {
+  const words = input
+    .split(/\s+/)
+    .map((word) => cleanWord(word).toLowerCase())
+    .filter(Boolean);
+  return words.length > 0 && !nonNameLeadWords.has(words[0]!);
 }
 
 function normalizeAssistantName(input: string) {

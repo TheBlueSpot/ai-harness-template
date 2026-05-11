@@ -6,7 +6,7 @@ import type {
   BackgroundJob,
   ProjectId
 } from "../../shared/protocol";
-import { detectAssistantChatIntent } from "./assistant-intent";
+import { detectAssistantChatIntent, isPlausibleAssistantSelector } from "./assistant-intent";
 
 export type AssistantActionIntentDraft = {
   actionKind: AssistantActionKind;
@@ -63,6 +63,9 @@ export function resolveAssistantChatAction(input: ResolveAssistantChatActionInpu
 
   const target = resolveAssistantTarget(input.assistants, input.projectId, parsed.assistantSelector);
   if (target.kind === "missing") {
+    if (!parsed.assistantSelector || !isPlausibleAssistantSelector(parsed.assistantSelector)) {
+      return { kind: "none" };
+    }
     return clarifyAssistantTarget(parsed, "Which assistant should handle this?");
   }
   if (target.kind === "ambiguous") {
