@@ -6,6 +6,7 @@ import { ProjectSidebar } from "./project-sidebar";
 import { captureDispatchedCommands, clearBrowserStateForTests, seedHarnessStoreForTests } from "../utils/tests/store-test-utils";
 import { createHarnessStateFixture, createViewProjectFixture } from "../utils/tests/test-fixtures";
 import { createProjectThreadSummary } from "../../../shared/protocol";
+import { readProjectSidebarPreferences } from "../harness-store";
 
 createUiTest("ProjectSidebar", () => {
   beforeEach(() => {
@@ -393,7 +394,8 @@ createUiTest("ProjectSidebar", () => {
           projectSort: "last-user-message",
           threadSort: "last-user-message",
           grouping: "separate",
-          manualProjectOrder: []
+          manualProjectOrder: [],
+          collapsedProjectIds: []
         },
         workspace: {
           activeProjectId: firstProject.id,
@@ -419,7 +421,8 @@ createUiTest("ProjectSidebar", () => {
           projectSort: "created-at",
           threadSort: "last-user-message",
           grouping: "separate",
-          manualProjectOrder: []
+          manualProjectOrder: [],
+          collapsedProjectIds: []
         },
         workspace: {
           activeProjectId: firstProject.id,
@@ -453,7 +456,8 @@ createUiTest("ProjectSidebar", () => {
           projectSort: "manual",
           threadSort: "last-user-message",
           grouping: "repository-path",
-          manualProjectOrder: ["project-1", "project-2"]
+          manualProjectOrder: ["project-1", "project-2"],
+          collapsedProjectIds: []
         },
         workspace: {
           activeProjectId: projectOne.id,
@@ -481,7 +485,8 @@ createUiTest("ProjectSidebar", () => {
             projectSort: "last-user-message",
             threadSort: "last-user-message",
             grouping: "separate",
-            manualProjectOrder: []
+            manualProjectOrder: [],
+            collapsedProjectIds: []
           },
           workspace: {
             activeProjectId: project.id,
@@ -497,5 +502,54 @@ createUiTest("ProjectSidebar", () => {
     } finally {
       console.warn = originalWarn;
     }
+  });
+
+  it("toggles thread visibility per project and persists collapsed preferences", async () => {
+    const now = new Date().toISOString();
+    const project = createViewProjectFixture({
+      id: "project-collapse",
+      threads: [
+        createProjectThreadSummary({
+          id: "thread-1",
+          title: "Visible thread",
+          titleSource: "generated",
+          updatedAt: now
+        }),
+        createProjectThreadSummary({
+          id: "thread-2",
+          title: "Second thread",
+          titleSource: "generated",
+          updatedAt: now
+        })
+      ]
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ProjectSidebar />);
+
+    const collapseButton = screen.getByRole("button", { name: `Collapse threads in ${project.name}` });
+    expect(screen.getByRole("button", { name: "Rename Visible thread" })).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Rename Second thread" })).not.toBeNull();
+
+    fireEvent.click(collapseButton);
+    await Promise.resolve();
+
+    expect(screen.queryByRole("button", { name: "Rename Visible thread" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Rename Second thread" })).toBeNull();
+    expect(readProjectSidebarPreferences().collapsedProjectIds).toEqual([project.id]);
+
+    fireEvent.click(screen.getByRole("button", { name: `Expand threads in ${project.name}` }));
+    await Promise.resolve();
+
+    expect(screen.getByRole("button", { name: "Rename Visible thread" })).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Rename Second thread" })).not.toBeNull();
+    expect(readProjectSidebarPreferences().collapsedProjectIds).toEqual([]);
   });
 });

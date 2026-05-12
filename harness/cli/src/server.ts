@@ -1,5 +1,6 @@
 import { createUiAssetManager } from "./ui-build";
 import { clearDevHarnessServerSingleton, getDevHarnessServerSingleton, setDevHarnessServerSingleton } from "./dev-server-singleton";
+import { withTraceTimestamp } from "./trace-timestamps";
 import { defaultAgentCatalog } from "../../shared/agent-catalog";
 import { defaultProviderCapabilities } from "../../shared/capabilities";
 import { modeUsesReadOnlyExecution, resolveModeById, resolveModeCatalog } from "../../shared/modes";
@@ -4597,19 +4598,20 @@ function createExecutionCallbacks(
 
   return {
     onTrace(trace: AgentTrace) {
-      runtime.appendTrace(projectId, trace, threadId);
+      const stampedTrace = withTraceTimestamp(trace);
+      runtime.appendTrace(projectId, stampedTrace, threadId);
       emitControlEvent(connections, {
         type: "agent.trace",
         requestId,
         payload: {
           projectId,
           threadId,
-          trace
+          trace: stampedTrace
         }
       });
-      const statusMessage = statusMessageFromTrace(trace);
+      const statusMessage = statusMessageFromTrace(stampedTrace);
       if (statusMessage) {
-        recordRunMilestone(statusMessage, inferTracePhase(trace, currentPhase));
+        recordRunMilestone(statusMessage, inferTracePhase(stampedTrace, currentPhase));
       }
     },
     onRunMilestone(line: string) {
@@ -5701,14 +5703,15 @@ function emitProjectTrace(
   threadId: string,
   trace: AgentTrace
 ) {
-  runtime.appendTrace(projectId, trace, threadId);
+  const stampedTrace = withTraceTimestamp(trace);
+  runtime.appendTrace(projectId, stampedTrace, threadId);
   sendEvent(ws, {
     type: "agent.trace",
     requestId,
     payload: {
       projectId,
       threadId,
-      trace
+      trace: stampedTrace
     }
   });
 }

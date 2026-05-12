@@ -110,7 +110,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - Composer supports attachment chips, UploadThing-backed upload flow, vision-aware image gating by selected model, and document ingestion for PDF, DOCX, XLSX, PPTX, and ODT on new top-level tasks
 - Transcript, plan, run, and trace surfaces render readable markdown with code fences, tables, blockquotes, and safe external-link behavior
 - Chat and trace panel share one execution plan modal that exposes summary, prerequisites, bucket strategy, isolation mode, contracts, verification scope, and correctness history
-- Trace panel surfaces browser activity, pending approvals, replay snippets, and lightweight verification results when a run touches browser tools
+- Trace panel surfaces browser activity, pending approvals, replay snippets, lightweight verification results, and task plus trace timestamps when a run touches browser tools
 - Shared primitives and major shells expose stable `data-test-*` hooks for UI automation and harness tests
 
 ## Local Workflow
@@ -188,7 +188,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - Scheduled jobs persist separately from user chat and can promote finished AI runs into reusable routines with explicit schedules
 - Assistant-owned jobs share the same scheduler path, while assistant circuit breakers can auto-pause failing assistants and surface blocking questions for user intervention
 - Post-merge correctness review checks the delivered workspace against the frozen plan, catches obvious runnable or quality gaps, and can queue a corrective plan-first follow-up iteration
-- Subagent startup timing is captured in debug logs plus developer trace events so slow spawn phases are measurable
+- Subagent startup timing is captured in debug logs plus developer trace events, with started-task timing visible in trace UI, so slow spawn phases are measurable
 - Bundled ripgrep is added to the agent toolchain path, and subagents receive repo-root, nested-project, skill-path, Windows search, and browser-native asset guidance so they do not depend on guessed paths or global shell tools
 - Caught UI and command errors surface through toast notifications
 - Development builds re-surface swallowed UI and command errors after toast display so local debugging keeps mapped stacks visible

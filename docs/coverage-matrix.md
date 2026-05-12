@@ -271,7 +271,7 @@ New `US-*` stories start as `GAP-HIGH` here until at least one colocated or inte
 | US-DEV-017 | harness/ui/src/utils/tests/test-harness.ts | integration | OK |
 | US-DEV-018 | harness/cli/src/protocol.test.ts, harness/cli/src/server.test.ts | unit+integration | OK |
 | US-DEV-019 | harness/cli/src/pi-agent-adapter.test.ts, harness/cli/src/pi-orchestrator.test.ts | unit | OK |
-| US-DEV-020 | harness/cli/src/pi-orchestrator.test.ts | unit | GAP-MED |
+| US-DEV-020 | harness/cli/src/pi-orchestrator.test.ts, harness/cli/src/trace-timestamps.test.ts, harness/ui/src/lib/trace-panel-model.test.ts, harness/ui/src/components/trace-panel.test.tsx | unit | GAP-MED |
 | US-DEV-021 | harness/cli/src/development-telemetry.test.ts | unit | OK |
 | US-DEV-022 | harness/ui/src/components/ui-primitive-guard.test.ts | unit | OK |
 | US-DEV-023 | scripts/screenshot.test.ts, harness/cli/src/bounded-output-buffer.test.ts | unit | OK |

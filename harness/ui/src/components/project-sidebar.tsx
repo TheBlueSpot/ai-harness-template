@@ -26,7 +26,20 @@ import { Separator } from "./primitives/separator";
 import { Tooltip } from "./primitives/tooltip";
 import { ThreadCleanupDialog } from "./thread-cleanup-dialog";
 import { VirtualList, type VirtualListHandle } from "./primitives/virtual-list";
-import { Archive, ArrowDown, ArrowUp, ArrowUpDown, Check, CircleHelp, Edit3, Folder, GripVertical, GitFork, Plus, Trash2 } from "lucide-solid";
+import {
+  Archive,
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
+  Check,
+  CircleHelp,
+  Edit3,
+  Folder,
+  GripVertical,
+  GitFork,
+  Plus,
+  Trash2
+} from "lucide-solid";
 
 type ProjectSidebarProps = {
   compact?: boolean;
@@ -42,6 +55,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
   const projectCards = createMemo(() => {
     const preferences = state.projectSidebarPreferences;
     const manualOrder = new Map(preferences.manualProjectOrder.map((projectId, index) => [projectId, index]));
+    const collapsedProjectIds = new Set(preferences.collapsedProjectIds);
     const cards = state.workspace.projects.map((project, workspaceIndex) => ({
       id: project.id,
       name: project.name,
@@ -51,6 +65,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
       hasWorkingThread: project.threads.some((thread) => thread.badgeState === "planning" || thread.badgeState === "executing"),
       hasCliSession: Boolean(project.activeCliSession),
       isActive: project.id === state.workspace.activeProjectId,
+      isCollapsed: collapsedProjectIds.has(project.id),
       activeThreadId: project.activeThreadId,
       threadCount: project.threads.filter((thread) => thread.kind === "user" && thread.status === "active").length,
       updatedAt: project.threads.reduce((latest, thread) => maxIso(latest, thread.updatedAt), project.session.messages.at(-1)?.createdAt),
@@ -107,6 +122,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
   }
 
   function handleCreateThread(projectId: string) {
+    setProjectCollapsed(projectId, false);
     sendCommand({
       type: "thread.create",
       requestId: createRequestId(),
@@ -153,6 +169,13 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
         ...state.projectSidebarPreferences.manualProjectOrder.filter((projectId) => !visible.has(projectId))
       ]
     });
+  }
+
+  function setProjectCollapsed(projectId: string, collapsed: boolean) {
+    const nextCollapsedProjectIds = collapsed
+      ? [...state.projectSidebarPreferences.collapsedProjectIds.filter((id) => id !== projectId), projectId]
+      : state.projectSidebarPreferences.collapsedProjectIds.filter((id) => id !== projectId);
+    store.setProjectSidebarPreferences({ collapsedProjectIds: nextCollapsedProjectIds });
   }
 
   const handleProjectDragEnd: DragEventHandler = ({ draggable, droppable }) => {
@@ -219,10 +242,31 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
     queueMicrotask(() => sidebarList?.scrollToKey(key, "center"));
   });
 
-  function renderProjectRow(project: ProjectCard) {
+  function ProjectRow(rowProps: { project: ProjectCard }) {
+    const project = rowProps.project;
     const isActiveProject = () => project.isActive;
+    let collapsed = project.isCollapsed;
+    let collapseButton: HTMLButtonElement | undefined;
+    let collapseIcon: HTMLSpanElement | undefined;
+    let threadList: HTMLDivElement | undefined;
     const removeDisabledReason = () =>
       project.hasWorkingThread ? "Project is streaming" : project.hasCliSession ? "Live CLI session attached" : undefined;
+    const collapseLabel = (isCollapsed: boolean) => `${isCollapsed ? "Expand" : "Collapse"} threads in ${project.name}`;
+
+    function applyCollapsed(nextCollapsed: boolean) {
+      collapsed = nextCollapsed;
+      if (threadList) {
+        threadList.hidden = nextCollapsed;
+      }
+      collapseButton?.setAttribute("aria-label", collapseLabel(nextCollapsed));
+      if (collapseIcon) {
+        collapseIcon.textContent = nextCollapsed ? ">" : "v";
+      }
+    }
+
+    createEffect(() => {
+      applyCollapsed(rowProps.project.isCollapsed);
+    });
     const renderCard = (sortable: ProjectCardSortableState) => (
       <section
         class={`rounded-[1.4rem] border p-3 transition ${sortable.isDragging ? "opacity-80 shadow-lg" : ""} ${isActiveProject()
@@ -242,6 +286,26 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
             >
               <GripVertical class="h-3.5 w-3.5" />
             </button>
+          </Show>
+          <Show when={project.threadCount > 0}>
+            <Tooltip content="Toggle thread list">
+              <Button
+                ref={collapseButton}
+                variant="ghost"
+                size="icon"
+                class="mt-1 h-6 w-6 shrink-0 rounded-lg"
+                aria-label={collapseLabel(project.isCollapsed)}
+                onClick={() => {
+                  const nextCollapsed = !collapsed;
+                  applyCollapsed(nextCollapsed);
+                  setProjectCollapsed(project.id, nextCollapsed);
+                }}
+              >
+                <span ref={collapseIcon} class="text-[0.8rem] leading-none">
+                  {project.isCollapsed ? ">" : "v"}
+                </span>
+              </Button>
+            </Tooltip>
           </Show>
           <ActionButton
             tooltip={isActiveProject() ? `${project.name} is active` : `Switch to ${project.name}`}
@@ -273,7 +337,10 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
             size="icon"
             class="h-6 w-6 rounded-lg"
             ariaLabel={`Create a new thread in ${project.name}`}
-            onClick={() => handleCreateThread(project.id)}
+            onClick={() => {
+              applyCollapsed(false);
+              handleCreateThread(project.id);
+            }}
           />
 
           <ActionButton
@@ -313,7 +380,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
           </Show>
         </div>
         <Show when={project.threads.length > 0}>
-          <div class="mt-2 flex flex-col gap-2">
+          <div ref={threadList} hidden={project.isCollapsed} class="mt-2 flex flex-col gap-2">
             {project.threads.map((thread) => (
               <ProjectThreadRow project={project} thread={thread} />
             ))}
@@ -459,7 +526,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
       return <div class="px-1 text-[0.55rem] font-semibold uppercase tracking-[0.16em] text-(--muted)">{row.label}</div>;
     }
     if (row.kind === "project") {
-      return renderProjectRow(row.project);
+      return <ProjectRow project={row.project} />;
     }
   }
 
@@ -550,7 +617,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
               itemClass="pb-2"
               items={sidebarRows()}
               getKey={(row) => row.key}
-              estimateSize={(row) => (row.kind === "group" ? 24 : 112 + row.project.threads.length * 82)}
+              estimateSize={estimateProjectSidebarRowSize}
               pagination={{ kind: "forward", initialCount: 80, batchSize: 80 }}
               handleRef={(handle) => {
                 sidebarList = handle;
@@ -569,7 +636,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
                 itemClass="pb-2"
                 items={sidebarRows()}
                 getKey={(row) => row.key}
-                estimateSize={(row) => (row.kind === "group" ? 24 : 112 + row.project.threads.length * 82)}
+                estimateSize={estimateProjectSidebarRowSize}
                 pagination={{ kind: "forward", initialCount: 80, batchSize: 80 }}
                 handleRef={(handle) => {
                   sidebarList = handle;
@@ -626,6 +693,7 @@ type ProjectCard = {
   hasWorkingThread: boolean;
   hasCliSession: boolean;
   isActive: boolean;
+  isCollapsed: boolean;
   activeThreadId: string;
   threadCount: number;
   updatedAt?: string;
@@ -821,6 +889,14 @@ function flattenProjectSidebarRows(groups: ProjectGroup[]) {
     }
   }
   return rows;
+}
+
+function estimateProjectSidebarRowSize(row: ProjectSidebarRow) {
+  if (row.kind === "group") {
+    return 24;
+  }
+
+  return 112 + (row.project.isCollapsed ? 0 : row.project.threads.length * 82);
 }
 
 function getLatestIso(values: Array<string | undefined>) {
