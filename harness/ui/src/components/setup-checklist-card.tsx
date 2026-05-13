@@ -49,15 +49,17 @@ export function SetupChecklistCard(props: SetupChecklistCardProps) {
         <For each={orderedChecks()}>
           {(check) => (
             <article
-              class={`rounded-[1.2rem] border px-4 py-3 ${
-                check.status === "ready"
-                  ? "border-emerald-200 bg-white/75"
-                  : check.status === "unsupported"
-                  ? "border-slate-200 bg-slate-50/75"
-                  : check.status === "warning"
-                  ? "border-sky-200 bg-sky-50/80"
-                  : "border-amber-300 bg-white/80"
-              }`}
+              class="rounded-[1.2rem] border px-4 py-3"
+              classList={{
+                "border-emerald-200": check.status === "ready",
+                "bg-white/75": check.status === "ready",
+                "border-slate-200": check.status === "unsupported",
+                "bg-slate-50/75": check.status === "unsupported",
+                "border-sky-200": check.status === "warning",
+                "bg-sky-50/80": check.status === "warning",
+                "border-amber-300": check.status !== "ready" && check.status !== "unsupported" && check.status !== "warning",
+                "bg-white/80": check.status !== "ready" && check.status !== "unsupported" && check.status !== "warning"
+              }}
             >
               <div class="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
                 <div class="space-y-1">

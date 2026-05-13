@@ -28,6 +28,7 @@ const basePreferences: PreferencesState = {
   correctnessIterationModeDefault: "ask-before-iterate",
   backgroundJobApprovalPolicyDefault: "ask-risky",
   memoryBankEnabledDefault: true,
+  memoryBankRecordRunsDefault: true,
   attachmentsEnabled: false,
   capabilities: [],
   agentRuntimes: []

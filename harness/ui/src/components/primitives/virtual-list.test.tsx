@@ -2,6 +2,7 @@
 import { beforeAll, expect, it } from "bun:test";
 import { createUiTest } from "../../utils/tests/test-harness";
 import {
+  getVirtualListContentSize,
   getVirtualListNextLoadedCount,
   getVirtualListReverseScrollTop,
   getVirtualListScrollTarget,
@@ -58,6 +59,11 @@ createUiTest("VirtualList", () => {
     const firstItem = container.querySelector("[data-test-virtual-list-item]");
     expect(canvas?.getAttribute("style")).toContain("height: 200px");
     expect(firstItem?.className).toContain("absolute");
+  });
+
+  it("lets measured virtual content shrink below the initial estimate", () => {
+    expect(getVirtualListContentSize(280, 900)).toBe(280);
+    expect(getVirtualListContentSize(0, 900)).toBe(900);
   });
 
   it("loads the next forward page near the bottom", () => {

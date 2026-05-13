@@ -66,7 +66,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - Thread archive and restore controls keep stale threads out of the active surface without losing history, with optional auto-archive preferences for the cases the user wants handled automatically
 - Thread badges summarize status: purple `User Input`, orange `Planning`, yellow `Executing`, red `Error`, green `Done`
 - High-signal run milestones stream through one live tail message while work is in flight, then persist as compact phase rows before the final assistant answer; raw tool activity stays in the Run pane
-- Shell tool activity persists with each run so the Run pane can show command status, concise output previews, and copyable failure detail while chat stays compact
+- Shell tool activity persists with each run so the Run pane can show command status, concise output previews, and sanitized copyable failure detail while chat stays compact
 - Project and thread switching stay available while another thread keeps streaming in background; only destructive removal stays blocked during active execution
 - OpenAI and Google API keys plus provider brand preference can be persisted locally for the current machine
 - Agent run state, planning questions, and subtask progress persist locally with the active thread

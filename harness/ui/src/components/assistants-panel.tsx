@@ -1,6 +1,8 @@
 import { For, Show, createEffect, createMemo, createSignal, type JSX } from "solid-js";
 import {
   ArrowDown,
+  ArrowUp,
+  Brain,
   Bot,
   Check,
   CircleAlert,
@@ -9,8 +11,10 @@ import {
   CirclePlay,
   ClipboardList,
   CopyPlus,
+  Cpu,
   FlaskConical,
   Folder,
+  Gauge,
   Globe,
   ListChecks,
   Logs,
@@ -18,6 +22,7 @@ import {
   Plus,
   RefreshCcw,
   Save,
+  Split,
   SquarePen,
   Trash2
 } from "lucide-solid";
@@ -29,8 +34,10 @@ import {
   type Assistant,
   type AssistantLearning,
   type AssistantQuestion,
-  type AssistantTodo
+  type AssistantTodo,
+  type ComposerReasoningStrength
 } from "../../../shared/protocol";
+import { resolveModeCatalog } from "../../../shared/modes";
 import { getAssistantQuestionDefaultChoices } from "../assistant-question-defaults";
 import { formatShortTimestamp, resolveBrowserTimezone } from "../lib/time-format";
 import { cn } from "../lib/utils";
@@ -39,6 +46,10 @@ import {
   type AssistantEditorDraft,
   type AssistantDetailTab,
   type BackgroundJobEditorDraft,
+  COMPOSER_REASONING_STRENGTHS,
+  DEFAULT_COMPOSER_REASONING_STRENGTH,
+  getComposerControlState,
+  getExecutionModelOptionsForAgent,
   getSelectedAssistant,
   getVisibleAssistants,
   harnessStore
@@ -79,6 +90,15 @@ function renderMessageActionRow(timestamp: string | number | Date | undefined, c
 }
 
 function compareAssistantLearnings(left: AssistantLearning, right: AssistantLearning) {
+  if (left.sortOrder !== undefined || right.sortOrder !== undefined) {
+    if (left.sortOrder === undefined) {
+      return 1;
+    }
+    if (right.sortOrder === undefined) {
+      return -1;
+    }
+    return left.sortOrder - right.sortOrder;
+  }
   const leftSummary = (left.kind ?? "fact") === "summary" ? 1 : 0;
   const rightSummary = (right.kind ?? "fact") === "summary" ? 1 : 0;
   return rightSummary - leftSummary || right.createdAt.localeCompare(left.createdAt);
@@ -111,6 +131,62 @@ function formatPromptStats(promptStats: BackgroundJobRun["promptStats"] | undefi
   return `${promptStats.promptChars} chars, hash ${promptStats.promptHash}`;
 }
 
+function splitAssistantStreamingText(input: string) {
+  const text = input.trim();
+  if (!text) {
+    return [];
+  }
+  const chunks: string[] = [];
+  let buffer = "";
+  for (const part of text.split(/(?<=[.!?])\s+|\n\n+/)) {
+    const next = buffer ? `${buffer} ${part}` : part;
+    if (next.length < 700) {
+      buffer = next;
+      continue;
+    }
+    if (buffer) {
+      chunks.push(buffer);
+    }
+    buffer = part;
+  }
+  if (buffer) {
+    chunks.push(buffer);
+  }
+  return chunks.length ? chunks : [text];
+}
+
+function getReasoningStrengthDescription(strength: ComposerReasoningStrength) {
+  switch (strength) {
+    case "low":
+      return "Fastest pass with minimal internal deliberation.";
+    case "medium":
+      return "Balanced depth for routine implementation and review.";
+    case "high":
+      return "Default stronger reasoning for most coding work.";
+    case "extra-high":
+      return "Heaviest reasoning budget for hard debugging and planning.";
+  }
+}
+
+function formatReasoningStrengthLabel(strength: ComposerReasoningStrength) {
+  switch (strength) {
+    case "extra-high":
+      return "Extra High";
+    case "medium":
+      return "Medium";
+    case "low":
+      return "Low";
+    case "high":
+    default:
+      return "High";
+  }
+}
+
+function formatReasoningOptionLabel(strength: ComposerReasoningStrength) {
+  const label = formatReasoningStrengthLabel(strength);
+  return strength === DEFAULT_COMPOSER_REASONING_STRENGTH ? `${label} (default)` : label;
+}
+
 type AssistantsPanelProps = {
   initialCircuitBreakerAssistantId?: string;
   variant?: "full" | "roster" | "detail";
@@ -123,6 +199,12 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
   const sendCommand = harnessStore.actions.sendCommand;
   const activeTab = createMemo(() => state.assistants.selectedTab);
   const [chatDraft, setChatDraft] = createSignal("");
+  const [assistantChatModeId, setAssistantChatModeId] = createSignal("");
+  const [assistantChatExecutionModelId, setAssistantChatExecutionModelId] = createSignal("");
+  const [assistantChatReasoningStrength, setAssistantChatReasoningStrength] = createSignal<ComposerReasoningStrength>(
+    DEFAULT_COMPOSER_REASONING_STRENGTH
+  );
+  const [assistantChatFastMode, setAssistantChatFastMode] = createSignal(false);
   const [assistantStickToBottom, setAssistantStickToBottom] = createSignal(true);
   const [assistantStreamingStartedAtByAssistantId, setAssistantStreamingStartedAtByAssistantId] = createSignal<Record<string, string>>({});
   const [newTodoTitle, setNewTodoTitle] = createSignal("");
@@ -136,6 +218,75 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
       .filter((assistant) => fuzzyMatches(assistantSearchHaystack(assistant, state), state.assistants.rosterSearch))
   );
   const selectedAssistant = createMemo(() => getSelectedAssistant(state));
+  createEffect(() => {
+    const assistant = selectedAssistant();
+    if (!assistant) {
+      return;
+    }
+    setAssistantChatModeId(assistant.modeId ?? "");
+    setAssistantChatExecutionModelId(assistant.executionModelId ?? "");
+    setAssistantChatReasoningStrength(assistant.reasoningStrength ?? DEFAULT_COMPOSER_REASONING_STRENGTH);
+    setAssistantChatFastMode(Boolean(assistant.fastMode));
+  });
+  const assistantChatModeOptions = createMemo(() => {
+    const assistant = selectedAssistant();
+    const project = state.workspace.projects.find((entry) => entry.id === assistant?.projectId);
+    return [
+      { value: "", label: "Default", description: "Use assistant or project default mode.", icon: <Split class="h-3 w-3" /> },
+      ...resolveModeCatalog(state.workspace.workspaceModes, project?.projectModes ?? []).map((mode) => ({
+        value: mode.id,
+        label: mode.label,
+        description: mode.description,
+        icon: <Split class="h-3 w-3" />
+      }))
+    ];
+  });
+  const assistantChatModelOptions = createMemo(() => {
+    const assistant = selectedAssistant();
+    const currentModel = assistantChatExecutionModelId().trim();
+    const knownOptions = assistant
+      ? getExecutionModelOptionsForAgent(state, assistant.agentId, assistant.providerBrand ?? state.providerBrand).map((model) => ({
+          value: model.modelId,
+          label: model.label,
+          description: model.modelId,
+          icon: <Cpu class="h-3 w-3" />
+        }))
+      : [];
+    return [
+      { value: "", label: "Default", description: "Use assistant or runtime default model.", icon: <Cpu class="h-3 w-3" /> },
+      ...(currentModel && !knownOptions.some((option) => option.value === currentModel)
+        ? [{ value: currentModel, label: currentModel, description: "Saved custom model.", icon: <Cpu class="h-3 w-3" /> }]
+        : []),
+      ...knownOptions
+    ];
+  });
+  const assistantChatControlState = createMemo(() => {
+    const assistant = selectedAssistant();
+    return getComposerControlState(
+      state,
+      assistant?.agentId ?? state.selectedAgentId,
+      assistantChatExecutionModelId().trim() || assistant?.executionModelId
+    );
+  });
+  const assistantChatReasoningOptions = createMemo(() =>
+    COMPOSER_REASONING_STRENGTHS.map((strength) => ({
+      value: strength,
+      label: formatReasoningOptionLabel(strength),
+      description: getReasoningStrengthDescription(strength),
+      disabled: !assistantChatControlState().availableStrengths.includes(strength),
+      icon: <Brain class="h-3 w-3" />
+    }))
+  );
+  const assistantChatFastModeOptions = createMemo(() => [
+    { value: "false", label: "Off", description: "Use standard response path.", icon: <Gauge class="h-3 w-3" /> },
+    {
+      value: "true",
+      label: "On",
+      description: "Prefer lower-latency responses when supported.",
+      disabled: !assistantChatControlState().supportsFastMode,
+      icon: <Gauge class="h-3 w-3" />
+    }
+  ]);
   const selectedThread = createMemo(() =>
     state.assistants.threads.find((thread) => thread.assistantId === selectedAssistant()?.id)
   );
@@ -216,15 +367,12 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
   const streamingText = createMemo(() => state.assistants.streamingByAssistantId[selectedAssistant()?.id ?? ""] ?? "");
   const assistantChatRows = createMemo(() => [
     ...visibleAssistantMessages().map((message) => ({ kind: "message" as const, message })),
-    ...(streamingText()
-      ? [
-          {
-            kind: "streaming" as const,
-            content: streamingText(),
-            createdAt: assistantStreamingStartedAtByAssistantId()[selectedAssistant()?.id ?? ""]
-          }
-        ]
-      : [])
+    ...splitAssistantStreamingText(streamingText()).map((content, index) => ({
+      kind: "streaming" as const,
+      content,
+      createdAt: assistantStreamingStartedAtByAssistantId()[selectedAssistant()?.id ?? ""],
+      index
+    }))
   ]);
   const executionPaused = createMemo(() => state.executionControl.isPaused);
   const executionPauseReason = "Global execution pause is active";
@@ -315,6 +463,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
       providerBrand: state.providerBrand,
       modeId: "",
       executionModelId: state.selectedExecutionModelId,
+      reasoningStrength: state.selectedReasoningStrength,
       fastMode: state.selectedFastMode,
       runState: "active",
       bootstrapState: "pending",
@@ -341,6 +490,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
       providerBrand: assistant.providerBrand,
       modeId: assistant.modeId,
       executionModelId: assistant.executionModelId,
+      reasoningStrength: assistant.reasoningStrength,
       fastMode: assistant.fastMode,
       runState: assistant.runState,
       bootstrapState: assistant.bootstrapState,
@@ -362,7 +512,11 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
       requestId: createRequestId(),
       payload: {
         assistantId: assistant.id,
-        content: trimmed
+        content: trimmed,
+        modeId: assistantChatModeId().trim() || undefined,
+        executionModelId: assistantChatExecutionModelId().trim() || undefined,
+        reasoningStrength: assistantChatReasoningStrength(),
+        fastMode: assistantChatFastMode()
       }
     });
     setChatDraft("");
@@ -430,6 +584,25 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
     });
   }
 
+  function reorderTodo(todo: AssistantTodo, direction: -1 | 1) {
+    const orderedTodos = selectedTodos();
+    const currentIndex = orderedTodos.findIndex((entry) => entry.id === todo.id);
+    const nextIndex = currentIndex + direction;
+    if (currentIndex < 0 || nextIndex < 0 || nextIndex >= orderedTodos.length) {
+      return;
+    }
+    const nextTodos = [...orderedTodos];
+    [nextTodos[currentIndex], nextTodos[nextIndex]] = [nextTodos[nextIndex]!, nextTodos[currentIndex]!];
+    sendCommand({
+      type: "assistant.todo.reorder",
+      requestId: createRequestId(),
+      payload: {
+        assistantId: todo.assistantId,
+        todoIds: nextTodos.map((entry) => entry.id)
+      }
+    });
+  }
+
   function deleteLearning(learning: AssistantLearning) {
     const confirmed = window.confirm("Delete this assistant learning?");
     if (!confirmed) {
@@ -441,6 +614,25 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
       payload: {
         assistantId: learning.assistantId,
         learningId: learning.id
+      }
+    });
+  }
+
+  function reorderLearning(learning: AssistantLearning, direction: -1 | 1) {
+    const orderedLearnings = selectedLearnings();
+    const currentIndex = orderedLearnings.findIndex((entry) => entry.id === learning.id);
+    const nextIndex = currentIndex + direction;
+    if (currentIndex < 0 || nextIndex < 0 || nextIndex >= orderedLearnings.length) {
+      return;
+    }
+    const nextLearnings = [...orderedLearnings];
+    [nextLearnings[currentIndex], nextLearnings[nextIndex]] = [nextLearnings[nextIndex]!, nextLearnings[currentIndex]!];
+    sendCommand({
+      type: "assistant.learning.reorder",
+      requestId: createRequestId(),
+      payload: {
+        assistantId: learning.assistantId,
+        learningIds: nextLearnings.map((entry) => entry.id)
       }
     });
   }
@@ -489,6 +681,8 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
       aiPrompt: assistant.jobPrompt,
       aiModeId: assistant.modeId,
       aiExecutionModelId: assistant.executionModelId,
+      aiReasoningStrength: assistant.reasoningStrength,
+      aiFastMode: assistant.fastMode,
       aiPlanExecutionMode: state.planExecutionModeDefault,
       aiSubagentWorktreeStrategy: state.subagentWorktreeStrategyDefault,
       shellExecutable: "",
@@ -678,7 +872,10 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
       </div>
       </Show>
 
-      <div class={showRoster() && showDetail() ? "grid min-h-0 flex-1 gap-4 xl:grid-cols-[minmax(18rem,22rem)_minmax(0,1fr)]" : "grid min-h-0 flex-1 gap-4"}>
+      <div
+        class="grid min-h-0 flex-1 gap-4"
+        classList={{ "xl:grid-cols-[minmax(18rem,22rem)_minmax(0,1fr)]": showRoster() && showDetail() }}
+      >
         <Show when={showRoster()}>
         <div class="flex min-h-0 flex-col gap-1">
           <nav class="surface-tab-strip" data-test-assistant-scope-nav="">
@@ -758,7 +955,13 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
           >
             {(assistant) => (
               <button
-                class={`w-full rounded-[1.2rem] border p-3 text-left transition ${selectedAssistant()?.id === assistant.id ? "border-(--accent) bg-[linear-gradient(135deg,rgba(15,118,110,0.14),rgba(255,255,255,0.92))]" : "border-(--border) bg-white/70"}`}
+                class="w-full rounded-[1.2rem] border p-3 text-left transition"
+                classList={{
+                  "border-(--accent)": selectedAssistant()?.id === assistant.id,
+                  "bg-[linear-gradient(135deg,rgba(15,118,110,0.14),rgba(255,255,255,0.92))]": selectedAssistant()?.id === assistant.id,
+                  "border-(--border)": selectedAssistant()?.id !== assistant.id,
+                  "bg-white/70": selectedAssistant()?.id !== assistant.id
+                }}
                 type="button"
                 onClick={() => harnessStore.setSelectedAssistantId(assistant.id)}
               >
@@ -918,7 +1121,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                           itemClass="pb-3"
                           data-test-assistant-chat-scroll=""
                           items={assistantChatRows()}
-                          getKey={(row, index) => row.kind === "message" ? row.message.id : `streaming-${index}`}
+                          getKey={(row, index) => row.kind === "message" ? row.message.id : `streaming-${row.index ?? index}`}
                           estimateSize={150}
                           pagination={{ kind: "reverse", initialCount: 80, batchSize: 80 }}
                           overscan={6}
@@ -926,7 +1129,15 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                           onScroll={updateAssistantScrollLock}
                         >
                           {(row) => row.kind === "message" ? (
-                            <article class={`rounded-2xl border p-3 ${row.message.role === "user" ? "border-(--border) bg-white/75" : "border-teal-200 bg-teal-50/65"}`}>
+                            <article
+                              class="rounded-2xl border p-3"
+                              classList={{
+                                "border-(--border)": row.message.role === "user",
+                                "bg-white/75": row.message.role === "user",
+                                "border-teal-200": row.message.role !== "user",
+                                "bg-teal-50/65": row.message.role !== "user"
+                              }}
+                            >
                               <div class="mb-2 text-[0.575rem] font-semibold uppercase tracking-[0.16em] text-(--muted)">{row.message.role}</div>
                               <MarkdownContent content={row.message.content} />
                               {renderMessageActionRow(
@@ -967,10 +1178,47 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                         rows="3"
                         value={chatDraft()}
                         placeholder={`Ask ${assistant().name} something.`}
+                        textareaClass="pb-20 lg:pb-12"
                         disabled={executionPaused()}
                         disabledReason={executionPauseReason}
                         onInput={setChatDraft}
                         onSubmit={handleSendChat}
+                        leftControls={
+                          <div class="pointer-events-auto flex flex-wrap items-center gap-1">
+                            <DropdownControl
+                              kind="select"
+                              ariaLabel="Select assistant chat mode"
+                              icon={<Split class="h-3.5 w-3.5" />}
+                              value={assistantChatModeId()}
+                              options={assistantChatModeOptions()}
+                              onChange={setAssistantChatModeId}
+                            />
+                            <DropdownControl
+                              kind="select"
+                              ariaLabel="Select assistant chat model"
+                              icon={<Cpu class="h-3.5 w-3.5" />}
+                              value={assistantChatExecutionModelId()}
+                              options={assistantChatModelOptions()}
+                              onChange={setAssistantChatExecutionModelId}
+                            />
+                            <DropdownControl
+                              kind="select"
+                              ariaLabel="Select assistant chat reasoning effort"
+                              icon={<Brain class="h-3.5 w-3.5" />}
+                              value={assistantChatReasoningStrength()}
+                              options={assistantChatReasoningOptions()}
+                              onChange={(value) => setAssistantChatReasoningStrength(value as ComposerReasoningStrength)}
+                            />
+                            <DropdownControl
+                              kind="select"
+                              ariaLabel="Select assistant chat fast mode"
+                              icon={<Gauge class="h-3.5 w-3.5" />}
+                              value={assistantChatFastMode() ? "true" : "false"}
+                              options={assistantChatFastModeOptions()}
+                              onChange={(value) => setAssistantChatFastMode(value === "true")}
+                            />
+                          </div>
+                        }
                         rightActions={
                           <ActionButton tooltip="Send message to assistant" disabled={executionPaused()} disabledReason={executionPauseReason} icon={<MessageSquare class="h-4 w-4" />} variant="ghost" size="icon" class="pointer-events-auto h-8 w-8 rounded-lg" ariaLabel="Send message to assistant" onClick={handleSendChat} />
                         }
@@ -1013,6 +1261,8 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                               <Show when={todo.blockerReason}><div class="mt-1 text-[0.625rem] text-amber-900">Blocker: {todo.blockerReason}</div></Show>
                             </div>
                             <div class="flex shrink-0 items-center gap-2">
+                              <ActionButton tooltip="Move assistant todo up" ariaLabel={`Move ${todo.title} up`} icon={<ArrowUp class="h-4 w-4" />} size="icon" variant="ghost" class="h-8 w-8" disabled={selectedTodos()[0]?.id === todo.id} disabledReason="Todo is already first" onClick={() => reorderTodo(todo, -1)} />
+                              <ActionButton tooltip="Move assistant todo down" ariaLabel={`Move ${todo.title} down`} icon={<ArrowDown class="h-4 w-4" />} size="icon" variant="ghost" class="h-8 w-8" disabled={selectedTodos()[selectedTodos().length - 1]?.id === todo.id} disabledReason="Todo is already last" onClick={() => reorderTodo(todo, 1)} />
                               <DropdownControl kind="select" ariaLabel={`Select ${todo.title} state`} icon={<ClipboardList class="h-3.5 w-3.5" />} size="md" class="w-40" value={todo.state} options={assistantTodoStateOptions} onChange={(value) => updateTodo(todo, { state: value as AssistantTodo["state"] })} />
                               <ActionButton tooltip="Delete assistant todo" ariaLabel={`Delete ${todo.title}`} icon={<Trash2 class="h-4 w-4" />} size="icon" variant="ghost" class="h-8 w-8 text-rose-700 hover:bg-rose-50" onClick={() => deleteTodo(todo)} />
                             </div>
@@ -1119,6 +1369,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                       <div>Provider: {assistant().providerBrand ?? "current"}</div>
                       <div>Mode: {assistant().modeId ?? "default"}</div>
                       <div>Execution model: {assistant().executionModelId ?? "default"}</div>
+                      <div>Effort: {formatReasoningStrengthLabel(assistant().reasoningStrength ?? DEFAULT_COMPOSER_REASONING_STRENGTH)}</div>
                       <div>Fast mode: {assistant().fastMode ? "on" : "off"}</div>
                       <div>Scope: {assistant().scope}</div>
                     </ConfigCard>
@@ -1162,6 +1413,8 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                             </div>
                             <div class="flex shrink-0 items-center gap-2">
                               <div class="text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">{learning.confidence}</div>
+                              <ActionButton tooltip="Move assistant learning up" ariaLabel={`Move learning ${learning.summary} up`} icon={<ArrowUp class="h-4 w-4" />} size="icon" variant="ghost" class="h-8 w-8" disabled={selectedLearnings()[0]?.id === learning.id} disabledReason="Learning is already first" onClick={() => reorderLearning(learning, -1)} />
+                              <ActionButton tooltip="Move assistant learning down" ariaLabel={`Move learning ${learning.summary} down`} icon={<ArrowDown class="h-4 w-4" />} size="icon" variant="ghost" class="h-8 w-8" disabled={selectedLearnings()[selectedLearnings().length - 1]?.id === learning.id} disabledReason="Learning is already last" onClick={() => reorderLearning(learning, 1)} />
                               <ActionButton tooltip="Delete assistant learning" ariaLabel={`Delete learning ${learning.summary}`} icon={<Trash2 class="h-4 w-4" />} size="icon" variant="ghost" class="h-8 w-8 text-rose-700 hover:bg-rose-50" onClick={() => deleteLearning(learning)} />
                             </div>
                           </div>
@@ -1194,7 +1447,17 @@ function TabButton(props: { icon: JSX.Element; label: Capitalize<AssistantDetail
 
 function StatusPill(props: { label: string; tone?: "default" | "error" }) {
   return (
-    <span class={`rounded-full border px-2 py-1 ${props.tone === "error" ? "border-rose-300 bg-rose-50 text-rose-900" : "border-(--border) bg-white/80 text-(--foreground)"}`}>
+    <span
+      class="rounded-full border px-2 py-1"
+      classList={{
+        "border-rose-300": props.tone === "error",
+        "bg-rose-50": props.tone === "error",
+        "text-rose-900": props.tone === "error",
+        "border-(--border)": props.tone !== "error",
+        "bg-white/80": props.tone !== "error",
+        "text-(--foreground)": props.tone !== "error"
+      }}
+    >
       {props.label}
     </span>
   );

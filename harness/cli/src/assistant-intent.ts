@@ -13,110 +13,8 @@ export type AssistantChatIntent =
       sourcePrompt: string;
     }
   | {
-      kind: "ambiguous";
-      suggestedName: string;
-      sourcePrompt: string;
-    }
-  | {
       kind: "none";
     };
-
-const assistantWorkVerbs = [
-  "start",
-  "begin",
-  "continue",
-  "keep",
-  "maintain",
-  "maintaining",
-  "build",
-  "building",
-  "run",
-  "running",
-  "execute",
-  "executing",
-  "process",
-  "processing",
-  "work",
-  "working"
-];
-
-const commonCommandStarts = new Set([
-  "add",
-  "build",
-  "change",
-  "create",
-  "delete",
-  "fix",
-  "implement",
-  "make",
-  "refactor",
-  "remove",
-  "rename",
-  "start",
-  "update"
-]);
-
-const nonNameLeadWords = new Set([
-  "a",
-  "an",
-  "the",
-  "this",
-  "that",
-  "these",
-  "those",
-  "i",
-  "i'm",
-  "im",
-  "i've",
-  "ive",
-  "me",
-  "my",
-  "mine",
-  "we",
-  "we're",
-  "were",
-  "our",
-  "ours",
-  "us",
-  "you",
-  "you're",
-  "your",
-  "yours",
-  "he",
-  "she",
-  "it",
-  "its",
-  "they",
-  "their",
-  "them",
-  "there",
-  "here",
-  "what",
-  "when",
-  "where",
-  "which",
-  "who",
-  "why",
-  "how",
-  "can",
-  "could",
-  "would",
-  "should",
-  "will",
-  "won't",
-  "wont",
-  "do",
-  "does",
-  "did",
-  "is",
-  "are",
-  "am",
-  "was",
-  "have",
-  "has",
-  "had",
-  "please"
-]);
 
 export function detectAssistantChatIntent(input: string): AssistantChatIntent {
   const sourcePrompt = input.trim();
@@ -133,15 +31,6 @@ export function detectAssistantChatIntent(input: string): AssistantChatIntent {
       ...(createIntent.purpose ? { purpose: createIntent.purpose } : {}),
       sourcePrompt
     } as AssistantChatIntent;
-  }
-
-  const suggestedName = detectAmbiguousAssistantName(sourcePrompt);
-  if (suggestedName) {
-    return {
-      kind: "ambiguous",
-      suggestedName,
-      sourcePrompt
-    };
   }
 
   return { kind: "none" };
@@ -234,38 +123,6 @@ function inferAssistantScope(input: string): "project" | "global" {
   return "project";
 }
 
-function detectAmbiguousAssistantName(sourcePrompt: string) {
-  const words = sourcePrompt.split(/\s+/);
-  if (words.length < 4) {
-    return undefined;
-  }
-
-  const verbIndex = words.findIndex((word, index) => index > 0 && assistantWorkVerbs.includes(cleanWord(word).toLowerCase()));
-  if (verbIndex < 1 || verbIndex > 4) {
-    return undefined;
-  }
-
-  const firstWord = cleanWord(words[0]).toLowerCase();
-  if (commonCommandStarts.has(firstWord)) {
-    return undefined;
-  }
-
-  const candidate = normalizeAssistantName(words.slice(0, verbIndex).join(" "));
-  if (!candidate || !isPlausibleAssistantSelector(candidate)) {
-    return undefined;
-  }
-
-  return candidate;
-}
-
-export function isPlausibleAssistantSelector(input: string) {
-  const words = input
-    .split(/\s+/)
-    .map((word) => cleanWord(word).toLowerCase())
-    .filter(Boolean);
-  return words.length > 0 && !nonNameLeadWords.has(words[0]!);
-}
-
 function normalizeAssistantName(input: string) {
   const trimmed = input
     .trim()
@@ -283,8 +140,4 @@ function normalizeAssistantName(input: string) {
   }
 
   return trimmed;
-}
-
-function cleanWord(input: string) {
-  return input.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
 }

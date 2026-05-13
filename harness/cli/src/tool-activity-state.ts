@@ -16,10 +16,14 @@ type ToolActivityInput = {
   subagentId?: string;
   event: Extract<PiAgentExecutionEvent, { type: "tool-start" | "tool-update" | "tool-end" }>;
   occurredAt?: string;
+  rawArgsDebugArtifactPath?: string;
+  rawResultDebugArtifactPath?: string;
 };
 
 const MAX_TOOL_ACTIVITIES = 512;
 const PREVIEW_LENGTH = 4000;
+const RAW_JSON_LENGTH = 65_536;
+const RAW_JSON_RUN_BUDGET = 1_048_576;
 
 export function recordToolStart(activities: ExecutionToolActivity[], input: ToolActivityInput) {
   const event = input.event;
@@ -45,6 +49,15 @@ export function recordToolStart(activities: ExecutionToolActivity[], input: Tool
       category: classifyToolCategory(event.toolName),
       command: extractCommand(event.args),
       argsSummary: summarizeToolArgs(event.args),
+      ...serializeRawJson(event.args, {
+        activities,
+        toolCallId: event.toolCallId,
+        valueKey: "rawArgsJson",
+        truncatedKey: "rawArgsTruncated",
+        redactedKey: "rawArgsRedacted",
+        omittedReasonKey: "rawArgsOmittedReason"
+      }),
+      rawArgsDebugArtifactPath: input.rawArgsDebugArtifactPath,
       status: "running",
       startedAt: occurredAt,
       updatedAt: occurredAt
@@ -62,9 +75,20 @@ export function recordToolUpdate(activities: ExecutionToolActivity[], input: Too
     ...activity,
     command: activity.command ?? extractCommand(event.args),
     argsSummary: activity.argsSummary ?? summarizeToolArgs(event.args),
+    rawArgsDebugArtifactPath: input.rawArgsDebugArtifactPath ?? activity.rawArgsDebugArtifactPath,
     outputPreview: summarizeToolResult(event.partialResult) ?? activity.outputPreview,
     stdoutPreview: summarizeNamedOutput(event.partialResult, "stdout") ?? activity.stdoutPreview,
     stderrPreview: summarizeNamedOutput(event.partialResult, "stderr") ?? activity.stderrPreview,
+    ...serializeRawJson(event.partialResult, {
+      activities,
+      toolCallId: event.toolCallId,
+      valueKey: "rawResultJson",
+      truncatedKey: "rawResultTruncated",
+      redactedKey: "rawResultRedacted",
+      omittedReasonKey: "rawResultOmittedReason"
+    }),
+    rawResultDebugArtifactPath: input.rawResultDebugArtifactPath ?? activity.rawResultDebugArtifactPath,
+    rawResultStatus: "partial",
     exitCode: extractExitCode(event.partialResult) ?? activity.exitCode,
     status: inferTimedOut(event.partialResult) ? "timed-out" : activity.status,
     updatedAt: occurredAt
@@ -83,6 +107,16 @@ export function recordToolEnd(activities: ExecutionToolActivity[], input: ToolAc
     outputPreview: summarizeToolResult(event.result) ?? activity.outputPreview,
     stdoutPreview: summarizeNamedOutput(event.result, "stdout") ?? activity.stdoutPreview,
     stderrPreview: summarizeNamedOutput(event.result, "stderr") ?? activity.stderrPreview,
+    ...serializeRawJson(event.result, {
+      activities,
+      toolCallId: event.toolCallId,
+      valueKey: "rawResultJson",
+      truncatedKey: "rawResultTruncated",
+      redactedKey: "rawResultRedacted",
+      omittedReasonKey: "rawResultOmittedReason"
+    }),
+    rawResultDebugArtifactPath: input.rawResultDebugArtifactPath ?? activity.rawResultDebugArtifactPath,
+    rawResultStatus: "final",
     exitCode: extractExitCode(event.result) ?? activity.exitCode,
     status: inferTimedOut(event.result) ? "timed-out" : event.isError ? "failed" : "completed",
     completedAt: occurredAt,
@@ -263,6 +297,134 @@ function summarizeValue(value: unknown) {
     return undefined;
   }
   return limit(JSON.stringify(value).replace(/\s+/g, " ").trim()) || undefined;
+}
+
+type RawJsonSerializeOptions<
+  ValueKey extends "rawArgsJson" | "rawResultJson",
+  TruncatedKey extends "rawArgsTruncated" | "rawResultTruncated",
+  RedactedKey extends "rawArgsRedacted" | "rawResultRedacted",
+  OmittedReasonKey extends "rawArgsOmittedReason" | "rawResultOmittedReason"
+> = {
+  activities: ExecutionToolActivity[];
+  toolCallId: string;
+  valueKey: ValueKey;
+  truncatedKey: TruncatedKey;
+  redactedKey: RedactedKey;
+  omittedReasonKey: OmittedReasonKey;
+};
+
+function serializeRawJson<
+  ValueKey extends "rawArgsJson" | "rawResultJson",
+  TruncatedKey extends "rawArgsTruncated" | "rawResultTruncated",
+  RedactedKey extends "rawArgsRedacted" | "rawResultRedacted",
+  OmittedReasonKey extends "rawArgsOmittedReason" | "rawResultOmittedReason"
+>(
+  value: unknown,
+  options: RawJsonSerializeOptions<ValueKey, TruncatedKey, RedactedKey, OmittedReasonKey>
+) {
+  const sanitized = sanitizeRawToolPayload(value);
+  const serialized = stableStringify(sanitized.value);
+  if (!serialized) {
+    return {
+      [options.omittedReasonKey]: "unserializable"
+    } as Record<OmittedReasonKey, "unserializable">;
+  }
+
+  const truncated = serialized.length > RAW_JSON_LENGTH;
+  const nextValue = truncated ? serialized.slice(0, RAW_JSON_LENGTH) : serialized;
+  const currentRawBytes = getCurrentRawJsonBytes(options.activities, options.toolCallId);
+  if (currentRawBytes + nextValue.length > RAW_JSON_RUN_BUDGET) {
+    return {
+      [options.omittedReasonKey]: "run-budget-exceeded",
+      [options.redactedKey]: sanitized.redacted
+    } as Record<OmittedReasonKey, "run-budget-exceeded"> & Record<RedactedKey, boolean>;
+  }
+
+  return {
+    [options.valueKey]: nextValue,
+    [options.truncatedKey]: truncated,
+    [options.redactedKey]: sanitized.redacted
+  } as Record<ValueKey, string> & Record<TruncatedKey, boolean> & Record<RedactedKey, boolean>;
+}
+
+function getCurrentRawJsonBytes(activities: ExecutionToolActivity[], replacingToolCallId: string) {
+  return activities.reduce((total, activity) => {
+    if (activity.toolCallId === replacingToolCallId) {
+      return total;
+    }
+    return total + (activity.rawArgsJson?.length ?? 0) + (activity.rawResultJson?.length ?? 0);
+  }, 0);
+}
+
+function sanitizeRawToolPayload(value: unknown): { value: unknown; redacted: boolean } {
+  const seen = new WeakSet<object>();
+  let redacted = false;
+
+  const sanitize = (entry: unknown): unknown => {
+    if (typeof entry === "string") {
+      const next = redactSensitiveString(entry);
+      if (next !== entry) {
+        redacted = true;
+      }
+      return next;
+    }
+    if (Array.isArray(entry)) {
+      return entry.map(sanitize);
+    }
+    if (!entry || typeof entry !== "object") {
+      return entry;
+    }
+    if (seen.has(entry)) {
+      redacted = true;
+      return "[redacted:circular]";
+    }
+    seen.add(entry);
+
+    return Object.fromEntries(
+      Object.entries(entry as Record<string, unknown>).map(([key, child]) => {
+        if (isSensitiveKey(key)) {
+          redacted = true;
+          return [key, "[redacted]"];
+        }
+        return [key, sanitize(child)];
+      })
+    );
+  };
+
+  return { value: sanitize(value), redacted };
+}
+
+function isSensitiveKey(key: string) {
+  return /^(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key|api[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|token|secret|password|passwd|private[-_]?key|client[-_]?secret)$/i.test(key);
+}
+
+function redactSensitiveString(value: string) {
+  return value
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{12,}\b/g, "Bearer [redacted]")
+    .replace(/\b(?:sk|rk|pk|ghp|github_pat|glpat|xox[baprs])_[A-Za-z0-9_=-]{12,}\b/g, "[redacted-token]")
+    .replace(/\b[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\b/g, "[redacted-jwt]");
+}
+
+function stableStringify(value: unknown): string {
+  try {
+    return JSON.stringify(sortJsonValue(value)) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function sortJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sortJsonValue);
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, sortJsonValue(entry)])
+  );
 }
 
 function firstUsefulSentence(value: string | undefined) {

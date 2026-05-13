@@ -59,6 +59,7 @@ const defaultPreferences: PreferencesState = {
   correctnessIterationModeDefault: "ask-before-iterate",
   backgroundJobApprovalPolicyDefault: "ask-risky",
   memoryBankEnabledDefault: true,
+  memoryBankRecordRunsDefault: true,
   attachmentsEnabled: true,
   capabilities: [...defaultProviderCapabilities],
   agentRuntimes: []
@@ -2823,6 +2824,7 @@ describe("harness store reducer", () => {
           correctnessIterationModeDefault: "ask-before-iterate",
           backgroundJobApprovalPolicyDefault: "ask-risky",
           memoryBankEnabledDefault: true,
+          memoryBankRecordRunsDefault: true,
           attachmentsEnabled: true,
           capabilities: [...defaultProviderCapabilities],
           agentRuntimes: []
@@ -2850,6 +2852,109 @@ describe("harness store reducer", () => {
     expect(nextState.autoCompactContextThresholdPercentDefault).toBe(44);
     expect(nextState.executionControl.isPaused).toBe(true);
     expect(nextState.executionControl.deferredPlanningQuestionCount).toBe(2);
+  });
+
+  test("applies memory reordered event to active project entries", () => {
+    const project = createWorkspaceProjectState({
+      id: "project-memory",
+      name: "Memory project",
+      rootPath: "C:\\repo"
+    });
+    const now = new Date().toISOString();
+    const state = createConnectedState(project);
+
+    const nextState = reduceServerEvent(state, {
+      type: "memory.reordered",
+      requestId: "req-memory-reordered",
+      payload: {
+        projectId: project.id,
+        entries: [
+          {
+            id: "memory-2",
+            projectId: project.id,
+            kind: "task-summary",
+            status: "active",
+            title: "New",
+            summary: "New summary",
+            tags: [],
+            pathGlobs: [],
+            confidence: "medium",
+            freshness: "fresh",
+            pinned: false,
+            priority: 100,
+            hitCount: 0,
+            createdAt: now,
+            updatedAt: now
+          }
+        ]
+      }
+    });
+
+    expect(nextState.workspace.projects[0]?.memoryEntries.map((entry) => entry.title)).toEqual(["New"]);
+  });
+
+  test("preserves project memory entries across thread activation refreshes", () => {
+    const now = new Date().toISOString();
+    const project = createWorkspaceProjectState({
+      id: "project-memory-thread-switch",
+      name: "Memory thread switch",
+      rootPath: "C:\\repo",
+      activeThreadId: "thread-1",
+      threads: [
+        createProjectThreadSummary({
+          id: "thread-1",
+          title: "Thread 1",
+          titleSource: "generated",
+          updatedAt: now
+        }),
+        createProjectThreadSummary({
+          id: "thread-2",
+          title: "Thread 2",
+          titleSource: "generated",
+          updatedAt: now
+        })
+      ]
+    });
+    const stateWithMemory = reduceServerEvent(createConnectedState(project), {
+      type: "memory.listed",
+      requestId: "req-memory-listed",
+      payload: {
+        projectId: project.id,
+        entries: [
+          {
+            id: "memory-1",
+            projectId: project.id,
+            kind: "task-summary",
+            status: "active",
+            title: "Persisted memory",
+            summary: "Memory should survive thread refresh.",
+            tags: [],
+            pathGlobs: [],
+            confidence: "medium",
+            freshness: "fresh",
+            pinned: false,
+            priority: 100,
+            hitCount: 0,
+            createdAt: now,
+            updatedAt: now
+          }
+        ]
+      }
+    });
+
+    const nextState = reduceServerEvent(stateWithMemory, {
+      type: "thread.activated",
+      requestId: "req-thread-activated",
+      payload: {
+        projectId: project.id,
+        project: {
+          ...project,
+          activeThreadId: "thread-2"
+        }
+      }
+    });
+
+    expect(nextState.workspace.projects[0]?.memoryEntries.map((entry) => entry.title)).toEqual(["Persisted memory"]);
   });
 
   test("uses server trace preference and capabilities on connection ready", () => {
@@ -2972,6 +3077,7 @@ describe("harness store reducer", () => {
         correctnessIterationModeDefault: "ask-before-iterate",
         backgroundJobApprovalPolicyDefault: "ask-risky",
         memoryBankEnabledDefault: true,
+        memoryBankRecordRunsDefault: true,
         attachmentsEnabled: true,
         capabilities: [...defaultProviderCapabilities],
         agentRuntimes: [],

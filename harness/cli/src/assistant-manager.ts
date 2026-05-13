@@ -12,6 +12,7 @@ import {
   type AssistantTodo,
   type AssistantThread,
   type ChatMessage,
+  type ComposerReasoningStrength,
   type ModeDefinition,
   type ProviderBrand,
   type ProjectId,
@@ -305,7 +306,16 @@ export class AssistantManager {
     }
   }
 
-  async sendAssistantChat(assistantId: string, content: string) {
+  async sendAssistantChat(
+    assistantId: string,
+    content: string,
+    controls: {
+      modeId?: string;
+      executionModelId?: string;
+      reasoningStrength?: ComposerReasoningStrength;
+      fastMode?: boolean;
+    } = {}
+  ) {
     const assistant = assertAssistantRunnableForLaunch(this.repository, assistantId);
 
     const thread = this.repository.appendAssistantMessage(assistantId, "user", content.trim());
@@ -319,7 +329,7 @@ export class AssistantManager {
       message: userMessage,
       thread
     });
-    const runtime = await this.resolveRuntime(assistant);
+    const runtime = await this.resolveRuntime(assistant, controls);
     const prompt = await this.buildAssistantChatPrompt(assistant, content.trim());
     let deltaBuffer = "";
 
@@ -330,6 +340,7 @@ export class AssistantManager {
         modelId: runtime.modelId,
         prompt,
         readOnly: runtime.readOnly,
+        reasoningStrength: runtime.reasoningStrength,
         fastMode: runtime.fastMode,
         promptCacheIdentity: runtime.promptCacheIdentity,
         onTextDelta: (delta) => {
@@ -773,6 +784,7 @@ export class AssistantManager {
       prompt: buildThreadSummaryPrompt(assistant, thread),
       readOnly: true,
       fastMode: runtime.fastMode,
+      reasoningStrength: runtime.reasoningStrength,
       promptCacheIdentity: runtime.promptCacheIdentity
     });
     this.repository.setAssistantThreadMemorySummary(assistant.id, result.text.trim());
@@ -1017,13 +1029,22 @@ export class AssistantManager {
       modelId: runtime.modelId,
       prompt: input.prompt,
       readOnly: input.readOnly,
+      reasoningStrength: runtime.reasoningStrength,
       fastMode: runtime.fastMode,
       promptCacheIdentity: runtime.promptCacheIdentity
     });
     return extractJsonPayload<T>(result.text);
   }
 
-  private async resolveRuntime(assistant: Assistant) {
+  private async resolveRuntime(
+    assistant: Assistant,
+    controls: {
+      modeId?: string;
+      executionModelId?: string;
+      reasoningStrength?: ComposerReasoningStrength;
+      fastMode?: boolean;
+    } = {}
+  ) {
     this.repository.assertAssistantAssetRefsResolved(assistant.id);
     const providerBrand = assistant.providerBrand ?? this.repository.getProviderBrand();
     const runtime = this.runtimeRegistry.get(assistant.agentId);
@@ -1038,10 +1059,11 @@ export class AssistantManager {
     const cwd = assistant.projectId ? this.repository.getProject(assistant.projectId).rootPath : process.cwd();
     const project = assistant.projectId ? this.repository.getProject(assistant.projectId) : undefined;
     const modelId =
+      controls.executionModelId ??
       assistant.executionModelId ??
       runtime.getDefaultExecutionModelId(providerBrand) ??
       getDefaultExecutionModelId(providerBrand);
-    const mode = resolveAssistantMode(assistant.modeId, this.repository.loadWorkspace().workspaceModes ?? [], project);
+    const mode = resolveAssistantMode(controls.modeId ?? assistant.modeId, this.repository.loadWorkspace().workspaceModes ?? [], project);
     const readOnly = modeUsesReadOnlyExecution(mode) || !assistant.projectId;
     debugLog("assistant.runtime.resolved", {
       assistantId: assistant.id,
@@ -1053,7 +1075,8 @@ export class AssistantManager {
       cwd,
       modelId,
       readOnly,
-      fastMode: assistant.fastMode,
+      reasoningStrength: controls.reasoningStrength ?? assistant.reasoningStrength,
+      fastMode: controls.fastMode ?? assistant.fastMode,
       promptCacheIdentity: project
         ? buildAssistantPromptCacheIdentity({
             repository: this.repository,

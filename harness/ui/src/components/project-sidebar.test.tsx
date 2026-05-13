@@ -1,7 +1,7 @@
 /** @jsxImportSource solid-js */
 import { beforeEach, expect, it, mock } from "bun:test";
 import { createUiTest } from "../utils/tests/test-harness";
-import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
+import { cleanup, fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { ProjectSidebar } from "./project-sidebar";
 import { captureDispatchedCommands, clearBrowserStateForTests, seedHarnessStoreForTests } from "../utils/tests/store-test-utils";
 import { createHarnessStateFixture, createViewProjectFixture } from "../utils/tests/test-fixtures";
@@ -10,6 +10,7 @@ import { readProjectSidebarPreferences } from "../harness-store";
 
 createUiTest("ProjectSidebar", () => {
   beforeEach(() => {
+    cleanup();
     clearBrowserStateForTests();
   });
 
@@ -92,6 +93,58 @@ createUiTest("ProjectSidebar", () => {
     const doneBadge = screen.getByText("Done");
     expect(doneBadge.className).toContain("bg-emerald-600");
     expect((screen.getByRole("button", { name: `Remove ${project.name}` }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("activates the project before activating a thread in another project", () => {
+    const currentProject = createViewProjectFixture({
+      id: "project-current",
+      name: "current-repo",
+      activeThreadId: "thread-current",
+      threads: [
+        createProjectThreadSummary({
+          id: "thread-current",
+          title: "Current thread",
+          titleSource: "generated",
+          updatedAt: new Date().toISOString()
+        })
+      ]
+    });
+    const targetProject = createViewProjectFixture({
+      id: "project-target",
+      name: "target-repo",
+      activeThreadId: "thread-target",
+      threads: [
+        createProjectThreadSummary({
+          id: "thread-target",
+          title: "Target thread",
+          titleSource: "generated",
+          updatedAt: new Date().toISOString()
+        })
+      ]
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: currentProject.id,
+          projects: [currentProject, targetProject]
+        }
+      })
+    );
+    const commands: unknown[] = [];
+    captureDispatchedCommands(commands);
+
+    render(() => <ProjectSidebar />);
+    fireEvent.click(screen.getByText("Target thread").closest("button") as HTMLButtonElement);
+
+    expect(commands).toHaveLength(2);
+    expect(commands[0]).toMatchObject({
+      type: "project.activate",
+      payload: { projectId: "project-target" }
+    });
+    expect(commands[1]).toMatchObject({
+      type: "thread.activate",
+      payload: { projectId: "project-target", threadId: "thread-target" }
+    });
   });
 
   it("blocks remove when another thread is executing in the background", () => {
@@ -508,6 +561,7 @@ createUiTest("ProjectSidebar", () => {
     const now = new Date().toISOString();
     const project = createViewProjectFixture({
       id: "project-collapse",
+      name: "collapse-project",
       threads: [
         createProjectThreadSummary({
           id: "thread-1",
@@ -539,17 +593,19 @@ createUiTest("ProjectSidebar", () => {
     expect(screen.getByRole("button", { name: "Rename Second thread" })).not.toBeNull();
 
     fireEvent.click(collapseButton);
-    await Promise.resolve();
 
-    expect(screen.queryByRole("button", { name: "Rename Visible thread" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Rename Second thread" })).toBeNull();
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Rename Visible thread" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Rename Second thread" })).toBeNull();
+    });
     expect(readProjectSidebarPreferences().collapsedProjectIds).toEqual([project.id]);
 
     fireEvent.click(screen.getByRole("button", { name: `Expand threads in ${project.name}` }));
-    await Promise.resolve();
 
-    expect(screen.getByRole("button", { name: "Rename Visible thread" })).not.toBeNull();
-    expect(screen.getByRole("button", { name: "Rename Second thread" })).not.toBeNull();
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Rename Visible thread" })).not.toBeNull();
+      expect(screen.getByRole("button", { name: "Rename Second thread" })).not.toBeNull();
+    });
     expect(readProjectSidebarPreferences().collapsedProjectIds).toEqual([]);
   });
 });

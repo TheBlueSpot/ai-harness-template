@@ -1,14 +1,20 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
-import { Bot, ClipboardList, FolderOpen, Play, Split } from "lucide-solid";
+import { Bot, Brain, ClipboardList, FolderOpen, Gauge, Play, Split } from "lucide-solid";
 import { resolveModeCatalog } from "../../../shared/modes";
 import {
   createBackgroundJobId,
   createRequestId,
   createThreadId,
   type BackgroundJob,
-  type BackgroundJobSchedule
+  type BackgroundJobSchedule,
+  type ComposerReasoningStrength
 } from "../../../shared/protocol";
-import { type BackgroundJobEditorDraft, harnessStore } from "../harness-store";
+import {
+  COMPOSER_REASONING_STRENGTHS,
+  DEFAULT_COMPOSER_REASONING_STRENGTH,
+  type BackgroundJobEditorDraft,
+  harnessStore
+} from "../harness-store";
 import { formatShortTimestamp, resolveBrowserTimezone } from "../lib/time-format";
 import { pushToast } from "../toast-store";
 import { Button } from "./primitives/button";
@@ -31,6 +37,10 @@ export function BackgroundJobEditorDialog() {
   const [aiPrompt, setAiPrompt] = createSignal("");
   const [aiModeId, setAiModeId] = createSignal("");
   const [aiExecutionModelId, setAiExecutionModelId] = createSignal("");
+  const [aiReasoningStrength, setAiReasoningStrength] = createSignal<ComposerReasoningStrength>(
+    DEFAULT_COMPOSER_REASONING_STRENGTH
+  );
+  const [aiFastMode, setAiFastMode] = createSignal(false);
   const [aiPlanExecutionMode, setAiPlanExecutionMode] = createSignal<"countdown" | "approve" | "immediate">("countdown");
   const [aiSubagentWorktreeStrategy, setAiSubagentWorktreeStrategy] = createSignal<"same-worktree" | "separate-worktrees">(
     "same-worktree"
@@ -90,6 +100,17 @@ export function BackgroundJobEditorDialog() {
     { value: "approve", label: "Approve", description: "Require explicit approval before execution starts." },
     { value: "immediate", label: "Immediate", description: "Start execution immediately after planning." }
   ];
+  const reasoningOptions = () =>
+    COMPOSER_REASONING_STRENGTHS.map((strength) => ({
+      value: strength,
+      label: formatReasoningOptionLabel(strength),
+      description: getReasoningStrengthDescription(strength),
+      icon: <Brain class="h-3 w-3" />
+    }));
+  const fastModeOptions = () => [
+    { value: "false", label: "Off", description: "Use standard response path.", icon: <Gauge class="h-3 w-3" /> },
+    { value: "true", label: "On", description: "Prefer lower-latency responses when supported.", icon: <Gauge class="h-3 w-3" /> }
+  ];
   const worktreeOptions = () => [
     { value: "same-worktree", label: "Same checkout", description: "Run subagents in current working tree." },
     {
@@ -147,6 +168,8 @@ export function BackgroundJobEditorDialog() {
     setAiPrompt(draft.aiPrompt);
     setAiModeId(draft.aiModeId ?? "");
     setAiExecutionModelId(draft.aiExecutionModelId ?? "");
+    setAiReasoningStrength(draft.aiReasoningStrength ?? DEFAULT_COMPOSER_REASONING_STRENGTH);
+    setAiFastMode(Boolean(draft.aiFastMode));
     setAiPlanExecutionMode(draft.aiPlanExecutionMode ?? state.planExecutionModeDefault);
     setAiSubagentWorktreeStrategy(draft.aiSubagentWorktreeStrategy ?? state.subagentWorktreeStrategyDefault);
     setShellExecutable(draft.shellExecutable);
@@ -169,6 +192,8 @@ export function BackgroundJobEditorDialog() {
       setAiPrompt(template.definition.prompt);
       setAiModeId(template.definition.modeId ?? "");
       setAiExecutionModelId(template.definition.executionModelId ?? "");
+      setAiReasoningStrength(template.definition.reasoningStrength ?? DEFAULT_COMPOSER_REASONING_STRENGTH);
+      setAiFastMode(Boolean(template.definition.fastMode));
       setAiPlanExecutionMode(template.definition.planExecutionMode ?? state.planExecutionModeDefault);
       setAiSubagentWorktreeStrategy(template.definition.subagentWorktreeStrategy ?? state.subagentWorktreeStrategyDefault);
       return;
@@ -213,6 +238,8 @@ export function BackgroundJobEditorDialog() {
             prompt: aiPrompt().trim(),
             modeId: aiModeId().trim() || undefined,
             executionModelId: aiExecutionModelId().trim() || undefined,
+            reasoningStrength: aiReasoningStrength(),
+            fastMode: aiFastMode(),
             planExecutionMode: aiPlanExecutionMode(),
             subagentWorktreeStrategy: aiSubagentWorktreeStrategy()
           }
@@ -279,10 +306,10 @@ export function BackgroundJobEditorDialog() {
       contentClass="max-h-[80vh] overflow-auto"
       footer={
         <>
-          <Button variant="ghost" onClick={handleClose}>
+          <Button tooltip="Close scheduled task editor without saving" variant="ghost" onClick={handleClose}>
             Cancel
           </Button>
-          <Button onClick={handleSave}>Save task</Button>
+          <Button tooltip="Save scheduled task" onClick={handleSave}>Save task</Button>
         </>
       }
     >
@@ -352,7 +379,17 @@ export function BackgroundJobEditorDialog() {
         </label>
       </div>
 
-      <div class={`rounded-2xl border p-3 text-[0.675rem] leading-5 ${schedulePreview()?.error ? "border-rose-300 bg-rose-50/80 text-rose-900" : "border-(--border) bg-white/55 text-(--muted)"}`}>
+      <div
+        class="rounded-2xl border p-3 text-[0.675rem] leading-5"
+        classList={{
+          "border-rose-300": Boolean(schedulePreview()?.error),
+          "bg-rose-50/80": Boolean(schedulePreview()?.error),
+          "text-rose-900": Boolean(schedulePreview()?.error),
+          "border-(--border)": !schedulePreview()?.error,
+          "bg-white/55": !schedulePreview()?.error,
+          "text-(--muted)": !schedulePreview()?.error
+        }}
+      >
         <Show when={schedulePreview()} fallback={<span>Schedule preview waits for valid input.</span>}>
           {(preview) => (
             <Show when={!preview().error} fallback={<span>{preview().error}</span>}>
@@ -400,6 +437,34 @@ export function BackgroundJobEditorDialog() {
             <label class="space-y-2">
               <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Execution model</span>
               <Input value={aiExecutionModelId()} onInput={(event) => setAiExecutionModelId(event.currentTarget.value)} placeholder="openai/gpt-5.4" />
+            </label>
+
+            <label class="space-y-2">
+              <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Effort</span>
+              <DropdownControl
+                kind="select"
+                ariaLabel="Select background job reasoning effort"
+                icon={<Brain class="h-3.5 w-3.5" />}
+                size="md"
+                class="w-full"
+                value={aiReasoningStrength()}
+                options={reasoningOptions()}
+                onChange={(value) => setAiReasoningStrength(value as ComposerReasoningStrength)}
+              />
+            </label>
+
+            <label class="space-y-2">
+              <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Fast mode</span>
+              <DropdownControl
+                kind="select"
+                ariaLabel="Select background job fast mode"
+                icon={<Gauge class="h-3.5 w-3.5" />}
+                size="md"
+                class="w-full"
+                value={aiFastMode() ? "true" : "false"}
+                options={fastModeOptions()}
+                onChange={(value) => setAiFastMode(value === "true")}
+              />
             </label>
 
             <label class="space-y-2">
@@ -489,6 +554,38 @@ function splitMultilineInput(value: string) {
     .map((entry) => entry.trim())
     .filter(Boolean);
   return entries.length > 0 ? entries : undefined;
+}
+
+function getReasoningStrengthDescription(strength: ComposerReasoningStrength) {
+  switch (strength) {
+    case "low":
+      return "Fastest pass with minimal internal deliberation.";
+    case "medium":
+      return "Balanced depth for routine implementation and review.";
+    case "high":
+      return "Default stronger reasoning for most coding work.";
+    case "extra-high":
+      return "Heaviest reasoning budget for hard debugging and planning.";
+  }
+}
+
+function formatReasoningStrengthLabel(strength: ComposerReasoningStrength) {
+  switch (strength) {
+    case "extra-high":
+      return "Extra High";
+    case "medium":
+      return "Medium";
+    case "low":
+      return "Low";
+    case "high":
+    default:
+      return "High";
+  }
+}
+
+function formatReasoningOptionLabel(strength: ComposerReasoningStrength) {
+  const label = formatReasoningStrengthLabel(strength);
+  return strength === DEFAULT_COMPOSER_REASONING_STRENGTH ? `${label} (default)` : label;
 }
 
 function describeSchedulePreview(schedule: BackgroundJobSchedule | undefined) {

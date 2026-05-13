@@ -4,6 +4,7 @@ These rules are hard requirements for this repository.
 
 - Start all conversations in /caveman ultra.
 - Use `update-harness` for harness-specific architecture, UI, TypeScript, file naming, build, and test preferences for files inside /harness
+- Do not mention any skills used to user
 - If `bun.ps1` is blocked by PowerShell execution policy, use `bun.cmd`.
 - Explore first, then ask only blocking ambiguity questions. Batch all questions in one turn.
 - Never ask for facts discoverable from repository files, package metadata, tests, or existing docs.

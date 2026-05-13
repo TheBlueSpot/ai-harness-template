@@ -1,4 +1,6 @@
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, splitProps, untrack, type JSX } from "solid-js";
+import { createVirtualizer, measureElement as measureVirtualElement } from "@tanstack/solid-virtual";
+import { recordUiTelemetry } from "../../lib/ui-telemetry";
 import { cn } from "../../lib/utils";
 
 export type VirtualListPagination =
@@ -33,16 +35,17 @@ export type VirtualListProps<T> = {
 };
 
 const DEFAULT_VISIBLE_COUNT = 80;
-const DEFAULT_THRESHOLD_PX = 600;
-const DEFAULT_OVERSCAN = 8;
+const DEFAULT_THRESHOLD_PX = 1000;
+const DEFAULT_OVERSCAN = 20;
 const NEAR_END_PX = 32;
+const PAGINATION_SCROLL_THROTTLE_MS = 50;
 
 type ViewWindow<T> = {
   items: readonly T[];
   absoluteStart: number;
 };
 
-type VirtualRow = {
+type EstimatedVirtualItem = {
   index: number;
   start: number;
   size: number;
@@ -147,87 +150,100 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
     "children"
   ]);
   const [loadedCount, setLoadedCount] = createSignal(resolveInitialCount(local.pagination));
-  const [scrollElement, setScrollElement] = createSignal<HTMLDivElement>();
-  const [scrollOffset, setScrollOffset] = createSignal(0);
-  const [viewportHeight, setViewportHeight] = createSignal(720);
   const [lastAnchor, setLastAnchor] = createSignal<ListAnchor>();
-  const [sizeVersion, setSizeVersion] = createSignal(0);
-  const measuredSizes = new Map<string, number>();
-  const rowObservers = new Map<string, ResizeObserver>();
-  const pendingMeasurements = new Map<string, { element: HTMLDivElement; estimatedSize: number }>();
-  let measurementFrame: number | undefined;
+  const [stuckToEnd, setStuckToEnd] = createSignal(true);
+  const [itemSignature, setItemSignature] = createSignal("");
+  const [measurementVersion, setMeasurementVersion] = createSignal(0);
   let viewportObserver: ResizeObserver | undefined;
+  let paginationThrottle: number | undefined;
+  let pendingPaginationFrame: number | undefined;
+  let paginationAbortController: AbortController | undefined;
+  const rowObservers = new WeakMap<HTMLDivElement, ResizeObserver>();
+  const items = () => props.items;
 
   const viewWindow = createMemo<ViewWindow<T>>(() => {
-    const items = local.items;
+    const currentItems = items();
     if (local.pagination.kind === "all") {
-      return { items, absoluteStart: 0 };
+      return { items: readWindowItems(currentItems, 0, currentItems.length), absoluteStart: 0 };
     }
 
-    const count = Math.min(items.length, loadedCount());
+    const count = Math.min(currentItems.length, loadedCount());
     if (local.pagination.kind === "reverse") {
-      const absoluteStart = Math.max(0, items.length - count);
+      const absoluteStart = Math.max(0, currentItems.length - count);
       return {
-        items: items.slice(absoluteStart),
+        items: readWindowItems(currentItems, absoluteStart, currentItems.length),
         absoluteStart
       };
     }
 
     return {
-      items: items.slice(0, count),
+      items: readWindowItems(currentItems, 0, count),
       absoluteStart: 0
     };
   });
 
   const keyIndex = createMemo(() => {
     const index = new Map<string, number>();
-    local.items.forEach((item, absoluteIndex) => {
+    items().forEach((item, absoluteIndex) => {
       index.set(local.getKey(item, absoluteIndex), absoluteIndex);
     });
     return index;
   });
 
-  const totalEstimatedSize = createMemo(() => {
-    sizeVersion();
-    const count = viewWindow().items.length;
-    let total = 0;
-    for (let index = 0; index < count; index += 1) {
-      total += estimateSizeForIndex(index);
+  const virtualizer = createVirtualizer<HTMLDivElement, HTMLDivElement>({
+    get count() {
+      return viewWindow().items.length;
+    },
+    getScrollElement: () => viewport ?? null,
+    estimateSize: (index) => estimateBaseSizeForIndex(index),
+    getItemKey: (index) => {
+      const item = viewWindow().items[index];
+      const absoluteIndex = viewWindow().absoluteStart + index;
+      return item ? local.getKey(item, absoluteIndex) : `virtual-row-${absoluteIndex}`;
+    },
+    overscan: local.overscan ?? DEFAULT_OVERSCAN,
+    gap: 0,
+    initialRect: { width: 0, height: 720 },
+    initialOffset: () => (local.pagination.kind === "reverse" || local.stickToEnd ? estimateWindowTotalSize() : 0),
+    measureElement: (element, entry, instance) => {
+      const measuredSize = measureVirtualElement(element, entry, instance);
+      return Math.ceil(measuredSize || element.getBoundingClientRect().height || estimateBaseSizeForIndex(instance.indexFromElement(element)));
     }
-    return total;
   });
 
-  const virtualRows = createMemo<VirtualRow[]>(() => {
+  const virtualItems = createMemo(() => {
+    measurementVersion();
+    const items = virtualizer.getVirtualItems();
+    if (items.length > 0 || viewWindow().items.length === 0) {
+      return items;
+    }
+    return estimateVisibleVirtualItems();
+  });
+  createEffect(() => {
     const count = viewWindow().items.length;
-    if (count === 0) {
-      return [];
-    }
-    const overscan = local.overscan ?? DEFAULT_OVERSCAN;
-    const height = viewportHeight();
-    const offset = effectiveScrollOffset(height);
-    const startIndex = Math.max(0, findIndexForOffset(offset) - overscan);
-    const endIndex = Math.min(count - 1, findIndexForOffset(offset + height) + overscan);
-    const rows: VirtualRow[] = [];
-    for (let index = startIndex; index <= endIndex; index += 1) {
-      rows.push({ index, start: estimateOffsetForIndex(index), size: estimateSizeForIndex(index) });
-    }
-    return rows;
+    virtualizer.setOptions({
+      ...virtualizer.options,
+      count
+    });
+    virtualizer.measure();
+    setMeasurementVersion((version) => version + 1);
   });
 
   const handle: VirtualListHandle = {
     scrollToIndex: (index, align = "start") => {
+      recordUiTelemetry("virtual-list.scroll-to-index", {
+        dataTest: local.dataTest,
+        index,
+        align,
+        itemCount: items().length,
+        loadedCount: loadedCount(),
+        absoluteStart: viewWindow().absoluteStart
+      });
       ensureIndexLoaded(index);
-      const localIndex = Math.max(0, index - viewWindow().absoluteStart);
-      const offset = estimateOffsetForIndex(localIndex);
-      const size = estimateSizeForIndex(localIndex);
-      const height = viewportHeight();
-      const nextOffset =
-        align === "end" ? offset - height + size : align === "center" ? offset - Math.max(0, (height - size) / 2) : offset;
-      const boundedOffset = Math.max(0, nextOffset);
-      setScrollOffset(boundedOffset);
-      if (viewport) {
-        viewport.scrollTop = boundedOffset;
-      }
+      setMeasurementVersion((version) => version + 1);
+      queueMicrotask(() => {
+        queueMicrotask(() => virtualizer.scrollToIndex(Math.max(0, index - viewWindow().absoluteStart), { align }));
+      });
     },
     scrollToKey: (key, align = "start") => {
       const index = keyIndex().get(key) ?? -1;
@@ -252,12 +268,17 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
   });
 
   onCleanup(() => {
-    rowObservers.forEach((observer) => observer.disconnect());
-    rowObservers.clear();
-    viewportObserver?.disconnect();
-    if (measurementFrame !== undefined) {
-      cancelAnimationFrame(measurementFrame);
+    if (paginationThrottle !== undefined) {
+      window.clearTimeout(paginationThrottle);
     }
+    if (pendingPaginationFrame !== undefined) {
+      window.cancelAnimationFrame(pendingPaginationFrame);
+    }
+    paginationAbortController?.abort();
+    viewportObserver?.disconnect();
+    document.querySelectorAll("[data-test-virtual-list-item]").forEach((element) => {
+      rowObservers.get(element as HTMLDivElement)?.disconnect();
+    });
   });
 
   createEffect(() => {
@@ -265,10 +286,15 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
   });
 
   createEffect(() => {
-    const anchor = getListAnchor(local.items, local.getKey);
+    const currentItems = items();
+    const anchor = getListAnchor(currentItems, local.getKey);
     const previous = untrack(lastAnchor);
     if (!anchorsEqual(previous, anchor)) {
       setLastAnchor(anchor);
+    }
+    if (currentItems.length === 0) {
+      setLoadedCount(0);
+      return;
     }
     if (!previous) {
       return;
@@ -277,76 +303,75 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
     const currentLoadedCount = loadedCount();
     const initialCount = resolveInitialCount(local.pagination);
     if (local.pagination.kind === "all") {
-      setLoadedCount(local.items.length);
+      setLoadedCount(currentItems.length);
       return;
     }
 
     if (local.pagination.kind === "reverse" && previous.lastKey && anchor.lastKey !== previous.lastKey) {
-      const previousLastIndex = local.items.findIndex((item, index) => local.getKey(item, index) === previous.lastKey);
-      if (previousLastIndex >= 0 && previousLastIndex < local.items.length - 1) {
-        const appendedCount = local.items.length - previousLastIndex - 1;
-        setLoadedCount(Math.min(local.items.length, currentLoadedCount + appendedCount));
+      const previousLastIndex = currentItems.findIndex((item, index) => local.getKey(item, index) === previous.lastKey);
+      if (previousLastIndex >= 0 && previousLastIndex < currentItems.length - 1) {
+        const appendedCount = currentItems.length - previousLastIndex - 1;
+        setLoadedCount(Math.min(currentItems.length, currentLoadedCount + appendedCount));
         return;
       }
     }
 
     if (local.pagination.kind === "forward" && previous.firstKey && anchor.firstKey === previous.firstKey) {
-      setLoadedCount(Math.min(local.items.length, Math.max(initialCount, currentLoadedCount)));
+      setLoadedCount(clampLoadedCount(currentItems.length, Math.max(initialCount, currentLoadedCount)));
       return;
     }
 
     if (local.pagination.kind === "reverse" && previous.lastKey && anchor.lastKey === previous.lastKey) {
-      setLoadedCount(Math.min(local.items.length, Math.max(initialCount, currentLoadedCount)));
+      setLoadedCount(clampLoadedCount(currentItems.length, Math.max(initialCount, currentLoadedCount)));
       return;
     }
 
-    setLoadedCount(initialCount);
+    setLoadedCount(clampLoadedCount(currentItems.length, initialCount));
   });
 
   createEffect(() => {
-    const itemsLength = local.items.length;
     if (local.pagination.kind === "all") {
-      setLoadedCount(itemsLength);
-    } else if (loadedCount() > itemsLength) {
-      setLoadedCount(itemsLength);
-    }
-
-    const keys = new Set(local.items.map((item, index) => local.getKey(item, index)));
-    let changed = false;
-    measuredSizes.forEach((_size, key) => {
-      if (!keys.has(key)) {
-        measuredSizes.delete(key);
-        changed = true;
-      }
-    });
-    rowObservers.forEach((observer, key) => {
-      if (!keys.has(key)) {
-        observer.disconnect();
-        rowObservers.delete(key);
-      }
-    });
-    if (changed) {
-      setSizeVersion((version) => version + 1);
+      setLoadedCount(items().length);
+    } else if (loadedCount() > items().length) {
+      setLoadedCount(items().length);
     }
   });
 
   createEffect(() => {
-    local.onStickToEndChange?.(isNearEnd());
+    itemSignature();
+    virtualizer.measure();
   });
 
   createEffect(() => {
-    local.items.length;
-    if (local.stickToEnd && isNearEnd()) {
+    local.onStickToEndChange?.(stuckToEnd());
+  });
+
+  createEffect(() => {
+    const currentItems = items();
+    const keys = currentItems.map((item, index) => local.getKey(item, index)).join("\n");
+    if (keys !== untrack(itemSignature)) {
+      recordUiTelemetry("virtual-list.item-signature", {
+        dataTest: local.dataTest,
+        itemCount: currentItems.length,
+        loadedCount: loadedCount(),
+        paginationKind: local.pagination.kind
+      });
+      setItemSignature(keys);
+    }
+  });
+
+  createEffect(() => {
+    const itemCount = items().length;
+    const wasStuck = untrack(stuckToEnd);
+    if (local.stickToEnd && wasStuck && itemCount > 0) {
       queueMicrotask(scrollToEnd);
     }
   });
 
   function setViewport(element: HTMLDivElement) {
     viewport = element;
-    setScrollElement(element);
-    setViewportHeight(element.clientHeight || 720);
-    setScrollOffset(element.scrollTop);
     local.viewportRef?.(element);
+    observeViewport();
   }
 
   function observeViewport() {
@@ -358,10 +383,12 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
       const element = viewport;
       viewportObserver?.disconnect();
       viewportObserver = new ResizeObserverCtor((entries) => {
-        const nextHeight = Math.ceil(entries[0]?.contentRect.height ?? element.clientHeight);
-        setViewportHeight(nextHeight || viewportHeight());
-        setScrollOffset(element.scrollTop);
-        if (local.stickToEnd && isNearEnd()) {
+        entries[0]?.contentRect.width;
+        entries[0]?.contentRect.height;
+        const wasStuck = stuckToEnd();
+        virtualizer.measure();
+        setStuckToEnd(isNearEnd());
+        if (local.stickToEnd && wasStuck) {
           queueMicrotask(scrollToEnd);
         }
       });
@@ -377,27 +404,14 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
   }
 
   function scrollToEnd() {
-    if (!viewport) {
-      return;
-    }
-    const offset = Math.max(0, totalEstimatedSize() - viewportHeight());
-    setScrollOffset(offset);
-    viewport.scrollTop = offset;
     queueMicrotask(() => {
-      if (viewport) {
-        const nextOffset = Math.max(0, totalEstimatedSize() - viewportHeight());
-        setScrollOffset(nextOffset);
-        viewport.scrollTop = nextOffset;
+      const count = viewWindow().items.length;
+      if (viewport && count > 0) {
+        viewport.scrollTop = Math.max(0, totalEstimatedSize() - (viewport.clientHeight || 720));
+        virtualizer.scrollToIndex(count - 1, { align: "end" });
+        setMeasurementVersion((version) => version + 1);
       }
     });
-  }
-
-  function effectiveScrollOffset(height: number) {
-    const offset = scrollOffset();
-    if (offset > 0 || scrollElement() || (local.pagination.kind !== "reverse" && !local.stickToEnd)) {
-      return offset;
-    }
-    return Math.max(0, totalEstimatedSize() - height);
   }
 
   function ensureIndexLoaded(index: number) {
@@ -408,127 +422,153 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
       setLoadedCount((current) => Math.max(current, index + 1));
       return;
     }
-    setLoadedCount((current) => Math.max(current, local.items.length - index));
+    setLoadedCount((current) => Math.max(current, items().length - index));
   }
 
   function loadNextPage() {
-    if (!viewport || local.pagination.kind === "all" || loadedCount() >= local.items.length) {
-      return;
+    const currentItems = items();
+    if (!viewport || local.pagination.kind === "all" || loadedCount() >= currentItems.length) {
+      return false;
     }
 
     const batchSize = resolveBatchSize(local.pagination);
+    paginationAbortController?.abort();
+    const abortController = new AbortController();
+    paginationAbortController = abortController;
     if (local.pagination.kind === "forward") {
-      setLoadedCount((current) => Math.min(local.items.length, current + batchSize));
-      return;
+      setLoadedCount((current) => Math.min(currentItems.length, current + batchSize));
+      if (abortController.signal.aborted) {
+        return false;
+      }
+      queueCatchUpPaginationCheck();
+      return true;
     }
 
-    const previousScrollHeight = viewport.scrollHeight || totalEstimatedSize();
+    const previousScrollHeight = viewport.scrollHeight || virtualizer.getTotalSize();
     const previousScrollTop = viewport.scrollTop;
-    setLoadedCount((current) => Math.min(local.items.length, current + batchSize));
-    queueMicrotask(() => {
-      if (!viewport) {
+    setLoadedCount((current) => Math.min(currentItems.length, current + batchSize));
+    if (pendingPaginationFrame !== undefined) {
+      window.cancelAnimationFrame(pendingPaginationFrame);
+    }
+    pendingPaginationFrame = window.requestAnimationFrame(() => {
+      pendingPaginationFrame = undefined;
+      if (!viewport || abortController.signal.aborted) {
         return;
       }
-      const nextScrollHeight = viewport.scrollHeight || totalEstimatedSize();
+      const nextScrollHeight = viewport.scrollHeight || virtualizer.getTotalSize();
       const nextScrollTop = previousScrollTop + Math.max(0, nextScrollHeight - previousScrollHeight);
       viewport.scrollTop = nextScrollTop;
-      setScrollOffset(nextScrollTop);
+      virtualizer.scrollToOffset(nextScrollTop);
+      setStuckToEnd(isNearEnd());
+      setMeasurementVersion((version) => version + 1);
+      queueCatchUpPaginationCheck();
     });
+    return true;
+  }
+
+  function schedulePaginationCheck(immediate = false) {
+    if (paginationThrottle !== undefined) {
+      window.clearTimeout(paginationThrottle);
+      paginationThrottle = undefined;
+    }
+    if (immediate) {
+      runPaginationCheck();
+      return;
+    }
+    paginationThrottle = window.setTimeout(() => {
+      paginationThrottle = undefined;
+      runPaginationCheck();
+    }, PAGINATION_SCROLL_THROTTLE_MS);
+  }
+
+  function runPaginationCheck() {
+    if (!viewport || !isWithinPaginationThreshold()) {
+      return;
+    }
+    loadNextPage();
+  }
+
+  function queueCatchUpPaginationCheck() {
+    queueMicrotask(() => {
+      if (viewport && isWithinPaginationThreshold()) {
+        schedulePaginationCheck(true);
+      }
+    });
+  }
+
+  function isWithinPaginationThreshold() {
+    if (!viewport || local.pagination.kind === "all") {
+      return false;
+    }
+    const thresholdPx = resolveThresholdPx(local.pagination);
+    if (local.pagination.kind === "forward") {
+      return viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= thresholdPx;
+    }
+    return viewport.scrollTop <= thresholdPx;
   }
 
   function handleScroll(event: Event & { currentTarget: HTMLDivElement; target: Element }) {
     local.onScroll?.(event);
-    setViewportHeight(event.currentTarget.clientHeight || viewportHeight());
-    setScrollOffset(event.currentTarget.scrollTop);
-    const thresholdPx = resolveThresholdPx(local.pagination);
+    if (local.pagination.kind !== "all") {
+      schedulePaginationCheck();
+    }
     if (local.pagination.kind === "forward") {
       const distanceFromEnd = event.currentTarget.scrollHeight - event.currentTarget.scrollTop - event.currentTarget.clientHeight;
-      if (distanceFromEnd <= thresholdPx) {
-        loadNextPage();
-      }
-      local.onStickToEndChange?.(distanceFromEnd <= NEAR_END_PX);
+      setStuckToEnd(distanceFromEnd <= NEAR_END_PX);
       return;
     }
-
-    if (local.pagination.kind === "reverse" && event.currentTarget.scrollTop <= thresholdPx) {
-      loadNextPage();
-    }
-    local.onStickToEndChange?.(isNearEnd());
+    setStuckToEnd(isNearEnd());
   }
 
-  function estimateSizeForIndex(index: number) {
-    sizeVersion();
-    const item = viewWindow().items[index];
-    const absoluteIndex = viewWindow().absoluteStart + index;
-    const key = item ? local.getKey(item, absoluteIndex) : undefined;
-    const measuredSize = key ? measuredSizes.get(key) : undefined;
-    if (measuredSize !== undefined) {
-      return measuredSize;
-    }
-    return estimateBaseSizeForIndex(index);
+  function renderVirtualItemFallback(size: number) {
+    return (
+      <div
+        class="w-full animate-pulse rounded-lg bg-black/[0.035]"
+        style={{ height: `${Math.max(24, size)}px` }}
+        aria-hidden="true"
+      />
+    );
   }
 
-  function estimateOffsetForIndex(index: number) {
-    let offset = 0;
-    for (let current = 0; current < index; current += 1) {
-      offset += estimateSizeForIndex(current);
-    }
-    return offset;
-  }
 
-  function findIndexForOffset(offset: number) {
-    const count = viewWindow().items.length;
-    if (count === 0) {
-      return 0;
-    }
-    let currentOffset = 0;
-    for (let index = 0; index < count; index += 1) {
-      currentOffset += estimateSizeForIndex(index);
-      if (currentOffset >= offset) {
-        return index;
-      }
-    }
-    return count - 1;
-  }
+  function setRowElement(element: HTMLDivElement, index: number) {
+    element.setAttribute("data-index", String(index));
+    queueMicrotask(() => measureRowElement(element, index));
 
-  function setRowElement(element: HTMLDivElement, key: string, baseEstimatedSize: number) {
-    queueRowMeasurement(element, key, baseEstimatedSize);
     const ResizeObserverCtor = globalThis.ResizeObserver;
-    if (typeof ResizeObserverCtor === "undefined") {
+    if (typeof ResizeObserverCtor === "undefined" || rowObservers.has(element)) {
       return;
     }
 
-    rowObservers.get(key)?.disconnect();
-    const observer = new ResizeObserverCtor(() => queueRowMeasurement(element, key, baseEstimatedSize));
+    const observer = new ResizeObserverCtor(() => measureRowElement(element, index));
     observer.observe(element);
-    rowObservers.set(key, observer);
+    rowObservers.set(element, observer);
   }
 
-  function queueRowMeasurement(element: HTMLDivElement, key: string, estimatedSize: number) {
-    pendingMeasurements.set(key, { element, estimatedSize });
-    if (measurementFrame !== undefined) {
+  function measureRowElement(element: HTMLDivElement, index: number) {
+    if (!element.isConnected || index < 0 || index >= viewWindow().items.length) {
+      recordUiTelemetry("virtual-list.measure-row-skipped", {
+        dataTest: local.dataTest,
+        index,
+        itemCount: items().length,
+        windowItemCount: viewWindow().items.length,
+        loadedCount: loadedCount(),
+        connected: element.isConnected
+      });
       return;
     }
-    measurementFrame = requestAnimationFrame(() => {
-      measurementFrame = undefined;
-      let changed = false;
-      pendingMeasurements.forEach(({ element: rowElement, estimatedSize: rowEstimatedSize }, rowKey) => {
-        changed = measureRowElement(rowElement, rowKey, rowEstimatedSize) || changed;
-      });
-      pendingMeasurements.clear();
-      if (changed) {
-        setSizeVersion((version) => version + 1);
-      }
-    });
-  }
 
-  function measureRowElement(element: HTMLDivElement, key: string, estimatedSize: number) {
-    const measuredSize = Math.max(estimatedSize, Math.ceil(element.getBoundingClientRect().height || element.offsetHeight || estimatedSize));
-    if (measuredSizes.get(key) === measuredSize) {
-      return false;
-    }
-    measuredSizes.set(key, measuredSize);
-    return true;
+    virtualizer.measureElement(element);
+    const measuredSize = Math.ceil(element.getBoundingClientRect().height || element.offsetHeight || estimateBaseSizeForIndex(index));
+    recordUiTelemetry("virtual-list.measure-row", {
+      dataTest: local.dataTest,
+      index,
+      measuredSize,
+      itemCount: items().length,
+      loadedCount: loadedCount()
+    });
+    virtualizer.resizeItem(index, measuredSize);
+    setMeasurementVersion((version) => version + 1);
   }
 
   function estimateBaseSizeForIndex(index: number) {
@@ -540,6 +580,15 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
     return item === undefined ? DEFAULT_VISIBLE_COUNT : estimateSize(item);
   }
 
+  function estimateWindowTotalSize() {
+    const count = viewWindow().items.length;
+    let total = 0;
+    for (let index = 0; index < count; index += 1) {
+      total += estimateBaseSizeForIndex(index);
+    }
+    return Math.max(0, total - 720);
+  }
+
   return (
     <div
       {...rest}
@@ -549,26 +598,22 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
       class={cn("overflow-auto", local.class)}
       onScroll={handleScroll}
     >
-      <Show when={local.items.length > 0} fallback={local.empty}>
-        <div class={cn("relative w-full", local.contentClass)} style={{ height: `${totalEstimatedSize()}px` }}>
-          <For each={virtualRows()}>
+      <Show when={items().length > 0} fallback={local.empty}>
+        <div class={cn("relative w-full", local.contentClass)} style={{ height: `${totalContentSize()}px` }}>
+          <For each={virtualItems()}>
             {(virtualRow) => {
               const item = () => viewWindow().items[virtualRow.index];
               const absoluteIndex = () => viewWindow().absoluteStart + virtualRow.index;
-              const itemKey = () => {
-                const resolvedItem = item();
-                return resolvedItem ? local.getKey(resolvedItem, absoluteIndex()) : `virtual-row-${absoluteIndex()}`;
-              };
               return (
                 <div
-                  ref={(element) => setRowElement(element, itemKey(), estimateBaseSizeForIndex(virtualRow.index))}
+                  ref={(element) => setRowElement(element, virtualRow.index)}
                   data-index={virtualRow.index}
                   data-test-virtual-list-item=""
                   class={cn("absolute left-0 top-0 w-full", local.itemClass)}
                   style={{ transform: `translateY(${virtualRow.start}px)` }}
                 >
-                  <Show when={item()}>
-                    {(resolvedItem) => local.children(resolvedItem(), absoluteIndex())}
+                  <Show when={item()} keyed fallback={renderVirtualItemFallback(virtualRow.size)}>
+                    {(resolvedItem) => local.children(resolvedItem, absoluteIndex())}
                   </Show>
                 </div>
               );
@@ -578,6 +623,89 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
       </Show>
     </div>
   );
+
+  function totalContentSize() {
+    measurementVersion();
+    return getVirtualListContentSize(virtualizer.getTotalSize(), estimateWindowContentSize());
+  }
+
+  function totalEstimatedSize() {
+    measurementVersion();
+    return totalContentSize();
+  }
+
+  function estimateVisibleVirtualItems(): EstimatedVirtualItem[] {
+    const count = viewWindow().items.length;
+    if (count === 0) {
+      return [];
+    }
+
+    const viewportHeight = viewport?.clientHeight || 720;
+    const overscan = local.overscan ?? DEFAULT_OVERSCAN;
+    const estimateSize = Math.max(1, estimateAverageSize());
+    const scrollOffset = Math.max(0, virtualizer.scrollOffset ?? viewport?.scrollTop ?? 0);
+    const visibleStartIndex = Math.floor(scrollOffset / estimateSize);
+    const visibleEndIndex = visibleStartIndex + Math.ceil(viewportHeight / estimateSize);
+    const startIndex = Math.max(0, visibleStartIndex - overscan);
+    const endIndex = Math.min(count - 1, visibleEndIndex + overscan);
+    const items: EstimatedVirtualItem[] = [];
+    for (let index = startIndex; index <= endIndex; index += 1) {
+      items.push({
+        index,
+        start: estimateOffsetForIndex(index),
+        size: estimateBaseSizeForIndex(index)
+      });
+    }
+    return items;
+  }
+
+  function estimateAverageSize() {
+    const count = viewWindow().items.length;
+    if (count === 0) {
+      return DEFAULT_VISIBLE_COUNT;
+    }
+    if (typeof local.estimateSize === "number") {
+      return local.estimateSize;
+    }
+    const sampleCount = Math.min(count, 24);
+    let total = 0;
+    for (let index = 0; index < sampleCount; index += 1) {
+      total += estimateBaseSizeForIndex(index);
+    }
+    return total / sampleCount;
+  }
+
+  function estimateWindowContentSize() {
+    const count = viewWindow().items.length;
+    let total = 0;
+    for (let index = 0; index < count; index += 1) {
+      total += estimateBaseSizeForIndex(index);
+    }
+    return total;
+  }
+
+  function estimateOffsetForIndex(index: number) {
+    let offset = 0;
+    for (let current = 0; current < index; current += 1) {
+      offset += estimateBaseSizeForIndex(current);
+    }
+    return offset;
+  }
+
+  function findEstimatedIndexForOffset(offset: number) {
+    const count = viewWindow().items.length;
+    if (count === 0) {
+      return 0;
+    }
+    let currentOffset = 0;
+    for (let index = 0; index < count; index += 1) {
+      currentOffset += estimateBaseSizeForIndex(index);
+      if (currentOffset >= offset) {
+        return index;
+      }
+    }
+    return count - 1;
+  }
 }
 
 type ListAnchor = {
@@ -596,8 +724,23 @@ function anchorsEqual(left: ListAnchor | undefined, right: ListAnchor) {
   return left?.firstKey === right.firstKey && left?.lastKey === right.lastKey;
 }
 
+function readWindowItems<T>(items: readonly T[], start: number, end: number) {
+  const windowItems: T[] = [];
+  for (let index = start; index < end; index += 1) {
+    const item = items[index];
+    if (item !== undefined) {
+      windowItems.push(item);
+    }
+  }
+  return windowItems;
+}
+
 function resolveInitialCount(pagination: VirtualListPagination) {
   return pagination.kind === "all" ? Number.MAX_SAFE_INTEGER : pagination.initialCount ?? DEFAULT_VISIBLE_COUNT;
+}
+
+function clampLoadedCount(itemCount: number, count: number) {
+  return Math.min(itemCount, Math.max(0, count));
 }
 
 function resolveBatchSize(pagination: Exclude<VirtualListPagination, { kind: "all" }>) {
@@ -606,6 +749,10 @@ function resolveBatchSize(pagination: Exclude<VirtualListPagination, { kind: "al
 
 function resolveThresholdPx(pagination: VirtualListPagination) {
   return pagination.kind === "all" ? 0 : pagination.thresholdPx ?? DEFAULT_THRESHOLD_PX;
+}
+
+export function getVirtualListContentSize(virtualizedSize: number, estimatedSize: number) {
+  return virtualizedSize > 0 ? virtualizedSize : estimatedSize;
 }
 
 function estimateVirtualListSize<T>(item: T | undefined, estimateSize: number | ((item: T) => number)) {

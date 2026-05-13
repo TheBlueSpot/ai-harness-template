@@ -140,6 +140,7 @@ const BACKGROUND_JOB_APPROVAL_POLICY_DEFAULT_KEY = "background_job_approval_poli
 const AUTO_ARCHIVE_COMPLETED_THREADS_DEFAULT_KEY = "auto_archive_completed_threads_default";
 const BACKGROUND_SCHEDULER_HEARTBEAT_KEY = "background_scheduler_heartbeat_at";
 const MEMORY_BANK_ENABLED_DEFAULT_KEY = "memory_bank_enabled_default";
+const MEMORY_BANK_RECORD_RUNS_DEFAULT_KEY = "memory_bank_record_runs_default";
 const GLOBAL_EXECUTION_PAUSED_KEY = "global_execution_paused";
 const WORKSPACE_RULES_CONTENT_KEY = "workspace_rules_content";
 const WORKSPACE_RULES_UPDATED_AT_KEY = "workspace_rules_updated_at";
@@ -302,6 +303,7 @@ type MemoryEntryRow = {
   path_globs_json: string | null;
   confidence: MemoryEntry["confidence"];
   pinned: number;
+  priority: number;
   hit_count: number;
   last_hit_at: string | null;
   source_commit_sha: string | null;
@@ -460,6 +462,7 @@ type AssistantRow = {
   provider_brand: ProviderBrand | null;
   mode_id: string | null;
   execution_model_id: string | null;
+  reasoning_strength: "low" | "medium" | "high" | "extra-high" | null;
   fast_mode: number | null;
   run_state: "active" | "paused";
   bootstrap_state: "pending" | "running" | "completed" | "failed";
@@ -519,6 +522,7 @@ type AssistantLearningRow = {
   summary: string;
   source: string;
   confidence: "low" | "medium" | "high";
+  sort_order: number | null;
   created_at: string;
   kind: "fact" | "summary" | null;
   supersedes_learning_ids_json: string | null;
@@ -624,6 +628,10 @@ function normalizeOptionalInteger(value: unknown, min: number, max: number) {
 
 function normalizeBooleanNumber(value: unknown) {
   return value === true || value === 1;
+}
+
+function normalizeComposerReasoningStrength(value: unknown) {
+  return value === "low" || value === "medium" || value === "high" || value === "extra-high" ? value : undefined;
 }
 
 function normalizeBackgroundJobSchedulerStatus(value: unknown) {
@@ -2163,9 +2171,9 @@ export class WorkspaceRepository {
       .query<MemoryEntryRow, []>(
         `SELECT
           id, project_id, thread_id, run_id, kind, status, title, summary, evidence, tags_json, path_globs_json,
-          confidence, pinned, hit_count, last_hit_at, source_commit_sha, created_at, updated_at
+          confidence, pinned, priority, hit_count, last_hit_at, source_commit_sha, created_at, updated_at
          FROM memory_entries
-         ORDER BY pinned DESC, updated_at DESC, created_at DESC`
+         ORDER BY pinned DESC, priority ASC, updated_at DESC, created_at DESC`
       )
       .all();
 
@@ -2193,7 +2201,7 @@ export class WorkspaceRepository {
       .query<MemoryEntryRow, [string]>(
         `SELECT
           id, project_id, thread_id, run_id, kind, status, title, summary, evidence, tags_json, path_globs_json,
-          confidence, pinned, hit_count, last_hit_at, source_commit_sha, created_at, updated_at
+          confidence, pinned, priority, hit_count, last_hit_at, source_commit_sha, created_at, updated_at
          FROM memory_entries
          WHERE id = ?1`
       )
@@ -2207,8 +2215,8 @@ export class WorkspaceRepository {
       .query(
         `INSERT INTO memory_entries (
           id, project_id, thread_id, run_id, kind, status, title, summary, evidence, tags_json, path_globs_json,
-          confidence, pinned, hit_count, last_hit_at, source_commit_sha, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+          confidence, pinned, priority, hit_count, last_hit_at, source_commit_sha, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
         ON CONFLICT(id) DO UPDATE SET
           project_id = excluded.project_id,
           thread_id = excluded.thread_id,
@@ -2222,6 +2230,7 @@ export class WorkspaceRepository {
           path_globs_json = excluded.path_globs_json,
           confidence = excluded.confidence,
           pinned = excluded.pinned,
+          priority = excluded.priority,
           hit_count = excluded.hit_count,
           last_hit_at = excluded.last_hit_at,
           source_commit_sha = excluded.source_commit_sha,
@@ -2241,6 +2250,7 @@ export class WorkspaceRepository {
         JSON.stringify(entry.pathGlobs),
         entry.confidence,
         entry.pinned ? 1 : 0,
+        entry.priority,
         entry.hitCount,
         entry.lastHitAt ?? null,
         entry.sourceCommitSha ?? null,
@@ -2252,6 +2262,63 @@ export class WorkspaceRepository {
 
   deleteMemoryEntry(entryId: string) {
     this.db.query(`DELETE FROM memory_entries WHERE id = ?1`).run(entryId);
+  }
+
+  getNextMemoryPriority(projectId?: ProjectId) {
+    const priorities = this.listMemoryEntries(projectId).map((entry) => entry.priority);
+    const maxPriority = priorities.length > 0 ? Math.max(...priorities) : 0;
+    return Math.min(100000, maxPriority + 100);
+  }
+
+  reorderMemoryEntry(projectId: ProjectId, memoryEntryId: string, direction: "up" | "down") {
+    let entries = this.listMemoryEntries(projectId);
+    const currentIndex = entries.findIndex((entry) => entry.id === memoryEntryId);
+    if (currentIndex === -1) {
+      throw new Error("Memory entry not found");
+    }
+
+    const targetIndex = direction === "up" ? currentIndex - 1 : currentIndex + 1;
+    if (targetIndex < 0 || targetIndex >= entries.length) {
+      return entries;
+    }
+
+    if (entries.some((entry, index) => index > 0 && entry.priority === entries[index - 1]?.priority)) {
+      const now = new Date().toISOString();
+      entries.forEach((entry, index) => {
+        this.saveMemoryEntry({
+          ...entry,
+          priority: Math.min(100000, (index + 1) * 100),
+          updatedAt: now
+        });
+      });
+      entries = this.listMemoryEntries(projectId);
+    }
+
+    const refreshedCurrentIndex = entries.findIndex((entry) => entry.id === memoryEntryId);
+    const refreshedTargetIndex = direction === "up" ? refreshedCurrentIndex - 1 : refreshedCurrentIndex + 1;
+    if (refreshedCurrentIndex === -1 || refreshedTargetIndex < 0 || refreshedTargetIndex >= entries.length) {
+      return entries;
+    }
+
+    const current = entries[refreshedCurrentIndex];
+    const target = entries[refreshedTargetIndex];
+    if (!current || !target) {
+      return entries;
+    }
+
+    const now = new Date().toISOString();
+    this.saveMemoryEntry({
+      ...current,
+      priority: target.priority,
+      updatedAt: now
+    });
+    this.saveMemoryEntry({
+      ...target,
+      priority: current.priority,
+      updatedAt: now
+    });
+
+    return this.listMemoryEntries(projectId);
   }
 
   logMemoryRetrieval(retrieval: MemoryRetrieval) {
@@ -2314,7 +2381,7 @@ export class WorkspaceRepository {
       .query<AssistantRow, [string]>(
         `SELECT
           id, name, scope, project_id, description, personality_prompt, job_prompt, agent_id, mode_id,
-          provider_brand, execution_model_id, fast_mode, run_state, bootstrap_state,
+          provider_brand, execution_model_id, reasoning_strength, fast_mode, run_state, bootstrap_state,
           bootstrap_attempt_id, bootstrap_started_at, bootstrap_finished_at, cloned_from_assistant_id, failure_streak_count,
           circuit_breaker_state, circuit_breaker_reason, pending_reprioritize_reason, pending_reprioritize_requested_at,
           deleted_at, latest_activity_at, created_at, updated_at
@@ -2352,11 +2419,11 @@ export class WorkspaceRepository {
         .query(
           `INSERT INTO assistants (
             id, name, scope, project_id, description, personality_prompt, job_prompt, agent_id, mode_id,
-            provider_brand, execution_model_id, fast_mode, run_state, bootstrap_state,
+            provider_brand, execution_model_id, reasoning_strength, fast_mode, run_state, bootstrap_state,
             bootstrap_attempt_id, bootstrap_started_at, bootstrap_finished_at, cloned_from_assistant_id, failure_streak_count,
             circuit_breaker_state, circuit_breaker_reason, pending_reprioritize_reason, pending_reprioritize_requested_at,
             deleted_at, latest_activity_at, created_at, updated_at
-          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, NULL, NULL, ?22, ?23, ?24, ?25)
+          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, NULL, NULL, ?23, ?24, ?25, ?26)
           ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
             scope = excluded.scope,
@@ -2368,6 +2435,7 @@ export class WorkspaceRepository {
             mode_id = excluded.mode_id,
             provider_brand = excluded.provider_brand,
             execution_model_id = excluded.execution_model_id,
+            reasoning_strength = excluded.reasoning_strength,
             fast_mode = excluded.fast_mode,
             run_state = excluded.run_state,
             bootstrap_state = excluded.bootstrap_state,
@@ -2394,6 +2462,7 @@ export class WorkspaceRepository {
           assistant.modeId ?? null,
           assistant.providerBrand ?? null,
           assistant.executionModelId ?? null,
+          assistant.reasoningStrength ?? null,
           assistant.fastMode === undefined ? null : assistant.fastMode ? 1 : 0,
           assistant.runState,
           assistant.bootstrapState,
@@ -2521,13 +2590,14 @@ export class WorkspaceRepository {
     this.db
       .query(
         `INSERT INTO assistant_learnings (
-           id, assistant_id, summary, source, confidence, created_at, kind, supersedes_learning_ids_json, compacted_at
+           id, assistant_id, summary, source, confidence, sort_order, created_at, kind, supersedes_learning_ids_json, compacted_at
          )
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
          ON CONFLICT(id) DO UPDATE SET
            summary = excluded.summary,
            source = excluded.source,
            confidence = excluded.confidence,
+           sort_order = excluded.sort_order,
            kind = excluded.kind,
            supersedes_learning_ids_json = excluded.supersedes_learning_ids_json,
            compacted_at = excluded.compacted_at`
@@ -2538,6 +2608,7 @@ export class WorkspaceRepository {
         parsed.summary,
         parsed.source,
         parsed.confidence,
+        parsed.sortOrder ?? null,
         parsed.createdAt,
         parsed.kind ?? "fact",
         parsed.supersedesLearningIds ? JSON.stringify(parsed.supersedesLearningIds) : null,
@@ -2545,6 +2616,20 @@ export class WorkspaceRepository {
       );
     this.touchAssistant(parsed.assistantId, parsed.createdAt);
     return this.getAssistantLearning(parsed.id);
+  }
+
+  reorderAssistantLearnings(assistantId: string, learningIds: string[]) {
+    this.assertAssistantExists(assistantId);
+    const now = new Date().toISOString();
+    const tx = this.db.transaction(() => {
+      learningIds.forEach((learningId, index) => {
+        this.db
+          .query(`UPDATE assistant_learnings SET sort_order = ?3 WHERE id = ?1 AND assistant_id = ?2`)
+          .run(learningId, assistantId, index);
+      });
+    });
+    tx();
+    this.touchAssistant(assistantId, now);
   }
 
   saveAssistantLearningDeduped(learning: AssistantLearning) {
@@ -4297,6 +4382,15 @@ export class WorkspaceRepository {
     this.setWorkspaceMetaValue(MEMORY_BANK_ENABLED_DEFAULT_KEY, String(value));
   }
 
+  getMemoryBankRecordRunsDefault() {
+    const value = this.getWorkspaceMetaValue(MEMORY_BANK_RECORD_RUNS_DEFAULT_KEY);
+    return value === undefined ? true : value === "true";
+  }
+
+  setMemoryBankRecordRunsDefault(value: boolean) {
+    this.setWorkspaceMetaValue(MEMORY_BANK_RECORD_RUNS_DEFAULT_KEY, String(value));
+  }
+
   getGlobalExecutionPaused() {
     return this.getWorkspaceMetaValue(GLOBAL_EXECUTION_PAUSED_KEY) === "true";
   }
@@ -4694,6 +4788,7 @@ export class WorkspaceRepository {
         path_globs_json TEXT NULL,
         confidence TEXT NOT NULL CHECK(confidence IN ('low', 'medium', 'high')),
         pinned INTEGER NOT NULL DEFAULT 0,
+        priority INTEGER NOT NULL DEFAULT 50000,
         hit_count INTEGER NOT NULL DEFAULT 0,
         last_hit_at TEXT NULL,
         source_commit_sha TEXT NULL,
@@ -4895,6 +4990,7 @@ export class WorkspaceRepository {
         provider_brand TEXT NULL CHECK(provider_brand IN ('gpt', 'gemini', 'claude')),
         mode_id TEXT NULL,
         execution_model_id TEXT NULL,
+        reasoning_strength TEXT NULL CHECK(reasoning_strength IN ('low', 'medium', 'high', 'extra-high')),
         fast_mode INTEGER NULL CHECK(fast_mode IN (0, 1)),
         run_state TEXT NOT NULL CHECK(run_state IN ('active', 'paused')),
         bootstrap_state TEXT NOT NULL CHECK(bootstrap_state IN ('pending', 'running', 'completed', 'failed')),
@@ -4968,6 +5064,7 @@ export class WorkspaceRepository {
         summary TEXT NOT NULL,
         source TEXT NOT NULL,
         confidence TEXT NOT NULL CHECK(confidence IN ('low', 'medium', 'high')),
+        sort_order INTEGER NULL,
         created_at TEXT NOT NULL,
         kind TEXT NOT NULL DEFAULT 'fact' CHECK(kind IN ('fact', 'summary')),
         supersedes_learning_ids_json TEXT NULL,
@@ -4977,6 +5074,9 @@ export class WorkspaceRepository {
 
       CREATE INDEX IF NOT EXISTS assistant_learnings_assistant_created_idx
       ON assistant_learnings(assistant_id, created_at DESC);
+
+      CREATE INDEX IF NOT EXISTS assistant_learnings_assistant_sort_idx
+      ON assistant_learnings(assistant_id, sort_order ASC, created_at DESC);
 
       CREATE TABLE IF NOT EXISTS assistant_questions (
         id TEXT PRIMARY KEY,
@@ -5068,6 +5168,7 @@ export class WorkspaceRepository {
     this.addColumnIfMissing("agent_runs", "failure_category", "TEXT NULL");
     this.addColumnIfMissing("agent_runs", "max_turns", "INTEGER NULL");
     this.addColumnIfMissing("agent_runs", "turns_used", "INTEGER NOT NULL DEFAULT 0");
+    this.addColumnIfMissing("memory_entries", "priority", "INTEGER NOT NULL DEFAULT 50000");
     this.addColumnIfMissing("background_jobs", "assistant_id", "TEXT NULL");
     this.addColumnIfMissing(
       "background_jobs",
@@ -5104,6 +5205,11 @@ export class WorkspaceRepository {
     this.addColumnIfMissing("background_job_runs", "timed_out_at", "TEXT NULL");
     this.addColumnIfMissing("assistants", "provider_brand", "TEXT NULL CHECK(provider_brand IN ('gpt', 'gemini'))");
     this.addColumnIfMissing("assistants", "fast_mode", "INTEGER NULL CHECK(fast_mode IN (0, 1))");
+    this.addColumnIfMissing(
+      "assistants",
+      "reasoning_strength",
+      "TEXT NULL CHECK(reasoning_strength IN ('low', 'medium', 'high', 'extra-high'))"
+    );
     this.addColumnIfMissing("assistants", "bootstrap_attempt_id", "TEXT NULL");
     this.addColumnIfMissing("assistants", "bootstrap_started_at", "TEXT NULL");
     this.addColumnIfMissing("assistants", "bootstrap_finished_at", "TEXT NULL");
@@ -5112,6 +5218,7 @@ export class WorkspaceRepository {
     this.addColumnIfMissing("assistant_learnings", "kind", "TEXT NOT NULL DEFAULT 'fact' CHECK(kind IN ('fact', 'summary'))");
     this.addColumnIfMissing("assistant_learnings", "supersedes_learning_ids_json", "TEXT NULL");
     this.addColumnIfMissing("assistant_learnings", "compacted_at", "TEXT NULL");
+    this.addColumnIfMissing("assistant_learnings", "sort_order", "INTEGER NULL");
     this.addColumnIfMissing("assistant_asset_refs", "canonical_value", "TEXT NULL");
     this.addColumnIfMissing("assistant_asset_refs", "scope", "TEXT NULL CHECK(scope IN ('workspace', 'project'))");
     this.addColumnIfMissing(
@@ -5401,7 +5508,7 @@ export class WorkspaceRepository {
       .query<AssistantRow, []>(
         `SELECT
           id, name, scope, project_id, description, personality_prompt, job_prompt, agent_id, mode_id,
-          provider_brand, execution_model_id, fast_mode, run_state, bootstrap_state,
+          provider_brand, execution_model_id, reasoning_strength, fast_mode, run_state, bootstrap_state,
           bootstrap_attempt_id, bootstrap_started_at, bootstrap_finished_at, cloned_from_assistant_id, failure_streak_count,
           circuit_breaker_state, circuit_breaker_reason, pending_reprioritize_reason, pending_reprioritize_requested_at,
           deleted_at, latest_activity_at, created_at, updated_at
@@ -5487,11 +5594,11 @@ export class WorkspaceRepository {
   private readAssistantLearnings() {
     return this.db
       .query<AssistantLearningRow, []>(
-        `SELECT id, assistant_id, summary, source, confidence, created_at, kind, supersedes_learning_ids_json, compacted_at
+        `SELECT id, assistant_id, summary, source, confidence, sort_order, created_at, kind, supersedes_learning_ids_json, compacted_at
          FROM assistant_learnings
          WHERE assistant_id IN (SELECT id FROM assistants WHERE deleted_at IS NULL)
            AND (compacted_at IS NULL OR kind = 'summary')
-         ORDER BY created_at DESC`
+         ORDER BY CASE WHEN sort_order IS NULL THEN 1 ELSE 0 END ASC, sort_order ASC, kind DESC, created_at DESC`
       )
       .all()
       .map((row) => this.hydrateAssistantLearning(row))
@@ -5501,11 +5608,11 @@ export class WorkspaceRepository {
   private readAssistantLearningsByAssistantId(assistantId: string) {
     return this.db
       .query<AssistantLearningRow, [string]>(
-        `SELECT id, assistant_id, summary, source, confidence, created_at, kind, supersedes_learning_ids_json, compacted_at
+        `SELECT id, assistant_id, summary, source, confidence, sort_order, created_at, kind, supersedes_learning_ids_json, compacted_at
          FROM assistant_learnings
          WHERE assistant_id = ?1
            AND (compacted_at IS NULL OR kind = 'summary')
-         ORDER BY created_at DESC`
+         ORDER BY CASE WHEN sort_order IS NULL THEN 1 ELSE 0 END ASC, sort_order ASC, kind DESC, created_at DESC`
       )
       .all(assistantId)
       .map((row) => this.hydrateAssistantLearning(row))
@@ -5583,7 +5690,7 @@ export class WorkspaceRepository {
   private getAssistantLearning(learningId: string) {
     const row = this.db
       .query<AssistantLearningRow, [string]>(
-        `SELECT id, assistant_id, summary, source, confidence, created_at, kind, supersedes_learning_ids_json, compacted_at
+        `SELECT id, assistant_id, summary, source, confidence, sort_order, created_at, kind, supersedes_learning_ids_json, compacted_at
          FROM assistant_learnings
          WHERE id = ?1`
       )
@@ -5686,6 +5793,7 @@ export class WorkspaceRepository {
       providerBrand: row.provider_brand ?? undefined,
       modeId: row.mode_id ?? undefined,
       executionModelId: normalizeOptionalString(row.execution_model_id, 256),
+      reasoningStrength: normalizeComposerReasoningStrength(row.reasoning_strength),
       fastMode: row.fast_mode === null ? undefined : normalizeBooleanNumber(row.fast_mode),
       runState: row.run_state,
       bootstrapState: row.bootstrap_state,
@@ -5769,6 +5877,7 @@ export class WorkspaceRepository {
       summary: normalizeRequiredString(row.summary, 4000, "Recovered learning"),
       source: normalizeAssistantLearningSource(row.source),
       confidence: row.confidence,
+      sortOrder: row.sort_order === null ? undefined : normalizeInteger(row.sort_order, 0, 1000000, 0),
       createdAt: normalizeRequiredString(row.created_at, 256, new Date().toISOString()),
       kind: row.kind ?? "fact",
       supersedesLearningIds: normalizeStringArray(row.supersedes_learning_ids_json, 512, 128),
@@ -6904,6 +7013,7 @@ export class WorkspaceRepository {
       confidence: row.confidence,
       freshness: deriveMemoryFreshness(row),
       pinned: normalizeBooleanNumber(row.pinned),
+      priority: normalizeInteger(row.priority, 0, 100000, 50000),
       hitCount: normalizeInteger(row.hit_count, 0, Number.MAX_SAFE_INTEGER, 0),
       lastHitAt: normalizeOptionalString(row.last_hit_at, 256),
       sourceCommitSha: normalizeOptionalString(row.source_commit_sha, 256),
@@ -7269,6 +7379,7 @@ function parseBackgroundJobDefinition(kind: BackgroundJob["kind"], input: string
     value.prompt = normalizeRequiredString(value.prompt, 32000, "Recovered background job prompt.");
     value.modeId = normalizeOptionalString(value.modeId, 128);
     value.executionModelId = normalizeOptionalString(value.executionModelId, 256);
+    value.reasoningStrength = normalizeComposerReasoningStrength(value.reasoningStrength);
   }
   return value;
 }

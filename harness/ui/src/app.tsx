@@ -1,6 +1,6 @@
 import { createMemo, createSignal, For, onCleanup, onMount, Show, type Component } from "solid-js";
-import { createHotkeys } from "@tanstack/solid-hotkeys";
-import { Bot, BriefcaseBusiness, Clock3, FolderKanban, Menu, Pause, Play, PanelsTopLeft, Settings2, Workflow, CircleQuestionMark } from "lucide-solid";
+import { createHotkeys, formatForDisplay } from "@tanstack/solid-hotkeys";
+import { Bot, BriefcaseBusiness, Clock3, Cog, FolderKanban, Menu, Pause, Play, PanelsTopLeft, Workflow, CircleQuestionMark } from "lucide-solid";
 import { createRequestId } from "../../shared/protocol";
 import { AssistantEditorDialog } from "./components/assistant-editor-dialog";
 import { AssistantsPanel } from "./components/assistants-panel";
@@ -11,7 +11,7 @@ import { ConnectionBanner } from "./components/connection-banner";
 import { ExecutionPlanDialog } from "./components/execution-plan-dialog";
 import { HelpTutorialDialog } from "./components/help-tutorial-dialog";
 import { NotificationInbox } from "./components/notification-inbox";
-import { PreferencesModal } from "./components/preferences-modal";
+import { PreferenceSectionNav, PreferencesPanel } from "./components/preferences-modal";
 import { ProjectSidebar } from "./components/project-sidebar";
 import { ProjectSwitcherDialog } from "./components/project-switcher-dialog";
 import { Toaster } from "./components/toaster";
@@ -23,7 +23,6 @@ import { SheetContent, SheetRoot, SheetTrigger } from "./components/primitives/s
 import { Tooltip } from "./components/primitives/tooltip";
 import { connectHarnessWebSocket } from "./harness-websocket";
 import { harnessStore, type HarnessLeftTab, type MainPanelSizes } from "./harness-store";
-import { cn } from "./lib/utils";
 import { reportUiError } from "./toast-store";
 
 export function App() {
@@ -195,7 +194,11 @@ export function App() {
               icon={state.executionControl.isPaused ? <Play class="h-4 w-4" /> : <Pause class="h-4 w-4" />}
               variant="ghost"
               size="sm"
-              class={state.executionControl.isPaused ? "execution-control-pill execution-control-pill-paused" : "execution-control-pill execution-control-pill-running"}
+              class="execution-control-pill"
+              classList={{
+                "execution-control-pill-paused": state.executionControl.isPaused,
+                "execution-control-pill-running": !state.executionControl.isPaused
+              }}
               onClick={() =>
                 harnessStore.actions.sendCommand({
                   type: state.executionControl.isPaused ? "execution.resume-all" : "execution.pause-all",
@@ -214,15 +217,6 @@ export function App() {
             >
             </ActionButton>
             <ActionButton
-              tooltip="Open workspace preferences (Command+,)"
-              icon={<Settings2 class="h-4 w-4" />}
-              variant="secondary"
-              size="icon"
-              ariaLabel="Open workspace preferences"
-              dataTourId="help-preferences"
-              onClick={() => harnessStore.openPreferencesModal()}
-            />
-            <ActionButton
               tooltip={state.tracePanelOpen ? "Hide developer trace panel" : "Show developer trace panel"}
               icon={<PanelsTopLeft class="h-4 w-4" />}
               variant="secondary"
@@ -234,12 +228,11 @@ export function App() {
 
         <div
           data-test-main-panel-grid=""
-          class={cn(
-            "grid min-h-0 flex-1 auto-rows-fr gap-4 lg:gap-x-2",
-            state.tracePanelOpen
-              ? "lg:grid-cols-[minmax(0,var(--left-panel-size))_0.35rem_minmax(0,var(--center-panel-size))_0.35rem_minmax(12rem,var(--right-panel-size))]"
-              : "lg:grid-cols-[minmax(0,var(--left-panel-size))_0.35rem_minmax(0,var(--center-panel-size))]"
-          )}
+          class="grid min-h-0 flex-1 auto-rows-fr gap-4 lg:gap-x-2"
+          classList={{
+            "lg:grid-cols-[minmax(0,var(--left-panel-size))_0.35rem_minmax(0,var(--center-panel-size))_0.35rem_minmax(0,var(--right-panel-size))]": state.tracePanelOpen,
+            "lg:grid-cols-[minmax(0,var(--left-panel-size))_0.35rem_minmax(0,var(--center-panel-size))]": !state.tracePanelOpen
+          }}
           style={mainPanelGridStyle()}
         >
           <div class="hidden min-h-0 min-w-0 lg:block">
@@ -252,8 +245,15 @@ export function App() {
             <Show
               when={activeLeftTab() === "jobs" || activeLeftTab() === "runs"}
               fallback={
-                <Show when={activeLeftTab() === "assistants"} fallback={<ChatPanel />}>
-                  <AssistantsPanel variant="detail" />
+                <Show
+                  when={activeLeftTab() === "preferences"}
+                  fallback={
+                    <Show when={activeLeftTab() === "assistants"} fallback={<ChatPanel />}>
+                      <AssistantsPanel variant="detail" />
+                    </Show>
+                  }
+                >
+                  <PreferencesPanel />
                 </Show>
               }
             >
@@ -271,7 +271,6 @@ export function App() {
         </div>
       </div>
 
-      <PreferencesModal />
       <HelpTutorialDialog
         open={state.helpDialogOpen}
         setup={state.setup}
@@ -353,14 +352,52 @@ const leftPaneTabs: LeftPaneTabDefinition[] = [
     label: "Runs",
     tooltip: "Show active run info",
     icon: Clock3
+  },
+  {
+    id: "preferences",
+    label: "Settings",
+    tooltip: `Show workspace settings (${formatForDisplay("Mod+,")})`,
+    icon: Cog
   }
 ];
 
 function TabbedLeftPane(props: { compact?: boolean; onNavigate?: () => void } = {}) {
   const state = harnessStore.state;
+  const [iconsOnly, setIconsOnly] = createSignal(false);
+  let navRef: HTMLElement | undefined;
+
+  onMount(() => {
+    const measure = () => {
+      if (!navRef) {
+        return;
+      }
+      navRef.classList.remove("surface-tab-strip-icons-only");
+      const shouldCollapse = shouldCollapseTabStrip(navRef);
+      setIconsOnly(shouldCollapse);
+      if (shouldCollapse) {
+        navRef.classList.add("surface-tab-strip-icons-only");
+      }
+    };
+    const resizeObserver = new ResizeObserver(measure);
+    if (navRef) {
+      resizeObserver.observe(navRef);
+    }
+    queueMicrotask(measure);
+    window.addEventListener("resize", measure);
+    onCleanup(() => {
+      resizeObserver.disconnect();
+      window.removeEventListener("resize", measure);
+    });
+  });
+
   return (
     <div data-test-left-tabbed-pane="" class="left-tabbed-pane flex h-full min-h-0 flex-col gap-0">
-      <nav data-test-left-tab-nav="" class="surface-tab-strip px-4 lg:px-5">
+      <nav
+          ref={navRef}
+          data-test-left-tab-nav=""
+          class="surface-tab-strip px-4 lg:px-5"
+          classList={{ "surface-tab-strip-icons-only": iconsOnly() }}
+      >
         <For each={leftPaneTabs}>
           {(tab) => {
             const Icon = tab.icon;
@@ -368,10 +405,14 @@ function TabbedLeftPane(props: { compact?: boolean; onNavigate?: () => void } = 
               <Tooltip content={tab.tooltip}>
                 <button
                   type="button"
-                  class={cn("surface-tab", state.activeLeftTab === tab.id ? "bg-white/80 text-(--foreground)" : "")}
+                  class="surface-tab"
+                  classList={{ "bg-white/80": state.activeLeftTab === tab.id, "text-(--foreground)": state.activeLeftTab === tab.id }}
                   aria-label={tab.label}
                   attr:aria-pressed={state.activeLeftTab === tab.id ? "true" : "false"}
-                  onClick={() => harnessStore.setActiveLeftTab(tab.id)}
+                  onClick={() => {
+                    harnessStore.setActiveLeftTab(tab.id);
+                    props.onNavigate?.();
+                  }}
                 >
                   <Icon class="h-4 w-4" />
                   <span class="surface-tab-label">{tab.label}</span>
@@ -381,11 +422,20 @@ function TabbedLeftPane(props: { compact?: boolean; onNavigate?: () => void } = 
           }}
         </For>
       </nav>
-      <div class="min-h-0 flex-1">
+      <div class="min-h-0 flex-1 rounded-b-2xl">
         <Show
           when={state.activeLeftTab === "jobs" || state.activeLeftTab === "runs"}
           fallback={
-            <Show when={state.activeLeftTab === "assistants"} fallback={<ProjectSidebar compact={props.compact} onNavigate={props.onNavigate} />}>
+            <Show
+              when={state.activeLeftTab === "assistants"}
+              fallback={
+                <Show when={state.activeLeftTab === "preferences"} fallback={<ProjectSidebar compact={props.compact} onNavigate={props.onNavigate} />}>
+                  <div class="h-full rounded-b-2xl border border-t-0 border-(--border) bg-(--panel)">
+                    <PreferenceSectionNav onNavigate={props.onNavigate} />
+                  </div>
+                </Show>
+              }
+            >
               <AssistantsPanel variant="roster" />
             </Show>
           }
@@ -395,6 +445,14 @@ function TabbedLeftPane(props: { compact?: boolean; onNavigate?: () => void } = 
       </div>
     </div>
   );
+}
+
+export function shouldCollapseTabStrip(navElement: HTMLElement) {
+  const tabItems = Array.from(navElement.children);
+  const firstTabTop = tabItems[0]?.getBoundingClientRect().top ?? 0;
+  const hasWrappedTabs = tabItems.some((tabItem) => tabItem.getBoundingClientRect().top > firstTabTop + 1);
+
+  return hasWrappedTabs || navElement.scrollWidth > navElement.clientWidth + 1;
 }
 
 function isProjectSwitcherInputFocused() {

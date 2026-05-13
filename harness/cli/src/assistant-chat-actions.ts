@@ -6,7 +6,7 @@ import type {
   BackgroundJob,
   ProjectId
 } from "../../shared/protocol";
-import { detectAssistantChatIntent, isPlausibleAssistantSelector } from "./assistant-intent";
+import { detectAssistantChatIntent } from "./assistant-intent";
 
 export type AssistantActionIntentDraft = {
   actionKind: AssistantActionKind;
@@ -44,6 +44,7 @@ type ResolveAssistantChatActionInput = {
 type ParsedAction = AssistantActionIntentDraft & {
   createName?: string;
   createScope?: "project" | "global";
+  requiresExistingTarget?: boolean;
 };
 
 export function resolveAssistantChatAction(input: ResolveAssistantChatActionInput): AssistantChatActionResolution {
@@ -63,7 +64,7 @@ export function resolveAssistantChatAction(input: ResolveAssistantChatActionInpu
 
   const target = resolveAssistantTarget(input.assistants, input.projectId, parsed.assistantSelector);
   if (target.kind === "missing") {
-    if (!parsed.assistantSelector || !isPlausibleAssistantSelector(parsed.assistantSelector)) {
+    if (parsed.requiresExistingTarget) {
       return { kind: "none" };
     }
     return clarifyAssistantTarget(parsed, "Which assistant should handle this?");
@@ -94,7 +95,7 @@ export function resolveAssistantChatAction(input: ResolveAssistantChatActionInpu
   return {
     kind: "execute",
     action: {
-      ...completed.action,
+      ...toAssistantActionIntentDraft(completed.action),
       assistant
     }
   };
@@ -120,7 +121,8 @@ function parseAssistantAction(sourcePrompt: string): ParsedAction | undefined {
       /^(?<assistant>.+?)\s+(?<message>(?:start|begin|continue|keep|maintain|maintaining|build|building|run|running|execute|executing|process|processing|work|working)\b.+)$/i,
       (match) => ({
         ...base("chat", sourcePrompt, match.groups?.assistant)!,
-        answerText: match.groups?.message?.trim()
+        answerText: match.groups?.message?.trim(),
+        requiresExistingTarget: true
       })
     ],
     [/^(?:hey|ask)\s+(?<assistant>.+?)\s+what\s+(?:background\s+)?jobs\s+do\s+you\s+have\s+queued\??$/i, (match) => base("list-jobs", sourcePrompt, match.groups?.assistant)],
@@ -334,4 +336,9 @@ function clarify(
 
 function normalizeSelector(input: string | undefined) {
   return input?.trim().replace(/^["'`]+|["'`.,:;!?]+$/g, "").replace(/\s+/g, " ") || undefined;
+}
+
+function toAssistantActionIntentDraft(action: ParsedAction | AssistantActionIntentDraft): AssistantActionIntentDraft {
+  const { requiresExistingTarget: _requiresExistingTarget, createName: _createName, createScope: _createScope, ...draft } = action as ParsedAction;
+  return draft;
 }

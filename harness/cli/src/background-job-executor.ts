@@ -17,7 +17,8 @@ import {
   type ProviderBrand,
   type WorkspaceRuleSource,
   type MemorySummary,
-  type ModeDefinition
+  type ModeDefinition,
+  type ComposerReasoningStrength
 } from "../../shared/protocol";
 import { executeReadyRun, runPlannerTurn } from "./pi-orchestrator";
 import { BoundedOutputBuffer, formatOutputCapExceeded } from "./bounded-output-buffer";
@@ -45,6 +46,7 @@ type BackgroundJobExecutorOptions = {
   providerBrand: ProviderBrand;
   planningModelId: string;
   executionModelId: string;
+  reasoningStrength?: ComposerReasoningStrength;
   debugEnabled: boolean;
   abortSignal?: AbortSignal;
   onRunUpdated?: (run: BackgroundJobRun) => void | Promise<void>;
@@ -157,6 +159,7 @@ async function executeAiRoutineJob(options: BackgroundJobExecutorOptions) {
       buildPlannerReadyTurnFromRun(activeRun),
       activeRun.plan,
       assistantOwned,
+      definition.reasoningStrength,
       definition.fastMode
     );
   }
@@ -289,6 +292,7 @@ async function executeAiRoutineJob(options: BackgroundJobExecutorOptions) {
     plannerTurn.plannerResult as PlannerReadyTurn,
     plannerTurn.executionPlan,
     assistantOwned,
+    definition.reasoningStrength,
     definition.fastMode
   );
 }
@@ -301,6 +305,7 @@ async function finalizeBackgroundAiRun(
   readyPlan: PlannerReadyTurn,
   executionPlan: AgentRunState["plan"],
   assistantOwned: boolean,
+  reasoningStrength: ComposerReasoningStrength | undefined,
   fastMode: boolean | undefined
 ) {
   const { repository, adapter, providerBrand, debugEnabled, abortSignal } = options;
@@ -332,6 +337,7 @@ async function finalizeBackgroundAiRun(
       providerBrand,
       readyPlan,
       debugEnabled,
+      reasoningStrength,
       fastMode,
       abortSignal,
       callbacks: createBackgroundExecutionCallbacks(options, job.projectId, options.run.id, activeRun.id),
@@ -603,6 +609,7 @@ function runBackgroundPlannerTurn(
     priorQuestions: input.priorQuestions,
     promptCacheIdentity: input.promptCacheIdentity,
     geminiCachedAttachmentContext: input.geminiCachedAttachmentContext,
+    reasoningStrength: job.definition.reasoningStrength ?? options.reasoningStrength,
     fastMode: job.definition.fastMode,
     abortSignal,
     callbacks: createBackgroundExecutionCallbacks(options, job.projectId, input.backgroundRunId, input.runId)

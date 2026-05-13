@@ -8,11 +8,13 @@ export function Toaster() {
       <For each={toastStore.toasts}>
         {(toast) => (
           <div
-            class={`pointer-events-auto rounded-2xl border p-4 shadow-2xl backdrop-blur-xl ${
-              toast.tone === "error"
-                ? "border-red-200/80 bg-red-50/92"
-                : "border-(--border) bg-(--panel)"
-            }`}
+            class="pointer-events-auto rounded-2xl border p-4 shadow-2xl backdrop-blur-xl"
+            classList={{
+              "border-red-200/80": toast.tone === "error",
+              "bg-red-50/92": toast.tone === "error",
+              "border-(--border)": toast.tone !== "error",
+              "bg-(--panel)": toast.tone !== "error"
+            }}
           >
             <div class="flex items-start justify-between gap-3">
               <div class="space-y-1">

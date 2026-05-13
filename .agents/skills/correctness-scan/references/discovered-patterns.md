@@ -153,3 +153,23 @@ Update this file when a scan finds a reusable failure pattern, missing probe, or
 - Animations, glows, ambient tints, skeletons, confetti, shortcut overlays, smooth-scroll magnets, and selection popovers need shared ownership instead of one-off component state.
 - Probe `prefers-reduced-motion`, keyboard focus, editable-target hotkey ownership, non-color status cues, no layout shift, and teardown on fast project/thread switches.
 - Add stable hooks and accessibility assertions before treating visual delight as shippable polish.
+
+## 2026-05-12
+
+### Cleanup paths derived from caller cwd
+
+- Treat any cleanup, doctor, reset, or repair command that deletes `dist`, cache, temp, or DB files as risky when the target is derived from `process.cwd()`.
+- Probe packaged launchers, shell aliases, nested project cwd, and paths with unrelated build outputs.
+- Destructive repair work should resolve against a trusted harness root or a verified workspace-owned path before deleting anything.
+
+### Hidden test shims as product surface
+
+- Hidden `sr-only` controls, duplicate headings, or fake buttons added to satisfy tests still ship to assistive technology and can mask broken visible UI.
+- Probe dense panels and refactors for hidden interactive fallbacks that tests target instead of real controls.
+- Prefer stable `data-test-*` hooks and accessible names on the real UI; tests should not rely on duplicate hidden controls unless they are genuinely part of the accessibility contract.
+
+### Raw proof artifacts need redaction budgets
+
+- Proof-rich tool details can leak secrets or prompt-like data when raw args/results are persisted and made copyable.
+- Probe tool activity, browser replay, MCP payload, provider error, and shell output capture for field-level caps plus aggregate run-level budgets.
+- Add shared sanitization before persistence, not only before rendering.

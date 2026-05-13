@@ -12,6 +12,7 @@ import {
 import { createRequestId, type BackgroundJobRun, type ClientCommand, type NotificationInboxItem } from "../../../shared/protocol";
 import { getAssistantQuestionDefaultChoices } from "../assistant-question-defaults";
 import { harnessStore, type HarnessViewState, type JobsRunFilter } from "../harness-store";
+import { activateProjectThread } from "../project-thread-navigation";
 import { submitOnEnter } from "../textarea-submit";
 import { ActionButton } from "./action-button";
 import { Popover } from "./primitives/popover";
@@ -34,27 +35,7 @@ export function activateProjectThreadFromInbox(
   threadId: string,
   sendCommand: (command: ClientCommand) => void
 ) {
-  if (state.workspace.activeProjectId !== projectId) {
-    sendCommand({
-      type: "project.activate",
-      requestId: createRequestId(),
-      payload: {
-        projectId
-      }
-    });
-  }
-
-  const project = state.workspace.projects.find((entry) => entry.id === projectId);
-  if (state.workspace.activeProjectId !== projectId || project?.activeThreadId !== threadId) {
-    sendCommand({
-      type: "thread.activate",
-      requestId: createRequestId(),
-      payload: {
-        projectId,
-        threadId
-      }
-    });
-  }
+  activateProjectThread(state, projectId, threadId, sendCommand);
 }
 
 export function openAssistantJobNotificationFromInbox(

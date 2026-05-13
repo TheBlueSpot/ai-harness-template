@@ -35,6 +35,36 @@ function addProject(repository: WorkspaceRepository) {
   return repository.addProject(projectRoot);
 }
 
+function saveTestMemory(
+  repository: WorkspaceRepository,
+  input: {
+    projectId: string;
+    title: string;
+    priority?: number;
+    pinned?: boolean;
+    updatedAt?: string;
+  }
+) {
+  const now = new Date().toISOString();
+  return repository.saveMemoryEntry({
+    id: createMemoryEntryId(),
+    projectId: input.projectId,
+    kind: "task-summary",
+    status: "active",
+    title: input.title,
+    summary: `${input.title} summary`,
+    tags: [input.title.toLowerCase()],
+    pathGlobs: ["src/**"],
+    confidence: "medium",
+    freshness: "fresh",
+    pinned: input.pinned ?? false,
+    priority: input.priority ?? 50000,
+    hitCount: 0,
+    createdAt: now,
+    updatedAt: input.updatedAt ?? now
+  })!;
+}
+
 function addLearningAssistant(repository: WorkspaceRepository) {
   const now = new Date().toISOString();
   return repository.saveAssistant({
@@ -74,6 +104,57 @@ describe("workspace repository", () => {
     repository.appendMessage(project.id, "user", "hello memory");
 
     expect(repository.loadWorkspace().projects[0]?.session.messages[0]?.content).toBe("hello memory");
+  });
+
+  test("defaults and persists memory record-run preference", () => {
+    const repository = createRepository();
+
+    expect(repository.getMemoryBankRecordRunsDefault()).toBe(true);
+    repository.setMemoryBankRecordRunsDefault(false);
+
+    expect(repository.getMemoryBankRecordRunsDefault()).toBe(false);
+  });
+
+  test("sorts and reorders memory entries by pinned state and priority", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    saveTestMemory(repository, { projectId: project.id, title: "Later", priority: 300 });
+    const middle = saveTestMemory(repository, { projectId: project.id, title: "Middle", priority: 200 });
+    saveTestMemory(repository, { projectId: project.id, title: "Pinned", priority: 900, pinned: true });
+    saveTestMemory(repository, { projectId: project.id, title: "First", priority: 100 });
+
+    expect(repository.listMemoryEntries(project.id).map((entry) => entry.title)).toEqual([
+      "Pinned",
+      "First",
+      "Middle",
+      "Later"
+    ]);
+
+    const reordered = repository.reorderMemoryEntry(project.id, middle.id, "up");
+    expect(reordered.map((entry) => entry.title)).toEqual(["Pinned", "Middle", "First", "Later"]);
+  });
+
+  test("renumbers equal priority memories before reordering", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    const first = saveTestMemory(repository, {
+      projectId: project.id,
+      title: "First",
+      priority: 50000,
+      updatedAt: "2026-01-02T00:00:00.000Z"
+    });
+    const second = saveTestMemory(repository, {
+      projectId: project.id,
+      title: "Second",
+      priority: 50000,
+      updatedAt: "2026-01-01T00:00:00.000Z"
+    });
+
+    const reordered = repository.reorderMemoryEntry(project.id, second.id, "up");
+
+    expect(reordered[0]?.id).toBe(second.id);
+    expect(reordered[1]?.id).toBe(first.id);
+    expect(new Set(reordered.map((entry) => entry.priority)).size).toBe(reordered.length);
   });
 
   test("bulk archives old inactive threads while keeping active and final threads", () => {
@@ -485,6 +566,7 @@ describe("workspace repository", () => {
       agentId: "pi",
       modeId: undefined,
       executionModelId: undefined,
+      reasoningStrength: "extra-high",
       runState: "active",
       bootstrapState: "pending",
       clonedFromAssistantId: undefined,
@@ -580,6 +662,7 @@ describe("workspace repository", () => {
 
     const assistants = repository.loadAssistantsState();
     expect(assistants.assistants[0]?.id).toBe(assistantId);
+    expect(assistants.assistants[0]?.reasoningStrength).toBe("extra-high");
     expect(assistants.threads[0]?.messages[0]?.content).toBe("Teach me balance.");
     expect(assistants.todos[0]?.title).toContain("karate stance");
     expect(assistants.questions[0]?.prompt).toContain("kata");
@@ -909,6 +992,48 @@ describe("workspace repository", () => {
     expect(repository.getAssistantLearnings(otherAssistant.id).map((entry) => entry.summary)).toEqual(["Keep other learning."]);
   });
 
+  test("reorders assistant learnings by assistant scope", () => {
+    const repository = createRepository();
+    const assistant = addLearningAssistant(repository);
+    const otherAssistant = addLearningAssistant(repository);
+    const now = new Date().toISOString();
+    const first = repository.saveAssistantLearning({
+      id: createAssistantLearningId(),
+      assistantId: assistant.id,
+      summary: "First learning.",
+      source: "test",
+      confidence: "medium",
+      createdAt: now
+    });
+    const second = repository.saveAssistantLearning({
+      id: createAssistantLearningId(),
+      assistantId: assistant.id,
+      summary: "Second learning.",
+      source: "test",
+      confidence: "medium",
+      createdAt: now
+    });
+    const other = repository.saveAssistantLearning({
+      id: createAssistantLearningId(),
+      assistantId: otherAssistant.id,
+      summary: "Other learning.",
+      source: "test",
+      confidence: "medium",
+      createdAt: now
+    });
+    if (!first || !second || !other) {
+      throw new Error("Expected assistant learnings to save");
+    }
+
+    repository.reorderAssistantLearnings(assistant.id, [second.id, first.id, other.id]);
+
+    expect(repository.getAssistantLearnings(assistant.id).map((entry) => entry.summary)).toEqual([
+      "Second learning.",
+      "First learning."
+    ]);
+    expect(repository.getAssistantLearnings(otherAssistant.id).map((entry) => entry.summary)).toEqual(["Other learning."]);
+  });
+
   test("drops completed assistant todos after retention window", () => {
     const repository = createRepository();
     const assistant = addLearningAssistant(repository);
@@ -1092,6 +1217,7 @@ describe("workspace repository", () => {
       confidence: "medium",
       freshness: "fresh",
       pinned: false,
+      priority: 50000,
       hitCount: 0,
       createdAt: now,
       updatedAt: now
@@ -2167,6 +2293,7 @@ describe("workspace repository", () => {
       confidence: "high",
       freshness: "fresh",
       pinned: false,
+      priority: 50000,
       hitCount: 0,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()

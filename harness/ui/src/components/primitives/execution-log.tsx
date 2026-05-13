@@ -5,7 +5,6 @@ import { cn } from "../../lib/utils";
 import { MarkdownContent } from "../markdown-content";
 import { Button } from "./button";
 import { Dialog } from "./dialog";
-import { Tooltip } from "./tooltip";
 import { VirtualList } from "./virtual-list";
 
 const defaultSummaryLength = 250;
@@ -79,14 +78,10 @@ export function ExecutionLog(props: ExecutionLogProps) {
                       {entry.level} | {formatShortTimestamp(entry.createdAt)}
                     </div>
                   </div>
-                  <Tooltip content="Show execution log details">
-                    <span class="inline-flex">
-                      <Button variant="secondary" aria-label={`Show details for ${entry.message}`} onClick={() => openEntryDetails(entry.id)}>
-                        <Logs class="h-4 w-4" />
-                        Show details
-                      </Button>
-                    </span>
-                  </Tooltip>
+                  <Button tooltip="Show execution log details" variant="secondary" aria-label={`Show details for ${entry.message}`} onClick={() => openEntryDetails(entry.id)}>
+                    <Logs class="h-4 w-4" />
+                    Show details
+                  </Button>
                 </div>
               </article>
             );

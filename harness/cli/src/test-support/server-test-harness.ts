@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test as bunTest } from "bun:te
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { AgentRuntimeCapability, Assistant, BackgroundJob, ProviderBrand } from "../../../shared/protocol";
+import { createMemoryEntryId, type AgentRuntimeCapability, type Assistant, type BackgroundJob, type ProviderBrand } from "../../../shared/protocol";
 import type { PiAgentAdapter, PiAgentExecutionController, PiAgentPromptRequest, PiAgentPromptResult, PiApiKeyProvider } from "../pi-agent-adapter";
 import {
   createSampleDocxBuffer,
@@ -1089,6 +1089,8 @@ export function registerServerStartupTests(options: ServerTestShardOptions = {})
         expect(ready.payload.preferences.planExecutionModeDefault).toBe("countdown");
         expect(ready.payload.preferences.planExecutionDelaySecondsDefault).toBe(10);
         expect(ready.payload.preferences.correctnessIterationModeDefault).toBe("ask-before-iterate");
+        expect(ready.payload.preferences.memoryBankEnabledDefault).toBe(true);
+        expect(ready.payload.preferences.memoryBankRecordRunsDefault).toBe(true);
         expect(ready.payload.preferences.attachmentsEnabled).toBe(EXPECT_ATTACHMENTS_ENABLED);
         expect(ready.payload.setup.launchMode).toBe("source");
         expect(ready.payload.setup.checks.some((check: { id: string }) => check.id === "project-selected")).toBe(true);
@@ -1589,7 +1591,9 @@ export function registerServerPreferencesAndModesTests(options: ServerTestShardO
               planExecutionModeDefault: "approve",
               planExecutionDelaySecondsDefault: 15,
               correctnessIterationModeDefault: "auto-once",
-              backgroundJobApprovalPolicyDefault: "ask-risky"
+              backgroundJobApprovalPolicyDefault: "ask-risky",
+              memoryBankEnabledDefault: false,
+              memoryBankRecordRunsDefault: false
             }
           })
         );
@@ -1611,10 +1615,160 @@ export function registerServerPreferencesAndModesTests(options: ServerTestShardO
         expect(saved.payload.planExecutionDelaySecondsDefault).toBe(15);
         expect(saved.payload.correctnessIterationModeDefault).toBe("auto-once");
         expect(saved.payload.backgroundJobApprovalPolicyDefault).toBe("ask-risky");
+        expect(saved.payload.memoryBankEnabledDefault).toBe(false);
+        expect(saved.payload.memoryBankRecordRunsDefault).toBe(false);
         expect(saved.payload.setup.checks.some((check: { id: string }) => check.id === "provider-auth")).toBe(true);
         expect(repository.getStoredOpenAiApiKey()).toBe("sk-local-123");
         expect(repository.getStoredGoogleApiKey()).toBe("AIza-local-456");
         expect(repository.getAutoCompactContextThresholdPercentDefault()).toBe(55);
+        expect(repository.getMemoryBankEnabledDefault()).toBe(false);
+        expect(repository.getMemoryBankRecordRunsDefault()).toBe(false);
+        socket.close();
+      });
+
+      serverTest("tests provider connection with draft key without persisting it", async () => {
+        const originalFetch = globalThis.fetch;
+        globalThis.fetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+          expect((init?.headers as Record<string, string>).Authorization).toBe("Bearer sk-draft-only");
+          return new Response(JSON.stringify({ data: [{ id: "model-1" }, { id: "model-2" }] }), { status: 200 });
+        }) as unknown as typeof fetch;
+
+        try {
+          const socket = createSocket(port);
+          await waitForEvent(socket, "connection.ready");
+          const testedPromise = waitForEvent(socket, "preferences.providerConnectionTested");
+
+          socket.send(
+            JSON.stringify({
+              type: "preferences.testProviderConnection",
+              requestId: "req-test-openai",
+              payload: {
+                provider: "openai",
+                apiKey: "sk-draft-only"
+              }
+            })
+          );
+
+          const tested = await testedPromise;
+          expect(tested.payload.status).toBe("ready");
+          expect(tested.payload.modelCount).toBe(2);
+          expect(repository.getStoredOpenAiApiKey()).toBeUndefined();
+          socket.close();
+        } finally {
+          globalThis.fetch = originalFetch;
+        }
+      });
+
+      serverTest("provider connection test fails when no key is available", async () => {
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const testedPromise = waitForEvent(socket, "preferences.providerConnectionTested");
+
+        socket.send(
+          JSON.stringify({
+            type: "preferences.testProviderConnection",
+            requestId: "req-test-missing-key",
+            payload: {
+              provider: "anthropic"
+            }
+          })
+        );
+
+        const tested = await testedPromise;
+        expect(tested.payload.provider).toBe("anthropic");
+        expect(tested.payload.status).toBe("failed");
+        expect(tested.payload.message).toBe("No API key available.");
+        socket.close();
+      });
+
+      serverTest("provider connection test sanitizes provider failures", async () => {
+        const originalFetch = globalThis.fetch;
+        repository.setStoredGoogleApiKey("AIza-secret");
+        globalThis.fetch = (async () =>
+          new Response(JSON.stringify({ error: { message: "Invalid API key AIza-secret" } }), {
+            status: 401
+          })) as unknown as typeof fetch;
+
+        try {
+          const socket = createSocket(port);
+          await waitForEvent(socket, "connection.ready");
+          const testedPromise = waitForEvent(socket, "preferences.providerConnectionTested");
+
+          socket.send(
+            JSON.stringify({
+              type: "preferences.testProviderConnection",
+              requestId: "req-test-google-fail",
+              payload: {
+                provider: "google"
+              }
+            })
+          );
+
+          const tested = await testedPromise;
+          expect(tested.payload.status).toBe("failed");
+          expect(tested.payload.message).toContain("[redacted]");
+          expect(tested.payload.message).not.toContain("AIza-secret");
+          socket.close();
+        } finally {
+          globalThis.fetch = originalFetch;
+        }
+      });
+
+      serverTest("reorders memory entries through websocket command", async () => {
+        const project = repository.addProject(projectRoot);
+        const now = new Date().toISOString();
+        const first = repository.saveMemoryEntry({
+          id: createMemoryEntryId(),
+          projectId: project.id,
+          kind: "task-summary",
+          status: "active",
+          title: "First",
+          summary: "First summary",
+          tags: [],
+          pathGlobs: [],
+          confidence: "medium",
+          freshness: "fresh",
+          pinned: false,
+          priority: 100,
+          hitCount: 0,
+          createdAt: now,
+          updatedAt: now
+        })!;
+        const second = repository.saveMemoryEntry({
+          id: createMemoryEntryId(),
+          projectId: project.id,
+          kind: "task-summary",
+          status: "active",
+          title: "Second",
+          summary: "Second summary",
+          tags: [],
+          pathGlobs: [],
+          confidence: "medium",
+          freshness: "fresh",
+          pinned: false,
+          priority: 200,
+          hitCount: 0,
+          createdAt: now,
+          updatedAt: now
+        })!;
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const reorderedPromise = waitForEvent(socket, "memory.reordered");
+
+        socket.send(
+          JSON.stringify({
+            type: "memory.reorder",
+            requestId: "req-memory-reorder",
+            payload: {
+              projectId: project.id,
+              memoryEntryId: second.id,
+              direction: "up"
+            }
+          })
+        );
+
+        const reordered = await reorderedPromise;
+        expect(reordered.payload.entries.map((entry: { id: string }) => entry.id)).toEqual([second.id, first.id]);
         socket.close();
       });
 
@@ -2172,30 +2326,13 @@ export function registerServerPreferencesAndModesTests(options: ServerTestShardO
         socket.close();
       }, 60000);
 
-      serverTest("chat.send asks before converting ambiguous assistant-like prompts", async () => {
+      serverTest("chat.send runs unknown assistant-like prompts as normal project chat", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot);
         const projectId = opened.payload.project.id;
         const threadId = opened.payload.project.activeThreadId;
-        const questionRunPromise = waitForEvent(
-          socket,
-          "run.updated",
-          (event) =>
-            event.payload.run.status === "awaiting-user-input" &&
-            event.payload.run.questions.some((question: { prompt: string }) =>
-              question.prompt.includes("create a project assistant named \"Catalog builder\"")
-            ),
-          10000
-        );
-        const questionMessagePromise = waitForEvent(
-          socket,
-          "thread.message-appended",
-          (event) =>
-            event.payload.message.role === "assistant" &&
-            event.payload.message.content.includes("create a project assistant named \"Catalog builder\""),
-          10000
-        );
+        const readyPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "ready", 10000);
 
         socket.send(
           JSON.stringify(
@@ -2208,11 +2345,9 @@ export function registerServerPreferencesAndModesTests(options: ServerTestShardO
           )
         );
 
-        const questionRun = await questionRunPromise;
-        await questionMessagePromise;
-
-        expect(questionRun.payload.run.questions[0]?.intent?.type).toBe("assistant-create-intent");
-        expect(adapter.calls).toHaveLength(0);
+        const ready = await readyPromise;
+        expect(ready.payload.run.questions).toHaveLength(0);
+        expect(repository.loadAssistantsState().assistants.some((assistant) => assistant.name === "Catalog builder")).toBe(false);
         socket.close();
       }, 60000);
 
@@ -2253,119 +2388,6 @@ ec32e89b-08a3-41a5-80bf-6823701343f0
         expect(ready.payload.run.questions).toHaveLength(0);
         expect(ready.payload.run.plan?.mode?.id).toBe("implement");
         expect(ready.payload.run.plan?.gating.mode).toBe("immediate");
-        socket.close();
-      }, 60000);
-
-      serverTest("ambiguous assistant question answer can create assistant", async () => {
-        const socket = createSocket(port);
-        await waitForEvent(socket, "connection.ready");
-        const opened = await openProject(socket, projectRoot);
-        const projectId = opened.payload.project.id;
-        const threadId = opened.payload.project.activeThreadId;
-        const questionRunPromise = waitForEvent(
-          socket,
-          "run.updated",
-          (event) => event.payload.run.status === "awaiting-user-input",
-          10000
-        );
-
-        socket.send(
-          JSON.stringify(
-            createChatSendCommand({
-              requestId: "req-ambiguous-create-start",
-              projectId,
-              threadId,
-              content: "Catalog builder start executing todos"
-            })
-          )
-        );
-
-        const questionRun = await questionRunPromise;
-        const question = questionRun.payload.run.questions[0];
-        const cardPromise = waitForEvent(
-          socket,
-          "assistant.created-card",
-          (event) => event.payload.assistant.name === "Catalog builder",
-          10000
-        );
-        const completedRunPromise = waitForEvent(
-          socket,
-          "run.updated",
-          (event) => event.payload.run.id === questionRun.payload.run.id && event.payload.run.status === "completed",
-          10000
-        );
-
-        socket.send(
-          JSON.stringify({
-            type: "planning.answer",
-            requestId: "req-ambiguous-create-answer",
-            payload: {
-              projectId,
-              threadId,
-              runId: questionRun.payload.run.id,
-              questionId: question.id,
-              content: question.choices[0].answerText
-            }
-          })
-        );
-
-        const card = await cardPromise;
-        await completedRunPromise;
-        expect(card.payload.assistant.name).toBe("Catalog builder");
-        expect(repository.loadAssistantsState().assistants.filter((assistant) => assistant.name === "Catalog builder")).toHaveLength(1);
-        socket.close();
-      }, 60000);
-
-      serverTest("ambiguous assistant question answer can run once", async () => {
-        const socket = createSocket(port);
-        await waitForEvent(socket, "connection.ready");
-        const opened = await openProject(socket, projectRoot);
-        const projectId = opened.payload.project.id;
-        const threadId = opened.payload.project.activeThreadId;
-        const questionRunPromise = waitForEvent(
-          socket,
-          "run.updated",
-          (event) => event.payload.run.status === "awaiting-user-input",
-          10000
-        );
-
-        socket.send(
-          JSON.stringify(
-            createChatSendCommand({
-              requestId: "req-ambiguous-run-start",
-              projectId,
-              threadId,
-              content: "Catalog builder start executing todos"
-            })
-          )
-        );
-
-        const questionRun = await questionRunPromise;
-        const question = questionRun.payload.run.questions[0];
-        const readyPromise = waitForEvent(
-          socket,
-          "run.updated",
-          (event) => event.payload.run.id === questionRun.payload.run.id && event.payload.run.status === "ready",
-          10000
-        );
-
-        socket.send(
-          JSON.stringify({
-            type: "planning.answer",
-            requestId: "req-ambiguous-run-answer",
-            payload: {
-              projectId,
-              threadId,
-              runId: questionRun.payload.run.id,
-              questionId: question.id,
-              content: question.choices[1].answerText
-            }
-          })
-        );
-
-        await readyPromise;
-        expect(adapter.calls.some((call) => call.kind === "planner")).toBe(true);
-        expect(repository.loadAssistantsState().assistants.some((assistant) => assistant.name === "Catalog builder")).toBe(false);
         socket.close();
       }, 60000);
 

@@ -70,6 +70,13 @@ ec32e89b-08a3-41a5-80bf-6823701343f0
     expect(result).toEqual({ kind: "none" });
   });
 
+  test("ignores bare named assistant imperative when assistant does not exist", () => {
+    const result = resolve("Catalog builder start executing todos", {
+      assistants: []
+    });
+    expect(result).toEqual({ kind: "none" });
+  });
+
   test("asks for schedule when creating a job without schedule", () => {
     const result = resolve("schedule Release watcher to check docs");
     expect(result.kind).toBe("clarify");

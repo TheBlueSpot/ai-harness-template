@@ -416,10 +416,10 @@ function ResultRow(props: {
 }) {
   return (
     <Button
+      tooltip={props.result.source === "workspace" && props.result.disabled ? "Project is already in workspace" : props.result.actionLabel}
       variant={props.selected ? "default" : "secondary"}
-      class={`h-auto w-full justify-start rounded-2xl px-3 py-3 text-left ${
-        props.selected ? "" : "bg-white/60"
-      }`}
+      class="h-auto w-full justify-start rounded-2xl px-3 py-3 text-left"
+      classList={{ "bg-white/60": !props.selected }}
       aria-label={`${props.result.actionLabel} ${props.result.rootPath}`}
       disabled={props.result.source === "workspace" && props.result.disabled}
       onMouseEnter={props.onHover}

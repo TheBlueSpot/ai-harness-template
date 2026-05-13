@@ -75,13 +75,13 @@ export function extractRunMemories(
     cwd?: string;
   }
 ) {
-  const entries = buildCandidateEntries(input);
+  const entries = buildCandidateEntries(repository, input);
   for (const entry of dedupeEntries(repository, input.projectId, entries)) {
     repository.saveMemoryEntry(entry);
   }
 }
 
-function buildCandidateEntries(input: {
+function buildCandidateEntries(repository: WorkspaceRepository, input: {
   projectId: ProjectId;
   threadId: ThreadId;
   run: AgentRunState;
@@ -93,6 +93,12 @@ function buildCandidateEntries(input: {
   const sourceCommitSha = input.run.experiment?.headCommitSha ?? input.run.experiment?.baseCommitSha;
   const pathGlobs = collectPathGlobs(input.run, input.cwd);
   const entries: MemoryEntry[] = [];
+  let nextPriority = repository.getNextMemoryPriority(input.projectId);
+  const assignPriority = () => {
+    const priority = nextPriority;
+    nextPriority = Math.min(100000, nextPriority + 100);
+    return priority;
+  };
 
   if (input.run.summary || input.finalAssistantMessage) {
     entries.push({
@@ -110,6 +116,7 @@ function buildCandidateEntries(input: {
       confidence: input.run.status === "completed" ? "high" : "medium",
       freshness: "fresh",
       pinned: false,
+      priority: assignPriority(),
       hitCount: 0,
       sourceCommitSha,
       createdAt: now,
@@ -133,6 +140,7 @@ function buildCandidateEntries(input: {
       confidence: "high",
       freshness: "fresh",
       pinned: false,
+      priority: assignPriority(),
       hitCount: 0,
       sourceCommitSha,
       createdAt: now,
@@ -156,6 +164,7 @@ function buildCandidateEntries(input: {
       confidence: "medium",
       freshness: "fresh",
       pinned: false,
+      priority: assignPriority(),
       hitCount: 0,
       sourceCommitSha,
       createdAt: now,
@@ -179,6 +188,7 @@ function buildCandidateEntries(input: {
       confidence: "medium",
       freshness: "fresh",
       pinned: false,
+      priority: assignPriority(),
       hitCount: 0,
       sourceCommitSha,
       createdAt: now,
@@ -210,6 +220,7 @@ function dedupeEntries(repository: WorkspaceRepository, projectId: ProjectId, ca
       tags: uniqueStrings([...duplicate.tags, ...candidate.tags]),
       confidence: candidate.confidence,
       freshness: "fresh" as const,
+      priority: duplicate.priority,
       sourceCommitSha: candidate.sourceCommitSha,
       updatedAt: candidate.updatedAt
     };
@@ -225,7 +236,8 @@ function scoreEntry(entry: MemoryEntry, queryText: string) {
   const freshnessBonus = entry.freshness === "fresh" ? 4 : entry.freshness === "aging" ? 2 : 0;
   const pinBonus = entry.pinned ? 6 : 0;
   const confidenceBonus = entry.confidence === "high" ? 4 : entry.confidence === "medium" ? 2 : 0;
-  return lexical + freshnessBonus + pinBonus + confidenceBonus + Math.min(entry.hitCount, 10);
+  const priorityBonus = Math.max(0, 1000 - Math.min(entry.priority, 1000));
+  return lexical + freshnessBonus + pinBonus + confidenceBonus + Math.min(entry.hitCount, 10) + priorityBonus;
 }
 
 function toMemorySummary(entry: MemoryEntry): MemorySummary {

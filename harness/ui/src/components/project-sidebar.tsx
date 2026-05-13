@@ -17,6 +17,7 @@ import {
   type ProjectSidebarThreadSort
 } from "../harness-store";
 import { truncateMiddle } from "../lib/utils";
+import { activateProjectThread } from "../project-thread-navigation";
 import { useHarnessStore } from "../store-providers";
 import { ActionButton } from "./action-button";
 import { Input } from "./primitives/input";
@@ -32,6 +33,8 @@ import {
   ArrowUp,
   ArrowUpDown,
   Check,
+  ChevronDown,
+  ChevronRight,
   CircleHelp,
   Edit3,
   Folder,
@@ -56,37 +59,41 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
     const preferences = state.projectSidebarPreferences;
     const manualOrder = new Map(preferences.manualProjectOrder.map((projectId, index) => [projectId, index]));
     const collapsedProjectIds = new Set(preferences.collapsedProjectIds);
-    const cards = state.workspace.projects.map((project, workspaceIndex) => ({
-      id: project.id,
-      name: project.name,
-      rootPath: project.rootPath,
-      workspaceIndex,
-      isStreaming: project.session.isStreaming,
-      hasWorkingThread: project.threads.some((thread) => thread.badgeState === "planning" || thread.badgeState === "executing"),
-      hasCliSession: Boolean(project.activeCliSession),
-      isActive: project.id === state.workspace.activeProjectId,
-      isCollapsed: collapsedProjectIds.has(project.id),
-      activeThreadId: project.activeThreadId,
-      threadCount: project.threads.filter((thread) => thread.kind === "user" && thread.status === "active").length,
-      updatedAt: project.threads.reduce((latest, thread) => maxIso(latest, thread.updatedAt), project.session.messages.at(-1)?.createdAt),
-      createdAt: getEarliestIso(project.threads.map((thread) => thread.createdAt ?? thread.updatedAt)),
-      lastUserMessageAt: getLatestIso(project.threads.map((thread) => thread.lastUserMessageAt)),
-      threads: sortThreads(
-        project.threads
-          .filter((thread) => thread.kind === "user" && thread.status === "active")
-          .map((thread) => ({
-            id: thread.id,
-            title: thread.title,
-            lastMessagePreview: thread.lastMessagePreview,
-            badgeState: thread.badgeState,
-            messageCount: thread.messageCount,
-            createdAt: thread.createdAt ?? thread.updatedAt,
-            updatedAt: thread.updatedAt,
-            lastUserMessageAt: thread.lastUserMessageAt
-          })),
+    const cards = state.workspace.projects.map((project, workspaceIndex) => {
+      const userThreads = project.threads.filter((thread) => thread.kind === "user" && thread.status === "active");
+      const isCollapsed = collapsedProjectIds.has(project.id);
+      const sortedThreads = sortThreads(
+        userThreads.map((thread) => ({
+          id: thread.id,
+          title: thread.title,
+          lastMessagePreview: thread.lastMessagePreview,
+          badgeState: thread.badgeState,
+          messageCount: thread.messageCount,
+          createdAt: thread.createdAt ?? thread.updatedAt,
+          updatedAt: thread.updatedAt,
+          lastUserMessageAt: thread.lastUserMessageAt
+        })),
         preferences.threadSort
-      )
-    }));
+      );
+
+      return {
+        id: project.id,
+        name: project.name,
+        rootPath: project.rootPath,
+        workspaceIndex,
+        isStreaming: project.session.isStreaming,
+        hasWorkingThread: project.threads.some((thread) => thread.badgeState === "planning" || thread.badgeState === "executing"),
+        hasCliSession: Boolean(project.activeCliSession),
+        isActive: project.id === state.workspace.activeProjectId,
+        isCollapsed,
+        activeThreadId: project.activeThreadId,
+        threadCount: userThreads.length,
+        updatedAt: project.threads.reduce((latest, thread) => maxIso(latest, thread.updatedAt), project.session.messages.at(-1)?.createdAt),
+        createdAt: getEarliestIso(project.threads.map((thread) => thread.createdAt ?? thread.updatedAt)),
+        lastUserMessageAt: getLatestIso(project.threads.map((thread) => thread.lastUserMessageAt)),
+        threads: isCollapsed ? [] : sortedThreads
+      };
+    });
     return [...cards].sort((left, right) => compareProjects(left, right, preferences.projectSort, manualOrder));
   });
   const projectGroups = createMemo(() => groupProjectCards(projectCards(), state.projectSidebarPreferences.grouping));
@@ -113,11 +120,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
   }
 
   function handleActivateThread(projectId: string, threadId: string) {
-    sendCommand({
-      type: "thread.activate",
-      requestId: createRequestId(),
-      payload: { projectId, threadId }
-    });
+    activateProjectThread(state, projectId, threadId, sendCommand);
     props.onNavigate?.();
   }
 
@@ -225,11 +228,11 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
   }
 
   function activeSidebarRowKey() {
-    const project = projectCards().find((card) => card.isActive);
-    if (!project) {
+    const row = sidebarRows().find((candidate) => candidate.kind === "project" && candidate.project.isActive);
+    if (!row) {
       return undefined;
     }
-    return `project:${project.id}`;
+    return row.key;
   }
 
   createEffect(() => {
@@ -245,34 +248,33 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
   function ProjectRow(rowProps: { project: ProjectCard }) {
     const project = rowProps.project;
     const isActiveProject = () => project.isActive;
-    let collapsed = project.isCollapsed;
-    let collapseButton: HTMLButtonElement | undefined;
-    let collapseIcon: HTMLSpanElement | undefined;
-    let threadList: HTMLDivElement | undefined;
+    const [isCollapsed, setCollapsed] = createSignal(project.isCollapsed);
+    let collapseButtonElement: HTMLButtonElement | undefined;
+    let threadListElement: HTMLDivElement | undefined;
     const removeDisabledReason = () =>
       project.hasWorkingThread ? "Project is streaming" : project.hasCliSession ? "Live CLI session attached" : undefined;
     const collapseLabel = (isCollapsed: boolean) => `${isCollapsed ? "Expand" : "Collapse"} threads in ${project.name}`;
-
-    function applyCollapsed(nextCollapsed: boolean) {
-      collapsed = nextCollapsed;
-      if (threadList) {
-        threadList.hidden = nextCollapsed;
+    const applyCollapsedState = (nextCollapsed: boolean) => {
+      setCollapsed(nextCollapsed);
+      collapseButtonElement?.setAttribute("aria-label", collapseLabel(nextCollapsed));
+      collapseButtonElement?.setAttribute("aria-expanded", String(!nextCollapsed));
+      if (threadListElement) {
+        threadListElement.hidden = nextCollapsed;
       }
-      collapseButton?.setAttribute("aria-label", collapseLabel(nextCollapsed));
-      if (collapseIcon) {
-        collapseIcon.textContent = nextCollapsed ? ">" : "v";
-      }
-    }
+    };
 
-    createEffect(() => {
-      applyCollapsed(rowProps.project.isCollapsed);
-    });
     const renderCard = (sortable: ProjectCardSortableState) => (
       <section
-        class={`rounded-[1.4rem] border p-3 transition ${sortable.isDragging ? "opacity-80 shadow-lg" : ""} ${isActiveProject()
-          ? "border-(--accent) bg-[linear-gradient(135deg,rgba(15,118,110,0.18),rgba(255,255,255,0.9))] shadow-md"
-          : "border-(--border) bg-white/55"
-          }`}
+        class="rounded-[1.4rem] border p-3 transition"
+        classList={{
+          "opacity-80": sortable.isDragging,
+          "shadow-lg": sortable.isDragging,
+          "border-(--accent)": isActiveProject(),
+          "bg-[linear-gradient(135deg,rgba(15,118,110,0.18),rgba(255,255,255,0.9))]": isActiveProject(),
+          "shadow-md": isActiveProject(),
+          "border-(--border)": !isActiveProject(),
+          "bg-white/55": !isActiveProject()
+        }}
         ref={sortable.ref}
         style={sortable.style}
       >
@@ -288,24 +290,24 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
             </button>
           </Show>
           <Show when={project.threadCount > 0}>
-            <Tooltip content="Toggle thread list">
-              <Button
-                ref={collapseButton}
-                variant="ghost"
-                size="icon"
-                class="mt-1 h-6 w-6 shrink-0 rounded-lg"
-                aria-label={collapseLabel(project.isCollapsed)}
-                onClick={() => {
-                  const nextCollapsed = !collapsed;
-                  applyCollapsed(nextCollapsed);
-                  setProjectCollapsed(project.id, nextCollapsed);
-                }}
-              >
-                <span ref={collapseIcon} class="text-[0.8rem] leading-none">
-                  {project.isCollapsed ? ">" : "v"}
-                </span>
-              </Button>
-            </Tooltip>
+            <Button
+              tooltip={isCollapsed() ? "Expand thread list" : "Collapse thread list"}
+              variant="ghost"
+              size="icon"
+              class="mt-1 h-6 w-6 shrink-0 rounded-lg text-(--muted)"
+              ref={collapseButtonElement}
+              aria-label={collapseLabel(isCollapsed())}
+              aria-expanded={!isCollapsed()}
+              onClick={() => {
+                const nextCollapsed = !isCollapsed();
+                applyCollapsedState(nextCollapsed);
+                setProjectCollapsed(project.id, nextCollapsed);
+              }}
+            >
+              <Show when={isCollapsed()} fallback={<ChevronDown class="h-3.5 w-3.5" />}>
+                <ChevronRight class="h-3.5 w-3.5" />
+              </Show>
+            </Button>
           </Show>
           <ActionButton
             tooltip={isActiveProject() ? `${project.name} is active` : `Switch to ${project.name}`}
@@ -338,7 +340,6 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
             class="h-6 w-6 rounded-lg"
             ariaLabel={`Create a new thread in ${project.name}`}
             onClick={() => {
-              applyCollapsed(false);
               handleCreateThread(project.id);
             }}
           />
@@ -379,13 +380,13 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
             />
           </Show>
         </div>
-        <Show when={project.threads.length > 0}>
-          <div ref={threadList} hidden={project.isCollapsed} class="mt-2 flex flex-col gap-2">
+        {project.threads.length > 0 ? (
+          <div ref={threadListElement} class="mt-2 flex flex-col gap-2" hidden={isCollapsed()}>
             {project.threads.map((thread) => (
               <ProjectThreadRow project={project} thread={thread} />
             ))}
           </div>
-        </Show>
+        ) : null}
       </section>
     );
 
@@ -399,7 +400,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
   function ProjectThreadRow(props: { project: ProjectCard; thread: ProjectThreadCard }) {
     const project = props.project;
     const thread = props.thread;
-    const isActiveThread = () => project.activeThreadId === thread.id;
+    const isActiveThread = () => project.isActive && project.activeThreadId === thread.id;
     const isEditing = () => editingThreadId() === thread.id;
     let deleteArmed = false;
     let deleteButton: HTMLButtonElement | undefined;
@@ -436,7 +437,15 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
     onCleanup(clearDeleteArmed);
 
     return (
-      <div class={`rounded-2xl border px-3 py-2 ${isActiveThread() ? "border-teal-500/50 bg-white/80" : "border-(--border) bg-white/60"}`}>
+      <div
+        class="rounded-2xl border px-3 py-2"
+        classList={{
+          "border-teal-500/50": isActiveThread(),
+          "bg-white/80": isActiveThread(),
+          "border-(--border)": !isActiveThread(),
+          "bg-white/60": !isActiveThread()
+        }}
+      >
         <div class="flex min-w-0 items-start justify-between gap-1.5">
           <button
             class="flex min-w-0 flex-1 cursor-pointer flex-col text-left disabled:cursor-not-allowed"
@@ -558,36 +567,34 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
                 />
               }
             >
-              <Tooltip content="Sort and group projects">
-                <Button
-                  aria-label="Sort projects"
-                  variant="ghost"
-                  size="sm"
-                  onMouseDown={(event) => {
-                    event.preventDefault();
-                    setSortMenuOpen((current) => !current);
-                  }}
-                  onClick={(event) => {
-                    if (event.detail === 0) {
-                      setSortMenuOpen((current) => !current);
-                    }
-                  }}
-                >
-                  <ArrowUpDown class="h-3.5 w-3.5" />
-                </Button>
-              </Tooltip>
-            </Popover>
-            <Tooltip content="Clean up old threads">
               <Button
-                aria-label="Clean up old threads"
+                tooltip="Sort and group projects"
+                aria-label="Sort projects"
                 variant="ghost"
-                size="icon"
-                onMouseDown={() => setCleanupDialogOpen(true)}
-                onClick={() => setCleanupDialogOpen(true)}
+                size="sm"
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  setSortMenuOpen((current) => !current);
+                }}
+                onClick={(event) => {
+                  if (event.detail === 0) {
+                    setSortMenuOpen((current) => !current);
+                  }
+                }}
               >
-                <Archive class="h-3.5 w-3.5" />
+                <ArrowUpDown class="h-3.5 w-3.5" />
               </Button>
-            </Tooltip>
+            </Popover>
+            <Button
+              tooltip="Clean up old threads"
+              aria-label="Clean up old threads"
+              variant="ghost"
+              size="icon"
+              onMouseDown={() => setCleanupDialogOpen(true)}
+              onClick={() => setCleanupDialogOpen(true)}
+            >
+              <Archive class="h-3.5 w-3.5" />
+            </Button>
             <ActionButton
               tooltip={`Open project switcher (${formatForDisplay("Mod+Space")} or ${formatForDisplay("Mod+K")})`}
               icon={<Plus class="h-3.5 w-3.5" />}
@@ -885,7 +892,7 @@ function flattenProjectSidebarRows(groups: ProjectGroup[]) {
       rows.push({ kind: "group", key: `group:${group.key}`, label: group.label });
     }
     for (const project of group.projects) {
-      rows.push({ kind: "project", key: `project:${project.id}`, project });
+      rows.push({ kind: "project", key: `project:${project.id}:${project.isCollapsed ? "collapsed" : "expanded"}`, project });
     }
   }
   return rows;

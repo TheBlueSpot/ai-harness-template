@@ -353,6 +353,56 @@ createUiTest("AssistantsPanel", () => {
     ]);
   });
 
+  it("sends reorder commands for assistant todos and learnings", () => {
+    const commands: unknown[] = [];
+    const assistantId = "assistant-reorder-memory";
+    const now = new Date(2026, 3, 28, 10, 4).toISOString();
+    seedAssistantDetailState({
+      assistantId,
+      projectId: "project-reorder-memory",
+      selectedTab: "todos",
+      todos: [
+        { id: "todo-first", assistantId, title: "First task", state: "pending", sortOrder: 0, createdAt: now, updatedAt: now },
+        { id: "todo-second", assistantId, title: "Second task", state: "pending", sortOrder: 1, createdAt: now, updatedAt: now }
+      ]
+    });
+    captureDispatchedCommands(commands);
+
+    render(() => <AssistantsPanel variant="detail" />);
+    fireEvent.click(screen.getByRole("button", { name: "Move Second task up" }));
+
+    cleanup();
+    seedAssistantDetailState({
+      assistantId,
+      projectId: "project-reorder-memory",
+      selectedTab: "learnings",
+      learnings: [
+        { id: "learning-first", assistantId, summary: "First learning", source: "test", confidence: "medium", sortOrder: 0, createdAt: now },
+        { id: "learning-second", assistantId, summary: "Second learning", source: "test", confidence: "medium", sortOrder: 1, createdAt: now }
+      ]
+    });
+    captureDispatchedCommands(commands);
+    render(() => <AssistantsPanel variant="detail" />);
+    fireEvent.click(screen.getByRole("button", { name: "Move learning Second learning up" }));
+
+    expect(commands).toMatchObject([
+      {
+        type: "assistant.todo.reorder",
+        payload: {
+          assistantId,
+          todoIds: ["todo-second", "todo-first"]
+        }
+      },
+      {
+        type: "assistant.learning.reorder",
+        payload: {
+          assistantId,
+          learningIds: ["learning-second", "learning-first"]
+        }
+      }
+    ]);
+  });
+
   it("seeds new assistants from current composer routing", async () => {
     const project = createViewProjectFixture({
       id: "project-assistant-routing"
@@ -613,7 +663,9 @@ createUiTest("AssistantsPanel", () => {
       type: "assistant.chat.send",
       payload: {
         assistantId,
-        content: "Need status"
+        content: "Need status",
+        reasoningStrength: "high",
+        fastMode: false
       }
     });
     await waitFor(() => expect(textarea.value).toBe(""));

@@ -243,13 +243,27 @@ export function TracePanel() {
                             const statusView = () => getAssistantJobStatusView(job.id, snapshot().runs);
                             return (
                             <div
-                              class={`cursor-pointer rounded-2xl border bg-white/70 p-3 text-[0.675rem] ${statusView().borderClass}`}
+                              class="cursor-pointer rounded-2xl border bg-white/70 p-3 text-[0.675rem]"
+                              classList={{
+                                "border-amber-300": statusView().state === "running",
+                                "border-emerald-300": statusView().state === "successful",
+                                "border-rose-300": statusView().state === "error",
+                                "border-(--border)": statusView().state === "idle"
+                              }}
                               role="button"
                               tabIndex={0}
                               onClick={() => openAssistantJob(job.id)}
                               onKeyDown={(event) => handleAssistantJobKeyDown(event, job.id)}
                             >
-                              <div class={`flex min-w-0 items-center gap-2 font-semibold ${statusView().textClass}`}>
+                              <div
+                                class="flex min-w-0 items-center gap-2 font-semibold"
+                                classList={{
+                                  "text-amber-700": statusView().state === "running",
+                                  "text-emerald-700": statusView().state === "successful",
+                                  "text-rose-700": statusView().state === "error",
+                                  "text-(--foreground)": statusView().state === "idle"
+                                }}
+                              >
                                 <AssistantJobStatusIcon state={statusView().state} />
                                 <span class="truncate">{job.name}</span>
                               </div>

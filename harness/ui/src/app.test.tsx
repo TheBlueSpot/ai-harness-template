@@ -18,7 +18,7 @@ mock.module("./harness-websocket", () => ({
   })
 }));
 
-import { App } from "./app";
+import { App, shouldCollapseTabStrip } from "./app";
 
 function getCreateHotkeysCall() {
   const calls = createHotkeysMock.mock.calls as unknown as Array<
@@ -68,11 +68,12 @@ createUiTest("App shortcuts", () => {
     const [definitions] = getCreateHotkeysCall();
     const preferencesShortcut = definitions.find((definition) => definition.hotkey === "Mod+,");
 
-    expect(harnessStore.state.preferencesModalOpen).toBe(false);
+    expect(harnessStore.state.activeLeftTab).toBe("projects");
 
     preferencesShortcut?.callback();
 
-    expect(harnessStore.state.preferencesModalOpen).toBe(true);
+    expect(harnessStore.state.activeLeftTab).toBe("preferences");
+    expect(harnessStore.state.activeSurface).toBe("preferences");
   });
 
   it("disables the shortcut while the switcher is open or focused", () => {
@@ -102,8 +103,37 @@ createUiTest("App shortcuts", () => {
     expect(buttons[1]?.getAttribute("aria-label")).toBe("Assistants");
     expect(buttons[2]?.getAttribute("aria-label")).toBe("Jobs");
     expect(buttons[3]?.getAttribute("aria-label")).toBe("Runs");
+    expect(buttons[4]?.getAttribute("aria-label")).toBe("Settings");
     expect(buttons[0]?.getAttribute("aria-pressed")).toBe("true");
     expect(buttons[1]?.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("collapses left tab labels when tabs wrap", () => {
+    const nav = document.createElement("nav");
+    const tabItems = Array.from({ length: 5 }, () => {
+      const tabItem = document.createElement("span");
+      nav.append(tabItem);
+      return tabItem;
+    });
+
+    Object.defineProperty(nav, "scrollWidth", { configurable: true, value: 320 });
+    Object.defineProperty(nav, "clientWidth", { configurable: true, value: 320 });
+    tabItems.forEach((tabItem, index) => {
+      tabItem.getBoundingClientRect = () =>
+        ({
+          top: index >= 3 ? 28 : 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          width: 0,
+          height: 0,
+          x: 0,
+          y: index >= 3 ? 28 : 0,
+          toJSON: () => undefined
+        }) as DOMRect;
+    });
+
+    expect(shouldCollapseTabStrip(nav)).toBe(true);
   });
 
   it("keeps workspace grid columns shrinkable when project threads have long content", () => {
@@ -112,7 +142,7 @@ createUiTest("App shortcuts", () => {
     const grid = document.querySelector("[data-test-main-panel-grid]");
 
     expect(grid?.className).toContain(
-      "lg:grid-cols-[minmax(0,var(--left-panel-size))_0.35rem_minmax(0,var(--center-panel-size))_0.35rem_minmax(12rem,var(--right-panel-size))]"
+      "lg:grid-cols-[minmax(0,var(--left-panel-size))_0.35rem_minmax(0,var(--center-panel-size))_0.35rem_minmax(0,var(--right-panel-size))]"
     );
   });
 

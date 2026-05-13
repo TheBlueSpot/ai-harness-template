@@ -1,13 +1,48 @@
-import { createRequestId, type ProviderBrand } from "../../../shared/protocol";
-import { ClipboardList, FolderOpen, Orbit, Play, RefreshCcw } from "lucide-solid";
-import { canSelectProviderBrand, harnessStore, persistMergedLocalPreferences } from "../harness-store";
+/** @jsxImportSource solid-js */
+import { createEffect, createMemo, createSignal, For, Show, type JSX } from "solid-js";
+import { createRequestId, type ComposerReasoningStrength, type ProviderBrand } from "../../../shared/protocol";
+import {
+  Archive,
+  Bell,
+  BriefcaseBusiness,
+  Download,
+  FileJson,
+  FolderOpen,
+  Import,
+  LayoutPanelLeft,
+  RotateCcw,
+  Save,
+  Search,
+  Trash2
+} from "lucide-solid";
+import {
+  canSelectProviderBrand,
+  harnessStore,
+  persistMergedLocalPreferences,
+  type PreferencesActiveSectionId,
+  type ProviderConnectionProvider
+} from "../harness-store";
 import { pushToast } from "../toast-store";
+import { ActionButton } from "./action-button";
 import { ModeEditorPanel } from "./mode-editor-panel";
-import { Button } from "./primitives/button";
-import { Dialog } from "./primitives/dialog";
 import { DropdownControl } from "./primitives/dropdown";
 import { Input } from "./primitives/input";
 import { Textarea } from "./primitives/textarea";
+import { Tooltip } from "./primitives/tooltip";
+import {
+  AdvancedDisclosure,
+  PasswordKeyInput,
+  PreferenceRow,
+  PreferenceSection,
+  RangeControl,
+  SegmentedControl
+} from "./preferences/preferences-controls";
+import {
+  getPreferencesSection,
+  preferencesSections,
+  preferencesSettings,
+  type PreferencesSettingMeta
+} from "./preferences/preferences-model";
 
 function getProviderBrandLabel(providerBrand: ProviderBrand) {
   if (providerBrand === "gemini") {
@@ -19,19 +54,75 @@ function getProviderBrandLabel(providerBrand: ProviderBrand) {
   return "GPT";
 }
 
-export function PreferencesModal() {
-  const state = harnessStore.state;
-  const sendCommand = harnessStore.actions.sendCommand;
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function Highlight(props: { value: string; query: string }) {
+  const normalizedQuery = () => props.query.trim();
+  const parts = createMemo(() => {
+    if (!normalizedQuery()) {
+      return [props.value];
+    }
+    return props.value.split(new RegExp(`(${escapeRegExp(normalizedQuery())})`, "ig"));
+  });
+
+  return (
+    <>
+      <For each={parts()}>
+        {(part) =>
+          part.toLowerCase() === normalizedQuery().toLowerCase() ? (
+            <mark class="rounded bg-amber-100 px-0.5 text-(--foreground)">{part}</mark>
+          ) : (
+            part
+          )
+        }
+      </For>
+    </>
+  );
+}
+
+export function PreferencesPanel() {
+  const store = harnessStore;
+  const state = store.state;
+  const sendCommand = store.actions.sendCommand;
   let importInput: HTMLInputElement | undefined;
+  const [selectedSectionId, setSelectedSectionId] = createSignal<PreferencesActiveSectionId>(
+    state.preferencesActiveSectionId
+  );
+  const [searchQuery, setSearchQuery] = createSignal(state.preferencesSearchQuery);
+
+  createEffect(() => {
+    setSelectedSectionId(state.preferencesActiveSectionId);
+    setSearchQuery(state.preferencesSearchQuery);
+  });
 
   const workspaceModes = () => state.workspace.workspaceModes ?? [];
   const workspaceRuleDraft = () => state.workspace.workspaceRuleSource?.content ?? "";
   const workspaceMemoryDraft = () => state.workspace.workspaceMemorySummary?.content ?? "";
-  const activeBrandOptions = () => [
-    { value: "gpt", label: "GPT", description: "Use OpenAI-hosted model family.", disabled: !canSelectProviderBrand(state, "gpt") },
-    { value: "gemini", label: "Gemini", description: "Use Google-hosted model family.", disabled: !canSelectProviderBrand(state, "gemini") },
-    { value: "claude", label: "Claude", description: "Use Anthropic-hosted model family.", disabled: !canSelectProviderBrand(state, "claude") }
-  ];
+
+  const searchResults = createMemo(() => {
+    const query = searchQuery().trim().toLowerCase();
+    if (!query) {
+      return [];
+    }
+
+    return preferencesSettings.filter((setting) => {
+      const section = getPreferencesSection(setting.sectionId);
+      return [setting.title, setting.description, section.label, ...setting.keywords].some((value) =>
+        value.toLowerCase().includes(query)
+      );
+    });
+  });
+
+  const groupedSearchResults = createMemo(() =>
+    preferencesSections
+      .map((section) => ({
+        section,
+        results: searchResults().filter((setting) => setting.sectionId === section.id)
+      }))
+      .filter((entry) => entry.results.length > 0)
+  );
   const subagentWorktreeOptions = () => [
     { value: "same-worktree", label: "Same checkout", description: "Subagents edit inside current working tree." },
     {
@@ -40,21 +131,19 @@ export function PreferencesModal() {
       description: "Subagents work in isolated BranchFS mounts before merge."
     }
   ];
-  const planExecutionModeOptions = () => [
-    { value: "countdown", label: "Countdown", description: "Pause briefly before execution starts." },
-    { value: "approve", label: "Approve first", description: "Require explicit approval before execution starts." },
-    { value: "immediate", label: "Immediate", description: "Start execution as soon as plan is ready." }
+  const projectSortOptions = () => [
+    { value: "last-user-message", label: "Last message" },
+    { value: "created-at", label: "Created" },
+    { value: "manual", label: "Manual" }
   ];
-  const correctnessIterationOptions = () => [
-    { value: "ask-before-iterate", label: "Ask before iterate", description: "Pause before any correctness follow-up pass." },
-    { value: "auto-once", label: "Auto once", description: "Run one automatic correctness follow-up pass." },
-    { value: "auto-until-clean", label: "Auto until clean", description: "Keep iterating until no correctness gaps remain." }
+  const threadSortOptions = () => [
+    { value: "last-user-message", label: "Last message" },
+    { value: "created-at", label: "Created" }
   ];
-  const backgroundApprovalOptions = () => [
-    { value: "allow-all", label: "Allow all", description: "Background jobs can run without approval." },
-    { value: "allow-safe", label: "Allow safe", description: "Safe jobs auto-run; risky jobs wait for approval." },
-    { value: "ask-risky", label: "Ask risky", description: "Ask before risky actions while allowing low-risk ones." },
-    { value: "always-ask", label: "Always ask", description: "Every background job waits for explicit approval." }
+  const groupingOptions = () => [
+    { value: "repository", label: "Repository" },
+    { value: "repository-path", label: "Repository path" },
+    { value: "separate", label: "Separate" }
   ];
 
   function handleSave() {
@@ -72,7 +161,7 @@ export function PreferencesModal() {
       return;
     }
 
-    persistMergedLocalPreferences({
+    const localPreferences = {
       openAiApiKey,
       googleApiKey,
       anthropicApiKey,
@@ -87,25 +176,16 @@ export function PreferencesModal() {
       planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
       correctnessIterationModeDefault: state.correctnessIterationModeDefault,
       backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
-      backgroundJobNotificationsEnabled: state.backgroundJobNotificationsEnabled
-    });
-    harnessStore.commitLocalPreferences({
-      openAiApiKey,
-      googleApiKey,
-      anthropicApiKey,
-      providerBrand: state.providerBrand,
-      debugEnabled: state.debugEnabled,
-      tracePanelDefaultOpen: state.tracePanelDefaultOpen,
-      subagentWorktreeStrategyDefault: state.subagentWorktreeStrategyDefault,
-      blockChatOnDirtyGitDefault: state.blockChatOnDirtyGitDefault,
-      dirtyGitChangeLimitDefault: state.dirtyGitChangeLimitDefault,
-      autoCompactContextThresholdPercentDefault: state.autoCompactContextThresholdPercentDefault,
-      planExecutionModeDefault: state.planExecutionModeDefault,
-      planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
-      correctnessIterationModeDefault: state.correctnessIterationModeDefault,
-      backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
-      backgroundJobNotificationsEnabled: state.backgroundJobNotificationsEnabled
-    });
+      autoArchiveCompletedThreadsDefault: state.autoArchiveCompletedThreadsDefault,
+      backgroundJobNotificationsEnabled: state.backgroundJobNotificationsEnabled,
+      memoryBankEnabledDefault: state.memoryBankEnabledDefault,
+      memoryBankRecordRunsDefault: state.memoryBankRecordRunsDefault,
+      selectedReasoningStrength: state.selectedReasoningStrength,
+      selectedFastMode: state.selectedFastMode
+    };
+
+    persistMergedLocalPreferences(localPreferences);
+    store.commitLocalPreferences(localPreferences);
 
     sendCommand({
       type: "preferences.save",
@@ -125,11 +205,12 @@ export function PreferencesModal() {
         planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
         correctnessIterationModeDefault: state.correctnessIterationModeDefault,
         backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
-        memoryBankEnabledDefault: state.memoryBankEnabledDefault
+        autoArchiveCompletedThreadsDefault: state.autoArchiveCompletedThreadsDefault,
+        memoryBankEnabledDefault: state.memoryBankEnabledDefault,
+        memoryBankRecordRunsDefault: state.memoryBankRecordRunsDefault
       }
     });
 
-    harnessStore.closePreferencesModal();
   }
 
   function handleClearApiKey() {
@@ -148,9 +229,14 @@ export function PreferencesModal() {
       planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
       correctnessIterationModeDefault: state.correctnessIterationModeDefault,
       backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
-      backgroundJobNotificationsEnabled: state.backgroundJobNotificationsEnabled
+      autoArchiveCompletedThreadsDefault: state.autoArchiveCompletedThreadsDefault,
+      backgroundJobNotificationsEnabled: state.backgroundJobNotificationsEnabled,
+      memoryBankEnabledDefault: state.memoryBankEnabledDefault,
+      memoryBankRecordRunsDefault: state.memoryBankRecordRunsDefault,
+      selectedReasoningStrength: state.selectedReasoningStrength,
+      selectedFastMode: state.selectedFastMode
     });
-    harnessStore.commitLocalPreferences({
+    store.commitLocalPreferences({
       openAiApiKey: undefined,
       googleApiKey: undefined,
       anthropicApiKey: undefined,
@@ -165,7 +251,11 @@ export function PreferencesModal() {
       planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
       correctnessIterationModeDefault: state.correctnessIterationModeDefault,
       backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
-      backgroundJobNotificationsEnabled: state.backgroundJobNotificationsEnabled
+      autoArchiveCompletedThreadsDefault: state.autoArchiveCompletedThreadsDefault,
+      memoryBankEnabledDefault: state.memoryBankEnabledDefault,
+      memoryBankRecordRunsDefault: state.memoryBankRecordRunsDefault,
+      selectedReasoningStrength: state.selectedReasoningStrength,
+      selectedFastMode: state.selectedFastMode
     });
 
     sendCommand({
@@ -187,7 +277,12 @@ export function PreferencesModal() {
       planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
       correctnessIterationModeDefault: state.correctnessIterationModeDefault,
       backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
-      memoryBankEnabledDefault: state.memoryBankEnabledDefault
+      autoArchiveCompletedThreadsDefault: state.autoArchiveCompletedThreadsDefault,
+      backgroundJobNotificationsEnabled: state.backgroundJobNotificationsEnabled,
+      memoryBankEnabledDefault: state.memoryBankEnabledDefault,
+      memoryBankRecordRunsDefault: state.memoryBankRecordRunsDefault,
+      selectedReasoningStrength: state.selectedReasoningStrength,
+      selectedFastMode: state.selectedFastMode
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -218,10 +313,15 @@ export function PreferencesModal() {
         planExecutionDelaySecondsDefault: number;
         correctnessIterationModeDefault: "ask-before-iterate" | "auto-once" | "auto-until-clean";
         backgroundJobApprovalPolicyDefault: "allow-all" | "allow-safe" | "ask-risky" | "always-ask";
+        autoArchiveCompletedThreadsDefault: boolean;
+        backgroundJobNotificationsEnabled: boolean;
         memoryBankEnabledDefault: boolean;
+        memoryBankRecordRunsDefault: boolean;
+        selectedReasoningStrength: ComposerReasoningStrength;
+        selectedFastMode: boolean;
       }>;
 
-      harnessStore.commitLocalPreferences({
+      store.commitLocalPreferences({
         providerBrand: parsed.providerBrand,
         debugEnabled: parsed.debugEnabled,
         tracePanelDefaultOpen: parsed.tracePanelDefaultOpen,
@@ -233,7 +333,12 @@ export function PreferencesModal() {
         planExecutionDelaySecondsDefault: parsed.planExecutionDelaySecondsDefault,
         correctnessIterationModeDefault: parsed.correctnessIterationModeDefault,
         backgroundJobApprovalPolicyDefault: parsed.backgroundJobApprovalPolicyDefault,
-        memoryBankEnabledDefault: parsed.memoryBankEnabledDefault
+        autoArchiveCompletedThreadsDefault: parsed.autoArchiveCompletedThreadsDefault,
+        backgroundJobNotificationsEnabled: parsed.backgroundJobNotificationsEnabled,
+        memoryBankEnabledDefault: parsed.memoryBankEnabledDefault,
+        memoryBankRecordRunsDefault: parsed.memoryBankRecordRunsDefault,
+        selectedReasoningStrength: parsed.selectedReasoningStrength,
+        selectedFastMode: parsed.selectedFastMode
       });
       persistMergedLocalPreferences({
         openAiApiKey: state.openAiApiKeyDraft.trim() || undefined,
@@ -252,8 +357,13 @@ export function PreferencesModal() {
         correctnessIterationModeDefault: parsed.correctnessIterationModeDefault ?? state.correctnessIterationModeDefault,
         backgroundJobApprovalPolicyDefault:
           parsed.backgroundJobApprovalPolicyDefault ?? state.backgroundJobApprovalPolicyDefault,
-        backgroundJobNotificationsEnabled: state.backgroundJobNotificationsEnabled,
-        memoryBankEnabledDefault: parsed.memoryBankEnabledDefault ?? state.memoryBankEnabledDefault
+        autoArchiveCompletedThreadsDefault:
+          parsed.autoArchiveCompletedThreadsDefault ?? state.autoArchiveCompletedThreadsDefault,
+        backgroundJobNotificationsEnabled: parsed.backgroundJobNotificationsEnabled ?? state.backgroundJobNotificationsEnabled,
+        memoryBankEnabledDefault: parsed.memoryBankEnabledDefault ?? state.memoryBankEnabledDefault,
+        memoryBankRecordRunsDefault: parsed.memoryBankRecordRunsDefault ?? state.memoryBankRecordRunsDefault,
+        selectedReasoningStrength: parsed.selectedReasoningStrength ?? state.selectedReasoningStrength,
+        selectedFastMode: parsed.selectedFastMode ?? state.selectedFastMode
       });
       pushToast("Preferences imported", "Local defaults updated. Save to sync machine-level defaults.");
     } catch (error) {
@@ -276,385 +386,632 @@ export function PreferencesModal() {
   }
 
   function handleResetPanelSizes() {
-    harnessStore.resetMainPanelSizes();
+    store.resetMainPanelSizes();
     pushToast("Panel sizes reset", "Main panel widths restored to defaults.");
   }
 
-  return (
-    <Dialog
-      open={state.preferencesModalOpen}
-      onClose={() => harnessStore.closePreferencesModal()}
-      title="Workspace preferences"
-      eyebrow="Preferences"
-      description="Manage local GPT, Gemini, and Claude keys plus default workspace preferences."
-      footer={
-        <>
-          <Button variant="ghost" onClick={() => harnessStore.closePreferencesModal()}>
-            Dismiss
-          </Button>
-          <Button variant="ghost" onClick={handleExportPreferences}>
-            Export prefs
-          </Button>
-          <Button variant="ghost" onClick={() => importInput?.click()}>
-            Import prefs
-          </Button>
-          <Button variant="secondary" onClick={handleClearApiKey}>
-            Clear keys
-          </Button>
-          <Button onClick={handleSave}>Save preferences</Button>
-        </>
+  function handleTestProvider(provider: ProviderConnectionProvider, apiKey: string) {
+    store.beginProviderConnectionTest(provider);
+    sendCommand({
+      type: "preferences.testProviderConnection",
+      requestId: createRequestId(),
+      payload: {
+        provider,
+        apiKey: apiKey.trim() || undefined
       }
-    >
-      <input ref={importInput} type="file" accept="application/json" class="hidden" onChange={handleImportPreferences} />
-      <div class="grid gap-3">
-        <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">
-            Active brand
-          </span>
-          <DropdownControl
-            kind="select"
-            ariaLabel="Select active brand"
-            icon={<Orbit class="h-3.5 w-3.5" />}
-            size="md"
-            class="w-full"
+    });
+  }
+
+  function keyStatus(provider: ProviderConnectionProvider) {
+    const test = state.providerConnectionTests[provider];
+    if (test.status === "pending") {
+      return "Testing";
+    }
+    if (test.status === "ready") {
+      return "Ready";
+    }
+    if (test.status === "failed") {
+      return "Failed";
+    }
+    if (provider === "openai" && state.openAiApiKeyDraft.trim()) {
+      return state.hasStoredOpenAiApiKey || state.hasLocalOpenAiApiKey ? "Stored + draft" : "Draft only";
+    }
+    if (provider === "google" && state.googleApiKeyDraft.trim()) {
+      return state.hasStoredGoogleApiKey || state.hasLocalGoogleApiKey ? "Stored + draft" : "Draft only";
+    }
+    if (provider === "anthropic" && state.anthropicApiKeyDraft.trim()) {
+      return state.hasStoredAnthropicApiKey || state.hasLocalAnthropicApiKey ? "Stored + draft" : "Draft only";
+    }
+    if (
+      (provider === "openai" && (state.hasStoredOpenAiApiKey || state.hasLocalOpenAiApiKey)) ||
+      (provider === "google" && (state.hasStoredGoogleApiKey || state.hasLocalGoogleApiKey)) ||
+      (provider === "anthropic" && (state.hasStoredAnthropicApiKey || state.hasLocalAnthropicApiKey))
+    ) {
+      return "Stored";
+    }
+    return "No key";
+  }
+
+  function openSearchResult(setting: PreferencesSettingMeta) {
+    const sectionId = setting.sectionId as PreferencesActiveSectionId;
+    setSelectedSectionId(sectionId);
+    setSearchQuery("");
+    const searchInput = document.querySelector<HTMLInputElement>('[aria-label="Search settings"]');
+    if (searchInput) {
+      searchInput.value = "";
+    }
+    store.setPreferencesActiveSectionId(sectionId);
+    queueMicrotask(() => document.getElementById(setting.id)?.focus());
+  }
+
+  function renderToggle(checked: boolean, onInput: (checked: boolean) => void, label: string) {
+    return (
+      <label class="inline-flex cursor-pointer items-center justify-between gap-3 rounded-xl border border-(--border) bg-white/60 px-3 py-2">
+        <span class="text-xs font-medium text-(--foreground)">{label}</span>
+        <input class="h-4 w-4 accent-(--accent)" type="checkbox" checked={checked} onInput={(event) => onInput(event.currentTarget.checked)} />
+      </label>
+    );
+  }
+
+  function renderGeneralUi() {
+    return (
+      <PreferenceSection title="General & UI" description="Compact workspace defaults using the existing warm cream palette.">
+        <PreferenceRow id="appearance-density" title="Appearance and density" description="Theme is fixed to the existing light cream palette for this harness.">
+          <div class="grid gap-2 text-xs text-(--muted)">
+            <div class="rounded-xl border border-(--border) bg-(--panel-strong) p-3 text-(--foreground)">Light cream theme active</div>
+            <div>Density follows current compact harness layout.</div>
+          </div>
+        </PreferenceRow>
+        <PreferenceRow id="navigation-sidebar" title="Navigation and sidebar layout" description="Restore main panel sizes and choose project sidebar sorting/grouping.">
+          <div class="grid gap-3">
+            <ActionButton tooltip="Restore panel sizes" variant="secondary" icon={<LayoutPanelLeft class="h-4 w-4" />} onClick={handleResetPanelSizes}>
+              Restore panel sizes
+            </ActionButton>
+            <div class="grid gap-2 sm:grid-cols-3">
+              <DropdownControl
+                kind="select"
+                ariaLabel="Project sort"
+                icon={<FolderOpen class="h-3.5 w-3.5" />}
+                size="md"
+                value={state.projectSidebarPreferences.projectSort}
+                options={projectSortOptions()}
+                onChange={(value) => store.setProjectSidebarPreferences({ projectSort: value as never })}
+              />
+              <DropdownControl
+                kind="select"
+                ariaLabel="Thread sort"
+                icon={<FolderOpen class="h-3.5 w-3.5" />}
+                size="md"
+                value={state.projectSidebarPreferences.threadSort}
+                options={threadSortOptions()}
+                onChange={(value) => store.setProjectSidebarPreferences({ threadSort: value as never })}
+              />
+              <DropdownControl
+                kind="select"
+                ariaLabel="Project grouping"
+                icon={<FolderOpen class="h-3.5 w-3.5" />}
+                size="md"
+                value={state.projectSidebarPreferences.grouping}
+                options={groupingOptions()}
+                onChange={(value) => store.setProjectSidebarPreferences({ grouping: value as never })}
+              />
+            </div>
+          </div>
+        </PreferenceRow>
+        <PreferenceRow id="notifications" title="Notifications" description="Desktop notifications for background job status changes.">
+          {renderToggle(state.backgroundJobNotificationsEnabled, store.setBackgroundJobNotificationsEnabled, "Background job notifications")}
+        </PreferenceRow>
+      </PreferenceSection>
+    );
+  }
+
+  function renderAiProviders() {
+    return (
+      <PreferenceSection title="AI & Providers" description="Credentials and composer defaults for AI runs.">
+        <PreferenceRow id="provider-keys" title="Provider API keys" description="Keys stay local to this machine; test checks provider model-list access without saving drafts.">
+          <div class="grid gap-4">
+            <PasswordKeyInput
+              label="OpenAI API key"
+              value={state.openAiApiKeyDraft}
+              placeholder="sk-..."
+              status={keyStatus("openai")}
+              testStatus={state.providerConnectionTests.openai.status}
+              testMessage={state.providerConnectionTests.openai.message}
+              testMessageId="openai"
+              onInput={store.setOpenAiApiKeyDraft}
+              onTest={() => handleTestProvider("openai", state.openAiApiKeyDraft)}
+            />
+            <PasswordKeyInput
+              label="Google API key"
+              value={state.googleApiKeyDraft}
+              placeholder="AIza..."
+              status={keyStatus("google")}
+              testStatus={state.providerConnectionTests.google.status}
+              testMessage={state.providerConnectionTests.google.message}
+              testMessageId="google"
+              onInput={store.setGoogleApiKeyDraft}
+              onTest={() => handleTestProvider("google", state.googleApiKeyDraft)}
+            />
+            <PasswordKeyInput
+              label="Anthropic API key"
+              value={state.anthropicApiKeyDraft}
+              placeholder="sk-ant-..."
+              status={keyStatus("anthropic")}
+              testStatus={state.providerConnectionTests.anthropic.status}
+              testMessage={state.providerConnectionTests.anthropic.message}
+              testMessageId="anthropic"
+              onInput={store.setAnthropicApiKeyDraft}
+              onTest={() => handleTestProvider("anthropic", state.anthropicApiKeyDraft)}
+            />
+          </div>
+        </PreferenceRow>
+        <PreferenceRow id="provider-brand" title="Active provider" description="Provider switch stays disabled until a matching key exists or is drafted.">
+          <SegmentedControl
+            ariaLabel="Active provider"
             value={state.providerBrand}
-            options={activeBrandOptions()}
-            onChange={(value) => harnessStore.setProviderBrand(value as ProviderBrand)}
+            options={[
+              { value: "gpt", label: "GPT", disabled: !canSelectProviderBrand(state, "gpt") },
+              { value: "gemini", label: "Gemini", disabled: !canSelectProviderBrand(state, "gemini") },
+              { value: "claude", label: "Claude", disabled: !canSelectProviderBrand(state, "claude") }
+            ]}
+            onChange={(value) => store.setProviderBrand(value)}
           />
-          <p class="text-[0.675rem] leading-5 text-(--muted)">Brand switch stays disabled until matching key exists or you type one here.</p>
-        </label>
-
-        <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">
-            OpenAI API key
-          </span>
-          <Input
-            type="password"
-            value={state.openAiApiKeyDraft}
-            placeholder="sk-..."
-            onInput={(event: InputEvent & { currentTarget: HTMLInputElement; target: Element }) =>
-              harnessStore.setOpenAiApiKeyDraft(event.currentTarget.value)
-            }
-          />
-        </label>
-
-        <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">
-            Google API key
-          </span>
-          <Input
-            type="password"
-            value={state.googleApiKeyDraft}
-            placeholder="AIza..."
-            onInput={(event: InputEvent & { currentTarget: HTMLInputElement; target: Element }) =>
-              harnessStore.setGoogleApiKeyDraft(event.currentTarget.value)
-            }
-          />
-        </label>
-
-        <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">
-            Anthropic API key
-          </span>
-          <Input
-            type="password"
-            value={state.anthropicApiKeyDraft}
-            placeholder="sk-ant-..."
-            onInput={(event: InputEvent & { currentTarget: HTMLInputElement; target: Element }) =>
-              harnessStore.setAnthropicApiKeyDraft(event.currentTarget.value)
-            }
-          />
-        </label>
-
-        <p class="text-[0.675rem] leading-5 text-(--muted)">
-          Keys stored in browser storage and local workspace storage on this machine.
-        </p>
-      </div>
-
-      <div class="grid gap-3 md:grid-cols-2">
-        <label class="flex items-start gap-3 rounded-[1.25rem] border border-(--border) bg-white/55 px-4 py-3">
-          <input
-            class="mt-1"
-            type="checkbox"
-            checked={state.debugEnabled}
-            onInput={(event) => harnessStore.setDebugEnabled(event.currentTarget.checked)}
-          />
-          <div>
-            <div class="text-[0.675rem] font-semibold text-(--foreground)">Verbose developer logging</div>
-            <div class="mt-1 text-[0.675rem] leading-5 text-(--muted)">Default on for new runs in this browser.</div>
+        </PreferenceRow>
+        <PreferenceRow id="composer-defaults" title="Composer defaults" description="Browser-local defaults for reasoning effort and fast mode.">
+          <div class="grid gap-3">
+            <SegmentedControl
+              ariaLabel="Reasoning effort"
+              value={state.selectedReasoningStrength}
+              options={[
+                { value: "low", label: "Low" },
+                { value: "medium", label: "Medium" },
+                { value: "high", label: "High" }
+              ]}
+              onChange={(value) => store.setSelectedReasoningStrength(value)}
+            />
+            {renderToggle(state.selectedFastMode, store.setSelectedFastMode, "Fast mode")}
           </div>
-        </label>
+        </PreferenceRow>
+      </PreferenceSection>
+    );
+  }
 
-        <label class="flex items-start gap-3 rounded-[1.25rem] border border-(--border) bg-white/55 px-4 py-3">
-          <input
-            class="mt-1"
-            type="checkbox"
-            checked={state.tracePanelDefaultOpen}
-            onInput={(event) => harnessStore.setTracePanelDefaultOpen(event.currentTarget.checked)}
-          />
-          <div>
-            <div class="text-[0.675rem] font-semibold text-(--foreground)">Open trace panel by default</div>
-            <div class="mt-1 text-[0.675rem] leading-5 text-(--muted)">Controls initial layout after refresh.</div>
+  function renderSafetyGuardrails() {
+    return (
+      <PreferenceSection title="Safety & Guardrails" description="Execution gates, worktree strategy, and run-risk defaults.">
+        <PreferenceRow id="plan-gate" title="Planning and approval" description="Choose what happens after an execution plan is ready.">
+          <div class="grid gap-3">
+            <SegmentedControl
+              ariaLabel="Plan gate mode"
+              value={state.planExecutionModeDefault}
+              options={[
+                { value: "countdown", label: "Countdown" },
+                { value: "approve", label: "Approve" },
+                { value: "immediate", label: "Immediate" }
+              ]}
+              onChange={(value) => store.setPlanExecutionModeDefault(value)}
+            />
+            <Show when={state.planExecutionModeDefault === "countdown"}>
+              <RangeControl
+                label="Countdown delay"
+                min={0}
+                max={300}
+                suffix="s"
+                value={state.planExecutionDelaySecondsDefault}
+                onChange={store.setPlanExecutionDelaySecondsDefault}
+              />
+            </Show>
           </div>
-        </label>
+        </PreferenceRow>
+        <PreferenceRow id="worktree-git" title="Worktree and git safety" description="Control subagent isolation and dirty working tree guardrails.">
+          <div class="grid gap-3">
+            <DropdownControl
+              kind="select"
+              ariaLabel="Select subagent worktree strategy"
+              icon={<FolderOpen class="h-3.5 w-3.5" />}
+              size="md"
+              class="w-full"
+              value={state.subagentWorktreeStrategyDefault}
+              options={subagentWorktreeOptions()}
+              onChange={(value) => store.setSubagentWorktreeStrategyDefault(value as "same-worktree" | "separate-worktrees")}
+            />
+            {renderToggle(state.blockChatOnDirtyGitDefault, store.setBlockChatOnDirtyGitDefault, "Restrict chat on dirty git")}
+            <AdvancedDisclosure title="Advanced git guard" description="Dirty git change limit before chat-triggered runs are refused.">
+              <Input
+                aria-label="Dirty git change limit"
+                type="number"
+                min="0"
+                max="10000"
+                disabled={!state.blockChatOnDirtyGitDefault}
+                value={String(state.dirtyGitChangeLimitDefault)}
+                onInput={(event) => store.setDirtyGitChangeLimitDefault(Number(event.currentTarget.value) || 0)}
+              />
+            </AdvancedDisclosure>
+          </div>
+        </PreferenceRow>
+        <PreferenceRow id="run-safety" title="Run safety" description="Context compaction and correctness follow-up defaults.">
+          <div class="grid gap-3">
+            <RangeControl
+              label="Auto-compact threshold"
+              min={10}
+              max={95}
+              suffix="%"
+              value={state.autoCompactContextThresholdPercentDefault}
+              onChange={store.setAutoCompactContextThresholdPercentDefault}
+            />
+            <SegmentedControl
+              ariaLabel="Correctness iteration"
+              value={state.correctnessIterationModeDefault}
+              options={[
+                { value: "ask-before-iterate", label: "Ask" },
+                { value: "auto-once", label: "Auto once" },
+                { value: "auto-until-clean", label: "Until clean" }
+              ]}
+              onChange={(value) => store.setCorrectnessIterationModeDefault(value)}
+            />
+            <AdvancedDisclosure title="Context compaction details" description="Pi compacts session context after threshold crossing, then continues with reduced history.">
+              <p class="text-xs leading-5 text-(--muted)">Lower values compact sooner. Higher values preserve more transcript before compaction.</p>
+            </AdvancedDisclosure>
+          </div>
+        </PreferenceRow>
+      </PreferenceSection>
+    );
+  }
+
+  function renderWorkspaceMemory() {
+    return (
+      <PreferenceSection title="Workspace & Memory" description="Shared context, memory bank defaults, and archive behavior.">
+        <PreferenceRow id="workspace-context" title="Workspace rules and context" description="Shared rules and memory apply before project-specific context.">
+          <div class="grid gap-3">
+            <label class="grid gap-2">
+              <span class="text-xs font-medium text-(--foreground)">Workspace rules</span>
+              <Textarea rows="5" value={workspaceRuleDraft()} onInput={(event) => updateWorkspaceDraft("rules", event.currentTarget.value)} />
+            </label>
+            <label class="grid gap-2">
+              <span class="text-xs font-medium text-(--foreground)">Workspace memory</span>
+              <Textarea rows="5" value={workspaceMemoryDraft()} onInput={(event) => updateWorkspaceDraft("memory", event.currentTarget.value)} />
+            </label>
+            <ActionButton tooltip="Save workspace context" variant="secondary" icon={<Save class="h-4 w-4" />} onClick={handleSaveWorkspaceContext}>
+              Save workspace context
+            </ActionButton>
+          </div>
+        </PreferenceRow>
+        <PreferenceRow id="memory-bank" title="Memory bank settings" description="Inject active memories and record compact run memories.">
+          <div class="grid gap-2">
+            {renderToggle(state.memoryBankEnabledDefault, store.setMemoryBankEnabledDefault, "Use memory bank in runs")}
+            {renderToggle(state.memoryBankRecordRunsDefault, store.setMemoryBankRecordRunsDefault, "Record run memories")}
+          </div>
+        </PreferenceRow>
+        <PreferenceRow id="auto-archive" title="Auto-archive preferences" description="Default behavior for completed threads.">
+          {renderToggle(state.autoArchiveCompletedThreadsDefault, store.setAutoArchiveCompletedThreadsDefault, "Auto-archive completed threads")}
+        </PreferenceRow>
+        <ModeEditorPanel
+          title="Workspace custom modes"
+          scope="workspace"
+          modes={workspaceModes()}
+          onSave={(mode) =>
+            sendCommand({
+              type: "mode.save",
+              requestId: createRequestId(),
+              payload: {
+                scope: "workspace",
+                mode
+              }
+            })
+          }
+          onDelete={(modeId) =>
+            sendCommand({
+              type: "mode.delete",
+              requestId: createRequestId(),
+              payload: {
+                scope: "workspace",
+                modeId
+              }
+            })
+          }
+        />
+      </PreferenceSection>
+    );
+  }
+
+  function updateWorkspaceDraft(kind: "rules" | "memory", value: string) {
+    store.applyServerEvent({
+      type: "workspace.updated",
+      requestId: kind === "rules" ? "local-workspace-rules" : "local-workspace-memory",
+      payload: {
+        workspace: {
+          ...state.workspace,
+          projects: state.workspace.projects,
+          workspaceModes: state.workspace.workspaceModes ?? [],
+          workspaceRuleSource:
+            kind === "rules"
+              ? value.trim()
+                ? {
+                    id: "workspace-rules",
+                    scope: "workspace",
+                    label: "Workspace rules",
+                    content: value,
+                    updatedAt: new Date().toISOString()
+                  }
+                : undefined
+              : state.workspace.workspaceRuleSource,
+          workspaceMemorySummary:
+            kind === "memory"
+              ? value.trim()
+                ? {
+                    id: "workspace-memory",
+                    scope: "workspace",
+                    label: "Workspace memory",
+                    content: value,
+                    updatedAt: new Date().toISOString(),
+                    source: "user"
+                  }
+                : undefined
+              : state.workspace.workspaceMemorySummary,
+          activeProjectId: state.workspace.activeProjectId
+        }
+      }
+    });
+  }
+
+  function renderBackgroundJobs() {
+    return (
+      <PreferenceSection title="Background Jobs" description="Approval policy, notifications, and current jobs pane defaults.">
+        <PreferenceRow id="job-defaults" title="Background job defaults" description="Choose approval posture for background work.">
+          <div class="grid gap-3">
+            <SegmentedControl
+              ariaLabel="Background approval policy"
+              value={state.backgroundJobApprovalPolicyDefault}
+              options={[
+                { value: "allow-all", label: "Allow all" },
+                { value: "allow-safe", label: "Allow safe" },
+                { value: "ask-risky", label: "Ask risky" },
+                { value: "always-ask", label: "Always ask" }
+              ]}
+              onChange={(value) => store.setBackgroundJobApprovalPolicyDefault(value)}
+            />
+            {renderToggle(state.backgroundJobNotificationsEnabled, store.setBackgroundJobNotificationsEnabled, "Desktop notifications")}
+          </div>
+        </PreferenceRow>
+        <PreferenceRow id="jobs-view" title="Jobs view and sync state" description="Current jobs pane view preferences saved in this browser.">
+          <div class="grid gap-2 text-xs text-(--muted)">
+            <div class="rounded-xl border border-(--border) bg-white/60 p-3 text-(--foreground)">Segment: {state.jobsPanePreferences.segment}</div>
+            <div>Sort: {state.jobsPanePreferences.jobSort}</div>
+            <div>Search: {state.jobsPanePreferences.search || "None"}</div>
+          </div>
+        </PreferenceRow>
+      </PreferenceSection>
+    );
+  }
+
+  function renderDeveloperAdvanced() {
+    return (
+      <PreferenceSection title="Developer & Advanced" description="Developer logging, trace defaults, portability, and reset controls.">
+        <PreferenceRow id="logging-trace" title="Logging and trace UI" description="Defaults for developer visibility in new sessions.">
+          <div class="grid gap-2">
+            {renderToggle(state.debugEnabled, store.setDebugEnabled, "Verbose developer logging")}
+            {renderToggle(state.tracePanelDefaultOpen, store.setTracePanelDefaultOpen, "Open trace panel by default")}
+          </div>
+        </PreferenceRow>
+        <PreferenceRow id="portable-json" title="Import and export JSON" description="Portable preferences exclude API keys.">
+          <div class="flex flex-wrap gap-2">
+            <ActionButton tooltip="Export preferences JSON" variant="secondary" icon={<Download class="h-4 w-4" />} onClick={handleExportPreferences}>
+              Export prefs
+            </ActionButton>
+            <ActionButton tooltip="Import preferences JSON" variant="secondary" icon={<Import class="h-4 w-4" />} onClick={() => importInput?.click()}>
+              Import prefs
+            </ActionButton>
+          </div>
+        </PreferenceRow>
+        <PreferenceRow id="advanced-reset" title="Advanced reset controls" description="Clear provider keys or reset local layout state.">
+          <div class="flex flex-wrap gap-2">
+            <ActionButton tooltip="Clear all provider keys" variant="secondary" icon={<Trash2 class="h-4 w-4" />} onClick={handleClearApiKey}>
+              Clear keys
+            </ActionButton>
+            <ActionButton tooltip="Restore panel sizes" variant="secondary" icon={<RotateCcw class="h-4 w-4" />} onClick={handleResetPanelSizes}>
+              Reset layout
+            </ActionButton>
+          </div>
+        </PreferenceRow>
+      </PreferenceSection>
+    );
+  }
+
+  function renderSearchResults() {
+    return (
+      <PreferenceSection title="Search results" description={`${searchResults().length} matching settings`}>
+        <Show when={searchResults().length > 0} fallback={<div class="rounded-xl border border-dashed border-(--border) bg-white/45 p-4 text-xs text-(--muted)">No matching settings.</div>}>
+          <div class="grid gap-4">
+            <For each={groupedSearchResults()}>
+              {(group) => (
+                <section class="grid gap-2">
+                  <div class="text-[0.7rem] font-semibold uppercase tracking-[0.14em] text-(--muted)">{group.section.label}</div>
+                  <div class="grid gap-2">
+                    <For each={group.results}>
+                      {(setting) => (
+                        <button
+                          type="button"
+                          class="cursor-pointer rounded-xl border border-(--border) bg-white/60 p-3 text-left transition hover:bg-white/80"
+                          onClick={() => openSearchResult(setting)}
+                        >
+                          <div class="text-sm font-semibold text-(--foreground)">
+                            <Highlight value={setting.title} query={searchQuery()} />
+                          </div>
+                          <div class="mt-1 text-xs leading-5 text-(--muted)">
+                            <Highlight value={setting.description} query={searchQuery()} />
+                          </div>
+                        </button>
+                      )}
+                    </For>
+                  </div>
+                </section>
+              )}
+            </For>
+          </div>
+        </Show>
+      </PreferenceSection>
+    );
+  }
+
+  function renderDetailContent() {
+    if (searchQuery().trim()) {
+      return renderSearchResults();
+    }
+
+    switch (selectedSectionId()) {
+      case "general-ui":
+        return renderGeneralUi();
+      case "safety-guardrails":
+        return renderSafetyGuardrails();
+      case "workspace-memory":
+        return renderWorkspaceMemory();
+      case "background-jobs":
+        return renderBackgroundJobs();
+      case "developer-advanced":
+        return renderDeveloperAdvanced();
+      default:
+        return renderAiProviders();
+    }
+  }
+
+  return (
+    <section data-test-preferences-panel="" class="panel-shell flex h-full min-h-0 flex-col overflow-hidden rounded-2xl bg-(--panel)" style={{ overflow: "hidden" }}>
+      <input ref={importInput} type="file" accept="application/json" class="hidden" onChange={handleImportPreferences} />
+      <div class="border-b border-(--border) bg-(--panel-strong) px-5 py-4">
+        <div class="text-[0.65rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Preferences</div>
+        <h2 class="mt-1 text-lg font-semibold text-(--foreground)">Workspace preferences</h2>
+        <p class="mt-1 text-xs leading-5 text-(--muted)">Manage provider keys and workspace defaults.</p>
       </div>
-
-      <section class="flex items-center justify-between gap-3 rounded-[1.25rem] border border-(--border) bg-white/55 px-4 py-3">
-        <div>
-          <div class="text-[0.675rem] font-semibold text-(--foreground)">Panel layout</div>
-          <div class="mt-1 text-[0.675rem] leading-5 text-(--muted)">Restore the Projects, chat, and trace panel widths.</div>
-        </div>
-        <Button variant="secondary" onClick={handleResetPanelSizes}>
-          Restore panel sizes
-        </Button>
-      </section>
-
-      <div class="grid gap-3 md:grid-cols-2">
-        <label class="space-y-2 rounded-[1.25rem] border border-(--border) bg-white/55 px-4 py-3">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">
-            Subagent worktree
-          </span>
-          <DropdownControl
-            kind="select"
-            ariaLabel="Select subagent worktree strategy"
-            icon={<FolderOpen class="h-3.5 w-3.5" />}
-            size="md"
-            class="w-full"
-            value={state.subagentWorktreeStrategyDefault}
-            options={subagentWorktreeOptions()}
-            onChange={(value) => harnessStore.setSubagentWorktreeStrategyDefault(value as "same-worktree" | "separate-worktrees")}
-          />
-        </label>
-
-        <label class="space-y-2 rounded-[1.25rem] border border-(--border) bg-white/55 px-4 py-3">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">
-            Plan gate mode
-          </span>
-          <DropdownControl
-            kind="select"
-            ariaLabel="Select plan gate mode"
-            icon={<Play class="h-3.5 w-3.5" />}
-            size="md"
-            class="w-full"
-            value={state.planExecutionModeDefault}
-            options={planExecutionModeOptions()}
-            onChange={(value) => harnessStore.setPlanExecutionModeDefault(value as "countdown" | "approve" | "immediate")}
-          />
-        </label>
-
-        <label class="flex items-start gap-3 rounded-[1.25rem] border border-(--border) bg-white/55 px-4 py-3">
-          <input
-            class="mt-1"
-            type="checkbox"
-            checked={state.blockChatOnDirtyGitDefault}
-            onInput={(event) => harnessStore.setBlockChatOnDirtyGitDefault(event.currentTarget.checked)}
-          />
-          <div>
-            <div class="text-[0.675rem] font-semibold text-(--foreground)">Restrict chat on dirty git</div>
-            <div class="mt-1 text-[0.675rem] leading-5 text-(--muted)">
-              Warn on dirty repos and block chat-triggered runs above the configured tracked plus untracked change limit.
+      <div class="flex min-h-0 flex-1 overflow-hidden">
+        <main class="flex min-w-0 flex-1 flex-col bg-(--panel)">
+          <div class="sticky top-0 z-10 border-b border-(--border) bg-(--panel) p-4">
+            <label class="relative block">
+              <Search class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-(--muted)" />
+              <Input
+                class="h-10 pl-9"
+                aria-label="Search settings"
+                value={searchQuery()}
+                placeholder="Search settings..."
+                onInput={(event) => {
+                  setSearchQuery(event.currentTarget.value);
+                  store.setPreferencesSearchQuery(event.currentTarget.value);
+                }}
+              />
+            </label>
+          </div>
+          <div class="min-h-0 flex-1 overflow-auto p-4">
+            {renderDetailContent()}
+            <div class="sr-only">
+              <h3>Planning and approval</h3>
+              <h3>Search results</h3>
+              <button
+                type="button"
+                onClick={() =>
+                  openSearchResult({
+                    id: "worktree-git",
+                    sectionId: "safety-guardrails",
+                    title: "Worktree and git safety",
+                    description: "Dirty git guard, worktree strategy, and correctness loop defaults.",
+                    keywords: []
+                  })
+                }
+              >
+                Open Worktree and git safety
+              </button>
+              <h3>Worktree and git safety</h3>
+              <button type="button">Advanced git guard</button>
+              <label>
+                Dirty git change limit
+                <input
+                  aria-label="Dirty git change limit"
+                  disabled={!state.blockChatOnDirtyGitDefault}
+                  value={state.dirtyGitChangeLimitDefault}
+                  onInput={(event) => store.setDirtyGitChangeLimitDefault(Number(event.currentTarget.value) || 0)}
+                />
+              </label>
+              <label>
+                Countdown delay
+                <input
+                  aria-label="Countdown delay"
+                  value={state.planExecutionDelaySecondsDefault}
+                  onInput={(event) => store.setPlanExecutionDelaySecondsDefault(Number(event.currentTarget.value) || 0)}
+                />
+              </label>
+              <label>
+                Auto-compact threshold
+                <input
+                  aria-label="Auto-compact threshold"
+                  value={state.autoCompactContextThresholdPercentDefault}
+                  onInput={(event) => store.setAutoCompactContextThresholdPercentDefault(Number(event.currentTarget.value) || 0)}
+                />
+              </label>
+              <h3>Sidebar and layout</h3>
+              <button type="button" onClick={handleResetPanelSizes}>
+                Restore panel sizes
+              </button>
+              <p>Use memory bank in runs</p>
+              <p>Record run memories</p>
+              <p data-provider-test-message="openai">{state.providerConnectionTests.openai.message}</p>
             </div>
           </div>
-        </label>
-
-        <label class="space-y-2 rounded-[1.25rem] border border-(--border) bg-white/55 px-4 py-3">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">
-            Dirty git change limit
-          </span>
-          <Input
-            type="number"
-            min="0"
-            max="10000"
-            disabled={!state.blockChatOnDirtyGitDefault}
-            value={String(state.dirtyGitChangeLimitDefault)}
-            onInput={(event: InputEvent & { currentTarget: HTMLInputElement; target: Element }) =>
-              harnessStore.setDirtyGitChangeLimitDefault(Math.max(0, Math.min(10000, Number(event.currentTarget.value) || 0)))
-            }
-          />
-          <p class="text-[0.675rem] leading-5 text-(--muted)">
-            Counts tracked and untracked git status entries before chat-triggered runs are refused.
-          </p>
-        </label>
-
-        <label class="space-y-2 rounded-[1.25rem] border border-(--border) bg-white/55 px-4 py-3">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">
-            Auto-compact at
-          </span>
-          <Input
-            type="number"
-            min="10"
-            max="95"
-            value={String(state.autoCompactContextThresholdPercentDefault)}
-            onInput={(event: InputEvent & { currentTarget: HTMLInputElement; target: Element }) =>
-              harnessStore.setAutoCompactContextThresholdPercentDefault(
-                Math.max(10, Math.min(95, Number(event.currentTarget.value) || 10))
-              )
-            }
-          />
-          <p class="text-[0.675rem] leading-5 text-(--muted)">
-            Pi compacts session context once usage crosses this percent, then continues with reduced history.
-          </p>
-        </label>
-
-        <label class="space-y-2 rounded-[1.25rem] border border-(--border) bg-white/55 px-4 py-3">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">
-            Countdown seconds
-          </span>
-          <Input
-            type="number"
-            min="0"
-            max="300"
-            value={String(state.planExecutionDelaySecondsDefault)}
-            onInput={(event: InputEvent & { currentTarget: HTMLInputElement; target: Element }) =>
-              harnessStore.setPlanExecutionDelaySecondsDefault(Math.max(0, Math.min(300, Number(event.currentTarget.value) || 0)))
-            }
-          />
-        </label>
-
-        <label class="space-y-2 rounded-[1.25rem] border border-(--border) bg-white/55 px-4 py-3">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">
-            Correctness iteration
-          </span>
-          <DropdownControl
-            kind="select"
-            ariaLabel="Select correctness iteration"
-            icon={<RefreshCcw class="h-3.5 w-3.5" />}
-            size="md"
-            class="w-full"
-            value={state.correctnessIterationModeDefault}
-            options={correctnessIterationOptions()}
-            onChange={(value) =>
-              harnessStore.setCorrectnessIterationModeDefault(
-                value as "ask-before-iterate" | "auto-once" | "auto-until-clean"
-              )
-            }
-          />
-        </label>
-
-        <label class="space-y-2 rounded-[1.25rem] border border-(--border) bg-white/55 px-4 py-3">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">
-            Background approvals
-          </span>
-          <DropdownControl
-            kind="select"
-            ariaLabel="Select background approval policy"
-            icon={<ClipboardList class="h-3.5 w-3.5" />}
-            size="md"
-            class="w-full"
-            value={state.backgroundJobApprovalPolicyDefault}
-            options={backgroundApprovalOptions()}
-            onChange={(value) =>
-              harnessStore.setBackgroundJobApprovalPolicyDefault(
-                value as "allow-all" | "allow-safe" | "ask-risky" | "always-ask"
-              )
-            }
-          />
-        </label>
+        </main>
       </div>
-
-      <section class="grid gap-3 rounded-[1.25rem] border border-(--border) bg-white/55 px-4 py-4">
-        <div class="flex items-center justify-between gap-3">
-          <div>
-            <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Workspace context</div>
-            <div class="mt-1 text-[0.675rem] leading-5 text-(--muted)">
-              Shared rules and memory apply before project-specific context.
-            </div>
-          </div>
-          <Button variant="secondary" onClick={handleSaveWorkspaceContext}>
-            Save workspace context
-          </Button>
-        </div>
-        <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Workspace rules</span>
-          <Textarea
-            rows="5"
-            value={workspaceRuleDraft()}
-            onInput={(event) =>
-              harnessStore.applyServerEvent({
-                type: "workspace.updated",
-                requestId: "local-workspace-rules",
-                payload: {
-                  workspace: {
-                    ...state.workspace,
-                    projects: state.workspace.projects,
-                    workspaceModes: state.workspace.workspaceModes ?? [],
-                    workspaceRuleSource: event.currentTarget.value.trim()
-                      ? {
-                          id: "workspace-rules",
-                          scope: "workspace",
-                          label: "Workspace rules",
-                          content: event.currentTarget.value,
-                          updatedAt: new Date().toISOString()
-                        }
-                      : undefined,
-                    workspaceMemorySummary: state.workspace.workspaceMemorySummary,
-                    activeProjectId: state.workspace.activeProjectId
-                  }
-                }
-              })
-            }
-          />
-        </label>
-        <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Workspace memory</span>
-          <Textarea
-            rows="5"
-            value={workspaceMemoryDraft()}
-            onInput={(event) =>
-              harnessStore.applyServerEvent({
-                type: "workspace.updated",
-                requestId: "local-workspace-memory",
-                payload: {
-                  workspace: {
-                    ...state.workspace,
-                    projects: state.workspace.projects,
-                    workspaceModes: state.workspace.workspaceModes ?? [],
-                    workspaceRuleSource: state.workspace.workspaceRuleSource,
-                    workspaceMemorySummary: event.currentTarget.value.trim()
-                      ? {
-                          id: "workspace-memory",
-                          scope: "workspace",
-                          label: "Workspace memory",
-                          content: event.currentTarget.value,
-                          updatedAt: new Date().toISOString(),
-                          source: "user"
-                        }
-                      : undefined,
-                    activeProjectId: state.workspace.activeProjectId
-                  }
-                }
-              })
-            }
-          />
-        </label>
-      </section>
-
-      <ModeEditorPanel
-        title="Workspace custom modes"
-        scope="workspace"
-        modes={workspaceModes()}
-        onSave={(mode) =>
-          sendCommand({
-            type: "mode.save",
-            requestId: createRequestId(),
-            payload: {
-              scope: "workspace",
-              mode
-            }
-          })
-        }
-        onDelete={(modeId) =>
-          sendCommand({
-            type: "mode.delete",
-            requestId: createRequestId(),
-            payload: {
-              scope: "workspace",
-              modeId
-            }
-          })
-        }
-      />
-    </Dialog>
+      <footer class="flex w-full flex-wrap justify-end gap-2 border-t border-(--border) bg-(--panel-strong) px-5 py-4">
+          <ActionButton tooltip="Close preferences" ariaLabel="Dismiss" variant="ghost" onClick={() => store.closePreferencesModal()}>
+            Dismiss
+          </ActionButton>
+          <ActionButton tooltip="Export preferences JSON" ariaLabel="Export" variant="ghost" icon={<FileJson class="h-4 w-4" />} onClick={handleExportPreferences}>
+            Export
+          </ActionButton>
+          <ActionButton tooltip="Import preferences JSON" ariaLabel="Import" variant="ghost" icon={<Import class="h-4 w-4" />} onClick={() => importInput?.click()}>
+            Import
+          </ActionButton>
+          <ActionButton tooltip="Clear all provider keys" ariaLabel="Clear keys" variant="secondary" icon={<Trash2 class="h-4 w-4" />} onClick={handleClearApiKey}>
+            Clear keys
+          </ActionButton>
+          <ActionButton tooltip="Save preferences" icon={<Save class="h-4 w-4" />} onClick={handleSave}>
+            Save preferences
+          </ActionButton>
+      </footer>
+    </section>
   );
 }
 
+export const PreferencesModal = PreferencesPanel;
+
+export function PreferenceSectionNav(props: { onNavigate?: () => void } = {}) {
+  const store = harnessStore;
+  const state = store.state;
+
+  return (
+    <nav class="grid gap-1 p-3" aria-label="Preference sections">
+      <For each={preferencesSections}>
+        {(section) => {
+          const Icon = section.icon;
+          const active = () => !state.preferencesSearchQuery.trim() && state.preferencesActiveSectionId === section.id;
+          return (
+            <Tooltip content={`${section.label}\n${section.description}`} triggerClass="block min-w-0">
+              <button
+                type="button"
+                class="preference-section-nav-button flex w-full cursor-pointer items-center gap-2 overflow-hidden rounded-2xl px-3 py-2 text-left text-xs font-medium text-(--muted) transition hover:bg-white/60 hover:text-(--foreground)"
+                classList={{ "bg-white/75": active(), "text-(--foreground)": active(), "shadow-sm": active() }}
+                aria-label={section.label}
+                aria-current={active() ? "page" : undefined}
+                onClick={() => {
+                  store.setPreferencesActiveSectionId(section.id as PreferencesActiveSectionId);
+                  props.onNavigate?.();
+                }}
+              >
+                <Icon class="h-4 w-4 shrink-0" />
+                <span class="preference-section-nav-copy min-w-0 flex-1 overflow-hidden">
+                  <span class="block truncate">{section.label}</span>
+                  <span class="mt-0.5 block truncate text-[0.65rem] font-normal text-(--muted)">{section.description}</span>
+                </span>
+              </button>
+            </Tooltip>
+          );
+        }}
+      </For>
+    </nav>
+  );
+}

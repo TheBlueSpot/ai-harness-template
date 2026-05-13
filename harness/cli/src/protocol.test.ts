@@ -3,9 +3,11 @@ import { defaultProviderCapabilities } from "../../shared/capabilities";
 import {
   chatMessageSchema,
   createProjectThreadSummary,
+  memoryEntrySchema,
   parseClientCommand,
   parseServerEvent,
   planPrerequisiteSchema,
+  preferencesStateSchema,
   planningQuestionSchema,
   plannerResultSchema
 } from "../../shared/protocol";
@@ -89,6 +91,20 @@ describe("client command validation", () => {
     expect(command.type).toBe("thread.cleanupArchive");
   });
 
+  test("accepts memory reorder payloads", () => {
+    const command = parseClientCommand({
+      type: "memory.reorder",
+      requestId: "req-memory-reorder",
+      payload: {
+        projectId: "project-1",
+        memoryEntryId: "memory-1",
+        direction: "up"
+      }
+    });
+
+    expect(command.type).toBe("memory.reorder");
+  });
+
   test("accepts thread cleanup archive payloads for all projects", () => {
     const command = parseClientCommand({
       type: "thread.cleanupArchive",
@@ -140,6 +156,32 @@ describe("client command validation", () => {
         requestId: "req-clear"
       }).type
     ).toBe("preferences.clearApiKey");
+  });
+
+  test("accepts provider connection test commands", () => {
+    const parsed = parseClientCommand({
+      type: "preferences.testProviderConnection",
+      requestId: "req-test-provider",
+      payload: {
+        provider: "openai",
+        apiKey: "sk-local-123"
+      }
+    });
+
+    expect(parsed.type).toBe("preferences.testProviderConnection");
+  });
+
+  test("rejects malformed provider connection test commands", () => {
+    expect(() =>
+      parseClientCommand({
+        type: "preferences.testProviderConnection",
+        requestId: "req-test-provider-bad",
+        payload: {
+          provider: "ollama",
+          apiKey: "local"
+        }
+      })
+    ).toThrow();
   });
 
   test("accepts preferences.save payloads with dirty git controls", () => {
@@ -210,6 +252,21 @@ describe("client command validation", () => {
         }
       }).type
     ).toBe("run.execute");
+
+    expect(
+      parseClientCommand({
+        type: "assistant.chat.send",
+        requestId: "req-controls-assistant-chat",
+        payload: {
+          assistantId: "assistant-1",
+          content: "Check this",
+          modeId: "implement",
+          executionModelId: "openai/gpt-5.4",
+          reasoningStrength: "high",
+          fastMode: true
+        }
+      }).type
+    ).toBe("assistant.chat.send");
   });
 
   test("rejects invalid runtime budget values", () => {
@@ -597,6 +654,104 @@ describe("client command validation", () => {
   });
 });
 
+describe("memory protocol", () => {
+  const memoryPayload = {
+    id: "memory-1",
+    projectId: "project-1",
+    kind: "task-summary",
+    status: "active",
+    title: "Memory",
+    summary: "Remember this.",
+    tags: ["tag"],
+    pathGlobs: ["src/**"],
+    confidence: "medium",
+    freshness: "fresh",
+    pinned: false,
+    hitCount: 0,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  } as const;
+
+  test("defaults missing memory priority", () => {
+    expect(memoryEntrySchema.parse(memoryPayload).priority).toBe(50000);
+  });
+
+  test("defaults memory recording preference", () => {
+    const parsed = preferencesStateSchema.parse({
+      hasUsableApiKey: false,
+      hasStoredApiKey: false,
+      hasUsableOpenAiApiKey: false,
+      hasStoredOpenAiApiKey: false,
+      hasUsableGoogleApiKey: false,
+      hasStoredGoogleApiKey: false,
+      providerBrand: "gpt",
+      debugEnabledDefault: false,
+      tracePanelDefaultOpen: true,
+      subagentWorktreeStrategyDefault: "same-worktree",
+      blockChatOnDirtyGitDefault: true,
+      dirtyGitChangeLimitDefault: 20,
+      autoCompactContextThresholdPercentDefault: 40,
+      planExecutionModeDefault: "countdown",
+      planExecutionDelaySecondsDefault: 10,
+      correctnessIterationModeDefault: "ask-before-iterate",
+      backgroundJobApprovalPolicyDefault: "ask-risky",
+      memoryBankEnabledDefault: true,
+      attachmentsEnabled: false,
+      capabilities: [],
+      agentRuntimes: []
+    });
+
+    expect(parsed.memoryBankRecordRunsDefault).toBe(true);
+  });
+
+  test("accepts provider connection tested events", () => {
+    const parsed = parseServerEvent({
+      type: "preferences.providerConnectionTested",
+      requestId: "req-provider-tested",
+      payload: {
+        provider: "anthropic",
+        status: "ready",
+        message: "Connection ready. 3 models visible.",
+        modelCount: 3
+      }
+    });
+
+    expect(parsed.type).toBe("preferences.providerConnectionTested");
+  });
+
+  test("rejects malformed provider connection tested events", () => {
+    expect(() =>
+      parseServerEvent({
+        type: "preferences.providerConnectionTested",
+        requestId: "req-provider-tested-bad",
+        payload: {
+          provider: "openai",
+          status: "pending",
+          message: "still running"
+        }
+      })
+    ).toThrow();
+  });
+
+  test("accepts memory reordered events", () => {
+    const event = parseServerEvent({
+      type: "memory.reordered",
+      requestId: "req-memory-reordered",
+      payload: {
+        projectId: "project-1",
+        entries: [
+          {
+            ...memoryPayload,
+            priority: 100
+          }
+        ]
+      }
+    });
+
+    expect(event.type).toBe("memory.reordered");
+  });
+});
+
 describe("planner result validation", () => {
   test("rejects out-of-range difficulty scores", () => {
     expect(() =>
@@ -675,7 +830,8 @@ describe("planner result validation", () => {
             planExecutionDelaySecondsDefault: 10,
             correctnessIterationModeDefault: "ask-before-iterate",
             backgroundJobApprovalPolicyDefault: "ask-risky",
-            memoryBankEnabledDefault: true
+            memoryBankEnabledDefault: true,
+            memoryBankRecordRunsDefault: true
           },
           setup: defaultSetup,
           backgroundJobs: {
@@ -874,7 +1030,8 @@ describe("planner result validation", () => {
             planExecutionDelaySecondsDefault: 10,
             correctnessIterationModeDefault: "ask-before-iterate",
             backgroundJobApprovalPolicyDefault: "ask-risky",
-            memoryBankEnabledDefault: true
+            memoryBankEnabledDefault: true,
+            memoryBankRecordRunsDefault: true
           },
           setup: defaultSetup,
           backgroundJobs: {

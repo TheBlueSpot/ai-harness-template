@@ -71,10 +71,10 @@ export function ThreadCleanupDialog(props: ThreadCleanupDialogProps) {
       contentClass="gap-3"
       footer={
         <>
-          <Button variant="secondary" onClick={props.onClose}>
+          <Button tooltip="Close thread cleanup without archiving" variant="secondary" onClick={props.onClose}>
             Cancel
           </Button>
-          <Button disabled={submitDisabled()} onClick={submit}>
+          <Button tooltip={submitDisabled() ? "No inactive threads match cleanup settings" : "Archive old inactive threads"} disabled={submitDisabled()} onClick={submit}>
             Archive old threads
           </Button>
         </>

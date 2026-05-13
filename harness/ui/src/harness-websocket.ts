@@ -7,6 +7,7 @@ import {
   readBrowserUiSession,
   readLocalPreferences
 } from "./harness-store";
+import { recordUiTelemetry } from "./lib/ui-telemetry";
 import { pushToast, reportUiError } from "./toast-store";
 
 type HarnessSocket = {
@@ -74,6 +75,12 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
     try {
       const browserUiSession = readBrowserUiSession();
       const parsed = parseServerEvent(JSON.parse(event.data));
+      recordUiTelemetry("websocket.event", {
+        type: parsed.type,
+        requestId: readTelemetryField(parsed, "requestId"),
+        projectId: readTelemetryPayloadField(parsed, "projectId"),
+        threadId: readTelemetryPayloadField(parsed, "threadId")
+      });
       if (parsed.type === "connection.pong") {
         missedPongs = 0;
         harnessStore.setConnectionState("connected");
@@ -116,7 +123,8 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
                 planExecutionDelaySecondsDefault: harnessStore.state.planExecutionDelaySecondsDefault,
                 correctnessIterationModeDefault: harnessStore.state.correctnessIterationModeDefault,
                 backgroundJobApprovalPolicyDefault: harnessStore.state.backgroundJobApprovalPolicyDefault,
-                memoryBankEnabledDefault: harnessStore.state.memoryBankEnabledDefault
+                memoryBankEnabledDefault: harnessStore.state.memoryBankEnabledDefault,
+                memoryBankRecordRunsDefault: harnessStore.state.memoryBankRecordRunsDefault
               }
             } satisfies ClientCommand)
           );
@@ -143,6 +151,7 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
             correctnessIterationModeDefault: harnessStore.state.correctnessIterationModeDefault,
             backgroundJobApprovalPolicyDefault: harnessStore.state.backgroundJobApprovalPolicyDefault,
             memoryBankEnabledDefault: harnessStore.state.memoryBankEnabledDefault,
+            memoryBankRecordRunsDefault: harnessStore.state.memoryBankRecordRunsDefault,
             backgroundJobNotificationsEnabled: harnessStore.state.backgroundJobNotificationsEnabled
           });
         }
@@ -172,6 +181,7 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
           correctnessIterationModeDefault: harnessStore.state.correctnessIterationModeDefault,
           backgroundJobApprovalPolicyDefault: harnessStore.state.backgroundJobApprovalPolicyDefault,
           memoryBankEnabledDefault: harnessStore.state.memoryBankEnabledDefault,
+          memoryBankRecordRunsDefault: harnessStore.state.memoryBankRecordRunsDefault,
           backgroundJobNotificationsEnabled: harnessStore.state.backgroundJobNotificationsEnabled
         });
       }
@@ -297,6 +307,21 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
       ptySockets.clear();
     }
   };
+}
+
+function readTelemetryField(input: unknown, key: string) {
+  return isTelemetryRecord(input) && typeof input[key] === "string" ? input[key] : undefined;
+}
+
+function readTelemetryPayloadField(input: unknown, key: string) {
+  if (!isTelemetryRecord(input) || !isTelemetryRecord(input.payload)) {
+    return undefined;
+  }
+  return typeof input.payload[key] === "string" ? input.payload[key] : undefined;
+}
+
+function isTelemetryRecord(input: unknown): input is Record<string, unknown> {
+  return typeof input === "object" && input !== null;
 }
 
 export function sendCliSessionInput(sessionId: string, input: string | Uint8Array) {

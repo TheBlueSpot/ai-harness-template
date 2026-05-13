@@ -42,8 +42,8 @@ describe("subagent defaults", () => {
     ).toBe("gemini-2.5-flash-lite");
   });
 
-  test("forces low reasoning for spawned subagents", () => {
+  test("inherits requested reasoning for spawned subagents", () => {
     expect(resolveSubagentReasoningStrength()).toBe("low");
-    expect(resolveSubagentReasoningStrength("extra-high")).toBe("low");
+    expect(resolveSubagentReasoningStrength("extra-high")).toBe("extra-high");
   });
 });

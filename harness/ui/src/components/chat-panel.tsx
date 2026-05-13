@@ -18,7 +18,6 @@ import {
   canSelectProviderBrand,
   COMPOSER_REASONING_STRENGTHS,
   getEffectiveProviderBrandForAgent,
-  getActiveProject,
   getActiveMode,
   getCapabilityTags,
   getBlockingSetupCheck,
@@ -36,6 +35,7 @@ import {
   type ViewProjectState
 } from "../harness-store";
 import { uploadFiles } from "../lib/uploadthing";
+import { buildChatTimelineRows, type ChatTimelineRow, type TimelineLiveMessage } from "../lib/chat-timeline-model";
 import { formatShortTimestamp, resolveBrowserTimezone } from "../lib/time-format";
 import { pushToast } from "../toast-store";
 import { ActionButton } from "./action-button";
@@ -43,6 +43,7 @@ import { CliSessionPanel } from "./cli-session-panel";
 import { MarkdownContent } from "./markdown-content";
 import { ModeEditorPanel } from "./mode-editor-panel";
 import { SetupChecklistCard } from "./setup-checklist-card";
+import { StreamedToolBlock } from "./streamed-tool-block";
 import { ChatComposer } from "./primitives/chat-composer";
 import { Dialog } from "./primitives/dialog";
 import { CopyTextButton } from "./primitives/copy-text-button";
@@ -76,6 +77,7 @@ import {
   RefreshCcw,
   Plus,
   ArrowDown,
+  ArrowUp,
   Check,
   SendHorizontal,
   Settings,
@@ -151,16 +153,19 @@ function renderMessageActionRow(timestamp: string | number | Date | undefined, c
   );
 }
 
-type LiveHarnessMessage = {
-  id: string;
-  content: string;
-  locked: boolean;
-  kind: "status" | "assistant";
-};
-
-type ProjectTranscriptRow =
-  | { kind: "persisted"; message: ChatMessage }
-  | { kind: "live"; message: LiveHarnessMessage; liveIndex: number };
+function reactiveArraySnapshot<T>(items: readonly T[] | undefined) {
+  if (!items) {
+    return [];
+  }
+  const snapshot: T[] = [];
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
+    if (item !== undefined) {
+      snapshot.push(item);
+    }
+  }
+  return snapshot;
+}
 
 export function ChatPanel() {
   let messageViewport: HTMLDivElement | undefined;
@@ -171,7 +176,14 @@ export function ChatPanel() {
   let waitingTimer: number | undefined;
   const state = harnessStore.state;
   const sendCommand = harnessStore.actions.sendCommand;
-  const activeProject = () => getActiveProject(state);
+  const activeProjectIndex = createMemo(() =>
+    state.workspace.projects.findIndex((project) => project.id === state.workspace.activeProjectId)
+  );
+  const activeProject = () => {
+    const index = activeProjectIndex();
+    return index >= 0 ? state.workspace.projects[index] : undefined;
+  };
+  const project = () => activeProject()!;
   const [stickToBottom, setStickToBottom] = createSignal(true);
   const [editingThreadTitle, setEditingThreadTitle] = createSignal(false);
   const [threadTitleDraft, setThreadTitleDraft] = createSignal("");
@@ -185,6 +197,7 @@ export function ChatPanel() {
   const [experimentDialogOpen, setExperimentDialogOpen] = createSignal(false);
   const [projectRulesDraft, setProjectRulesDraft] = createSignal("");
   const [threadMemoryDraft, setThreadMemoryDraft] = createSignal("");
+  const [deleteArmedMemoryId, setDeleteArmedMemoryId] = createSignal<string>();
   const [draftAttachments, setDraftAttachments] = createSignal<ChatAttachment[]>([]);
   const [uploadingAttachments, setUploadingAttachments] = createSignal(false);
   const [composerSettingsOpen, setComposerSettingsOpen] = createSignal(false);
@@ -196,7 +209,13 @@ export function ChatPanel() {
   const resumableRun = () => (activeProject()?.activeRun?.resumable ? activeProject()?.activeRun : undefined);
   const retryableRun = () => (activeProject()?.lastRun?.retryable ? activeProject()?.lastRun : undefined);
   const readyRun = () => (activeProject()?.activeRun?.status === "ready" ? activeProject()?.activeRun : undefined);
-  const workingRun = () => (activeProject()?.session.isStreaming ? activeProject()?.activeRun : undefined);
+  const workingRun = () => {
+    const project = activeProject();
+    return project?.session.isStreaming && project.activeRun && isBlockingRunStatus(project.activeRun.status)
+      ? project.activeRun
+      : undefined;
+  };
+  const activeThreadIsStreaming = () => Boolean(workingRun());
   const activeThread = () => activeProject()?.threads.find((thread) => thread.id === activeProject()?.activeThreadId);
   const currentExecutionPlan = () => activeProject()?.latestPlan?.executionPlan ?? readyRun()?.plan;
   const resolvedModes = () => getResolvedModes(state, activeProject());
@@ -316,12 +335,19 @@ export function ChatPanel() {
     const project = activeProject();
     return project ? getStreamingLiveMessages(project) : [];
   };
-  const transcriptRows = createMemo<ProjectTranscriptRow[]>(() => [
-    ...(activeProject()?.session.messages ?? []).map((message) => ({ kind: "persisted" as const, message })),
-    ...liveHarnessMessages().map((message, liveIndex) => ({ kind: "live" as const, message, liveIndex }))
-  ]);
+  const projectTraces = createMemo(() => reactiveArraySnapshot(activeProject()?.traces));
+  const projectMemoryEntries = createMemo(() => reactiveArraySnapshot(activeProject()?.memoryEntries));
+  const transcriptRows = createMemo<ChatTimelineRow[]>(() => {
+    const project = activeProject();
+    return buildChatTimelineRows({
+      messages: reactiveArraySnapshot(project?.session.messages),
+      liveMessages: liveHarnessMessages(),
+      toolActivities: reactiveArraySnapshot(project?.activeRun?.toolActivities ?? project?.lastRun?.toolActivities),
+      activeRunId: project?.activeRun?.id ?? project?.lastRun?.id
+    });
+  });
   const liveHarnessMessageTimestamp = () => activeProject()?.activeRun?.updatedAt ?? activeProject()?.activeRun?.createdAt;
-  const runSubtasks = createMemo(() => activeProject()?.activeRun?.subtasks ?? activeProject()?.lastRun?.subtasks ?? []);
+  const runSubtasks = createMemo(() => reactiveArraySnapshot(activeProject()?.activeRun?.subtasks ?? activeProject()?.lastRun?.subtasks));
   const projectChatSearchResults = createMemo(() => buildProjectChatSearchResults(state.workspace.projects, projectChatSearch()));
   const liveHarnessMessageKey = () =>
     liveHarnessMessages()
@@ -330,11 +356,11 @@ export function ChatPanel() {
   const failedSubtaskCount = () =>
     activeProject()?.activeRun?.subtasks.filter((task) => task.status === "failed").length ?? 0;
   const contextUsage = () => activeProject()?.contextUsage;
-  const attachmentButtonDisabled = () => !state.attachmentsEnabled || activeProject()?.session.isStreaming || uploadingAttachments();
+  const attachmentButtonDisabled = () => !state.attachmentsEnabled || activeThreadIsStreaming() || uploadingAttachments();
   const attachmentButtonReason = () =>
     !state.attachmentsEnabled
       ? "Set UPLOADTHING_TOKEN on the server to enable attachments"
-      : activeProject()?.session.isStreaming
+      : activeThreadIsStreaming()
         ? "Project is streaming"
         : uploadingAttachments()
           ? "Attachment upload in progress"
@@ -365,7 +391,7 @@ export function ChatPanel() {
       return { disabled: true, disabledReason: executionPauseReason(), tooltip };
     }
 
-    if (project.session.isStreaming) {
+    if (activeThreadIsStreaming()) {
       return { disabled: true, disabledReason: "Project is streaming", tooltip };
     }
 
@@ -595,9 +621,15 @@ export function ChatPanel() {
   });
 
   createEffect(() => {
-    if (currentTab() === "memory" && activeProject()) {
+    if (currentTab() === "memory" && activeProject() && state.connectionState === "connected") {
       handleLoadMemoryEntries();
     }
+  });
+
+  createEffect(() => {
+    activeProject()?.id;
+    currentTab();
+    setDeleteArmedMemoryId(undefined);
   });
 
   createEffect(() => {
@@ -1260,10 +1292,17 @@ export function ChatPanel() {
     );
   }
 
-  function renderTranscriptRow(row: ProjectTranscriptRow, index: number, project: ViewProjectState) {
+  function renderTranscriptRow(row: ChatTimelineRow, index: number, project: ViewProjectState) {
+    if (row.kind === "tool-block") {
+      return <StreamedToolBlock block={row.block} />;
+    }
+
     if (row.kind === "live") {
       return (
-        <article class={`flex flex-col gap-2 rounded-3xl border border-(--border) p-3 shadow-sm ${row.message.kind === "status" ? "bg-white/70" : "bg-teal-950/5"}`}>
+        <article
+          class="flex flex-col gap-2 rounded-3xl border border-(--border) p-3 shadow-sm"
+          classList={{ "bg-white/70": row.message.kind === "status", "bg-teal-950/5": row.message.kind !== "status" }}
+        >
           <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--accent-strong)">harness</div>
           <MarkdownContent content={() => row.message.content} size="compact" live={!row.message.locked && row.liveIndex === liveHarnessMessages().length - 1} />
           {renderMessageActionRow(
@@ -1285,7 +1324,7 @@ export function ChatPanel() {
     }
 
     const message = row.message;
-    if (shouldHidePersistedStreamingAssistantMessage(project, message, index)) {
+    if (shouldHidePersistedStreamingAssistantMessage(project, message)) {
       return null;
     }
 
@@ -1294,17 +1333,21 @@ export function ChatPanel() {
         when={message.kind === "plan-summary" && message.metadata?.type === "plan-summary"}
         fallback={
           <article
-            class={`border border-(--border) p-3 shadow-sm ${
-              isHarnessTranscriptMessage(message)
-                ? message.kind === "run-milestones" && message.metadata?.type === "run-milestones" && message.metadata.status === "open"
-                  ? "rounded-3xl bg-teal-950/10 ring-1 ring-teal-700/20"
-                  : "rounded-3xl bg-teal-950/5"
-                : "rounded-3xl bg-white/60"
-            }`}
+            class="rounded-3xl border border-(--border) p-3 shadow-sm"
+            classList={{
+              "bg-teal-950/10": isHarnessTranscriptMessage(message) && message.kind === "run-milestones" && message.metadata?.type === "run-milestones" && message.metadata.status === "open",
+              "ring-1": isHarnessTranscriptMessage(message) && message.kind === "run-milestones" && message.metadata?.type === "run-milestones" && message.metadata.status === "open",
+              "ring-teal-700/20": isHarnessTranscriptMessage(message) && message.kind === "run-milestones" && message.metadata?.type === "run-milestones" && message.metadata.status === "open",
+              "bg-teal-950/5": isHarnessTranscriptMessage(message) && !(message.kind === "run-milestones" && message.metadata?.type === "run-milestones" && message.metadata.status === "open"),
+              "bg-white/60": !isHarnessTranscriptMessage(message)
+            }}
           >
             <div class="flex flex-col gap-3">
               <div class="flex items-center gap-2">
-                <div class={`text-[0.585rem] font-semibold uppercase tracking-[0.2em] ${isHarnessTranscriptMessage(message) ? "text-(--accent-strong)" : "text-(--muted)"}`}>
+                <div
+                  class="text-[0.585rem] font-semibold uppercase tracking-[0.2em]"
+                  classList={{ "text-(--accent-strong)": isHarnessTranscriptMessage(message), "text-(--muted)": !isHarnessTranscriptMessage(message) }}
+                >
                   {getTranscriptRoleLabel(message.role)}
                 </div>
                 <Show when={message.kind === "run-milestones" && message.metadata?.type === "run-milestones" && message.metadata.status === "open"}>
@@ -1515,7 +1558,15 @@ export function ChatPanel() {
     });
   }
 
+  function handleSelectPaneTab(tab: ChatPaneTab) {
+    harnessStore.setChatPaneTab(tab);
+    if (tab === "memory" && state.connectionState === "connected") {
+      queueMicrotask(handleLoadMemoryEntries);
+    }
+  }
+
   function handleUpdateMemory(entryId: string, patch: { pinned?: boolean; status?: "active" | "archived" }) {
+    setDeleteArmedMemoryId(undefined);
     sendCommand({
       type: "memory.update",
       requestId: createRequestId(),
@@ -1526,7 +1577,31 @@ export function ChatPanel() {
     });
   }
 
+  function handleReorderMemory(entryId: string, direction: "up" | "down") {
+    const project = activeProject();
+    if (!project) {
+      return;
+    }
+
+    setDeleteArmedMemoryId(undefined);
+    sendCommand({
+      type: "memory.reorder",
+      requestId: createRequestId(),
+      payload: {
+        projectId: project.id,
+        memoryEntryId: entryId,
+        direction
+      }
+    });
+  }
+
   function handleDeleteMemory(entryId: string) {
+    if (deleteArmedMemoryId() !== entryId) {
+      setDeleteArmedMemoryId(entryId);
+      return;
+    }
+
+    setDeleteArmedMemoryId(undefined);
     sendCommand({
       type: "memory.delete",
       requestId: createRequestId(),
@@ -1787,7 +1862,8 @@ export function ChatPanel() {
       correctnessIterationModeDefault: state.correctnessIterationModeDefault,
       backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
       backgroundJobNotificationsEnabled: state.backgroundJobNotificationsEnabled,
-      memoryBankEnabledDefault: state.memoryBankEnabledDefault
+      memoryBankEnabledDefault: state.memoryBankEnabledDefault,
+      memoryBankRecordRunsDefault: state.memoryBankRecordRunsDefault
     });
 
     sendCommand({
@@ -1808,7 +1884,8 @@ export function ChatPanel() {
         planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
         correctnessIterationModeDefault: state.correctnessIterationModeDefault,
         backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
-        memoryBankEnabledDefault: state.memoryBankEnabledDefault
+        memoryBankEnabledDefault: state.memoryBankEnabledDefault,
+        memoryBankRecordRunsDefault: state.memoryBankRecordRunsDefault
       }
     });
   }
@@ -1985,6 +2062,8 @@ export function ChatPanel() {
       aiPrompt: run.latestUserPrompt,
       aiModeId: activeMode()?.id,
       aiExecutionModelId: run.executionModelId ?? getEffectiveExecutionModelId(),
+      aiReasoningStrength: selectedReasoningStrength(),
+      aiFastMode: selectedFastMode(),
       aiPlanExecutionMode: run.plan?.gating.mode ?? state.planExecutionModeDefault,
       aiSubagentWorktreeStrategy: run.plan?.subagentWorktreeStrategy ?? state.subagentWorktreeStrategyDefault,
       shellExecutable: "",
@@ -2208,7 +2287,6 @@ export function ChatPanel() {
           </div>
         }
       >
-        {(project) => (
           <>
           <div class="flex min-w-0 flex-col lg:gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div class="flex min-w-0 flex-1 flex-col gap-2">
@@ -2287,7 +2365,7 @@ export function ChatPanel() {
                 <ActionButton
                   tooltip="Stop active run"
                   disabledReason="No running task"
-                  disabled={!project().session.isStreaming}
+                  disabled={!activeThreadIsStreaming()}
                   icon={<Pause class="h-4 w-4" />}
                   variant="secondary"
                   onClick={handleStop}
@@ -2298,7 +2376,7 @@ export function ChatPanel() {
                       <ActionButton
                         tooltip="Retry last run"
                         disabledReason="Project is streaming"
-                        disabled={project().session.isStreaming}
+                        disabled={activeThreadIsStreaming()}
                         icon={<RefreshCcw class="h-4 w-4" />}
                         variant="secondary"
                         onClick={handleRetry}
@@ -2354,7 +2432,8 @@ export function ChatPanel() {
                       {(result, index) => (
                         <button
                           type="button"
-                          class={`flex w-full flex-col gap-1 px-3 py-2 text-left text-[0.675rem] ${projectChatSearchIndex() === index() ? "bg-teal-50 text-(--foreground)" : "text-(--muted)"}`}
+                          class="flex w-full flex-col gap-1 px-3 py-2 text-left text-[0.675rem]"
+                          classList={{ "bg-teal-50": projectChatSearchIndex() === index(), "text-(--foreground)": projectChatSearchIndex() === index(), "text-(--muted)": projectChatSearchIndex() !== index() }}
                           onMouseEnter={() => setProjectChatSearchIndex(index())}
                           onClick={() => openProjectChatSearchResult(result)}
                         >
@@ -2386,7 +2465,7 @@ export function ChatPanel() {
                                 aria-label={`Open ${tab.label.toLowerCase()} pane`}
                                 attr:aria-pressed={pressed ? "true" : "false"}
                                 data-test-chat-pane-tab={tab.id}
-                                onClick={() => harnessStore.setChatPaneTab(tab.id)}
+                                onClick={() => handleSelectPaneTab(tab.id)}
                               >
                                 {tab.icon}
                                 <span>{tab.label}</span>
@@ -2409,10 +2488,10 @@ export function ChatPanel() {
                           contentClass="w-full"
                           itemClass="pb-3"
                           items={transcriptRows()}
-                          getKey={(row, index) => row.kind === "persisted" ? row.message.id : `live-${row.message.id}-${index}`}
-                          estimateSize={(row) => row.kind === "persisted" && row.message.kind === "plan-summary" ? 260 : 180}
-                          pagination={{ kind: "reverse", initialCount: CHAT_TRANSCRIPT_LIMIT, batchSize: CHAT_TRANSCRIPT_LIMIT }}
-                          overscan={6}
+                          getKey={(row, index) => row.kind === "persisted" ? row.message.id : row.kind === "tool-block" ? row.block.id : `live-${row.message.id}-${index}`}
+                          estimateSize={estimateTranscriptRowSize}
+                          pagination={{ kind: "reverse", initialCount: CHAT_TRANSCRIPT_LIMIT, batchSize: CHAT_TRANSCRIPT_LIMIT, thresholdPx: 1000 }}
+                          overscan={20}
                           stickToEnd
                           onScroll={updateScrollLock}
                           empty={
@@ -2624,7 +2703,7 @@ export function ChatPanel() {
                   class="flex-1 min-h-0 pr-2"
                   contentClass="w-full"
                   itemClass="pb-3"
-                  items={project().traces}
+                  items={projectTraces()}
                   getKey={(trace, index) => `${trace.stage}-${index}`}
                   estimateSize={145}
                   pagination={{ kind: "reverse", initialCount: CHAT_EVENT_LIMIT, batchSize: CHAT_EVENT_LIMIT }}
@@ -2655,7 +2734,7 @@ export function ChatPanel() {
                   class="flex-1 min-h-0 pr-2"
                   contentClass="w-full"
                   itemClass="pb-3"
-                  items={project().memoryEntries}
+                  items={projectMemoryEntries()}
                   getKey={(entry) => entry.id}
                   estimateSize={190}
                   pagination={{ kind: "reverse", initialCount: CHAT_MEMORY_LIMIT, batchSize: CHAT_MEMORY_LIMIT }}
@@ -2665,7 +2744,7 @@ export function ChatPanel() {
                     </div>
                   }
                 >
-                  {(entry) => (
+                  {(entry, index) => (
                     <article class="rounded-[1.35rem] border border-(--border) bg-white/55 p-4">
                       <div class="flex items-center justify-between gap-3">
                         <div>
@@ -2673,6 +2752,26 @@ export function ChatPanel() {
                           <div class="font-semibold">{entry.title}</div>
                         </div>
                         <div class="flex flex-wrap items-center gap-2">
+                          <ActionButton
+                            tooltip="Move memory earlier in retrieval priority"
+                            disabled={index === 0}
+                            disabledReason="Already highest priority memory"
+                            icon={<ArrowUp class="h-3.5 w-3.5" />}
+                            size="icon"
+                            variant="secondary"
+                            ariaLabel="Move memory up"
+                            onClick={() => handleReorderMemory(entry.id, "up")}
+                          />
+                          <ActionButton
+                            tooltip="Move memory later in retrieval priority"
+                            disabled={index === projectMemoryEntries().length - 1}
+                            disabledReason="Already lowest priority memory"
+                            icon={<ArrowDown class="h-3.5 w-3.5" />}
+                            size="icon"
+                            variant="secondary"
+                            ariaLabel="Move memory down"
+                            onClick={() => handleReorderMemory(entry.id, "down")}
+                          />
                           <ActionButton tooltip={entry.pinned ? "Unpin memory entry" : "Pin memory entry"} size="sm" variant="secondary" onClick={() => handleUpdateMemory(entry.id, { pinned: !entry.pinned })}>
                             {entry.pinned ? "Unpin" : "Pin"}
                           </ActionButton>
@@ -2684,12 +2783,12 @@ export function ChatPanel() {
                           >
                             {entry.status === "active" ? "Archive" : "Restore"}
                           </ActionButton>
-                          <ActionButton tooltip="Delete memory entry" size="sm" variant="secondary" onClick={() => handleDeleteMemory(entry.id)}>
-                            Delete
+                          <ActionButton tooltip="Permanently delete this memory entry" size="sm" variant="secondary" onClick={() => handleDeleteMemory(entry.id)}>
+                            {deleteArmedMemoryId() === entry.id ? "Confirm delete" : "Delete"}
                           </ActionButton>
                         </div>
                       </div>
-                      <div class="pt-2 text-(--muted)">{entry.confidence} | {entry.freshness} | hits {entry.hitCount}</div>
+                      <div class="pt-2 text-(--muted)">priority {entry.priority} | {entry.confidence} | {entry.freshness} | hits {entry.hitCount}</div>
                       <div class="pt-2">
                         <MarkdownContent content={() => entry.summary} size="compact" />
                       </div>
@@ -2771,10 +2870,15 @@ export function ChatPanel() {
                             <Tooltip content={executionPaused() ? executionPauseReason() : choice.description}>
                               <span class="inline-flex">
                                 <button
-                                  class={`cursor-pointer rounded-[1.1rem] border px-3 py-2 text-left text-[0.675rem] transition disabled:cursor-not-allowed ${choice.recommended
-                                    ? "border-amber-500 bg-white text-amber-950"
-                                    : "border-amber-200/80 bg-white/70 text-amber-900"
-                                    }`}
+                                  class="cursor-pointer rounded-[1.1rem] border px-3 py-2 text-left text-[0.675rem] transition disabled:cursor-not-allowed"
+                                  classList={{
+                                    "border-amber-500": choice.recommended,
+                                    "bg-white": choice.recommended,
+                                    "text-amber-950": choice.recommended,
+                                    "border-amber-200/80": !choice.recommended,
+                                    "bg-white/70": !choice.recommended,
+                                    "text-amber-900": !choice.recommended
+                                  }}
                                   type="button"
                                   disabled={executionPaused()}
                                   onClick={() => handleQuestionChoice(choice.answerText)}
@@ -3035,11 +3139,11 @@ export function ChatPanel() {
                       disabledReason={
                         executionPaused()
                           ? executionPauseReason()
-                          : project().session.isStreaming
+                          : activeThreadIsStreaming()
                             ? "Project is streaming"
                             : "No resumable run"
                       }
-                      disabled={executionPaused() || !resumableRun() || project().session.isStreaming}
+                      disabled={executionPaused() || !resumableRun() || activeThreadIsStreaming()}
                       icon={<RefreshCcw class="h-4 w-4" />}
                       type="button"
                       onClick={handleResume}
@@ -3100,7 +3204,6 @@ export function ChatPanel() {
               </div>
             </Dialog>
           </>
-        )}
       </Show>
     </section>
   );
@@ -3123,6 +3226,24 @@ function formatReasoningStrengthLabel(strength: (typeof COMPOSER_REASONING_STREN
 function formatReasoningOptionLabel(strength: (typeof COMPOSER_REASONING_STRENGTHS)[number]) {
   const label = formatReasoningStrengthLabel(strength);
   return strength === "high" ? `${label} (default)` : label;
+}
+
+function estimateTranscriptRowSize(row: ChatTimelineRow) {
+  switch (row.kind) {
+    case "tool-block":
+      return 180;
+    case "live":
+      return row.message.kind === "status" ? 120 : 180;
+    case "persisted":
+      switch (row.message.metadata?.type ?? row.message.kind ?? "plain") {
+        case "plan-summary":
+          return 260;
+        case "run-milestones":
+          return 140;
+        default:
+          return row.message.attachments && row.message.attachments.length > 0 ? 220 : 180;
+      }
+  }
 }
 
 const CHAT_TRANSCRIPT_LIMIT = 120;
@@ -3176,17 +3297,18 @@ function tokenizeSearch(query: string) {
     .filter(Boolean);
 }
 
-function getStreamingLiveMessages(project: ViewProjectState): LiveHarnessMessage[] {
-  const messages: LiveHarnessMessage[] = [];
+function getStreamingLiveMessages(project: ViewProjectState): TimelineLiveMessage[] {
+  const messages: TimelineLiveMessage[] = [];
 
   if (project.streamingHeartbeatMessages.length > 0) {
     messages.push(
       ...project.streamingHeartbeatMessages.map((message) => ({
-        id: message.id,
-        content: message.content,
-        locked: message.locked,
-        kind: "status" as const
-      }))
+          id: message.id,
+          content: message.content,
+          locked: message.locked,
+          kind: "status" as const,
+          updatedAt: message.updatedAt
+        }))
     );
   } else {
     messages.push(
@@ -3196,40 +3318,74 @@ function getStreamingLiveMessages(project: ViewProjectState): LiveHarnessMessage
           id: segment.id,
           content: segment.content,
           locked: true,
-          kind: "status" as const
+          kind: "status" as const,
+          updatedAt: segment.updatedAt
         }))
     );
   }
 
   const assistantFallback = [...project.streamingTailSegments].reverse().find((segment) => segment.kind === "assistant")?.content ?? "";
-  const assistantContent = project.streamingAssistantText.trim() || assistantFallback.trim();
+  const assistantContent = removePersistedAssistantPrefix(project, project.streamingAssistantText.trim() || assistantFallback.trim());
   if (assistantContent) {
     messages.push({
       id: "streaming-assistant-fallback",
       content: assistantContent,
       locked: false,
-      kind: "assistant"
+      kind: "assistant",
+      updatedAt: project.activeRun?.updatedAt ?? project.activeRun?.createdAt
     });
   }
 
   return messages;
 }
 
+function removePersistedAssistantPrefix(project: ViewProjectState, content: string) {
+  let remaining = content.trim();
+  if (!remaining) {
+    return "";
+  }
+
+  let lastUserIndex = -1;
+  for (let index = project.session.messages.length - 1; index >= 0; index -= 1) {
+    if (project.session.messages[index]?.role === "user") {
+      lastUserIndex = index;
+      break;
+    }
+  }
+  for (const message of project.session.messages.slice(lastUserIndex + 1)) {
+    if (message.role !== "assistant" || message.kind === "run-milestones") {
+      continue;
+    }
+    const messageContent = message.content.trim();
+    if (remaining.startsWith(messageContent)) {
+      remaining = remaining.slice(messageContent.length).trim();
+    }
+  }
+  return remaining;
+}
+
 function shouldHidePersistedStreamingAssistantMessage(
   project: ViewProjectState,
-  message: ViewProjectState["session"]["messages"][number],
-  index: number
+  message: ViewProjectState["session"]["messages"][number]
 ) {
-  if (!project.session.isStreaming || message.role !== "assistant" || message.kind === "run-milestones") {
+  if (!isProjectRunStreaming(project) || message.role !== "assistant" || message.kind === "run-milestones") {
     return false;
   }
 
-  const lastMessageIndex = project.session.messages.length - 1;
-  if (index !== lastMessageIndex) {
+  const lastMessage = project.session.messages.at(-1);
+  if (message.id !== lastMessage?.id) {
     return false;
   }
 
   return getStreamingLiveMessages(project).some((entry) => entry.kind === "assistant");
+}
+
+function isProjectRunStreaming(project: ViewProjectState) {
+  return Boolean(project.session.isStreaming && project.activeRun && isBlockingRunStatus(project.activeRun.status));
+}
+
+function isBlockingRunStatus(status: AgentRunState["status"]) {
+  return status === "planning" || status === "running-main" || status === "running-subagents" || status === "aggregating";
 }
 
 function formatTokenCount(value: number | undefined) {

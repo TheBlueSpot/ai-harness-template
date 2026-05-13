@@ -29,7 +29,7 @@ Backend websocket handlers and runtime orchestration for harness.
 - Live CLI session commands validate the session's owning thread, reject unsupported resize instead of faking terminal dimensions, keep terminal output bounded, and store captured terminal context for the next prompt on that thread.
 - CLI and shell-job termination kills Windows process trees so stopped, timed-out, or capped runs do not leave orphaned shell windows behind.
 - Assistant-linked assets are resolved to scoped capabilities before persistence or runtime launch so missing or out-of-scope refs fail early.
-- Assistant creation can be routed from chat intent through typed websocket commands and persisted setup questions, keeping underspecified or ambiguous prompts from silently becoming one-off project runs.
+- Explicit assistant creation can be routed from chat intent through typed websocket commands and persisted setup questions while unknown assistant-like prompts stay in normal project chat.
 - Assistant bootstrap work is tracked as retryable durable state so reconnects and duplicate retries do not leave operators stuck in invisible setup work.
 - Websocket streaming paths batch high-frequency assistant and terminal output, use heartbeat checks for stale sockets, and keep hot transcript updates narrow.
 - Development live reload ignores context and repo-local agent metadata so prompt or skill edits do not refresh the harness UI.

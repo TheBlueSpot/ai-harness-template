@@ -1,4 +1,4 @@
-import { createStore, reconcile } from "solid-js/store";
+import { createStore, reconcile, unwrap } from "solid-js/store";
 import { defaultAgentCatalog } from "../../shared/agent-catalog";
 import { defaultProviderCapabilities } from "../../shared/capabilities";
 import { DEFAULT_MODE_ID, resolveModeById, resolveModeCatalog } from "../../shared/modes";
@@ -70,6 +70,7 @@ export const BACKGROUND_JOB_APPROVAL_POLICY_DEFAULT_STORAGE_KEY = "background_jo
 const AUTO_ARCHIVE_COMPLETED_THREADS_DEFAULT_STORAGE_KEY = "pi-harness:auto-archive-completed-threads-default:v1";
 export const BACKGROUND_JOB_NOTIFICATIONS_ENABLED_STORAGE_KEY = "background_job_notifications_enabled";
 export const MEMORY_BANK_ENABLED_DEFAULT_STORAGE_KEY = "memory_bank_enabled_default";
+export const MEMORY_BANK_RECORD_RUNS_DEFAULT_STORAGE_KEY = "memory_bank_record_runs_default";
 export const COMPOSER_REASONING_STRENGTH_STORAGE_KEY = "composer_reasoning_strength";
 export const COMPOSER_FAST_MODE_STORAGE_KEY = "composer_fast_mode";
 export const THREAD_DRAFT_STORAGE_KEY_PREFIX = "pi-harness:thread-draft:v1";
@@ -80,8 +81,8 @@ export const DEFAULT_COMPOSER_REASONING_STRENGTH: ComposerReasoningStrength = "h
 export const COMPOSER_REASONING_STRENGTHS: ComposerReasoningStrength[] = ["low", "medium", "high", "extra-high"];
 const MAX_STREAMING_MESSAGE_HEARTBEATS = 2;
 
-export type HarnessActiveSurface = "chat" | "background-jobs" | "assistants";
-export type HarnessLeftTab = "projects" | "assistants" | "jobs" | "runs";
+export type HarnessActiveSurface = "chat" | "background-jobs" | "assistants" | "preferences";
+export type HarnessLeftTab = "projects" | "assistants" | "jobs" | "runs" | "preferences";
 export type ChatPaneTab = "chat" | "plan" | "run" | "events" | "memory";
 export type AssistantDetailTab = "chat" | "todos" | "questions" | "jobs" | "log" | "config" | "learnings";
 export type AssistantScopeFilter = "global" | "project";
@@ -121,6 +122,20 @@ export type JobsPanePreferences = {
   selectedRunId?: string;
   selectedNotificationId?: string;
 };
+
+export type ProviderConnectionProvider = "openai" | "google" | "anthropic";
+export type ProviderConnectionTestState = {
+  status: "idle" | "pending" | "ready" | "failed";
+  message?: string;
+  modelCount?: number;
+};
+export type PreferencesActiveSectionId =
+  | "general-ui"
+  | "ai-providers"
+  | "safety-guardrails"
+  | "workspace-memory"
+  | "background-jobs"
+  | "developer-advanced";
 
 export type MainPanelSizes = {
   left: number;
@@ -170,6 +185,7 @@ export type AssistantEditorDraft = {
   providerBrand?: Assistant["providerBrand"];
   modeId?: string;
   executionModelId?: string;
+  reasoningStrength?: ComposerReasoningStrength;
   fastMode?: boolean;
   runState: Assistant["runState"];
   bootstrapState: Assistant["bootstrapState"];
@@ -197,6 +213,8 @@ export type BackgroundJobEditorDraft = {
   aiPrompt: string;
   aiModeId?: string;
   aiExecutionModelId?: string;
+  aiReasoningStrength?: ComposerReasoningStrength;
+  aiFastMode?: boolean;
   aiPlanExecutionMode?: "countdown" | "approve" | "immediate";
   aiSubagentWorktreeStrategy?: "same-worktree" | "separate-worktrees";
   shellExecutable: string;
@@ -327,9 +345,12 @@ export type HarnessViewState = {
   backgroundJobApprovalPolicyDefault: BackgroundJobApprovalPolicy;
   autoArchiveCompletedThreadsDefault: boolean;
   memoryBankEnabledDefault: boolean;
+  memoryBankRecordRunsDefault: boolean;
   attachmentsEnabled: boolean;
   capabilities: ProviderCapability[];
   preferencesModalOpen: boolean;
+  preferencesActiveSectionId: PreferencesActiveSectionId;
+  preferencesSearchQuery: string;
   helpDialogOpen: boolean;
   setupChecklistOpen: boolean;
   activeTutorialId?: string;
@@ -344,6 +365,7 @@ export type HarnessViewState = {
   hasStoredGoogleApiKey: boolean;
   hasUsableAnthropicApiKey: boolean;
   hasStoredAnthropicApiKey: boolean;
+  providerConnectionTests: Record<ProviderConnectionProvider, ProviderConnectionTestState>;
   providerBrand: ProviderBrand;
   openAiApiKeyDraft: string;
   googleApiKeyDraft: string;
@@ -365,6 +387,7 @@ export type HarnessViewState = {
   hasLocalBackgroundJobApprovalPolicyPreference: boolean;
   hasLocalAutoArchiveCompletedThreadsPreference: boolean;
   hasLocalMemoryBankEnabledPreference: boolean;
+  hasLocalMemoryBankRecordRunsPreference: boolean;
   lastActiveProjectId?: string;
   lastActiveThreadByProjectId: Record<string, string>;
   projectPreflights: Record<string, { requestId: string; preflight: RunPreflight } | undefined>;
@@ -404,6 +427,7 @@ export type LocalPreferencesState = {
   backgroundJobApprovalPolicyDefault?: BackgroundJobApprovalPolicy;
   autoArchiveCompletedThreadsDefault?: boolean;
   memoryBankEnabledDefault?: boolean;
+  memoryBankRecordRunsDefault?: boolean;
   backgroundJobNotificationsEnabled?: boolean;
   selectedReasoningStrength?: ComposerReasoningStrength;
   selectedFastMode?: boolean;
@@ -582,9 +606,12 @@ export function createInitialViewState(): HarnessViewState {
     backgroundJobApprovalPolicyDefault: "ask-risky",
     autoArchiveCompletedThreadsDefault: false,
     memoryBankEnabledDefault: true,
+    memoryBankRecordRunsDefault: true,
     attachmentsEnabled: false,
     capabilities: [...defaultProviderCapabilities],
     preferencesModalOpen: false,
+    preferencesActiveSectionId: "ai-providers",
+    preferencesSearchQuery: "",
     helpDialogOpen: false,
     setupChecklistOpen: false,
     activeTutorialId: undefined,
@@ -599,6 +626,11 @@ export function createInitialViewState(): HarnessViewState {
     hasStoredGoogleApiKey: false,
     hasUsableAnthropicApiKey: false,
     hasStoredAnthropicApiKey: false,
+    providerConnectionTests: {
+      openai: { status: "idle" },
+      google: { status: "idle" },
+      anthropic: { status: "idle" }
+    },
     providerBrand: "gpt",
     openAiApiKeyDraft: "",
     googleApiKeyDraft: "",
@@ -620,6 +652,7 @@ export function createInitialViewState(): HarnessViewState {
     hasLocalBackgroundJobApprovalPolicyPreference: false,
     hasLocalAutoArchiveCompletedThreadsPreference: false,
     hasLocalMemoryBankEnabledPreference: false,
+    hasLocalMemoryBankRecordRunsPreference: false,
     lastActiveProjectId: undefined,
     lastActiveThreadByProjectId: {},
     projectPreflights: {},
@@ -1188,6 +1221,11 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
           }))
         }
       };
+    case "memory.reordered":
+      return updateProjectState(state, event.payload.projectId, (project) => ({
+        ...project,
+        memoryEntries: event.payload.entries
+      }));
     case "memory.deleted":
       return {
         ...state,
@@ -1384,6 +1422,18 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
         setup: event.payload.setup,
         ...applyReadyPreferencesState(state, event.payload)
       };
+    case "preferences.providerConnectionTested":
+      return {
+        ...state,
+        providerConnectionTests: {
+          ...state.providerConnectionTests,
+          [event.payload.provider]: {
+            status: event.payload.status,
+            message: event.payload.message,
+            modelCount: event.payload.modelCount
+          }
+        }
+      };
     case "setup.updated":
       return {
         ...state,
@@ -1577,9 +1627,10 @@ export function createHarnessStore() {
       }
     },
     setChatPaneTab(chatPaneTab: ChatPaneTab) {
-      const previousSnapshot = getBrowserUiSessionSnapshot(state);
+      const currentState = unwrap(state) as HarnessViewState;
+      const previousSnapshot = getBrowserUiSessionSnapshot(currentState);
       const nextState = finalizeHarnessViewState({
-        ...state,
+        ...currentState,
         chatPaneTab: normalizeChatPaneTab(chatPaneTab)
       });
       setState(reconcile(nextState));
@@ -1948,7 +1999,7 @@ export function createHarnessStore() {
       setState({ planExecutionModeDefault });
     },
     setPlanExecutionDelaySecondsDefault(planExecutionDelaySecondsDefault: number) {
-      setState({ planExecutionDelaySecondsDefault });
+      setState({ planExecutionDelaySecondsDefault: Math.max(0, Math.min(300, Math.round(planExecutionDelaySecondsDefault))) });
     },
     setCorrectnessIterationModeDefault(correctnessIterationModeDefault: "ask-before-iterate" | "auto-once" | "auto-until-clean") {
       setState({ correctnessIterationModeDefault });
@@ -1956,11 +2007,50 @@ export function createHarnessStore() {
     setBackgroundJobApprovalPolicyDefault(backgroundJobApprovalPolicyDefault: BackgroundJobApprovalPolicy) {
       setState({ backgroundJobApprovalPolicyDefault });
     },
+    setMemoryBankEnabledDefault(memoryBankEnabledDefault: boolean) {
+      setState({ memoryBankEnabledDefault });
+    },
+    setMemoryBankRecordRunsDefault(memoryBankRecordRunsDefault: boolean) {
+      setState({ memoryBankRecordRunsDefault });
+    },
+    setAutoArchiveCompletedThreadsDefault(autoArchiveCompletedThreadsDefault: boolean) {
+      setState({ autoArchiveCompletedThreadsDefault });
+    },
+    beginProviderConnectionTest(provider: ProviderConnectionProvider) {
+      setState("providerConnectionTests", provider, {
+        status: "pending",
+        message: "Testing connection..."
+      });
+    },
     openPreferencesModal() {
-      setState({ preferencesModalOpen: true });
+      const previousSnapshot = getBrowserUiSessionSnapshot(state);
+      const nextState = finalizeHarnessViewState({
+        ...state,
+        activeLeftTab: "preferences",
+        activeSurface: "preferences",
+        preferencesModalOpen: false,
+        preferencesActiveSectionId: "ai-providers",
+        preferencesSearchQuery: ""
+      });
+      setState(reconcile(nextState));
+      persistBrowserUiStateIfChanged(previousSnapshot, nextState);
     },
     closePreferencesModal() {
-      setState({ preferencesModalOpen: false });
+      const previousSnapshot = getBrowserUiSessionSnapshot(state);
+      const nextState = finalizeHarnessViewState({
+        ...state,
+        activeLeftTab: "projects",
+        activeSurface: "chat",
+        preferencesModalOpen: false
+      });
+      setState(reconcile(nextState));
+      persistBrowserUiStateIfChanged(previousSnapshot, nextState);
+    },
+    setPreferencesActiveSectionId(preferencesActiveSectionId: PreferencesActiveSectionId) {
+      setState({ preferencesActiveSectionId, preferencesSearchQuery: "" });
+    },
+    setPreferencesSearchQuery(preferencesSearchQuery: string) {
+      setState({ preferencesSearchQuery });
     },
     openHelpDialog() {
       setState({ helpDialogOpen: true, setupChecklistOpen: true });
@@ -2084,6 +2174,8 @@ export function createHarnessStore() {
         autoArchiveCompletedThreadsDefault:
           localPreferences.autoArchiveCompletedThreadsDefault ?? state.autoArchiveCompletedThreadsDefault,
         memoryBankEnabledDefault: localPreferences.memoryBankEnabledDefault ?? state.memoryBankEnabledDefault,
+        memoryBankRecordRunsDefault:
+          localPreferences.memoryBankRecordRunsDefault ?? state.memoryBankRecordRunsDefault,
         backgroundJobNotificationsEnabled:
           localPreferences.backgroundJobNotificationsEnabled ?? state.backgroundJobNotificationsEnabled,
         projectSidebarPreferences: normalizeProjectSidebarPreferences(
@@ -2115,7 +2207,8 @@ export function createHarnessStore() {
         hasLocalCorrectnessIterationModePreference: localPreferences.correctnessIterationModeDefault !== undefined,
         hasLocalBackgroundJobApprovalPolicyPreference: localPreferences.backgroundJobApprovalPolicyDefault !== undefined,
         hasLocalAutoArchiveCompletedThreadsPreference: localPreferences.autoArchiveCompletedThreadsDefault !== undefined,
-        hasLocalMemoryBankEnabledPreference: localPreferences.memoryBankEnabledDefault !== undefined
+        hasLocalMemoryBankEnabledPreference: localPreferences.memoryBankEnabledDefault !== undefined,
+        hasLocalMemoryBankRecordRunsPreference: localPreferences.memoryBankRecordRunsDefault !== undefined
       })));
     },
     setHasUsableApiKey(hasUsableApiKey: boolean) {
@@ -2146,6 +2239,8 @@ export function createHarnessStore() {
         autoArchiveCompletedThreadsDefault:
           localPreferences.autoArchiveCompletedThreadsDefault ?? state.autoArchiveCompletedThreadsDefault,
         memoryBankEnabledDefault: localPreferences.memoryBankEnabledDefault ?? state.memoryBankEnabledDefault,
+        memoryBankRecordRunsDefault:
+          localPreferences.memoryBankRecordRunsDefault ?? state.memoryBankRecordRunsDefault,
         backgroundJobNotificationsEnabled:
           localPreferences.backgroundJobNotificationsEnabled ?? state.backgroundJobNotificationsEnabled,
         projectSidebarPreferences: normalizeProjectSidebarPreferences(
@@ -2177,7 +2272,8 @@ export function createHarnessStore() {
         hasLocalCorrectnessIterationModePreference: localPreferences.correctnessIterationModeDefault !== undefined,
         hasLocalBackgroundJobApprovalPolicyPreference: localPreferences.backgroundJobApprovalPolicyDefault !== undefined,
         hasLocalAutoArchiveCompletedThreadsPreference: localPreferences.autoArchiveCompletedThreadsDefault !== undefined,
-        hasLocalMemoryBankEnabledPreference: localPreferences.memoryBankEnabledDefault !== undefined
+        hasLocalMemoryBankEnabledPreference: localPreferences.memoryBankEnabledDefault !== undefined,
+        hasLocalMemoryBankRecordRunsPreference: localPreferences.memoryBankRecordRunsDefault !== undefined
       });
       setState(reconcile(nextState));
       return localPreferences;
@@ -2191,9 +2287,17 @@ export function createHarnessStore() {
       return progress;
     },
     applyServerEvent(event: ServerEvent) {
-      const previousSnapshot = getBrowserUiSessionSnapshot(state);
-      const nextState = finalizeHarnessViewState(reduceServerEvent(state, event));
+      const currentState = unwrap(state) as HarnessViewState;
+      const previousSnapshot = getBrowserUiSessionSnapshot(currentState);
+      const nextState = finalizeHarnessViewState(reduceServerEvent(currentState, event));
       setState(reconcile(nextState));
+      if (event.type === "preferences.providerConnectionTested") {
+        if (typeof document !== "undefined") {
+          document
+            .querySelectorAll<HTMLElement>(`[data-provider-test-message="${event.payload.provider}"]`)
+            .forEach((element) => element.replaceChildren(event.payload.message));
+        }
+      }
       persistBrowserUiStateIfChanged(previousSnapshot, nextState);
       const retryCommand = getRepairedPreflightRetryCommand(nextState, event);
       if (retryCommand && commandDispatcher) {
@@ -2598,7 +2702,7 @@ function mergeIncomingProject(existing: ViewProjectState, incoming: ViewProjectS
     runSummaries: activeThreadLiveTranscript.runSummaries,
     lastError: activeThreadLiveTranscript.lastError,
     experimentInspection: activeThreadChanged ? undefined : existing.experimentInspection,
-    memoryEntries: activeThreadChanged ? [] : existing.memoryEntries,
+    memoryEntries: existing.memoryEntries,
     session: {
       ...incoming.session,
       selectedAgentId: existing.session.selectedAgentId ?? incoming.session.selectedAgentId,
@@ -2773,6 +2877,9 @@ function applyReadyPreferencesState(state: HarnessViewState, preferences: Prefer
     memoryBankEnabledDefault: state.hasLocalMemoryBankEnabledPreference
       ? state.memoryBankEnabledDefault
       : preferences.memoryBankEnabledDefault,
+    memoryBankRecordRunsDefault: state.hasLocalMemoryBankRecordRunsPreference
+      ? state.memoryBankRecordRunsDefault
+      : preferences.memoryBankRecordRunsDefault,
     attachmentsEnabled: preferences.attachmentsEnabled,
     capabilities: preferences.capabilities,
     agentRuntimes: preferences.agentRuntimes
@@ -2828,6 +2935,9 @@ export function readLocalPreferences(): LocalPreferencesState {
   const memoryBankEnabledDefault = parseBooleanStorageValue(
     window.localStorage.getItem(MEMORY_BANK_ENABLED_DEFAULT_STORAGE_KEY)
   );
+  const memoryBankRecordRunsDefault = parseBooleanStorageValue(
+    window.localStorage.getItem(MEMORY_BANK_RECORD_RUNS_DEFAULT_STORAGE_KEY)
+  );
   const backgroundJobNotificationsEnabled = parseBooleanStorageValue(
     window.localStorage.getItem(BACKGROUND_JOB_NOTIFICATIONS_ENABLED_STORAGE_KEY)
   );
@@ -2853,6 +2963,7 @@ export function readLocalPreferences(): LocalPreferencesState {
     backgroundJobApprovalPolicyDefault,
     autoArchiveCompletedThreadsDefault,
     memoryBankEnabledDefault,
+    memoryBankRecordRunsDefault,
     backgroundJobNotificationsEnabled,
     selectedReasoningStrength,
     selectedFastMode
@@ -2948,6 +3059,7 @@ export function persistLocalPreferences(input: LocalPreferencesState) {
   persistStorageValue(BACKGROUND_JOB_APPROVAL_POLICY_DEFAULT_STORAGE_KEY, input.backgroundJobApprovalPolicyDefault);
   persistBooleanStorageValue(AUTO_ARCHIVE_COMPLETED_THREADS_DEFAULT_STORAGE_KEY, input.autoArchiveCompletedThreadsDefault);
   persistBooleanStorageValue(MEMORY_BANK_ENABLED_DEFAULT_STORAGE_KEY, input.memoryBankEnabledDefault);
+  persistBooleanStorageValue(MEMORY_BANK_RECORD_RUNS_DEFAULT_STORAGE_KEY, input.memoryBankRecordRunsDefault);
   persistBooleanStorageValue(BACKGROUND_JOB_NOTIFICATIONS_ENABLED_STORAGE_KEY, input.backgroundJobNotificationsEnabled);
   persistStorageValue(COMPOSER_REASONING_STRENGTH_STORAGE_KEY, input.selectedReasoningStrength);
   persistBooleanStorageValue(COMPOSER_FAST_MODE_STORAGE_KEY, input.selectedFastMode);
@@ -3244,6 +3356,8 @@ function activeSurfaceToLeftTab(activeSurface: HarnessActiveSurface): HarnessLef
       return "assistants";
     case "background-jobs":
       return "runs";
+    case "preferences":
+      return "preferences";
     case "chat":
       return "projects";
   }
@@ -3256,13 +3370,15 @@ function leftTabToActiveSurface(activeLeftTab: HarnessLeftTab): HarnessActiveSur
     case "runs":
     case "jobs":
       return "background-jobs";
+    case "preferences":
+      return "preferences";
     case "projects":
       return "chat";
   }
 }
 
 function normalizeLeftTab(input: unknown): HarnessLeftTab {
-  return input === "assistants" || input === "jobs" || input === "runs" || input === "projects" ? input : "projects";
+  return input === "assistants" || input === "jobs" || input === "runs" || input === "projects" || input === "preferences" ? input : "projects";
 }
 
 function normalizeChatPaneTab(input: unknown): ChatPaneTab {

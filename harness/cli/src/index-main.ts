@@ -10,6 +10,7 @@ import { createStartupTelemetrySession } from "./startup-telemetry";
 import { WorkspaceRepository } from "./workspace-repository";
 import { CliUsageError, parseCliOptions } from "./cli-options";
 import { ensureDependencyHealth } from "./dependency-health";
+import { deleteDoctorDistFolder } from "./doctor-cleanup";
 
 const CLI_HELP = `Usage: pi-harness [--server-only] [--open|--no-open] [--doctor [--json]] [--help]
 
@@ -82,6 +83,7 @@ export async function main() {
 }
 
 async function runDoctor(options: { json?: boolean } = {}) {
+  await deleteDoctorDistFolder();
   await ensureDependencyHealth({
     log: (message) => (options.json ? console.error(message) : console.log(message))
   });
@@ -135,6 +137,7 @@ async function runDoctor(options: { json?: boolean } = {}) {
       correctnessIterationModeDefault: repository.getCorrectnessIterationModeDefault(),
       backgroundJobApprovalPolicyDefault: repository.getBackgroundJobApprovalPolicyDefault(),
       memoryBankEnabledDefault: repository.getMemoryBankEnabledDefault(),
+      memoryBankRecordRunsDefault: repository.getMemoryBankRecordRunsDefault(),
       attachmentsEnabled: Boolean(Bun.env.UPLOADTHING_TOKEN?.trim()),
       capabilities: [],
       agentRuntimes: runtimeRegistry.listCapabilities()

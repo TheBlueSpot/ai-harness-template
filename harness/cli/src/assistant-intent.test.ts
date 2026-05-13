@@ -57,11 +57,8 @@ describe("assistant chat intent detection", () => {
     });
   });
 
-  test("asks for named operator ongoing work", () => {
-    expect(detectAssistantChatIntent("Catalog builder start executing todos")).toMatchObject({
-      kind: "ambiguous",
-      suggestedName: "Catalog builder"
-    });
+  test("ignores bare named operator ongoing work", () => {
+    expect(detectAssistantChatIntent("Catalog builder start executing todos")).toEqual({ kind: "none" });
   });
 
   test("ignores complaint and run-code requests that mention assistants", () => {
@@ -82,6 +79,8 @@ ec32e89b-08a3-41a5-80bf-6823701343f0
   test("ignores normal imperatives", () => {
     expect(detectAssistantChatIntent("start executing todos")).toEqual({ kind: "none" });
     expect(detectAssistantChatIntent("create folder catalog-builder")).toEqual({ kind: "none" });
+    expect(detectAssistantChatIntent("suggest ideas on how we can tighten intent detection")).toEqual({ kind: "none" });
+    expect(detectAssistantChatIntent("no fix need just investigate assistant intent detection")).toEqual({ kind: "none" });
   });
 
   test("rejects unsafe names", () => {

@@ -13,12 +13,15 @@ Last merged targeted overlay, hotkey, and attachment-affordance scan: 2026-04-25
 Last merged targeted UI rendering, OS/CLI, websocket continuity, execution, and test-strictness scan: 2026-04-25.
 Last merged targeted UI-magic affordance scan: 2026-04-25.
 Last merged targeted reliability diagnostics and background ownership closeout: 2026-05-01.
+Last merged working-tree branch scan: 2026-05-12.
 
 Source of truth: [user-stories.md](user-stories.md), [coverage-matrix.md](coverage-matrix.md), [architecture overview](../context/architecture/overview.md), and harness implementation under [harness](../harness).
 
 This review focuses on correctness gaps outside the expected happy path. It does not replace `bun test`; it maps shipped stories to likely edge failures and extraction opportunities.
 
 Recent closeout note: the harness now exposes recent run health in-product, renews background-run ownership leases during execution, and routes reliability categorization through one shared path. That materially lowers the earlier risk of stale ownership or drift between scheduler, repair, and UI diagnostics, while keeping the remaining gaps below focused on broader assistant, overlay, and workflow concerns.
+
+Virtualized transcript, trace, and sidebar lists now depend on responsive row measurement: dynamic-height rows must be allowed to grow and shrink after container reflow, while reverse lists must continue opening at the latest content and preserve browsing position when older rows load.
 
 ## Story To Code Map
 
@@ -220,6 +223,30 @@ Edge case: A bounce or confetti animation ignores `prefers-reduced-motion`; ambi
 
 Fix direction: Create shared primitives for reduced-motion-aware attention animation, status tinting with non-color labels, skeleton surfaces, selection popovers, and shortcut overlays. Each should have `data-test-*` hooks, keyboard and focus rules, and tests for nested overlays, editable targets, reduced motion, fast thread switching, and no layout shift.
 
+### CR-040: Doctor cleanup deletes `dist` relative to launch cwd
+
+Stories: `US-DEV-007`, `US-DEV-002`, `US-ACTIVATION-001`.
+
+Code map: [CLI entry](../harness/cli/src/index-main.ts), [doctor cleanup](../harness/cli/src/doctor-cleanup.ts), [dependency health](../harness/cli/src/dependency-health.ts).
+
+Impact: `--doctor` now deletes `path.resolve(process.cwd(), "dist")` before health checks. That is safe only when the current working directory is the harness repo root. If a packaged launcher, shell alias, or user runs the CLI from another project folder, doctor can delete that project's `dist` directory.
+
+Edge case: A user runs `pi-harness --doctor` from an app repo that has a production `dist/`. The command removes the app build output even though doctor is only expected to inspect and repair harness setup.
+
+Fix direction: Resolve cleanup against the harness install/root directory, not arbitrary cwd. Add a guard that verifies expected harness files before deletion, and keep destructive cleanup behind a clearly named repair path or temp/build cache path.
+
+### CR-041: Preferences panel contains hidden interactive test shims
+
+Stories: `US-PREFERENCES-001`, `US-PREFERENCES-002`, `US-UI-005`, `US-UI-017`.
+
+Code map: [preferences panel](../harness/ui/src/components/preferences-modal.tsx), [preferences tests](../harness/ui/src/components/preferences-modal.test.tsx), [UI store](../harness/ui/src/harness-store.ts).
+
+Impact: The new preferences panel renders an `sr-only` block with extra headings, buttons, labels, and inputs that are not the actual visible controls. Screen reader and keyboard users can encounter duplicate or fake controls such as hidden reset buttons and hidden numeric inputs, and tests can pass by targeting the shim instead of the real settings UI.
+
+Edge case: A screen reader user navigates the preferences panel and hears hidden "Planning and approval" or "Dirty git change limit" controls that are visually absent from the current section. A future visual refactor can break the real control while tests still pass because the hidden fallback remains.
+
+Fix direction: Remove the hidden interactive shim. Give the real controls stable accessible names and `data-test-*` hooks, then update tests to target visible semantic controls or explicit test hooks.
+
 ## Critical Duplicate Logic To Extract
 
 1. Project open response path.
@@ -270,6 +297,8 @@ Use [coverage-matrix.md](coverage-matrix.md) as the baseline. Highest-value addi
 26. `US-MODES-001`, `US-RUNTIMES-006`, and `US-PROVIDERS-ROADMAP-012`: cover mode-specific placeholders and normalized model tradeoff metadata without hardcoded provider assumptions.
 27. `US-RUNS-007`, `US-WORKTREE-001`, and `US-RUNS-ROADMAP-001`: cover per-file BranchFS diff inspection, changed-path navigation, and promote disabled states while diff inspection is stale or failed.
 28. `US-UI-002`, `US-UI-016`, `US-RUNS-005`, and `US-MARKDOWN-ROADMAP-001`: cover reduced-motion behavior, status-tint non-color cues, skeleton teardown on fast thread switches, smooth-scroll affordance state, and quote-reply focus ownership.
+29. `US-DEV-007` and `US-ACTIVATION-001`: prove doctor cleanup cannot delete a caller project `dist/` when launched outside the harness root.
+30. `US-PREFERENCES-001` and `US-UI-017`: ensure preferences tests target visible, real controls and that no hidden interactive controls are exposed only for tests.
 
 ## Bottom Line
 

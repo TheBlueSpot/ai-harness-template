@@ -170,11 +170,15 @@ export function ModeEditorPanel(props: ModeEditorPanelProps) {
         <For each={customModes()}>
           {(mode) => (
             <button
-              class={`rounded-full border px-3 py-1 text-[0.625rem] font-semibold transition ${
-                selectedModeId() === mode.id
-                  ? "border-(--accent) bg-(--accent) text-white"
-                  : "border-(--border) bg-white/70 text-(--foreground)"
-              }`}
+              class="rounded-full border px-3 py-1 text-[0.625rem] font-semibold transition"
+              classList={{
+                "border-(--accent)": selectedModeId() === mode.id,
+                "bg-(--accent)": selectedModeId() === mode.id,
+                "text-white": selectedModeId() === mode.id,
+                "border-(--border)": selectedModeId() !== mode.id,
+                "bg-white/70": selectedModeId() !== mode.id,
+                "text-(--foreground)": selectedModeId() !== mode.id
+              }}
               type="button"
               onClick={() => setSelectedModeId(mode.id)}
             >

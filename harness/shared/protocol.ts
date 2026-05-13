@@ -227,6 +227,7 @@ export const memoryEntrySchema = z.object({
   confidence: memoryConfidenceSchema,
   freshness: memoryFreshnessSchema,
   pinned: z.boolean(),
+  priority: z.number().int().min(0).max(100000).default(50000),
   hitCount: z.number().int().min(0),
   lastHitAt: z.string().datetime().or(z.string().min(1)).optional(),
   sourceCommitSha: z.string().min(1).max(256).optional(),
@@ -505,6 +506,7 @@ export const backgroundJobAiRoutineDefinitionSchema = z.object({
   prompt: z.string().min(1).max(32000),
   modeId: modeIdSchema.optional(),
   executionModelId: executionModelIdSchema.optional(),
+  reasoningStrength: composerReasoningStrengthSchema.optional(),
   fastMode: z.boolean().optional(),
   planExecutionMode: planExecutionModeSchema.optional(),
   subagentWorktreeStrategy: subagentWorktreeStrategySchema.optional()
@@ -835,6 +837,7 @@ export const assistantSchema = z.object({
   providerBrand: providerBrandSchema.optional(),
   modeId: modeIdSchema.optional(),
   executionModelId: executionModelIdSchema.optional(),
+  reasoningStrength: composerReasoningStrengthSchema.optional(),
   fastMode: z.boolean().optional(),
   runState: assistantRunStateSchema,
   bootstrapState: assistantBootstrapStateSchema,
@@ -883,6 +886,7 @@ export const assistantLearningSchema = z.object({
   summary: z.string().min(1).max(4000),
   source: z.string().min(1).max(256),
   confidence: assistantLearningConfidenceSchema,
+  sortOrder: z.number().int().min(0).max(1000000).optional(),
   createdAt: z.string().datetime().or(z.string().min(1)),
   kind: z.enum(["fact", "summary"]).optional(),
   supersedesLearningIds: z.array(assistantLearningIdSchema).max(512).optional(),
@@ -990,10 +994,14 @@ export const preferencesStateSchema = z.object({
   backgroundJobApprovalPolicyDefault: backgroundJobApprovalPolicySchema,
   autoArchiveCompletedThreadsDefault: z.boolean().optional(),
   memoryBankEnabledDefault: z.boolean(),
+  memoryBankRecordRunsDefault: z.boolean().default(true),
   attachmentsEnabled: z.boolean(),
   capabilities: z.array(providerCapabilitySchema).max(4),
   agentRuntimes: z.array(agentRuntimeCapabilitySchema).max(8)
 });
+
+export const providerConnectionProviderSchema = z.enum(["openai", "google", "anthropic"]);
+export const providerConnectionStatusSchema = z.enum(["ready", "failed"]);
 
 export const agentPlanSchema = z.object({
   sessionId: sessionIdSchema,
@@ -1099,6 +1107,17 @@ export const executionToolActivitySchema = z.object({
   outputPreview: z.string().min(1).max(4000).optional(),
   stdoutPreview: z.string().min(1).max(4000).optional(),
   stderrPreview: z.string().min(1).max(4000).optional(),
+  rawArgsJson: z.string().min(1).max(65536).optional(),
+  rawArgsTruncated: z.boolean().optional(),
+  rawArgsRedacted: z.boolean().optional(),
+  rawArgsOmittedReason: z.enum(["run-budget-exceeded", "unserializable"]).optional(),
+  rawArgsDebugArtifactPath: z.string().min(1).max(1024).optional(),
+  rawResultJson: z.string().min(1).max(65536).optional(),
+  rawResultTruncated: z.boolean().optional(),
+  rawResultRedacted: z.boolean().optional(),
+  rawResultOmittedReason: z.enum(["run-budget-exceeded", "unserializable"]).optional(),
+  rawResultDebugArtifactPath: z.string().min(1).max(1024).optional(),
+  rawResultStatus: z.enum(["partial", "final"]).optional(),
   exitCode: z.number().int().optional(),
   status: executionToolActivityStatusSchema,
   startedAt: z.string().datetime().or(z.string().min(1)),
@@ -1782,6 +1801,15 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     })
   }),
   z.object({
+    type: z.literal("memory.reorder"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      memoryEntryId: memoryEntryIdSchema,
+      direction: z.enum(["up", "down"])
+    })
+  }),
+  z.object({
     type: z.literal("memory.delete"),
     requestId: requestIdSchema,
     payload: z.object({
@@ -1896,6 +1924,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       scope: assistantScopeSchema.optional(),
       modeId: modeIdSchema.optional(),
       executionModelId: executionModelIdSchema.optional(),
+      reasoningStrength: composerReasoningStrengthSchema.optional(),
       fastMode: z.boolean().optional(),
       agentId: agentIdSchema.optional()
     })
@@ -1963,7 +1992,11 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     requestId: requestIdSchema,
     payload: z.object({
       assistantId: assistantIdSchema,
-      content: z.string().trim().min(1).max(32000)
+      content: z.string().trim().min(1).max(32000),
+      modeId: modeIdSchema.optional(),
+      executionModelId: executionModelIdSchema.optional(),
+      reasoningStrength: composerReasoningStrengthSchema.optional(),
+      fastMode: z.boolean().optional()
     })
   }),
   z.object({
@@ -2015,6 +2048,14 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     payload: z.object({
       assistantId: assistantIdSchema,
       learningId: assistantLearningIdSchema
+    })
+  }),
+  z.object({
+    type: z.literal("assistant.learning.reorder"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      assistantId: assistantIdSchema,
+      learningIds: z.array(assistantLearningIdSchema).max(512)
     })
   }),
   z.object({
@@ -2170,7 +2211,16 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       correctnessIterationModeDefault: correctnessIterationModeSchema,
       backgroundJobApprovalPolicyDefault: backgroundJobApprovalPolicySchema,
       autoArchiveCompletedThreadsDefault: z.boolean().optional(),
-      memoryBankEnabledDefault: z.boolean().optional()
+      memoryBankEnabledDefault: z.boolean().optional(),
+      memoryBankRecordRunsDefault: z.boolean().optional()
+    })
+  }),
+  z.object({
+    type: z.literal("preferences.testProviderConnection"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      provider: providerConnectionProviderSchema,
+      apiKey: z.string().min(1).max(1024).optional()
     })
   }),
   z.object({
@@ -2492,6 +2542,14 @@ export const serverEventSchema = z.discriminatedUnion("type", [
     })
   }),
   z.object({
+    type: z.literal("memory.reordered"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      entries: z.array(memoryEntrySchema).max(512)
+    })
+  }),
+  z.object({
     type: z.literal("memory.deleted"),
     requestId: requestIdSchema,
     payload: z.object({
@@ -2652,6 +2710,16 @@ export const serverEventSchema = z.discriminatedUnion("type", [
     requestId: requestIdSchema,
     payload: preferencesStateSchema.extend({
       setup: setupStateSchema
+    })
+  }),
+  z.object({
+    type: z.literal("preferences.providerConnectionTested"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      provider: providerConnectionProviderSchema,
+      status: providerConnectionStatusSchema,
+      message: z.string().min(1).max(512),
+      modelCount: z.number().int().min(0).max(10000).optional()
     })
   }),
   z.object({

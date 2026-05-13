@@ -1,0 +1,4 @@
+interface:
+  display_name: "Analyze PR"
+  short_description: "Audit a branch or commit without changing files."
+  default_prompt: "Analyze a remote branch, local branch, or commit hash from a staff-engineer review perspective. Compare it with the current branch, identify quality risks and duplicated work, and report verification performed."

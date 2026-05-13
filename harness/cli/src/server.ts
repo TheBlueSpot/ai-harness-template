@@ -11,6 +11,7 @@ import {
   isDirectWorkspaceImplementTask
 } from "../../shared/mode-intent";
 import { createHash } from "node:crypto";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createRouteHandler } from "uploadthing/server";
 import {
@@ -132,6 +133,7 @@ import { prepareGeminiCachedAttachmentContext, type GeminiCachedAttachmentContex
 import { createHarnessUploadRouter } from "./uploadthing-router";
 import { buildSetupState, detectSetupLaunchMode } from "./setup-health";
 import { StreamPump } from "./stream-pump";
+import { AssistantStreamChunker, type AssistantStreamChunk } from "./assistant-stream-chunker";
 import { guardedWebsocketSend } from "./websocket-send-guard";
 import {
   findPendingBrowserApproval,
@@ -1758,7 +1760,7 @@ async function handleCommand(
     }
     case "session.reset": {
       const activeProject = runtime.getProject(command.payload.projectId);
-      if (activeProject.session.isStreaming) {
+      if (isActiveThreadStreaming(runtime, command.payload.projectId, activeProject.activeThreadId)) {
         throw new Error("Project is streaming");
       }
 
@@ -1889,6 +1891,7 @@ async function handleCommand(
           providerBrand,
           modeId: effectiveModeId,
           executionModelId: effectiveExecutionModelId,
+          reasoningStrength: command.payload.reasoningStrength,
           fastMode: command.payload.fastMode
         });
         emitAssistantsUpdatedToAll(connections, repository.loadAssistantsState());
@@ -1988,29 +1991,6 @@ async function handleCommand(
       }
       runtime.upsertPersistedProject(runProject);
       emitRunUpdatedById(ws, command.requestId, repository, projectId, createdRun.id);
-
-      if (assistantIntent.kind === "ambiguous") {
-        const questionProject = repository.appendPlanningQuestion(projectId, createdRun.id, createAssistantIntentQuestion({
-          projectId,
-          threadId: command.payload.threadId,
-          sourcePrompt: assistantIntent.sourcePrompt,
-          suggestedName: assistantIntent.suggestedName
-        }));
-        runtime.upsertPersistedProject(questionProject);
-        emitRunUpdatedById(ws, command.requestId, repository, projectId, createdRun.id);
-        runtime.setProjectStreaming(projectId, false, command.payload.threadId);
-        runtime.clearStreaming(projectId, command.payload.threadId);
-        const promptProject = repository.appendMessage(
-          projectId,
-          "assistant",
-          questionProject.activeRun?.questions.find((question) => question.intent?.type === "assistant-create-intent")?.prompt ??
-          `Do you want to create a project assistant named "${assistantIntent.suggestedName}", or run this once in project chat?`,
-          command.payload.threadId
-        );
-        runtime.upsertPersistedProject(promptProject);
-        emitThreadMessageAppended(ws, command.requestId, runtime, repository, projectId, command.payload.threadId);
-        return;
-      }
 
       if (assistantAction.kind === "clarify") {
         const questionProject = repository.appendPlanningQuestion(projectId, createdRun.id, createAssistantActionIntentQuestion(assistantAction));
@@ -2367,6 +2347,7 @@ async function handleCommand(
             providerBrand,
             modeId: project.selectedModeId,
             executionModelId: targetRun.executionModelId ?? project.session.executionModelId,
+            reasoningStrength: command.payload.reasoningStrength,
             fastMode: command.payload.fastMode
           });
           const completedProject = repository.setAgentRunStatus(projectId, targetRun.id, "completed");
@@ -2704,6 +2685,22 @@ async function handleCommand(
         requestId: command.requestId,
         payload: {
           entry: entry!
+        }
+      });
+      return;
+    }
+    case "memory.reorder": {
+      const entries = repository.reorderMemoryEntry(
+        command.payload.projectId,
+        command.payload.memoryEntryId,
+        command.payload.direction
+      );
+      sendEvent(ws, {
+        type: "memory.reordered",
+        requestId: command.requestId,
+        payload: {
+          projectId: command.payload.projectId,
+          entries
         }
       });
       return;
@@ -3209,6 +3206,7 @@ async function handleCommand(
         providerBrand: repository.getProviderBrand(),
         modeId: command.payload.modeId ?? project.selectedModeId,
         executionModelId: command.payload.executionModelId ?? project.session.executionModelId,
+        reasoningStrength: command.payload.reasoningStrength,
         fastMode: command.payload.fastMode
       });
       emitAssistantsUpdatedToAll(connections, repository.loadAssistantsState());
@@ -3299,7 +3297,12 @@ async function handleCommand(
     case "assistant.chat.send": {
       assertGlobalExecutionNotPaused(repository);
       assertAssistantRunnableForLaunch(repository, command.payload.assistantId);
-      await assistantManager.sendAssistantChat(command.payload.assistantId, command.payload.content);
+      await assistantManager.sendAssistantChat(command.payload.assistantId, command.payload.content, {
+        modeId: command.payload.modeId,
+        executionModelId: command.payload.executionModelId,
+        reasoningStrength: command.payload.reasoningStrength,
+        fastMode: command.payload.fastMode
+      });
       return;
     }
     case "assistant.question.answer": {
@@ -3375,6 +3378,12 @@ async function handleCommand(
       repository.deleteAssistantLearning(command.payload.assistantId, command.payload.learningId);
       emitAssistantsUpdatedToAll(connections, repository.loadAssistantsState());
       assistantManager.scheduleReprioritize(command.payload.assistantId, "manual-learning-delete");
+      return;
+    }
+    case "assistant.learning.reorder": {
+      repository.reorderAssistantLearnings(command.payload.assistantId, command.payload.learningIds);
+      emitAssistantsUpdatedToAll(connections, repository.loadAssistantsState());
+      assistantManager.scheduleReprioritize(command.payload.assistantId, "manual-learning-reorder");
       return;
     }
     case "browser.approval.resolve": {
@@ -3509,6 +3518,9 @@ async function handleCommand(
       repository.setMemoryBankEnabledDefault(
         command.payload.memoryBankEnabledDefault ?? repository.getMemoryBankEnabledDefault()
       );
+      repository.setMemoryBankRecordRunsDefault(
+        command.payload.memoryBankRecordRunsDefault ?? repository.getMemoryBankRecordRunsDefault()
+      );
       applyAdapterAutoCompactionThreshold(adapter, command.payload.autoCompactContextThresholdPercentDefault);
       await runtimeRegistry.refreshAll();
       const preferences = getCurrentPreferencesState();
@@ -3521,6 +3533,20 @@ async function handleCommand(
           ...preferences,
           setup
         }
+      });
+      return;
+    }
+    case "preferences.testProviderConnection": {
+      const result = await testProviderConnection({
+        provider: command.payload.provider,
+        apiKey: command.payload.apiKey,
+        repository
+      });
+
+      sendEvent(ws, {
+        type: "preferences.providerConnectionTested",
+        requestId: command.requestId,
+        payload: result
       });
       return;
     }
@@ -4252,7 +4278,7 @@ async function executeRunLifecycle(
     partialReason: outcome.partial ? outcome.partialReason ?? "Some subagents failed." : undefined
   });
   const finalRunState = completed.run;
-  if (finalRunState) {
+  if (finalRunState && repository.getMemoryBankRecordRunsDefault()) {
     extractRunMemories(repository, {
       projectId: options.projectId,
       threadId: activeRun.threadId,
@@ -4423,56 +4449,61 @@ function createExecutionCallbacks(
   let finalized = false;
   let lastDerivedDigest = "";
   let staleBeatCount = 0;
-  let persistedAssistantMessageId: string | undefined;
-  let persistedAssistantContent = "";
+  const assistantChunker = new AssistantStreamChunker();
+  const persistedAssistantChunks = new Map<number, { id: string; content: string }>();
   let lastStreamingPersistAt = 0;
 
-  const persistStreamingAssistantMessage = (force = false) => {
-    const segments = transcriptDraft.getSegments();
-    let assistantContent: string | undefined;
-    for (let index = segments.length - 1; index >= 0; index -= 1) {
-      const segment = segments[index];
-      if (segment?.kind === "assistant") {
-        assistantContent = segment.content;
-        break;
-      }
-    }
+  const rememberPersistedAssistantChunk = (chunk: AssistantStreamChunk, messageId: string) => {
+    persistedAssistantChunks.set(chunk.index, {
+      id: messageId,
+      content: chunk.content
+    });
+  };
+
+  const findPersistedAssistantChunkId = (chunk: AssistantStreamChunk) => {
+    const messages = repository.getThreadMessages(projectId, threadId as ThreadId);
+    const assistantMessages = messages.filter((message) => message.role === "assistant" && message.kind !== "run-milestones");
+    return assistantMessages.at(-1)?.id;
+  };
+
+  const persistStreamingAssistantChunks = (force = false) => {
+    const chunks = assistantChunker.getChunks().filter((chunk) => chunk.content.trim());
     const nowMs = Date.now();
-    if (!assistantContent || assistantContent === persistedAssistantContent) {
+    if (chunks.length === 0) {
       return;
     }
-    if (!force && nowMs - lastStreamingPersistAt < STREAM_PERSIST_INTERVAL_MS) {
-      return;
-    }
-
-    if (persistedAssistantMessageId) {
-      const nextProject = repository.updateThreadMessage(projectId, threadId as ThreadId, persistedAssistantMessageId, {
-        content: assistantContent
-      });
-      runtime.upsertPersistedProject(nextProject);
-      persistedAssistantContent = assistantContent;
-      lastStreamingPersistAt = nowMs;
+    if (!force && nowMs - lastStreamingPersistAt < STREAM_PERSIST_INTERVAL_MS && chunks.every((chunk) => persistedAssistantChunks.get(chunk.index)?.content === chunk.content)) {
       return;
     }
 
-    const nextProject = repository.appendMessage(projectId, "assistant", assistantContent, threadId as ThreadId);
-    runtime.upsertPersistedProject(nextProject);
-    const threadMessages = repository.getThreadMessages(projectId, threadId as ThreadId);
-    let persistedAssistantMessage: ChatMessage | undefined;
-    for (let index = threadMessages.length - 1; index >= 0; index -= 1) {
-      const message = threadMessages[index];
-      if (message?.role === "assistant" && message.kind !== "run-milestones") {
-        persistedAssistantMessage = message;
-        break;
+    let nextProject: WorkspaceProjectState | undefined;
+    for (const chunk of chunks) {
+      const persisted = persistedAssistantChunks.get(chunk.index);
+      if (persisted?.content === chunk.content) {
+        continue;
       }
-    }
-    if (!persistedAssistantMessage) {
-      throw new Error("Expected persisted streaming assistant message");
+
+      if (persisted) {
+        nextProject = repository.updateThreadMessage(projectId, threadId as ThreadId, persisted.id, {
+          content: chunk.content,
+          createdAt: chunk.updatedAt
+        });
+        rememberPersistedAssistantChunk(chunk, persisted.id);
+        continue;
+      }
+
+      nextProject = repository.appendMessage(projectId, "assistant", chunk.content, threadId as ThreadId);
+      const messageId = findPersistedAssistantChunkId(chunk);
+      if (!messageId) {
+        throw new Error("Expected persisted streaming assistant chunk");
+      }
+      rememberPersistedAssistantChunk(chunk, messageId);
     }
 
-    persistedAssistantMessageId = persistedAssistantMessage.id;
-    persistedAssistantContent = assistantContent;
-    lastStreamingPersistAt = nowMs;
+    if (nextProject) {
+      runtime.upsertPersistedProject(nextProject);
+      lastStreamingPersistAt = nowMs;
+    }
   };
   const assistantDeltaPump = new StreamPump({
     flushIntervalMs: STREAM_DELTA_FLUSH_MS,
@@ -4480,7 +4511,8 @@ function createExecutionCallbacks(
     onFlush(delta) {
       runtime.appendStreamingDelta(projectId, delta, threadId);
       transcriptDraft.appendAssistantDelta(delta);
-      persistStreamingAssistantMessage();
+      assistantChunker.append(delta);
+      persistStreamingAssistantChunks();
       scheduleTailFlush();
       emitControlEvent(connections, {
         type: "chat.delta",
@@ -4501,7 +4533,7 @@ function createExecutionCallbacks(
       return;
     }
     const segments = transcriptDraft.getSegments();
-    persistStreamingAssistantMessage();
+    persistStreamingAssistantChunks();
     runtime.setStreamingTail(projectId, segments, threadId);
     emitControlEvent(connections, {
       type: "chat.streaming-tail-updated",
@@ -4585,15 +4617,10 @@ function createExecutionCallbacks(
 
   const persistFinalAssistantMessage = (content: string) => {
     void assistantDeltaPump.flush();
-    if (persistedAssistantMessageId) {
-      persistedAssistantContent = content;
-      return repository.updateThreadMessage(projectId, threadId as ThreadId, persistedAssistantMessageId, {
-        content,
-        createdAt: new Date().toISOString()
-      });
-    }
-
-    return repository.appendMessage(projectId, "assistant", content, threadId as ThreadId);
+    assistantChunker.seed(content);
+    assistantChunker.flush();
+    persistStreamingAssistantChunks(true);
+    return runtime.getProject(projectId);
   };
 
   return {
@@ -4720,7 +4747,8 @@ function createExecutionCallbacks(
             runId,
             owner: input.owner,
             subagentId: input.subagentId,
-            event: input.event
+            event: input.event,
+            rawArgsDebugArtifactPath: writeToolDebugArtifactIfEnabled(repository, runId, input.event.toolCallId, "args", input.event.args)
           });
           nextSessions = recordBrowserToolStart(nextSessions, {
             runId,
@@ -4737,7 +4765,9 @@ function createExecutionCallbacks(
             runId,
             owner: input.owner,
             subagentId: input.subagentId,
-            event: input.event
+            event: input.event,
+            rawArgsDebugArtifactPath: writeToolDebugArtifactIfEnabled(repository, runId, input.event.toolCallId, "args-update", input.event.args),
+            rawResultDebugArtifactPath: writeToolDebugArtifactIfEnabled(repository, runId, input.event.toolCallId, "result-partial", input.event.partialResult)
           });
           nextSessions = recordBrowserToolUpdate(nextSessions, {
             runId,
@@ -4757,7 +4787,8 @@ function createExecutionCallbacks(
               runId,
               owner: input.owner,
               subagentId: input.subagentId,
-              event
+              event,
+              rawResultDebugArtifactPath: writeToolDebugArtifactIfEnabled(repository, runId, event.toolCallId, "result-final", event.result)
             });
             nextSessions = recordBrowserToolEnd(nextSessions, {
               runId,
@@ -5265,14 +5296,16 @@ async function handleRunFailure(
     }
     runtime.upsertPersistedProject(failedProject);
     emitRunUpdatedById(ws, requestId, repository, projectId, failedRun.id, connections);
-    extractRunMemories(repository, {
-      projectId,
-      threadId: failedRun.threadId,
-      run: repository.getRun(projectId, failedRun.id) ?? failedRun,
-      finalAssistantMessage: getThreadSessionState(runtime, repository, projectId, failedRun.threadId).messages.at(-1)?.content,
-      correctnessReview: failedRun.correctnessReview,
-      cwd: failedRun.experiment?.projectMountPath ?? project.rootPath
-    });
+    if (repository.getMemoryBankRecordRunsDefault()) {
+      extractRunMemories(repository, {
+        projectId,
+        threadId: failedRun.threadId,
+        run: repository.getRun(projectId, failedRun.id) ?? failedRun,
+        finalAssistantMessage: getThreadSessionState(runtime, repository, projectId, failedRun.threadId).messages.at(-1)?.content,
+        correctnessReview: failedRun.correctnessReview,
+        cwd: failedRun.experiment?.projectMountPath ?? project.rootPath
+      });
+    }
   }
 
   runtime.setProjectError(projectId, message, failedRun?.threadId ?? project.activeThreadId);
@@ -5327,7 +5360,15 @@ async function completeRunWithAssistantMessage(
     throw new Error(`Run ${input.runId} is already terminal`);
   }
 
-  const messageProject = repository.appendMessage(input.projectId, "assistant", input.assistantMessageContent, input.threadId);
+  const shouldAppendFinalMessage = !hasPersistedFinalAssistantContent(
+    repository,
+    input.projectId,
+    input.threadId,
+    input.assistantMessageContent
+  );
+  const messageProject = shouldAppendFinalMessage
+    ? repository.appendMessage(input.projectId, "assistant", input.assistantMessageContent, input.threadId)
+    : runtime.getProject(input.projectId);
   runtime.upsertPersistedProject(messageProject);
   const finalStatus = input.partialReason ? "partial-complete" : "completed";
   const statusProject = repository.setAgentRunStatus(input.projectId, input.runId, finalStatus, input.partialReason);
@@ -5369,6 +5410,85 @@ async function completeRunWithAssistantMessage(
     run: finalRun,
     assistantMessage
   };
+}
+
+function hasPersistedFinalAssistantContent(
+  repository: WorkspaceRepository,
+  projectId: ProjectId,
+  threadId: ThreadId,
+  expectedContent: string
+) {
+  const messages = repository.getThreadMessages(projectId, threadId);
+  const latestNonMilestoneAssistant = findLatestNonMilestoneAssistantMessage(messages);
+  if (!latestNonMilestoneAssistant) {
+    return false;
+  }
+
+  const latestMilestoneIndex = findLastMessageIndex(messages, (message) => message.kind === "run-milestones");
+  const latestAssistantIndex = findLastMessageIndex(messages, (message) => message.id === latestNonMilestoneAssistant.id);
+  if (latestMilestoneIndex > latestAssistantIndex) {
+    return false;
+  }
+
+  return normalizeAssistantContent(latestNonMilestoneAssistant.content) === normalizeAssistantContent(expectedContent);
+}
+
+function normalizeAssistantContent(content: string) {
+  return content.replace(/\s+/g, " ").trim();
+}
+
+function findLastMessageIndex(messages: ChatMessage[], predicate: (message: ChatMessage) => boolean) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message && predicate(message)) {
+      return index;
+    }
+  }
+
+  return -1;
+}
+
+function writeToolDebugArtifactIfEnabled(
+  repository: WorkspaceRepository,
+  runId: string,
+  toolCallId: string,
+  kind: string,
+  value: unknown
+) {
+  if (!repository.getDebugEnabledDefault()) {
+    return undefined;
+  }
+  if (value === undefined) {
+    return undefined;
+  }
+
+  try {
+    const artifactDir = path.resolve(process.cwd(), ".local", "debug", "tool-artifacts", safePathSegment(runId));
+    mkdirSync(artifactDir, { recursive: true });
+    const artifactPath = path.join(artifactDir, `${safePathSegment(toolCallId)}-${safePathSegment(kind)}.json`);
+    writeFileSync(artifactPath, stableDebugJson(value), "utf8");
+    return artifactPath;
+  } catch (error) {
+    debugLog("tool.debugArtifact.writeFailed", {
+      runId,
+      toolCallId,
+      kind,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return undefined;
+  }
+}
+
+function safePathSegment(value: string) {
+  return value.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 128) || "artifact";
+}
+
+function stableDebugJson(value: unknown) {
+  try {
+    return JSON.stringify(value, null, 2) ?? String(value);
+  } catch {
+    return JSON.stringify({ unserializable: String(value) }, null, 2);
+  }
 }
 
 function isTerminalRunStatus(status: AgentRunState["status"]) {
@@ -5804,9 +5924,13 @@ function emitThreadMessageAppended(
 }
 
 function findLatestAssistantMessage(project: ProjectLike) {
-  for (let index = project.session.messages.length - 1; index >= 0; index -= 1) {
-    const message = project.session.messages[index];
-    if (message?.role === "assistant") {
+  return findLatestNonMilestoneAssistantMessage(project.session.messages);
+}
+
+function findLatestNonMilestoneAssistantMessage(messages: ChatMessage[]) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role === "assistant" && message.kind !== "run-milestones") {
       return message;
     }
   }
@@ -6329,7 +6453,16 @@ function findProjectRunWithStatuses(
 
 function isActiveThreadStreaming(runtime: WorkspaceRuntimeStore, projectId: ProjectId, threadId: ThreadId) {
   const project = runtime.getProject(projectId);
-  return project.activeThreadId === threadId && project.session.isStreaming;
+  return (
+    project.activeThreadId === threadId &&
+    project.session.isStreaming &&
+    project.activeRun?.threadId === threadId &&
+    isBlockingRunStatus(project.activeRun.status)
+  );
+}
+
+function isBlockingRunStatus(status: AgentRunState["status"]) {
+  return status === "planning" || status === "running-main" || status === "running-subagents" || status === "aggregating";
 }
 
 async function stopThreadActivityBeforeArchive(input: {
@@ -6852,10 +6985,133 @@ function getPreferencesState(
     backgroundJobApprovalPolicyDefault: repository.getBackgroundJobApprovalPolicyDefault(),
     autoArchiveCompletedThreadsDefault: getRepositoryAutoArchiveCompletedThreadsDefault(repository),
     memoryBankEnabledDefault: repository.getMemoryBankEnabledDefault(),
+    memoryBankRecordRunsDefault: repository.getMemoryBankRecordRunsDefault(),
     attachmentsEnabled: Boolean(Bun.env.UPLOADTHING_TOKEN?.trim()),
     capabilities: defaultProviderCapabilities,
     agentRuntimes: runtimeRegistry.listCapabilities()
   };
+}
+
+type ProviderConnectionProvider = "openai" | "google" | "anthropic";
+
+async function testProviderConnection(input: {
+  provider: ProviderConnectionProvider;
+  apiKey?: string;
+  repository: WorkspaceRepository;
+}): Promise<{
+  provider: ProviderConnectionProvider;
+  status: "ready" | "failed";
+  message: string;
+  modelCount?: number;
+}> {
+  const apiKey = (input.apiKey ?? getStoredProviderApiKey(input.repository, input.provider))?.trim();
+  if (!apiKey) {
+    return {
+      provider: input.provider,
+      status: "failed",
+      message: "No API key available."
+    };
+  }
+
+  try {
+    const modelCount = await fetchProviderModelCount(input.provider, apiKey);
+    return {
+      provider: input.provider,
+      status: "ready",
+      message: modelCount === 1 ? "Connection ready. 1 model visible." : `Connection ready. ${modelCount} models visible.`,
+      modelCount
+    };
+  } catch (error) {
+    return {
+      provider: input.provider,
+      status: "failed",
+      message: sanitizeProviderConnectionError(error, apiKey)
+    };
+  }
+}
+
+function getStoredProviderApiKey(repository: WorkspaceRepository, provider: ProviderConnectionProvider) {
+  switch (provider) {
+    case "google":
+      return repository.getStoredGoogleApiKey();
+    case "anthropic":
+      return repository.getStoredAnthropicApiKey();
+    case "openai":
+      return repository.getStoredOpenAiApiKey();
+  }
+}
+
+async function fetchProviderModelCount(provider: ProviderConnectionProvider, apiKey: string) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+
+  try {
+    const response = await fetchProviderModels(provider, apiKey, controller.signal);
+    const payload = await response.json().catch(() => undefined);
+    if (!response.ok) {
+      throw new Error(extractProviderErrorMessage(payload) ?? `Provider returned HTTP ${response.status}.`);
+    }
+
+    return countProviderModels(provider, payload);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function fetchProviderModels(provider: ProviderConnectionProvider, apiKey: string, signal: AbortSignal) {
+  switch (provider) {
+    case "openai":
+      return fetch("https://api.openai.com/v1/models", {
+        signal,
+        headers: {
+          Authorization: `Bearer ${apiKey}`
+        }
+      });
+    case "anthropic":
+      return fetch("https://api.anthropic.com/v1/models", {
+        signal,
+        headers: {
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01"
+        }
+      });
+    case "google":
+      return fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`, { signal });
+  }
+}
+
+function countProviderModels(provider: ProviderConnectionProvider, payload: unknown) {
+  if (!payload || typeof payload !== "object") {
+    return 0;
+  }
+
+  const record = payload as { data?: unknown; models?: unknown };
+  const list = provider === "google" ? record.models : record.data;
+  return Array.isArray(list) ? list.length : 0;
+}
+
+function extractProviderErrorMessage(payload: unknown) {
+  if (!payload || typeof payload !== "object") {
+    return undefined;
+  }
+
+  const record = payload as { error?: unknown };
+  if (!record.error || typeof record.error !== "object") {
+    return undefined;
+  }
+
+  const errorRecord = record.error as { message?: unknown };
+  return typeof errorRecord.message === "string" ? errorRecord.message : undefined;
+}
+
+function sanitizeProviderConnectionError(error: unknown, apiKey: string) {
+  const rawMessage = error instanceof Error ? error.message : "Provider connection failed.";
+  const withoutKey = rawMessage.split(apiKey).join("[redacted]");
+  if (withoutKey.toLowerCase().includes("abort")) {
+    return "Provider connection timed out.";
+  }
+
+  return withoutKey || "Provider connection failed.";
 }
 
 function getRepositoryAutoArchiveCompletedThreadsDefault(repository: WorkspaceRepository) {
@@ -6958,6 +7214,7 @@ function createAssistantFromThreadIntent(input: {
   providerBrand?: ProviderBrand;
   modeId?: string;
   executionModelId?: string;
+  reasoningStrength?: ComposerReasoningStrength;
   fastMode?: boolean;
 }): AssistantCreationResult {
   const project = input.runtime.getProject(input.projectId);
@@ -6993,6 +7250,7 @@ function createAssistantFromThreadIntent(input: {
     providerBrand: input.providerBrand,
     modeId: input.modeId,
     executionModelId: input.executionModelId,
+    reasoningStrength: input.reasoningStrength,
     fastMode: input.fastMode,
     runState: "active",
     bootstrapState: "pending",
@@ -7128,6 +7386,7 @@ async function executeAssistantChatAction(input: {
           prompt: action.jobPrompt ?? action.sourcePrompt,
           modeId: assistant.modeId ?? project.selectedModeId,
           executionModelId: assistant.executionModelId ?? project.session.executionModelId,
+          reasoningStrength: assistant.reasoningStrength,
           fastMode: assistant.fastMode
         },
         schedule: preview.schedule,
@@ -7370,57 +7629,7 @@ function inferAssistantNameFromPrompt(sourcePrompt: string) {
   if (intent.kind === "create-ready" || intent.kind === "create-needs-purpose") {
     return intent.name;
   }
-  if (intent.kind === "ambiguous") {
-    return intent.suggestedName;
-  }
   return "Thread assistant";
-}
-
-function createAssistantIntentQuestion(input: {
-  projectId: ProjectId;
-  threadId: ThreadId;
-  sourcePrompt: string;
-  suggestedName: string;
-  defaultScope?: "project" | "global";
-}): Pick<PlanningQuestion, "id" | "prompt" | "placeholder" | "responseKind" | "choices" | "required" | "intent"> {
-  return {
-    id: "assistant-create-intent" as QuestionId,
-    prompt: `Do you want to create a project assistant named "${input.suggestedName}", or run this once in project chat?`,
-    placeholder: "Choose assistant creation or one-off project execution.",
-    responseKind: "choice",
-    choices: [
-      {
-        id: "assistant-create-intent:create",
-        label: "Create project assistant",
-        description: "Create a project-scoped assistant and open it in Assistants.",
-        answerText: `Create a project assistant named "${input.suggestedName}" from this prompt.`,
-        recommended: true
-      },
-      {
-        id: "assistant-create-intent:run-once",
-        label: "Run once",
-        description: "Handle this prompt once in normal project chat.",
-        answerText: `${input.sourcePrompt}\n\nRun this once in project chat; do not create an assistant.`,
-        recommended: false
-      },
-      {
-        id: "assistant-create-intent:cancel",
-        label: "Cancel",
-        description: "Stop this request without creating an assistant or running project work.",
-        answerText: "Cancel this request.",
-        recommended: false
-      }
-    ],
-    required: true,
-    intent: {
-      type: "assistant-create-intent",
-      projectId: input.projectId,
-      threadId: input.threadId,
-      sourcePrompt: input.sourcePrompt,
-      suggestedName: input.suggestedName,
-      defaultScope: input.defaultScope ?? "project"
-    }
-  };
 }
 
 function createAssistantPurposeQuestion(input: {
@@ -8248,6 +8457,8 @@ async function launchBackgroundJobRun(
     const project = repository.getProject(job.projectId);
     const requestedModelId =
       job.definition.kind === "ai-routine" ? job.definition.executionModelId ?? assistant?.executionModelId : undefined;
+    const requestedReasoningStrength =
+      job.definition.kind === "ai-routine" ? job.definition.reasoningStrength ?? assistant?.reasoningStrength : undefined;
     const resolvedExecutionModelId =
       job.definition.kind === "ai-routine"
         ? resolveExecutionModelIdForRuntime({
@@ -8267,6 +8478,7 @@ async function launchBackgroundJobRun(
       providerBrand,
       planningModelId: agentRuntime.getDefaultPlanningModelId(providerBrand),
       executionModelId: resolvedExecutionModelId,
+      reasoningStrength: requestedReasoningStrength,
       debugEnabled: repository.getDebugEnabledDefault(),
       abortSignal: abortController.signal,
       onRunUpdated(updatedRun) {

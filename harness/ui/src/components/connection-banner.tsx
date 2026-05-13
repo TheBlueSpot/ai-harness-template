@@ -4,22 +4,17 @@ import { harnessStore } from "../harness-store";
 export function ConnectionBanner() {
   const state = harnessStore.state;
 
-  const toneClass = () => {
-    switch (state.connectionState) {
-      case "connected":
-        return "text-emerald-700";
-      case "connecting":
-        return "text-amber-700";
-      case "error":
-        return "text-red-700";
-      default:
-        return "text-(--muted)";
-    }
-  };
-
   return (
     <div class="rounded-full border border-(--border) bg-white/60 px-3 py-1.5 shadow-sm">
-      <div class={`flex items-center gap-2 text-[0.675rem] font-medium ${toneClass()}`}>
+      <div
+        class="flex items-center gap-2 text-[0.675rem] font-medium"
+        classList={{
+          "text-emerald-700": state.connectionState === "connected",
+          "text-amber-700": state.connectionState === "connecting",
+          "text-red-700": state.connectionState === "error",
+          "text-(--muted)": state.connectionState !== "connected" && state.connectionState !== "connecting" && state.connectionState !== "error"
+        }}
+      >
         <Dot class="h-4 w-4" />
         <span class="capitalize">{state.connectionState}</span>
       </div>

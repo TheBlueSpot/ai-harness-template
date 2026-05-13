@@ -13,22 +13,19 @@ createUiTest("Modal dismiss integration", () => {
     clearBrowserStateForTests();
   });
 
-  it("dismisses the preferences modal from backdrop click", () => {
+  it("dismisses the preferences panel back to projects", () => {
     seedHarnessStoreForTests(
       createHarnessStateFixture({
-        preferencesModalOpen: true
+        activeLeftTab: "preferences",
+        activeSurface: "preferences"
       })
     );
 
     render(() => <PreferencesModal />);
-    const dialog = screen.getByRole("dialog", { name: "Workspace preferences" });
-    const backdrop = dialog.parentElement?.previousElementSibling as HTMLElement | null;
-    if (!backdrop) {
-      throw new Error("Expected preferences backdrop");
-    }
+    expect(screen.getByRole("heading", { name: "Workspace preferences" })).not.toBeNull();
 
-    fireEvent.click(backdrop);
-    expect(harnessStore.state.preferencesModalOpen).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(harnessStore.state.activeLeftTab).toBe("projects");
   });
 
   it("dismisses the execution plan dialog from Escape and keeps the body scrollable", async () => {

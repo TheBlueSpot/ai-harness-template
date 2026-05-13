@@ -140,20 +140,18 @@ textarea {
   min-width: 0;
 }
 
-@container (max-width: 21rem) {
-  .left-tabbed-pane .surface-tab-strip {
-    padding-inline: 0.75rem;
-  }
+.surface-tab-strip-icons-only {
+  padding-inline: 0.75rem !important;
+}
 
-  .left-tabbed-pane .surface-tab {
-    width: 2rem !important;
-    padding-inline: 0 !important;
-    justify-content: center;
-  }
+.surface-tab-strip-icons-only .surface-tab {
+  width: 2rem !important;
+  padding-inline: 0 !important;
+  justify-content: center;
+}
 
-  .left-tabbed-pane .surface-tab-label {
-    display: none;
-  }
+.surface-tab-strip-icons-only .surface-tab-label {
+  display: none;
 }
 
 .surface-tab::after {

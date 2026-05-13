@@ -1,4 +1,5 @@
 import { createStore } from "solid-js/store";
+import { readUiTelemetrySnapshot, recordUiTelemetry } from "./lib/ui-telemetry";
 
 export type ToastEntry = {
   id: string;
@@ -163,6 +164,14 @@ export function reportUiError(error: unknown, source: string, options: ReportUiE
     normalizedError.message
   ].filter(Boolean);
 
+  recordUiTelemetry("ui.error", {
+    source,
+    message: normalizedError.message,
+    stack: normalizedError.stack,
+    projectId: options.projectId,
+    rethrowMode
+  });
+  logUiErrorTelemetry(source, normalizedError);
   pushToast(source, descriptionParts.join(" | "), "error");
 
   if (rethrowMode === "dev-only" && isDevelopmentUiRuntime()) {
@@ -170,6 +179,17 @@ export function reportUiError(error: unknown, source: string, options: ReportUiE
       throw normalizedError;
     });
   }
+}
+
+function logUiErrorTelemetry(source: string, error: Error) {
+  if (!isDevelopmentUiRuntime()) {
+    return;
+  }
+
+  console.groupCollapsed(`[harness-ui-error] ${source}: ${error.message}`);
+  console.error(error);
+  console.table(readUiTelemetrySnapshot().slice(-25));
+  console.groupEnd();
 }
 
 export function normalizeUiError(error: unknown) {

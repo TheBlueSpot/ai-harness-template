@@ -1,4 +1,4 @@
-import { createMemo, type JSX } from "solid-js";
+import { Show, type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 
 export type PrimitivePortalLayer = "dialog" | "popover" | "tooltip" | "tutorial";
@@ -16,20 +16,13 @@ export function shouldBypassPortalForTests() {
 }
 
 export function PrimitivePortal(props: PrimitivePortalProps) {
-  const content = createMemo(() => {
-    const active = props.active ?? true;
-    if (!active) {
-      return null;
-    }
-
-    if (shouldBypassPortalForTests()) {
-      return props.children;
-    }
-
-    return <Portal mount={getPrimitivePortalRoot(props.layer)}>{props.children}</Portal>;
-  });
-
-  return <>{content()}</>;
+  return (
+    <Show when={props.active ?? true}>
+      <Show when={shouldBypassPortalForTests()} fallback={<Portal mount={getPrimitivePortalRoot(props.layer)}>{props.children}</Portal>}>
+        {props.children}
+      </Show>
+    </Show>
+  );
 }
 
 export function getPrimitivePortalRoot(layer: PrimitivePortalLayer) {

@@ -1,6 +1,6 @@
+/** @jsxImportSource solid-js */
 import type { JSX } from "solid-js";
 import { Button, type buttonVariants } from "./primitives/button";
-import { Tooltip } from "./primitives/tooltip";
 
 type ActionButtonProps = {
   tooltip: string;
@@ -8,6 +8,7 @@ type ActionButtonProps = {
   icon?: JSX.Element;
   children?: JSX.Element;
   class?: string;
+  classList?: Record<string, boolean | undefined>;
   wrapperClass?: string;
   ariaLabel?: string;
   type?: "button" | "submit";
@@ -22,23 +23,22 @@ export function ActionButton(props: ActionButtonProps) {
   const tooltipText = () => (props.disabled && props.disabledReason ? props.disabledReason : props.tooltip);
 
   return (
-    <Tooltip content={tooltipText()} triggerClass={props.wrapperClass}>
-      <span class={props.wrapperClass ?? "inline-flex"}>
-        <Button
-          class={props.class}
-          type={props.type}
-          variant={props.variant}
-          size={props.size}
-          disabled={props.disabled}
-          data-tour-id={props.dataTourId}
-          aria-label={props.ariaLabel ?? props.tooltip}
-          aria-description={props.disabled && props.disabledReason ? props.disabledReason : undefined}
-          onClick={props.onClick}
-        >
-          {props.icon}
-          {props.children}
-        </Button>
-      </span>
-    </Tooltip>
+    <Button
+      class={props.class}
+      classList={props.classList}
+      tooltip={tooltipText()}
+      tooltipTriggerClass={props.wrapperClass}
+      type={props.type}
+      variant={props.variant}
+      size={props.size}
+      disabled={props.disabled}
+      data-tour-id={props.dataTourId}
+      aria-label={props.ariaLabel ?? props.tooltip}
+      aria-description={props.disabled && props.disabledReason ? props.disabledReason : undefined}
+      onClick={props.onClick}
+    >
+      {props.icon}
+      {props.children}
+    </Button>
   );
 }

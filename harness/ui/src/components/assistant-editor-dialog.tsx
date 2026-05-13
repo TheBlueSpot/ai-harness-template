@@ -1,5 +1,5 @@
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
-import { Bot, Folder, FolderOpen, Globe, Split } from "lucide-solid";
+import { Bot, Brain, Cpu, Folder, FolderOpen, Gauge, Globe, Split } from "lucide-solid";
 import { resolveModeCatalog } from "../../../shared/modes";
 import {
   createAssistantAssetRefId,
@@ -7,8 +7,17 @@ import {
   createRequestId,
   type Assistant,
   type AssistantAssetRef,
+  type ComposerReasoningStrength,
+  type ProviderBrand
 } from "../../../shared/protocol";
-import { type AssistantEditorDraft, harnessStore } from "../harness-store";
+import {
+  COMPOSER_REASONING_STRENGTHS,
+  DEFAULT_COMPOSER_REASONING_STRENGTH,
+  getComposerControlState,
+  getExecutionModelOptionsForAgent,
+  type AssistantEditorDraft,
+  harnessStore
+} from "../harness-store";
 import { pushToast } from "../toast-store";
 import { Button } from "./primitives/button";
 import { Dialog } from "./primitives/dialog";
@@ -29,8 +38,11 @@ export function AssistantEditorDialog() {
   const [personalityPrompt, setPersonalityPrompt] = createSignal("");
   const [jobPrompt, setJobPrompt] = createSignal("");
   const [agentId, setAgentId] = createSignal<Assistant["agentId"]>("pi");
+  const [providerBrand, setProviderBrand] = createSignal<ProviderBrand>("gpt");
   const [modeId, setModeId] = createSignal("");
   const [executionModelId, setExecutionModelId] = createSignal("");
+  const [reasoningStrength, setReasoningStrength] = createSignal<ComposerReasoningStrength>(DEFAULT_COMPOSER_REASONING_STRENGTH);
+  const [fastMode, setFastMode] = createSignal(false);
   const [assetRefsText, setAssetRefsText] = createSignal("");
 
   const activeDraft = () => state.assistantEditorDraft;
@@ -60,6 +72,11 @@ export function AssistantEditorDialog() {
       icon: <FolderOpen class="h-3 w-3" />
     }))
   );
+  const providerOptions = () => [
+    { value: "gpt", label: "GPT", description: "OpenAI-hosted model family.", icon: <Cpu class="h-3 w-3" /> },
+    { value: "gemini", label: "Gemini", description: "Google-hosted model family.", icon: <Cpu class="h-3 w-3" /> },
+    { value: "claude", label: "Claude", description: "Anthropic-hosted model family.", icon: <Cpu class="h-3 w-3" /> }
+  ];
   const modeOptions = createMemo(() => [
     { value: "", label: "Default", description: "Use workspace or project default mode.", icon: <Split class="h-3 w-3" /> },
     ...availableModes().map((mode) => ({
@@ -68,6 +85,45 @@ export function AssistantEditorDialog() {
       description: mode.description,
       icon: getModeDropdownIcon(mode.id)
     }))
+  ]);
+  const executionModelOptions = createMemo(() => {
+    const options = getExecutionModelOptionsForAgent(state, agentId(), providerBrand());
+    const currentModel = executionModelId().trim();
+    const knownOptions = options.map((model) => ({
+      value: model.modelId,
+      label: model.label,
+      description: model.modelId,
+      icon: <Cpu class="h-3 w-3" />
+    }));
+    return [
+      { value: "", label: "Default", description: "Use runtime default model.", icon: <Cpu class="h-3 w-3" /> },
+      ...(currentModel && !knownOptions.some((option) => option.value === currentModel)
+        ? [{ value: currentModel, label: currentModel, description: "Saved custom model.", icon: <Cpu class="h-3 w-3" /> }]
+        : []),
+      ...knownOptions
+    ];
+  });
+  const composerControlState = createMemo(() =>
+    getComposerControlState(state, agentId(), executionModelId().trim() || undefined)
+  );
+  const reasoningOptions = createMemo(() =>
+    COMPOSER_REASONING_STRENGTHS.map((strength) => ({
+      value: strength,
+      label: formatReasoningOptionLabel(strength),
+      description: getReasoningStrengthDescription(strength),
+      disabled: !composerControlState().availableStrengths.includes(strength),
+      icon: <Brain class="h-3 w-3" />
+    }))
+  );
+  const fastModeOptions = createMemo(() => [
+    { value: "false", label: "Off", description: "Use standard response path.", icon: <Gauge class="h-3 w-3" /> },
+    {
+      value: "true",
+      label: "On",
+      description: "Prefer lower-latency responses when supported.",
+      disabled: !composerControlState().supportsFastMode,
+      icon: <Gauge class="h-3 w-3" />
+    }
   ]);
 
   createEffect(() => {
@@ -87,8 +143,11 @@ export function AssistantEditorDialog() {
     setPersonalityPrompt(draft.personalityPrompt);
     setJobPrompt(draft.jobPrompt);
     setAgentId(draft.agentId);
+    setProviderBrand(draft.providerBrand ?? state.providerBrand);
     setModeId(draft.modeId ?? "");
     setExecutionModelId(draft.executionModelId ?? "");
+    setReasoningStrength(draft.reasoningStrength ?? DEFAULT_COMPOSER_REASONING_STRENGTH);
+    setFastMode(Boolean(draft.fastMode));
     setAssetRefsText(draft.assetRefsText);
   }
 
@@ -136,10 +195,11 @@ export function AssistantEditorDialog() {
       personalityPrompt: personalityPrompt().trim(),
       jobPrompt: jobPrompt().trim(),
       agentId: agentId(),
-      providerBrand: draft.providerBrand,
+      providerBrand: providerBrand(),
       modeId: modeId().trim() || undefined,
       executionModelId: executionModelId().trim() || undefined,
-      fastMode: draft.fastMode,
+      reasoningStrength: reasoningStrength(),
+      fastMode: fastMode(),
       runState: existingAssistant?.runState ?? draft.runState,
       bootstrapState: existingAssistant?.bootstrapState ?? draft.bootstrapState,
       clonedFromAssistantId: existingAssistant?.clonedFromAssistantId,
@@ -174,10 +234,10 @@ export function AssistantEditorDialog() {
       class="max-w-4xl"
       footer={
         <>
-          <Button variant="ghost" onClick={handleClose}>
+          <Button tooltip="Close assistant editor without saving" variant="ghost" onClick={handleClose}>
             Cancel
           </Button>
-          <Button onClick={handleSave}>{activeDraft()?.source === "edit" ? "Save assistant" : "Create assistant"}</Button>
+          <Button tooltip={activeDraft()?.source === "edit" ? "Save assistant changes" : "Create assistant"} onClick={handleSave}>{activeDraft()?.source === "edit" ? "Save assistant" : "Create assistant"}</Button>
         </>
       }
     >
@@ -232,6 +292,20 @@ export function AssistantEditorDialog() {
         </Show>
 
         <label class="space-y-2">
+          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Provider</span>
+          <DropdownControl
+            kind="select"
+            ariaLabel="Select assistant provider"
+            icon={<Cpu class="h-3.5 w-3.5" />}
+            size="md"
+            class="w-full"
+            value={providerBrand()}
+            options={providerOptions()}
+            onChange={(value) => setProviderBrand(value as ProviderBrand)}
+          />
+        </label>
+
+        <label class="space-y-2">
           <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Mode</span>
           <DropdownControl
             kind="select"
@@ -247,7 +321,44 @@ export function AssistantEditorDialog() {
 
         <label class="space-y-2">
           <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Execution model</span>
-          <Input value={executionModelId()} onInput={(event) => setExecutionModelId(event.currentTarget.value)} placeholder="openai/gpt-5.4" />
+          <DropdownControl
+            kind="select"
+            ariaLabel="Select assistant execution model"
+            icon={<Cpu class="h-3.5 w-3.5" />}
+            size="md"
+            class="w-full"
+            value={executionModelId()}
+            options={executionModelOptions()}
+            onChange={setExecutionModelId}
+          />
+        </label>
+
+        <label class="space-y-2">
+          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Effort</span>
+          <DropdownControl
+            kind="select"
+            ariaLabel="Select assistant reasoning effort"
+            icon={<Brain class="h-3.5 w-3.5" />}
+            size="md"
+            class="w-full"
+            value={reasoningStrength()}
+            options={reasoningOptions()}
+            onChange={(value) => setReasoningStrength(value as ComposerReasoningStrength)}
+          />
+        </label>
+
+        <label class="space-y-2">
+          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Fast mode</span>
+          <DropdownControl
+            kind="select"
+            ariaLabel="Select assistant fast mode"
+            icon={<Gauge class="h-3.5 w-3.5" />}
+            size="md"
+            class="w-full"
+            value={fastMode() ? "true" : "false"}
+            options={fastModeOptions()}
+            onChange={(value) => setFastMode(value === "true")}
+          />
         </label>
       </div>
 
@@ -292,6 +403,38 @@ export function AssistantEditorDialog() {
       </div>
     </Dialog>
   );
+}
+
+function getReasoningStrengthDescription(strength: ComposerReasoningStrength) {
+  switch (strength) {
+    case "low":
+      return "Fastest pass with minimal internal deliberation.";
+    case "medium":
+      return "Balanced depth for routine implementation and review.";
+    case "high":
+      return "Default stronger reasoning for most coding work.";
+    case "extra-high":
+      return "Heaviest reasoning budget for hard debugging and planning.";
+  }
+}
+
+function formatReasoningStrengthLabel(strength: ComposerReasoningStrength) {
+  switch (strength) {
+    case "extra-high":
+      return "Extra High";
+    case "medium":
+      return "Medium";
+    case "low":
+      return "Low";
+    case "high":
+    default:
+      return "High";
+  }
+}
+
+function formatReasoningOptionLabel(strength: ComposerReasoningStrength) {
+  const label = formatReasoningStrengthLabel(strength);
+  return strength === DEFAULT_COMPOSER_REASONING_STRENGTH ? `${label} (default)` : label;
 }
 
 function parseAssetRefs(input: string, assistantId: string) {

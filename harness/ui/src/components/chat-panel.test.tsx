@@ -1,7 +1,7 @@
 /** @jsxImportSource solid-js */
 import { beforeEach, expect, it } from "bun:test";
 import { createUiTest } from "../utils/tests/test-harness";
-import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
+import { cleanup, fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { ChatPanel, buildProjectChatSearchResults } from "./chat-panel";
 import { createInitialViewState, harnessStore, readBrowserUiSession } from "../harness-store";
 import { toastStore } from "../toast-store";
@@ -272,6 +272,99 @@ createUiTest("ChatPanel", () => {
     expect(screen.queryByText(/transcript\s*\|/i)).toBeNull();
   });
 
+  it("shows memory priority controls and confirms delete before dispatch", () => {
+    const commands: unknown[] = [];
+    const now = new Date().toISOString();
+    const project = createViewProjectFixture({
+      id: "project-memory-controls",
+      memoryEntries: [
+        {
+          id: "memory-1",
+          projectId: "project-memory-controls",
+          kind: "task-summary",
+          status: "active",
+          title: "First memory",
+          summary: "First summary",
+          tags: [],
+          pathGlobs: [],
+          confidence: "medium",
+          freshness: "fresh",
+          pinned: false,
+          priority: 100,
+          hitCount: 0,
+          createdAt: now,
+          updatedAt: now
+        },
+        {
+          id: "memory-2",
+          projectId: "project-memory-controls",
+          kind: "task-summary",
+          status: "active",
+          title: "Second memory",
+          summary: "Second summary",
+          tags: [],
+          pathGlobs: [],
+          confidence: "high",
+          freshness: "fresh",
+          pinned: false,
+          priority: 200,
+          hitCount: 3,
+          createdAt: now,
+          updatedAt: now
+        }
+      ]
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        chatPaneTab: "memory",
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    captureDispatchedCommands(commands as never[]);
+    render(() => <ChatPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "Open memory pane" }));
+
+    expect(screen.getByText("priority 100 | medium | fresh | hits 0")).not.toBeNull();
+    fireEvent.click(screen.getAllByRole("button", { name: "Move memory down" })[0]!);
+    expect((commands.at(-1) as { type: string }).type).toBe("memory.reorder");
+
+    const deleteButtons = screen.getAllByRole("button", { name: "Permanently delete this memory entry" });
+    fireEvent.click(deleteButtons[0]!);
+    expect(commands.some((command) => (command as { type: string }).type === "memory.delete")).toBe(false);
+    fireEvent.click(deleteButtons[0]!);
+    expect((commands.at(-1) as { type: string }).type).toBe("memory.delete");
+  });
+
+  it("loads memory entries when memory pane opens with a ready connection", async () => {
+    const commands: unknown[] = [];
+    const project = createViewProjectFixture({
+      id: "project-memory-connect"
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        chatPaneTab: "chat",
+        connectionState: "connected",
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    captureDispatchedCommands(commands as never[]);
+    render(() => <ChatPanel />);
+
+    expect(commands.some((command) => (command as { type: string }).type === "memory.list")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Open memory pane" }));
+
+    await waitFor(() => expect((commands.at(-1) as { type: string } | undefined)?.type).toBe("memory.list"));
+    expect((commands.at(-1) as { payload: { projectId: string } }).payload.projectId).toBe(project.id);
+  });
+
   it("blocks plain submit for resumable runs and shows toast", () => {
     const commands: unknown[] = [];
     const project = createViewProjectFixture({
@@ -512,6 +605,7 @@ createUiTest("ChatPanel", () => {
           correctnessIterationModeDefault: state.correctnessIterationModeDefault,
           backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
           memoryBankEnabledDefault: state.memoryBankEnabledDefault,
+          memoryBankRecordRunsDefault: state.memoryBankRecordRunsDefault,
           attachmentsEnabled: state.attachmentsEnabled,
           capabilities: state.capabilities,
           agentRuntimes: state.agentRuntimes
@@ -845,6 +939,10 @@ it("updates composer effort label and sends reasoning plus fast mode", () => {
     const project = createViewProjectFixture({
       id: "project-enter-streaming",
       draft: "send while streaming",
+      activeRun: createRunFixture({
+        id: "run-enter-streaming",
+        status: "running-main"
+      }),
       session: {
         ...createEmptySession("thread-1"),
         messages: [],
@@ -869,6 +967,53 @@ it("updates composer effort label and sends reasoning plus fast mode", () => {
 
     expect(commands).toHaveLength(0);
     expect(toastStore.toasts[0]?.description).toBe("Project is streaming");
+  });
+
+  it("allows a follow-up when only a stale stream flag remains after a live CLI session", () => {
+    const commands: unknown[] = [];
+    const project = createViewProjectFixture({
+      id: "project-stale-stream-cli",
+      draft: "next task",
+      activeRun: createRunFixture({
+        id: "run-stale-stream-cli",
+        status: "completed"
+      }),
+      session: {
+        ...createEmptySession("thread-1"),
+        messages: [],
+        isStreaming: true
+      },
+      activeCliSession: {
+        id: "cli-session-1",
+        projectId: "project-stale-stream-cli",
+        threadId: "thread-1",
+        agentId: "codex-cli",
+        cwd: "C:/repo",
+        status: "running",
+        cols: 120,
+        rows: 32,
+        attachState: "attached",
+        idleTimeoutMs: 30 * 60_000,
+        startedAt: "2026-05-10T12:00:00.000Z",
+        updatedAt: "2026-05-10T12:00:01.000Z"
+      }
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        hasUsableApiKey: true,
+        hasUsableOpenAiApiKey: true,
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    captureDispatchedCommands(commands as never[]);
+    render(() => <ChatPanel />);
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+
+    expect((commands[0] as { type: string }).type).toBe("chat.send");
   });
 
   it("shows a waiting timer above the composer while the active thread is streaming", () => {
@@ -1218,6 +1363,10 @@ it("updates composer effort label and sends reasoning plus fast mode", () => {
     const threadId = "thread-streaming-dup";
     const project = createViewProjectFixture({
       id: "project-streaming-dup",
+      activeRun: createRunFixture({
+        id: "run-streaming-dup",
+        status: "running-main"
+      }),
       session: {
         ...createViewProjectFixture().session,
         sessionId: threadId,
@@ -1669,7 +1818,7 @@ it("updates composer effort label and sends reasoning plus fast mode", () => {
     expect(toastStore.toasts[0]?.title).toBe("Plan summary copied");
   });
 
-  it("stops treating the thread as streaming after chat.message-appended resets isStreaming", () => {
+  it("keeps ready plan controls usable when only a stale stream flag remains", () => {
     const commands: unknown[] = [];
     const plan = createExecutionPlanFixture({
       runId: "run-ready",
@@ -1713,7 +1862,7 @@ it("updates composer effort label and sends reasoning plus fast mode", () => {
 
     captureDispatchedCommands(commands as never[]);
     render(() => <ChatPanel />);
-    expect((screen.getByRole("button", { name: "Refine plan before execution" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Refine plan before execution" }) as HTMLButtonElement).disabled).toBe(false);
 
     harnessStore.applyServerEvent({
       type: "chat.message-appended",

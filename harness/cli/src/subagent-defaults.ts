@@ -52,8 +52,8 @@ export function resolveSubagentModelId(input: {
   return executionModelId ?? getProviderDefaultSubagentModelId(input.providerBrand);
 }
 
-export function resolveSubagentReasoningStrength(_reasoningStrength?: ComposerReasoningStrength): ComposerReasoningStrength {
-  return "low";
+export function resolveSubagentReasoningStrength(reasoningStrength?: ComposerReasoningStrength): ComposerReasoningStrength {
+  return reasoningStrength ?? "low";
 }
 
 function getAvailableModelIds(agentId: AgentId | undefined, providerBrand: ProviderBrand) {

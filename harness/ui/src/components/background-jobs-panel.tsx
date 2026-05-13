@@ -248,6 +248,8 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
       aiPrompt: template?.definition.kind === "ai-routine" ? template.definition.prompt : "",
       aiModeId: template?.definition.kind === "ai-routine" ? template.definition.modeId : undefined,
       aiExecutionModelId: template?.definition.kind === "ai-routine" ? template.definition.executionModelId : undefined,
+      aiReasoningStrength: template?.definition.kind === "ai-routine" ? template.definition.reasoningStrength : undefined,
+      aiFastMode: template?.definition.kind === "ai-routine" ? template.definition.fastMode : undefined,
       aiPlanExecutionMode:
         template?.definition.kind === "ai-routine"
           ? template.definition.planExecutionMode ?? state.planExecutionModeDefault
@@ -288,6 +290,8 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
       aiPrompt: job.definition.kind === "ai-routine" ? job.definition.prompt : "",
       aiModeId: job.definition.kind === "ai-routine" ? job.definition.modeId : undefined,
       aiExecutionModelId: job.definition.kind === "ai-routine" ? job.definition.executionModelId : undefined,
+      aiReasoningStrength: job.definition.kind === "ai-routine" ? job.definition.reasoningStrength : undefined,
+      aiFastMode: job.definition.kind === "ai-routine" ? job.definition.fastMode : undefined,
       aiPlanExecutionMode:
         job.definition.kind === "ai-routine" ? job.definition.planExecutionMode ?? state.planExecutionModeDefault : undefined,
       aiSubagentWorktreeStrategy:
@@ -435,21 +439,24 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
           <div class="flex items-center gap-2 rounded-2xl border border-(--border) bg-white/55 p-1">
             <button
               type="button"
-              class={`flex-1 rounded-[0.8rem] px-3 py-2 text-[0.675rem] font-semibold ${activeSegment() === "jobs" ? "bg-(--accent) text-white" : "text-(--foreground)"}`}
+              class="flex-1 rounded-[0.8rem] px-3 py-2 text-[0.675rem] font-semibold"
+              classList={{ "bg-(--accent)": activeSegment() === "jobs", "text-white": activeSegment() === "jobs", "text-(--foreground)": activeSegment() !== "jobs" }}
               onClick={() => harnessStore.setJobsPanePreferences({ segment: "jobs" })}
             >
               Jobs
             </button>
             <button
               type="button"
-              class={`flex-1 rounded-[0.8rem] px-3 py-2 text-[0.675rem] font-semibold ${activeSegment() === "inbox" ? "bg-(--accent) text-white" : "text-(--foreground)"}`}
+              class="flex-1 rounded-[0.8rem] px-3 py-2 text-[0.675rem] font-semibold"
+              classList={{ "bg-(--accent)": activeSegment() === "inbox", "text-white": activeSegment() === "inbox", "text-(--foreground)": activeSegment() !== "inbox" }}
               onClick={() => harnessStore.setJobsPanePreferences({ segment: "inbox" })}
             >
               Runs
             </button>
             <button
               type="button"
-              class={`flex-1 rounded-[0.8rem] px-3 py-2 text-[0.675rem] font-semibold ${activeSegment() === "health" ? "bg-(--accent) text-white" : "text-(--foreground)"}`}
+              class="flex-1 rounded-[0.8rem] px-3 py-2 text-[0.675rem] font-semibold"
+              classList={{ "bg-(--accent)": activeSegment() === "health", "text-white": activeSegment() === "health", "text-(--foreground)": activeSegment() !== "health" }}
               onClick={() => harnessStore.setJobsPanePreferences({ segment: "health" })}
             >
               Health
@@ -502,7 +509,10 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
         </Show>
       </Show>
 
-      <div class={showLeft() && showDetail() && activeSegment() !== "health" ? "grid min-h-0 min-w-0 flex-1 gap-4 2xl:grid-cols-[minmax(18rem,24rem)_minmax(0,1fr)]" : "grid min-h-0 min-w-0 flex-1 gap-4"}>
+      <div
+        class="grid min-h-0 min-w-0 flex-1 gap-4"
+        classList={{ "2xl:grid-cols-[minmax(18rem,24rem)_minmax(0,1fr)]": showLeft() && showDetail() && activeSegment() !== "health" }}
+      >
         <Show when={showLeft()}>
           <div class="grid min-h-0 min-w-0 gap-4">
             <Show when={activeSegment() === "health"}>
@@ -533,7 +543,16 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                   empty={<EmptyFilteredState message="No scheduled tasks match current search or filters." onClear={() => harnessStore.setJobsPanePreferences({ jobSearch: "", kind: undefined, status: undefined, risk: undefined })} />}
                 >
                   {(job) => (
-                    <article class={`min-w-0 rounded-[1.2rem] border p-3 cursor-pointer ${selectedJob()?.id === job.id ? "border-(--accent) bg-[linear-gradient(135deg,rgba(15,118,110,0.14),rgba(255,255,255,0.92))]" : "border-(--border) bg-white/70"}`} onClick={() => openJobDetails(job)}>
+                    <article
+                      class="min-w-0 cursor-pointer rounded-[1.2rem] border p-3"
+                      classList={{
+                        "border-(--accent)": selectedJob()?.id === job.id,
+                        "bg-[linear-gradient(135deg,rgba(15,118,110,0.14),rgba(255,255,255,0.92))]": selectedJob()?.id === job.id,
+                        "border-(--border)": selectedJob()?.id !== job.id,
+                        "bg-white/70": selectedJob()?.id !== job.id
+                      }}
+                      onClick={() => openJobDetails(job)}
+                    >
                       <div class="flex items-start justify-between gap-3">
                         <button type="button" class="min-w-0 flex-1 text-left cursor-pointer" aria-label={`Select ${job.name}`} onClick={() => openJobDetails(job)}>
                           <span class="break-words text-[0.75rem] font-semibold text-(--foreground) [overflow-wrap:anywhere]">{job.name}</span>
@@ -568,10 +587,15 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                       {(filter) => (
                         <Tooltip content={runFilterLabel(filter)}>
                           <button
-                            class={`inline-flex h-8 w-8 items-center justify-center rounded-full border transition ${runFilter() === filter
-                              ? "border-(--accent) bg-(--accent) text-white"
-                              : "border-(--border) bg-white/70 text-(--foreground)"
-                              }`}
+                            class="inline-flex h-8 w-8 items-center justify-center rounded-full border transition"
+                            classList={{
+                              "border-(--accent)": runFilter() === filter,
+                              "bg-(--accent)": runFilter() === filter,
+                              "text-white": runFilter() === filter,
+                              "border-(--border)": runFilter() !== filter,
+                              "bg-white/70": runFilter() !== filter,
+                              "text-(--foreground)": runFilter() !== filter
+                            }}
                             type="button"
                             aria-label={runFilterLabel(filter)}
                             onClick={() => harnessStore.setJobsRunFilter(filter)}
@@ -619,7 +643,17 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                   empty={<EmptyFilteredState message="No runs match current search or filter." onClear={() => { harnessStore.setJobsPanePreferences({ runSearch: "" }); harnessStore.setJobsRunFilter("approval"); }} />}
                 >
                   {(run) => (
-                    <button class={`min-w-0 w-full rounded-[1.2rem] border p-3 text-left transition ${selectedRun()?.id === run.id ? "border-(--accent) bg-[linear-gradient(135deg,rgba(15,118,110,0.14),rgba(255,255,255,0.92))]" : "border-(--border) bg-white/70"}`} type="button" onClick={() => openRunDetails(run)}>
+                    <button
+                      class="min-w-0 w-full rounded-[1.2rem] border p-3 text-left transition"
+                      classList={{
+                        "border-(--accent)": selectedRun()?.id === run.id,
+                        "bg-[linear-gradient(135deg,rgba(15,118,110,0.14),rgba(255,255,255,0.92))]": selectedRun()?.id === run.id,
+                        "border-(--border)": selectedRun()?.id !== run.id,
+                        "bg-white/70": selectedRun()?.id !== run.id
+                      }}
+                      type="button"
+                      onClick={() => openRunDetails(run)}
+                    >
                       <div class="flex min-w-0 items-center justify-between gap-3">
                         <div class="min-w-0 break-words text-[0.725rem] font-semibold text-(--foreground) [overflow-wrap:anywhere]">{state.backgroundJobs.jobs.find((job) => job.id === run.jobId)?.name ?? run.jobId}</div>
                         <div class="shrink-0 text-[0.575rem] uppercase tracking-[0.16em] text-(--muted)">{run.status}</div>
@@ -801,7 +835,15 @@ function HealthView(props: {
               <Tooltip content={`Inspect the last ${windowDays === 1 ? "24 hours" : `${windowDays} days`}`}>
                 <button
                   type="button"
-                  class={`rounded-full px-3 py-1.5 text-[0.675rem] font-semibold ${props.healthWindowDays === windowDays ? "bg-(--accent) text-white" : "border border-(--border) bg-white/70 text-(--foreground)"}`}
+                  class="rounded-full px-3 py-1.5 text-[0.675rem] font-semibold"
+                  classList={{
+                    "bg-(--accent)": props.healthWindowDays === windowDays,
+                    "text-white": props.healthWindowDays === windowDays,
+                    "border": props.healthWindowDays !== windowDays,
+                    "border-(--border)": props.healthWindowDays !== windowDays,
+                    "bg-white/70": props.healthWindowDays !== windowDays,
+                    "text-(--foreground)": props.healthWindowDays !== windowDays
+                  }}
                   onClick={() => props.onSelectWindow(windowDays)}
                 >
                   {windowDays === 1 ? "24h" : `${windowDays}d`}

@@ -37,6 +37,7 @@ export const defaultPreferencesFixture: PreferencesState = {
   correctnessIterationModeDefault: "ask-before-iterate",
   backgroundJobApprovalPolicyDefault: "ask-risky",
   memoryBankEnabledDefault: true,
+  memoryBankRecordRunsDefault: true,
   attachmentsEnabled: true,
   capabilities: [...defaultProviderCapabilities],
   agentRuntimes: []
