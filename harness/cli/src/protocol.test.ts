@@ -91,6 +91,20 @@ describe("client command validation", () => {
     expect(command.type).toBe("thread.cleanupArchive");
   });
 
+  test("accepts thread pin payloads", () => {
+    const command = parseClientCommand({
+      type: "thread.pin",
+      requestId: "req-thread-pin",
+      payload: {
+        projectId: "project-1",
+        threadId: "thread-1",
+        pinned: true
+      }
+    });
+
+    expect(command.type).toBe("thread.pin");
+  });
+
   test("accepts memory reorder payloads", () => {
     const command = parseClientCommand({
       type: "memory.reorder",

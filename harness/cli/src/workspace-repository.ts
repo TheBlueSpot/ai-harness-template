@@ -164,6 +164,7 @@ type ThreadRow = {
   id: string;
   project_id: string;
   status: string;
+  pinned: number;
   kind: BackgroundJobThreadKind;
   title: string;
   title_source: "generated" | "custom";
@@ -1149,10 +1150,35 @@ export class WorkspaceRepository {
     return this.readProjectSnapshot(projectId);
   }
 
+  setThreadPinned(projectId: ProjectId, threadId: ThreadId, pinned: boolean) {
+    const thread = this.readThreadRow(projectId, threadId);
+    if (thread.kind !== "user") {
+      throw new Error("Automation threads cannot be pinned");
+    }
+    const now = new Date().toISOString();
+    const updated = this.db
+      .query(
+        `UPDATE project_threads
+         SET pinned = ?3, updated_at = ?4
+         WHERE id = ?1 AND project_id = ?2 AND kind = 'user'`
+      )
+      .run(threadId, projectId, pinned ? 1 : 0, now);
+
+    if (updated.changes === 0) {
+      throw new Error(`Unknown thread: ${threadId}`);
+    }
+
+    this.touchProject(projectId, now);
+    return this.readProjectSnapshot(projectId);
+  }
+
   archiveThread(projectId: ProjectId, threadId: ThreadId) {
     const thread = this.readThreadRow(projectId, threadId);
     if (thread.kind !== "user") {
       throw new Error("Automation threads cannot be archived");
+    }
+    if (normalizeBooleanNumber(thread.pinned)) {
+      throw new Error("Pinned threads cannot be archived");
     }
     if (thread.status === "archived") {
       return this.readProjectSnapshot(projectId);
@@ -1211,6 +1237,7 @@ export class WorkspaceRepository {
       const capacity = Math.max(0, activeUserThreads.length - 1);
       const eligible = activeUserThreads
         .filter((thread) => thread.id !== project.activeThreadId)
+        .filter((thread) => !thread.pinned)
         .filter((thread) => thread.badgeState !== "planning" && thread.badgeState !== "executing" && thread.badgeState !== "needs-input")
         .filter((thread) => {
           const activityAt = thread.lastUserMessageAt ?? thread.updatedAt ?? thread.createdAt;
@@ -4603,6 +4630,7 @@ export class WorkspaceRepository {
         id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL,
         status TEXT NOT NULL CHECK(status IN ('active', 'archived')),
+        pinned INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0, 1)),
         kind TEXT NOT NULL DEFAULT 'user' CHECK(kind IN ('user', 'automation')),
         title TEXT NULL,
         title_source TEXT NULL,
@@ -5168,6 +5196,7 @@ export class WorkspaceRepository {
     this.addColumnIfMissing("agent_runs", "failure_category", "TEXT NULL");
     this.addColumnIfMissing("agent_runs", "max_turns", "INTEGER NULL");
     this.addColumnIfMissing("agent_runs", "turns_used", "INTEGER NOT NULL DEFAULT 0");
+    this.addColumnIfMissing("project_threads", "pinned", "INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0, 1))");
     this.addColumnIfMissing("memory_entries", "priority", "INTEGER NOT NULL DEFAULT 50000");
     this.addColumnIfMissing("background_jobs", "assistant_id", "TEXT NULL");
     this.addColumnIfMissing(
@@ -5328,7 +5357,7 @@ export class WorkspaceRepository {
   private readThreadRow(projectId: ProjectId, threadId: ThreadId) {
     const thread = this.db
       .query<ThreadRow, [string, string]>(
-        `SELECT id, project_id, status, kind, title, title_source, updated_at, forked_from_thread_id, memory_summary_content, memory_summary_updated_at, created_at, archived_at
+        `SELECT id, project_id, status, pinned, kind, title, title_source, updated_at, forked_from_thread_id, memory_summary_content, memory_summary_updated_at, created_at, archived_at
          FROM project_threads
          WHERE project_id = ?1 AND id = ?2`
       )
@@ -5376,7 +5405,7 @@ export class WorkspaceRepository {
     const threadRows = this.db
       .query<ThreadRow, [string]>(
         `SELECT
-          id, project_id, status, kind, title, title_source, updated_at, forked_from_thread_id,
+          id, project_id, status, pinned, kind, title, title_source, updated_at, forked_from_thread_id,
           memory_summary_content, memory_summary_updated_at, created_at, archived_at
          FROM project_threads
          WHERE project_id = ?1
@@ -5428,6 +5457,7 @@ export class WorkspaceRepository {
           id: thread.id as ThreadId,
           kind: thread.kind,
           status: thread.status === "archived" ? "archived" : "active",
+          pinned: normalizeBooleanNumber(thread.pinned),
           title: normalizeRequiredTrimmedString(thread.title, 256, "Recovered thread"),
           titleSource: thread.title_source,
           badgeState: getThreadBadgeState(latestRun),
@@ -6268,9 +6298,9 @@ export class WorkspaceRepository {
     this.db
       .query(
         `INSERT INTO project_threads (
-          id, project_id, status, kind, title, title_source, updated_at, forked_from_thread_id,
+          id, project_id, status, pinned, kind, title, title_source, updated_at, forked_from_thread_id,
           memory_summary_content, memory_summary_updated_at, created_at, archived_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, NULL, ?7, NULL)`
+        ) VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6, ?7, ?8, NULL, NULL, ?7, NULL)`
       )
       .run(
         threadId,
@@ -6381,7 +6411,7 @@ export class WorkspaceRepository {
       const threads = this.db
         .query<ThreadRow, [string]>(
           `SELECT
-            id, project_id, status, kind, title, title_source, updated_at, forked_from_thread_id,
+            id, project_id, status, pinned, kind, title, title_source, updated_at, forked_from_thread_id,
             memory_summary_content, memory_summary_updated_at, created_at, archived_at
            FROM project_threads
            WHERE project_id = ?1

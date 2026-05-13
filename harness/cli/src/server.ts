@@ -1719,6 +1719,24 @@ async function handleCommand(
       });
       return;
     }
+    case "thread.pin": {
+      const nextProject = repository.setThreadPinned(command.payload.projectId, command.payload.threadId, command.payload.pinned);
+      runtime.upsertPersistedProject(nextProject);
+      const thread = nextProject.threads.find((entry) => entry.id === command.payload.threadId);
+      if (!thread) {
+        throw new Error(`Unknown thread: ${command.payload.threadId}`);
+      }
+
+      sendEvent(ws, {
+        type: "thread.pinned",
+        requestId: command.requestId,
+        payload: {
+          projectId: command.payload.projectId,
+          thread
+        }
+      });
+      return;
+    }
     case "thread.archive": {
       const archivedProject = repository.archiveThread(command.payload.projectId, command.payload.threadId);
       runtime.upsertPersistedProject(archivedProject);

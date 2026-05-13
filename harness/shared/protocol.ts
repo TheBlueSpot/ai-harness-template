@@ -1397,6 +1397,7 @@ export const projectThreadSummarySchema = z.object({
   id: threadIdSchema,
   kind: backgroundJobThreadKindSchema,
   status: z.enum(["active", "archived"]),
+  pinned: z.boolean().optional(),
   title: threadTitleSchema,
   titleSource: threadTitleSourceSchema,
   badgeState: threadBadgeStateSchema,
@@ -1569,6 +1570,15 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       projectId: projectIdSchema,
       threadId: threadIdSchema,
       title: threadTitleSchema
+    })
+  }),
+  z.object({
+    type: z.literal("thread.pin"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      threadId: threadIdSchema,
+      pinned: z.boolean()
     })
   }),
   z.object({
@@ -2364,6 +2374,14 @@ export const serverEventSchema = z.discriminatedUnion("type", [
     })
   }),
   z.object({
+    type: z.literal("thread.pinned"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      thread: projectThreadSummarySchema
+    })
+  }),
+  z.object({
     type: z.literal("thread.cleanupArchived"),
     requestId: requestIdSchema,
     payload: z.object({
@@ -3080,6 +3098,7 @@ export function createProjectThreadSummary(
         | "lastUserMessageAt"
         | "archivedAt"
         | "forkedFromThreadId"
+        | "pinned"
       >
     >
 ): ProjectThreadSummary {
@@ -3087,6 +3106,7 @@ export function createProjectThreadSummary(
     id: input.id,
     kind: input.kind ?? "user",
     status: input.status ?? "active",
+    pinned: input.pinned ?? false,
     title: input.title,
     titleSource: input.titleSource,
     badgeState: input.badgeState ?? "idle",

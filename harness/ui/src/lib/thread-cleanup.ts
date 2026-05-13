@@ -48,6 +48,7 @@ export function getThreadCleanupCandidates(
     const capacity = Math.max(0, activeUserThreads.length - 1);
     return activeUserThreads
       .filter((thread) => thread.id !== project.activeThreadId)
+      .filter((thread) => !thread.pinned)
       .filter((thread) => thread.badgeState !== "planning" && thread.badgeState !== "executing" && thread.badgeState !== "needs-input")
       .filter((thread) => {
         const activityAt = getThreadCleanupActivityAt(thread);

@@ -308,7 +308,7 @@ createUiTest("ProjectSidebar", () => {
 
     render(() => <ProjectSidebar />);
 
-    const deleteButton = screen.getByRole("button", { name: "Delete Thread to delete" });
+    const deleteButton = screen.getAllByRole("button", { name: "Delete" })[1] as HTMLButtonElement;
     fireEvent.click(deleteButton);
     await Promise.resolve();
 
@@ -323,6 +323,68 @@ createUiTest("ProjectSidebar", () => {
       payload: {
         projectId: "project-delete-thread",
         threadId: "thread-2"
+      }
+    });
+  });
+
+  it("pins threads above unpinned sort results and blocks pinned delete", () => {
+    const older = "2026-01-01T00:00:00.000Z";
+    const newer = "2026-01-02T00:00:00.000Z";
+    const project = createViewProjectFixture({
+      id: "project-pin-thread",
+      activeThreadId: "thread-new",
+      threads: [
+        createProjectThreadSummary({
+          id: "thread-new",
+          title: "New unpinned",
+          titleSource: "generated",
+          updatedAt: newer,
+          lastUserMessageAt: newer
+        }),
+        createProjectThreadSummary({
+          id: "thread-old-pinned",
+          title: "Old pinned",
+          titleSource: "generated",
+          pinned: true,
+          updatedAt: older,
+          lastUserMessageAt: older
+        })
+      ]
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        projectSidebarPreferences: {
+          projectSort: "last-user-message",
+          threadSort: "last-user-message",
+          grouping: "separate",
+          manualProjectOrder: [],
+          collapsedProjectIds: []
+        },
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+    const commands: unknown[] = [];
+    captureDispatchedCommands(commands);
+
+    render(() => <ProjectSidebar />);
+
+    expect(
+      screen.getByText("Old pinned").compareDocumentPosition(screen.getByText("New unpinned")) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    expect((screen.getAllByRole("button", { name: "Delete" })[0] as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Unpin" }));
+
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      type: "thread.pin",
+      payload: {
+        projectId: "project-pin-thread",
+        threadId: "thread-old-pinned",
+        pinned: false
       }
     });
   });
@@ -398,7 +460,7 @@ createUiTest("ProjectSidebar", () => {
 
     render(() => <ProjectSidebar />);
 
-    const deleteButton = screen.getByRole("button", { name: "Delete Thread to reset" });
+    const deleteButton = screen.getAllByRole("button", { name: "Delete" })[1] as HTMLButtonElement;
     fireEvent.click(deleteButton);
     await Promise.resolve();
     await new Promise((resolve) => setTimeout(resolve, 2050));
@@ -589,22 +651,19 @@ createUiTest("ProjectSidebar", () => {
     render(() => <ProjectSidebar />);
 
     const collapseButton = screen.getByRole("button", { name: `Collapse threads in ${project.name}` });
-    expect(screen.getByRole("button", { name: "Rename Visible thread" })).not.toBeNull();
-    expect(screen.getByRole("button", { name: "Rename Second thread" })).not.toBeNull();
+    expect(screen.getAllByRole("button", { name: "Rename" })).toHaveLength(2);
 
     fireEvent.click(collapseButton);
 
     await waitFor(() => {
-      expect(screen.queryByRole("button", { name: "Rename Visible thread" })).toBeNull();
-      expect(screen.queryByRole("button", { name: "Rename Second thread" })).toBeNull();
+      expect(screen.queryAllByRole("button", { name: "Rename" })).toHaveLength(0);
     });
     expect(readProjectSidebarPreferences().collapsedProjectIds).toEqual([project.id]);
 
     fireEvent.click(screen.getByRole("button", { name: `Expand threads in ${project.name}` }));
 
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Rename Visible thread" })).not.toBeNull();
-      expect(screen.getByRole("button", { name: "Rename Second thread" })).not.toBeNull();
+      expect(screen.getAllByRole("button", { name: "Rename" })).toHaveLength(2);
     });
     expect(readProjectSidebarPreferences().collapsedProjectIds).toEqual([]);
   });

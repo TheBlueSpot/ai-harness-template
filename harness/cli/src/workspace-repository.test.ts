@@ -162,8 +162,11 @@ describe("workspace repository", () => {
     const firstProject = addProject(repository);
     const oldThreadProject = repository.createThread(firstProject.id);
     const oldThreadId = oldThreadProject.activeThreadId;
+    const pinnedThreadProject = repository.createThread(firstProject.id);
+    const pinnedThreadId = pinnedThreadProject.activeThreadId;
     const recentThreadProject = repository.createThread(firstProject.id);
     const recentThreadId = recentThreadProject.activeThreadId;
+    repository.setThreadPinned(firstProject.id, pinnedThreadId, true);
     repository.activateThread(firstProject.id, firstProject.activeThreadId);
     const secondProject = addProject(repository);
     const secondOldProject = repository.createThread(secondProject.id);
@@ -173,10 +176,13 @@ describe("workspace repository", () => {
     const recent = "2026-04-20T00:00:00.000Z";
     const db = (repository as unknown as { db: Database }).db;
     db.query(`UPDATE project_threads SET created_at = ?2, updated_at = ?2 WHERE id = ?1`).run(oldThreadId, old);
+    db.query(`UPDATE project_threads SET created_at = ?2, updated_at = ?2 WHERE id = ?1`).run(pinnedThreadId, old);
     db.query(`UPDATE project_threads SET created_at = ?2, updated_at = ?2 WHERE id = ?1`).run(recentThreadId, recent);
     db.query(`UPDATE project_threads SET created_at = ?2, updated_at = ?2 WHERE id = ?1`).run(secondOldThreadId, old);
     db.query(`INSERT INTO thread_messages (id, thread_id, role, kind, content, attachments_json, metadata_json, created_at)
       VALUES (?1, ?2, 'user', 'plain', 'old', NULL, NULL, ?3)`).run(crypto.randomUUID(), oldThreadId, old);
+    db.query(`INSERT INTO thread_messages (id, thread_id, role, kind, content, attachments_json, metadata_json, created_at)
+      VALUES (?1, ?2, 'user', 'plain', 'pinned old', NULL, NULL, ?3)`).run(crypto.randomUUID(), pinnedThreadId, old);
     db.query(`INSERT INTO thread_messages (id, thread_id, role, kind, content, attachments_json, metadata_json, created_at)
       VALUES (?1, ?2, 'user', 'plain', 'recent', NULL, NULL, ?3)`).run(crypto.randomUUID(), recentThreadId, recent);
     db.query(`INSERT INTO thread_messages (id, thread_id, role, kind, content, attachments_json, metadata_json, created_at)
@@ -191,8 +197,10 @@ describe("workspace repository", () => {
     expect(result.projects.flatMap((project) => project.archivedThreadIds).sort()).toEqual([oldThreadId, secondOldThreadId].sort());
     const nextFirstProject = repository.getProject(firstProject.id);
     expect(nextFirstProject.threads.find((thread) => thread.id === oldThreadId)?.status).toBe("archived");
+    expect(nextFirstProject.threads.find((thread) => thread.id === pinnedThreadId)).toMatchObject({ pinned: true, status: "active" });
     expect(nextFirstProject.threads.find((thread) => thread.id === recentThreadId)?.status).toBe("active");
     expect(nextFirstProject.threads.find((thread) => thread.id === firstProject.activeThreadId)?.status).toBe("active");
+    expect(() => repository.archiveThread(firstProject.id, pinnedThreadId)).toThrow("Pinned threads cannot be archived");
   });
 
   test("persists and hydrates agent run runtime budgets", () => {

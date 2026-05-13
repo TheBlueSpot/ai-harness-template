@@ -812,6 +812,7 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
         selectedExecutionPlan: undefined
       };
     case "thread.renamed":
+    case "thread.pinned":
       return updateProjectState(state, event.payload.projectId, (project) => ({
         ...project,
         threads: project.threads.map((thread) => (thread.id === event.payload.thread.id ? event.payload.thread : thread))

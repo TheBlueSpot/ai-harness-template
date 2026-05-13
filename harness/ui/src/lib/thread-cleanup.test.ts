@@ -29,7 +29,7 @@ describe("thread cleanup helpers", () => {
     expect(getThreadCleanupActivityAt(thread)).toBe("2026-03-01T00:00:00.000Z");
   });
 
-  test("excludes active and final remaining threads from candidates", () => {
+  test("excludes active, pinned, and final remaining threads from candidates", () => {
     const project = createWorkspaceProjectState({
       id: "project-cleanup",
       name: "Cleanup",
@@ -49,6 +49,14 @@ describe("thread cleanup helpers", () => {
           titleSource: "generated",
           updatedAt: "2026-01-02T00:00:00.000Z",
           lastUserMessageAt: "2026-01-02T00:00:00.000Z"
+        }),
+        createProjectThreadSummary({
+          id: "thread-pinned",
+          title: "Pinned",
+          titleSource: "generated",
+          pinned: true,
+          updatedAt: "2026-01-01T00:00:00.000Z",
+          lastUserMessageAt: "2026-01-01T00:00:00.000Z"
         })
       ]
     });

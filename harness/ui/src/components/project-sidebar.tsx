@@ -22,6 +22,7 @@ import { useHarnessStore } from "../store-providers";
 import { ActionButton } from "./action-button";
 import { Input } from "./primitives/input";
 import { Button } from "./primitives/button";
+import { ButtonGroup, type ButtonGroupItem } from "./primitives/button-group";
 import { Popover } from "./primitives/popover";
 import { Separator } from "./primitives/separator";
 import { Tooltip } from "./primitives/tooltip";
@@ -41,6 +42,7 @@ import {
   GripVertical,
   GitFork,
   Plus,
+  Pin,
   Trash2
 } from "lucide-solid";
 
@@ -71,7 +73,8 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
           messageCount: thread.messageCount,
           createdAt: thread.createdAt ?? thread.updatedAt,
           updatedAt: thread.updatedAt,
-          lastUserMessageAt: thread.lastUserMessageAt
+          lastUserMessageAt: thread.lastUserMessageAt,
+          pinned: Boolean(thread.pinned)
         })),
         preferences.threadSort
       );
@@ -138,6 +141,14 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
       type: "thread.fork",
       requestId: createRequestId(),
       payload: { projectId, sourceThreadId }
+    });
+  }
+
+  function handlePinThread(projectId: string, threadId: string, pinned: boolean) {
+    sendCommand({
+      type: "thread.pin",
+      requestId: createRequestId(),
+      payload: { projectId, threadId, pinned }
     });
   }
 
@@ -402,12 +413,12 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
     const thread = props.thread;
     const isActiveThread = () => project.isActive && project.activeThreadId === thread.id;
     const isEditing = () => editingThreadId() === thread.id;
-    let deleteArmed = false;
+    const [deleteArmed, setDeleteArmed] = createSignal(false);
     let deleteButton: HTMLButtonElement | undefined;
     let deleteArmedTimeout: ReturnType<typeof setTimeout> | undefined;
 
     function clearDeleteArmed() {
-      deleteArmed = false;
+      setDeleteArmed(false);
       deleteButton?.classList.remove("text-rose-600", "hover:bg-rose-50");
       deleteButton?.classList.add("text-(--foreground)");
       if (deleteArmedTimeout) {
@@ -416,9 +427,12 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
       }
     }
 
-    function handleDeleteClick(event: MouseEvent & { currentTarget: HTMLButtonElement }) {
-      deleteButton = event.currentTarget;
-      if (deleteArmed) {
+    function handleDeleteClick(event?: MouseEvent & { currentTarget: HTMLButtonElement }) {
+      deleteButton = event?.currentTarget;
+      if (thread.pinned) {
+        return;
+      }
+      if (deleteArmed()) {
         clearDeleteArmed();
         sendCommand({
           type: "thread.archive",
@@ -428,13 +442,52 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
         return;
       }
 
-      deleteArmed = true;
-      deleteButton.classList.remove("text-(--foreground)");
-      deleteButton.classList.add("text-rose-600", "hover:bg-rose-50");
+      setDeleteArmed(true);
+      deleteButton?.classList.remove("text-(--foreground)");
+      deleteButton?.classList.add("text-rose-600", "hover:bg-rose-50");
       deleteArmedTimeout = setTimeout(clearDeleteArmed, 2000);
     }
 
     onCleanup(clearDeleteArmed);
+
+    const actionItems = (): ButtonGroupItem[] => [
+      {
+        key: "pin",
+        label: thread.pinned ? "Unpin" : "Pin",
+        tooltip: thread.pinned ? "Unpins thread so it can be archived." : "Pins thread, making it immune to archiving.",
+        icon: <Pin class="h-3 w-3" fill={thread.pinned ? "currentColor" : "none"} />,
+        classList: { "text-teal-700": thread.pinned },
+        onClick: () => handlePinThread(project.id, thread.id, !thread.pinned)
+      },
+      {
+        key: "fork",
+        label: "Fork",
+        tooltip: "Forks this thread into a new thread.",
+        icon: <GitFork class="h-3 w-3" />,
+        onClick: () => handleForkThread(project.id, thread.id)
+      },
+      {
+        key: "rename",
+        label: "Rename",
+        tooltip: "Renames this thread.",
+        icon: <Edit3 class="h-3 w-3" />,
+        onClick: () => startRename(thread.id, thread.title)
+      },
+      {
+        key: "delete",
+        label: "Delete",
+        tooltip: thread.pinned ? "Pinned threads cannot be archived." : "Archives this thread.",
+        disabledReason: "Pinned threads cannot be archived.",
+        disabled: thread.pinned,
+        icon: <Trash2 class="h-3 w-3" />,
+        class: "text-(--foreground)",
+        classList: {
+          "text-rose-600": deleteArmed(),
+          "hover:bg-rose-50": deleteArmed()
+        },
+        onClick: handleDeleteClick
+      }
+    ];
 
     return (
       <div
@@ -496,35 +549,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
             </div>
           </button>
 
-          <div class="flex shrink-0 gap-0.5">
-            <ActionButton
-              tooltip="Fork this thread"
-              icon={<GitFork class="h-3 w-3" />}
-              variant="ghost"
-              size="icon"
-              class="h-6 w-6 rounded-lg"
-              ariaLabel={`Fork ${thread.title}`}
-              onClick={() => handleForkThread(project.id, thread.id)}
-            />
-            <ActionButton
-              tooltip="Rename this thread"
-              icon={<Edit3 class="h-3 w-3" />}
-              variant="ghost"
-              size="icon"
-              class="h-6 w-6 rounded-lg"
-              ariaLabel={`Rename ${thread.title}`}
-              onClick={() => startRename(thread.id, thread.title)}
-            />
-            <ActionButton
-              tooltip="Delete this thread"
-              icon={<Trash2 class="h-3 w-3" />}
-              variant="ghost"
-              size="icon"
-              class="h-6 w-6 rounded-lg text-(--foreground)"
-              ariaLabel={`Delete ${thread.title}`}
-              onClick={handleDeleteClick}
-            />
-          </div>
+          <ButtonGroup items={actionItems} menuLabel="Thread actions" collapseBelowWidth="22rem" />
         </div>
       </div>
     );
@@ -718,6 +743,7 @@ type ProjectThreadCard = {
   createdAt?: string;
   updatedAt?: string;
   lastUserMessageAt?: string;
+  pinned: boolean;
 };
 
 type ProjectGroup = {
@@ -818,11 +844,14 @@ function createStaticProjectCardSortableState(): ProjectCardSortableState {
   };
 }
 
-function sortThreads<T extends { title: string; createdAt?: string; updatedAt?: string; lastUserMessageAt?: string }>(
+function sortThreads<T extends { title: string; pinned?: boolean; createdAt?: string; updatedAt?: string; lastUserMessageAt?: string }>(
   threads: T[],
   sort: ProjectSidebarThreadSort
 ) {
   return [...threads].sort((left, right) => {
+    if (left.pinned !== right.pinned) {
+      return left.pinned ? -1 : 1;
+    }
     if (sort === "created-at") {
       return compareIsoAsc(left.createdAt ?? left.updatedAt, right.createdAt ?? right.updatedAt) || left.title.localeCompare(right.title);
     }
