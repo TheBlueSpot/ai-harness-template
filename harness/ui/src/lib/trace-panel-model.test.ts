@@ -129,7 +129,7 @@ it("derives thread execution log from run, plan, traces, tool activity, and brow
     id: "run-1",
     status: "running-main",
     updatedAt: later,
-    subtasks: [createSubtaskFixture({ id: "task-1", title: "Patch code", status: "running", updatedAt: later })],
+    subtasks: [createSubtaskFixture({ id: "task-1", title: "Patch code", status: "running", startedAt: now, updatedAt: later })],
     toolActivities: [
       {
         id: "tool-1",
@@ -159,7 +159,7 @@ it("derives thread execution log from run, plan, traces, tool activity, and brow
     latestPlan: createAgentPlanFixture({ sessionId: "session-plan" }),
     activeRun: run,
     lastRun: run,
-    traces: [createTraceFixture({ stage: "verification-complete", message: "Trace event" })]
+    traces: [createTraceFixture({ stage: "verification-complete", message: "Trace event", createdAt: now })]
   });
   const state = createHarnessStateFixture({
     activeLeftTab: "projects",
@@ -169,11 +169,14 @@ it("derives thread execution log from run, plan, traces, tool activity, and brow
     }
   });
 
-  const messages = getTracePanelExecutionLogEntries(state, {
+  const entries = getTracePanelExecutionLogEntries(state, {
     type: "thread",
     projectId: project.id,
     threadId: project.activeThreadId
-  }).map((entry) => entry.message);
+  });
+  const messages = entries.map((entry) => entry.message);
+  const subtaskEntry = entries.find((entry) => entry.message === "Patch code running");
+  const traceEntry = entries.find((entry) => entry.message === "Trace event");
 
   expect(messages).toContain("Run running-main");
   expect(messages).toContain("Plan ready: subagents");
@@ -181,6 +184,9 @@ it("derives thread execution log from run, plan, traces, tool activity, and brow
   expect(messages).toContain("shell_command running");
   expect(messages).toContain("Open app");
   expect(messages).toContain("Trace event");
+  expect(subtaskEntry?.createdAt).toBe(now);
+  expect(subtaskEntry?.detail).toContain("Started: April 28 '26 - 12:00 PM");
+  expect(traceEntry?.createdAt).toBe(now);
 });
 
 it("counts current and total running agents and dedupes linked background runs", () => {

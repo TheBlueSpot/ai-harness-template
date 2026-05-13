@@ -12,6 +12,7 @@ import {
   type ViewProjectState
 } from "../harness-store";
 import { getVisibleProjectTraces, isRunWorking } from "./run-status";
+import { formatShortTimestamp } from "./time-format";
 
 export type TracePanelEntity =
   | { type: "thread"; projectId: string; threadId: string }
@@ -237,8 +238,8 @@ function getThreadExecutionLogEntries(
       message: `${task.title} ${task.status}`,
       rowSummary: `${task.status} | ${task.title}`,
       level: "subtask",
-      createdAt: task.updatedAt,
-      detail: task.errorMessage ?? task.output
+      createdAt: resolveSubtaskActivityTime(task),
+      detail: formatSubtaskDetail(task)
     });
   }
 
@@ -281,7 +282,7 @@ function getThreadExecutionLogEntries(
       message: trace.message,
       rowSummary: `${trace.stage} | ${trace.message}`,
       level: trace.stage,
-      createdAt: run?.updatedAt,
+      createdAt: trace.createdAt,
       detail: trace.detail
     });
   });
@@ -490,6 +491,19 @@ function formatToolOwner(owner: "main" | "subagent" | "aggregator", subagentId?:
     return subagentId ? `subagent ${subagentId}` : "subagent";
   }
   return owner;
+}
+
+function formatSubtaskDetail(task: AgentRunState["subtasks"][number]) {
+  const timestamps = [
+    task.startedAt ? `Started: ${formatShortTimestamp(task.startedAt)}` : undefined,
+    task.completedAt ? `Completed: ${formatShortTimestamp(task.completedAt)}` : undefined
+  ].filter(Boolean);
+  const body = task.errorMessage ?? task.output;
+  return [...timestamps, body].filter(Boolean).join("\n\n") || undefined;
+}
+
+function resolveSubtaskActivityTime(task: AgentRunState["subtasks"][number]) {
+  return task.completedAt ?? task.startedAt ?? task.updatedAt;
 }
 
 function sortEntriesNewestFirst(entries: TracePanelExecutionEntry[]) {

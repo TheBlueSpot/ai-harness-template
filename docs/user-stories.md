@@ -329,7 +329,7 @@ US-UI-017: As a user, I see run cockpit expose virtual-branch experiment review,
 
 US-UI-020: As a user, I inspect shell tool activity from a run pane with command status, concise output previews, classified failure detail, and copyable summaries while chat keeps only interpreted progress and blocking failures. (README L68)
 
-US-UI-021: As a user, I see the trace panel follow the selected project thread, assistant, or background job and show unified execution evidence with current and total running-agent counts.
+US-UI-021: As a user, I see the trace panel follow the selected project thread, assistant, or background job and show unified execution evidence, including task and trace timing, with current and total running-agent counts.
 
 US-UI-018: As a user, I see shared popovers render through portal-backed primitives so that compact overlays (inbox, quick replies, interaction panels) stay well-positioned. (README L93)
 
@@ -415,7 +415,7 @@ US-DEV-018: As a developer, I see the backend validate every websocket payload b
 
 US-DEV-019: As a developer, I see pi tool use stay behind the backend adapter boundary. (README L167)
 
-US-DEV-020: As a developer, I see subagent startup timing captured in debug logs plus developer trace events so slow spawn phases are measurable. (README L181)
+US-DEV-020: As a developer, I see subagent startup timing captured in debug logs plus developer trace events, with started-task timing visible in trace UI, so slow spawn phases are measurable. (README L181)
 
 US-DEV-021: As a developer, I see development builds re-surface swallowed UI and command errors after toast display so local debugging keeps mapped stacks visible. (README L183)
 

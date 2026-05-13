@@ -191,7 +191,8 @@ export function createTraceFixture(overrides: Partial<AgentTrace> = {}): AgentTr
     detail: overrides.detail,
     subagentId: overrides.subagentId,
     modelId: overrides.modelId,
-    durationMs: overrides.durationMs
+    durationMs: overrides.durationMs,
+    createdAt: overrides.createdAt ?? new Date().toISOString()
   };
 }
 

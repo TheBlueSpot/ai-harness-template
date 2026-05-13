@@ -311,7 +311,8 @@ describe("harness store reducer", () => {
         projectSort: "manual",
         threadSort: "bad",
         grouping: "repository-path",
-        manualProjectOrder: ["project-2", "missing-project", "project-2"]
+        manualProjectOrder: ["project-2", "missing-project", "project-2"],
+        collapsedProjectIds: ["project-2", "missing-project", "project-2"]
       })
     );
     const firstProject = createWorkspaceProjectState({
@@ -348,17 +349,20 @@ describe("harness store reducer", () => {
       projectSort: "manual",
       threadSort: "last-user-message",
       grouping: "repository-path",
-      manualProjectOrder: ["project-2", "project-1"]
+      manualProjectOrder: ["project-2", "project-1"],
+      collapsedProjectIds: ["project-2"]
     });
 
     store.setProjectSidebarPreferences({
       projectSort: "created-at",
-      manualProjectOrder: ["project-1", "project-2"]
+      manualProjectOrder: ["project-1", "project-2"],
+      collapsedProjectIds: ["project-1"]
     });
 
     expect(readProjectSidebarPreferences()).toMatchObject({
       projectSort: "created-at",
-      manualProjectOrder: ["project-1", "project-2"]
+      manualProjectOrder: ["project-1", "project-2"],
+      collapsedProjectIds: ["project-1"]
     });
   });
 

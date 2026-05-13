@@ -103,6 +103,7 @@ export type ProjectSidebarPreferences = {
   threadSort: ProjectSidebarThreadSort;
   grouping: ProjectSidebarGrouping;
   manualProjectOrder: string[];
+  collapsedProjectIds: string[];
 };
 
 export type JobsPanePreferences = {
@@ -423,7 +424,8 @@ export function createDefaultProjectSidebarPreferences(): ProjectSidebarPreferen
     projectSort: "last-user-message",
     threadSort: "last-user-message",
     grouping: "repository",
-    manualProjectOrder: []
+    manualProjectOrder: [],
+    collapsedProjectIds: []
   };
 }
 
@@ -1589,7 +1591,9 @@ export function createHarnessStore() {
           ...state.projectSidebarPreferences,
           ...projectSidebarPreferences,
           manualProjectOrder:
-            projectSidebarPreferences.manualProjectOrder ?? state.projectSidebarPreferences.manualProjectOrder
+            projectSidebarPreferences.manualProjectOrder ?? state.projectSidebarPreferences.manualProjectOrder,
+          collapsedProjectIds:
+            projectSidebarPreferences.collapsedProjectIds ?? state.projectSidebarPreferences.collapsedProjectIds
         },
         state.workspace.projects.map((project) => project.id)
       );
@@ -3605,12 +3609,23 @@ function normalizeProjectSidebarPreferences(input: unknown, projectIds: string[]
       manualProjectOrder.push(projectId);
     }
   }
+  const seenCollapsedProjectIds = new Set<string>();
+  const collapsedProjectIds = Array.isArray(parsed.collapsedProjectIds)
+    ? parsed.collapsedProjectIds.filter((projectId): projectId is string => {
+        if (typeof projectId !== "string" || !projectId.trim() || seenCollapsedProjectIds.has(projectId)) {
+          return false;
+        }
+        seenCollapsedProjectIds.add(projectId);
+        return projectIds.length === 0 || projectIds.includes(projectId);
+      })
+    : [];
 
   return {
     projectSort: isProjectSidebarProjectSort(parsed.projectSort) ? parsed.projectSort : defaults.projectSort,
     threadSort: isProjectSidebarThreadSort(parsed.threadSort) ? parsed.threadSort : defaults.threadSort,
     grouping: isProjectSidebarGrouping(parsed.grouping) ? parsed.grouping : defaults.grouping,
-    manualProjectOrder
+    manualProjectOrder,
+    collapsedProjectIds
   };
 }
 

@@ -428,6 +428,12 @@ export function TracePanel() {
                             </div>
                             <div class="mt-1 text-(--muted)">Attempts: {task.attemptCount}</div>
                             <div class="mt-1 text-(--muted)">Latest status: {getLatestTaskStatusText(project(), task)}</div>
+                            <Show when={task.startedAt}>
+                              <div class="mt-1 text-(--muted)">Started: {formatShortTimestamp(task.startedAt)}</div>
+                            </Show>
+                            <Show when={task.completedAt}>
+                              <div class="mt-1 text-(--muted)">Completed: {formatShortTimestamp(task.completedAt)}</div>
+                            </Show>
                             <div class="mt-2 flex flex-wrap gap-2">
                               <ActionButton
                                 tooltip="Refresh this active subagent"
@@ -665,7 +671,12 @@ export function TracePanel() {
               {(trace) => (
                 <article class="rounded-3xl border border-(--border) bg-white/55 p-3">
                   <div class="mb-2 flex items-center justify-between gap-3 text-[0.585rem] font-semibold uppercase tracking-[0.16em] text-(--accent-strong)">
-                    <span>{trace.stage}</span>
+                    <div class="min-w-0">
+                      <div class="truncate">{trace.stage}</div>
+                      <div class="mt-1 text-[0.53rem] font-medium normal-case tracking-normal text-(--muted)">
+                        {formatShortTimestamp(trace.createdAt)}
+                      </div>
+                    </div>
                     <span>{trace.modelId ?? "n/a"}</span>
                   </div>
                   <MarkdownContent content={() => trace.message} size="compact" />

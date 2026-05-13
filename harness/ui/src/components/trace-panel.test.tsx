@@ -18,6 +18,9 @@ import {
   createViewProjectFixture
 } from "../utils/tests/test-fixtures";
 
+const now = "2026-04-28T12:00:00.000Z";
+const later = "2026-04-28T12:05:00.000Z";
+
 createUiTest("TracePanel", () => {
   beforeEach(() => {
     clearBrowserStateForTests();
@@ -31,18 +34,18 @@ createUiTest("TracePanel", () => {
         id: "run-1",
         status: "running-subagents",
         subtasks: [
-          createSubtaskFixture({ id: "task-running", status: "running" }),
-          createSubtaskFixture({ id: "task-done", status: "completed" }),
-          createSubtaskFixture({ id: "task-fail", status: "failed", errorMessage: "boom" })
+          createSubtaskFixture({ id: "task-running", status: "running", startedAt: now }),
+          createSubtaskFixture({ id: "task-done", status: "completed", startedAt: now, completedAt: later }),
+          createSubtaskFixture({ id: "task-fail", status: "failed", startedAt: now, completedAt: later, errorMessage: "boom" })
         ]
       }),
       lastRun: createRunFixture({
         id: "run-1",
         status: "running-subagents",
         subtasks: [
-          createSubtaskFixture({ id: "task-running", status: "running" }),
-          createSubtaskFixture({ id: "task-done", status: "completed" }),
-          createSubtaskFixture({ id: "task-fail", status: "failed", errorMessage: "boom" })
+          createSubtaskFixture({ id: "task-running", status: "running", startedAt: now }),
+          createSubtaskFixture({ id: "task-done", status: "completed", startedAt: now, completedAt: later }),
+          createSubtaskFixture({ id: "task-fail", status: "failed", startedAt: now, completedAt: later, errorMessage: "boom" })
         ]
       }),
       latestPlan: createAgentPlanFixture({
@@ -54,7 +57,8 @@ createUiTest("TracePanel", () => {
           sessionId: "session-1",
           stage: "subagent-complete",
           message: "Use **markdown** output",
-          detail: "See [docs](https://example.com)"
+          detail: "See [docs](https://example.com)",
+          createdAt: later
         }
       ]
     });
@@ -72,8 +76,11 @@ createUiTest("TracePanel", () => {
     expect(screen.getByLabelText("Subtask running")).not.toBeNull();
     expect(screen.getByLabelText("Subtask completed")).not.toBeNull();
     expect(screen.getByLabelText("Subtask failed")).not.toBeNull();
+    expect(screen.getAllByText("Started: April 28 '26 - 12:00 PM").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Completed: April 28 '26 - 12:05 PM").length).toBeGreaterThan(0);
     expect(screen.getByText("markdown").tagName).toBe("STRONG");
     expect(screen.getByRole("link", { name: "docs" }).getAttribute("target")).toBe("_blank");
+    expect(screen.getByText("April 28 '26 - 12:05 PM")).not.toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Open the full execution plan" }));
     expect(harnessStore.state.executionPlanDialogOpen).toBe(true);

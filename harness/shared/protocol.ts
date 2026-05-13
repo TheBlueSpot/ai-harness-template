@@ -1013,7 +1013,8 @@ export const agentTraceSchema = z.object({
   detail: z.string().min(1).optional(),
   subagentId: z.string().min(1).max(128).optional(),
   modelId: executionModelIdSchema.optional(),
-  durationMs: z.number().int().min(0).optional()
+  durationMs: z.number().int().min(0).optional(),
+  createdAt: z.string().datetime().or(z.string().min(1)).optional()
 });
 
 export const projectContextSourceKindSchema = z.enum(["planner", "main", "subagent", "aggregator"]);
