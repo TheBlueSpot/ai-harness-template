@@ -159,6 +159,8 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
   let pendingPaginationFrame: number | undefined;
   let paginationAbortController: AbortController | undefined;
   const rowObservers = new WeakMap<HTMLDivElement, ResizeObserver>();
+  const observedRowElements = new Set<HTMLDivElement>();
+  const measuredRowSizes = new Map<number, number>();
   const items = () => props.items;
 
   const viewWindow = createMemo<ViewWindow<T>>(() => {
@@ -276,9 +278,7 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
     }
     paginationAbortController?.abort();
     viewportObserver?.disconnect();
-    document.querySelectorAll("[data-test-virtual-list-item]").forEach((element) => {
-      rowObservers.get(element as HTMLDivElement)?.disconnect();
-    });
+    observedRowElements.forEach(disconnectRowObserver);
   });
 
   createEffect(() => {
@@ -540,13 +540,17 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
       return;
     }
 
-    const observer = new ResizeObserverCtor(() => measureRowElement(element, index));
+    const observer = new ResizeObserverCtor(() => measureRowElement(element, getRowElementIndex(element)));
     observer.observe(element);
     rowObservers.set(element, observer);
+    observedRowElements.add(element);
   }
 
   function measureRowElement(element: HTMLDivElement, index: number) {
     if (!element.isConnected || index < 0 || index >= viewWindow().items.length) {
+      if (!element.isConnected) {
+        disconnectRowObserver(element);
+      }
       recordUiTelemetry("virtual-list.measure-row-skipped", {
         dataTest: local.dataTest,
         index,
@@ -558,8 +562,20 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
       return;
     }
 
-    virtualizer.measureElement(element);
     const measuredSize = Math.ceil(element.getBoundingClientRect().height || element.offsetHeight || estimateBaseSizeForIndex(index));
+    const previousMeasuredSize = measuredRowSizes.get(index);
+    if (previousMeasuredSize === measuredSize) {
+      recordUiTelemetry("virtual-list.measure-row-unchanged", {
+        dataTest: local.dataTest,
+        index,
+        measuredSize,
+        itemCount: items().length,
+        loadedCount: loadedCount()
+      });
+      return;
+    }
+
+    measuredRowSizes.set(index, measuredSize);
     recordUiTelemetry("virtual-list.measure-row", {
       dataTest: local.dataTest,
       index,
@@ -569,6 +585,25 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
     });
     virtualizer.resizeItem(index, measuredSize);
     setMeasurementVersion((version) => version + 1);
+  }
+
+  function getRowElementIndex(element: HTMLDivElement) {
+    const index = Number(element.dataset.index);
+    return Number.isFinite(index) ? index : -1;
+  }
+
+  function disconnectRowObserver(element: HTMLDivElement) {
+    const observer = rowObservers.get(element);
+    if (!observer) {
+      return;
+    }
+    observer.disconnect();
+    rowObservers.delete(element);
+    observedRowElements.delete(element);
+    recordUiTelemetry("virtual-list.row-observer-disconnect", {
+      dataTest: local.dataTest,
+      index: getRowElementIndex(element)
+    });
   }
 
   function estimateBaseSizeForIndex(index: number) {

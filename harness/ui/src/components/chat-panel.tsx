@@ -2487,6 +2487,7 @@ export function ChatPanel() {
                           class="flex-1 min-h-0 pr-2"
                           contentClass="w-full"
                           itemClass="pb-3"
+                          dataTest="project-chat-transcript"
                           items={transcriptRows()}
                           getKey={(row, index) => row.kind === "persisted" ? row.message.id : row.kind === "tool-block" ? row.block.id : `live-${row.message.id}-${index}`}
                           estimateSize={estimateTranscriptRowSize}

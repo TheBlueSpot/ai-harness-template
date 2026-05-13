@@ -1,5 +1,5 @@
 /** @jsxImportSource solid-js */
-import { beforeAll, expect, it } from "bun:test";
+import { afterEach, beforeAll, expect, it } from "bun:test";
 import { createUiTest } from "../../utils/tests/test-harness";
 import {
   getVirtualListContentSize,
@@ -13,11 +13,17 @@ let render: typeof import("@solidjs/testing-library").render;
 let screen: typeof import("@solidjs/testing-library").screen;
 let waitFor: typeof import("@solidjs/testing-library").waitFor;
 let VirtualList: typeof import("./virtual-list").VirtualList;
+const nativeResizeObserver = globalThis.ResizeObserver;
 
 createUiTest("VirtualList", () => {
   beforeAll(async () => {
     ({ render, screen, waitFor } = await import("@solidjs/testing-library"));
     ({ VirtualList } = await import("./virtual-list"));
+  });
+
+  afterEach(() => {
+    (globalThis as typeof globalThis & { ResizeObserver?: typeof ResizeObserver }).ResizeObserver = nativeResizeObserver;
+    window.__HARNESS_UI_TELEMETRY__ = [];
   });
 
   it("renders bounded visible rows for a large list", async () => {
@@ -102,6 +108,40 @@ createUiTest("VirtualList", () => {
       scrollTop: 0
     });
   });
+
+  it("ignores repeated ResizeObserver row measurements when size is unchanged", async () => {
+    const resizeObserver = installFakeResizeObserver();
+    const { container } = render(() => (
+      <VirtualList
+        dataTest="measurement-test"
+        items={makeItems(12)}
+        getKey={(item) => item.id}
+        estimateSize={40}
+        pagination={{ kind: "all" }}
+        overscan={0}
+      >
+        {(item) => <div data-testid="virtual-list-row">{item.label}</div>}
+      </VirtualList>
+    ));
+
+    await waitFor(() => expect(screen.getAllByTestId("virtual-list-row").length).toBeGreaterThan(0));
+    window.__HARNESS_UI_TELEMETRY__ = [];
+
+    setMeasuredRowHeight(container, 64);
+    resizeObserver.triggerObservedRows();
+    await Promise.resolve();
+
+    setMeasuredRowHeight(container, 64);
+    resizeObserver.triggerObservedRows();
+    await Promise.resolve();
+
+    const telemetry = window.__HARNESS_UI_TELEMETRY__ ?? [];
+    const measuredRows = telemetry.filter((event) => event.kind === "virtual-list.measure-row");
+    const unchangedRows = telemetry.filter((event) => event.kind === "virtual-list.measure-row-unchanged");
+    expect(measuredRows.length).toBeGreaterThan(0);
+    expect(unchangedRows.length).toBeGreaterThan(0);
+    expect(measuredRows.length).toBeLessThanOrEqual(screen.getAllByTestId("virtual-list-row").length);
+  });
 });
 
 type TestItem = {
@@ -111,4 +151,67 @@ type TestItem = {
 
 function makeItems(count: number): TestItem[] {
   return Array.from({ length: count }, (_, index) => ({ id: `row-${index}`, label: `Row ${index}` }));
+}
+
+function setMeasuredRowHeight(container: HTMLElement, height: number) {
+  container.querySelectorAll<HTMLElement>("[data-test-virtual-list-item]").forEach((element) => {
+    element.getBoundingClientRect = () =>
+      ({
+        x: 0,
+        y: 0,
+        top: 0,
+        left: 0,
+        right: 100,
+        bottom: height,
+        width: 100,
+        height,
+        toJSON: () => ({})
+      }) as DOMRect;
+  });
+}
+
+function installFakeResizeObserver() {
+  const observers: FakeResizeObserver[] = [];
+
+  class FakeResizeObserver {
+    target?: Element;
+
+    constructor(readonly callback: ResizeObserverCallback) {
+      observers.push(this);
+    }
+
+    observe(target: Element) {
+      this.target = target;
+    }
+
+    unobserve() {
+      this.target = undefined;
+    }
+
+    disconnect() {
+      this.target = undefined;
+    }
+  }
+
+  globalThis.ResizeObserver = FakeResizeObserver as typeof ResizeObserver;
+
+  return {
+    triggerObservedRows() {
+      for (const observer of observers) {
+        const target = observer.target;
+        if (!(target instanceof HTMLElement) || !target.hasAttribute("data-test-virtual-list-item")) {
+          continue;
+        }
+        observer.callback(
+          [
+            {
+              target,
+              contentRect: target.getBoundingClientRect()
+            } as unknown as ResizeObserverEntry
+          ],
+          observer as unknown as ResizeObserver
+        );
+      }
+    }
+  };
 }
