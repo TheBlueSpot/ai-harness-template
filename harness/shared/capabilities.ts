@@ -9,6 +9,16 @@ export const defaultProviderCapabilities: ProviderCapability[] = [
     defaultSubagentModelId: "openai/gpt-5.4-nano",
     models: [
       {
+        modelId: "openai/gpt-5.5",
+        providerBrand: "gpt",
+        label: "GPT-5.5",
+        tags: ["tools", "long-context", "expensive"],
+        contextWindow: 200000,
+        summary: "Newest GPT model for planning and implementation quality.",
+        supportedReasoningStrengths: ["low", "medium", "high", "extra-high"],
+        supportsFastMode: true
+      },
+      {
         modelId: "openai/gpt-5.4",
         providerBrand: "gpt",
         label: "GPT-5.4",

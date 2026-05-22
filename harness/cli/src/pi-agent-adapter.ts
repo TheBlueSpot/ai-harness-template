@@ -1,9 +1,8 @@
 import {
   AuthStorage,
   createAgentSession,
-  createCodingTools,
-  createReadOnlyTools,
   DefaultResourceLoader,
+  getAgentDir,
   ModelRegistry,
   SessionManager,
   SettingsManager,
@@ -163,7 +162,7 @@ export class PiSdkAgentAdapter implements PiAgentAdapter {
   async startExecution(request: PiAgentPromptRequest): Promise<PiAgentExecutionController> {
     const modelRegistry = this.createExecutionModelRegistry(request);
     const model = this.resolveModel(modelRegistry, request.modelId);
-    const toolset = sortToolsByName(request.readOnly ? createReadOnlyTools(request.cwd) : createCodingTools(request.cwd));
+    const toolNames = request.readOnly ? ["read", "grep", "find", "ls"] : ["read", "bash", "edit", "write"];
     const settingsManager = SettingsManager.inMemory({
       compaction: buildPiAutoCompactionSettings(model.contextWindow, this.autoCompactContextThresholdPercent),
       retry: { enabled: true, maxRetries: 1 }
@@ -177,7 +176,7 @@ export class PiSdkAgentAdapter implements PiAgentAdapter {
       modelRegistry,
       model,
       thinkingLevel: mapReasoningStrengthToThinkingLevel(request.reasoningStrength),
-      tools: toolset,
+      tools: toolNames,
       resourceLoader,
       sessionManager: SessionManager.inMemory(request.cwd),
       settingsManager
@@ -397,37 +396,42 @@ export class PiSdkAgentAdapter implements PiAgentAdapter {
   }
 
   private async createResourceLoader(request: PiAgentPromptRequest, settingsManager: SettingsManager) {
-    const loader = new DefaultResourceLoader({
-      cwd: request.cwd,
-      settingsManager,
-      extensionFactories: [
-        (pi) => {
-          pi.on("tool_call", async (event) => {
-            if (!request.requestBrowserApproval || !isBrowserToolName(event.toolName)) {
-              return;
-            }
-
-            const decision = await request.requestBrowserApproval({
-              toolCallId: event.toolCallId,
-              toolName: event.toolName,
-              args: event.input
-            });
-            if (decision.approved) {
-              return;
-            }
-
-            return {
-              block: true,
-              reason: "Browser action rejected in harness approval gate"
-            };
-          });
-        }
-      ]
-    });
-    await loader.reload();
-    return loader;
+    return createPiResourceLoader(request, settingsManager);
   }
 
+}
+
+async function createPiResourceLoader(request: PiAgentPromptRequest, settingsManager: SettingsManager) {
+  const loader = new DefaultResourceLoader({
+    cwd: request.cwd,
+    agentDir: getAgentDir(),
+    settingsManager,
+    extensionFactories: [
+      (pi) => {
+        pi.on("tool_call", async (event) => {
+          if (!request.requestBrowserApproval || !isBrowserToolName(event.toolName)) {
+            return;
+          }
+
+          const decision = await request.requestBrowserApproval({
+            toolCallId: event.toolCallId,
+            toolName: event.toolName,
+            args: event.input
+          });
+          if (decision.approved) {
+            return;
+          }
+
+          return {
+            block: true,
+            reason: "Browser action rejected in harness approval gate"
+          };
+        });
+      }
+    ]
+  });
+  await loader.reload();
+  return loader;
 }
 
 class PiSdkExecutionController implements PiAgentExecutionController {
@@ -598,10 +602,6 @@ function isAbortLikeError(error: unknown) {
   return error.name === "AbortError" || normalized.includes("abort") || normalized.includes("cancel");
 }
 
-function sortToolsByName<T extends { name: string }>(tools: T[]) {
-  return [...tools].sort((left, right) => left.name.localeCompare(right.name));
-}
-
 function injectGeminiCachedContent(payload: unknown, model: { provider: string; api: string }, cachedContentName: string | undefined) {
   if (
     !cachedContentName ||
@@ -624,3 +624,7 @@ function injectGeminiCachedContent(payload: unknown, model: { provider: string; 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
+
+export const testExports = {
+  createPiResourceLoader
+};

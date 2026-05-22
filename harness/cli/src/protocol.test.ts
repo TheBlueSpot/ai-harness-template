@@ -645,6 +645,18 @@ describe("client command validation", () => {
     ).toBe("execution.resume-all");
   });
 
+  test("accepts update commands for non-agent cli targets", () => {
+    expect(
+      parseClientCommand({
+        type: "cli-updates.install",
+        requestId: "req-claude-update",
+        payload: {
+          agentId: "claude-cli"
+        }
+      }).type
+    ).toBe("cli-updates.install");
+  });
+
   test("accepts run diagnostics inspect payloads for 1, 7, and 30 days only", () => {
     expect(
       parseClientCommand({
@@ -731,6 +743,36 @@ describe("memory protocol", () => {
     });
 
     expect(parsed.type).toBe("preferences.providerConnectionTested");
+  });
+
+  test("accepts claude cli update notifications", () => {
+    const parsed = parseServerEvent({
+      type: "cli-updates.checked",
+      requestId: "req-cli-updates",
+      payload: {
+        updates: [
+          {
+            id: "cli-update:claude-cli:2.1.147",
+            kind: "cli-update",
+            interactive: true,
+            createdAt: new Date().toISOString(),
+            agentId: "claude-cli",
+            label: "Claude Code",
+            currentVersion: "2.1.146",
+            latestVersion: "2.1.147",
+            updateCommand: "claude update"
+          }
+        ],
+        notifications: {
+          items: [],
+          unreadCount: 0,
+          interactiveUnreadCount: 0,
+          passiveUnreadCount: 0
+        }
+      }
+    });
+
+    expect(parsed.type).toBe("cli-updates.checked");
   });
 
   test("rejects malformed provider connection tested events", () => {
@@ -845,7 +887,8 @@ describe("planner result validation", () => {
             correctnessIterationModeDefault: "ask-before-iterate",
             backgroundJobApprovalPolicyDefault: "ask-risky",
             memoryBankEnabledDefault: true,
-            memoryBankRecordRunsDefault: true
+            memoryBankRecordRunsDefault: true,
+            checkCliUpdatesDefault: true
           },
           setup: defaultSetup,
           backgroundJobs: {
@@ -1045,7 +1088,8 @@ describe("planner result validation", () => {
             correctnessIterationModeDefault: "ask-before-iterate",
             backgroundJobApprovalPolicyDefault: "ask-risky",
             memoryBankEnabledDefault: true,
-            memoryBankRecordRunsDefault: true
+            memoryBankRecordRunsDefault: true,
+            checkCliUpdatesDefault: true
           },
           setup: defaultSetup,
           backgroundJobs: {

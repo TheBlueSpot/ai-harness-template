@@ -1412,6 +1412,88 @@ describe("workspace repository", () => {
     });
   });
 
+  test("persists cli update notifications", () => {
+    const repository = createRepository();
+    const now = "2026-04-29T12:00:00.000Z";
+
+    repository.saveNotification({
+      id: "cli-update:claude-cli:2.1.147",
+      kind: "cli-update",
+      interactive: true,
+      createdAt: now,
+      agentId: "claude-cli",
+      label: "Claude Code",
+      currentVersion: "2.1.146",
+      latestVersion: "2.1.147",
+      updateCommand: "claude update"
+    });
+
+    expect(repository.loadNotificationInboxState()).toMatchObject({
+      items: [
+        {
+          id: "cli-update:claude-cli:2.1.147",
+          kind: "cli-update",
+          interactive: true,
+          agentId: "claude-cli",
+          latestVersion: "2.1.147"
+        }
+      ],
+      unreadCount: 1,
+      interactiveUnreadCount: 1,
+      passiveUnreadCount: 0
+    });
+  });
+
+  test("migrates legacy notification kind constraint for cli updates", () => {
+    const repository = createRepository();
+    const dbPath = (repository as any).dbPath as string;
+    const db = new Database(dbPath, { strict: true });
+    db.exec(`
+      ALTER TABLE notifications RENAME TO notifications_legacy;
+      CREATE TABLE notifications (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL CHECK(kind IN ('planning-question', 'planning-question-batch', 'assistant-question', 'assistant-question-batch', 'browser-approval', 'background-run-status')),
+        interactive INTEGER NOT NULL CHECK(interactive IN (0, 1)),
+        project_id TEXT NULL,
+        thread_id TEXT NULL,
+        run_id TEXT NULL,
+        assistant_id TEXT NULL,
+        question_id TEXT NULL,
+        session_id TEXT NULL,
+        tool_call_id TEXT NULL,
+        background_run_id TEXT NULL,
+        job_id TEXT NULL,
+        payload_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        read_at TEXT NULL,
+        archived_at TEXT NULL,
+        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+        FOREIGN KEY(thread_id) REFERENCES project_threads(id) ON DELETE CASCADE,
+        FOREIGN KEY(run_id) REFERENCES agent_runs(id) ON DELETE CASCADE,
+        FOREIGN KEY(assistant_id) REFERENCES assistants(id) ON DELETE CASCADE,
+        FOREIGN KEY(background_run_id) REFERENCES background_job_runs(id) ON DELETE CASCADE,
+        FOREIGN KEY(job_id) REFERENCES background_jobs(id) ON DELETE CASCADE
+      );
+      DROP TABLE notifications_legacy;
+    `);
+    db.close(false);
+
+    const migratedRepository = new WorkspaceRepository(dbPath, process.cwd());
+    migratedRepository.saveNotification({
+      id: "cli-update:claude-cli:2.1.147",
+      kind: "cli-update",
+      interactive: true,
+      createdAt: "2026-04-29T12:00:00.000Z",
+      agentId: "claude-cli",
+      label: "Claude Code",
+      currentVersion: "2.1.146",
+      latestVersion: "2.1.147",
+      updateCommand: "claude update"
+    });
+
+    expect(migratedRepository.loadNotificationInboxState().items[0]?.kind).toBe("cli-update");
+  });
+
   test("preserves recurring job next run when only last run changes", () => {
     const repository = createRepository();
     const project = addProject(repository);
@@ -2261,6 +2343,7 @@ describe("workspace repository", () => {
     });
     expect(schemas.every((row) => !row.sql.includes("background_job_runs_legacy"))).toBe(true);
     expect(schemas.every((row) => row.sql.includes("REFERENCES background_job_runs"))).toBe(true);
+    expect(schemas.find((row) => row.name === "notifications")?.sql).toContain("'cli-update'");
   });
 
   test("persists experiment metadata and shared memory retrievals across reload", () => {

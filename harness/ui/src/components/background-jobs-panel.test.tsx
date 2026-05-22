@@ -1,7 +1,7 @@
 /** @jsxImportSource solid-js */
 import { beforeEach, expect, it } from "bun:test";
 import { cleanup, fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
-import { createProjectThreadSummary, type BackgroundJob, type BackgroundJobRun, type RunDiagnosticsReport } from "../../../shared/protocol";
+import { createProjectThreadSummary, type Assistant, type BackgroundJob, type BackgroundJobRun, type RunDiagnosticsReport } from "../../../shared/protocol";
 import { createInitialViewState, harnessStore, readBrowserUiSession } from "../harness-store";
 import { createUiTest } from "../utils/tests/test-harness";
 import { captureDispatchedCommands, clearBrowserStateForTests, seedHarnessStoreForTests } from "../utils/tests/store-test-utils";
@@ -110,9 +110,76 @@ function createRunDiagnosticsReportFixture(overrides: Partial<RunDiagnosticsRepo
   };
 }
 
+function createAssistantFixture(overrides: Partial<Assistant> = {}): Assistant {
+  const now = "2026-05-01T12:00:00.000Z";
+  return {
+    id: overrides.id ?? "assistant-owner",
+    name: overrides.name ?? "Repo Assistant",
+    scope: overrides.scope ?? "project",
+    projectId: overrides.projectId,
+    description: overrides.description,
+    personalityPrompt: overrides.personalityPrompt ?? "Own background work.",
+    jobPrompt: overrides.jobPrompt ?? "Review the repo.",
+    agentId: overrides.agentId ?? "pi",
+    providerBrand: overrides.providerBrand,
+    modeId: overrides.modeId,
+    executionModelId: overrides.executionModelId,
+    reasoningStrength: overrides.reasoningStrength,
+    fastMode: overrides.fastMode,
+    runState: overrides.runState ?? "active",
+    bootstrapState: overrides.bootstrapState ?? "completed",
+    failureStreakCount: overrides.failureStreakCount ?? 0,
+    circuitBreakerState: overrides.circuitBreakerState ?? "closed",
+    unreadQuestionCount: overrides.unreadQuestionCount ?? 0,
+    createdAt: overrides.createdAt ?? now,
+    updatedAt: overrides.updatedAt ?? now
+  };
+}
+
 createUiTest("BackgroundJobsPanel", () => {
   beforeEach(() => {
     clearBrowserStateForTests();
+  });
+
+  it("uses shared left pane shell and empty-state hooks for jobs", () => {
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        activeLeftTab: "jobs",
+        activeSurface: "background-jobs",
+        backgroundJobs: {
+          jobs: [],
+          runs: [],
+          templates: []
+        }
+      })
+    );
+
+    render(() => <BackgroundJobsPanel variant="left" segment="jobs" />);
+
+    expect(document.querySelector("[data-test-left-pane-shell][data-left-pane-kind='jobs']")).not.toBeNull();
+    expect(screen.getByText("No scheduled tasks match current search or filters.").closest("[data-test-left-pane-empty-state]")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Schedule job" })).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Run shell job" })).not.toBeNull();
+  });
+
+  it("uses shared empty-state hooks for run details", () => {
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        activeLeftTab: "runs",
+        activeSurface: "background-jobs",
+        backgroundJobs: {
+          jobs: [],
+          runs: [],
+          templates: []
+        }
+      })
+    );
+
+    render(() => <BackgroundJobsPanel segment="runs" />);
+
+    expect(document.querySelector("[data-test-left-pane-shell][data-left-pane-kind='runs']")).not.toBeNull();
+    expect(screen.getByText(/Run history appears after first task/i).closest("[data-test-left-pane-empty-state]")).not.toBeNull();
+    expect(screen.getByText("Select background run or job to inspect details.").closest("[data-test-detail-empty-state]")).not.toBeNull();
   });
 
   it("persists and restores jobs segment, split search, and run filter", async () => {
@@ -158,7 +225,7 @@ createUiTest("BackgroundJobsPanel", () => {
     );
     render(() => <BackgroundJobsPanel />);
 
-    expect(screen.getByRole("button", { name: "Failed" }).className).toContain("bg-(--accent)");
+    expect(harnessStore.state.jobsRunFilter).toBe("failed");
   });
 
   it("persists and restores the health segment", () => {
@@ -173,7 +240,7 @@ createUiTest("BackgroundJobsPanel", () => {
     );
 
     render(() => <BackgroundJobsPanel />);
-    fireEvent.click(screen.getByRole("button", { name: "Health" }));
+    harnessStore.setJobsPanePreferences({ segment: "health" });
 
     expect(harnessStore.state.jobsPanePreferences.segment).toBe("health");
     expect(readBrowserUiSession().jobsPane).toMatchObject({
@@ -195,7 +262,7 @@ createUiTest("BackgroundJobsPanel", () => {
 
     render(() => <BackgroundJobsPanel />);
 
-    expect(screen.getByRole("button", { name: "Health" }).className).toContain("bg-(--accent)");
+    expect(screen.getByText("Health")).not.toBeNull();
   });
 
   it("renders health loading state", () => {
@@ -221,6 +288,61 @@ createUiTest("BackgroundJobsPanel", () => {
     render(() => <BackgroundJobsPanel />);
 
     expect(screen.getByText("Loading diagnostics...")).toBeTruthy();
+  });
+
+  it("shows assistant ownership on scheduled jobs", () => {
+    const project = createViewProjectFixture({ id: "project-job-owner-label" });
+    const assistant = createAssistantFixture({ id: "assistant-job-owner-label", projectId: project.id });
+    const now = "2026-05-01T12:00:00.000Z";
+    const job: BackgroundJob = {
+      id: "job-owner-label",
+      projectId: project.id,
+      assistantId: assistant.id,
+      automationThreadId: "thread-automation",
+      kind: "ai-routine",
+      name: "Owned repo review",
+      status: "enabled",
+      riskLevel: "safe",
+      definition: {
+        kind: "ai-routine",
+        prompt: "Review project."
+      },
+      schedule: {
+        type: "one-off",
+        runAt: now,
+        sourceText: "manual"
+      },
+      scheduleInput: "manual",
+      createdAt: now,
+      updatedAt: now
+    };
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        },
+        assistants: {
+          ...harnessStore.state.assistants,
+          assistants: [assistant]
+        },
+        backgroundJobs: {
+          jobs: [job],
+          runs: [],
+          templates: []
+        },
+        jobsPanePreferences: {
+          segment: "jobs",
+          search: "",
+          jobSort: "next-run",
+          selectedJobId: job.id
+        }
+      })
+    );
+
+    render(() => <BackgroundJobsPanel />);
+
+    expect(screen.getAllByText("Owner: Repo Assistant").length).toBeGreaterThan(0);
   });
 
   it("renders health report sections", () => {

@@ -1,5 +1,5 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
-import { Bot, Brain, ClipboardList, FolderOpen, Gauge, Play, Split } from "lucide-solid";
+import { Bot, Brain, ClipboardList, FolderOpen, Gauge, Play, Split, UserRound } from "lucide-solid";
 import { resolveModeCatalog } from "../../../shared/modes";
 import {
   createBackgroundJobId,
@@ -28,6 +28,7 @@ export function BackgroundJobEditorDialog() {
   const state = harnessStore.state;
   const sendCommand = harnessStore.actions.sendCommand;
   const [projectId, setProjectId] = createSignal<string>();
+  const [assistantId, setAssistantId] = createSignal("");
   const [templateId, setTemplateId] = createSignal("");
   const [kind, setKind] = createSignal<BackgroundJob["kind"]>("ai-routine");
   const [name, setName] = createSignal("");
@@ -73,6 +74,17 @@ export function BackgroundJobEditorDialog() {
       icon: <FolderOpen class="h-3 w-3" />
     }))
   );
+  const assistantOptions = createMemo(() => [
+    { value: "", label: "Unowned", description: "Run as a project background job.", icon: <ClipboardList class="h-3 w-3" /> },
+    ...state.assistants.assistants
+      .filter((assistant) => !assistant.projectId || assistant.projectId === projectId())
+      .map((assistant) => ({
+        value: assistant.id,
+        label: assistant.name,
+        description: assistant.projectId ? "Attach to this project assistant." : "Attach to this global assistant.",
+        icon: <UserRound class="h-3 w-3" />
+      }))
+  ]);
   const templateOptions = createMemo(() => [
     { value: "", label: "Custom", description: "Start from blank scheduled task definition.", icon: <ClipboardList class="h-3 w-3" /> },
     ...state.backgroundJobs.templates.map((template) => ({
@@ -135,6 +147,17 @@ export function BackgroundJobEditorDialog() {
       return;
     }
 
+    const selectedAssistantId = assistantId();
+    if (selectedAssistantId && !assistantOptions().some((option) => option.value === selectedAssistantId)) {
+      setAssistantId("");
+    }
+  });
+
+  createEffect(() => {
+    if (!state.backgroundJobEditorOpen) {
+      return;
+    }
+
     const input = scheduleInput().trim();
     if (!input) {
       harnessStore.clearBackgroundJobSchedulePreview();
@@ -159,6 +182,7 @@ export function BackgroundJobEditorDialog() {
 
   function seedFromDraft(draft: BackgroundJobEditorDraft) {
     setProjectId(draft.projectId ?? state.workspace.activeProjectId ?? state.workspace.projects[0]?.id);
+    setAssistantId(draft.assistantId ?? "");
     setTemplateId(draft.templateId ?? (draft.source === "create" && draft.kind === "ai-routine" ? "scheduled-task" : ""));
     setKind(draft.kind);
     setName(draft.name);
@@ -271,7 +295,7 @@ export function BackgroundJobEditorDialog() {
         job: {
           id: draft.jobId ?? createBackgroundJobId(),
           projectId: resolvedProjectId,
-          assistantId: draft.assistantId,
+          assistantId: assistantId().trim() || undefined,
           automationThreadId: draft.automationThreadId ?? createThreadId(),
           templateId: selectedTemplate()?.id ?? draft.templateId ?? undefined,
           createdFromRunId: draft.createdFromRunId,
@@ -325,6 +349,20 @@ export function BackgroundJobEditorDialog() {
             value={projectId() ?? ""}
             options={projectOptions()}
             onChange={(value) => setProjectId(value || undefined)}
+          />
+        </label>
+
+        <label class="space-y-2">
+          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Owner</span>
+          <DropdownControl
+            kind="select"
+            ariaLabel="Select background job owner assistant"
+            icon={<UserRound class="h-3.5 w-3.5" />}
+            size="md"
+            class="w-full"
+            value={assistantId()}
+            options={assistantOptions()}
+            onChange={setAssistantId}
           />
         </label>
 

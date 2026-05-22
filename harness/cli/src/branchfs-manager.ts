@@ -157,6 +157,7 @@ export class BranchfsManager {
     const changedPaths = await collectChangedPaths(lease.baseProjectPath, lease.projectMountPath);
     const diffText = await this.diffDirectories(lease.baseProjectPath, lease.projectMountPath);
     const { insertions, deletions } = summarizeDiffText(diffText);
+    const inspectedAt = new Date().toISOString();
     this.emitTrace({
       stage: "branchfs-diff-read",
       message: "Read BranchFS diff layer",
@@ -168,9 +169,11 @@ export class BranchfsManager {
         filesChanged: changedPaths.length,
         insertions,
         deletions,
-        updatedAt: new Date().toISOString()
+        updatedAt: inspectedAt
       },
       diffText,
+      files: summarizeDiffFiles(diffText, changedPaths),
+      inspectedAt,
       filesChanged: changedPaths.length,
       insertions,
       deletions,
@@ -412,6 +415,69 @@ function summarizeDiffText(diffText: string) {
     }
   }
   return { insertions, deletions };
+}
+
+function summarizeDiffFiles(diffText: string, changedPaths: string[] = []) {
+  const summaries: NonNullable<ExperimentInspection["files"]> = [];
+  let current: NonNullable<ExperimentInspection["files"]>[number] | undefined;
+  let currentHunks: string[] = [];
+
+  const flush = () => {
+    if (!current) {
+      return;
+    }
+    current.hunksPreview = currentHunks.slice(0, 8).join("\n");
+    summaries.push(current);
+    current = undefined;
+    currentHunks = [];
+  };
+
+  for (const line of diffText.split(/\r?\n/)) {
+    if (line.startsWith("diff --git ")) {
+      flush();
+      current = { path: extractDiffPath(line) ?? "unknown", additions: 0, deletions: 0, hunksPreview: "" };
+      continue;
+    }
+    if (!current) {
+      continue;
+    }
+    if (line.startsWith("+++ b/")) {
+      current.path = line.slice("+++ b/".length) || current.path;
+      continue;
+    }
+    if (line.startsWith("@@")) {
+      currentHunks.push(line);
+      continue;
+    }
+    if (line.startsWith("+++") || line.startsWith("---")) {
+      continue;
+    }
+    if (line.startsWith("+")) {
+      current.additions += 1;
+    } else if (line.startsWith("-")) {
+      current.deletions += 1;
+    }
+  }
+  flush();
+
+  if (summaries.length > 0) {
+    return summaries.map((summary, index) => ({
+      ...summary,
+      path: summary.path === "unknown" ? changedPaths[index] ?? summary.path : summary.path
+    }));
+  }
+
+  return changedPaths.map((changedPath) => ({
+    path: changedPath,
+    additions: 0,
+    deletions: 0,
+    hunksPreview: ""
+  }));
+}
+
+function extractDiffPath(line: string) {
+  const match = /^diff --git a\/(.+?) b\/(.+)$/.exec(line);
+  return match?.[2] ?? match?.[1];
 }
 
 async function pathExists(targetPath: string) {

@@ -93,6 +93,24 @@ createUiTest("AssistantsPanel", () => {
     clearBrowserStateForTests();
   });
 
+  it("uses shared left pane shell and empty-state hooks", () => {
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        activeLeftTab: "assistants",
+        activeSurface: "assistants",
+        assistants: createEmptyAssistantsState()
+      })
+    );
+
+    render(() => <AssistantsPanel />);
+
+    expect(document.querySelector("[data-test-left-pane-shell][data-left-pane-kind='assistants']")).not.toBeNull();
+    expect(screen.getByText("No assistants match current search or filters.").closest("[data-test-left-pane-empty-state]")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "New assistant" })).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Create from current thread" })).not.toBeNull();
+    expect(screen.getByText("Select assistant to inspect config, chat, todos, and logs.").closest("[data-test-detail-empty-state]")).not.toBeNull();
+  });
+
   it("persists and restores assistant learnings tab", () => {
     const now = new Date().toISOString();
     const project = createViewProjectFixture({

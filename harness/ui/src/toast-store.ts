@@ -6,6 +6,7 @@ export type ToastEntry = {
   title: string;
   description?: string;
   tone?: "error" | "info";
+  onClick?: () => void;
 };
 
 export type ToastScheduler = {
@@ -140,11 +141,12 @@ type ReportUiErrorOptions = {
   rethrow?: "never" | "dev-only";
 };
 
-export function pushToast(title: string, description?: string, tone: ToastEntry["tone"] = "info") {
+export function pushToast(title: string, description?: string, tone: ToastEntry["tone"] = "info", onClick?: () => void) {
   toastStore.push({
     title,
     description,
-    tone
+    tone,
+    onClick
   });
 }
 

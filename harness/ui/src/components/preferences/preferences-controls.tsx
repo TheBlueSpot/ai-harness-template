@@ -10,7 +10,7 @@ export function PreferenceSection(props: { title: string; description: string; c
   return (
     <section class="grid min-w-0 gap-3">
       <div class="min-w-0 border-b border-(--border) pb-3">
-        <h3 class="truncate text-lg font-semibold text-(--foreground)">{props.title}</h3>
+        <h3 class="truncate font-display text-lg font-semibold text-(--muted)">{props.title}</h3>
         <p class="mt-1 truncate text-xs leading-5 text-(--muted)">{props.description}</p>
       </div>
       <div class="grid gap-3">{props.children}</div>
@@ -32,8 +32,8 @@ export function PreferenceRow(props: {
       class={cn("grid min-w-0 gap-3 overflow-hidden rounded-xl border border-(--border) bg-white/55 p-4 md:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]", props.class)}
     >
       <div class="min-w-0">
-        <h4 class="truncate text-sm font-semibold text-(--foreground)">{props.title}</h4>
-        <p class="mt-1 truncate text-xs leading-5 text-(--muted)">{props.description}</p>
+        <h4 class="truncate text-[0.585rem] font-semibold tracking-[0.18em] text-(--muted)">{props.title}</h4>
+        <p class="mt-1 truncate text-[0.675rem] leading-5 text-(--muted)">{props.description}</p>
       </div>
       <div class="min-w-0">{props.children}</div>
     </section>
@@ -55,7 +55,7 @@ export function SegmentedControl<T extends string>(props: {
             class="min-h-8 min-w-0 truncate rounded-lg px-2 text-xs font-medium text-(--muted) transition hover:bg-white/75 hover:text-(--foreground) disabled:cursor-not-allowed disabled:opacity-45"
             classList={{
               "bg-(--accent)": props.value === option.value,
-              "text-(--accent-foreground)": props.value === option.value,
+              "text-white": props.value === option.value,
               "shadow-sm": props.value === option.value,
               "hover:bg-(--accent)": props.value === option.value
             }}
@@ -84,7 +84,7 @@ export function RangeControl(props: {
   return (
     <label class="grid gap-2">
       <div class="flex min-w-0 items-center justify-between gap-3 text-xs">
-        <span class="min-w-0 truncate font-medium text-(--foreground)">{props.label}</span>
+        <span class="min-w-0 truncate text-[0.585rem] font-semibold tracking-[0.18em] text-(--muted)">{props.label}</span>
         <span class="shrink-0 rounded-lg border border-(--border) bg-white/70 px-2 py-1 font-semibold text-(--foreground)">
           {props.value}
           {props.suffix}
@@ -130,7 +130,7 @@ export function PasswordKeyInput(props: {
   return (
     <div class="grid gap-2">
       <label class="grid gap-1">
-        <span class="text-xs font-medium text-(--foreground)">{props.label}</span>
+        <span class="text-[0.585rem] font-semibold tracking-[0.18em] text-(--muted)">{props.label}</span>
         <div class="flex gap-2">
           <div class="relative min-w-0 flex-1">
             <Input
@@ -187,11 +187,9 @@ export function PasswordKeyInput(props: {
         >
           {props.status}
         </span>
-        <Show when={props.testMessage}>
-          <span data-provider-test-message={props.testMessageId} class="min-w-0 text-(--muted)">
-            {props.testMessage}
-          </span>
-        </Show>
+        <span data-provider-test-message={props.testMessageId} class="min-w-0 text-(--muted)">
+          {props.testMessage}
+        </span>
       </div>
     </div>
   );
@@ -210,16 +208,14 @@ export function AdvancedDisclosure(props: { title: string; description?: string;
         onClick={() => setOpen((current) => !current)}
       >
         <span class="min-w-0">
-          <span class="block truncate text-sm font-semibold text-(--foreground)">{props.title}</span>
+          <span class="block truncate text-[0.585rem] font-semibold tracking-[0.18em] text-(--muted)">{props.title}</span>
           <Show when={props.description}>
-            <span class="mt-1 block truncate text-xs leading-5 text-(--muted)">{props.description}</span>
+            <span class="mt-1 block truncate text-[0.675rem] leading-5 text-(--muted)">{props.description}</span>
           </Show>
         </span>
         <ChevronDown class="h-4 w-4 shrink-0 text-(--muted) transition" classList={{ "rotate-180": open() }} />
       </Button>
-      <Show when={open()}>
-        <div class="border-t border-(--border) p-4">{props.children}</div>
-      </Show>
+      <div class="border-t border-(--border) p-4">{props.children}</div>
     </section>
   );
 }

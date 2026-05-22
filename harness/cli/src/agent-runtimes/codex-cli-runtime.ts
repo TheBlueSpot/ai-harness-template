@@ -8,8 +8,17 @@ import { resolveCodexSandboxMode } from "./codex-sandbox-policy";
 import { CodexSdkAdapter } from "./codex-sdk-adapter";
 import { resolveSubagentModelId } from "../subagent-defaults";
 
-const DEFAULT_MODEL_ID = "openai/gpt-5.4";
-const CODEX_SUPPORTED_MODEL_IDS = [DEFAULT_MODEL_ID, "openai/gpt-5.4-mini"] as const;
+const DEFAULT_MODEL_ID = "openai/gpt-5.5";
+const FALLBACK_CODEX_SUPPORTED_MODEL_IDS = [
+  DEFAULT_MODEL_ID,
+  "openai/gpt-5.4",
+  "openai/gpt-5.4-mini",
+  "openai/gpt-5.3-codex",
+  "openai/gpt-5.3-codex-spark",
+  "openai/gpt-5.2"
+] as const;
+const MODEL_DISCOVERY_TOTAL_TIMEOUT_MS = 10_000;
+const MODEL_DISCOVERY_IDLE_TIMEOUT_MS = 5_000;
 
 type CodexCliRuntimeOptions = {
   processManager?: CliProcessManager;
@@ -103,6 +112,7 @@ export class CodexCliRuntime implements AgentRuntime {
         helpArgs: ["--help"]
       })
     ]);
+    const modelDiscovery = await discoverCodexModels(this.processManager, installation.executablePath);
 
     this.capability = buildCliCapability({
       agentId: this.id,
@@ -116,9 +126,9 @@ export class CodexCliRuntime implements AgentRuntime {
       supportsReview: true,
       supportsReasoningStrengthControl: true,
       supportsFastModeControl: true,
-      discoveredModels: getCodexSupportedModelIds(),
+      discoveredModels: modelDiscovery.discoveredModels,
       activeModel: DEFAULT_MODEL_ID,
-      modelDiscoveryConfidence: "partial",
+      modelDiscoveryConfidence: modelDiscovery.modelDiscoveryConfidence,
       healthMessage: authenticated ? undefined : "Run `bunx codex login` before using this runtime.",
       installCommand: installation.installCommand,
       authCommand: installation.authCommand,
@@ -170,19 +180,73 @@ export class CodexCliRuntime implements AgentRuntime {
 }
 
 export function getCodexSupportedModelIds() {
-  return [...CODEX_SUPPORTED_MODEL_IDS];
+  return [...FALLBACK_CODEX_SUPPORTED_MODEL_IDS];
 }
 
 export function isCodexSupportedModelId(modelId: string | undefined) {
-  return Boolean(modelId && CODEX_SUPPORTED_MODEL_IDS.includes(modelId as (typeof CODEX_SUPPORTED_MODEL_IDS)[number]));
+  return Boolean(modelId && FALLBACK_CODEX_SUPPORTED_MODEL_IDS.includes(modelId as (typeof FALLBACK_CODEX_SUPPORTED_MODEL_IDS)[number]));
 }
 
 export function resolveCodexModelId(modelId: string | undefined) {
   return isCodexSupportedModelId(modelId) ? modelId : DEFAULT_MODEL_ID;
 }
 
+async function discoverCodexModels(processManager: CliProcessManager, executablePath: string) {
+  try {
+    const result = await processManager.runNonInteractive({
+      cmd: [executablePath, "debug", "models"],
+      cwd: process.cwd(),
+      cols: 120,
+      rows: 40,
+      idleTimeoutMs: MODEL_DISCOVERY_IDLE_TIMEOUT_MS,
+      totalTimeoutMs: MODEL_DISCOVERY_TOTAL_TIMEOUT_MS
+    });
+
+    if (result.hangDetected || result.timedOut || result.exitCode !== 0) {
+      return {
+        discoveredModels: getCodexSupportedModelIds(),
+        modelDiscoveryConfidence: "partial" as const
+      };
+    }
+
+    const discoveredModels = parseCodexModelCatalog(result.stdout);
+    if (discoveredModels.length === 0) {
+      return {
+        discoveredModels: getCodexSupportedModelIds(),
+        modelDiscoveryConfidence: "partial" as const
+      };
+    }
+
+    return {
+      discoveredModels,
+      modelDiscoveryConfidence: "exact" as const
+    };
+  } catch {
+    return {
+      discoveredModels: getCodexSupportedModelIds(),
+      modelDiscoveryConfidence: "partial" as const
+    };
+  }
+}
+
+function parseCodexModelCatalog(input: string) {
+  try {
+    const parsed = JSON.parse(input) as { models?: Array<{ slug?: unknown; visibility?: unknown }> };
+    const slugs =
+      parsed.models
+        ?.filter((model) => model.visibility === "list")
+        .map((model) => (typeof model.slug === "string" ? model.slug.trim() : ""))
+        .filter(Boolean) ?? [];
+    return [...new Set(slugs.map((slug) => (slug.includes("/") ? slug : `openai/${slug}`)))];
+  } catch {
+    return [];
+  }
+}
+
 export const testExports = {
   getCodexSupportedModelIds,
   isCodexSupportedModelId,
-  resolveCodexModelId
+  resolveCodexModelId,
+  discoverCodexModels,
+  parseCodexModelCatalog
 };

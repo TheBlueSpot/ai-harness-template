@@ -8,6 +8,8 @@ type DevHarnessServerSingleton<TState, THandlerRefs, TServer, TWebSocketShell> =
   pendingState?: TState;
   pendingHandlerRefs?: THandlerRefs;
   pendingApplyTimer?: ReturnType<typeof setTimeout>;
+  pendingApplyBackoffStep?: number;
+  trackedHotReloadSnapshot?: Map<string, number>;
 };
 
 const DEV_HARNESS_SERVER_SINGLETON_KEY = Symbol.for("pi-harness.dev-server");

@@ -146,6 +146,7 @@ New `US-*` stories start as `GAP-HIGH` here until at least one colocated or inte
 | US-MODES-005 | harness/cli/src/protocol.test.ts | schema-only | GAP-MED |
 | US-MODES-006 | harness/cli/src/pi-orchestrator.test.ts, harness/cli/src/server.test.ts, harness/cli/src/workspace-repository.test.ts | unit+integration | OK |
 | US-MODES-007 | harness/cli/src/protocol.test.ts | schema-only | OK |
+| US-MODES-008 | harness/cli/src/global-skills.test.ts, harness/cli/src/assistant-capabilities.test.ts, harness/cli/src/pi-subagents.test.ts | unit | OK |
 
 ## ASSISTANTS
 
@@ -170,7 +171,7 @@ New `US-*` stories start as `GAP-HIGH` here until at least one colocated or inte
 
 | Story ID | Covered by | Depth | Gap |
 |----------|-----------|-------|-----|
-| US-NOTIFICATIONS-001 | harness/ui/src/components/notification-inbox.test.tsx | unit | OK |
+| US-NOTIFICATIONS-001 | harness/cli/src/server.background-run-notifications.test.ts, harness/ui/src/components/notification-inbox.test.tsx | unit | OK |
 | US-NOTIFICATIONS-002 | harness/cli/src/notification-ids.test.ts, harness/cli/src/protocol.test.ts, harness/ui/src/components/notification-inbox.test.tsx | unit+integration | OK |
 | US-NOTIFICATIONS-003 | — | none | GAP-HIGH |
 
@@ -239,6 +240,7 @@ New `US-*` stories start as `GAP-HIGH` here until at least one colocated or inte
 | US-PERSISTENCE-013 | harness/ui/src/store/store.test.ts | unit | GAP-MED |
 | US-PERSISTENCE-014 | harness/cli/src/browser-session-state.test.ts | unit | OK |
 | US-PERSISTENCE-015 | harness/ui/src/store/store.test.ts | unit | GAP-MED |
+| US-PERSISTENCE-016 | harness/cli/src/harness-paths.test.ts, harness/cli/src/workspace-repository.test.ts | unit | OK |
 
 ## PREFERENCES
 

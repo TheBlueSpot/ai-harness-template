@@ -7,11 +7,13 @@ import {
   CircleAlert,
   CircleX,
   LoaderCircle,
+  Download,
   SendHorizontal
 } from "lucide-solid";
-import { createRequestId, type BackgroundJobRun, type ClientCommand, type NotificationInboxItem } from "../../../shared/protocol";
+import { createRequestId, type ClientCommand, type NotificationInboxItem } from "../../../shared/protocol";
 import { getAssistantQuestionDefaultChoices } from "../assistant-question-defaults";
-import { harnessStore, type HarnessViewState, type JobsRunFilter } from "../harness-store";
+import { openBackgroundRunInJobsPane } from "../background-run-navigation";
+import { harnessStore, type HarnessViewState } from "../harness-store";
 import { activateProjectThread } from "../project-thread-navigation";
 import { submitOnEnter } from "../textarea-submit";
 import { ActionButton } from "./action-button";
@@ -63,41 +65,7 @@ export function openBackgroundRunNotificationFromInbox(
   state: HarnessViewState,
   notification: Extract<NotificationInboxItem, { kind: "background-run-status" }>
 ) {
-  const run = state.backgroundJobs.runs.find((entry) => entry.id === notification.backgroundRunId);
-  const runFilter = getBackgroundRunFilter(run);
-  harnessStore.setActiveSurface("background-jobs");
-  harnessStore.closeBackgroundJobDetailsDialog();
-  if (runFilter) {
-    harnessStore.setJobsRunFilter(runFilter);
-  }
-  harnessStore.setJobsPanePreferences({
-    segment: "inbox",
-    selectedRunId: notification.backgroundRunId,
-    selectedJobId: notification.jobId,
-    selectedNotificationId: undefined
-  });
-}
-
-function getBackgroundRunFilter(
-  run: Pick<BackgroundJobRun, "status" | "approvalStatus"> | undefined
-): JobsRunFilter | undefined {
-  if (!run) {
-    return undefined;
-  }
-
-  if (run.status === "awaiting-approval" || run.status === "awaiting-user-input" || run.approvalStatus === "pending") {
-    return "approval";
-  }
-  if (run.status === "queued") {
-    return "queued";
-  }
-  if (run.status === "running") {
-    return "running";
-  }
-  if (run.status === "failed" || run.status === "cancelled") {
-    return "failed";
-  }
-  return "done";
+  openBackgroundRunInJobsPane(state, notification.backgroundRunId, notification.jobId);
 }
 
 export function NotificationInbox() {
@@ -128,6 +96,16 @@ export function NotificationInbox() {
       case "background-run-status":
         openBackgroundRunNotificationFromInbox(state, notification);
         activateProjectThread(notification.projectId, notification.threadId);
+        setOpen(false);
+        return;
+      case "cli-update":
+        sendCommand({
+          type: "cli-updates.install",
+          requestId: createRequestId(),
+          payload: {
+            agentId: notification.agentId
+          }
+        });
         setOpen(false);
         return;
       case "planning-question":
@@ -554,6 +532,8 @@ function notificationTitle(notification: NotificationInboxItem) {
       return `${notification.questions.length} assistant questions`;
     case "browser-approval":
       return notification.label;
+    case "cli-update":
+      return `${notification.label} update available`;
   }
 }
 
@@ -571,6 +551,8 @@ function notificationSummary(notification: NotificationInboxItem) {
       return notification.questions.map((question) => question.prompt).join(" ");
     case "browser-approval":
       return notification.inputSummary;
+    case "cli-update":
+      return `${notification.currentVersion} -> ${notification.latestVersion}. Click to update.`;
   }
 }
 
@@ -586,6 +568,9 @@ function NotificationKindIcon(props: { notification: NotificationInboxItem }) {
       </Match>
       <Match when={props.notification.kind === "background-run-status"}>
         <LoaderCircle class="h-3.5 w-3.5" />
+      </Match>
+      <Match when={props.notification.kind === "cli-update"}>
+        <Download class="h-3.5 w-3.5" />
       </Match>
       <Match when={props.notification.kind === "browser-approval"}>
         <CircleAlert class="h-3.5 w-3.5" />

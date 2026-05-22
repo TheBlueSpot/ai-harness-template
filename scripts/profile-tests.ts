@@ -21,6 +21,8 @@ const junitXmlPaths = defaultSegments.map((segment) => path.join(profileDir, `${
 const junitXmlPath = junitXmlPaths[0] ?? path.join(profileDir, `${profileBasename}.xml`);
 const outputJsonPath = path.join(profileDir, `${profileBasename}.json`);
 const outputMarkdownPath = path.join(profileDir, `${profileBasename}.md`);
+const maxTestDurationMs = parseOptionalPositiveInteger(process.env.HARNESS_TEST_PROFILE_MAX_TEST_MS) ?? 5000;
+let profileExceededThreshold = false;
 
 console.log(`[test:profile] writing profiles to ${path.relative(repoRoot, profileDir)}`);
 
@@ -77,6 +79,14 @@ if (existingJunitXmlPaths.length > 0) {
   );
   writeFileSync(outputMarkdownPath, buildMarkdownSummary(report));
   printSummary(report);
+  const slowThresholdFailures = report.tests.filter((record) => record.status === "pass" && record.durationMs > maxTestDurationMs);
+  profileExceededThreshold = slowThresholdFailures.length > 0;
+  if (slowThresholdFailures.length > 0) {
+    console.error(`[test:profile] ${slowThresholdFailures.length} passing test(s) exceeded ${maxTestDurationMs}ms. Set HARNESS_TEST_PROFILE_MAX_TEST_MS to opt into a different threshold.`);
+    for (const record of slowThresholdFailures.slice(0, 10)) {
+      console.error(`[test:profile] slow ${record.durationMs}ms ${record.file}:${record.line ?? "?"} :: ${record.name}`);
+    }
+  }
 }
 
 if (existingJunitXmlPaths.length > 0 || existsSync(outputJsonPath) || existsSync(outputMarkdownPath)) {
@@ -86,7 +96,7 @@ if (existingJunitXmlPaths.length > 0 || existsSync(outputJsonPath) || existsSync
   console.log(`[test:profile] report: ${path.relative(repoRoot, outputJsonPath)}`);
   console.log(`[test:profile] summary: ${path.relative(repoRoot, outputMarkdownPath)}`);
 }
-process.exit(exitCode);
+process.exit(exitCode || (profileExceededThreshold ? 1 : 0));
 
 type TestProfileRecord = {
   name: string;
@@ -228,4 +238,15 @@ function toOptionalNumber(value: string | undefined) {
   }
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function parseOptionalPositiveInteger(rawValue: string | undefined) {
+  if (!rawValue) {
+    return undefined;
+  }
+  const parsed = Number.parseInt(rawValue, 10);
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return undefined;
+  }
+  return parsed;
 }

@@ -279,12 +279,29 @@ describe("assistant manager chat", () => {
     expect(adapter.calls[0]?.prompt).toContain("Description: Tracks release risk.");
     expect(adapter.calls[0]?.prompt).toContain("# OPERATIONAL LOGIC (The Job)\nWatch release blockers.");
     expect(adapter.calls[0]?.prompt).toContain("# ACTIVE MISSION (The Request)\nNeed status");
+    expect(adapter.calls[0]?.prompt).toContain("invoke the assistant-actions skill before acting");
     expect(adapter.calls[0]?.prompt).not.toContain("Role:");
     expect(adapter.calls[0]?.prompt).not.toContain("First assistant message requirement:");
     expect(adapter.calls[0]?.prompt).not.toContain("Concise learnings report:");
     expect(adapter.calls[0]?.prompt).toContain("Prioritize smoke-test failures before polish.");
 
     adapter.resolvers[0]?.({ text: "Ready" });
+    await sent;
+  });
+
+  test("project-chat routed assistant messages inherit assistant action guidance", async () => {
+    const repository = createRepository();
+    const assistant = createAssistant(repository, { bootstrapState: "completed" });
+    const adapter = new DeferredAdapter();
+    const manager = createManager(repository, adapter);
+
+    const sent = manager.sendAssistantChat(assistant.id, "what jobs do you have queued");
+    await waitForCalls(adapter, 1);
+
+    expect(adapter.calls[0]?.prompt).toContain("For every assistant-chat or project-chat request");
+    expect(adapter.calls[0]?.prompt).toContain("assistant-actions skill");
+
+    adapter.resolvers[0]?.({ text: "No queued jobs." });
     await sent;
   });
 });

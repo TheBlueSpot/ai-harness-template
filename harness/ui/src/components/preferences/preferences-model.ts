@@ -1,8 +1,9 @@
 import type { Component } from "solid-js";
-import { Bell, Bot, BriefcaseBusiness, Code2, Palette, ShieldCheck } from "lucide-solid";
+import { Bell, Bot, BriefcaseBusiness, Code2, Keyboard, Palette, ShieldCheck } from "lucide-solid";
 
 export type PreferencesSectionId =
   | "general-ui"
+  | "keybinds"
   | "ai-providers"
   | "safety-guardrails"
   | "workspace-memory"
@@ -12,6 +13,7 @@ export type PreferencesSectionId =
 export type PreferencesSettingId =
   | "appearance-density"
   | "navigation-sidebar"
+  | "keyboard-shortcuts"
   | "notifications"
   | "provider-keys"
   | "provider-brand"
@@ -49,6 +51,12 @@ export const preferencesSections: PreferencesSectionMeta[] = [
     label: "General & UI",
     description: "Layout, navigation, notifications, density.",
     icon: Palette
+  },
+  {
+    id: "keybinds",
+    label: "Keybinds",
+    description: "App-level keyboard shortcuts.",
+    icon: Keyboard
   },
   {
     id: "ai-providers",
@@ -98,11 +106,18 @@ export const preferencesSettings: PreferencesSettingMeta[] = [
     keywords: ["navigation", "sidebar", "layout", "sort", "grouping", "panel"]
   },
   {
+    id: "keyboard-shortcuts",
+    sectionId: "keybinds",
+    title: "Keyboard shortcuts",
+    description: "Configure app-level hotkeys.",
+    keywords: ["hotkeys", "keyboard", "shortcuts", "command", "keys"]
+  },
+  {
     id: "notifications",
     sectionId: "general-ui",
     title: "Notifications",
-    description: "Desktop notifications for background job events.",
-    keywords: ["desktop", "notification", "alerts", "background"]
+    description: "Desktop notifications and CLI update checks.",
+    keywords: ["desktop", "notification", "alerts", "background", "cli", "updates"]
   },
   {
     id: "provider-keys",

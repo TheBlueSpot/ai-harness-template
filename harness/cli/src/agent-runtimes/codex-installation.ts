@@ -89,10 +89,14 @@ export function resolveBundledCodexExecutablePath(input: {
   const platformPackageJsonPath = resolvePackageJson(`${platformPackage}/package.json`);
   const vendorRoot = path.join(path.dirname(platformPackageJsonPath), "vendor");
   const binaryName = (input.platform ?? process.platform) === "win32" ? "codex.exe" : "codex";
-  const executablePath = path.join(vendorRoot, targetTriple, "codex", binaryName);
   const pathExists = input.pathExists ?? existsSync;
-  if (!pathExists(executablePath)) {
-    throw new Error(`Bundled Codex executable not found at ${executablePath}`);
+  const executablePaths = [
+    path.join(vendorRoot, targetTriple, "bin", binaryName),
+    path.join(vendorRoot, targetTriple, "codex", binaryName)
+  ];
+  const executablePath = executablePaths.find((candidate) => pathExists(candidate));
+  if (!executablePath) {
+    throw new Error(`Bundled Codex executable not found at ${executablePaths.join(" or ")}`);
   }
 
   return executablePath;

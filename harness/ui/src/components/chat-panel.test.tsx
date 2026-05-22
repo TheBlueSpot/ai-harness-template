@@ -2,8 +2,10 @@
 import { beforeEach, expect, it } from "bun:test";
 import { createUiTest } from "../utils/tests/test-harness";
 import { cleanup, fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
-import { ChatPanel, buildProjectChatSearchResults } from "./chat-panel";
+import { ChatPanel } from "./chat-panel";
+import { buildProjectChatSearchResults } from "../lib/project-chat-search";
 import { createInitialViewState, harnessStore, readBrowserUiSession } from "../harness-store";
+import { DEFAULT_APP_HOTKEY_PREFERENCES } from "../lib/app-hotkeys";
 import { toastStore } from "../toast-store";
 import { formatShortTimestamp } from "../lib/time-format";
 import { captureDispatchedCommands, clearBrowserStateForTests, seedHarnessStoreForTests } from "../utils/tests/store-test-utils";
@@ -55,6 +57,26 @@ createUiTest("ChatPanel", () => {
     render(() => <ChatPanel />);
 
     expect(screen.getByRole("button", { name: "Open events pane" }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("shows the create-thread hotkey in the chat toolbar tooltip", async () => {
+    const project = createViewProjectFixture({ id: "project-chat-hotkey" });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        appHotkeyPreferences: {
+          ...DEFAULT_APP_HOTKEY_PREFERENCES,
+          createProjectChat: ["Alt+N"]
+        },
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ChatPanel />);
+
+    expect(screen.getByRole("button", { name: /Create a new thread in this project \(Alt.*N\)/ })).not.toBeNull();
   });
 
   it("orders project chat search by project title hits before active thread transcript", () => {
@@ -606,6 +628,7 @@ createUiTest("ChatPanel", () => {
           backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
           memoryBankEnabledDefault: state.memoryBankEnabledDefault,
           memoryBankRecordRunsDefault: state.memoryBankRecordRunsDefault,
+          checkCliUpdatesDefault: state.checkCliUpdatesDefault,
           attachmentsEnabled: state.attachmentsEnabled,
           capabilities: state.capabilities,
           agentRuntimes: state.agentRuntimes
@@ -932,6 +955,33 @@ it("updates composer effort label and sends reasoning plus fast mode", () => {
 
     expect(commands.length).toBe(1);
     expect((commands[0] as { type: string }).type).toBe("chat.send");
+  });
+
+  it("grows composer to a viewport-bound height before internal scroll", () => {
+    const project = createViewProjectFixture({
+      id: "project-composer-height",
+      draft: ""
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        hasUsableApiKey: true,
+        hasUsableOpenAiApiKey: true,
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 360 });
+
+    render(() => <ChatPanel />);
+    const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
+    Object.defineProperty(textbox, "scrollHeight", { configurable: true, value: 400 });
+
+    fireEvent.input(textbox, { target: { value: "long\n".repeat(40) } });
+
+    expect(textbox.style.maxHeight).toBe("180px");
+    expect(textbox.style.height).toBe("180px");
   });
 
   it("blocks Enter submit while the active thread is streaming", () => {
@@ -1994,6 +2044,42 @@ it("updates composer effort label and sends reasoning plus fast mode", () => {
         target: "ephemeral-experiment"
       }
     });
+  });
+
+  it("renders compact run ledger and proof bundle details", () => {
+    const project = createViewProjectFixture({
+      id: "project-run-ledger",
+      activeRun: createRunFixture({
+        id: "run-ledger",
+        ledger: {
+          currentPhase: "Reviewing",
+          nextStep: "Run focused tests",
+          waitingOn: "approval"
+        },
+        proofBundle: {
+          diffSummary: "2 files changed",
+          commands: ["bun test"],
+          browserEvidenceRefs: ["home-desktop.png"],
+          finalReviewNotes: "Looks bounded"
+        }
+      })
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        chatPaneTab: "run",
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ChatPanel />);
+
+    expect(screen.getByText("Run ledger")).not.toBeNull();
+    expect(screen.getByText("Next: Run focused tests")).not.toBeNull();
+    expect(screen.getByText("Proof bundle")).not.toBeNull();
+    expect(screen.getByText("Evidence refs: 2")).not.toBeNull();
   });
 
   it("builds persisted ready plans from transcript run summaries", () => {

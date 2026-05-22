@@ -1,4 +1,5 @@
 import path from "node:path";
+import { withAgentsMdRuleSource } from "./agent-rules";
 import { resolveModeById } from "../../shared/modes";
 import {
   createAssistantLogEntryId,
@@ -87,7 +88,9 @@ async function executeAiRoutineJob(options: BackgroundJobExecutorOptions) {
   const threadId = job.automationThreadId;
   const mode = resolveModeById(definition.modeId ?? project.selectedModeId, project.projectModes);
   const executionModelId = options.executionModelId;
-  const ruleSources = [project.projectRuleSource].filter((value): value is WorkspaceRuleSource => Boolean(value));
+  const ruleSources = withAgentsMdRuleSource(
+    [project.projectRuleSource].filter((value): value is WorkspaceRuleSource => Boolean(value))
+  );
   const memorySummaries = [repository.getThreadMemorySummary(job.projectId, threadId)].filter(
     (value): value is MemorySummary => Boolean(value)
   );

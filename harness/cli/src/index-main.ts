@@ -11,6 +11,7 @@ import { WorkspaceRepository } from "./workspace-repository";
 import { CliUsageError, parseCliOptions } from "./cli-options";
 import { ensureDependencyHealth } from "./dependency-health";
 import { deleteDoctorDistFolder } from "./doctor-cleanup";
+import { syncBundledSkillsToGlobalRoot } from "./global-skills";
 
 const CLI_HELP = `Usage: pi-harness [--server-only] [--open|--no-open] [--doctor [--json]] [--help]
 
@@ -48,6 +49,7 @@ export async function main() {
   if (launchMode === "portable-launcher") {
     process.chdir(path.dirname(process.execPath));
   }
+  syncBundledSkillsToGlobalRoot();
 
   if (doctorOnly) {
     const setup = await runDoctor({ json: options.flags.has("--json") });
@@ -83,7 +85,15 @@ export async function main() {
 }
 
 async function runDoctor(options: { json?: boolean } = {}) {
-  await deleteDoctorDistFolder();
+  const cleanup = await deleteDoctorDistFolder();
+  if (!cleanup.deleted) {
+    const message = `Skipped doctor dist cleanup because ${cleanup.rootPath} does not look like the harness root.`;
+    if (options.json) {
+      console.error(message);
+    } else {
+      console.log(message);
+    }
+  }
   await ensureDependencyHealth({
     log: (message) => (options.json ? console.error(message) : console.log(message))
   });
@@ -138,6 +148,7 @@ async function runDoctor(options: { json?: boolean } = {}) {
       backgroundJobApprovalPolicyDefault: repository.getBackgroundJobApprovalPolicyDefault(),
       memoryBankEnabledDefault: repository.getMemoryBankEnabledDefault(),
       memoryBankRecordRunsDefault: repository.getMemoryBankRecordRunsDefault(),
+      checkCliUpdatesDefault: repository.getCheckCliUpdatesDefault(),
       attachmentsEnabled: Boolean(Bun.env.UPLOADTHING_TOKEN?.trim()),
       capabilities: [],
       agentRuntimes: runtimeRegistry.listCapabilities()

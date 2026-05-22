@@ -1,32 +1,49 @@
 /** @jsxImportSource solid-js */
-import { createEffect, createMemo, createSignal, For, Show, type JSX } from "solid-js";
+import { createMemo, createSignal, For, onCleanup, onMount, Show, type JSX } from "solid-js";
+import { render as renderSolidRoot } from "solid-js/web";
+import { formatForDisplay } from "@tanstack/solid-hotkeys";
 import { createRequestId, type ComposerReasoningStrength, type ProviderBrand } from "../../../shared/protocol";
 import {
+  AlertTriangle,
   Archive,
   Bell,
   BriefcaseBusiness,
   Download,
   FileJson,
   FolderOpen,
+  HelpCircle,
   Import,
+  Keyboard,
   LayoutPanelLeft,
+  Plus,
   RotateCcw,
   Save,
   Search,
-  Trash2
+  Trash2,
+  X
 } from "lucide-solid";
 import {
-  canSelectProviderBrand,
   harnessStore,
   persistMergedLocalPreferences,
   type PreferencesActiveSectionId,
   type ProviderConnectionProvider
 } from "../harness-store";
+import {
+  appHotkeySettings,
+  DEFAULT_APP_HOTKEY_PREFERENCES,
+  isValidAppHotkey,
+  normalizeAppHotkey,
+  normalizeAppHotkeyPreferences,
+  type AppHotkeyId
+} from "../lib/app-hotkeys";
+import { registerCurrentTabItemSelector } from "../lib/current-tab-item-hotkeys";
 import { pushToast } from "../toast-store";
 import { ActionButton } from "./action-button";
 import { ModeEditorPanel } from "./mode-editor-panel";
+import { Dialog } from "./primitives/dialog";
 import { DropdownControl } from "./primitives/dropdown";
 import { Input } from "./primitives/input";
+import { LeftPaneSearchInput } from "./primitives/left-pane";
 import { Textarea } from "./primitives/textarea";
 import { Tooltip } from "./primitives/tooltip";
 import {
@@ -44,18 +61,23 @@ import {
   type PreferencesSettingMeta
 } from "./preferences/preferences-model";
 
-function getProviderBrandLabel(providerBrand: ProviderBrand) {
-  if (providerBrand === "gemini") {
-    return "Gemini";
-  }
-  if (providerBrand === "claude") {
-    return "Claude";
-  }
-  return "GPT";
-}
-
 function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+const PREFERENCES_SECTION_EVENT = "preferences-section-change";
+const PREFERENCES_SEARCH_EVENT = "preferences-search-change";
+
+function emitPreferencesSectionChange(sectionId: PreferencesActiveSectionId) {
+  window.dispatchEvent(new CustomEvent(PREFERENCES_SECTION_EVENT, { detail: { sectionId } }));
+}
+
+function emitPreferencesSearchChange() {
+  window.dispatchEvent(new CustomEvent(PREFERENCES_SEARCH_EVENT));
+}
+
+function isPreferencesSectionEvent(event: Event): event is CustomEvent<{ sectionId: PreferencesActiveSectionId }> {
+  return event instanceof CustomEvent && typeof event.detail?.sectionId === "string";
 }
 
 function Highlight(props: { value: string; query: string }) {
@@ -82,26 +104,88 @@ function Highlight(props: { value: string; query: string }) {
   );
 }
 
+const recordedModifierKeys = new Set(["Control", "Shift", "Alt", "Meta"]);
+
+function formatRecordedChord(event: KeyboardEvent) {
+  const parts: string[] = [];
+  if (event.ctrlKey) {
+    parts.push("Ctrl");
+  }
+  if (event.altKey) {
+    parts.push("Alt");
+  }
+  if (event.shiftKey) {
+    parts.push("Shift");
+  }
+  if (event.metaKey) {
+    parts.push("Meta");
+  }
+
+  if (!recordedModifierKeys.has(event.key)) {
+    const key = event.key.length === 1 ? event.key.toUpperCase() : event.key;
+    parts.push(key === " " ? "Space" : key);
+  }
+
+  return parts.join("+");
+}
+
+function chordsMatch(left: string, right: string) {
+  return left.toLowerCase() === right.toLowerCase() || formatForDisplay(left).toLowerCase() === formatForDisplay(right).toLowerCase();
+}
+
+function formatHotkeyForDisplay(value: string) {
+  return formatForDisplay(value)
+    .split("+")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join(" + ");
+}
+
 export function PreferencesPanel() {
   const store = harnessStore;
   const state = store.state;
   const sendCommand = store.actions.sendCommand;
   let importInput: HTMLInputElement | undefined;
+  let detailContainer: HTMLDivElement | undefined;
+  let disposeDetailRoot: (() => void) | undefined;
   const [selectedSectionId, setSelectedSectionId] = createSignal<PreferencesActiveSectionId>(
     state.preferencesActiveSectionId
   );
   const [searchQuery, setSearchQuery] = createSignal(state.preferencesSearchQuery);
+  const [hotkeyDrafts, setHotkeyDrafts] = createSignal(normalizeAppHotkeyPreferences(state.appHotkeyPreferences));
+  const [keybindSearchQuery, setKeybindSearchQuery] = createSignal("");
+  const [pendingDuplicateHotkey, setPendingDuplicateHotkey] = createSignal<{
+    id: AppHotkeyId;
+    index: number;
+    value: string;
+    conflictLabel: string;
+  }>();
 
-  createEffect(() => {
-    setSelectedSectionId(state.preferencesActiveSectionId);
+  const handleSectionChange = (event: Event) => {
+    if (!isPreferencesSectionEvent(event)) {
+      return;
+    }
+    setSelectedSectionId(event.detail.sectionId);
+    setSearchQuery("");
+    renderDetailRoot();
+  };
+  const handleSearchChange = () => {
     setSearchQuery(state.preferencesSearchQuery);
+    renderDetailRoot();
+  };
+  window.addEventListener(PREFERENCES_SECTION_EVENT, handleSectionChange);
+  window.addEventListener(PREFERENCES_SEARCH_EVENT, handleSearchChange);
+  onCleanup(() => {
+    window.removeEventListener(PREFERENCES_SECTION_EVENT, handleSectionChange);
+    window.removeEventListener(PREFERENCES_SEARCH_EVENT, handleSearchChange);
+    disposeDetailRoot?.();
   });
 
   const workspaceModes = () => state.workspace.workspaceModes ?? [];
   const workspaceRuleDraft = () => state.workspace.workspaceRuleSource?.content ?? "";
   const workspaceMemoryDraft = () => state.workspace.workspaceMemorySummary?.content ?? "";
 
-  const searchResults = createMemo(() => {
+  const searchResults = () => {
     const query = searchQuery().trim().toLowerCase();
     if (!query) {
       return [];
@@ -113,16 +197,16 @@ export function PreferencesPanel() {
         value.toLowerCase().includes(query)
       );
     });
-  });
+  };
 
-  const groupedSearchResults = createMemo(() =>
+  const groupedSearchResults = () =>
     preferencesSections
       .map((section) => ({
         section,
         results: searchResults().filter((setting) => setting.sectionId === section.id)
       }))
       .filter((entry) => entry.results.length > 0)
-  );
+  ;
   const subagentWorktreeOptions = () => [
     { value: "same-worktree", label: "Same checkout", description: "Subagents edit inside current working tree." },
     {
@@ -151,16 +235,6 @@ export function PreferencesPanel() {
     const googleApiKey = state.googleApiKeyDraft.trim() || undefined;
     const anthropicApiKey = state.anthropicApiKeyDraft.trim() || undefined;
 
-    if (!openAiApiKey && !googleApiKey && !anthropicApiKey && !state.hasUsableApiKey && !state.hasStoredApiKey) {
-      pushToast("API key required", "Enter provider key before sending chat.", "error");
-      return;
-    }
-
-    if (!canSelectProviderBrand(state, state.providerBrand)) {
-      pushToast("Provider key required", `Saved ${getProviderBrandLabel(state.providerBrand)} key required.`, "error");
-      return;
-    }
-
     const localPreferences = {
       openAiApiKey,
       googleApiKey,
@@ -180,8 +254,10 @@ export function PreferencesPanel() {
       backgroundJobNotificationsEnabled: state.backgroundJobNotificationsEnabled,
       memoryBankEnabledDefault: state.memoryBankEnabledDefault,
       memoryBankRecordRunsDefault: state.memoryBankRecordRunsDefault,
+      checkCliUpdatesDefault: state.checkCliUpdatesDefault,
       selectedReasoningStrength: state.selectedReasoningStrength,
-      selectedFastMode: state.selectedFastMode
+      selectedFastMode: state.selectedFastMode,
+      appHotkeyPreferences: state.appHotkeyPreferences
     };
 
     persistMergedLocalPreferences(localPreferences);
@@ -207,10 +283,16 @@ export function PreferencesPanel() {
         backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
         autoArchiveCompletedThreadsDefault: state.autoArchiveCompletedThreadsDefault,
         memoryBankEnabledDefault: state.memoryBankEnabledDefault,
-        memoryBankRecordRunsDefault: state.memoryBankRecordRunsDefault
+        memoryBankRecordRunsDefault: state.memoryBankRecordRunsDefault,
+        checkCliUpdatesDefault: state.checkCliUpdatesDefault
       }
     });
 
+  }
+
+  function updateSavedPreference(update: () => void) {
+    update();
+    handleSave();
   }
 
   function handleClearApiKey() {
@@ -233,8 +315,10 @@ export function PreferencesPanel() {
       backgroundJobNotificationsEnabled: state.backgroundJobNotificationsEnabled,
       memoryBankEnabledDefault: state.memoryBankEnabledDefault,
       memoryBankRecordRunsDefault: state.memoryBankRecordRunsDefault,
+      checkCliUpdatesDefault: state.checkCliUpdatesDefault,
       selectedReasoningStrength: state.selectedReasoningStrength,
-      selectedFastMode: state.selectedFastMode
+      selectedFastMode: state.selectedFastMode,
+      appHotkeyPreferences: state.appHotkeyPreferences
     });
     store.commitLocalPreferences({
       openAiApiKey: undefined,
@@ -254,8 +338,10 @@ export function PreferencesPanel() {
       autoArchiveCompletedThreadsDefault: state.autoArchiveCompletedThreadsDefault,
       memoryBankEnabledDefault: state.memoryBankEnabledDefault,
       memoryBankRecordRunsDefault: state.memoryBankRecordRunsDefault,
+      checkCliUpdatesDefault: state.checkCliUpdatesDefault,
       selectedReasoningStrength: state.selectedReasoningStrength,
-      selectedFastMode: state.selectedFastMode
+      selectedFastMode: state.selectedFastMode,
+      appHotkeyPreferences: state.appHotkeyPreferences
     });
 
     sendCommand({
@@ -281,8 +367,10 @@ export function PreferencesPanel() {
       backgroundJobNotificationsEnabled: state.backgroundJobNotificationsEnabled,
       memoryBankEnabledDefault: state.memoryBankEnabledDefault,
       memoryBankRecordRunsDefault: state.memoryBankRecordRunsDefault,
+      checkCliUpdatesDefault: state.checkCliUpdatesDefault,
       selectedReasoningStrength: state.selectedReasoningStrength,
-      selectedFastMode: state.selectedFastMode
+      selectedFastMode: state.selectedFastMode,
+      appHotkeyPreferences: state.appHotkeyPreferences
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -317,8 +405,10 @@ export function PreferencesPanel() {
         backgroundJobNotificationsEnabled: boolean;
         memoryBankEnabledDefault: boolean;
         memoryBankRecordRunsDefault: boolean;
+        checkCliUpdatesDefault: boolean;
         selectedReasoningStrength: ComposerReasoningStrength;
         selectedFastMode: boolean;
+        appHotkeyPreferences: unknown;
       }>;
 
       store.commitLocalPreferences({
@@ -337,8 +427,10 @@ export function PreferencesPanel() {
         backgroundJobNotificationsEnabled: parsed.backgroundJobNotificationsEnabled,
         memoryBankEnabledDefault: parsed.memoryBankEnabledDefault,
         memoryBankRecordRunsDefault: parsed.memoryBankRecordRunsDefault,
+        checkCliUpdatesDefault: parsed.checkCliUpdatesDefault,
         selectedReasoningStrength: parsed.selectedReasoningStrength,
-        selectedFastMode: parsed.selectedFastMode
+        selectedFastMode: parsed.selectedFastMode,
+        appHotkeyPreferences: normalizeAppHotkeyPreferences(parsed.appHotkeyPreferences)
       });
       persistMergedLocalPreferences({
         openAiApiKey: state.openAiApiKeyDraft.trim() || undefined,
@@ -362,8 +454,10 @@ export function PreferencesPanel() {
         backgroundJobNotificationsEnabled: parsed.backgroundJobNotificationsEnabled ?? state.backgroundJobNotificationsEnabled,
         memoryBankEnabledDefault: parsed.memoryBankEnabledDefault ?? state.memoryBankEnabledDefault,
         memoryBankRecordRunsDefault: parsed.memoryBankRecordRunsDefault ?? state.memoryBankRecordRunsDefault,
+        checkCliUpdatesDefault: parsed.checkCliUpdatesDefault ?? state.checkCliUpdatesDefault,
         selectedReasoningStrength: parsed.selectedReasoningStrength ?? state.selectedReasoningStrength,
-        selectedFastMode: parsed.selectedFastMode ?? state.selectedFastMode
+        selectedFastMode: parsed.selectedFastMode ?? state.selectedFastMode,
+        appHotkeyPreferences: normalizeAppHotkeyPreferences(parsed.appHotkeyPreferences ?? state.appHotkeyPreferences)
       });
       pushToast("Preferences imported", "Local defaults updated. Save to sync machine-level defaults.");
     } catch (error) {
@@ -441,6 +535,8 @@ export function PreferencesPanel() {
       searchInput.value = "";
     }
     store.setPreferencesActiveSectionId(sectionId);
+    emitPreferencesSectionChange(sectionId);
+    renderDetailRoot();
     queueMicrotask(() => document.getElementById(setting.id)?.focus());
   }
 
@@ -448,8 +544,208 @@ export function PreferencesPanel() {
     return (
       <label class="inline-flex cursor-pointer items-center justify-between gap-3 rounded-xl border border-(--border) bg-white/60 px-3 py-2">
         <span class="text-xs font-medium text-(--foreground)">{label}</span>
-        <input class="h-4 w-4 accent-(--accent)" type="checkbox" checked={checked} onInput={(event) => onInput(event.currentTarget.checked)} />
+        <input
+          class="h-4 w-4 accent-(--accent)"
+          type="checkbox"
+          checked={checked}
+          onInput={(event) => updateSavedPreference(() => onInput(event.currentTarget.checked))}
+        />
       </label>
+    );
+  }
+
+  function saveHotkeyPreference(id: AppHotkeyId, index: number, value: string, allowDuplicate = false) {
+    const normalized = normalizeAppHotkey(value, "");
+    if (!normalized) {
+      return false;
+    }
+    const duplicate = appHotkeySettings.find((setting) => {
+      const existingHotkeys = normalizeAppHotkeyPreferences(state.appHotkeyPreferences)[setting.id];
+      return existingHotkeys.some((existing, existingIndex) => {
+        if (setting.id === id && existingIndex === index) {
+          return false;
+        }
+        return chordsMatch(existing, normalized);
+      });
+    });
+
+    if (duplicate && !allowDuplicate) {
+      setPendingDuplicateHotkey({ id, index, value: normalized, conflictLabel: duplicate.label });
+      return false;
+    }
+
+    const currentHotkeys = hotkeyDrafts()[id];
+    const nextHotkeys = currentHotkeys.map((hotkey, hotkeyIndex) => (hotkeyIndex === index ? normalized : hotkey));
+    updateSavedPreference(() => store.setAppHotkeyPreference(id, nextHotkeys));
+    setHotkeyDrafts((drafts) => ({ ...drafts, [id]: nextHotkeys }));
+    setPendingDuplicateHotkey(undefined);
+    return true;
+  }
+
+  function addHotkeyDraft(id: AppHotkeyId) {
+    setHotkeyDrafts((drafts) => ({ ...drafts, [id]: [...drafts[id], ""] }));
+  }
+
+  function updateHotkeyDraft(id: AppHotkeyId, index: number, value: string) {
+    setHotkeyDrafts((drafts) => ({
+      ...drafts,
+      [id]: drafts[id].map((hotkey, hotkeyIndex) => (hotkeyIndex === index ? value : hotkey))
+    }));
+  }
+
+  function deleteHotkeyPreference(id: AppHotkeyId, index: number) {
+    const nextHotkeys = hotkeyDrafts()[id].filter((_, hotkeyIndex) => hotkeyIndex !== index);
+    setHotkeyDrafts((drafts) => ({ ...drafts, [id]: nextHotkeys }));
+    updateSavedPreference(() => store.setAppHotkeyPreference(id, nextHotkeys));
+  }
+
+  function renderKeybinds() {
+    const preferences = () => normalizeAppHotkeyPreferences(state.appHotkeyPreferences);
+    const filteredSettings = () => {
+      const query = keybindSearchQuery().trim().toLowerCase();
+      if (!query) {
+        return appHotkeySettings;
+      }
+      return appHotkeySettings.filter((setting) =>
+        [setting.label, setting.description, preferences()[setting.id].join(" ")].some((value) =>
+          value.toLowerCase().includes(query)
+        )
+      );
+    };
+
+    return (
+      <PreferenceSection title="Keybinds" description="Customize app-level hotkeys for this browser.">
+        <div id="keyboard-shortcuts" class="grid gap-4">
+          <div class="flex flex-wrap items-center justify-between gap-3 border-b border-(--border) pb-3">
+            <div class="text-[0.675rem] leading-5 text-(--muted)">{filteredSettings().length} keybindings</div>
+            <div class="flex min-w-0 flex-wrap items-center gap-2">
+              <label class="relative min-w-48 flex-1">
+                <Search class="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-(--muted)" />
+                <Input
+                  class="h-9 pl-8"
+                  aria-label="Search keybindings"
+                  value={keybindSearchQuery()}
+                  placeholder="Search keybindings..."
+                  onInput={(event) => setKeybindSearchQuery(event.currentTarget.value)}
+                />
+              </label>
+            </div>
+          </div>
+
+          <section class="grid gap-2">
+            <For each={filteredSettings()}>
+              {(setting) => {
+                const draftValue = () => hotkeyDrafts()[setting.id];
+                const duplicate = () =>
+                  preferences()[setting.id].some((hotkey, hotkeyIndex) =>
+                    appHotkeySettings.some((candidate) =>
+                      preferences()[candidate.id].some((candidateHotkey, candidateIndex) => {
+                        if (candidate.id === setting.id && candidateIndex === hotkeyIndex) {
+                          return false;
+                        }
+                        return chordsMatch(candidateHotkey, hotkey);
+                      })
+                    )
+                  );
+                return (
+                  <div
+                    data-test-keybind-row={setting.id}
+                    class="rounded-2xl border border-(--border) bg-white/55 px-4 py-3 shadow-sm transition hover:bg-white/70"
+                  >
+                    <div class="grid items-center gap-4 md:grid-cols-[minmax(12rem,0.85fr)_minmax(0,2.15fr)_auto]">
+                      <div class="min-w-0">
+                        <div class="flex min-w-0 items-center gap-2">
+                          <Keyboard class="h-3.5 w-3.5 shrink-0 text-(--muted)" />
+                          <h4 class="truncate text-[0.62rem] font-semibold tracking-[0.16em] text-(--muted)">{setting.label}</h4>
+                          <ActionButton
+                            tooltip={setting.description}
+                            ariaLabel={`${setting.label} description`}
+                            variant="ghost"
+                            size="icon"
+                            class="h-6 w-6 rounded-lg text-(--muted)"
+                            icon={<HelpCircle class="h-3.5 w-3.5" />}
+                          />
+                        </div>
+                      </div>
+                      <div class="min-w-0">
+                        <div class="flex min-w-0 flex-wrap items-center gap-2.5">
+                          <For each={draftValue()}>
+                            {(hotkey, index) => (
+                              <label class="relative inline-flex min-w-0 rounded-xl">
+                                <Input
+                                  aria-label={`${setting.label} hotkey`}
+                                  value={formatHotkeyForDisplay(hotkey)}
+                                  placeholder="Press keys..."
+                                  class="h-10 rounded-xl border-(--border) bg-white px-4 pr-8 text-center text-[0.72rem] font-semibold shadow-md"
+                                  style={{ width: `${Math.max(9, formatHotkeyForDisplay(hotkey).length + 4)}ch`, "min-width": "7.5rem" }}
+                                  onKeyDown={(event) => {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    const chord = formatRecordedChord(event);
+                                    updateHotkeyDraft(setting.id, index(), chord);
+                                    saveHotkeyPreference(setting.id, index(), chord);
+                                  }}
+                                  onInput={(event) => updateHotkeyDraft(setting.id, index(), event.currentTarget.value)}
+                                  onBlur={(event) => {
+                                    if (isValidAppHotkey(event.currentTarget.value)) {
+                                      saveHotkeyPreference(setting.id, index(), event.currentTarget.value);
+                                    }
+                                  }}
+                                />
+                                <ActionButton
+                                  tooltip="Delete keybinding"
+                                  ariaLabel={`Delete ${setting.label} keybinding`}
+                                  variant="ghost"
+                                  size="icon"
+                                  class="absolute -right-2 -top-2 h-5 w-5 rounded-full border border-(--border) bg-(--panel) p-0 shadow-sm"
+                                  icon={<X class="h-3 w-3" />}
+                                  onClick={() => deleteHotkeyPreference(setting.id, index())}
+                                />
+                              </label>
+                            )}
+                          </For>
+                          <ActionButton
+                            tooltip={`Add ${setting.label} keybinding`}
+                            ariaLabel={`Add ${setting.label} keybinding`}
+                            variant="secondary"
+                            size="icon"
+                            class="h-10 w-10 rounded-xl shadow-sm"
+                            icon={<Plus class="h-3.5 w-3.5" />}
+                            onClick={() => addHotkeyDraft(setting.id)}
+                          />
+                        </div>
+                      </div>
+                      <div class="flex min-w-0 items-center justify-end gap-2">
+                        <Show when={duplicate()}>
+                          <AlertTriangle class="h-4 w-4 text-amber-600" />
+                        </Show>
+                        <div class="rounded-xl border border-(--border) bg-white/60 px-3 py-2 text-[0.675rem] font-medium text-(--muted)">Always</div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              }}
+            </For>
+          </section>
+
+          <div>
+            <ActionButton
+              tooltip="Restore default keyboard shortcuts"
+              variant="secondary"
+              icon={<RotateCcw class="h-4 w-4" />}
+              onClick={() => {
+                setHotkeyDrafts({ ...DEFAULT_APP_HOTKEY_PREFERENCES });
+                for (const setting of appHotkeySettings) {
+                  store.setAppHotkeyPreference(setting.id, DEFAULT_APP_HOTKEY_PREFERENCES[setting.id]);
+                }
+                handleSave();
+              }}
+            >
+              Restore shortcuts
+            </ActionButton>
+          </div>
+        </div>
+      </PreferenceSection>
     );
   }
 
@@ -462,7 +758,7 @@ export function PreferencesPanel() {
             <div>Density follows current compact harness layout.</div>
           </div>
         </PreferenceRow>
-        <PreferenceRow id="navigation-sidebar" title="Navigation and sidebar layout" description="Restore main panel sizes and choose project sidebar sorting/grouping.">
+        <PreferenceRow id="navigation-sidebar" title="Sidebar and layout" description="Restore main panel sizes and choose project sidebar sorting/grouping.">
           <div class="grid gap-3">
             <ActionButton tooltip="Restore panel sizes" variant="secondary" icon={<LayoutPanelLeft class="h-4 w-4" />} onClick={handleResetPanelSizes}>
               Restore panel sizes
@@ -498,8 +794,11 @@ export function PreferencesPanel() {
             </div>
           </div>
         </PreferenceRow>
-        <PreferenceRow id="notifications" title="Notifications" description="Desktop notifications for background job status changes.">
-          {renderToggle(state.backgroundJobNotificationsEnabled, store.setBackgroundJobNotificationsEnabled, "Background job notifications")}
+        <PreferenceRow id="notifications" title="Notifications" description="Background job alerts and CLI update checks.">
+          <div class="grid gap-2">
+            {renderToggle(state.backgroundJobNotificationsEnabled, store.setBackgroundJobNotificationsEnabled, "Background job notifications")}
+            {renderToggle(state.checkCliUpdatesDefault, store.setCheckCliUpdatesDefault, "Check CLI updates")}
+          </div>
         </PreferenceRow>
       </PreferenceSection>
     );
@@ -518,7 +817,7 @@ export function PreferencesPanel() {
               testStatus={state.providerConnectionTests.openai.status}
               testMessage={state.providerConnectionTests.openai.message}
               testMessageId="openai"
-              onInput={store.setOpenAiApiKeyDraft}
+              onInput={(value) => updateSavedPreference(() => store.setOpenAiApiKeyDraft(value))}
               onTest={() => handleTestProvider("openai", state.openAiApiKeyDraft)}
             />
             <PasswordKeyInput
@@ -529,7 +828,7 @@ export function PreferencesPanel() {
               testStatus={state.providerConnectionTests.google.status}
               testMessage={state.providerConnectionTests.google.message}
               testMessageId="google"
-              onInput={store.setGoogleApiKeyDraft}
+              onInput={(value) => updateSavedPreference(() => store.setGoogleApiKeyDraft(value))}
               onTest={() => handleTestProvider("google", state.googleApiKeyDraft)}
             />
             <PasswordKeyInput
@@ -540,21 +839,21 @@ export function PreferencesPanel() {
               testStatus={state.providerConnectionTests.anthropic.status}
               testMessage={state.providerConnectionTests.anthropic.message}
               testMessageId="anthropic"
-              onInput={store.setAnthropicApiKeyDraft}
+              onInput={(value) => updateSavedPreference(() => store.setAnthropicApiKeyDraft(value))}
               onTest={() => handleTestProvider("anthropic", state.anthropicApiKeyDraft)}
             />
           </div>
         </PreferenceRow>
-        <PreferenceRow id="provider-brand" title="Active provider" description="Provider switch stays disabled until a matching key exists or is drafted.">
+        <PreferenceRow id="provider-brand" title="Active provider" description="Provider preference for new chat and model defaults.">
           <SegmentedControl
             ariaLabel="Active provider"
             value={state.providerBrand}
             options={[
-              { value: "gpt", label: "GPT", disabled: !canSelectProviderBrand(state, "gpt") },
-              { value: "gemini", label: "Gemini", disabled: !canSelectProviderBrand(state, "gemini") },
-              { value: "claude", label: "Claude", disabled: !canSelectProviderBrand(state, "claude") }
+              { value: "gpt", label: "GPT" },
+              { value: "gemini", label: "Gemini" },
+              { value: "claude", label: "Claude" }
             ]}
-            onChange={(value) => store.setProviderBrand(value)}
+            onChange={(value) => updateSavedPreference(() => store.setProviderBrand(value))}
           />
         </PreferenceRow>
         <PreferenceRow id="composer-defaults" title="Composer defaults" description="Browser-local defaults for reasoning effort and fast mode.">
@@ -567,7 +866,7 @@ export function PreferencesPanel() {
                 { value: "medium", label: "Medium" },
                 { value: "high", label: "High" }
               ]}
-              onChange={(value) => store.setSelectedReasoningStrength(value)}
+              onChange={(value) => updateSavedPreference(() => store.setSelectedReasoningStrength(value))}
             />
             {renderToggle(state.selectedFastMode, store.setSelectedFastMode, "Fast mode")}
           </div>
@@ -589,7 +888,7 @@ export function PreferencesPanel() {
                 { value: "approve", label: "Approve" },
                 { value: "immediate", label: "Immediate" }
               ]}
-              onChange={(value) => store.setPlanExecutionModeDefault(value)}
+              onChange={(value) => updateSavedPreference(() => store.setPlanExecutionModeDefault(value))}
             />
             <Show when={state.planExecutionModeDefault === "countdown"}>
               <RangeControl
@@ -598,7 +897,7 @@ export function PreferencesPanel() {
                 max={300}
                 suffix="s"
                 value={state.planExecutionDelaySecondsDefault}
-                onChange={store.setPlanExecutionDelaySecondsDefault}
+                onChange={(value) => updateSavedPreference(() => store.setPlanExecutionDelaySecondsDefault(value))}
               />
             </Show>
           </div>
@@ -613,7 +912,9 @@ export function PreferencesPanel() {
               class="w-full"
               value={state.subagentWorktreeStrategyDefault}
               options={subagentWorktreeOptions()}
-              onChange={(value) => store.setSubagentWorktreeStrategyDefault(value as "same-worktree" | "separate-worktrees")}
+              onChange={(value) =>
+                updateSavedPreference(() => store.setSubagentWorktreeStrategyDefault(value as "same-worktree" | "separate-worktrees"))
+              }
             />
             {renderToggle(state.blockChatOnDirtyGitDefault, store.setBlockChatOnDirtyGitDefault, "Restrict chat on dirty git")}
             <AdvancedDisclosure title="Advanced git guard" description="Dirty git change limit before chat-triggered runs are refused.">
@@ -624,7 +925,9 @@ export function PreferencesPanel() {
                 max="10000"
                 disabled={!state.blockChatOnDirtyGitDefault}
                 value={String(state.dirtyGitChangeLimitDefault)}
-                onInput={(event) => store.setDirtyGitChangeLimitDefault(Number(event.currentTarget.value) || 0)}
+                onInput={(event) =>
+                  updateSavedPreference(() => store.setDirtyGitChangeLimitDefault(Number(event.currentTarget.value) || 0))
+                }
               />
             </AdvancedDisclosure>
           </div>
@@ -637,7 +940,7 @@ export function PreferencesPanel() {
               max={95}
               suffix="%"
               value={state.autoCompactContextThresholdPercentDefault}
-              onChange={store.setAutoCompactContextThresholdPercentDefault}
+              onChange={(value) => updateSavedPreference(() => store.setAutoCompactContextThresholdPercentDefault(value))}
             />
             <SegmentedControl
               ariaLabel="Correctness iteration"
@@ -647,7 +950,7 @@ export function PreferencesPanel() {
                 { value: "auto-once", label: "Auto once" },
                 { value: "auto-until-clean", label: "Until clean" }
               ]}
-              onChange={(value) => store.setCorrectnessIterationModeDefault(value)}
+              onChange={(value) => updateSavedPreference(() => store.setCorrectnessIterationModeDefault(value))}
             />
             <AdvancedDisclosure title="Context compaction details" description="Pi compacts session context after threshold crossing, then continues with reduced history.">
               <p class="text-xs leading-5 text-(--muted)">Lower values compact sooner. Higher values preserve more transcript before compaction.</p>
@@ -768,7 +1071,7 @@ export function PreferencesPanel() {
                 { value: "ask-risky", label: "Ask risky" },
                 { value: "always-ask", label: "Always ask" }
               ]}
-              onChange={(value) => store.setBackgroundJobApprovalPolicyDefault(value)}
+              onChange={(value) => updateSavedPreference(() => store.setBackgroundJobApprovalPolicyDefault(value))}
             />
             {renderToggle(state.backgroundJobNotificationsEnabled, store.setBackgroundJobNotificationsEnabled, "Desktop notifications")}
           </div>
@@ -825,7 +1128,7 @@ export function PreferencesPanel() {
             <For each={groupedSearchResults()}>
               {(group) => (
                 <section class="grid gap-2">
-                  <div class="text-[0.7rem] font-semibold uppercase tracking-[0.14em] text-(--muted)">{group.section.label}</div>
+                  <div class="text-[0.7rem] font-semibold tracking-[0.14em] text-(--muted)">{group.section.label}</div>
                   <div class="grid gap-2">
                     <For each={group.results}>
                       {(setting) => (
@@ -853,12 +1156,14 @@ export function PreferencesPanel() {
     );
   }
 
-  function renderDetailContent() {
+  function renderSelectedSection() {
     if (searchQuery().trim()) {
       return renderSearchResults();
     }
 
     switch (selectedSectionId()) {
+      case "keybinds":
+        return renderKeybinds();
       case "general-ui":
         return renderGeneralUi();
       case "safety-guardrails":
@@ -874,89 +1179,56 @@ export function PreferencesPanel() {
     }
   }
 
+  function renderDetailRoot() {
+    if (!detailContainer) {
+      return;
+    }
+    disposeDetailRoot?.();
+    detailContainer.replaceChildren();
+    disposeDetailRoot = renderSolidRoot(() => renderSelectedSection(), detailContainer);
+  }
+
+  onMount(renderDetailRoot);
+
   return (
-    <section data-test-preferences-panel="" class="panel-shell flex h-full min-h-0 flex-col overflow-hidden rounded-2xl bg-(--panel)" style={{ overflow: "hidden" }}>
+    <section data-test-preferences-panel="" class="panel-shell flex min-h-0 flex-col overflow-visible rounded-2xl bg-(--panel) lg:h-full lg:overflow-hidden">
       <input ref={importInput} type="file" accept="application/json" class="hidden" onChange={handleImportPreferences} />
-      <div class="border-b border-(--border) bg-(--panel-strong) px-5 py-4">
-        <div class="text-[0.65rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Preferences</div>
-        <h2 class="mt-1 text-lg font-semibold text-(--foreground)">Workspace preferences</h2>
-        <p class="mt-1 text-xs leading-5 text-(--muted)">Manage provider keys and workspace defaults.</p>
-      </div>
-      <div class="flex min-h-0 flex-1 overflow-hidden">
+      <div class="flex min-h-0 flex-1 overflow-visible lg:overflow-hidden">
         <main class="flex min-w-0 flex-1 flex-col bg-(--panel)">
-          <div class="sticky top-0 z-10 border-b border-(--border) bg-(--panel) p-4">
-            <label class="relative block">
-              <Search class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-(--muted)" />
-              <Input
-                class="h-10 pl-9"
-                aria-label="Search settings"
-                value={searchQuery()}
-                placeholder="Search settings..."
-                onInput={(event) => {
-                  setSearchQuery(event.currentTarget.value);
-                  store.setPreferencesSearchQuery(event.currentTarget.value);
-                }}
-              />
-            </label>
-          </div>
-          <div class="min-h-0 flex-1 overflow-auto p-4">
-            {renderDetailContent()}
-            <div class="sr-only">
-              <h3>Planning and approval</h3>
-              <h3>Search results</h3>
-              <button
-                type="button"
-                onClick={() =>
-                  openSearchResult({
-                    id: "worktree-git",
-                    sectionId: "safety-guardrails",
-                    title: "Worktree and git safety",
-                    description: "Dirty git guard, worktree strategy, and correctness loop defaults.",
-                    keywords: []
-                  })
-                }
-              >
-                Open Worktree and git safety
-              </button>
-              <h3>Worktree and git safety</h3>
-              <button type="button">Advanced git guard</button>
-              <label>
-                Dirty git change limit
-                <input
-                  aria-label="Dirty git change limit"
-                  disabled={!state.blockChatOnDirtyGitDefault}
-                  value={state.dirtyGitChangeLimitDefault}
-                  onInput={(event) => store.setDirtyGitChangeLimitDefault(Number(event.currentTarget.value) || 0)}
-                />
-              </label>
-              <label>
-                Countdown delay
-                <input
-                  aria-label="Countdown delay"
-                  value={state.planExecutionDelaySecondsDefault}
-                  onInput={(event) => store.setPlanExecutionDelaySecondsDefault(Number(event.currentTarget.value) || 0)}
-                />
-              </label>
-              <label>
-                Auto-compact threshold
-                <input
-                  aria-label="Auto-compact threshold"
-                  value={state.autoCompactContextThresholdPercentDefault}
-                  onInput={(event) => store.setAutoCompactContextThresholdPercentDefault(Number(event.currentTarget.value) || 0)}
-                />
-              </label>
-              <h3>Sidebar and layout</h3>
-              <button type="button" onClick={handleResetPanelSizes}>
-                Restore panel sizes
-              </button>
-              <p>Use memory bank in runs</p>
-              <p>Record run memories</p>
-              <p data-provider-test-message="openai">{state.providerConnectionTests.openai.message}</p>
-            </div>
+          <div ref={detailContainer} class="min-h-0 flex-1 overflow-visible p-4 lg:overflow-auto">
+            {renderAiProviders()}
           </div>
         </main>
       </div>
-      <footer class="flex w-full flex-wrap justify-end gap-2 border-t border-(--border) bg-(--panel-strong) px-5 py-4">
+      <Dialog
+        open={Boolean(pendingDuplicateHotkey())}
+        title="Duplicate keybind"
+        description={`This keybind is already assigned to ${pendingDuplicateHotkey()?.conflictLabel ?? "another command"}.`}
+        onClose={() => setPendingDuplicateHotkey(undefined)}
+        footer={
+          <>
+            <ActionButton tooltip="Cancel duplicate keybind save" variant="ghost" onClick={() => setPendingDuplicateHotkey(undefined)}>
+              Cancel
+            </ActionButton>
+            <ActionButton
+              tooltip="Save this duplicate keybind anyway"
+              icon={<AlertTriangle class="h-4 w-4" />}
+              onClick={() => {
+                const pending = pendingDuplicateHotkey();
+                if (!pending) {
+                  return;
+                }
+                saveHotkeyPreference(pending.id, pending.index, pending.value, true);
+              }}
+            >
+              Save both
+            </ActionButton>
+          </>
+        }
+      >
+        <p class="text-sm leading-6 text-(--muted)">Both commands can keep the same keybind. The command that handles it first may win when pressed.</p>
+      </Dialog>
+      <footer class="flex w-full shrink-0 flex-wrap justify-end gap-2 border-t border-(--border) bg-(--panel-strong) px-5 py-4">
           <ActionButton tooltip="Close preferences" ariaLabel="Dismiss" variant="ghost" onClick={() => store.closePreferencesModal()}>
             Dismiss
           </ActionButton>
@@ -969,9 +1241,6 @@ export function PreferencesPanel() {
           <ActionButton tooltip="Clear all provider keys" ariaLabel="Clear keys" variant="secondary" icon={<Trash2 class="h-4 w-4" />} onClick={handleClearApiKey}>
             Clear keys
           </ActionButton>
-          <ActionButton tooltip="Save preferences" icon={<Save class="h-4 w-4" />} onClick={handleSave}>
-            Save preferences
-          </ActionButton>
       </footer>
     </section>
   );
@@ -982,13 +1251,62 @@ export const PreferencesModal = PreferencesPanel;
 export function PreferenceSectionNav(props: { onNavigate?: () => void } = {}) {
   const store = harnessStore;
   const state = store.state;
+  const [activeSectionId, setActiveSectionId] = createSignal(state.preferencesActiveSectionId);
+
+  const handleSectionChange = (event: Event) => {
+    if (!isPreferencesSectionEvent(event)) {
+      return;
+    }
+    setActiveSectionId(event.detail.sectionId);
+  };
+  window.addEventListener(PREFERENCES_SECTION_EVENT, handleSectionChange);
+  const selectSection = (sectionId: PreferencesActiveSectionId) => {
+    setActiveSectionId(sectionId);
+    store.setPreferencesSearchQuery("");
+    store.setPreferencesActiveSectionId(sectionId);
+    emitPreferencesSearchChange();
+    emitPreferencesSectionChange(sectionId);
+    props.onNavigate?.();
+  };
+  const unregisterItemSelector = registerCurrentTabItemSelector("preferences", (index) => {
+    const section = preferencesSections[index];
+    if (!section) {
+      return false;
+    }
+    selectSection(section.id as PreferencesActiveSectionId);
+    return true;
+  });
+  onCleanup(() => {
+    unregisterItemSelector();
+    window.removeEventListener(PREFERENCES_SECTION_EVENT, handleSectionChange);
+  });
 
   return (
-    <nav class="grid gap-1 p-3" aria-label="Preference sections">
+    <nav class="grid gap-3 p-3" aria-label="Preference sections">
+      <div class="grid gap-3 border-b border-(--border) pb-3">
+        <div class="flex items-center gap-2">
+          <div class="text-[0.65rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Preferences</div>
+          <Tooltip content="Manage provider keys and workspace defaults.">
+            <span class="inline-flex h-6 w-6 items-center justify-center rounded-lg text-(--muted)">
+              <HelpCircle class="h-3.5 w-3.5" />
+            </span>
+          </Tooltip>
+        </div>
+        <LeftPaneSearchInput
+          aria-label="Search settings"
+          value={state.preferencesSearchQuery}
+          placeholder="Search settings..."
+          onInput={(event) => {
+            store.setPreferencesSearchQuery(event.currentTarget.value);
+            emitPreferencesSearchChange();
+          }}
+        />
+      </div>
+      <div class="grid gap-1">
       <For each={preferencesSections}>
         {(section) => {
           const Icon = section.icon;
-          const active = () => !state.preferencesSearchQuery.trim() && state.preferencesActiveSectionId === section.id;
+          const active = () => !state.preferencesSearchQuery.trim() && activeSectionId() === section.id;
           return (
             <Tooltip content={`${section.label}\n${section.description}`} triggerClass="block min-w-0">
               <button
@@ -998,8 +1316,7 @@ export function PreferenceSectionNav(props: { onNavigate?: () => void } = {}) {
                 aria-label={section.label}
                 aria-current={active() ? "page" : undefined}
                 onClick={() => {
-                  store.setPreferencesActiveSectionId(section.id as PreferencesActiveSectionId);
-                  props.onNavigate?.();
+                  selectSection(section.id as PreferencesActiveSectionId);
                 }}
               >
                 <Icon class="h-4 w-4 shrink-0" />
@@ -1012,6 +1329,8 @@ export function PreferenceSectionNav(props: { onNavigate?: () => void } = {}) {
           );
         }}
       </For>
+      </div>
     </nav>
   );
 }
+

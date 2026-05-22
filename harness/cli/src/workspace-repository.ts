@@ -120,6 +120,7 @@ import {
 import { defaultBackgroundJobTemplates } from "../../shared/background-job-templates";
 import { assertResolvedAssistantAssetRefs, resolveAssistantAssetRefs } from "./assistant-capabilities";
 import { debugLog } from "./logging";
+import { resolveHarnessDbPath } from "./harness-paths";
 
 const ACTIVE_THREAD_STATUS = "active";
 const ACTIVE_PROJECT_KEY = "active_project_id";
@@ -141,6 +142,7 @@ const AUTO_ARCHIVE_COMPLETED_THREADS_DEFAULT_KEY = "auto_archive_completed_threa
 const BACKGROUND_SCHEDULER_HEARTBEAT_KEY = "background_scheduler_heartbeat_at";
 const MEMORY_BANK_ENABLED_DEFAULT_KEY = "memory_bank_enabled_default";
 const MEMORY_BANK_RECORD_RUNS_DEFAULT_KEY = "memory_bank_record_runs_default";
+const CHECK_CLI_UPDATES_DEFAULT_KEY = "check_cli_updates_default";
 const GLOBAL_EXECUTION_PAUSED_KEY = "global_execution_paused";
 const WORKSPACE_RULES_CONTENT_KEY = "workspace_rules_content";
 const WORKSPACE_RULES_UPDATED_AT_KEY = "workspace_rules_updated_at";
@@ -893,7 +895,7 @@ type AssistantAssetRefRow = {
   value: string;
   canonical_value: string | null;
   scope: "workspace" | "project" | null;
-  provenance: "repo-skill" | "repo-script" | "workspace-mode" | "project-mode" | "background-template" | null;
+  provenance: "repo-skill" | "global-skill" | "repo-script" | "workspace-mode" | "project-mode" | "background-template" | null;
   resolution_status: "resolved" | "missing" | "out-of-scope" | null;
   resolution_error: string | null;
   created_at: string;
@@ -928,7 +930,7 @@ export class WorkspaceRepository {
   private readonly allowDevThreadRecovery: boolean;
 
   constructor(dbPath?: string, defaultRootPath: string = process.cwd(), options: WorkspaceRepositoryOptions = {}) {
-    this.dbPath = dbPath ?? path.join(process.cwd(), ".local", "harness.db");
+    this.dbPath = dbPath ?? resolveHarnessDbPath();
     this.repoRoot = defaultRootPath;
     this.allowDevThreadRecovery = Bun.env.NODE_ENV !== "production";
     if (this.dbPath !== ":memory:") {
@@ -4418,6 +4420,15 @@ export class WorkspaceRepository {
     this.setWorkspaceMetaValue(MEMORY_BANK_RECORD_RUNS_DEFAULT_KEY, String(value));
   }
 
+  getCheckCliUpdatesDefault() {
+    const value = this.getWorkspaceMetaValue(CHECK_CLI_UPDATES_DEFAULT_KEY);
+    return value === undefined ? true : value === "true";
+  }
+
+  setCheckCliUpdatesDefault(value: boolean) {
+    this.setWorkspaceMetaValue(CHECK_CLI_UPDATES_DEFAULT_KEY, String(value));
+  }
+
   getGlobalExecutionPaused() {
     return this.getWorkspaceMetaValue(GLOBAL_EXECUTION_PAUSED_KEY) === "true";
   }
@@ -4970,7 +4981,7 @@ export class WorkspaceRepository {
 
       CREATE TABLE IF NOT EXISTS notifications (
         id TEXT PRIMARY KEY,
-        kind TEXT NOT NULL CHECK(kind IN ('planning-question', 'planning-question-batch', 'assistant-question', 'assistant-question-batch', 'browser-approval', 'background-run-status')),
+        kind TEXT NOT NULL CHECK(kind IN ('planning-question', 'planning-question-batch', 'assistant-question', 'assistant-question-batch', 'browser-approval', 'background-run-status', 'cli-update')),
         interactive INTEGER NOT NULL CHECK(interactive IN (0, 1)),
         project_id TEXT NULL,
         thread_id TEXT NULL,
@@ -5143,7 +5154,7 @@ export class WorkspaceRepository {
         value TEXT NOT NULL,
         canonical_value TEXT NULL,
         scope TEXT NULL CHECK(scope IN ('workspace', 'project')),
-        provenance TEXT NULL CHECK(provenance IN ('repo-skill', 'repo-script', 'workspace-mode', 'project-mode', 'background-template')),
+        provenance TEXT NULL CHECK(provenance IN ('repo-skill', 'global-skill', 'repo-script', 'workspace-mode', 'project-mode', 'background-template')),
         resolution_status TEXT NOT NULL DEFAULT 'resolved' CHECK(resolution_status IN ('resolved', 'missing', 'out-of-scope')),
         resolution_error TEXT NULL,
         created_at TEXT NOT NULL,
@@ -5253,7 +5264,7 @@ export class WorkspaceRepository {
     this.addColumnIfMissing(
       "assistant_asset_refs",
       "provenance",
-      "TEXT NULL CHECK(provenance IN ('repo-skill', 'repo-script', 'workspace-mode', 'project-mode', 'background-template'))"
+      "TEXT NULL CHECK(provenance IN ('repo-skill', 'global-skill', 'repo-script', 'workspace-mode', 'project-mode', 'background-template'))"
     );
     this.addColumnIfMissing(
       "assistant_asset_refs",
@@ -5261,6 +5272,7 @@ export class WorkspaceRepository {
       "TEXT NOT NULL DEFAULT 'resolved' CHECK(resolution_status IN ('resolved', 'missing', 'out-of-scope'))"
     );
     this.addColumnIfMissing("assistant_asset_refs", "resolution_error", "TEXT NULL");
+    this.rebuildAssistantAssetRefsTableIfNeeded();
 
     this.db.exec(`DROP INDEX IF EXISTS project_threads_active_project_idx;`);
     this.db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS agent_run_questions_run_turn_logical_idx ON agent_run_questions(run_id, planner_turn_id, logical_question_id);`);
@@ -6649,7 +6661,11 @@ export class WorkspaceRepository {
 
   private rebuildNotificationsTableIfNeeded() {
     const createSql = this.readTableCreateSql("notifications");
-    if (createSql.includes("'planning-question-batch'") && createSql.includes("'assistant-question-batch'")) {
+    if (
+      createSql.includes("'planning-question-batch'") &&
+      createSql.includes("'assistant-question-batch'") &&
+      createSql.includes("'cli-update'")
+    ) {
       return;
     }
 
@@ -6686,7 +6702,7 @@ export class WorkspaceRepository {
       ALTER TABLE notifications RENAME TO notifications_legacy;
       CREATE TABLE notifications (
         id TEXT PRIMARY KEY,
-        kind TEXT NOT NULL CHECK(kind IN ('planning-question', 'planning-question-batch', 'assistant-question', 'assistant-question-batch', 'browser-approval', 'background-run-status')),
+        kind TEXT NOT NULL CHECK(kind IN ('planning-question', 'planning-question-batch', 'assistant-question', 'assistant-question-batch', 'browser-approval', 'background-run-status', 'cli-update')),
         interactive INTEGER NOT NULL CHECK(interactive IN (0, 1)),
         project_id TEXT NULL,
         thread_id TEXT NULL,
@@ -7112,6 +7128,38 @@ export class WorkspaceRepository {
         .query<{ sql: string | null }, [string]>(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?1`)
         .get(tableName)?.sql ?? ""
     );
+  }
+
+  private rebuildAssistantAssetRefsTableIfNeeded() {
+    const createSql = this.readTableCreateSql("assistant_asset_refs");
+    if (!createSql || createSql.includes("'global-skill'")) {
+      return;
+    }
+
+    this.db.exec(`
+      ALTER TABLE assistant_asset_refs RENAME TO assistant_asset_refs_legacy;
+      CREATE TABLE assistant_asset_refs (
+        id TEXT PRIMARY KEY,
+        assistant_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('skill', 'script', 'mode', 'background-template')),
+        label TEXT NOT NULL,
+        value TEXT NOT NULL,
+        canonical_value TEXT NULL,
+        scope TEXT NULL CHECK(scope IN ('workspace', 'project')),
+        provenance TEXT NULL CHECK(provenance IN ('repo-skill', 'global-skill', 'repo-script', 'workspace-mode', 'project-mode', 'background-template')),
+        resolution_status TEXT NOT NULL DEFAULT 'resolved' CHECK(resolution_status IN ('resolved', 'missing', 'out-of-scope')),
+        resolution_error TEXT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(assistant_id) REFERENCES assistants(id) ON DELETE CASCADE
+      );
+      INSERT INTO assistant_asset_refs (
+        id, assistant_id, kind, label, value, canonical_value, scope, provenance, resolution_status, resolution_error, created_at
+      )
+      SELECT
+        id, assistant_id, kind, label, value, canonical_value, scope, provenance, COALESCE(resolution_status, 'resolved'), resolution_error, created_at
+      FROM assistant_asset_refs_legacy;
+      DROP TABLE assistant_asset_refs_legacy;
+    `);
   }
 
   private backfillExecutionTargets() {

@@ -5,10 +5,12 @@ import { SolidPlugin } from "@dschz/bun-plugin-solid";
 import tailwindPlugin from "bun-plugin-tailwind";
 
 const uiSourceDir = path.resolve(process.cwd(), "harness/ui");
+const sharedSourceDir = path.resolve(process.cwd(), "harness/shared");
 const uiOutDir = path.resolve(process.cwd(), "dist/ui");
 const uiEntryPoint = path.resolve(uiSourceDir, "src/main.tsx");
 const contextSourceDir = path.resolve(process.cwd(), "context");
 const repoRoot = path.resolve(process.cwd());
+const DEV_HMR_BACKOFF_MS = [1000, 1500, 2000, 2500, 5000, 10000, 15000] as const;
 
 type UiBuildOptions = {
   minify?: boolean;
@@ -27,8 +29,11 @@ type LiveReloadState = {
 
 type CreateUiAssetManagerOptions = {
   debounceMs?: number;
+  debounceScheduleMs?: readonly number[];
   timerApi?: TimerApi;
   buildUiBundle?: (options?: UiBuildOptions) => Promise<void>;
+  isTrackedFile?: (changedPath: string | undefined) => boolean;
+  watchedSourceDirs?: readonly string[];
   watchSourceDir?: (
     sourceDir: string,
     listener: (changedPath?: string) => void
@@ -106,12 +111,14 @@ async function appendDevSourceMapReference() {
 }
 
 export function createUiAssetManager(options: CreateUiAssetManagerOptions = {}) {
-  const debounceMs = Math.max(0, options.debounceMs ?? 0);
+  const debounceScheduleMs = normalizeDebounceSchedule(options.debounceScheduleMs ?? [options.debounceMs ?? 0]);
   const timerApi = options.timerApi ?? {
     setTimeout: globalThis.setTimeout,
     clearTimeout: globalThis.clearTimeout
   };
   const buildUi = options.buildUiBundle ?? buildUiBundle;
+  const isTrackedFile = options.isTrackedFile ?? createGitTrackedFilePredicate();
+  const watchedSourceDirs = options.watchedSourceDirs ?? [uiSourceDir, sharedSourceDir];
   const watchSourceDir =
     options.watchSourceDir ??
     ((sourceDir: string, listener: (changedPath?: string) => void) =>
@@ -120,8 +127,9 @@ export function createUiAssetManager(options: CreateUiAssetManagerOptions = {}) 
       }));
   let buildInFlight: Promise<void> | undefined;
   let rebuildQueued = false;
-  let watcher: FSWatcher | undefined;
+  let watchers: FSWatcher[] = [];
   let rebuildTimer: ReturnType<typeof setTimeout> | undefined;
+  let rebuildBackoffStep = 0;
   let revision = 0;
 
   const runBuild = async () => {
@@ -159,13 +167,17 @@ export function createUiAssetManager(options: CreateUiAssetManagerOptions = {}) 
   };
 
   const queueBuild = () => {
+    const debounceMs = debounceScheduleMs[Math.min(rebuildBackoffStep, debounceScheduleMs.length - 1)] ?? 0;
     if (debounceMs === 0) {
+      rebuildBackoffStep = 0;
       return scheduleBuild();
     }
 
     clearRebuildTimer();
+    rebuildBackoffStep += 1;
     rebuildTimer = timerApi.setTimeout(() => {
       rebuildTimer = undefined;
+      rebuildBackoffStep = 0;
       void scheduleBuild();
     }, debounceMs);
     return undefined;
@@ -183,17 +195,17 @@ export function createUiAssetManager(options: CreateUiAssetManagerOptions = {}) 
       }
     },
     startWatching() {
-      if (watcher) {
+      if (watchers.length > 0) {
         return;
       }
 
-      watcher = watchSourceDir(uiSourceDir, (changedPath) => {
-        if (isIgnoredLiveReloadWatchPath(changedPath)) {
+      watchers = watchedSourceDirs.map((sourceDir) => watchSourceDir(sourceDir, (changedPath) => {
+        if (isIgnoredLiveReloadWatchPath(changedPath) || !isTrackedFile(changedPath)) {
           return;
         }
 
         void queueBuild();
-      }) as FSWatcher;
+      }) as FSWatcher);
     },
     resolveAsset(pathname: string) {
       const relativePath = pathname === "/" ? "index.html" : pathname.slice(1);
@@ -218,10 +230,19 @@ export function createUiAssetManager(options: CreateUiAssetManagerOptions = {}) 
     },
     dispose() {
       clearRebuildTimer();
-      watcher?.close();
-      watcher = undefined;
+      watchers.forEach((watcher) => watcher.close());
+      watchers = [];
     }
   };
+}
+
+export function createDevHmrDebounceSchedule() {
+  return DEV_HMR_BACKOFF_MS;
+}
+
+function normalizeDebounceSchedule(schedule: readonly number[]) {
+  const normalized = schedule.map((delayMs) => Math.max(0, Math.round(delayMs))).filter((delayMs) => Number.isFinite(delayMs));
+  return normalized.length > 0 ? normalized : [0];
 }
 
 function resolveWatchEventPath(sourceDir: string, filename: string | Buffer | null) {
@@ -255,6 +276,41 @@ function isIgnoredLiveReloadWatchPath(changedPath: string | undefined) {
   const segments = repoRelativePath.split(path.sep);
   const firstSegment = segments[0]?.toLowerCase();
   return firstSegment === ".agent" || firstSegment === ".agents" || path.basename(resolvedPath).toLowerCase() === "agents.md";
+}
+
+function createGitTrackedFilePredicate() {
+  return (changedPath: string | undefined) => {
+    if (!changedPath) {
+      return false;
+    }
+
+    const relativePath = normalizeRepoRelativePath(path.resolve(changedPath));
+    return relativePath !== undefined && isGitTrackedFile(relativePath);
+  };
+}
+
+function isGitTrackedFile(relativePath: string) {
+  const result = Bun.spawnSync({
+    cmd: ["git", "ls-files", "--error-unmatch", "--", relativePath],
+    cwd: repoRoot,
+    stdout: "pipe",
+    stderr: "ignore"
+  });
+
+  return result.exitCode === 0;
+}
+
+function normalizeRepoRelativePath(absolutePath: string) {
+  const relativePath = path.relative(repoRoot, absolutePath);
+  if (relativePath === "" || relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+    return undefined;
+  }
+
+  return normalizeGitPath(relativePath);
+}
+
+function normalizeGitPath(filePath: string) {
+  return filePath.split(path.sep).join("/");
 }
 
 function isPathWithin(directory: string, candidatePath: string) {

@@ -38,6 +38,7 @@ export const defaultPreferencesFixture: PreferencesState = {
   backgroundJobApprovalPolicyDefault: "ask-risky",
   memoryBankEnabledDefault: true,
   memoryBankRecordRunsDefault: true,
+  checkCliUpdatesDefault: true,
   attachmentsEnabled: true,
   capabilities: [...defaultProviderCapabilities],
   agentRuntimes: []
@@ -139,6 +140,9 @@ export function createRunFixture(overrides: Partial<AgentRunState> = {}): AgentR
     subtasks: overrides.subtasks ?? [],
     browserSessions: overrides.browserSessions,
     toolActivities: overrides.toolActivities,
+    experiment: overrides.experiment,
+    ledger: overrides.ledger,
+    proofBundle: overrides.proofBundle,
     resumable: overrides.resumable ?? false,
     retryable: overrides.retryable ?? true,
     createdAt: overrides.createdAt ?? new Date().toISOString(),

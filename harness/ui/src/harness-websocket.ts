@@ -7,6 +7,7 @@ import {
   readBrowserUiSession,
   readLocalPreferences
 } from "./harness-store";
+import { openBackgroundRunInJobsPane } from "./background-run-navigation";
 import { recordUiTelemetry } from "./lib/ui-telemetry";
 import { pushToast, reportUiError } from "./toast-store";
 
@@ -18,6 +19,7 @@ type HarnessSocket = {
 const ptySockets = new Map<string, WebSocket>();
 const notifiedBackgroundRunStatuses = new Map<string, string>();
 const CONTROL_HEARTBEAT_INTERVAL_MS = 15_000;
+const CLI_UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const CONTROL_MISSED_PONG_LIMIT = 2;
 const PTY_HEARTBEAT = 0x00;
 
@@ -25,6 +27,7 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
   harnessStore.setConnectionState("connecting");
   const socket = new WebSocket(endpoint);
   let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+  let cliUpdateTimer: ReturnType<typeof setInterval> | undefined;
   let missedPongs = 0;
 
   const stopHeartbeat = () => {
@@ -57,6 +60,28 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
       );
       missedPongs += 1;
     }, CONTROL_HEARTBEAT_INTERVAL_MS);
+  };
+  const stopCliUpdateChecks = () => {
+    if (cliUpdateTimer) {
+      clearInterval(cliUpdateTimer);
+      cliUpdateTimer = undefined;
+    }
+  };
+  const requestCliUpdateCheck = () => {
+    if (!harnessStore.state.checkCliUpdatesDefault || socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    socket.send(
+      JSON.stringify({
+        type: "cli-updates.check",
+        requestId: createRequestId()
+      } satisfies ClientCommand)
+    );
+  };
+  const startCliUpdateChecks = () => {
+    stopCliUpdateChecks();
+    requestCliUpdateCheck();
+    cliUpdateTimer = setInterval(requestCliUpdateCheck, CLI_UPDATE_CHECK_INTERVAL_MS);
   };
 
   socket.addEventListener("open", () => {
@@ -124,7 +149,8 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
                 correctnessIterationModeDefault: harnessStore.state.correctnessIterationModeDefault,
                 backgroundJobApprovalPolicyDefault: harnessStore.state.backgroundJobApprovalPolicyDefault,
                 memoryBankEnabledDefault: harnessStore.state.memoryBankEnabledDefault,
-                memoryBankRecordRunsDefault: harnessStore.state.memoryBankRecordRunsDefault
+                memoryBankRecordRunsDefault: harnessStore.state.memoryBankRecordRunsDefault,
+                checkCliUpdatesDefault: harnessStore.state.checkCliUpdatesDefault
               }
             } satisfies ClientCommand)
           );
@@ -152,6 +178,7 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
             backgroundJobApprovalPolicyDefault: harnessStore.state.backgroundJobApprovalPolicyDefault,
             memoryBankEnabledDefault: harnessStore.state.memoryBankEnabledDefault,
             memoryBankRecordRunsDefault: harnessStore.state.memoryBankRecordRunsDefault,
+            checkCliUpdatesDefault: harnessStore.state.checkCliUpdatesDefault,
             backgroundJobNotificationsEnabled: harnessStore.state.backgroundJobNotificationsEnabled
           });
         }
@@ -159,6 +186,7 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
         for (const restoreCommand of restoreCommands) {
           socket.send(JSON.stringify(restoreCommand));
         }
+        startCliUpdateChecks();
       }
 
       if (parsed.type === "preferences.saved" || parsed.type === "preferences.apiKeyCleared") {
@@ -182,8 +210,12 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
           backgroundJobApprovalPolicyDefault: harnessStore.state.backgroundJobApprovalPolicyDefault,
           memoryBankEnabledDefault: harnessStore.state.memoryBankEnabledDefault,
           memoryBankRecordRunsDefault: harnessStore.state.memoryBankRecordRunsDefault,
+          checkCliUpdatesDefault: harnessStore.state.checkCliUpdatesDefault,
           backgroundJobNotificationsEnabled: harnessStore.state.backgroundJobNotificationsEnabled
         });
+        if (parsed.type === "preferences.saved") {
+          requestCliUpdateCheck();
+        }
       }
 
       if (parsed.type === "chat.error") {
@@ -194,6 +226,31 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
 
       if (parsed.type === "run.preflight") {
         pushToast("Git dirty warning", parsed.payload.preflight.message);
+      }
+
+      if (parsed.type === "cli-updates.checked") {
+        for (const update of parsed.payload.updates) {
+          pushToast(
+            `${update.label} update available`,
+            `${update.currentVersion} -> ${update.latestVersion}`,
+            "info",
+            () => {
+              socket.send(
+                JSON.stringify({
+                  type: "cli-updates.install",
+                  requestId: createRequestId(),
+                  payload: {
+                    agentId: update.agentId
+                  }
+                } satisfies ClientCommand)
+              );
+            }
+          );
+        }
+      }
+
+      if (parsed.type === "cli-updates.installed") {
+        pushToast(`${parsed.payload.label} updated`, parsed.payload.output || "Update complete.");
       }
 
       if (parsed.type === "command.rejected") {
@@ -280,6 +337,7 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
 
   socket.addEventListener("close", () => {
     stopHeartbeat();
+    stopCliUpdateChecks();
     harnessStore.setConnectionState("disconnected");
   });
 
@@ -300,6 +358,7 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
     },
     dispose() {
       stopHeartbeat();
+      stopCliUpdateChecks();
       socket.close();
       for (const ptySocket of ptySockets.values()) {
         ptySocket.close();
@@ -377,9 +436,14 @@ function notifyBackgroundRun(runId: string) {
     return;
   }
 
-  new Notification(title, {
+  const notification = new Notification(title, {
     body: `${jobName} | ${body}`
   });
+  notification.onclick = () => {
+    window.focus();
+    openBackgroundRunInJobsPane(harnessStore.state, run.id, run.jobId);
+    notification.close();
+  };
 }
 
 function getDefaultEndpoint() {

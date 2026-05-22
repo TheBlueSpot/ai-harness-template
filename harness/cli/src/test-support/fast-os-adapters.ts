@@ -69,6 +69,8 @@ class FastBranchfsManager implements HarnessBranchfsManager {
     return {
       experiment: lease.experiment,
       diffText: "",
+      files: [],
+      inspectedAt: new Date().toISOString(),
       filesChanged: 0,
       insertions: 0,
       deletions: 0,

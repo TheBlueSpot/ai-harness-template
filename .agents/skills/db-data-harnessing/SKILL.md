@@ -3,7 +3,7 @@ name: db-data-harnessing
 description: >
   Investigate harness SQLite data for `/lookup-thread <id>` and nearby
   persistence questions. Use when Codex needs to trace a project or assistant
-  thread through `.local/harness.db` (or `HARNESS_DB_PATH`), explain which
+  thread through `~/.ai-harness-template/harness.db` (or `HARNESS_DB_PATH`), explain which
   tables and records belong to a thread id, debug missing history, runs,
   notifications, automation jobs, or memory, or refresh this skill after schema
   changes or new DB lookup patterns are discovered.
@@ -31,11 +31,11 @@ If `bun.ps1` is blocked by PowerShell execution policy, keep using `bun.cmd`.
 - Notifications pointing at the thread or its runs.
 - Background job state when the thread is an automation thread.
 - Assistant-side todos, learnings, questions, logs, and assets when the id belongs to `assistant_threads`.
-- Missing-data cases caused by reading the wrong DB file, BranchFS fresh `.local/`, or recovery fallback DBs.
+- Missing-data cases caused by reading the wrong DB file, BranchFS fresh state, or recovery fallback DBs.
 
 ## Workflow
 
-1. Resolve the DB path. Default is `.local/harness.db`; `HARNESS_DB_PATH` overrides it.
+1. Resolve the DB path. Default is `~/.ai-harness-template/harness.db`; `HARNESS_DB_PATH` overrides it.
 2. Treat `/lookup-thread <id>` as a lookup workflow, not a built-in harness command.
 3. Run `scripts/lookup-thread.ts` for a first pass before writing ad hoc SQL.
 4. Read [lookup-thread.md](references/lookup-thread.md) for investigation order and interpretation hints.
@@ -46,7 +46,7 @@ If `bun.ps1` is blocked by PowerShell execution policy, keep using `bun.cmd`.
 
 Update this skill whenever any of these change:
 
-- The schema or migration logic for `.local/harness.db`.
+- The schema or migration logic for the harness SQLite database.
 - A new thread-adjacent table, column, status, or relationship appears.
 - A better `/lookup-thread` usage pattern is discovered during debugging.
 - Assistant, notification, memory, or background-job flows start attaching to threads in a new way.

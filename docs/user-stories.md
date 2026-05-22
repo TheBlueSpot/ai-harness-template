@@ -237,9 +237,11 @@ US-MODES-006: As a developer, I see built-in modes as policy presets, not separa
 
 US-MODES-007: As a developer, I see the UI send typed project and chat commands only so that modes stay behind a narrow contract. (README L153)
 
+US-MODES-008: As a user, I use shared skills from a global harness skill root across any opened project while project-local skills can still customize behavior. (README What It Is)
+
 ### ASSISTANTS
 
-US-ASSISTANTS-001: As a user, I use local assistant operators with named personas, role prompts, project or global scope, synced routing defaults, chat-addressable actions from project chat, assistant-owned background job creation, pause and resume controls, chat, todo lists, learnings, open questions, clone-to-project flow, and high-level plus deep-debug logs. (README L24)
+US-ASSISTANTS-001: As a user, I use local assistant operators with named personas, role prompts, project or global scope, synced routing defaults, action-runbook guidance, chat-addressable actions from project chat, assistant-owned background job creation, pause and resume controls, chat, todo lists, learnings, open questions, clone-to-project flow, and high-level plus deep-debug logs. (README L24)
 
 US-ASSISTANTS-002: As a user, I get a dedicated Assistants surface with search and filters so assistant chat, todos, questions, bounded learnings, logs, and assistant-owned jobs stay inspectable outside normal project chat. (README L103)
 
@@ -367,6 +369,8 @@ US-PERSISTENCE-014: As a developer, I see browser localStorage store per-thread 
 
 US-PERSISTENCE-015: As a developer, I see browser localStorage store chat-composer session state including current trace panel open state as a session override separate from the saved default-open preference. (README L149)
 
+US-PERSISTENCE-016: As a user, I keep workspace and assistant state in a cwd-independent local database so every opened project reads the same harness state. (README What It Is)
+
 ### PREFERENCES
 
 US-PREFERENCES-001: As a user, I set global execution preferences for dirty-git chat restriction, dirty change threshold, plan gate mode, countdown delay, subagent isolation strategy, and correctness iteration policy. (README L45)
@@ -435,7 +439,7 @@ US-SEARCH-001: As a user, I open a spotlight-style project switcher for recent r
 
 US-SEARCH-002: As a user, I activate an already-open project from the switcher without creating a fresh thread when the exact path matches. (README L61)
 
-US-SEARCH-003: As a user, I create and open a folder-only project from an absolute path in the project switcher so that I can start a new project without a template or git requirement. (README L11)
+US-SEARCH-003: As a user, I create and open a folder-only project from an absolute path in the project switcher without requiring a full template or git repository. (README L11)
 
 ### MARKDOWN
 

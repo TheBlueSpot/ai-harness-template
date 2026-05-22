@@ -26,6 +26,7 @@ export const projectSearchRepoKindSchema = z.enum(["git-repo", "folder"]);
 export const projectSearchMatchKindSchema = z.enum(["exact", "path-prefix", "name-prefix", "substring"]);
 export const threadTitleSchema = z.string().trim().min(1).max(256);
 export const agentIdSchema = z.enum(["pi", "copilot-cli", "codex-cli"]);
+export const cliUpdateTargetIdSchema = z.enum(["pi", "copilot-cli", "codex-cli", "claude-cli"]);
 export const providerBrandSchema = z.enum(["gpt", "gemini", "claude"]);
 export const runtimeKindSchema = z.enum(["sdk", "cli"]);
 export const modelDiscoveryConfidenceSchema = z.enum(["exact", "partial", "unknown"]);
@@ -84,6 +85,7 @@ export const assistantAssetRefKindSchema = z.enum(["skill", "script", "mode", "b
 export const assistantAssetRefScopeSchema = z.enum(["workspace", "project"]);
 export const assistantAssetRefProvenanceSchema = z.enum([
   "repo-skill",
+  "global-skill",
   "repo-script",
   "workspace-mode",
   "project-mode",
@@ -191,6 +193,19 @@ export const experimentRunSchema = z.object({
 export const experimentInspectionSchema = z.object({
   experiment: experimentRunSchema,
   diffText: z.string(),
+  files: z
+    .array(
+      z.object({
+        path: z.string().min(1),
+        additions: z.number().int().min(0),
+        deletions: z.number().int().min(0),
+        hunksPreview: z.string()
+      })
+    )
+    .max(512)
+    .optional(),
+  inspectedAt: z.string().datetime().or(z.string().min(1)).optional(),
+  staleReason: z.string().min(1).optional(),
   filesChanged: z.number().int().min(0),
   insertions: z.number().int().min(0),
   deletions: z.number().int().min(0),
@@ -809,13 +824,24 @@ export const backgroundRunStatusNotificationSchema = notificationInboxItemBaseSc
   severity: notificationSeveritySchema
 });
 
+export const cliUpdateNotificationSchema = notificationInboxItemBaseSchema.extend({
+  kind: z.literal("cli-update"),
+  interactive: z.literal(true),
+  agentId: cliUpdateTargetIdSchema,
+  label: z.string().min(1).max(128),
+  currentVersion: z.string().min(1).max(128),
+  latestVersion: z.string().min(1).max(128),
+  updateCommand: z.string().min(1).max(1024)
+});
+
 export const notificationInboxItemSchema = z.discriminatedUnion("kind", [
   planningQuestionNotificationSchema,
   planningQuestionBatchNotificationSchema,
   assistantQuestionNotificationSchema,
   assistantQuestionBatchNotificationSchema,
   browserApprovalNotificationSchema,
-  backgroundRunStatusNotificationSchema
+  backgroundRunStatusNotificationSchema,
+  cliUpdateNotificationSchema
 ]);
 
 export const notificationInboxStateSchema = z.object({
@@ -995,6 +1021,7 @@ export const preferencesStateSchema = z.object({
   autoArchiveCompletedThreadsDefault: z.boolean().optional(),
   memoryBankEnabledDefault: z.boolean(),
   memoryBankRecordRunsDefault: z.boolean().default(true),
+  checkCliUpdatesDefault: z.boolean().default(true),
   attachmentsEnabled: z.boolean(),
   capabilities: z.array(providerCapabilitySchema).max(4),
   agentRuntimes: z.array(agentRuntimeCapabilitySchema).max(8)
@@ -1291,6 +1318,27 @@ export const agentRunStateSchema = z.object({
   browserSessions: z.array(browserSessionSchema).max(32).optional(),
   toolActivities: z.array(executionToolActivitySchema).max(512).optional(),
   experiment: experimentRunSchema.optional(),
+  ledger: z
+    .object({
+      currentPhase: z.string().min(1).max(120).optional(),
+      lastVerifiedAt: z.string().datetime().or(z.string().min(1)).optional(),
+      nextStep: z.string().min(1).max(240).optional(),
+      waitingOn: z.string().min(1).max(240).optional(),
+      failureClass: z.string().min(1).max(120).optional(),
+      contextUsage: z.string().min(1).max(120).optional(),
+      notableCostOrTokenSpike: z.string().min(1).max(240).optional()
+    })
+    .optional(),
+  proofBundle: z
+    .object({
+      diffSummary: z.string().max(2000).optional(),
+      commands: z.array(z.string().max(240)).max(24).optional(),
+      browserEvidenceRefs: z.array(z.string().max(240)).max(24).optional(),
+      approvals: z.array(z.string().max(240)).max(24).optional(),
+      finalReviewNotes: z.string().max(2000).optional(),
+      followUpPrompt: z.string().max(1000).optional()
+    })
+    .optional(),
   memoryRetrievals: z.array(memoryRetrievalSchema).max(128).optional(),
   resumable: z.boolean(),
   retryable: z.boolean(),
@@ -1415,7 +1463,13 @@ export const projectSearchResultSchema = z.object({
   name: projectNameSchema,
   rootPath: projectRootPathSchema,
   repoKind: projectSearchRepoKindSchema,
-  matchKind: projectSearchMatchKindSchema
+  matchKind: projectSearchMatchKindSchema,
+  activeRunCount: z.number().int().min(0).optional(),
+  pendingApprovalCount: z.number().int().min(0).optional(),
+  pendingQuestionCount: z.number().int().min(0).optional(),
+  failedJobCount: z.number().int().min(0).optional(),
+  lastThreadPreview: z.string().max(240).optional(),
+  detectedFrameworks: z.array(z.string().min(1).max(48)).max(8).optional()
 });
 
 export const workspaceProjectStateSchema = z.object({
@@ -1631,6 +1685,17 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("notifications.mark-all-read"),
     requestId: requestIdSchema
+  }),
+  z.object({
+    type: z.literal("cli-updates.check"),
+    requestId: requestIdSchema
+  }),
+  z.object({
+    type: z.literal("cli-updates.install"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      agentId: cliUpdateTargetIdSchema
+    })
   }),
   z.object({
     type: z.literal("setup.refresh"),
@@ -2222,7 +2287,8 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       backgroundJobApprovalPolicyDefault: backgroundJobApprovalPolicySchema,
       autoArchiveCompletedThreadsDefault: z.boolean().optional(),
       memoryBankEnabledDefault: z.boolean().optional(),
-      memoryBankRecordRunsDefault: z.boolean().optional()
+      memoryBankRecordRunsDefault: z.boolean().optional(),
+      checkCliUpdatesDefault: z.boolean().optional()
     })
   }),
   z.object({
@@ -2717,6 +2783,23 @@ export const serverEventSchema = z.discriminatedUnion("type", [
     })
   }),
   z.object({
+    type: z.literal("cli-updates.checked"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      updates: z.array(cliUpdateNotificationSchema).max(8),
+      notifications: notificationInboxStateSchema
+    })
+  }),
+  z.object({
+    type: z.literal("cli-updates.installed"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      agentId: cliUpdateTargetIdSchema,
+      label: z.string().min(1).max(128),
+      output: z.string().max(4000)
+    })
+  }),
+  z.object({
     type: z.literal("preferences.saved"),
     requestId: requestIdSchema,
     payload: preferencesStateSchema.extend({
@@ -2816,6 +2899,7 @@ export type ProjectSearchRepoKind = z.infer<typeof projectSearchRepoKindSchema>;
 export type ProjectSearchMatchKind = z.infer<typeof projectSearchMatchKindSchema>;
 export type ThreadTitle = z.infer<typeof threadTitleSchema>;
 export type AgentId = z.infer<typeof agentIdSchema>;
+export type CliUpdateTargetId = z.infer<typeof cliUpdateTargetIdSchema>;
 export type ProviderBrand = z.infer<typeof providerBrandSchema>;
 export type RuntimeKind = z.infer<typeof runtimeKindSchema>;
 export type ModelDiscoveryConfidence = z.infer<typeof modelDiscoveryConfidenceSchema>;

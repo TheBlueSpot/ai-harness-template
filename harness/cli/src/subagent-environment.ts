@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
+import { resolveGlobalSkillsRoot } from "./harness-paths";
 
 export type SubagentEnvironmentBriefInput = {
   projectRoot: string;
@@ -29,6 +30,10 @@ export function resolveRepoRoot(projectRoot: string) {
 }
 
 export function discoverRepoSkillPaths(repoRoot: string) {
+  return [...discoverGlobalSkillPaths(), ...discoverProjectSkillPaths(repoRoot)].sort();
+}
+
+export function discoverProjectSkillPaths(repoRoot: string) {
   const skillsRoot = path.join(repoRoot, ".agents", "skills");
   if (!existsSync(skillsRoot)) {
     return [];
@@ -39,6 +44,19 @@ export function discoverRepoSkillPaths(repoRoot: string) {
     .map((entry) => path.join(skillsRoot, entry.name, "SKILL.md"))
     .filter((skillPath) => existsSync(skillPath))
     .map((skillPath) => toRepoRelativePath(repoRoot, skillPath))
+    .sort();
+}
+
+export function discoverGlobalSkillPaths(skillsRoot: string = resolveGlobalSkillsRoot()) {
+  if (!existsSync(skillsRoot)) {
+    return [];
+  }
+
+  return readdirSync(skillsRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => path.join(skillsRoot, entry.name, "SKILL.md"))
+    .filter((skillPath) => existsSync(skillPath))
+    .map((skillPath) => normalizeRelativePath(skillPath))
     .sort();
 }
 
@@ -58,9 +76,10 @@ export function buildSubagentEnvironmentBrief(input: SubagentEnvironmentBriefInp
     `- Project path relative to repository root: ${relativeProjectRoot}`,
     "- This project may be nested inside the repo.",
     "- Repo-level files such as AGENTS.md and .agents live at repo root.",
-    "- Do not invent system skill paths under .agents/skills.",
-    "- Known skills live under .agents/skills/<name>/SKILL.md when present.",
-    "Available repo skill files:",
+    "- Do not invent skill paths.",
+    "- Project skills live under .agents/skills/<name>/SKILL.md when present.",
+    `- Global skills live under ${normalizeRelativePath(resolveGlobalSkillsRoot())}/<name>/SKILL.md when present.`,
+    "Available skill files:",
     ...skillLines,
     ...buildAgentInstructionHints(input.repoRoot),
     "Windows-safe search recipes:",

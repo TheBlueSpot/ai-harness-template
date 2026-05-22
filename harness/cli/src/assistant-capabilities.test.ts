@@ -65,6 +65,40 @@ describe("assistant capabilities", () => {
     expect(resolved.canonicalValue).toBe(".agents/skills/review/SKILL.md");
   });
 
+  test("resolves global skills when a repo skill is absent", () => {
+    const repoRoot = path.join(process.cwd(), ".tmp-test-data", `assistant-cap-${crypto.randomUUID()}`);
+    const homeRoot = path.join(process.cwd(), ".tmp-test-data", `assistant-global-${crypto.randomUUID()}`);
+    const globalRoot = path.join(homeRoot, "skills");
+    mkdirSync(repoRoot, { recursive: true });
+    const skillPath = path.join(globalRoot, "grill-me", "SKILL.md");
+    mkdirSync(path.dirname(skillPath), { recursive: true });
+    writeFileSync(skillPath, "# Grill me\n");
+    const previousHome = Bun.env.AI_HARNESS_TEMPLATE_HOME;
+    Bun.env.AI_HARNESS_TEMPLATE_HOME = homeRoot;
+    const assistant = createAssistant();
+
+    try {
+      const [resolved] = resolveAssistantAssetRefs({
+        repoRoot,
+        assistant,
+        assetRefs: [createAssetRef(assistant.id, "grill-me")],
+        workspaceModes: [],
+        projectModes: [],
+        backgroundTemplates: []
+      });
+
+      expect(resolved.resolutionStatus).toBe("resolved");
+      expect(resolved.provenance).toBe("global-skill");
+      expect(resolved.canonicalValue).toBe(skillPath);
+    } finally {
+      if (previousHome === undefined) {
+        delete Bun.env.AI_HARNESS_TEMPLATE_HOME;
+      } else {
+        Bun.env.AI_HARNESS_TEMPLATE_HOME = previousHome;
+      }
+    }
+  });
+
   test("rejects missing refs and out-of-scope project modes", () => {
     const repoRoot = path.join(process.cwd(), ".tmp-test-data", `assistant-cap-${crypto.randomUUID()}`);
     mkdirSync(repoRoot, { recursive: true });

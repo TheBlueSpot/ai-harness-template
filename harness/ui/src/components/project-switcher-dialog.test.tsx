@@ -8,7 +8,7 @@ import {
   shouldSearchProjects
 } from "./project-switcher-dialog";
 import { captureDispatchedCommands, clearBrowserStateForTests, seedHarnessStoreForTests } from "../utils/tests/store-test-utils";
-import { createHarnessStateFixture, createViewProjectFixture } from "../utils/tests/test-fixtures";
+import { createHarnessStateFixture, createRunFixture, createViewProjectFixture } from "../utils/tests/test-fixtures";
 
 createUiTest("ProjectSwitcherDialog", () => {
   beforeEach(() => {
@@ -41,6 +41,43 @@ createUiTest("ProjectSwitcherDialog", () => {
     expect(await screen.findByRole("dialog", { name: "Open or switch project" })).not.toBeNull();
     expect(screen.getByText("repo-one")).not.toBeNull();
     expect(screen.getByText("repo-two")).not.toBeNull();
+  });
+
+  it("shows activity metadata for open projects", async () => {
+    const activeProject = createViewProjectFixture({
+      id: "project-active-metadata",
+      name: "solid-bun-app",
+      rootPath: "C:\\solid-bun-app",
+      activeRun: createRunFixture({
+        status: "running-main",
+        questions: [
+          {
+            id: "question-1",
+            prompt: "Need direction",
+            status: "pending",
+            askedAt: new Date().toISOString(),
+            required: true,
+            responseKind: "freeform",
+          }
+        ]
+      })
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        projectSwitcherOpen: true,
+        workspace: {
+          activeProjectId: activeProject.id,
+          projects: [activeProject]
+        }
+      })
+    );
+
+    render(() => <ProjectSwitcherDialog />);
+
+    expect(await screen.findByText("1 active")).not.toBeNull();
+    expect(screen.getByText("1 questions")).not.toBeNull();
+    expect(screen.getByText("Solid")).not.toBeNull();
+    expect(screen.getByText("Bun")).not.toBeNull();
   });
 
   it("searches only for absolute paths or queries with at least two characters", async () => {

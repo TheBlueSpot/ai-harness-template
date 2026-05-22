@@ -11,6 +11,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - Spotlight-style project switcher for recent roots, local folder search, and fast project activation from one shared flow
 - Bootstrap-first startup path for source users, plus portable Bun launcher packaging for release users
 - Runtime health visibility so install, auth, browser-tool repair, and degraded interactive support show before a run starts
+- Workspace data defaults to `~/.ai-harness-template/harness.db`, with `HARNESS_DB_PATH` still available for explicit overrides
 - Shared activation checklist that keeps first-run setup inside the main chat cockpit instead of a blocking wizard
 - Guided help tutorials with spotlight overlays for opening a project, connecting provider/runtime, sending the first task, and reviewing plans
 - `UploadThing`-backed attachments for screenshots, PDFs, and text or office-doc specs, persisted with chat history and routed into prompts
@@ -22,6 +23,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - Local scheduled tasks and background jobs with durable SQLite history, startup catch-up, approval policy defaults, hidden automation threads, concurrent launch, timeout/progress visibility, overload warnings, and a dedicated inbox surface
 - Header-level notification inbox for deferred planner questions, assistant questions, browser approvals, and passive background-run status updates
 - Local assistant operators with named personas, role prompts, project or global scope, synced routing defaults, pause and resume controls, chat, todo lists, deduped and compacted learnings, open questions, clone-to-project flow, and high-level plus deep-debug logs
+- Shared skills synchronize into `~/.ai-harness-template/skills` for use across opened projects, while `.agents/skills` stays available for project-local workflows
 - Product direction currently favors safe background execution, connector health visibility, explicit rule and memory control, preview-to-fix loops, durable review artifacts, budget-aware long runs, remote review from another device, and cleaner thread retrieval and cleanup over broader assistant surfaces
 - Built-in workflow modes for asking, planning, implementing, debugging, and review, plus local custom modes at workspace or project scope
 - Brand-aware defaults for GPT or Gemini execution
@@ -147,6 +149,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 
 - The backend validates every websocket payload before processing it
 - SQLite persistence stays local-first and single-machine
+- SQLite persistence uses a cwd-independent default path so assistants and projects read the same local workspace state
 - Setup health is server-derived per machine, while tutorial progress and dismissal state stay local to the current browser profile
 - Assistant state persists locally in SQLite, including canonical thread memory summaries, active todo list, deduped learnings with AI-assisted compaction, pending questions, structured logs, and assistant-linked background jobs
 - Browser localStorage mirrors API key presence and global workspace defaults for the current browser profile
@@ -166,6 +169,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - Plan execution starts through a typed `run.execute` command after plan presentation, not as an implicit side effect of `chat.send`
 - Ready plans can be replaced through a typed `planning.refine` command that starts a fresh planning cycle in the same thread
 - Project open responses report whether a new project was created or an existing project was reopened with a new thread
+- Planner and execution prompts include the repository `agents.md` guidance as thread context without copying it into newly created project folders
 - Thread lifecycle, planning answers, resume requests, retry requests, and preflight warnings use typed websocket contracts
 - Workspace-global execution pause and resume use typed websocket commands and a shared execution-control event so every connected client stays in sync
 - Browser approval decisions use a typed websocket command and persist on the active run record

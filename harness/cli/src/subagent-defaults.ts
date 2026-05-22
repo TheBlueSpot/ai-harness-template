@@ -107,6 +107,10 @@ function buildHeuristicLowestCostModelId(modelId: string, agentId: AgentId | und
   const parsed = splitModelId(modelId);
   const gptMatch = parsed.bareModelId.match(/^(gpt-[\d.]+)(?:-(mini|nano))?$/);
   if (gptMatch) {
+    if (agentId === "codex-cli" && gptMatch[1] === "gpt-5.5") {
+      return joinModelId(parsed.providerPrefix, "gpt-5.4-mini");
+    }
+
     const cheapestVariant = agentId === "pi" ? "nano" : "mini";
     return joinModelId(parsed.providerPrefix, `${gptMatch[1]}-${cheapestVariant}`);
   }

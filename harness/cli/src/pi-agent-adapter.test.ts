@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { SettingsManager } from "@mariozechner/pi-coding-agent";
 import {
   buildPiAutoCompactionSettings,
   clampAutoCompactContextThresholdPercent,
   mapReasoningStrengthToThinkingLevel,
-  PiSdkAgentAdapter
+  PiSdkAgentAdapter,
+  testExports
 } from "./pi-agent-adapter";
 
 describe("pi sdk adapter", () => {
@@ -45,5 +47,20 @@ describe("pi sdk adapter", () => {
     expect(mapReasoningStrengthToThinkingLevel("medium")).toBe("medium");
     expect(mapReasoningStrengthToThinkingLevel("high")).toBe("high");
     expect(mapReasoningStrengthToThinkingLevel("extra-high")).toBe("xhigh");
+  });
+
+  test("creates browser-gated resource loader with explicit agent dir", async () => {
+    await expect(
+      testExports.createPiResourceLoader(
+        {
+          kind: "executor",
+          cwd: process.cwd(),
+          modelId: "google/gemini-2.5-flash",
+          prompt: "test",
+          requestBrowserApproval: async () => ({ approved: true })
+        },
+        SettingsManager.inMemory()
+      )
+    ).resolves.toBeDefined();
   });
 });

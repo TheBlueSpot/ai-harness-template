@@ -39,3 +39,4 @@ Use this when a task touches broad harness conventions, naming, docs policy, or 
 - Batch non-overlapping reads in parallel.
 - Prefer symbol-aware or AST-aware tools when available; otherwise use targeted `rg`.
 - Stop when completion criteria are met. Do not spend final turns on optional polish.
+- Use `run.complete` as the typed lifecycle completion command; do not treat it as markdown output.

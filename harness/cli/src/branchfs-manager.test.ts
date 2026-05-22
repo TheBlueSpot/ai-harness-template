@@ -52,6 +52,9 @@ describe("branchfs manager", () => {
     expect(inspection.changedPaths).toContain("tracked.txt");
     expect(inspection.changedPaths).toContain("new-file.txt");
     expect(inspection.changedPaths).toContain("nested/keep.txt");
+    expect(inspection.files?.map((file) => file.path)).toContain("tracked.txt");
+    expect(inspection.files?.find((file) => file.path === "tracked.txt")?.additions).toBeGreaterThan(0);
+    expect(inspection.inspectedAt).toBeTruthy();
 
     await manager.flushExperiment(lease);
     expect(await readText(path.join(rootPath, "tracked.txt"))).toBe("experiment update\n");

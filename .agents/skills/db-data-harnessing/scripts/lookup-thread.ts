@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
-import path from "node:path";
+import { resolveHarnessDbPath } from "../../../../harness/cli/src/harness-paths";
 
 type CliOptions = {
   dbPath: string;
@@ -21,7 +21,7 @@ Usage:
   bun.cmd .agents/skills/db-data-harnessing/scripts/lookup-thread.ts <thread-id> [--db <path>] [--limit <n>] [--json]
 
 Options:
-  --db <path>    Override DB path. Default: HARNESS_DB_PATH or .local/harness.db
+  --db <path>    Override DB path. Default: HARNESS_DB_PATH or ~/.ai-harness-template/harness.db
   --limit <n>    Limit rows shown per list section. Default: 20
   --json         Emit machine-readable JSON instead of a text report
   --help         Show this help
@@ -61,7 +61,7 @@ try {
 
 function parseArgs(argv: string[]) {
   let threadId: string | undefined;
-  let dbPath = Bun.env.HARNESS_DB_PATH ?? path.join(process.cwd(), ".local", "harness.db");
+  let dbPath = resolveHarnessDbPath();
   let json = false;
   let limit = DEFAULT_LIMIT;
   let help = false;
@@ -449,7 +449,7 @@ function buildReport(db: Database, threadId: string, options: CliOptions) {
     error: "Thread id not found in project_threads or assistant_threads",
     hints: [
       "Check HARNESS_DB_PATH or pass --db.",
-      "If you are inside a BranchFS mount, the mount may have a fresh .local/harness.db.",
+      "If you are inside a BranchFS mount, confirm the helper is pointed at the intended host DB.",
       "If recovery created a fallback DB, inspect the recovered file instead of the default path."
     ]
   };

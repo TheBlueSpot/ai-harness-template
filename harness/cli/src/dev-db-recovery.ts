@@ -1,5 +1,6 @@
 import { copyFileSync, existsSync, rmSync } from "node:fs";
 import path from "node:path";
+export { resolveHarnessDbPath } from "./harness-paths";
 
 const PURGE_RETRY_ATTEMPTS = 8;
 const PURGE_RETRY_DELAY_MS = 40;
@@ -20,10 +21,6 @@ type PurgeWorkspaceDatabaseOptions = {
   retryAttempts?: number;
   retryDelayMs?: number;
 };
-
-export function resolveHarnessDbPath() {
-  return Bun.env.HARNESS_DB_PATH ?? path.join(process.cwd(), ".local", "harness.db");
-}
 
 export function resolveRecoveredHarnessDbPath(dbPath: string) {
   const parsed = path.parse(dbPath);

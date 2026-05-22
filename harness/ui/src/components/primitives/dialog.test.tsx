@@ -4,10 +4,12 @@ import { createUiTest } from "../../utils/tests/test-harness";
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { clearBrowserStateForTests } from "../../utils/tests/store-test-utils";
 import { Dialog } from "./dialog";
+import { clearOverlayStackForTests } from "./overlay-stack";
 
 createUiTest("Dialog", () => {
   beforeEach(() => {
     clearBrowserStateForTests();
+    clearOverlayStackForTests();
   });
 
   it("renders nothing when closed", () => {
@@ -77,4 +79,5 @@ createUiTest("Dialog", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Inner action" }));
     expect(closed).toBe(false);
   });
+
 });

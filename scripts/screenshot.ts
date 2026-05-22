@@ -15,6 +15,7 @@ export type ScreenshotOptions = {
   runId: string;
   baseUrlOverride?: string;
   outDir: string;
+  waitUntil: ScreenshotWaitUntil;
 };
 
 export type ScreenshotArtifact = {
@@ -54,10 +55,13 @@ const VIEWPORT_PRESETS: Record<string, Viewport> = {
 };
 
 const DEFAULT_VIEWPORT_NAMES = ["desktop", "mobile"];
+const DEFAULT_WAIT_UNTIL: ScreenshotWaitUntil = "domcontentloaded";
 const LISTENING_REGEX = /Harness server listening on (http:\/\/localhost:\d+)/;
 const DEV_SERVER_READY_TIMEOUT_MS = 60_000;
 export const SCREENSHOT_SERVER_OUTPUT_CAP_BYTES = 256 * 1024;
 const PAGE_NAVIGATION_TIMEOUT_MS = 30_000;
+const PAGE_SETTLE_DELAY_MS = 350;
+export type ScreenshotWaitUntil = "domcontentloaded" | "load" | "networkidle";
 
 export function resolveViewport(spec: string) {
   const preset = VIEWPORT_PRESETS[spec];
@@ -91,6 +95,7 @@ export function parseScreenshotArgs(argv: string[], nowFactory: () => number = D
   const routes: string[] = [];
   const viewportNames: string[] = [];
   let baseUrlOverride: string | undefined;
+  let waitUntil = DEFAULT_WAIT_UNTIL;
 
   for (let cursor = 0; cursor < argv.length; cursor += 1) {
     const token = argv[cursor];
@@ -121,6 +126,18 @@ export function parseScreenshotArgs(argv: string[], nowFactory: () => number = D
       continue;
     }
 
+    if (token === "--wait") {
+      const value = argv[++cursor];
+      if (!value) {
+        throw new Error("--wait requires a value");
+      }
+      if (!isScreenshotWaitUntil(value)) {
+        throw new Error(`Unknown --wait value "${value}". Use domcontentloaded, load, or networkidle.`);
+      }
+      waitUntil = value;
+      continue;
+    }
+
     throw new Error(`Unknown argument: ${token}`);
   }
 
@@ -135,9 +152,14 @@ export function parseScreenshotArgs(argv: string[], nowFactory: () => number = D
     viewports: effectiveViewports,
     runId,
     baseUrlOverride,
-    outDir
+    outDir,
+    waitUntil
   };
   return options;
+}
+
+function isScreenshotWaitUntil(value: string): value is ScreenshotWaitUntil {
+  return value === "domcontentloaded" || value === "load" || value === "networkidle";
 }
 
 export async function runScreenshotCapture(opts: ScreenshotOptions, deps: CaptureDeps) {
@@ -239,55 +261,39 @@ async function startDevServerInMount(mountPath: string): Promise<DevServerHandle
 }
 
 async function capturePagesWithPlaywright(baseUrl: string, opts: ScreenshotOptions) {
-  let playwright: typeof import("playwright");
-  try {
-    playwright = await import("playwright");
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`playwright dependency missing. This script uses \`playwright\`, not \`@playwright/test\`. Run \`bun install\`.\n${detail}`);
-  }
-
-  let browser: Awaited<ReturnType<typeof playwright.chromium.launch>>;
-  try {
-    browser = await playwright.chromium.launch();
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`playwright chromium launch failed. Run \`bunx playwright install chromium\`.\n${detail}`);
-  }
-  try {
-    const artifacts: ScreenshotArtifact[] = [];
-    for (const viewport of opts.viewports) {
-      const context = await browser.newContext({
-        viewport: { width: viewport.width, height: viewport.height }
-      });
-      try {
-        for (const route of opts.routes) {
-          const page = await context.newPage();
-          try {
-            const normalizedRoute = route.startsWith("/") ? route : `/${route}`;
-            const target = new URL(normalizedRoute, baseUrl).toString();
-            await page.goto(target, { waitUntil: "networkidle", timeout: PAGE_NAVIGATION_TIMEOUT_MS });
-            const slug = slugifyRoute(route);
-            const filePath = path.join(opts.outDir, `${slug}-${viewport.name}.png`);
-            await page.screenshot({ path: filePath, fullPage: true });
-            artifacts.push({
-              route,
-              viewport: viewport.name,
-              width: viewport.width,
-              height: viewport.height,
-              path: path.relative(process.cwd(), filePath).replace(/\\/g, "/")
-            });
-          } finally {
-            await page.close();
-          }
+  const runnerPath = path.join(import.meta.dir, "screenshot-playwright-runner.mjs");
+  const proc = Bun.spawn({
+    cmd: ["node", runnerPath],
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      SCREENSHOT_PAYLOAD: JSON.stringify({
+        baseUrl,
+        opts: {
+          ...opts,
+          navigationTimeoutMs: PAGE_NAVIGATION_TIMEOUT_MS,
+          settleDelayMs: PAGE_SETTLE_DELAY_MS,
+          screenshotTimeoutMs: PAGE_NAVIGATION_TIMEOUT_MS
         }
-      } finally {
-        await context.close();
-      }
-    }
-    return artifacts;
-  } finally {
-    await browser.close();
+      })
+    },
+    stdout: "pipe",
+    stderr: "pipe"
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited
+  ]);
+  if (exitCode !== 0) {
+    throw new Error(`playwright screenshot runner failed with exit ${exitCode}.\n${stderr || stdout}`);
+  }
+  try {
+    const parsed = JSON.parse(stdout.trim()) as { artifacts: ScreenshotArtifact[] };
+    return parsed.artifacts;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`playwright screenshot runner returned invalid JSON: ${detail}\n${stdout}\n${stderr}`);
   }
 }
 
@@ -321,6 +327,7 @@ if (import.meta.main) {
     console.log(JSON.stringify(payload, null, 2));
     console.log("--- END ---");
     console.log(`\nWrote ${result.screenshots.length} screenshot(s) to ${path.relative(process.cwd(), opts.outDir).replace(/\\/g, "/")}/`);
+    process.exit(0);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     console.error(`[screenshot] ${detail}`);

@@ -10,11 +10,13 @@ export function Toaster() {
           <div
             class="pointer-events-auto rounded-2xl border p-4 shadow-2xl backdrop-blur-xl"
             classList={{
+              "cursor-pointer": Boolean(toast.onClick),
               "border-red-200/80": toast.tone === "error",
               "bg-red-50/92": toast.tone === "error",
               "border-(--border)": toast.tone !== "error",
               "bg-(--panel)": toast.tone !== "error"
             }}
+            onClick={() => toast.onClick?.()}
           >
             <div class="flex items-start justify-between gap-3">
               <div class="space-y-1">
@@ -27,7 +29,10 @@ export function Toaster() {
                 class="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg text-(--muted) transition hover:bg-(--panel-strong) hover:text-(--foreground) disabled:cursor-not-allowed"
                 type="button"
                 aria-label="Dismiss toast"
-                onClick={() => toastStore.dismiss(toast.id)}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  toastStore.dismiss(toast.id);
+                }}
               >
                 <X class="h-4 w-4" />
               </button>

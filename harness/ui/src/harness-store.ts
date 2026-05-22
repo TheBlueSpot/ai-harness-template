@@ -51,6 +51,12 @@ import {
   type WorkspaceProjectState,
   type WorkspaceState
 } from "../../shared/protocol";
+import {
+  DEFAULT_APP_HOTKEY_PREFERENCES,
+  normalizeAppHotkeyPreferences,
+  type AppHotkeyId,
+  type AppHotkeyPreferences
+} from "./lib/app-hotkeys";
 import { pushToast, reportUiError } from "./toast-store";
 
 export const OPENAI_API_KEY_STORAGE_KEY = "openai_api_key";
@@ -71,8 +77,10 @@ const AUTO_ARCHIVE_COMPLETED_THREADS_DEFAULT_STORAGE_KEY = "pi-harness:auto-arch
 export const BACKGROUND_JOB_NOTIFICATIONS_ENABLED_STORAGE_KEY = "background_job_notifications_enabled";
 export const MEMORY_BANK_ENABLED_DEFAULT_STORAGE_KEY = "memory_bank_enabled_default";
 export const MEMORY_BANK_RECORD_RUNS_DEFAULT_STORAGE_KEY = "memory_bank_record_runs_default";
+export const CHECK_CLI_UPDATES_DEFAULT_STORAGE_KEY = "check_cli_updates_default";
 export const COMPOSER_REASONING_STRENGTH_STORAGE_KEY = "composer_reasoning_strength";
 export const COMPOSER_FAST_MODE_STORAGE_KEY = "composer_fast_mode";
+export const APP_HOTKEY_PREFERENCES_STORAGE_KEY = "pi-harness:app-hotkeys:v1";
 export const THREAD_DRAFT_STORAGE_KEY_PREFIX = "pi-harness:thread-draft:v1";
 export const TUTORIAL_PROGRESS_STORAGE_KEY = "pi-harness:tutorial-progress:v1";
 export const BROWSER_UI_SESSION_STORAGE_KEY = "pi-harness:browser-ui-session:v1";
@@ -90,7 +98,9 @@ export type ProjectSidebarProjectSort = "last-user-message" | "created-at" | "ma
 export type ProjectSidebarThreadSort = "last-user-message" | "created-at";
 export type ProjectSidebarGrouping = "repository" | "repository-path" | "separate";
 export type JobsPaneSegment = "jobs" | "inbox" | "health";
+export type AssistantRosterSort = "updated" | "created" | "name" | "run-state" | "bootstrap-state";
 export type JobsPaneJobSort = "next-run" | "updated" | "created" | "status" | "risk";
+export type JobsPaneRunSort = "urgency" | "updated" | "queued" | "status";
 export type JobsRunFilter = "approval" | "queued" | "running" | "failed" | "done";
 
 export type RunDiagnosticsViewState = {
@@ -113,6 +123,7 @@ export type JobsPanePreferences = {
   jobSearch?: string;
   runSearch?: string;
   jobSort: JobsPaneJobSort;
+  runSort?: JobsPaneRunSort;
   projectId?: string;
   assistantId?: string;
   kind?: BackgroundJob["kind"];
@@ -131,6 +142,7 @@ export type ProviderConnectionTestState = {
 };
 export type PreferencesActiveSectionId =
   | "general-ui"
+  | "keybinds"
   | "ai-providers"
   | "safety-guardrails"
   | "workspace-memory"
@@ -164,6 +176,7 @@ export type BrowserUiSessionState = {
     providerBrand?: Assistant["providerBrand"];
     projectId?: string;
     selectedAssistantId?: string;
+    rosterSort?: AssistantRosterSort;
     selectedTab?: AssistantDetailTab;
     selectedLogDetailsId?: string;
   };
@@ -280,6 +293,7 @@ export type ViewAssistantsState = AssistantsState & {
   bootstrapStateFilter?: Assistant["bootstrapState"];
   providerBrandFilter?: Assistant["providerBrand"];
   projectIdFilter?: string;
+  rosterSort: AssistantRosterSort;
   streamingByAssistantId: Record<string, string>;
 };
 
@@ -346,6 +360,8 @@ export type HarnessViewState = {
   autoArchiveCompletedThreadsDefault: boolean;
   memoryBankEnabledDefault: boolean;
   memoryBankRecordRunsDefault: boolean;
+  checkCliUpdatesDefault: boolean;
+  appHotkeyPreferences: AppHotkeyPreferences;
   attachmentsEnabled: boolean;
   capabilities: ProviderCapability[];
   preferencesModalOpen: boolean;
@@ -388,6 +404,7 @@ export type HarnessViewState = {
   hasLocalAutoArchiveCompletedThreadsPreference: boolean;
   hasLocalMemoryBankEnabledPreference: boolean;
   hasLocalMemoryBankRecordRunsPreference: boolean;
+  hasLocalCheckCliUpdatesPreference: boolean;
   lastActiveProjectId?: string;
   lastActiveThreadByProjectId: Record<string, string>;
   projectPreflights: Record<string, { requestId: string; preflight: RunPreflight } | undefined>;
@@ -428,9 +445,11 @@ export type LocalPreferencesState = {
   autoArchiveCompletedThreadsDefault?: boolean;
   memoryBankEnabledDefault?: boolean;
   memoryBankRecordRunsDefault?: boolean;
+  checkCliUpdatesDefault?: boolean;
   backgroundJobNotificationsEnabled?: boolean;
   selectedReasoningStrength?: ComposerReasoningStrength;
   selectedFastMode?: boolean;
+  appHotkeyPreferences?: AppHotkeyPreferences;
 };
 
 export function createInitialWorkspaceState(): ViewWorkspaceState {
@@ -460,6 +479,7 @@ export function createDefaultJobsPanePreferences(): JobsPanePreferences {
     jobSearch: "",
     runSearch: "",
     jobSort: "next-run",
+    runSort: "urgency",
     projectId: undefined,
     assistantId: undefined,
     kind: undefined,
@@ -514,6 +534,7 @@ export function createEmptyAssistantsState(): ViewAssistantsState {
     bootstrapStateFilter: undefined,
     providerBrandFilter: undefined,
     projectIdFilter: undefined,
+    rosterSort: "updated",
     streamingByAssistantId: {}
   };
 }
@@ -607,6 +628,8 @@ export function createInitialViewState(): HarnessViewState {
     autoArchiveCompletedThreadsDefault: false,
     memoryBankEnabledDefault: true,
     memoryBankRecordRunsDefault: true,
+    checkCliUpdatesDefault: true,
+    appHotkeyPreferences: { ...DEFAULT_APP_HOTKEY_PREFERENCES },
     attachmentsEnabled: false,
     capabilities: [...defaultProviderCapabilities],
     preferencesModalOpen: false,
@@ -653,6 +676,7 @@ export function createInitialViewState(): HarnessViewState {
     hasLocalAutoArchiveCompletedThreadsPreference: false,
     hasLocalMemoryBankEnabledPreference: false,
     hasLocalMemoryBankRecordRunsPreference: false,
+    hasLocalCheckCliUpdatesPreference: false,
     lastActiveProjectId: undefined,
     lastActiveThreadByProjectId: {},
     projectPreflights: {},
@@ -714,6 +738,7 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
       };
     }
     case "notifications.updated":
+    case "cli-updates.checked":
       return {
         ...state,
         notifications: event.payload.notifications
@@ -1517,6 +1542,7 @@ export function createHarnessStore() {
             browserUiSession.assistantPane?.providerBrand ?? state.assistants.providerBrandFilter
           ),
           projectIdFilter: normalizeOptionalStorageString(browserUiSession.assistantPane?.projectId ?? state.assistants.projectIdFilter),
+          rosterSort: normalizeAssistantRosterSort(browserUiSession.assistantPane?.rosterSort ?? state.assistants.rosterSort),
           selectedAssistantId: normalizeOptionalStorageString(
             browserUiSession.assistantPane?.selectedAssistantId ?? state.assistants.selectedAssistantId
           ),
@@ -1685,7 +1711,7 @@ export function createHarnessStore() {
       setState(reconcile(nextState));
       persistBrowserUiStateIfChanged(previousSnapshot, nextState);
     },
-    setAssistantPaneFilters(filters: Partial<Pick<ViewAssistantsState, "rosterSearch" | "detailSearch" | "runStateFilter" | "bootstrapStateFilter" | "providerBrandFilter" | "projectIdFilter">>) {
+    setAssistantPaneFilters(filters: Partial<Pick<ViewAssistantsState, "rosterSearch" | "detailSearch" | "runStateFilter" | "bootstrapStateFilter" | "providerBrandFilter" | "projectIdFilter" | "rosterSort">>) {
       const previousSnapshot = getBrowserUiSessionSnapshot(state);
       const nextState = finalizeHarnessViewState({
         ...state,
@@ -1696,7 +1722,8 @@ export function createHarnessStore() {
           runStateFilter: normalizeAssistantRunStateFilter(filters.runStateFilter ?? state.assistants.runStateFilter),
           bootstrapStateFilter: normalizeAssistantBootstrapStateFilter(filters.bootstrapStateFilter ?? state.assistants.bootstrapStateFilter),
           providerBrandFilter: normalizeAssistantProviderBrandFilter(filters.providerBrandFilter ?? state.assistants.providerBrandFilter),
-          projectIdFilter: normalizeOptionalStorageString(filters.projectIdFilter ?? state.assistants.projectIdFilter)
+          projectIdFilter: normalizeOptionalStorageString(filters.projectIdFilter ?? state.assistants.projectIdFilter),
+          rosterSort: normalizeAssistantRosterSort(filters.rosterSort ?? state.assistants.rosterSort)
         }
       });
       setState(reconcile(nextState));
@@ -2014,6 +2041,12 @@ export function createHarnessStore() {
     setMemoryBankRecordRunsDefault(memoryBankRecordRunsDefault: boolean) {
       setState({ memoryBankRecordRunsDefault });
     },
+    setCheckCliUpdatesDefault(checkCliUpdatesDefault: boolean) {
+      setState({ checkCliUpdatesDefault });
+    },
+    setAppHotkeyPreference(appHotkeyId: AppHotkeyId, hotkeys: string[]) {
+      setState("appHotkeyPreferences", appHotkeyId, hotkeys.map((hotkey) => hotkey.trim()).filter(Boolean));
+    },
     setAutoArchiveCompletedThreadsDefault(autoArchiveCompletedThreadsDefault: boolean) {
       setState({ autoArchiveCompletedThreadsDefault });
     },
@@ -2177,6 +2210,10 @@ export function createHarnessStore() {
         memoryBankEnabledDefault: localPreferences.memoryBankEnabledDefault ?? state.memoryBankEnabledDefault,
         memoryBankRecordRunsDefault:
           localPreferences.memoryBankRecordRunsDefault ?? state.memoryBankRecordRunsDefault,
+        checkCliUpdatesDefault: localPreferences.checkCliUpdatesDefault ?? state.checkCliUpdatesDefault,
+        appHotkeyPreferences: normalizeAppHotkeyPreferences(
+          localPreferences.appHotkeyPreferences ?? state.appHotkeyPreferences
+        ),
         backgroundJobNotificationsEnabled:
           localPreferences.backgroundJobNotificationsEnabled ?? state.backgroundJobNotificationsEnabled,
         projectSidebarPreferences: normalizeProjectSidebarPreferences(
@@ -2209,7 +2246,8 @@ export function createHarnessStore() {
         hasLocalBackgroundJobApprovalPolicyPreference: localPreferences.backgroundJobApprovalPolicyDefault !== undefined,
         hasLocalAutoArchiveCompletedThreadsPreference: localPreferences.autoArchiveCompletedThreadsDefault !== undefined,
         hasLocalMemoryBankEnabledPreference: localPreferences.memoryBankEnabledDefault !== undefined,
-        hasLocalMemoryBankRecordRunsPreference: localPreferences.memoryBankRecordRunsDefault !== undefined
+        hasLocalMemoryBankRecordRunsPreference: localPreferences.memoryBankRecordRunsDefault !== undefined,
+        hasLocalCheckCliUpdatesPreference: localPreferences.checkCliUpdatesDefault !== undefined
       })));
     },
     setHasUsableApiKey(hasUsableApiKey: boolean) {
@@ -2242,6 +2280,10 @@ export function createHarnessStore() {
         memoryBankEnabledDefault: localPreferences.memoryBankEnabledDefault ?? state.memoryBankEnabledDefault,
         memoryBankRecordRunsDefault:
           localPreferences.memoryBankRecordRunsDefault ?? state.memoryBankRecordRunsDefault,
+        checkCliUpdatesDefault: localPreferences.checkCliUpdatesDefault ?? state.checkCliUpdatesDefault,
+        appHotkeyPreferences: normalizeAppHotkeyPreferences(
+          localPreferences.appHotkeyPreferences ?? state.appHotkeyPreferences
+        ),
         backgroundJobNotificationsEnabled:
           localPreferences.backgroundJobNotificationsEnabled ?? state.backgroundJobNotificationsEnabled,
         projectSidebarPreferences: normalizeProjectSidebarPreferences(
@@ -2274,7 +2316,8 @@ export function createHarnessStore() {
         hasLocalBackgroundJobApprovalPolicyPreference: localPreferences.backgroundJobApprovalPolicyDefault !== undefined,
         hasLocalAutoArchiveCompletedThreadsPreference: localPreferences.autoArchiveCompletedThreadsDefault !== undefined,
         hasLocalMemoryBankEnabledPreference: localPreferences.memoryBankEnabledDefault !== undefined,
-        hasLocalMemoryBankRecordRunsPreference: localPreferences.memoryBankRecordRunsDefault !== undefined
+        hasLocalMemoryBankRecordRunsPreference: localPreferences.memoryBankRecordRunsDefault !== undefined,
+        hasLocalCheckCliUpdatesPreference: localPreferences.checkCliUpdatesDefault !== undefined
       });
       setState(reconcile(nextState));
       return localPreferences;
@@ -2416,6 +2459,7 @@ function hydrateAssistants(existing: ViewAssistantsState, incoming: AssistantsSt
     bootstrapStateFilter: existing.bootstrapStateFilter,
     providerBrandFilter: existing.providerBrandFilter,
     projectIdFilter: existing.projectIdFilter,
+    rosterSort: existing.rosterSort,
     streamingByAssistantId: existing.streamingByAssistantId
   };
 }
@@ -2881,6 +2925,9 @@ function applyReadyPreferencesState(state: HarnessViewState, preferences: Prefer
     memoryBankRecordRunsDefault: state.hasLocalMemoryBankRecordRunsPreference
       ? state.memoryBankRecordRunsDefault
       : preferences.memoryBankRecordRunsDefault,
+    checkCliUpdatesDefault: state.hasLocalCheckCliUpdatesPreference
+      ? state.checkCliUpdatesDefault
+      : preferences.checkCliUpdatesDefault,
     attachmentsEnabled: preferences.attachmentsEnabled,
     capabilities: preferences.capabilities,
     agentRuntimes: preferences.agentRuntimes
@@ -2939,6 +2986,9 @@ export function readLocalPreferences(): LocalPreferencesState {
   const memoryBankRecordRunsDefault = parseBooleanStorageValue(
     window.localStorage.getItem(MEMORY_BANK_RECORD_RUNS_DEFAULT_STORAGE_KEY)
   );
+  const checkCliUpdatesDefault = parseBooleanStorageValue(
+    window.localStorage.getItem(CHECK_CLI_UPDATES_DEFAULT_STORAGE_KEY)
+  );
   const backgroundJobNotificationsEnabled = parseBooleanStorageValue(
     window.localStorage.getItem(BACKGROUND_JOB_NOTIFICATIONS_ENABLED_STORAGE_KEY)
   );
@@ -2946,6 +2996,7 @@ export function readLocalPreferences(): LocalPreferencesState {
     window.localStorage.getItem(COMPOSER_REASONING_STRENGTH_STORAGE_KEY)
   );
   const selectedFastMode = parseBooleanStorageValue(window.localStorage.getItem(COMPOSER_FAST_MODE_STORAGE_KEY));
+  const appHotkeyPreferences = readAppHotkeyPreferences();
 
   return {
     openAiApiKey,
@@ -2965,10 +3016,25 @@ export function readLocalPreferences(): LocalPreferencesState {
     autoArchiveCompletedThreadsDefault,
     memoryBankEnabledDefault,
     memoryBankRecordRunsDefault,
+    checkCliUpdatesDefault,
     backgroundJobNotificationsEnabled,
     selectedReasoningStrength,
-    selectedFastMode
+    selectedFastMode,
+    appHotkeyPreferences
   };
+}
+
+export function readAppHotkeyPreferences(): AppHotkeyPreferences {
+  if (typeof window === "undefined") {
+    return { ...DEFAULT_APP_HOTKEY_PREFERENCES };
+  }
+
+  try {
+    const raw = window.localStorage.getItem(APP_HOTKEY_PREFERENCES_STORAGE_KEY);
+    return normalizeAppHotkeyPreferences(raw ? JSON.parse(raw) : undefined);
+  } catch {
+    return { ...DEFAULT_APP_HOTKEY_PREFERENCES };
+  }
 }
 
 export function readTutorialProgress() {
@@ -3061,9 +3127,20 @@ export function persistLocalPreferences(input: LocalPreferencesState) {
   persistBooleanStorageValue(AUTO_ARCHIVE_COMPLETED_THREADS_DEFAULT_STORAGE_KEY, input.autoArchiveCompletedThreadsDefault);
   persistBooleanStorageValue(MEMORY_BANK_ENABLED_DEFAULT_STORAGE_KEY, input.memoryBankEnabledDefault);
   persistBooleanStorageValue(MEMORY_BANK_RECORD_RUNS_DEFAULT_STORAGE_KEY, input.memoryBankRecordRunsDefault);
+  persistBooleanStorageValue(CHECK_CLI_UPDATES_DEFAULT_STORAGE_KEY, input.checkCliUpdatesDefault);
   persistBooleanStorageValue(BACKGROUND_JOB_NOTIFICATIONS_ENABLED_STORAGE_KEY, input.backgroundJobNotificationsEnabled);
   persistStorageValue(COMPOSER_REASONING_STRENGTH_STORAGE_KEY, input.selectedReasoningStrength);
   persistBooleanStorageValue(COMPOSER_FAST_MODE_STORAGE_KEY, input.selectedFastMode);
+  persistAppHotkeyPreferences(input.appHotkeyPreferences);
+}
+
+function persistAppHotkeyPreferences(input: AppHotkeyPreferences | undefined) {
+  if (!input) {
+    window.localStorage.removeItem(APP_HOTKEY_PREFERENCES_STORAGE_KEY);
+    return;
+  }
+
+  window.localStorage.setItem(APP_HOTKEY_PREFERENCES_STORAGE_KEY, JSON.stringify(normalizeAppHotkeyPreferences(input)));
 }
 
 export function persistMergedLocalPreferences(input: LocalPreferencesState) {
@@ -3153,6 +3230,7 @@ export function readBrowserUiSession(): BrowserUiSessionState {
         bootstrapState: normalizeAssistantBootstrapStateFilter(parsed.assistantPane.bootstrapState),
         providerBrand: normalizeAssistantProviderBrandFilter(parsed.assistantPane.providerBrand),
         projectId: normalizeOptionalStorageString(parsed.assistantPane.projectId),
+        rosterSort: normalizeAssistantRosterSort(parsed.assistantPane.rosterSort),
         selectedAssistantId: normalizeOptionalStorageString(parsed.assistantPane.selectedAssistantId),
         selectedTab: normalizeAssistantDetailTab(parsed.assistantPane.selectedTab),
         selectedLogDetailsId: normalizeOptionalStorageString(parsed.assistantPane.selectedLogDetailsId)
@@ -3237,6 +3315,7 @@ export function persistBrowserUiSession(input: BrowserUiSessionState) {
           bootstrapState: normalizeAssistantBootstrapStateFilter(input.assistantPane.bootstrapState),
           providerBrand: normalizeAssistantProviderBrandFilter(input.assistantPane.providerBrand),
           projectId: normalizeOptionalStorageString(input.assistantPane.projectId),
+          rosterSort: input.assistantPane.rosterSort ? normalizeAssistantRosterSort(input.assistantPane.rosterSort) : undefined,
           selectedAssistantId: normalizeOptionalStorageString(input.assistantPane.selectedAssistantId),
           selectedTab: input.assistantPane.selectedTab ? normalizeAssistantDetailTab(input.assistantPane.selectedTab) : undefined,
           selectedLogDetailsId: normalizeOptionalStorageString(input.assistantPane.selectedLogDetailsId)
@@ -3338,6 +3417,7 @@ function getBrowserUiSessionSnapshot(state: HarnessViewState): BrowserUiSessionS
       bootstrapState: state.assistants.bootstrapStateFilter,
       providerBrand: state.assistants.providerBrandFilter,
       projectId: state.assistants.projectIdFilter,
+      rosterSort: state.assistants.rosterSort,
       selectedAssistantId: state.assistants.selectedAssistantId,
       selectedTab: state.assistants.selectedTab,
       selectedLogDetailsId: state.assistants.selectedLogDetailsId
@@ -3418,6 +3498,12 @@ function normalizeAssistantProviderBrandFilter(input: unknown): Assistant["provi
   return input === "gpt" || input === "gemini" || input === "claude" ? input : undefined;
 }
 
+function normalizeAssistantRosterSort(input: unknown): AssistantRosterSort {
+  return input === "updated" || input === "created" || input === "name" || input === "run-state" || input === "bootstrap-state"
+    ? input
+    : "updated";
+}
+
 function normalizeJobsPaneSegment(input: unknown): JobsPaneSegment {
   return input === "jobs" || input === "inbox" || input === "health" ? input : "inbox";
 }
@@ -3426,6 +3512,10 @@ function normalizeJobsPaneJobSort(input: unknown): JobsPaneJobSort {
   return input === "next-run" || input === "updated" || input === "created" || input === "status" || input === "risk"
     ? input
     : "next-run";
+}
+
+function normalizeJobsPaneRunSort(input: unknown): JobsPaneRunSort {
+  return input === "urgency" || input === "updated" || input === "queued" || input === "status" ? input : "urgency";
 }
 
 function normalizeJobsRunFilter(input: unknown): JobsRunFilter {
@@ -3440,6 +3530,7 @@ function normalizeJobsPanePreferences(input: unknown, state?: HarnessViewState, 
     jobSearch: normalizeSearchText(source.jobSearch ?? source.search),
     runSearch: normalizeSearchText(source.runSearch ?? source.search),
     jobSort: normalizeJobsPaneJobSort(source.jobSort),
+    runSort: normalizeJobsPaneRunSort(source.runSort),
     projectId: normalizeOptionalStorageString(source.projectId),
     assistantId: normalizeOptionalStorageString(source.assistantId),
     kind: source.kind === "ai-routine" || source.kind === "shell" ? source.kind : undefined,
@@ -3849,7 +3940,7 @@ function resolveProviderBrand(state: HarnessViewState, preferences: PreferencesS
 }
 
 function isProviderBrandSelectable(
-  state: Pick<
+  _state: Pick<
     HarnessViewState,
     | "openAiApiKeyDraft"
     | "googleApiKeyDraft"
@@ -3858,7 +3949,7 @@ function isProviderBrandSelectable(
     | "hasLocalGoogleApiKey"
     | "hasLocalAnthropicApiKey"
   >,
-  preferences: Pick<
+  _preferences: Pick<
     PreferencesState,
     | "hasUsableOpenAiApiKey"
     | "hasStoredOpenAiApiKey"
@@ -3867,32 +3958,9 @@ function isProviderBrandSelectable(
     | "hasUsableAnthropicApiKey"
     | "hasStoredAnthropicApiKey"
   >,
-  providerBrand: ProviderBrand
+  _providerBrand: ProviderBrand
 ) {
-  if (providerBrand === "gpt") {
-    return Boolean(
-      preferences.hasUsableOpenAiApiKey ||
-        preferences.hasStoredOpenAiApiKey ||
-        state.hasLocalOpenAiApiKey ||
-        state.openAiApiKeyDraft.trim()
-    );
-  }
-
-  if (providerBrand === "claude") {
-    return Boolean(
-      preferences.hasUsableAnthropicApiKey ||
-        preferences.hasStoredAnthropicApiKey ||
-        state.hasLocalAnthropicApiKey ||
-        state.anthropicApiKeyDraft.trim()
-    );
-  }
-
-  return Boolean(
-    preferences.hasUsableGoogleApiKey ||
-      preferences.hasStoredGoogleApiKey ||
-      state.hasLocalGoogleApiKey ||
-      state.googleApiKeyDraft.trim()
-  );
+  return true;
 }
 
 export function hasUsableApiKeyForProvider(state: HarnessViewState, providerBrand: ProviderBrand) {
@@ -3947,31 +4015,8 @@ export function requireActiveProject(state: HarnessViewState) {
   return project;
 }
 
-export function canSelectProviderBrand(state: HarnessViewState, providerBrand: ProviderBrand) {
-  if (providerBrand === "gemini") {
-    return Boolean(
-      state.hasUsableGoogleApiKey ||
-        state.hasStoredGoogleApiKey ||
-        state.hasLocalGoogleApiKey ||
-        state.googleApiKeyDraft.trim()
-    );
-  }
-
-  if (providerBrand === "claude") {
-    return Boolean(
-      state.hasUsableAnthropicApiKey ||
-        state.hasStoredAnthropicApiKey ||
-        state.hasLocalAnthropicApiKey ||
-        state.anthropicApiKeyDraft.trim()
-    );
-  }
-
-  return Boolean(
-    state.hasUsableOpenAiApiKey ||
-      state.hasStoredOpenAiApiKey ||
-      state.hasLocalOpenAiApiKey ||
-      state.openAiApiKeyDraft.trim()
-  );
+export function canSelectProviderBrand(_state: HarnessViewState, _providerBrand: ProviderBrand) {
+  return true;
 }
 
 export function getDefaultExecutionModelIdForProvider(providerBrand: ProviderBrand) {

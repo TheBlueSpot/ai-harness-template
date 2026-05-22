@@ -3,11 +3,13 @@ import { beforeEach, expect, it } from "bun:test";
 import { createUiTest } from "../../utils/tests/test-harness";
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { clearBrowserStateForTests } from "../../utils/tests/store-test-utils";
+import { clearOverlayStackForTests } from "./overlay-stack";
 import { SheetContent } from "./sheet";
 
 createUiTest("SheetContent", () => {
   beforeEach(() => {
     clearBrowserStateForTests();
+    clearOverlayStackForTests();
   });
 
   it("renders nothing when closed", () => {

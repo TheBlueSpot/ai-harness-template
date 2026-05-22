@@ -22,6 +22,16 @@ describe("subagent defaults", () => {
     ).toBe("openai/gpt-5.4-mini");
   });
 
+  test("uses visible codex mini worker for gpt-5.5 execution", () => {
+    expect(
+      resolveSubagentModelId({
+        agentId: "codex-cli",
+        providerBrand: "gpt",
+        executionModelId: "openai/gpt-5.5"
+      })
+    ).toBe("openai/gpt-5.4-mini");
+  });
+
   test("maps claude families to haiku for cli runtimes", () => {
     expect(
       resolveSubagentModelId({

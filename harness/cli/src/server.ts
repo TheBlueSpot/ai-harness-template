@@ -1,8 +1,9 @@
-import { createUiAssetManager } from "./ui-build";
+import { createDevHmrDebounceSchedule, createUiAssetManager } from "./ui-build";
 import { clearDevHarnessServerSingleton, getDevHarnessServerSingleton, setDevHarnessServerSingleton } from "./dev-server-singleton";
 import { withTraceTimestamp } from "./trace-timestamps";
 import { defaultAgentCatalog } from "../../shared/agent-catalog";
 import { defaultProviderCapabilities } from "../../shared/capabilities";
+import { withAgentsMdRuleSource } from "./agent-rules";
 import { modeUsesReadOnlyExecution, resolveModeById, resolveModeCatalog } from "../../shared/modes";
 import {
   PLANNER_DIFFICULTY_THRESHOLD,
@@ -11,7 +12,7 @@ import {
   isDirectWorkspaceImplementTask
 } from "../../shared/mode-intent";
 import { createHash } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createRouteHandler } from "uploadthing/server";
 import {
@@ -93,6 +94,7 @@ import { debugLog } from "./logging";
 import { extractRunMemories, retrieveMemorySummaries } from "./memory-bank";
 import { runManagedAgentExecution } from "./managed-agent-execution";
 import { createLegacyTruncatedId, createStableBoundedId } from "./notification-ids";
+import { checkCliUpdates, installCliUpdate, type CliUpdate } from "./cli-update-checker";
 import { PiSdkAgentAdapter, type PiAgentAdapter, type PiAgentExecutionEvent } from "./pi-agent-adapter";
 import { searchProjectFolders } from "./project-search-service";
 import type { AgentRuntime } from "./agent-runtimes/agent-runtime";
@@ -169,7 +171,6 @@ type HarnessConnection = {
 };
 
 const DERIVED_PROGRESS_HEARTBEAT_MS = 10_000;
-const DEV_HMR_DEBOUNCE_MS = 30_000;
 const DEV_UI_LIVE_RELOAD_ENDPOINT = "/__dev/ui-reload-state";
 const STREAM_DELTA_FLUSH_MS = 50;
 const STREAM_DELTA_MAX_BUFFERED_BYTES = 8 * 1024;
@@ -181,6 +182,10 @@ const BACKGROUND_RUN_STARTUP_GRACE_MS = 2 * 60 * 1000;
 type TimerApi = {
   setTimeout: typeof globalThis.setTimeout;
   clearTimeout: typeof globalThis.clearTimeout;
+};
+
+type DevHmrDebouncePolicy = {
+  scheduleMs: readonly number[];
 };
 
 export type HarnessBranchfsManager = Pick<
@@ -215,6 +220,7 @@ type HarnessServerOptions = {
   devHotMode?: boolean;
   hotSingletonVersion?: number;
   hotReloadDebounceMs?: number;
+  backendHotReloadChangeDetector?: () => boolean;
   timerApi?: TimerApi;
   derivedProgressHeartbeatMs?: number;
 };
@@ -314,7 +320,8 @@ export async function startHarnessServer({
   browserLauncher = openHarnessBrowser,
   devHotMode,
   hotSingletonVersion = 1,
-  hotReloadDebounceMs = DEV_HMR_DEBOUNCE_MS,
+  hotReloadDebounceMs,
+  backendHotReloadChangeDetector,
   derivedProgressHeartbeatMs = DERIVED_PROGRESS_HEARTBEAT_MS,
   timerApi = {
     setTimeout: globalThis.setTimeout,
@@ -339,7 +346,8 @@ export async function startHarnessServer({
       uiAssetManagerFactory,
       browserLauncher,
       hotSingletonVersion,
-      hotReloadDebounceMs,
+      hotReloadDebouncePolicy: resolveDevHmrDebouncePolicy(hotReloadDebounceMs),
+      backendHotReloadChangeDetector,
       derivedProgressHeartbeatMs,
       timerApi
     });
@@ -356,7 +364,7 @@ export async function startHarnessServer({
     startupTelemetry,
     uiAssetManagerFactory,
     hotDevelopmentMode,
-    hotReloadDebounceMs
+    hotReloadDebouncePolicy: resolveDevHmrDebouncePolicy(hotReloadDebounceMs)
   });
   const handlerRefs = createHarnessHandlerRefs(state, { derivedProgressHeartbeatMs });
   startupTelemetry?.phaseStart("serve", "starting Bun server listeners");
@@ -394,14 +402,22 @@ async function startHotReloadableHarnessServer(
       | "uiAssetManagerFactory"
       | "browserLauncher"
       | "hotSingletonVersion"
-      | "hotReloadDebounceMs"
       | "derivedProgressHeartbeatMs"
       | "timerApi"
     >
-  > &
+  > & {
+    hotReloadDebouncePolicy: DevHmrDebouncePolicy;
+  } &
     Pick<
       HarnessServerOptions,
-      "hostname" | "adapter" | "repository" | "runtimeRegistry" | "osAdapters" | "pickFolder" | "startupTelemetry"
+      | "hostname"
+      | "adapter"
+      | "repository"
+      | "runtimeRegistry"
+      | "osAdapters"
+      | "pickFolder"
+      | "startupTelemetry"
+      | "backendHotReloadChangeDetector"
     >
 ) {
   let singleton = getDevHarnessServerSingleton<
@@ -434,23 +450,39 @@ async function startHotReloadableHarnessServer(
     startupTelemetry: options.startupTelemetry,
     uiAssetManagerFactory: options.uiAssetManagerFactory,
     hotDevelopmentMode: true,
-    hotReloadDebounceMs: options.hotReloadDebounceMs,
+    hotReloadDebouncePolicy: options.hotReloadDebouncePolicy,
     existingState: singleton?.state
   });
   const handlerRefs = createHarnessHandlerRefs(state, { derivedProgressHeartbeatMs: options.derivedProgressHeartbeatMs });
 
   if (singleton) {
+    const hasBackendHotReloadChange = options.backendHotReloadChangeDetector
+      ? options.backendHotReloadChangeDetector()
+      : consumeTrackedBackendHotReloadChange(singleton);
+    if (!hasBackendHotReloadChange) {
+      options.startupTelemetry?.phaseStart("serve", "ignoring dev hot reload without tracked backend file changes");
+      return finalizeHarnessServerStartup({
+        server: singleton.server,
+        state: singleton.state,
+        startupTelemetry: options.startupTelemetry,
+        openBrowser: options.openBrowser,
+        browserLauncher: options.browserLauncher,
+        browserOpenState: singleton
+      });
+    }
+
+    const nextReloadDelayMs = peekNextHotReloadDelay(singleton, options.hotReloadDebouncePolicy);
     options.startupTelemetry?.phaseStart(
       "serve",
-      options.hotReloadDebounceMs > 0
-        ? `queueing dev hot reload apply after ${options.hotReloadDebounceMs}ms quiet window`
+      nextReloadDelayMs > 0
+        ? `queueing dev hot reload apply after ${nextReloadDelayMs}ms quiet window`
         : "reloading Bun server handlers"
     );
     queueHotReloadUpdate({
       singleton,
       state,
       handlerRefs,
-      debounceMs: options.hotReloadDebounceMs,
+      debouncePolicy: options.hotReloadDebouncePolicy,
       timerApi: options.timerApi
     });
     return finalizeHarnessServerStartup({
@@ -492,7 +524,8 @@ async function startHotReloadableHarnessServer(
     websocketShell,
     pendingState: undefined,
     pendingHandlerRefs: undefined,
-    pendingApplyTimer: undefined
+    pendingApplyTimer: undefined,
+    trackedHotReloadSnapshot: readTrackedBackendHotReloadSnapshot()
   });
   decorateHarnessServerStop(server, () => {
     const currentSingleton = getDevHarnessServerSingleton<
@@ -536,7 +569,7 @@ async function initializeHarnessServerState(input: {
   startupTelemetry?: StartupTelemetrySink;
   uiAssetManagerFactory: typeof createUiAssetManager;
   hotDevelopmentMode: boolean;
-  hotReloadDebounceMs: number;
+  hotReloadDebouncePolicy: DevHmrDebouncePolicy;
   existingState?: HarnessServerState;
 }) {
   const osAdapters = resolveHarnessServerOsAdapters(input.osAdapters);
@@ -566,7 +599,7 @@ async function initializeHarnessServerState(input: {
         serverOnly: input.serverOnly,
         hotDevelopmentMode: input.hotDevelopmentMode,
         uiAssetManagerFactory: input.uiAssetManagerFactory,
-        hotReloadDebounceMs: input.hotReloadDebounceMs,
+        hotReloadDebouncePolicy: input.hotReloadDebouncePolicy,
         existingUi: input.existingState?.ui
       })
     })
@@ -824,8 +857,10 @@ function createBackgroundJobScheduler(input: {
       emitNotificationsUpdatedToAll(connections, `bg:auto:${crypto.randomUUID()}`, repository.loadNotificationInboxState());
     },
     onRunQueued(run, job) {
+      saveBackgroundRunStatusNotification(repository, run);
       emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
       void emitBackgroundJobRunUpdatedToAll(connections, run);
+      emitNotificationsUpdatedToAll(connections, `bg:auto:${crypto.randomUUID()}`, repository.loadNotificationInboxState());
       if (run.status === "queued") {
         return launchBackgroundJobRun(
           connections,
@@ -1119,7 +1154,7 @@ function resolveUiServingState(input: {
   serverOnly: boolean;
   hotDevelopmentMode: boolean;
   uiAssetManagerFactory: typeof createUiAssetManager;
-  hotReloadDebounceMs: number;
+  hotReloadDebouncePolicy: DevHmrDebouncePolicy;
   existingUi?: UiServingState;
 }): UiServingState {
   if (input.serverOnly) {
@@ -1138,7 +1173,7 @@ function resolveUiServingState(input: {
   return {
     mode: "static-dist",
     uiAssets: input.uiAssetManagerFactory({
-      debounceMs: input.hotDevelopmentMode ? input.hotReloadDebounceMs : 0
+      debounceScheduleMs: input.hotDevelopmentMode ? input.hotReloadDebouncePolicy.scheduleMs : [0]
     }),
     liveReload: input.hotDevelopmentMode ? "debounced-poll" : "disabled"
   };
@@ -1157,23 +1192,117 @@ function queueHotReloadUpdate(input: {
   >;
   state: HarnessServerState;
   handlerRefs: HarnessHandlerRefs;
-  debounceMs: number;
+  debouncePolicy: DevHmrDebouncePolicy;
   timerApi: TimerApi;
 }) {
   input.singleton.pendingState = input.state;
   input.singleton.pendingHandlerRefs = input.handlerRefs;
   clearPendingHotReloadUpdate(input.singleton, input.timerApi);
 
-  if (input.debounceMs <= 0) {
+  const debounceMs = nextHotReloadDelay(input.singleton, input.debouncePolicy);
+  if (debounceMs <= 0) {
     applyHotReloadUpdate(input.singleton);
     return;
   }
 
   input.singleton.pendingApplyTimer = input.timerApi.setTimeout(() => {
     input.singleton.pendingApplyTimer = undefined;
+    input.singleton.pendingApplyBackoffStep = 0;
     applyHotReloadUpdate(input.singleton);
-  }, input.debounceMs);
+  }, debounceMs);
   setDevHarnessServerSingleton(input.singleton);
+}
+
+function resolveDevHmrDebouncePolicy(overrideDebounceMs: number | undefined): DevHmrDebouncePolicy {
+  if (overrideDebounceMs !== undefined) {
+    return {
+      scheduleMs: [Math.max(0, Math.round(overrideDebounceMs))]
+    };
+  }
+
+  return {
+    scheduleMs: createDevHmrDebounceSchedule()
+  };
+}
+
+function peekNextHotReloadDelay(
+  singleton: {
+    pendingApplyBackoffStep?: number;
+  },
+  policy: DevHmrDebouncePolicy
+) {
+  const schedule = policy.scheduleMs.length > 0 ? policy.scheduleMs : [0];
+  const step = singleton.pendingApplyBackoffStep ?? 0;
+  return schedule[Math.min(step, schedule.length - 1)] ?? 0;
+}
+
+function nextHotReloadDelay(
+  singleton: {
+    pendingApplyBackoffStep?: number;
+  },
+  policy: DevHmrDebouncePolicy
+) {
+  const delayMs = peekNextHotReloadDelay(singleton, policy);
+  singleton.pendingApplyBackoffStep = (singleton.pendingApplyBackoffStep ?? 0) + 1;
+  return delayMs;
+}
+
+function consumeTrackedBackendHotReloadChange(singleton: {
+  trackedHotReloadSnapshot?: Map<string, number>;
+}) {
+  const previousSnapshot = singleton.trackedHotReloadSnapshot;
+  const nextSnapshot = readTrackedBackendHotReloadSnapshot();
+  if (!nextSnapshot) {
+    return true;
+  }
+
+  singleton.trackedHotReloadSnapshot = nextSnapshot;
+  if (!previousSnapshot) {
+    return true;
+  }
+
+  if (previousSnapshot.size !== nextSnapshot.size) {
+    return true;
+  }
+
+  for (const [filePath, mtimeMs] of nextSnapshot) {
+    if (previousSnapshot.get(filePath) !== mtimeMs) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function readTrackedBackendHotReloadSnapshot() {
+  const result = Bun.spawnSync({
+    cmd: ["git", "ls-files", "-z", "--", "harness/cli", "harness/shared", "package.json", "bun.lock"],
+    cwd: process.cwd(),
+    stdout: "pipe",
+    stderr: "ignore"
+  });
+
+  if (result.exitCode !== 0) {
+    return undefined;
+  }
+
+  const snapshot = new Map<string, number>();
+  for (const filePath of result.stdout.toString().split("\0")) {
+    if (!filePath) {
+      continue;
+    }
+
+    snapshot.set(filePath, readFileMtimeMs(path.resolve(process.cwd(), filePath)));
+  }
+  return snapshot;
+}
+
+function readFileMtimeMs(filePath: string) {
+  try {
+    return statSync(filePath).mtimeMs;
+  } catch {
+    return -1;
+  }
 }
 
 function applyHotReloadUpdate(
@@ -1197,6 +1326,7 @@ function applyHotReloadUpdate(
   singleton.handlerRefs = singleton.pendingHandlerRefs;
   singleton.pendingState = undefined;
   singleton.pendingHandlerRefs = undefined;
+  singleton.pendingApplyBackoffStep = 0;
   singleton.server.reload({
     fetch: singleton.handlerRefs.fetch,
     routes: singleton.handlerRefs.routes,
@@ -1213,6 +1343,7 @@ function applyHotReloadUpdate(
 function clearPendingHotReloadUpdate(
   singleton: {
     pendingApplyTimer?: ReturnType<typeof setTimeout>;
+    pendingApplyBackoffStep?: number;
   },
   timerApi: TimerApi
 ) {
@@ -1409,6 +1540,48 @@ async function handleCommand(
     case "notifications.mark-all-read": {
       repository.markAllPassiveNotificationsRead();
       emitNotificationsUpdatedToAll(connections, command.requestId, repository.loadNotificationInboxState());
+      return;
+    }
+    case "cli-updates.check": {
+      if (!repository.getCheckCliUpdatesDefault()) {
+        sendEvent(ws, {
+          type: "cli-updates.checked",
+          requestId: command.requestId,
+          payload: {
+            updates: [],
+            notifications: repository.loadNotificationInboxState()
+          }
+        });
+        return;
+      }
+
+      const updates = await checkCliUpdates(runtimeRegistry.listCapabilities());
+      const notifications = saveCliUpdateNotifications(repository, updates);
+      emitNotificationsUpdatedToAll(connections, command.requestId, notifications);
+      sendEvent(ws, {
+        type: "cli-updates.checked",
+        requestId: command.requestId,
+        payload: {
+          updates: updates.map((update) => createCliUpdateNotification(update)),
+          notifications
+        }
+      });
+      return;
+    }
+    case "cli-updates.install": {
+      const output = await installCliUpdate(command.payload.agentId);
+      const agentRuntimes = await runtimeRegistry.refreshAll();
+      emitAgentRuntimeUpdatedToAll(connections, command.requestId, agentRuntimes);
+      await emitSetupRefresh(command.requestId);
+      sendEvent(ws, {
+        type: "cli-updates.installed",
+        requestId: command.requestId,
+        payload: {
+          agentId: command.payload.agentId,
+          label: getCliUpdateTargetLabel(command.payload.agentId),
+          output
+        }
+      });
       return;
     }
     case "execution.pause-all": {
@@ -3539,6 +3712,7 @@ async function handleCommand(
       repository.setMemoryBankRecordRunsDefault(
         command.payload.memoryBankRecordRunsDefault ?? repository.getMemoryBankRecordRunsDefault()
       );
+      repository.setCheckCliUpdatesDefault(command.payload.checkCliUpdatesDefault ?? repository.getCheckCliUpdatesDefault());
       applyAdapterAutoCompactionThreshold(adapter, command.payload.autoCompactContextThresholdPercentDefault);
       await runtimeRegistry.refreshAll();
       const preferences = getCurrentPreferencesState();
@@ -3656,8 +3830,10 @@ async function continueRunLifecycle(
     mode?.subagentWorktreeStrategyDefault ?? repository.getSubagentWorktreeStrategyDefault();
   const correctnessIterationMode =
     mode?.correctnessIterationModeDefault ?? repository.getCorrectnessIterationModeDefault();
-  const ruleSources = [runtime.getWorkspace().workspaceRuleSource, project.projectRuleSource].filter(
-    (value): value is WorkspaceRuleSource => Boolean(value)
+  const ruleSources = withAgentsMdRuleSource(
+    [runtime.getWorkspace().workspaceRuleSource, project.projectRuleSource].filter(
+      (value): value is WorkspaceRuleSource => Boolean(value)
+    )
   );
   const memorySummaries = [runtime.getWorkspace().workspaceMemorySummary, project.threadMemorySummary].filter(
     (value): value is MemorySummary => Boolean(value)
@@ -7004,6 +7180,7 @@ function getPreferencesState(
     autoArchiveCompletedThreadsDefault: getRepositoryAutoArchiveCompletedThreadsDefault(repository),
     memoryBankEnabledDefault: repository.getMemoryBankEnabledDefault(),
     memoryBankRecordRunsDefault: repository.getMemoryBankRecordRunsDefault(),
+    checkCliUpdatesDefault: repository.getCheckCliUpdatesDefault(),
     attachmentsEnabled: Boolean(Bun.env.UPLOADTHING_TOKEN?.trim()),
     capabilities: defaultProviderCapabilities,
     agentRuntimes: runtimeRegistry.listCapabilities()
@@ -8194,6 +8371,47 @@ function saveBackgroundRunStatusNotification(repository: WorkspaceRepository, ru
   repository.saveNotification(notification);
 }
 
+function saveCliUpdateNotifications(repository: WorkspaceRepository, updates: CliUpdate[]) {
+  let notifications = repository.loadNotificationInboxState();
+  for (const update of updates) {
+    notifications = repository.saveNotification(createCliUpdateNotification(update));
+  }
+  return notifications;
+}
+
+function createCliUpdateNotification(update: CliUpdate) {
+  return {
+    id: createCliUpdateNotificationId(update.agentId, update.latestVersion),
+    kind: "cli-update" as const,
+    interactive: true as const,
+    createdAt: new Date().toISOString(),
+    agentId: update.agentId,
+    label: update.label,
+    currentVersion: update.currentVersion,
+    latestVersion: update.latestVersion,
+    updateCommand: update.updateCommand
+  };
+}
+
+function createCliUpdateNotificationId(agentId: string, latestVersion: string) {
+  return createStableBoundedId(["cli-update", agentId, latestVersion]);
+}
+
+function getCliUpdateTargetLabel(agentId: string) {
+  switch (agentId) {
+    case "pi":
+      return "Pi";
+    case "copilot-cli":
+      return "GitHub Copilot CLI";
+    case "codex-cli":
+      return "Codex CLI";
+    case "claude-cli":
+      return "Claude Code";
+    default:
+      return "CLI";
+  }
+}
+
 function archiveNotificationWithLegacyId(repository: WorkspaceRepository, parts: readonly string[]) {
   const id = createStableBoundedId(parts);
   const legacyId = createLegacyTruncatedId(parts);
@@ -8322,7 +8540,7 @@ function createBrowserApprovalNotificationId(projectId: string, runId: string, s
   return createStableBoundedId(["browser-approval", projectId, runId, sessionId, toolCallId]);
 }
 
-function createBackgroundRunStatusNotification(job: BackgroundJob, run: BackgroundJobRun): BackgroundRunStatusNotification | undefined {
+export function createBackgroundRunStatusNotification(job: BackgroundJob, run: BackgroundJobRun): BackgroundRunStatusNotification | undefined {
   const statusMeta = backgroundRunNotificationMeta(run.status);
   if (!statusMeta) {
     return undefined;
@@ -8366,6 +8584,8 @@ function backgroundRunNotificationMeta(
   status: BackgroundJobRun["status"]
 ): { title: string; severity: NotificationSeverity; fallbackVerb: string } | undefined {
   switch (status) {
+    case "awaiting-approval":
+      return { title: "Background task needs approval", severity: "warning", fallbackVerb: "needs approval" };
     case "running":
       return { title: "Background task started", severity: "info", fallbackVerb: "started" };
     case "awaiting-user-input":

@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
-import path from "node:path";
+import { resolveHarnessDbPath } from "../../../../harness/cli/src/harness-paths";
 
 export type AssistantStateOptions = {
   dbPath: string;
@@ -27,7 +27,7 @@ Usage:
 Options:
   --assistant <value>  Assistant id or exact/fuzzy name
   --project <value>    Project id, name, or root path to disambiguate project assistants
-  --db <path>          Override DB path. Default: HARNESS_DB_PATH or .local/harness.db
+  --db <path>          Override DB path. Default: HARNESS_DB_PATH or ~/.ai-harness-template/harness.db
   --limit <n>          Limit rows shown per list section. Default: 20
   --json               Emit machine-readable JSON instead of a text report
   --help               Show this help
@@ -52,7 +52,7 @@ if (import.meta.main) {
 }
 
 export function parseArgs(argv: string[]): CliParseResult {
-  let dbPath = Bun.env.HARNESS_DB_PATH ?? path.join(process.cwd(), ".local", "harness.db");
+  let dbPath = resolveHarnessDbPath();
   let assistant: string | undefined;
   let project: string | undefined;
   let json = false;

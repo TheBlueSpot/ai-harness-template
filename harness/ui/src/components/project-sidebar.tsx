@@ -1,5 +1,4 @@
-import { Show, createEffect, createMemo, createSignal, onCleanup, type JSX } from "solid-js";
-import { formatForDisplay } from "@tanstack/solid-hotkeys";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js";
 import {
   DragDropProvider,
   DragDropSensors,
@@ -17,33 +16,37 @@ import {
   type ProjectSidebarThreadSort
 } from "../harness-store";
 import { truncateMiddle } from "../lib/utils";
+import { normalizeAppHotkeyPreferences } from "../lib/app-hotkeys";
+import { tooltipWithPrimaryHotkey } from "../lib/hotkey-hints";
+import { registerCurrentTabItemSelector } from "../lib/current-tab-item-hotkeys";
+import { buildProjectChatSearchResults, type ProjectChatSearchResult } from "../lib/project-chat-search";
 import { activateProjectThread } from "../project-thread-navigation";
 import { useHarnessStore } from "../store-providers";
 import { ActionButton } from "./action-button";
 import { Input } from "./primitives/input";
 import { Button } from "./primitives/button";
 import { ButtonGroup, type ButtonGroupItem } from "./primitives/button-group";
-import { Popover } from "./primitives/popover";
-import { Separator } from "./primitives/separator";
+import { LeftPaneEmptyState, LeftPaneFilterBlock, LeftPaneHeader, LeftPaneSearchInput, LeftPaneSearchMenu, LeftPaneShell } from "./primitives/left-pane";
 import { Tooltip } from "./primitives/tooltip";
 import { ThreadCleanupDialog } from "./thread-cleanup-dialog";
 import { VirtualList, type VirtualListHandle } from "./primitives/virtual-list";
 import {
-  Archive,
   ArrowDown,
   ArrowUp,
-  ArrowUpDown,
-  Check,
+  Calendar,
   ChevronDown,
   ChevronRight,
-  CircleHelp,
+  Clock3,
   Edit3,
   Folder,
   GripVertical,
   GitFork,
   Plus,
   Pin,
-  Trash2
+  Trash2,
+  FolderOpenDot,
+  Layers,
+  Shredder
 } from "lucide-solid";
 
 type ProjectSidebarProps = {
@@ -56,7 +59,6 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
   const state = store.state;
   const sendCommand = store.actions.sendCommand;
   const activeProject = () => getActiveProject(state);
-  const [sortMenuOpen, setSortMenuOpen] = createSignal(false);
   const projectCards = createMemo(() => {
     const preferences = state.projectSidebarPreferences;
     const manualOrder = new Map(preferences.manualProjectOrder.map((projectId, index) => [projectId, index]));
@@ -107,7 +109,14 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
   const [threadTitleDraft, setThreadTitleDraft] = createSignal("");
   const [lastScrolledActiveKey, setLastScrolledActiveKey] = createSignal<string>();
   const [cleanupDialogOpen, setCleanupDialogOpen] = createSignal(false);
+  const [projectChatSearch, setProjectChatSearch] = createSignal("");
+  const [projectChatSearchIndex, setProjectChatSearchIndex] = createSignal(0);
+  const projectChatSearchResults = createMemo(() => buildProjectChatSearchResults(state.workspace.projects, projectChatSearch()));
+  const selectableProjectThreads = createMemo(() =>
+    projectCards().flatMap((project) => project.threads.map((thread) => ({ projectId: project.id, threadId: thread.id })))
+  );
   let sidebarList: VirtualListHandle | undefined;
+  let projectSearchInput: HTMLInputElement | undefined;
 
   function handleActivateProject(projectId: string) {
     if (projectId === state.workspace.activeProjectId) {
@@ -124,6 +133,22 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
 
   function handleActivateThread(projectId: string, threadId: string) {
     activateProjectThread(state, projectId, threadId, sendCommand);
+    props.onNavigate?.();
+  }
+
+  function openProjectChatSearchResult(result: ProjectChatSearchResult) {
+    if (result.threadId) {
+      activateProjectThread(state, result.projectId, result.threadId, sendCommand);
+    } else if (state.workspace.activeProjectId !== result.projectId) {
+      sendCommand({
+        type: "project.activate",
+        requestId: createRequestId(),
+        payload: { projectId: result.projectId }
+      });
+    }
+    harnessStore.setChatPaneTab("chat");
+    setProjectChatSearch("");
+    setProjectChatSearchIndex(0);
     props.onNavigate?.();
   }
 
@@ -162,17 +187,14 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
 
   function setProjectSort(projectSort: ProjectSidebarProjectSort) {
     store.setProjectSidebarPreferences({ projectSort });
-    setSortMenuOpen(false);
   }
 
   function setThreadSort(threadSort: ProjectSidebarThreadSort) {
     store.setProjectSidebarPreferences({ threadSort });
-    setSortMenuOpen(false);
   }
 
   function setGrouping(grouping: ProjectSidebarGrouping) {
     store.setProjectSidebarPreferences({ grouping });
-    setSortMenuOpen(false);
   }
 
   function persistManualOrder(nextVisibleOrder: string[]) {
@@ -254,6 +276,40 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
     }
     setLastScrolledActiveKey(key);
     queueMicrotask(() => sidebarList?.scrollToKey(key, "center"));
+  });
+
+  onMount(() => {
+    const unregisterItemSelector = registerCurrentTabItemSelector("projects", (index) => {
+      const result = projectChatSearch() ? projectChatSearchResults()[index] : undefined;
+      if (result) {
+        openProjectChatSearchResult(result);
+        return true;
+      }
+      const thread = selectableProjectThreads()[index];
+      if (!thread) {
+        return false;
+      }
+      handleActivateThread(thread.projectId, thread.threadId);
+      return true;
+    });
+    const handleSearchShortcut = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const isTyping = target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        projectSearchInput?.focus();
+        return;
+      }
+      if (!isTyping && event.key === "/") {
+        event.preventDefault();
+        projectSearchInput?.focus();
+      }
+    };
+    window.addEventListener("keydown", handleSearchShortcut);
+    onCleanup(() => {
+      unregisterItemSelector();
+      window.removeEventListener("keydown", handleSearchShortcut);
+    });
   });
 
   function ProjectRow(rowProps: { project: ProjectCard }) {
@@ -344,7 +400,10 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
           </ActionButton>
 
           <ActionButton
-            tooltip="Create a new thread in this project"
+            tooltip={tooltipWithPrimaryHotkey(
+              "Create a new thread in this project",
+              normalizeAppHotkeyPreferences(harnessStore.state.appHotkeyPreferences).createProjectChat[0]
+            )}
             icon={<Plus class="h-3 w-3" />}
             variant="ghost"
             size="icon"
@@ -565,51 +624,12 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
   }
 
   return (
-    <div data-test-project-sidebar="" class="panel-shell flex h-full min-h-0 flex-col gap-4 rounded-2xl border-t-0 p-[0.8rem]">
-      <div class="space-y-2">
-        <div class="flex items-center gap-2 text-[0.585rem] font-semibold tracking-[0.2em] text-(--muted)">
-          <span>Projects</span>
-          <Tooltip content="Each project root keeps its own selectable threads, local chat history, and project-scoped execution context.">
-            <span class="inline-flex">
-              <CircleHelp class="h-3.5 w-3.5 text-(--muted)" aria-label="Projects help" />
-            </span>
-          </Tooltip>
-          <div class="ml-auto flex items-center">
-            <Popover
-              open={sortMenuOpen()}
-              onClose={() => setSortMenuOpen(false)}
-              align="end"
-              side="bottom"
-              contentClass="w-60 rounded-[1rem] p-2"
-              content={
-                <SortMenu
-                  projectSort={state.projectSidebarPreferences.projectSort}
-                  threadSort={state.projectSidebarPreferences.threadSort}
-                  grouping={state.projectSidebarPreferences.grouping}
-                  onProjectSort={setProjectSort}
-                  onThreadSort={setThreadSort}
-                  onGrouping={setGrouping}
-                />
-              }
-            >
-              <Button
-                tooltip="Sort and group projects"
-                aria-label="Sort projects"
-                variant="ghost"
-                size="sm"
-                onMouseDown={(event) => {
-                  event.preventDefault();
-                  setSortMenuOpen((current) => !current);
-                }}
-                onClick={(event) => {
-                  if (event.detail === 0) {
-                    setSortMenuOpen((current) => !current);
-                  }
-                }}
-              >
-                <ArrowUpDown class="h-3.5 w-3.5" />
-              </Button>
-            </Popover>
+    <LeftPaneShell kind="projects" class="gap-4" data-test-project-sidebar="">
+      <LeftPaneHeader
+        title="Projects"
+        help="Each project root keeps its own selectable threads, local chat history, and project-scoped execution context."
+        actions={
+          <>
             <Button
               tooltip="Clean up old threads"
               aria-label="Clean up old threads"
@@ -618,26 +638,183 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
               onMouseDown={() => setCleanupDialogOpen(true)}
               onClick={() => setCleanupDialogOpen(true)}
             >
-              <Archive class="h-3.5 w-3.5" />
+              <Shredder class="h-3.5 w-3.5" />
             </Button>
             <ActionButton
-              tooltip={`Open project switcher (${formatForDisplay("Mod+Space")} or ${formatForDisplay("Mod+K")})`}
-              icon={<Plus class="h-3.5 w-3.5" />}
+              tooltip={tooltipWithPrimaryHotkey(
+                "Open project switcher",
+                normalizeAppHotkeyPreferences(harnessStore.state.appHotkeyPreferences).openProjectSwitcher[0]
+              )}
+              icon={<FolderOpenDot class="h-3.5 w-3.5" />}
               variant="ghost"
               size="icon"
               ariaLabel="Open project switcher"
               onClick={() => harnessStore.openProjectSwitcher()}
             />
+          </>
+        }
+      />
+
+      <LeftPaneFilterBlock>
+        <LeftPaneSearchInput
+          ref={(element) => {
+            projectSearchInput = element;
+          }}
+          value={projectChatSearch()}
+          aria-label="Search projects"
+          placeholder="Search projects..."
+          menu={
+            <LeftPaneSearchMenu
+              ariaLabel="Sort and group projects"
+              tooltip="Sort and group projects"
+              items={[
+                {
+                  kind: "submenu",
+                  label: "Sort projects",
+                  value: formatProjectSortLabel(state.projectSidebarPreferences.projectSort),
+                  icon: <Clock3 class="h-3.5 w-3.5" />,
+                  items: [
+                    {
+                      kind: "option",
+                      label: "Last user message",
+                      icon: <Clock3 class="h-3.5 w-3.5" />,
+                      selected: state.projectSidebarPreferences.projectSort === "last-user-message",
+                      onSelect: () => setProjectSort("last-user-message")
+                    },
+                    {
+                      kind: "option",
+                      label: "Created at",
+                      icon: <Calendar class="h-3.5 w-3.5" />,
+                      selected: state.projectSidebarPreferences.projectSort === "created-at",
+                      onSelect: () => setProjectSort("created-at")
+                    },
+                    {
+                      kind: "option",
+                      label: "Manual",
+                      icon: <GripVertical class="h-3.5 w-3.5" />,
+                      selected: state.projectSidebarPreferences.projectSort === "manual",
+                      onSelect: () => setProjectSort("manual")
+                    }
+                  ]
+                },
+                {
+                  kind: "submenu",
+                  label: "Sort threads",
+                  value: formatThreadSortLabel(state.projectSidebarPreferences.threadSort),
+                  icon: <Clock3 class="h-3.5 w-3.5" />,
+                  items: [
+                    {
+                      kind: "option",
+                      label: "Last user message",
+                      icon: <Clock3 class="h-3.5 w-3.5" />,
+                      selected: state.projectSidebarPreferences.threadSort === "last-user-message",
+                      onSelect: () => setThreadSort("last-user-message")
+                    },
+                    {
+                      kind: "option",
+                      label: "Created at",
+                      icon: <Calendar class="h-3.5 w-3.5" />,
+                      selected: state.projectSidebarPreferences.threadSort === "created-at",
+                      onSelect: () => setThreadSort("created-at")
+                    }
+                  ]
+                },
+                {
+                  kind: "submenu",
+                  label: "Group projects",
+                  value: formatProjectGroupingLabel(state.projectSidebarPreferences.grouping),
+                  icon: <Folder class="h-3.5 w-3.5" />,
+                  items: [
+                    {
+                      kind: "option",
+                      label: "Group by repository",
+                      icon: <Folder class="h-3.5 w-3.5" />,
+                      selected: state.projectSidebarPreferences.grouping === "repository",
+                      onSelect: () => setGrouping("repository")
+                    },
+                    {
+                      kind: "option",
+                      label: "Group by repository path",
+                      icon: <FolderOpenDot class="h-3.5 w-3.5" />,
+                      selected: state.projectSidebarPreferences.grouping === "repository-path",
+                      onSelect: () => setGrouping("repository-path")
+                    },
+                    {
+                      kind: "option",
+                      label: "Keep separate",
+                      icon: <Layers class="h-3.5 w-3.5" />,
+                      selected: state.projectSidebarPreferences.grouping === "separate",
+                      onSelect: () => setGrouping("separate")
+                    }
+                  ]
+                }
+              ]}
+            />
+          }
+          onInput={(event) => {
+            setProjectChatSearch((event.target as HTMLInputElement).value);
+            setProjectChatSearchIndex(0);
+          }}
+          onKeyDown={(event) => {
+            if (!projectChatSearch()) {
+              return;
+            }
+            if (event.key === "Escape") {
+              event.preventDefault();
+              setProjectChatSearch("");
+            }
+            if (event.key === "ArrowDown") {
+              event.preventDefault();
+              setProjectChatSearchIndex((index) => Math.min(index + 1, Math.max(0, projectChatSearchResults().length - 1)));
+            }
+            if (event.key === "ArrowUp") {
+              event.preventDefault();
+              setProjectChatSearchIndex((index) => Math.max(0, index - 1));
+            }
+            if (event.key === "Enter") {
+              const result = projectChatSearchResults()[projectChatSearchIndex()];
+              if (result) {
+                event.preventDefault();
+                openProjectChatSearchResult(result);
+              }
+            }
+          }}
+        />
+        <Show when={projectChatSearch()}>
+          <div class="mt-2 max-h-52 overflow-auto rounded-lg border border-(--border) bg-white/85">
+            <Show
+              when={projectChatSearchResults().length > 0}
+              fallback={<div class="p-3 text-[0.675rem] text-(--muted)">No project or active-thread hits.</div>}
+            >
+              <For each={projectChatSearchResults()}>
+                {(result, index) => (
+                  <button
+                    type="button"
+                    class="flex w-full flex-col gap-1 px-3 py-2 text-left text-[0.675rem]"
+                    classList={{
+                      "bg-teal-50": projectChatSearchIndex() === index(),
+                      "text-(--foreground)": projectChatSearchIndex() === index(),
+                      "text-(--muted)": projectChatSearchIndex() !== index()
+                    }}
+                    onMouseEnter={() => setProjectChatSearchIndex(index())}
+                    onClick={() => openProjectChatSearchResult(result)}
+                  >
+                    <span class="font-semibold text-(--foreground)">{result.title}</span>
+                    <span class="truncate">{result.preview}</span>
+                  </button>
+                )}
+              </For>
+            </Show>
           </div>
-        </div>
-      </div>
+        </Show>
+      </LeftPaneFilterBlock>
 
       <Show
         when={state.workspace.projects.length > 0}
         fallback={
-          <div class="rounded-3xl border border-dashed border-(--border) bg-white/40 p-5 text-[0.675rem] leading-5 text-(--muted)">
+          <LeftPaneEmptyState>
             No workspace roots yet. Open project switcher or browse folder to start isolated project threads.
-          </div>
+          </LeftPaneEmptyState>
         }
       >
         <Show
@@ -712,7 +889,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
           }
         />
       </Show>
-    </div>
+    </LeftPaneShell>
   );
 }
 
@@ -756,67 +933,16 @@ type ProjectSidebarRow =
   | { kind: "group"; key: string; label: string }
   | { kind: "project"; key: string; project: ProjectCard };
 
-function SortMenu(props: {
-  projectSort: ProjectSidebarProjectSort;
-  threadSort: ProjectSidebarThreadSort;
-  grouping: ProjectSidebarGrouping;
-  onProjectSort: (value: ProjectSidebarProjectSort) => void;
-  onThreadSort: (value: ProjectSidebarThreadSort) => void;
-  onGrouping: (value: ProjectSidebarGrouping) => void;
-}) {
-  return (
-    <div class="flex flex-col gap-1 text-[0.675rem]">
-      <MenuSection label="Sort projects" />
-      <MenuOption
-        selected={props.projectSort === "last-user-message"}
-        label="Last user message"
-        onClick={() => props.onProjectSort("last-user-message")}
-      />
-      <MenuOption selected={props.projectSort === "created-at"} label="Created at" onClick={() => props.onProjectSort("created-at")} />
-      <MenuOption selected={props.projectSort === "manual"} label="Manual" onClick={() => props.onProjectSort("manual")} />
-      <MenuSection label="Sort threads" class="mt-3" />
-      <MenuOption
-        selected={props.threadSort === "last-user-message"}
-        label="Last user message"
-        onClick={() => props.onThreadSort("last-user-message")}
-      />
-      <MenuOption selected={props.threadSort === "created-at"} label="Created at" onClick={() => props.onThreadSort("created-at")} />
-      <Separator class="my-2" />
-      <MenuSection label="Group projects" />
-      <MenuOption
-        selected={props.grouping === "repository"}
-        label="Group by repository"
-        onClick={() => props.onGrouping("repository")}
-      />
-      <MenuOption
-        selected={props.grouping === "repository-path"}
-        label="Group by repository path"
-        onClick={() => props.onGrouping("repository-path")}
-      />
-      <MenuOption selected={props.grouping === "separate"} label="Keep separate" onClick={() => props.onGrouping("separate")} />
-    </div>
-  );
+function formatProjectSortLabel(sort: ProjectSidebarProjectSort) {
+  return sort === "created-at" ? "Created" : sort === "manual" ? "Manual" : "Last message";
 }
 
-function MenuSection(props: { label: string; class?: string }) {
-  return <div class={`px-2 py-1 text-[0.625rem] font-semibold text-(--muted) ${props.class ?? ""}`}>{props.label}</div>;
+function formatThreadSortLabel(sort: ProjectSidebarThreadSort) {
+  return sort === "created-at" ? "Created" : "Last message";
 }
 
-function MenuOption(props: { selected: boolean; label: string; onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      class="flex min-h-8 cursor-pointer items-center gap-2 rounded-lg px-2 text-left font-semibold text-(--foreground) transition hover:bg-black/5"
-      onClick={props.onClick}
-    >
-      <span class="flex h-4 w-4 items-center justify-center">
-        <Show when={props.selected}>
-          <Check class="h-3.5 w-3.5" />
-        </Show>
-      </span>
-      <span>{props.label}</span>
-    </button>
-  );
+function formatProjectGroupingLabel(grouping: ProjectSidebarGrouping) {
+  return grouping === "repository-path" ? "Path" : grouping === "separate" ? "Separate" : "Repository";
 }
 
 type ProjectCardSortableState = {

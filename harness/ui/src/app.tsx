@@ -1,5 +1,6 @@
 import { createMemo, createSignal, For, onCleanup, onMount, Show, type Component } from "solid-js";
 import { createHotkeys, formatForDisplay } from "@tanstack/solid-hotkeys";
+import type { CreateHotkeyDefinition } from "@tanstack/solid-hotkeys";
 import { Bot, BriefcaseBusiness, Clock3, Cog, FolderKanban, Menu, Pause, Play, PanelsTopLeft, Workflow, CircleQuestionMark } from "lucide-solid";
 import { createRequestId } from "../../shared/protocol";
 import { AssistantEditorDialog } from "./components/assistant-editor-dialog";
@@ -19,55 +20,71 @@ import { TracePanel } from "./components/trace-panel";
 import { getTutorialDefinition } from "./components/tutorial-definitions";
 import { TutorialOverlay } from "./components/tutorial-overlay";
 import { ActionButton } from "./components/action-button";
+import { LeftPaneShell } from "./components/primitives/left-pane";
 import { SheetContent, SheetRoot, SheetTrigger } from "./components/primitives/sheet";
 import { Tooltip } from "./components/primitives/tooltip";
 import { connectHarnessWebSocket } from "./harness-websocket";
-import { harnessStore, type HarnessLeftTab, type MainPanelSizes } from "./harness-store";
+import { harnessStore, type AssistantEditorDraft, type BackgroundJobEditorDraft, type HarnessLeftTab, type MainPanelSizes } from "./harness-store";
+import { resolveBrowserTimezone } from "./lib/time-format";
+import { appHotkeySettings, normalizeAppHotkeyPreferences, type AppHotkeyId } from "./lib/app-hotkeys";
+import { selectCurrentTabItem } from "./lib/current-tab-item-hotkeys";
+import { isEditableTarget } from "./lib/editable-target";
 import { reportUiError } from "./toast-store";
 
 export function App() {
   let connection: ReturnType<typeof connectHarnessWebSocket> | undefined;
   const [sidebarOpen, setSidebarOpen] = createSignal(false);
 
-  createHotkeys(
-    [
-      {
-        hotkey: "Mod+K",
-        callback: () => {
-          harnessStore.openProjectSwitcher();
-        },
+  const appHotkeys = (): CreateHotkeyDefinition[] => {
+    const hotkeys = normalizeAppHotkeyPreferences(harnessStore.state.appHotkeyPreferences);
+    return [
+      ...appHotkeySettings.filter((setting) => setting.id !== "focusCurrentSearch").flatMap((setting) =>
+      hotkeys[setting.id].map((hotkey) => ({
+        hotkey: hotkey as CreateHotkeyDefinition["hotkey"],
+        callback: () => handleAppHotkey(setting.id),
         options: {
           meta: {
-            name: "Open or switch project",
-            description: "Open the spotlight-style project switcher"
+            name: setting.label,
+            description: setting.description
           }
         }
-      },
-      {
-        hotkey: "Mod+Space",
-        callback: () => {
-          harnessStore.openProjectSwitcher();
-        },
+      }))
+      ),
+      ...Array.from({ length: 9 }, (_, index) => ({
+        hotkey: `Mod+Shift+${index + 1}` as CreateHotkeyDefinition["hotkey"],
+        callback: () => selectCurrentTabItem(harnessStore.state.activeLeftTab, index),
         options: {
           meta: {
-            name: "Open or switch project",
-            description: "Open the spotlight-style project switcher"
+            name: `Select item ${index + 1}`,
+            description: "Select item in the current sidepanel"
           }
         }
-      },
-      {
-        hotkey: "Mod+,",
-        callback: () => {
-          harnessStore.openPreferencesModal();
-        },
-        options: {
-          meta: {
-            name: "Open workspace preferences",
-            description: "Open workspace preferences"
-          }
+      }))
+    ];
+  };
+  const searchHotkeys = (): CreateHotkeyDefinition[] => {
+    const hotkeys = normalizeAppHotkeyPreferences(harnessStore.state.appHotkeyPreferences);
+    return hotkeys.focusCurrentSearch.map((hotkey) => ({
+      hotkey: hotkey as CreateHotkeyDefinition["hotkey"],
+      callback: () => focusCurrentTabSearch(),
+      options: {
+        meta: {
+          name: "Focus search",
+          description: "Focus search for the current sidepanel"
         }
       }
-    ],
+    }));
+  };
+
+  createHotkeys(
+    appHotkeys,
+    () => ({
+      enabled: !harnessStore.state.projectSwitcherOpen && !isProjectSwitcherInputFocused() && !isEditableTarget(document.activeElement),
+      ignoreInputs: false
+    })
+  );
+  createHotkeys(
+    searchHotkeys,
     () => ({
       enabled: !harnessStore.state.projectSwitcherOpen && !isProjectSwitcherInputFocused(),
       ignoreInputs: false
@@ -110,6 +127,7 @@ export function App() {
 
   const state = harnessStore.state;
   const activeLeftTab = createMemo(() => state.activeLeftTab);
+  const activeLeftTabDefinition = createMemo(() => leftPaneTabs.find((tab) => tab.id === activeLeftTab()) ?? leftPaneTabs[0]);
   const mainPanelGridStyle = () => ({
     "--left-panel-size": `${state.mainPanelSizes.left}fr`,
     "--center-panel-size": `${state.mainPanelSizes.center}fr`,
@@ -157,7 +175,7 @@ export function App() {
     return `Resume new executions | queued ${state.executionControl.deferredPlanningQuestionCount} planner, ${state.executionControl.deferredAssistantQuestionCount} assistant, ${state.executionControl.deferredBrowserApprovalCount} browser`;
   };
   return (
-    <main data-test-app-shell="" class="app-zoom-shell relative overflow-hidden px-[0.6rem] py-[0.6rem] md:px-4 md:py-4">
+    <main data-test-app-shell="" class="app-zoom-shell relative overflow-auto px-[0.6rem] py-[0.6rem] md:px-4 md:py-4 lg:overflow-hidden">
       <div class="app-background" />
       <div class="mx-auto flex h-full min-h-0 flex-col gap-4">
         <header data-test-app-header="" class="panel-shell flex flex-col gap-3 rounded-2xl px-[0.8rem] py-[0.6rem] md:flex-row md:items-center md:justify-between">
@@ -182,6 +200,13 @@ export function App() {
               <div class="flex items-center gap-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--muted)">
                 <Workflow class="h-3.5 w-3.5" />
                 AI harness workspace
+              </div>
+              <div data-test-mobile-surface-label="" class="inline-flex items-center gap-1.5 rounded-full border border-(--border) bg-white/60 px-2 py-1 text-[0.625rem] font-semibold text-(--foreground) lg:hidden">
+                {(() => {
+                  const Icon = activeLeftTabDefinition().icon;
+                  return <Icon class="h-3.5 w-3.5" />;
+                })()}
+                {activeLeftTabDefinition().label}
               </div>
             </div>
           </div>
@@ -228,7 +253,7 @@ export function App() {
 
         <div
           data-test-main-panel-grid=""
-          class="grid min-h-0 flex-1 auto-rows-fr gap-4 lg:gap-x-2"
+          class="grid min-h-0 flex-1 auto-rows-min gap-4 lg:auto-rows-fr lg:gap-x-2"
           classList={{
             "lg:grid-cols-[minmax(0,var(--left-panel-size))_0.35rem_minmax(0,var(--center-panel-size))_0.35rem_minmax(0,var(--right-panel-size))]": state.tracePanelOpen,
             "lg:grid-cols-[minmax(0,var(--left-panel-size))_0.35rem_minmax(0,var(--center-panel-size))]": !state.tracePanelOpen
@@ -241,7 +266,7 @@ export function App() {
             </div>
           </div>
           <PanelResizeHandle label="Resize left and center panels" onPointerDown={(event) => startPanelResize("left", event)} />
-          <div class="min-h-0 min-w-0 overflow-hidden">
+          <div class="min-h-0 min-w-0 overflow-visible lg:overflow-hidden">
             <Show
               when={activeLeftTab() === "jobs" || activeLeftTab() === "runs"}
               fallback={
@@ -307,6 +332,120 @@ export function App() {
   );
 }
 
+function handleAppHotkey(id: AppHotkeyId) {
+  const tab = appHotkeySettings.find((setting) => setting.id === id)?.tab;
+  if (tab) {
+    harnessStore.setActiveLeftTab(tab);
+    return;
+  }
+
+  switch (id) {
+    case "openProjectSwitcher":
+      harnessStore.openProjectSwitcher();
+      return;
+    case "createProjectChat":
+      createProjectChatFromHotkey();
+      return;
+    case "createAssistant":
+      createAssistantFromHotkey();
+      return;
+    case "createBackgroundJob":
+      createBackgroundJobFromHotkey();
+      return;
+    case "focusCurrentSearch":
+      focusCurrentTabSearch();
+      return;
+  }
+}
+
+function createProjectChatFromHotkey() {
+  harnessStore.setActiveLeftTab("projects");
+  const projectId = harnessStore.state.workspace.activeProjectId;
+  if (!projectId) {
+    harnessStore.openProjectSwitcher();
+    return;
+  }
+
+  harnessStore.actions.sendCommand({
+    type: "thread.create",
+    requestId: createRequestId(),
+    payload: { projectId }
+  });
+}
+
+function createAssistantFromHotkey() {
+  const state = harnessStore.state;
+  const scope = state.assistants.scopeFilter === "project" ? "project" : "global";
+  const draft: AssistantEditorDraft = {
+    source: "create",
+    name: "",
+    scope,
+    projectId: scope === "project" ? state.workspace.activeProjectId ?? state.workspace.projects[0]?.id : undefined,
+    description: "",
+    personalityPrompt: "",
+    jobPrompt: "",
+    agentId: state.selectedAgentId,
+    providerBrand: state.providerBrand,
+    modeId: "",
+    executionModelId: state.selectedExecutionModelId,
+    reasoningStrength: state.selectedReasoningStrength,
+    fastMode: state.selectedFastMode,
+    runState: "active",
+    bootstrapState: "pending",
+    assetRefsText: ""
+  };
+  harnessStore.openAssistantEditor(draft);
+}
+
+function createBackgroundJobFromHotkey() {
+  const state = harnessStore.state;
+  const template = state.backgroundJobs.templates.find((entry) => entry.id === "scheduled-task");
+  const draft: BackgroundJobEditorDraft = {
+    source: "create",
+    projectId: state.workspace.activeProjectId ?? state.workspace.projects[0]?.id,
+    templateId: template?.id,
+    kind: "ai-routine",
+    name: "",
+    description: "",
+    scheduleInput: "",
+    timezone: resolveBrowserTimezone(),
+    aiPrompt: template?.definition.kind === "ai-routine" ? template.definition.prompt : "",
+    aiModeId: template?.definition.kind === "ai-routine" ? template.definition.modeId : undefined,
+    aiExecutionModelId: template?.definition.kind === "ai-routine" ? template.definition.executionModelId : undefined,
+    aiReasoningStrength: template?.definition.kind === "ai-routine" ? template.definition.reasoningStrength : undefined,
+    aiFastMode: template?.definition.kind === "ai-routine" ? template.definition.fastMode : undefined,
+    aiPlanExecutionMode:
+      template?.definition.kind === "ai-routine"
+        ? template.definition.planExecutionMode ?? state.planExecutionModeDefault
+        : state.planExecutionModeDefault,
+    aiSubagentWorktreeStrategy:
+      template?.definition.kind === "ai-routine"
+        ? template.definition.subagentWorktreeStrategy ?? state.subagentWorktreeStrategyDefault
+        : state.subagentWorktreeStrategyDefault,
+    shellExecutable: "",
+    shellArgsText: "",
+    shellCwd: "",
+    shellEnvRefsText: "",
+    shellTimeoutSeconds: 600,
+    shellNetworkAccess: false
+  };
+  harnessStore.openBackgroundJobEditor(draft);
+}
+
+function focusCurrentTabSearch() {
+  const labels: Record<HarnessLeftTab, string> = {
+    projects: "Search projects",
+    assistants: "Search assistants",
+    jobs: "Search jobs",
+    runs: "Search runs",
+    preferences: "Search settings"
+  };
+  const label = labels[harnessStore.state.activeLeftTab];
+  const input = document.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`);
+  input?.focus();
+  input?.select();
+}
+
 function PanelResizeHandle(props: { label: string; onPointerDown: (event: PointerEvent) => void }) {
   return (
     <Tooltip content={props.label} triggerClass="hidden h-full min-h-0 lg:block">
@@ -326,6 +465,7 @@ type LeftPaneTabDefinition = {
   label: string;
   tooltip: string;
   icon: Component<{ class?: string }>;
+  hotkeyId?: AppHotkeyId;
 };
 
 const leftPaneTabs: LeftPaneTabDefinition[] = [
@@ -333,33 +473,54 @@ const leftPaneTabs: LeftPaneTabDefinition[] = [
     id: "projects",
     label: "Projects",
     tooltip: "Show project roots and threads",
-    icon: FolderKanban
+    icon: FolderKanban,
+    hotkeyId: "openProjects"
   },
   {
     id: "assistants",
     label: "Assistants",
     tooltip: "Show assistant roster",
-    icon: Bot
+    icon: Bot,
+    hotkeyId: "openAssistants"
   },
   {
     id: "jobs",
     label: "Jobs",
     tooltip: "Show scheduled background jobs",
-    icon: BriefcaseBusiness
+    icon: BriefcaseBusiness,
+    hotkeyId: "openJobs"
   },
   {
     id: "runs",
     label: "Runs",
     tooltip: "Show active run info",
-    icon: Clock3
+    icon: Clock3,
+    hotkeyId: "openRuns"
   },
   {
     id: "preferences",
     label: "Settings",
-    tooltip: `Show workspace settings (${formatForDisplay("Mod+,")})`,
-    icon: Cog
+    tooltip: "Show workspace settings",
+    icon: Cog,
+    hotkeyId: "openPreferences"
   }
 ];
+
+function formatHotkeyHint(hotkey: string) {
+  return formatForDisplay(hotkey)
+    .split("+")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join(" + ");
+}
+
+function withPrimaryHotkey(tooltip: string, hotkeyId?: AppHotkeyId) {
+  if (!hotkeyId) {
+    return tooltip;
+  }
+  const primaryHotkey = normalizeAppHotkeyPreferences(harnessStore.state.appHotkeyPreferences)[hotkeyId][0];
+  return primaryHotkey ? `${tooltip} (${formatHotkeyHint(primaryHotkey)})` : tooltip;
+}
 
 function TabbedLeftPane(props: { compact?: boolean; onNavigate?: () => void } = {}) {
   const state = harnessStore.state;
@@ -401,12 +562,12 @@ function TabbedLeftPane(props: { compact?: boolean; onNavigate?: () => void } = 
         <For each={leftPaneTabs}>
           {(tab) => {
             const Icon = tab.icon;
+            const tooltip = () => withPrimaryHotkey(tab.tooltip, tab.hotkeyId);
             return (
-              <Tooltip content={tab.tooltip}>
+              <Tooltip content={tooltip()}>
                 <button
                   type="button"
                   class="surface-tab"
-                  classList={{ "bg-white/80": state.activeLeftTab === tab.id, "text-(--foreground)": state.activeLeftTab === tab.id }}
                   aria-label={tab.label}
                   attr:aria-pressed={state.activeLeftTab === tab.id ? "true" : "false"}
                   onClick={() => {
@@ -430,9 +591,9 @@ function TabbedLeftPane(props: { compact?: boolean; onNavigate?: () => void } = 
               when={state.activeLeftTab === "assistants"}
               fallback={
                 <Show when={state.activeLeftTab === "preferences"} fallback={<ProjectSidebar compact={props.compact} onNavigate={props.onNavigate} />}>
-                  <div class="h-full rounded-b-2xl border border-t-0 border-(--border) bg-(--panel)">
+                  <LeftPaneShell kind="preferences" class="rounded-b-2xl">
                     <PreferenceSectionNav onNavigate={props.onNavigate} />
-                  </div>
+                  </LeftPaneShell>
                 </Show>
               }
             >

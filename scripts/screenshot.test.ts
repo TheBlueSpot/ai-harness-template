@@ -23,6 +23,7 @@ describe("parseScreenshotArgs", () => {
     const opts = parseScreenshotArgs([], fixedNow);
     expect(opts.routes).toEqual(["/"]);
     expect(opts.viewports.map((viewport) => viewport.name)).toEqual(["desktop", "mobile"]);
+    expect(opts.waitUntil).toBe("domcontentloaded");
     expect(opts.runId).toBe("screenshot-42");
     expect(opts.outDir.endsWith(`${opts.runId}`)).toBe(true);
   });
@@ -44,6 +45,15 @@ describe("parseScreenshotArgs", () => {
   test("captures --base-url override", () => {
     const opts = parseScreenshotArgs(["--base-url", "http://localhost:8787"], fixedNow);
     expect(opts.baseUrlOverride).toBe("http://localhost:8787");
+  });
+
+  test("accepts explicit navigation wait mode", () => {
+    const opts = parseScreenshotArgs(["--wait", "networkidle"], fixedNow);
+    expect(opts.waitUntil).toBe("networkidle");
+  });
+
+  test("throws on unknown navigation wait mode", () => {
+    expect(() => parseScreenshotArgs(["--wait", "idle"], fixedNow)).toThrow(/Unknown --wait value/);
   });
 
   test("throws on unknown argument", () => {

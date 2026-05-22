@@ -21,6 +21,7 @@ Backend websocket handlers and runtime orchestration for harness.
 - Assistant reprioritization includes recent assistant logs, keeping state summaries grounded in the job that just finished.
 - First assistant chat and assistant-owned job outputs are prompted to introduce the assistant role, prompts, and current learnings before work begins.
 - Assistant prompts share a consistent identity, operational logic, and active mission shape while passive background notifications redact prompt scaffolding.
+- Assistant chat prompts route assistant operations through the shared assistant action runbook, whether the user addressed the assistant from project chat or from the Assistants surface.
 - Assistant learnings reject placeholder summaries, clean stale garbage rows at startup, dedupe on write, compact through bounded AI summaries after growth thresholds, and keep prompt context focused on summaries plus durable user guidance.
 - Assistant todos and learnings can be manually removed, and completed todos age out after a short retention window to keep assistant state focused.
 - Assistant-owned background jobs carry recent answered questions into routine context so repeated prompts honor prior user guidance.
@@ -32,7 +33,7 @@ Backend websocket handlers and runtime orchestration for harness.
 - Explicit assistant creation can be routed from chat intent through typed websocket commands and persisted setup questions while unknown assistant-like prompts stay in normal project chat.
 - Assistant bootstrap work is tracked as retryable durable state so reconnects and duplicate retries do not leave operators stuck in invisible setup work.
 - Websocket streaming paths batch high-frequency assistant and terminal output, use heartbeat checks for stale sockets, and keep hot transcript updates narrow.
-- Development live reload ignores context and repo-local agent metadata so prompt or skill edits do not refresh the harness UI.
+- Development live reload uses short backoff windows, keeps UI and backend timers independent, watches shared harness contracts for both surfaces, and ignores untracked or repo-local metadata changes.
 - Development DB recovery backs up local SQLite artifacts before purge so corrupted or schema-drifted workspace state remains inspectable.
 - Prompt attachments are accepted only from trusted upload metadata and can be reused on planning answers or refinements.
 - Pi provider routing supports GPT, Gemini, and Claude while keeping stable prompt context and large attachments cache-aware for cheaper repeated runs.

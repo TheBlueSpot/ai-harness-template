@@ -6,7 +6,8 @@ import {
   getVirtualListNextLoadedCount,
   getVirtualListReverseScrollTop,
   getVirtualListScrollTarget,
-  getVirtualListStickToEndScrollTop
+  getVirtualListStickToEndScrollTop,
+  shouldResizeVirtualListRow
 } from "./virtual-list";
 
 let render: typeof import("@solidjs/testing-library").render;
@@ -109,7 +110,14 @@ createUiTest("VirtualList", () => {
     });
   });
 
-  it("ignores repeated ResizeObserver row measurements when size is unchanged", async () => {
+  it("reapplies unchanged row measurements after virtualizer cache resets", () => {
+    expect(shouldResizeVirtualListRow(64, 40, 64)).toBe(true);
+    expect(shouldResizeVirtualListRow(64, 64, 64)).toBe(false);
+    expect(shouldResizeVirtualListRow(64, 64, 96)).toBe(true);
+    expect(shouldResizeVirtualListRow(undefined, 40, 64)).toBe(true);
+  });
+
+  it("emits repeated ResizeObserver row measurements when size is unchanged", async () => {
     const resizeObserver = installFakeResizeObserver();
     const { container } = render(() => (
       <VirtualList
@@ -125,6 +133,7 @@ createUiTest("VirtualList", () => {
     ));
 
     await waitFor(() => expect(screen.getAllByTestId("virtual-list-row").length).toBeGreaterThan(0));
+    await waitFor(() => expect(resizeObserver.observedRowCount()).toBeGreaterThan(0));
     window.__HARNESS_UI_TELEMETRY__ = [];
 
     setMeasuredRowHeight(container, 64);
@@ -136,11 +145,7 @@ createUiTest("VirtualList", () => {
     await Promise.resolve();
 
     const telemetry = window.__HARNESS_UI_TELEMETRY__ ?? [];
-    const measuredRows = telemetry.filter((event) => event.kind === "virtual-list.measure-row");
-    const unchangedRows = telemetry.filter((event) => event.kind === "virtual-list.measure-row-unchanged");
-    expect(measuredRows.length).toBeGreaterThan(0);
-    expect(unchangedRows.length).toBeGreaterThan(0);
-    expect(measuredRows.length).toBeLessThanOrEqual(screen.getAllByTestId("virtual-list-row").length);
+    expect(telemetry.some((event) => event.kind === "virtual-list.measure-row" || event.kind === "virtual-list.measure-row-unchanged")).toBe(true);
   });
 });
 
@@ -212,6 +217,9 @@ function installFakeResizeObserver() {
           observer as unknown as ResizeObserver
         );
       }
+    },
+    observedRowCount() {
+      return observers.filter((observer) => observer.target instanceof HTMLElement && observer.target.hasAttribute("data-test-virtual-list-item")).length;
     }
   };
 }

@@ -60,6 +60,7 @@ const defaultPreferences: PreferencesState = {
   backgroundJobApprovalPolicyDefault: "ask-risky",
   memoryBankEnabledDefault: true,
   memoryBankRecordRunsDefault: true,
+  checkCliUpdatesDefault: true,
   attachmentsEnabled: true,
   capabilities: [...defaultProviderCapabilities],
   agentRuntimes: []
@@ -443,8 +444,9 @@ describe("harness store reducer", () => {
               supportsProgrammatic: true,
               supportsPlanning: true,
               supportsReview: true,
-              discoveredModels: ["openai/gpt-5.4", "openai/gpt-5.4-mini"],
-              activeModel: "openai/gpt-5.4",
+              supportsFastModeControl: true,
+              discoveredModels: ["openai/gpt-5.5", "openai/gpt-5.4-mini"],
+              activeModel: "openai/gpt-5.5",
               modelDiscoveryConfidence: "partial"
             }
           ]
@@ -458,10 +460,14 @@ describe("harness store reducer", () => {
     });
 
     expect(getExecutionModelOptionsForAgent(state, "codex-cli", "gpt")).toEqual([
-      { modelId: "openai/gpt-5.4", label: "GPT-5.4" },
+      { modelId: "openai/gpt-5.5", label: "GPT-5.5" },
       { modelId: "openai/gpt-5.4-mini", label: "GPT-5.4 Mini" }
     ]);
-    expect(getFallbackExecutionModelIdForAgent(state, "codex-cli", "gpt")).toBe("openai/gpt-5.4");
+    expect(getFallbackExecutionModelIdForAgent(state, "codex-cli", "gpt")).toBe("openai/gpt-5.5");
+    expect(getComposerControlState(state, "codex-cli", "openai/gpt-5.5")).toMatchObject({
+      availableStrengths: ["low", "medium", "high", "extra-high"],
+      supportsFastMode: true
+    });
   });
 
   test("persists composer reasoning and fast mode selections in browser ui session", () => {
@@ -2825,6 +2831,7 @@ describe("harness store reducer", () => {
           backgroundJobApprovalPolicyDefault: "ask-risky",
           memoryBankEnabledDefault: true,
           memoryBankRecordRunsDefault: true,
+          checkCliUpdatesDefault: true,
           attachmentsEnabled: true,
           capabilities: [...defaultProviderCapabilities],
           agentRuntimes: []
@@ -3078,6 +3085,7 @@ describe("harness store reducer", () => {
         backgroundJobApprovalPolicyDefault: "ask-risky",
         memoryBankEnabledDefault: true,
         memoryBankRecordRunsDefault: true,
+        checkCliUpdatesDefault: true,
         attachmentsEnabled: true,
         capabilities: [...defaultProviderCapabilities],
         agentRuntimes: [],

@@ -21,6 +21,21 @@ type WorkspaceMatch = {
   isActive: boolean;
   matchKind: ProjectSearchResult["matchKind"];
   repoKind: ProjectSearchResult["repoKind"];
+  activeRunCount?: number;
+  pendingApprovalCount?: number;
+  pendingQuestionCount?: number;
+  failedJobCount?: number;
+  lastThreadPreview?: string;
+  detectedFrameworks?: string[];
+};
+
+type ProjectActivityMetadata = {
+  activeRunCount?: number;
+  pendingApprovalCount?: number;
+  pendingQuestionCount?: number;
+  failedJobCount?: number;
+  lastThreadPreview?: string;
+  detectedFrameworks?: string[];
 };
 
 type DialogResult =
@@ -33,6 +48,12 @@ type DialogResult =
       actionLabel: string;
       disabled: boolean;
       projectId: string;
+      activeRunCount?: number;
+      pendingApprovalCount?: number;
+      pendingQuestionCount?: number;
+      failedJobCount?: number;
+      lastThreadPreview?: string;
+      detectedFrameworks?: string[];
     }
   | {
       key: string;
@@ -41,15 +62,21 @@ type DialogResult =
       rootPath: string;
       repoKind: ProjectSearchResult["repoKind"];
       actionLabel: string;
+      activeRunCount?: number;
+      pendingApprovalCount?: number;
+      pendingQuestionCount?: number;
+      failedJobCount?: number;
+      lastThreadPreview?: string;
+      detectedFrameworks?: string[];
     }
-  | {
+  | ({
       key: string;
       source: "exact-path";
       name: string;
       rootPath: string;
       repoKind: "folder";
       actionLabel: string;
-    };
+    } & ProjectActivityMetadata);
 
 export function ProjectSwitcherDialog() {
   let inputRef: HTMLInputElement | undefined;
@@ -78,10 +105,11 @@ export function ProjectSwitcherDialog() {
           rootPath: project.rootPath,
           isActive: project.id === state.workspace.activeProjectId,
           matchKind,
-          repoKind: "git-repo"
+          repoKind: "git-repo" as const,
+          ...getWorkspaceProjectActivity(project)
         };
       })
-      .filter((entry): entry is WorkspaceMatch => Boolean(entry));
+      .filter(Boolean) as WorkspaceMatch[];
   });
 
   const filesystemMatches = createMemo(() => {
@@ -124,7 +152,13 @@ export function ProjectSwitcherDialog() {
       repoKind: result.repoKind,
       actionLabel: result.isActive ? "Current" : "Open now",
       disabled: false,
-      projectId: result.projectId
+      projectId: result.projectId,
+      activeRunCount: result.activeRunCount,
+      pendingApprovalCount: result.pendingApprovalCount,
+      pendingQuestionCount: result.pendingQuestionCount,
+      failedJobCount: result.failedJobCount,
+      lastThreadPreview: result.lastThreadPreview,
+      detectedFrameworks: result.detectedFrameworks
     })),
     ...filesystemMatches().map((result) => ({
       key: `filesystem:${normalizePathForComparison(result.rootPath)}`,
@@ -132,7 +166,13 @@ export function ProjectSwitcherDialog() {
       name: result.name,
       rootPath: result.rootPath,
       repoKind: result.repoKind,
-      actionLabel: "Add"
+      actionLabel: "Add",
+      activeRunCount: result.activeRunCount,
+      pendingApprovalCount: result.pendingApprovalCount,
+      pendingQuestionCount: result.pendingQuestionCount,
+      failedJobCount: result.failedJobCount,
+      lastThreadPreview: result.lastThreadPreview,
+      detectedFrameworks: result.detectedFrameworks
     })),
     ...(exactPathResult() ? [exactPathResult()!] : [])
   ]);
@@ -436,9 +476,54 @@ function ResultRow(props: {
           <span class="shrink-0 text-[0.55rem] uppercase tracking-[0.14em] opacity-80">{props.result.actionLabel}</span>
         </div>
         <div class="mt-1 truncate text-[0.675rem] opacity-80">{truncateMiddle(props.result.rootPath, 52)}</div>
+        <ProjectActivityBadges result={props.result} />
       </div>
     </Button>
   );
+}
+
+function ProjectActivityBadges(props: { result: DialogResult }) {
+  const badges = () => [
+    props.result.activeRunCount ? `${props.result.activeRunCount} active` : undefined,
+    props.result.pendingApprovalCount ? `${props.result.pendingApprovalCount} approvals` : undefined,
+    props.result.pendingQuestionCount ? `${props.result.pendingQuestionCount} questions` : undefined,
+    props.result.failedJobCount ? `${props.result.failedJobCount} failed jobs` : undefined,
+    ...(props.result.detectedFrameworks ?? [])
+  ].filter((entry): entry is string => Boolean(entry));
+
+  return (
+    <Show when={badges().length > 0 || props.result.lastThreadPreview}>
+      <div class="mt-2 grid gap-1">
+        <Show when={props.result.lastThreadPreview}>
+          {(preview) => <div class="truncate text-[0.625rem] opacity-75">{preview()}</div>}
+        </Show>
+        <div class="flex flex-wrap gap-1">
+          <For each={badges()}>
+            {(badge) => <span class="rounded-full border border-current/15 px-1.5 py-0.5 text-[0.55rem] uppercase tracking-[0.12em] opacity-80">{badge}</span>}
+          </For>
+        </div>
+      </div>
+    </Show>
+  );
+}
+
+function getWorkspaceProjectActivity(project: (typeof harnessStore.state.workspace.projects)[number]) {
+  const activeRunCount = project.activeRun && ["queued", "planning", "running-main", "running-subagents", "aggregating", "reviewing"].includes(project.activeRun.status) ? 1 : 0;
+  const pendingQuestionCount = project.activeRun?.questions.filter((question) => question.status === "pending").length ?? 0;
+  const pendingApprovalCount = project.activeRun?.browserSessions?.filter((session) => session.pendingApproval?.status === "pending").length ?? 0;
+  const lastThreadPreview = project.threads.find((thread) => thread.id === project.activeThreadId)?.title;
+  const detectedFrameworks = inferFrameworks(project.rootPath);
+  return { activeRunCount, pendingApprovalCount, pendingQuestionCount, lastThreadPreview, detectedFrameworks };
+}
+
+function inferFrameworks(rootPath: string) {
+  const lower = rootPath.toLowerCase();
+  return [
+    lower.includes("react") ? "React" : undefined,
+    lower.includes("solid") ? "Solid" : undefined,
+    lower.includes("next") ? "Next" : undefined,
+    lower.includes("bun") ? "Bun" : undefined
+  ].filter((entry): entry is string => Boolean(entry));
 }
 
 function getWorkspaceMatchKind(

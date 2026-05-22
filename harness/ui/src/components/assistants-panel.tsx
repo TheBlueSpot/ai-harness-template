@@ -1,9 +1,10 @@
-import { For, Show, createEffect, createMemo, createSignal, type JSX } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, type JSX } from "solid-js";
 import {
   ArrowDown,
   ArrowUp,
   Brain,
   Bot,
+  Calendar,
   Check,
   CircleAlert,
   CirclePause,
@@ -16,6 +17,7 @@ import {
   Folder,
   Gauge,
   Globe,
+  ListFilter,
   ListChecks,
   Logs,
   MessageSquare,
@@ -26,6 +28,7 @@ import {
   SquarePen,
   Trash2
 } from "lucide-solid";
+import { formatForDisplay } from "@tanstack/solid-hotkeys";
 import {
   createAssistantTodoId,
   type BackgroundJob,
@@ -40,7 +43,9 @@ import {
 import { resolveModeCatalog } from "../../../shared/modes";
 import { getAssistantQuestionDefaultChoices } from "../assistant-question-defaults";
 import { formatShortTimestamp, resolveBrowserTimezone } from "../lib/time-format";
-import { cn } from "../lib/utils";
+import { toProperCase } from "../lib/utils";
+import { normalizeAppHotkeyPreferences } from "../lib/app-hotkeys";
+import { registerCurrentTabItemSelector } from "../lib/current-tab-item-hotkeys";
 import { submitOnEnter } from "../textarea-submit";
 import {
   type AssistantEditorDraft,
@@ -48,6 +53,7 @@ import {
   type BackgroundJobEditorDraft,
   COMPOSER_REASONING_STRENGTHS,
   DEFAULT_COMPOSER_REASONING_STRENGTH,
+  type AssistantRosterSort,
   getComposerControlState,
   getExecutionModelOptionsForAgent,
   getSelectedAssistant,
@@ -62,6 +68,17 @@ import { ChatComposer } from "./primitives/chat-composer";
 import { CopyTextButton } from "./primitives/copy-text-button";
 import { Dialog } from "./primitives/dialog";
 import { ExecutionLog } from "./primitives/execution-log";
+import {
+  DetailEmptyState,
+  LeftPaneEmptyState,
+  LeftPaneFilterBlock,
+  LeftPaneHeader,
+  LeftPaneListSection,
+  LeftPaneSearchInput,
+  LeftPaneSearchMenu,
+  LeftPaneShell,
+  type LeftPaneSearchMenuItem
+} from "./primitives/left-pane";
 import { DropdownControl } from "./primitives/dropdown";
 import { Input } from "./primitives/input";
 import { ScrollArea } from "./primitives/scroll-area";
@@ -77,6 +94,18 @@ const assistantTodoStateOptions = [
   { value: "failed", label: "failed", description: "Attempt finished with failure." },
   { value: "cancelled", label: "cancelled", description: "Work was intentionally stopped." }
 ] satisfies Array<{ value: AssistantTodo["state"]; label: string; description: string }>;
+
+function formatHotkeyHint(hotkey: string) {
+  return formatForDisplay(hotkey)
+    .split("+")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join(" + ");
+}
+
+function tooltipWithPrimaryHotkey(label: string, hotkey: string | undefined) {
+  return hotkey ? `${label} (${formatHotkeyHint(hotkey)})` : label;
+}
 
 function renderMessageActionRow(timestamp: string | number | Date | undefined, copyButton: JSX.Element) {
   return (
@@ -216,6 +245,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
     getVisibleAssistants(state)
       .filter((assistant) => matchesAssistantFilters(assistant, state))
       .filter((assistant) => fuzzyMatches(assistantSearchHaystack(assistant, state), state.assistants.rosterSearch))
+      .sort((left, right) => compareAssistants(left, right, state.assistants.rosterSort))
   );
   const selectedAssistant = createMemo(() => getSelectedAssistant(state));
   createEffect(() => {
@@ -438,6 +468,21 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
   });
   const showRoster = () => variant() !== "detail";
   const showDetail = () => variant() !== "roster";
+
+  createEffect(() => {
+    if (!showRoster()) {
+      return;
+    }
+    const unregister = registerCurrentTabItemSelector("assistants", (index) => {
+      const assistant = visibleAssistants()[index];
+      if (!assistant) {
+        return false;
+      }
+      harnessStore.setSelectedAssistantId(assistant.id);
+      return true;
+    });
+    onCleanup(unregister);
+  });
 
   createEffect(() => {
     const assistant = selectedAssistant();
@@ -731,7 +776,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
   }
 
   return (
-    <section data-test-assistants-panel="" class="panel-shell flex h-full min-h-0 flex-col gap-4 rounded-2xl border-t-0 p-4">
+    <LeftPaneShell data-test-assistants-panel="" kind="assistants" padding="comfortable">
       <Show when={selectedCircuitBreakerAssistantId()}>
         <Dialog
           open
@@ -848,28 +893,23 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
         </Dialog>
       </Show>
       <Show when={showRoster()}>
-      <div class="px-1 py-1">
-        <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div class="flex items-center gap-2 text-[0.585rem] font-semibold tracking-[0.2em] text-(--muted)">
-            <span>Assistants</span>
-            <Tooltip content="Named operators with chat, todo list, questions inbox, learnings, jobs, and deep logs.">
-              <span class="inline-flex">
-                <CircleHelp class="h-3.5 w-3.5 text-(--muted)" aria-label="Assistants help" />
-              </span>
-            </Tooltip>
-          </div>
-          <div class="flex items-center gap-2">
+        <LeftPaneHeader
+          title="Assistants"
+          help="Named operators with chat, todo list, questions inbox, learnings, jobs, and deep logs."
+          actions={
             <ActionButton
-              tooltip={state.assistants.scopeFilter === "project" ? "Create project assistant" : "Create global assistant"}
+              tooltip={tooltipWithPrimaryHotkey(
+                state.assistants.scopeFilter === "project" ? "Create project assistant" : "Create global assistant",
+                normalizeAppHotkeyPreferences(state.appHotkeyPreferences).createAssistant[0]
+              )}
               icon={<Plus class="h-4 w-4" />}
               size="icon"
               variant="ghost"
               ariaLabel={state.assistants.scopeFilter === "project" ? "Create project assistant" : "Create global assistant"}
               onClick={() => openCreateAssistant(state.assistants.scopeFilter === "project" ? "project" : "global")}
             />
-          </div>
-        </div>
-      </div>
+          }
+        />
       </Show>
 
       <div
@@ -878,71 +918,22 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
       >
         <Show when={showRoster()}>
         <div class="flex min-h-0 flex-col gap-1">
-          <nav class="surface-tab-strip" data-test-assistant-scope-nav="">
-            <Tooltip content="Show global assistants">
-              <button
-                type="button"
-                class={cn(buttonVariants({ variant: "ghost" }), "surface-tab")}
-                aria-label="Show global assistants"
-                attr:aria-pressed={state.assistants.scopeFilter === "global" ? "true" : "false"}
-                onClick={() => harnessStore.setAssistantScopeFilter("global")}
-              >
-                <Globe class="h-4 w-4" />
-                Global
-              </button>
-            </Tooltip>
-            <Tooltip content="Show assistants for current project">
-              <button
-                type="button"
-                class={cn(buttonVariants({ variant: "ghost" }), "surface-tab")}
-                aria-label="Show assistants for current project"
-                attr:aria-pressed={state.assistants.scopeFilter === "project" ? "true" : "false"}
-                onClick={() => harnessStore.setAssistantScopeFilter("project")}
-              >
-                <Folder class="h-4 w-4" />
-                Current project
-              </button>
-            </Tooltip>
-          </nav>
-          <div class="grid gap-2">
-            <Input
+          <LeftPaneFilterBlock>
+            <LeftPaneSearchInput
               value={state.assistants.rosterSearch}
-              placeholder="Search assistants"
+              aria-label="Search assistants"
+              placeholder="Search assistants..."
+              menu={
+                <LeftPaneSearchMenu
+                  ariaLabel="Filter and sort assistants"
+                  tooltip="Filter and sort assistants"
+                  items={assistantRosterMenuItems(state)}
+                />
+              }
               onInput={(event) => harnessStore.setAssistantPaneFilters({ rosterSearch: (event.target as HTMLInputElement).value })}
             />
-            <div class="grid gap-2 text-[0.675rem] sm:grid-cols-2">
-              <select class="rounded-lg border border-(--border) bg-white/75 px-2 py-2" value={state.assistants.runStateFilter ?? ""} onChange={(event) => harnessStore.setAssistantPaneFilters({ runStateFilter: event.currentTarget.value ? event.currentTarget.value as Assistant["runState"] : undefined })}>
-                <option value="">All run states</option>
-                <option value="active">Active</option>
-                <option value="paused">Paused</option>
-              </select>
-              <select class="rounded-lg border border-(--border) bg-white/75 px-2 py-2" value={state.assistants.bootstrapStateFilter ?? ""} onChange={(event) => harnessStore.setAssistantPaneFilters({ bootstrapStateFilter: event.currentTarget.value ? event.currentTarget.value as Assistant["bootstrapState"] : undefined })}>
-                <option value="">All bootstrap</option>
-                <option value="pending">Pending</option>
-                <option value="running">Running</option>
-                <option value="completed">Completed</option>
-                <option value="failed">Failed</option>
-              </select>
-              <select class="rounded-lg border border-(--border) bg-white/75 px-2 py-2" value={state.assistants.providerBrandFilter ?? ""} onChange={(event) => harnessStore.setAssistantPaneFilters({ providerBrandFilter: event.currentTarget.value ? event.currentTarget.value as Assistant["providerBrand"] : undefined })}>
-                <option value="">All providers</option>
-                <option value="gpt">GPT</option>
-                <option value="gemini">Gemini</option>
-                <option value="claude">Claude</option>
-              </select>
-              <select class="rounded-lg border border-(--border) bg-white/75 px-2 py-2" value={state.assistants.projectIdFilter ?? ""} onChange={(event) => harnessStore.setAssistantPaneFilters({ projectIdFilter: event.currentTarget.value || undefined })}>
-                <option value="">All projects</option>
-                <For each={state.workspace.projects}>{(project) => <option value={project.id}>{project.name}</option>}</For>
-              </select>
-            </div>
-            <Show when={hasAssistantRosterFilters(state)}>
-              <ActionButton tooltip="Clear assistant roster search and filters" size="sm" variant="ghost" onClick={() => harnessStore.setAssistantPaneFilters({ rosterSearch: "", runStateFilter: undefined, bootstrapStateFilter: undefined, providerBrandFilter: undefined, projectIdFilter: undefined })}>Clear filters</ActionButton>
-            </Show>
-          </div>
-          <section class="flex min-h-0 flex-1 flex-col rounded-[1.35rem] border border-(--border) bg-white/55 p-3">
-          <div class="mb-3 flex items-center justify-between gap-3">
-            <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Roster</div>
-            <span class="text-[0.625rem] text-(--muted)">{visibleAssistants().length} total</span>
-          </div>
+          </LeftPaneFilterBlock>
+          <LeftPaneListSection title="Roster" count={`${visibleAssistants().length} total`} class="p-3">
           <VirtualList
             class="min-h-0 flex-1 pr-2"
             contentClass="w-full"
@@ -951,7 +942,36 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
             getKey={(assistant) => assistant.id}
             estimateSize={140}
             pagination={{ kind: "forward", initialCount: 60, batchSize: 60 }}
-            empty={<div class="rounded-[1.2rem] border border-dashed border-(--border) bg-white/45 p-4 text-[0.675rem] leading-5 text-(--muted)">No assistants match current search or filters.</div>}
+            empty={
+              <LeftPaneEmptyState>
+                <div class="grid gap-3">
+                  <div>No assistants match current search or filters.</div>
+                  <div class="flex flex-wrap gap-2">
+                    <ActionButton
+                      tooltip={tooltipWithPrimaryHotkey("Create assistant", normalizeAppHotkeyPreferences(state.appHotkeyPreferences).createAssistant[0])}
+                      ariaLabel="New assistant"
+                      size="sm"
+                      icon={<Plus class="h-3.5 w-3.5" />}
+                      onClick={() => openCreateAssistant(state.assistants.scopeFilter === "project" ? "project" : "global")}
+                    >
+                      New assistant
+                    </ActionButton>
+                    <ActionButton
+                      tooltip={state.workspace.activeProjectId ? "Create from current thread" : "Open a project first"}
+                      ariaLabel="Create from current thread"
+                      size="sm"
+                      variant="secondary"
+                      disabled={!state.workspace.activeProjectId}
+                      disabledReason={!state.workspace.activeProjectId ? "Open a project first" : undefined}
+                      icon={<MessageSquare class="h-3.5 w-3.5" />}
+                      onClick={() => openCreateAssistant("project")}
+                    >
+                      Create from current thread
+                    </ActionButton>
+                  </div>
+                </div>
+              </LeftPaneEmptyState>
+            }
           >
             {(assistant) => (
               <button
@@ -981,7 +1001,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
               </button>
             )}
           </VirtualList>
-          </section>
+          </LeftPaneListSection>
         </div>
         </Show>
 
@@ -990,9 +1010,9 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
           <Show
             when={selectedAssistant()}
             fallback={
-              <div class="flex h-full min-h-80 items-center justify-center rounded-[1.2rem] border border-dashed border-(--border) bg-white/45 p-6 text-center text-[0.675rem] text-(--muted)">
+              <DetailEmptyState>
                 Select assistant to inspect config, chat, todos, and logs.
-              </div>
+              </DetailEmptyState>
             }
           >
             {(assistant) => (
@@ -1433,7 +1453,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
         </section>
         </Show>
       </div>
-    </section>
+    </LeftPaneShell>
   );
 }
 
@@ -1541,14 +1561,194 @@ function matchesAssistantFilters(assistant: Assistant, state: typeof harnessStor
   return true;
 }
 
-function hasAssistantRosterFilters(state: typeof harnessStore.state) {
-  return Boolean(
-    state.assistants.rosterSearch ||
-      state.assistants.runStateFilter ||
-      state.assistants.bootstrapStateFilter ||
-      state.assistants.providerBrandFilter ||
-      state.assistants.projectIdFilter
-  );
+function compareAssistants(left: Assistant, right: Assistant, sort: AssistantRosterSort) {
+  if (sort === "name") {
+    return left.name.localeCompare(right.name) || right.updatedAt.localeCompare(left.updatedAt);
+  }
+  if (sort === "created") {
+    return right.createdAt.localeCompare(left.createdAt);
+  }
+  if (sort === "run-state") {
+    return left.runState.localeCompare(right.runState) || right.updatedAt.localeCompare(left.updatedAt);
+  }
+  if (sort === "bootstrap-state") {
+    return left.bootstrapState.localeCompare(right.bootstrapState) || right.updatedAt.localeCompare(left.updatedAt);
+  }
+  return right.updatedAt.localeCompare(left.updatedAt);
+}
+
+function assistantRosterMenuItems(state: typeof harnessStore.state): LeftPaneSearchMenuItem[] {
+  const setFilters = harnessStore.setAssistantPaneFilters;
+  const sortOption = (label: string, value: AssistantRosterSort, icon: JSX.Element): LeftPaneSearchMenuItem => ({
+    kind: "option",
+    label,
+    icon,
+    selected: state.assistants.rosterSort === value,
+    onSelect: () => setFilters({ rosterSort: value })
+  });
+
+  return [
+    {
+      kind: "submenu",
+      label: "Scope",
+      value: state.assistants.scopeFilter === "project" ? "Current" : "Global",
+      icon: <Folder class="h-3.5 w-3.5" />,
+      items: [
+        {
+          kind: "option",
+          label: "Current project",
+          icon: <Folder class="h-3.5 w-3.5" />,
+          selected: state.assistants.scopeFilter === "project",
+          onSelect: () => harnessStore.setAssistantScopeFilter("project")
+        },
+        {
+          kind: "option",
+          label: "Global",
+          icon: <Globe class="h-3.5 w-3.5" />,
+          selected: state.assistants.scopeFilter === "global",
+          onSelect: () => harnessStore.setAssistantScopeFilter("global")
+        }
+      ]
+    },
+    {
+      kind: "submenu",
+      label: "Sort assistants",
+      value: formatAssistantRosterSortLabel(state.assistants.rosterSort),
+      icon: <ListFilter class="h-3.5 w-3.5" />,
+      items: [
+        sortOption("Updated", "updated", <ArrowDown class="h-3.5 w-3.5" />),
+        sortOption("Created", "created", <Calendar class="h-3.5 w-3.5" />),
+        sortOption("Name", "name", <ListFilter class="h-3.5 w-3.5" />),
+        sortOption("Run state", "run-state", <CirclePlay class="h-3.5 w-3.5" />),
+        sortOption("Bootstrap state", "bootstrap-state", <ListChecks class="h-3.5 w-3.5" />)
+      ] as Array<Extract<LeftPaneSearchMenuItem, { kind: "option" }>>
+    },
+    {
+      kind: "submenu",
+      label: "Run state",
+      value: state.assistants.runStateFilter ?? "All",
+      icon: <CirclePlay class="h-3.5 w-3.5" />,
+      items: [
+        {
+          kind: "option",
+          label: "All run states",
+          icon: <ListFilter class="h-3.5 w-3.5" />,
+          selected: !state.assistants.runStateFilter,
+          onSelect: () => setFilters({ runStateFilter: undefined })
+        },
+        {
+          kind: "option",
+          label: "Active",
+          icon: <CirclePlay class="h-3.5 w-3.5" />,
+          selected: state.assistants.runStateFilter === "active",
+          onSelect: () => setFilters({ runStateFilter: "active" })
+        },
+        {
+          kind: "option",
+          label: "Paused",
+          icon: <CirclePause class="h-3.5 w-3.5" />,
+          selected: state.assistants.runStateFilter === "paused",
+          onSelect: () => setFilters({ runStateFilter: "paused" })
+        }
+      ]
+    },
+    {
+      kind: "submenu",
+      label: "Bootstrap",
+      value: state.assistants.bootstrapStateFilter ? toProperCase(state.assistants.bootstrapStateFilter) : "All",
+      icon: <ListChecks class="h-3.5 w-3.5" />,
+      items: [
+        {
+          kind: "option",
+          label: "All bootstrap",
+          icon: <ListFilter class="h-3.5 w-3.5" />,
+          selected: !state.assistants.bootstrapStateFilter,
+          onSelect: () => setFilters({ bootstrapStateFilter: undefined })
+        },
+        ...(["pending", "running", "completed", "failed"] as const).map((value) => ({
+          kind: "option" as const,
+          label: toProperCase(value),
+          icon: <ListChecks class="h-3.5 w-3.5" />,
+          selected: state.assistants.bootstrapStateFilter === value,
+          onSelect: () => setFilters({ bootstrapStateFilter: value })
+        }))
+      ]
+    },
+    {
+      kind: "submenu",
+      label: "Provider",
+      value: state.assistants.providerBrandFilter ? toProperCase(state.assistants.providerBrandFilter) : "All",
+      icon: <Bot class="h-3.5 w-3.5" />,
+      items: [
+        {
+          kind: "option",
+          label: "All providers",
+          icon: <Bot class="h-3.5 w-3.5" />,
+          selected: !state.assistants.providerBrandFilter,
+          onSelect: () => setFilters({ providerBrandFilter: undefined })
+        },
+        ...(["gpt", "gemini", "claude"] as const).map((value) => ({
+          kind: "option" as const,
+          label: toProperCase(value),
+          icon: <Bot class="h-3.5 w-3.5" />,
+          selected: state.assistants.providerBrandFilter === value,
+          onSelect: () => setFilters({ providerBrandFilter: value })
+        }))
+      ]
+    },
+    {
+      kind: "submenu",
+      label: "Project",
+      value: state.workspace.projects.find((project) => project.id === state.assistants.projectIdFilter)?.name ?? "All",
+      icon: <Folder class="h-3.5 w-3.5" />,
+      items: [
+        {
+          kind: "option",
+          label: "All projects",
+          icon: <Folder class="h-3.5 w-3.5" />,
+          selected: !state.assistants.projectIdFilter,
+          onSelect: () => setFilters({ projectIdFilter: undefined })
+        },
+        ...state.workspace.projects.map((project) => ({
+          kind: "option" as const,
+          label: project.name,
+          icon: <Folder class="h-3.5 w-3.5" />,
+          selected: state.assistants.projectIdFilter === project.id,
+          onSelect: () => setFilters({ projectIdFilter: project.id })
+        }))
+      ]
+    },
+    { kind: "separator" },
+    {
+      kind: "option",
+      label: "Clear search and filters",
+      icon: <Trash2 class="h-3.5 w-3.5" />,
+      onSelect: () =>
+        setFilters({
+          rosterSearch: "",
+          runStateFilter: undefined,
+          bootstrapStateFilter: undefined,
+          providerBrandFilter: undefined,
+          projectIdFilter: undefined
+        })
+    }
+  ];
+}
+
+function formatAssistantRosterSortLabel(sort: AssistantRosterSort) {
+  if (sort === "created") {
+    return "Created";
+  }
+  if (sort === "name") {
+    return "Name";
+  }
+  if (sort === "run-state") {
+    return "Run state";
+  }
+  if (sort === "bootstrap-state") {
+    return "Bootstrap";
+  }
+  return "Updated";
 }
 
 function assistantSearchHaystack(assistant: Assistant, state: typeof harnessStore.state) {

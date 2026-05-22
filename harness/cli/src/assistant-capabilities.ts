@@ -1,5 +1,6 @@
 import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
+import { resolveGlobalSkillsRoot } from "./harness-paths";
 import type {
   Assistant,
   AssistantAssetRef,
@@ -43,7 +44,7 @@ export function assertResolvedAssistantAssetRefs(assetRefs: AssistantAssetRef[])
 function resolveAssistantAssetRef(input: ResolveAssistantAssetRefsInput, assetRef: AssistantAssetRef): CapabilityResolution {
   switch (assetRef.kind) {
     case "skill":
-      return resolveRepoFileCapability(input.repoRoot, assetRef.value, ".agents/skills", "repo-skill", "workspace");
+      return resolveSkillCapability(input.repoRoot, assetRef.value);
     case "script":
       return resolveRepoFileCapability(input.repoRoot, assetRef.value, "scripts", "repo-script", "workspace");
     case "mode":
@@ -51,6 +52,50 @@ function resolveAssistantAssetRef(input: ResolveAssistantAssetRefsInput, assetRe
     case "background-template":
       return resolveBackgroundTemplateCapability(input.backgroundTemplates, assetRef.value);
   }
+}
+
+function resolveSkillCapability(repoRoot: string, value: string): CapabilityResolution {
+  const repoSkill = resolveRepoFileCapability(repoRoot, value, ".agents/skills", "repo-skill", "workspace");
+  if (repoSkill.resolutionStatus === "resolved") {
+    return repoSkill;
+  }
+
+  const globalSkill = resolveGlobalSkillCapability(value);
+  if (globalSkill.resolutionStatus === "resolved") {
+    return globalSkill;
+  }
+  return repoSkill.resolutionStatus === "out-of-scope" ? repoSkill : globalSkill;
+}
+
+function resolveGlobalSkillCapability(value: string): CapabilityResolution {
+  const skillsRoot = resolveGlobalSkillsRoot();
+  const candidates = buildGlobalSkillCandidates(skillsRoot, value);
+  for (const candidate of candidates) {
+    const resolved = resolveInsideDirectory(skillsRoot, candidate);
+    if (!resolved.inDirectory) {
+      return {
+        scope: "workspace",
+        provenance: "global-skill",
+        resolutionStatus: "out-of-scope",
+        resolutionError: `Path escapes global skills root: ${value}`
+      };
+    }
+    if (resolved.realPath && existsSync(resolved.realPath)) {
+      return {
+        canonicalValue: resolved.realPath,
+        scope: "workspace",
+        provenance: "global-skill",
+        resolutionStatus: "resolved"
+      };
+    }
+  }
+
+  return {
+    scope: "workspace",
+    provenance: "global-skill",
+    resolutionStatus: "missing",
+    resolutionError: `No global-skill found for ${value}`
+  };
 }
 
 function resolveRepoFileCapability(
@@ -154,7 +199,14 @@ function buildRepoFileCandidates(repoRoot: string, rootRelativeDirectory: string
     rootRelativeDirectory === ".agents/skills"
       ? path.join(repoRoot, rootRelativeDirectory, trimmed, "SKILL.md")
       : path.join(repoRoot, rootRelativeDirectory, trimmed);
-  return [direct, byName];
+  return [byName, direct];
+}
+
+function buildGlobalSkillCandidates(skillsRoot: string, value: string) {
+  const trimmed = value.trim();
+  const direct = path.isAbsolute(trimmed) ? trimmed : path.join(skillsRoot, trimmed);
+  const byName = path.join(skillsRoot, trimmed, "SKILL.md");
+  return [byName, direct];
 }
 
 function resolveInsideRepo(repoRoot: string, candidatePath: string) {
@@ -167,6 +219,20 @@ function resolveInsideRepo(repoRoot: string, candidatePath: string) {
 
   return {
     inRepo: true,
+    realPath: existsSync(normalizedCandidate) ? realpathSync(normalizedCandidate) : normalizedCandidate
+  };
+}
+
+function resolveInsideDirectory(rootPath: string, candidatePath: string) {
+  const normalizedRoot = existsSync(rootPath) ? realpathSync(rootPath) : path.resolve(rootPath);
+  const normalizedCandidate = path.resolve(candidatePath);
+  const relative = path.relative(normalizedRoot, normalizedCandidate);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    return { inDirectory: false, realPath: undefined };
+  }
+
+  return {
+    inDirectory: true,
     realPath: existsSync(normalizedCandidate) ? realpathSync(normalizedCandidate) : normalizedCandidate
   };
 }

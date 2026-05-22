@@ -29,6 +29,7 @@ const basePreferences: PreferencesState = {
   backgroundJobApprovalPolicyDefault: "ask-risky",
   memoryBankEnabledDefault: true,
   memoryBankRecordRunsDefault: true,
+  checkCliUpdatesDefault: true,
   attachmentsEnabled: false,
   capabilities: [],
   agentRuntimes: []

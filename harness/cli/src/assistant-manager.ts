@@ -96,6 +96,8 @@ const ASSISTANT_LEARNING_COMPACTION_FACT_THRESHOLD = 40;
 const ASSISTANT_LEARNING_COMPACTION_CHAR_THRESHOLD = 24000;
 const MAX_PROMPT_ANSWERED_QUESTIONS = 3;
 const MAX_PROMPT_LEARNINGS = 6;
+const ASSISTANT_ACTIONS_SKILL_PROMPT =
+  "For every assistant-chat or project-chat request addressed to this assistant, invoke the assistant-actions skill before acting when the user's prompt does not already include it.";
 const OPERATIONAL_PROMPT_QUESTION_CATEGORIES = new Set([
   "schedule-or-job-selection",
   "todo-or-question-selection",
@@ -804,6 +806,7 @@ export class AssistantManager {
         kind: "system",
         content: [
           renderAssistantPromptContext(assistant, activeMission),
+          ASSISTANT_ACTIONS_SKILL_PROMPT,
           "Reply directly to the user. Keep answer grounded in the assistant role and current priorities.",
           "Ask questions only when missing information blocks useful progress. If multiple questions are necessary, batch them in one response."
         ]

@@ -1,6 +1,6 @@
 # Harness DB Table Map
 
-This is a high-level map for `.local/harness.db`. Use it to decide which tables matter for a `/lookup-thread` investigation.
+This is a high-level map for the harness SQLite database. Use it to decide which tables matter for a `/lookup-thread` investigation.
 
 ## Thread-Critical Tables
 

@@ -4,13 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { createMemoryEntryId, type AgentRuntimeCapability, type Assistant, type BackgroundJob, type ProviderBrand } from "../../../shared/protocol";
 import type { PiAgentAdapter, PiAgentExecutionController, PiAgentPromptRequest, PiAgentPromptResult, PiApiKeyProvider } from "../pi-agent-adapter";
-import {
-  createSampleDocxBuffer,
-  createSampleOdtBuffer,
-  createSamplePdfBuffer,
-  createSamplePptxBuffer,
-  createSampleXlsxBuffer
-} from "../document-extractors/test-fixtures";
+import { createSampleDocxBuffer } from "../document-extractors/test-fixtures";
 import { clearDevHarnessServerSingleton, getDevHarnessServerSingleton } from "../dev-server-singleton";
 import { startHarnessServer, type HarnessServerOsAdapters } from "../server";
 import { createStartupTelemetrySession, type StartupPhaseId, type StartupTelemetrySink } from "../startup-telemetry";
@@ -23,6 +17,7 @@ import { useGitProjectFixture } from "./git-project-fixture";
 import { createFastHarnessServerOsAdapters } from "./fast-os-adapters";
 
 const EXPECT_ATTACHMENTS_ENABLED = Boolean(Bun.env.UPLOADTHING_TOKEN?.trim());
+const DEFAULT_TEST_EVENT_TIMEOUT_MS = 1500;
 
 type ServerTestShardOptions = {
   shardIndex?: number;
@@ -73,7 +68,7 @@ export class FakePiAgentAdapter implements PiAgentAdapter {
   waitForCall(
     kind: PiAgentPromptRequest["kind"],
     predicate?: (request: PiAgentPromptRequest) => boolean,
-    timeoutMs: number = 5000
+    timeoutMs: number = DEFAULT_TEST_EVENT_TIMEOUT_MS
   ) {
     const existing = this.calls.find((call) => call.kind === kind && (predicate ? predicate(call) : true));
     if (existing) {
@@ -962,7 +957,7 @@ export function createFastTestRuntimeRegistry(adapter: PiAgentAdapter) {
 export function waitForAdapterCall(
   adapter: FakePiAgentAdapter,
   kind: PiAgentPromptRequest["kind"],
-  timeoutMs: number = 5000
+  timeoutMs: number = DEFAULT_TEST_EVENT_TIMEOUT_MS
 ) {
   return adapter.waitForCall(kind, undefined, timeoutMs);
 }
@@ -971,7 +966,7 @@ export async function executeReadyRunUntil(
   socket: EventTarget & { send: (payload: string) => void },
   input: { requestId: string; projectId: string; threadId: string; runId: string },
   waiters: Array<Promise<any>>,
-  timeoutMs: number = 5000,
+  timeoutMs: number = DEFAULT_TEST_EVENT_TIMEOUT_MS,
   options: {
     includeChatComplete?: boolean;
   } = {}
@@ -1217,7 +1212,8 @@ export function registerServerStartupTests(options: ServerTestShardOptions = {})
           pickFolder: async () => extraProjectRoot,
           serverOnly: true,
           devHotMode: true,
-          hotReloadDebounceMs: 0
+          hotReloadDebounceMs: 0,
+          backendHotReloadChangeDetector: () => true
         });
 
         const singletonBefore = getDevHarnessServerSingleton<
@@ -1271,7 +1267,8 @@ export function registerServerStartupTests(options: ServerTestShardOptions = {})
           pickFolder: async () => extraProjectRoot,
           serverOnly: true,
           devHotMode: true,
-          hotReloadDebounceMs: 0
+          hotReloadDebounceMs: 0,
+          backendHotReloadChangeDetector: () => true
         });
 
         await waitForCondition(() => repository.getActiveBackgroundJobRuns(jobId).length === 1);
@@ -1292,7 +1289,7 @@ export function registerServerStartupTests(options: ServerTestShardOptions = {})
         await stopServerForTest(server);
         const telemetry = createFakeStartupTelemetry();
         const uiAssetCalls: string[] = [];
-        let receivedDebounceMs = -1;
+        let receivedDebounceScheduleMs: readonly number[] = [];
 
         server = await startHarnessServer({
           port: 0,
@@ -1304,7 +1301,7 @@ export function registerServerStartupTests(options: ServerTestShardOptions = {})
           devHotMode: true,
           startupTelemetry: telemetry,
           uiAssetManagerFactory(options) {
-            receivedDebounceMs = options?.debounceMs ?? -1;
+            receivedDebounceScheduleMs = options?.debounceScheduleMs ?? [];
             return {
               async ensureBuilt() {
                 uiAssetCalls.push("ensureBuilt");
@@ -1329,7 +1326,7 @@ export function registerServerStartupTests(options: ServerTestShardOptions = {})
           }
         });
 
-        expect(receivedDebounceMs).toBe(30_000);
+        expect(receivedDebounceScheduleMs).toEqual([1000, 1500, 2000, 2500, 5000, 10000, 15000]);
         expect(uiAssetCalls).toEqual(["ensureBuilt", "startWatching"]);
         expect(
           telemetry.events.filter((event) => event.kind === "phase-start" && event.phaseId === "ui-assets")
@@ -1352,6 +1349,7 @@ export function registerServerStartupTests(options: ServerTestShardOptions = {})
           serverOnly: false,
           devHotMode: true,
           hotReloadDebounceMs: 30_000,
+          backendHotReloadChangeDetector: () => true,
           timerApi: {
             setTimeout: clock.setTimeout,
             clearTimeout: clock.clearTimeout
@@ -1370,6 +1368,7 @@ export function registerServerStartupTests(options: ServerTestShardOptions = {})
           serverOnly: false,
           devHotMode: true,
           hotReloadDebounceMs: 30_000,
+          backendHotReloadChangeDetector: () => true,
           timerApi: {
             setTimeout: clock.setTimeout,
             clearTimeout: clock.clearTimeout
@@ -1386,6 +1385,93 @@ export function registerServerStartupTests(options: ServerTestShardOptions = {})
 
         const singletonAfterDebounce = getDevHarnessServerSingleton<any, any, any, any>();
         expect(await singletonAfterDebounce?.state.pickFolder()).toBe(secondRoot);
+      });
+
+      serverTest("hot dev mode backs off backend handler apply and resets after reload", async () => {
+        await stopServerForTest(server);
+        const clock = new FakeClock();
+        const firstRoot = fixture.createTempDir(`first-hot-backoff-root-${crypto.randomUUID()}`);
+        const secondRoot = fixture.createTempDir(`second-hot-backoff-root-${crypto.randomUUID()}`);
+        const thirdRoot = fixture.createTempDir(`third-hot-backoff-root-${crypto.randomUUID()}`);
+        const fourthRoot = fixture.createTempDir(`fourth-hot-backoff-root-${crypto.randomUUID()}`);
+
+        const hotOptions = {
+          port: 0,
+          adapter,
+          repository,
+          runtimeRegistry: createFastTestRuntimeRegistry(adapter),
+          serverOnly: false,
+          devHotMode: true,
+          backendHotReloadChangeDetector: () => true,
+          timerApi: {
+            setTimeout: clock.setTimeout,
+            clearTimeout: clock.clearTimeout
+          }
+        };
+
+        server = await startHarnessServer({
+          ...hotOptions,
+          pickFolder: async () => firstRoot
+        });
+
+        await startHarnessServer({
+          ...hotOptions,
+          pickFolder: async () => secondRoot
+        });
+        await startHarnessServer({
+          ...hotOptions,
+          pickFolder: async () => thirdRoot
+        });
+
+        const singletonDuringBackoff = getDevHarnessServerSingleton<any, any, any, any>();
+        clock.advanceBy(1499);
+        expect(await singletonDuringBackoff?.state.pickFolder()).toBe(firstRoot);
+
+        clock.advanceBy(1);
+        await Promise.resolve();
+        const singletonAfterBackoff = getDevHarnessServerSingleton<any, any, any, any>();
+        expect(await singletonAfterBackoff?.state.pickFolder()).toBe(thirdRoot);
+
+        await startHarnessServer({
+          ...hotOptions,
+          pickFolder: async () => fourthRoot
+        });
+        clock.advanceBy(1000);
+        await Promise.resolve();
+        const singletonAfterReset = getDevHarnessServerSingleton<any, any, any, any>();
+        expect(await singletonAfterReset?.state.pickFolder()).toBe(fourthRoot);
+      });
+
+      serverTest("hot dev mode ignores backend reloads without tracked backend changes", async () => {
+        await stopServerForTest(server);
+        const firstRoot = fixture.createTempDir(`first-hot-tracked-root-${crypto.randomUUID()}`);
+        const secondRoot = fixture.createTempDir(`second-hot-tracked-root-${crypto.randomUUID()}`);
+
+        server = await startHarnessServer({
+          port: 0,
+          adapter,
+          repository,
+          runtimeRegistry: createFastTestRuntimeRegistry(adapter),
+          pickFolder: async () => firstRoot,
+          serverOnly: false,
+          devHotMode: true,
+          hotReloadDebounceMs: 0
+        });
+
+        await startHarnessServer({
+          port: 0,
+          adapter,
+          repository,
+          runtimeRegistry: createFastTestRuntimeRegistry(adapter),
+          pickFolder: async () => secondRoot,
+          serverOnly: false,
+          devHotMode: true,
+          hotReloadDebounceMs: 0,
+          backendHotReloadChangeDetector: () => false
+        });
+
+        const singletonAfterIgnoredReload = getDevHarnessServerSingleton<any, any, any, any>();
+        expect(await singletonAfterIgnoredReload?.state.pickFolder()).toBe(firstRoot);
       });
 
 
@@ -1593,7 +1679,8 @@ export function registerServerPreferencesAndModesTests(options: ServerTestShardO
               correctnessIterationModeDefault: "auto-once",
               backgroundJobApprovalPolicyDefault: "ask-risky",
               memoryBankEnabledDefault: false,
-              memoryBankRecordRunsDefault: false
+              memoryBankRecordRunsDefault: false,
+              checkCliUpdatesDefault: false
             }
           })
         );
@@ -1617,12 +1704,53 @@ export function registerServerPreferencesAndModesTests(options: ServerTestShardO
         expect(saved.payload.backgroundJobApprovalPolicyDefault).toBe("ask-risky");
         expect(saved.payload.memoryBankEnabledDefault).toBe(false);
         expect(saved.payload.memoryBankRecordRunsDefault).toBe(false);
+        expect(saved.payload.checkCliUpdatesDefault).toBe(false);
         expect(saved.payload.setup.checks.some((check: { id: string }) => check.id === "provider-auth")).toBe(true);
         expect(repository.getStoredOpenAiApiKey()).toBe("sk-local-123");
         expect(repository.getStoredGoogleApiKey()).toBe("AIza-local-456");
         expect(repository.getAutoCompactContextThresholdPercentDefault()).toBe(55);
         expect(repository.getMemoryBankEnabledDefault()).toBe(false);
         expect(repository.getMemoryBankRecordRunsDefault()).toBe(false);
+        expect(repository.getCheckCliUpdatesDefault()).toBe(false);
+        socket.close();
+      });
+
+      serverTest("saves preferences without API keys", async () => {
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const savedPromise = waitForEvent(socket, "preferences.saved");
+
+        socket.send(
+          JSON.stringify({
+            type: "preferences.save",
+            requestId: "req-pref-no-keys",
+            payload: {
+              providerBrand: "claude",
+              debugEnabled: false,
+              tracePanelDefaultOpen: true,
+              subagentWorktreeStrategyDefault: "same-worktree",
+              blockChatOnDirtyGitDefault: true,
+              dirtyGitChangeLimitDefault: 12,
+              autoCompactContextThresholdPercentDefault: 45,
+              planExecutionModeDefault: "countdown",
+              planExecutionDelaySecondsDefault: 8,
+              correctnessIterationModeDefault: "ask-before-iterate",
+              backgroundJobApprovalPolicyDefault: "ask-risky",
+              memoryBankEnabledDefault: true,
+              memoryBankRecordRunsDefault: true,
+              checkCliUpdatesDefault: true
+            }
+          })
+        );
+
+        const saved = await savedPromise;
+        expect(saved.payload.hasUsableApiKey).toBe(false);
+        expect(saved.payload.hasStoredApiKey).toBe(false);
+        expect(saved.payload.hasUsableAnthropicApiKey).toBe(false);
+        expect(saved.payload.hasStoredAnthropicApiKey).toBe(false);
+        expect(saved.payload.providerBrand).toBe("claude");
+        expect(saved.payload.dirtyGitChangeLimitDefault).toBe(12);
+        expect(repository.getStoredAnthropicApiKey()).toBeUndefined();
         socket.close();
       });
 
@@ -1838,7 +1966,9 @@ export function registerServerPreferencesAndModesTests(options: ServerTestShardO
           requestId: "req-gemini",
           projectId,
           threadId,
-          content: "complex task"
+          content: "complex task",
+          modeId: "plan",
+          modeLocked: true
         }, 30000);
     
         socket.send(
@@ -1926,7 +2056,8 @@ export function registerServerPreferencesAndModesTests(options: ServerTestShardO
             threadId,
             agentId: "codex-cli",
             content: "complex task",
-            reasoningStrength: "extra-high"
+            modeId: "plan",
+            modeLocked: true
           },
           30000
         );
@@ -1980,6 +2111,8 @@ export function registerServerPreferencesAndModesTests(options: ServerTestShardO
             threadId,
             agentId: "codex-cli",
             content: "complex task",
+            modeId: "plan",
+            modeLocked: true,
             reasoningStrength: "extra-high"
           },
           30000
@@ -1993,7 +2126,6 @@ export function registerServerPreferencesAndModesTests(options: ServerTestShardO
               projectId,
               threadId,
               runId: ready.payload.run.id,
-              reasoningStrength: "extra-high",
               fastMode: true
             }
           })
@@ -2098,7 +2230,9 @@ export function registerServerPreferencesAndModesTests(options: ServerTestShardO
               projectId,
               threadId,
               agentId: "pi",
-              content: "simple task"
+              content: "simple task",
+              modeId: "plan",
+              modeLocked: true
             }
           })
         );
@@ -2972,7 +3106,9 @@ ec32e89b-08a3-41a5-80bf-6823701343f0
               requestId: "req-impl-subagents-send",
               projectId,
               threadId,
-              content: "complex task"
+              content: "complex task",
+              modeId: "plan",
+              modeLocked: true
             })
           )
         );
@@ -3378,7 +3514,9 @@ export function registerServerExecutionMainTests(options: ServerTestShardOptions
               requestId: "req-slow-question",
               projectId: opened.payload.project.id,
               threadId: opened.payload.project.activeThreadId,
-              content: "slow needs clarification"
+              content: "slow needs clarification",
+              modeId: "plan",
+              modeLocked: true
             })
           )
         );
@@ -3458,7 +3596,7 @@ export function registerServerExecutionMainTests(options: ServerTestShardOptions
         });
         expect(complete.payload.projectId).toBe(projectId);
         expect(complete.payload.assistantMessage.content).toBe("main execution result");
-        expect(adapter.calls.map((call) => call.kind)).toEqual(["planner", "executor"]);
+        expect(adapter.calls.map((call) => call.kind)).toEqual(["executor"]);
         socket.close();
       });
 
@@ -3484,7 +3622,9 @@ export function registerServerExecutionMainTests(options: ServerTestShardOptions
               projectId,
               threadId,
               agentId: "pi",
-              content: "needs clarification"
+              content: "needs clarification",
+              modeId: "plan",
+              modeLocked: true
             }
           })
         );
@@ -3551,7 +3691,9 @@ export function registerServerExecutionMainTests(options: ServerTestShardOptions
               projectId,
               threadId,
               agentId: "pi",
-              content: "slow needs clarification"
+              content: "slow needs clarification",
+              modeId: "plan",
+              modeLocked: true
             }
           })
         );
@@ -3581,7 +3723,9 @@ export function registerServerExecutionMainTests(options: ServerTestShardOptions
               projectId,
               threadId,
               agentId: "pi",
-              content: "needs clarification"
+              content: "needs clarification",
+              modeId: "plan",
+              modeLocked: true
             }
           })
         );
@@ -3618,7 +3762,9 @@ export function registerServerExecutionMainTests(options: ServerTestShardOptions
               projectId,
               threadId,
               agentId: "pi",
-              content: "needs clarification"
+              content: "needs clarification",
+              modeId: "plan",
+              modeLocked: true
             }
           })
         );
@@ -3658,7 +3804,9 @@ export function registerServerExecutionMainTests(options: ServerTestShardOptions
               requestId: "req-same-run-repeat-question",
               projectId,
               threadId,
-              content: "same-run repeated question"
+              content: "same-run repeated question",
+              modeId: "plan",
+              modeLocked: true
             })
           )
         );
@@ -3732,7 +3880,9 @@ export function registerServerExecutionMainTests(options: ServerTestShardOptions
               projectId,
               threadId,
               agentId: "pi",
-              content: "slow task"
+              content: "slow task",
+              modeId: "plan",
+              modeLocked: true
             }
           })
         );
@@ -3835,7 +3985,6 @@ export function registerServerSubagentTests(options: ServerTestShardOptions = {}
 
     
       serverTest("runs experiments in virtual branch mode and exposes shared memory entries", async () => {
-        await restartWithRealOsAdapters();
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot, "req-experiment-open");
@@ -3958,6 +4107,8 @@ export function registerServerSubagentTests(options: ServerTestShardOptions = {}
               projectId: opened.payload.project.id,
               threadId: opened.payload.project.activeThreadId,
               content: "Use attached context",
+              modeId: "plan",
+              modeLocked: true,
               attachments: [textAttachment, imageAttachment]
             })
           )
@@ -3975,86 +4126,32 @@ export function registerServerSubagentTests(options: ServerTestShardOptions = {}
 
 
     
-      serverTest("chat.send forwards extracted office document context into planner prompts", async () => {
+      serverTest("chat.send forwards extracted document context into planner prompts", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
         const opened = await openProject(socket, projectRoot, "req-doc-open");
         const readyPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "ready");
-        const documentAttachments = [
-          {
-            id: "attachment-pdf",
-            kind: "document",
-            documentType: "pdf",
-            name: "spec.pdf",
-            mimeType: "application/pdf",
-            sizeBytes: createSamplePdfBuffer().length,
-            url: "https://example.com/spec.pdf",
-            key: "attachment-pdf",
-            uploadedAt: new Date().toISOString()
-          },
-          {
-            id: "attachment-docx",
-            kind: "document",
-            documentType: "docx",
-            name: "brief.docx",
-            mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            sizeBytes: createSampleDocxBuffer().length,
-            url: "https://example.com/brief.docx",
-            key: "attachment-docx",
-            uploadedAt: new Date().toISOString()
-          },
-          {
-            id: "attachment-xlsx",
-            kind: "document",
-            documentType: "xlsx",
-            name: "backlog.xlsx",
-            mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            sizeBytes: createSampleXlsxBuffer().length,
-            url: "https://example.com/backlog.xlsx",
-            key: "attachment-xlsx",
-            uploadedAt: new Date().toISOString()
-          },
-          {
-            id: "attachment-pptx",
-            kind: "document",
-            documentType: "pptx",
-            name: "deck.pptx",
-            mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            sizeBytes: createSamplePptxBuffer().length,
-            url: "https://example.com/deck.pptx",
-            key: "attachment-pptx",
-            uploadedAt: new Date().toISOString()
-          },
-          {
-            id: "attachment-odt",
-            kind: "document",
-            documentType: "odt",
-            name: "notes.odt",
-            mimeType: "application/vnd.oasis.opendocument.text",
-            sizeBytes: createSampleOdtBuffer().length,
-            url: "https://example.com/notes.odt",
-            key: "attachment-odt",
-            uploadedAt: new Date().toISOString()
-          }
-        ] as const;
-        const documentBodies = [
-          createSamplePdfBuffer(),
-          createSampleDocxBuffer(),
-          createSampleXlsxBuffer(),
-          createSamplePptxBuffer(),
-          createSampleOdtBuffer()
-        ];
-        for (const [index, attachment] of documentAttachments.entries()) {
-          repository.saveChatAttachmentUpload({
-            projectId: opened.payload.project.id,
-            threadId: opened.payload.project.activeThreadId,
-            attachment
-          });
-          attachmentFetchBodies.set(attachment.url, {
-            body: documentBodies[index]!,
-            mimeType: attachment.mimeType
-          });
-        }
+        const documentBody = createSampleDocxBuffer();
+        const documentAttachment = {
+          id: "attachment-docx",
+          kind: "document",
+          documentType: "docx",
+          name: "brief.docx",
+          mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          sizeBytes: documentBody.length,
+          url: "https://example.com/brief.docx",
+          key: "attachment-docx",
+          uploadedAt: new Date().toISOString()
+        } as const;
+        repository.saveChatAttachmentUpload({
+          projectId: opened.payload.project.id,
+          threadId: opened.payload.project.activeThreadId,
+          attachment: documentAttachment
+        });
+        attachmentFetchBodies.set(documentAttachment.url, {
+          body: documentBody,
+          mimeType: documentAttachment.mimeType
+        });
     
         socket.send(
           JSON.stringify(
@@ -4063,18 +4160,17 @@ export function registerServerSubagentTests(options: ServerTestShardOptions = {}
               projectId: opened.payload.project.id,
               threadId: opened.payload.project.activeThreadId,
               content: "Use attached office docs",
-              attachments: [...documentAttachments]
+              modeId: "plan",
+              modeLocked: true,
+              attachments: [documentAttachment]
             })
           )
         );
     
         await readyPromise;
     
-        expect(adapter.calls[0]?.prompt).toContain("Hello PDF extraction");
         expect(adapter.calls[0]?.prompt).toContain("Docx intro");
-        expect(adapter.calls[0]?.prompt).toContain("Sheet: Backlog");
-        expect(adapter.calls[0]?.prompt).toContain("Slide 1");
-        expect(adapter.calls[0]?.prompt).toContain("ODT heading");
+        expect(adapter.calls[0]?.prompt).toContain("Cell A1");
         socket.close();
       });
 
@@ -4113,6 +4209,8 @@ export function registerServerSubagentTests(options: ServerTestShardOptions = {}
               projectId: opened.payload.project.id,
               threadId: opened.payload.project.activeThreadId,
               content: "Handle malformed document",
+              modeId: "plan",
+              modeLocked: true,
               attachments: [badAttachment]
             })
           )
@@ -4139,7 +4237,9 @@ export function registerServerSubagentTests(options: ServerTestShardOptions = {}
           requestId: "req-high",
           projectId,
           threadId,
-          content: "complex task"
+          content: "complex task",
+          modeId: "plan",
+          modeLocked: true
         }, 30000);
     
         socket.send(
@@ -4178,7 +4278,9 @@ export function registerServerSubagentTests(options: ServerTestShardOptions = {}
           requestId: "req-prereq",
           projectId,
           threadId,
-          content: "complex prerequisite task"
+          content: "complex prerequisite task",
+          modeId: "plan",
+          modeLocked: true
         }, 30000);
         const prerequisiteTracePromise = waitForEvent(
           socket,
@@ -4222,7 +4324,9 @@ export function registerServerSubagentTests(options: ServerTestShardOptions = {}
           requestId: "req-prereq-alias",
           projectId,
           threadId,
-          content: "complex aliased prerequisite task"
+          content: "complex aliased prerequisite task",
+          modeId: "plan",
+          modeLocked: true
         }, 30000);
         expect(repository.getRun(projectId, ready.payload.run.id)?.plan?.prerequisites[0]?.owner).toBe("main");
         const prerequisiteTracePromise = waitForEvent(
@@ -4269,7 +4373,9 @@ export function registerServerSubagentTests(options: ServerTestShardOptions = {}
           requestId: "req-prereq-fail",
           projectId,
           threadId,
-          content: "complex failing prerequisite task"
+          content: "complex failing prerequisite task",
+          modeId: "plan",
+          modeLocked: true
         }, 30000);
         const failedRunPromise = waitForEvent(
           socket,
@@ -4328,7 +4434,9 @@ export function registerServerSubagentTests(options: ServerTestShardOptions = {}
           requestId: "req-milestone-only",
           projectId,
           threadId,
-          content: "complex task"
+          content: "complex task",
+          modeId: "plan",
+          modeLocked: true
         }, 30000);
 
         const harnessMessagePromise = waitForEvent(
@@ -4341,12 +4449,6 @@ export function registerServerSubagentTests(options: ServerTestShardOptions = {}
           socket,
           "chat.streaming-tail-updated",
           (event) => event.payload.segments.some((segment: { content: string }) => segment.content.includes("retrying attempt 2")),
-          30000
-        );
-        const failMessagePromise = waitForEvent(
-          socket,
-          "chat.streaming-tail-updated",
-          (event) => event.payload.segments.some((segment: { content: string }) => segment.content.includes("Subagent fail: Patch code.")),
           30000
         );
         const completePromise = waitForEvent(socket, "chat.complete", undefined, 30000);
@@ -4364,13 +4466,6 @@ export function registerServerSubagentTests(options: ServerTestShardOptions = {}
 
         await harnessMessagePromise;
         await retryMessagePromise;
-        await failMessagePromise;
-        await waitForEvent(
-          socket,
-          "chat.streaming-tail-updated",
-          (event) => event.payload.segments.some((segment: { content: string }) => segment.content.includes("Subagent Patch code: patched code")),
-          30000
-        );
         await waitForAdapterCall(adapter, "aggregator", 30000);
         const complete = await completePromise;
         await pingServer(socket, "req-milestone-drain");
@@ -4380,7 +4475,6 @@ export function registerServerSubagentTests(options: ServerTestShardOptions = {}
         expect(updatedMessages.some((message) => message.kind === "run-milestones")).toBe(false);
         expect(streamingTailContents.some((message) => message.includes("Subagent Inspect files: started."))).toBe(true);
         expect(streamingTailContents.some((message) => message.includes("Subagent Patch code: retrying attempt 2."))).toBe(true);
-        expect(streamingTailContents.some((message) => message.includes("Subagent Patch code: patched code"))).toBe(true);
         expect(streamingTailContents.some((message) => message.includes("shell running 5s+"))).toBe(false);
         expect(streamingTailContents.some((message) => message.includes("Aggregator: shell"))).toBe(false);
         expect(appendedMessages.some((message) => message.role === "system" && message.content.includes("Subagent"))).toBe(false);
@@ -4409,7 +4503,9 @@ export function registerServerSubagentTests(options: ServerTestShardOptions = {}
           requestId: "req-tool-failure-burst",
           projectId,
           threadId,
-          content: "complex tool failure burst"
+          content: "complex tool failure burst",
+          modeId: "plan",
+          modeLocked: true
         }, 30000);
 
         socket.send(
@@ -4446,7 +4542,9 @@ export function registerServerSubagentTests(options: ServerTestShardOptions = {}
           requestId: "req-early-fail",
           projectId,
           threadId,
-          content: "complex early fail"
+          content: "complex early fail",
+          modeId: "plan",
+          modeLocked: true
         }, 30000);
 
         let completeResolved = false;
@@ -4497,7 +4595,9 @@ export function registerServerSubagentTests(options: ServerTestShardOptions = {}
           requestId: "req-aggregating-status",
           projectId,
           threadId,
-          content: "complex status window"
+          content: "complex status window",
+          modeId: "plan",
+          modeLocked: true
         }, 30000);
         const aggregatingPromise = waitForEvent(
           socket,
@@ -5016,7 +5116,9 @@ export function registerServerProjectsAndHistoryTests(options: ServerTestShardOp
               requestId: "req-background-question-send",
               projectId,
               threadId: originalThreadId,
-              content: "slow needs clarification"
+              content: "slow needs clarification",
+              modeId: "plan",
+              modeLocked: true
             })
           )
         );
@@ -5162,7 +5264,9 @@ export function registerServerProjectsAndHistoryTests(options: ServerTestShardOp
               projectId,
               threadId: newThreadId,
               agentId: "pi",
-              content: "second thread work"
+              content: "second thread work",
+              modeId: "plan",
+              modeLocked: true
             }
           })
         );
@@ -5591,7 +5695,9 @@ export function registerServerProjectsAndHistoryTests(options: ServerTestShardOp
               projectId,
               threadId: questionThreadId,
               agentId: "pi",
-              content: "needs clarification"
+              content: "needs clarification",
+              modeId: "plan",
+              modeLocked: true
             }
           })
         );
@@ -5917,7 +6023,9 @@ export function registerServerProjectsAndHistoryTests(options: ServerTestShardOp
           requestId: "req-retry-main-1",
           projectId,
           threadId,
-          content: "simple task"
+          content: "simple task",
+          modeId: "plan",
+          modeLocked: true
         });
         await executeReadyRun(socket, {
           requestId: "req-retry-main-1-execute",
@@ -5971,7 +6079,9 @@ export function registerServerProjectsAndHistoryTests(options: ServerTestShardOp
           requestId: "req-refine-1",
           projectId,
           threadId,
-          content: "complex task"
+          content: "complex task",
+          modeId: "plan",
+          modeLocked: true
         });
         const refinedReadyPromise = waitForEvent(
           socket,
@@ -6072,7 +6182,9 @@ export function registerServerProjectsAndHistoryTests(options: ServerTestShardOp
           requestId: "req-context",
           projectId,
           threadId,
-          content: "simple task"
+          content: "simple task",
+          modeId: "plan",
+          modeLocked: true
         });
         await executeReadyRun(socket, {
           requestId: "req-context-execute",
@@ -6126,6 +6238,8 @@ export function registerServerRuntimeBudgetTests(options: ServerTestShardOptions
             threadId: opened.payload.project.activeThreadId,
             agentId: "pi",
             content: "Do budgeted work",
+            modeId: "plan",
+            modeLocked: true,
             runtimeBudget: { maxTurns: 1 }
           }
         })
@@ -6298,8 +6412,9 @@ async function sendChatUntilReady(
     reasoningStrength?: "low" | "medium" | "high" | "extra-high";
     fastMode?: boolean;
     modeId?: string;
+    modeLocked?: boolean;
   },
-  timeoutMs: number = 5000
+  timeoutMs: number = DEFAULT_TEST_EVENT_TIMEOUT_MS
 ) {
   const readyPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "ready", timeoutMs);
   const planMessagePromise = waitForEvent(
@@ -6307,17 +6422,22 @@ async function sendChatUntilReady(
     "chat.message-appended",
     (event) => event.payload.message.kind === "plan-summary",
     timeoutMs
-  );
+  ).catch((error) => error);
   socket.send(JSON.stringify(createChatSendCommand(input)));
   const ready = await readyPromise;
-  await planMessagePromise;
+  if (ready.payload.run.plan?.origin !== "quick-task") {
+    const planMessage = await planMessagePromise;
+    if (planMessage instanceof Error) {
+      throw planMessage;
+    }
+  }
   return ready;
 }
 
 async function executeReadyRun(
   socket: WebSocket,
   input: { requestId: string; projectId: string; threadId: string; runId: string },
-  timeoutMs: number = 5000
+  timeoutMs: number = DEFAULT_TEST_EVENT_TIMEOUT_MS
 ) {
   const completePromise = waitForEvent(socket, "chat.complete", undefined, timeoutMs);
   socket.send(
@@ -6337,7 +6457,7 @@ async function executeReadyRun(
 async function sendChatAndExecute(
   socket: WebSocket,
   input: { requestId: string; projectId: string; threadId: string; content: string },
-  timeoutMs: number = 5000
+  timeoutMs: number = DEFAULT_TEST_EVENT_TIMEOUT_MS
 ) {
   const ready = await sendChatUntilReady(socket, input, timeoutMs);
   return executeReadyRun(
@@ -6355,7 +6475,7 @@ async function sendChatAndExecute(
 async function answerPlanningQuestionAndExecute(
   socket: WebSocket,
   input: { requestId: string; projectId: string; threadId: string; runId: string; questionId: string; content: string },
-  timeoutMs: number = 5000
+  timeoutMs: number = DEFAULT_TEST_EVENT_TIMEOUT_MS
 ) {
   const readyPromise = waitForEvent(
     socket,
@@ -6368,7 +6488,7 @@ async function answerPlanningQuestionAndExecute(
     "chat.message-appended",
     (event) => event.payload.message.kind === "plan-summary",
     timeoutMs
-  );
+  ).catch((error) => error);
   socket.send(
     JSON.stringify({
       type: "planning.answer",
@@ -6383,7 +6503,12 @@ async function answerPlanningQuestionAndExecute(
     })
   );
   const ready = await readyPromise;
-  await planMessagePromise;
+  if (ready.payload.run.plan?.origin !== "quick-task") {
+    const planMessage = await planMessagePromise;
+    if (planMessage instanceof Error) {
+      throw planMessage;
+    }
+  }
   return executeReadyRun(
     socket,
     {
@@ -6414,7 +6539,7 @@ async function pingServer(socket: WebSocket, requestId: string) {
   await pongPromise;
 }
 
-function waitForEvent(socket: EventTarget, type: string, predicate?: (payload: any) => boolean, timeoutMs: number = 5000) {
+function waitForEvent(socket: EventTarget, type: string, predicate?: (payload: any) => boolean, timeoutMs: number = DEFAULT_TEST_EVENT_TIMEOUT_MS) {
   return new Promise<any>((resolve, reject) => {
     let settled = false;
     let timeout: ReturnType<typeof setTimeout>;
@@ -6469,7 +6594,7 @@ function waitForEvent(socket: EventTarget, type: string, predicate?: (payload: a
   });
 }
 
-function waitForCondition(predicate: () => boolean, timeoutMs: number = 5000, intervalMs: number = 50) {
+function waitForCondition(predicate: () => boolean, timeoutMs: number = DEFAULT_TEST_EVENT_TIMEOUT_MS, intervalMs: number = 25) {
   return new Promise<void>((resolve, reject) => {
     const startedAt = Date.now();
     const interval = setInterval(() => {

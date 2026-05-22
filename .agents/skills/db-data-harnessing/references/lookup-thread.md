@@ -16,14 +16,14 @@ Read [table-map.md](table-map.md) if you need the wider schema around a result.
 - Notifications: inbox items tied to the thread, run, job, or approval flow.
 - Background automation: jobs and job runs when the thread is an automation thread.
 - Assistant thread state: messages, todos, learnings, questions, logs, and skill/script/mode references if the id belongs to `assistant_threads`.
-- Environment mistakes: wrong DB path, BranchFS-created fresh `.local/`, or recovered DB files after corruption/schema drift.
+- Environment mistakes: wrong DB path, BranchFS-created fresh state, or recovered DB files after corruption/schema drift.
 
 ## Recommended Order
 
 1. Confirm the DB file.
-   Default path is `.local/harness.db`.
+   Default path is `~/.ai-harness-template/harness.db`.
    `HARNESS_DB_PATH` can redirect reads somewhere else.
-   In BranchFS, `.local/` starts fresh unless the caller points back to the host DB.
+   In BranchFS, local state may start fresh unless the caller points back to the host DB.
 
 2. Identify thread type.
    Check `project_threads.id` first.
@@ -47,7 +47,7 @@ Read [table-map.md](table-map.md) if you need the wider schema around a result.
    - Empty sidebar thread preview usually traces back to `thread_messages`.
    - Wrong badge usually traces back to latest `agent_runs.status`.
    - Missing automation history usually traces back to `background_job_runs` or `notifications`.
-   - "Data disappeared" may really mean the user is looking at a different `.local/harness.db`.
+   - "Data disappeared" may really mean the user is looking at a different harness database.
 
 ## Fast Path
 
@@ -60,8 +60,8 @@ bun.cmd .agents/skills/db-data-harnessing/scripts/lookup-thread.ts <thread-id> -
 
 ## Notable Discoveries From Current Context
 
-- The harness default DB lives at `.local/harness.db`.
-- BranchFS mounts do not copy `.local`, so isolated runs usually see a fresh DB unless explicitly redirected.
+- The harness default DB lives at `~/.ai-harness-template/harness.db`.
+- BranchFS mounts should point back to that DB unless a fresh isolated database is intended.
 - Project thread summaries are derived from `project_threads`, latest `agent_runs`, and latest non-system `thread_messages`.
 - Fork lineage lives on `project_threads.forked_from_thread_id`.
 - Thread memory summaries live on the thread rows themselves, while durable memory bank entries live in `memory_entries`.

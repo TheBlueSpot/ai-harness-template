@@ -1,13 +1,35 @@
-import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, type JSX } from "solid-js";
 import { createRequestId, type AgentRunState, type BackgroundJob, type BackgroundJobRun, type RunDiagnosticsWindowDays } from "../../../shared/protocol";
-import { type BackgroundJobEditorDraft, type JobsRunFilter, type RunDiagnosticsViewState, harnessStore, persistMergedLocalPreferences } from "../harness-store";
+import { formatForDisplay } from "@tanstack/solid-hotkeys";
+import {
+  type BackgroundJobEditorDraft,
+  type JobsPaneJobSort,
+  type JobsPaneRunSort,
+  type JobsRunFilter,
+  type RunDiagnosticsViewState,
+  harnessStore,
+  persistMergedLocalPreferences
+} from "../harness-store";
 import { formatShortTimestamp, resolveBrowserTimezone } from "../lib/time-format";
+import { normalizeAppHotkeyPreferences } from "../lib/app-hotkeys";
+import { registerCurrentTabItemSelector } from "../lib/current-tab-item-hotkeys";
+import { toProperCase } from "../lib/utils";
 import { pushToast } from "../toast-store";
 import { ActionButton } from "./action-button";
 import { CopyTextButton } from "./primitives/copy-text-button";
 import { ExecutionLog } from "./primitives/execution-log";
 import { Dialog } from "./primitives/dialog";
-import { Input } from "./primitives/input";
+import {
+  DetailEmptyState,
+  LeftPaneEmptyState,
+  LeftPaneFilterBlock,
+  LeftPaneHeader,
+  LeftPaneListSection,
+  LeftPaneSearchInput,
+  LeftPaneSearchMenu,
+  LeftPaneShell,
+  type LeftPaneSearchMenuItem
+} from "./primitives/left-pane";
 import { ScrollArea } from "./primitives/scroll-area";
 import { Tooltip } from "./primitives/tooltip";
 import { VirtualList } from "./primitives/virtual-list";
@@ -15,9 +37,12 @@ import {
   Bell,
   BellOff,
   Bot,
+  BriefcaseBusiness,
+  Calendar,
   CheckCircle2,
-  CircleHelp,
+  Clock3,
   CircleX,
+  ListFilter,
   LoaderCircle,
   Pause,
   Play,
@@ -33,6 +58,18 @@ type BackgroundJobsPanelProps = {
   segment?: "jobs" | "runs" | "health";
   healthRefreshThrottleMs?: number;
 };
+
+function formatHotkeyHint(hotkey: string) {
+  return formatForDisplay(hotkey)
+    .split("+")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join(" + ");
+}
+
+function tooltipWithPrimaryHotkey(label: string, hotkey: string | undefined) {
+  return hotkey ? `${label} (${formatHotkeyHint(hotkey)})` : label;
+}
 
 export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
   let runDetailViewport: HTMLDivElement | undefined;
@@ -76,7 +113,7 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
     [...state.backgroundJobs.runs]
       .filter((run) => matchesRunFilter(run, runFilter()))
       .filter((run) => fuzzyMatches(runSearchHaystack(run, state), jobsPane().runSearch ?? ""))
-      .sort(compareRunsByUrgency)
+      .sort((left, right) => compareRuns(left, right, jobsPane().runSort ?? "urgency"))
   );
   const activeProjectChatRuns = createMemo(() =>
     state.workspace.projects
@@ -133,6 +170,41 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
       detail: event.detail
     }))
   );
+
+  createEffect(() => {
+    if (!showLeft()) {
+      return;
+    }
+    if (activeSegment() === "jobs") {
+      const unregister = registerCurrentTabItemSelector("jobs", (index) => {
+        const job = jobs()[index];
+        if (!job) {
+          return false;
+        }
+        openJobDetails(job);
+        return true;
+      });
+      onCleanup(unregister);
+      return;
+    }
+    if (activeSegment() === "inbox") {
+      const unregister = registerCurrentTabItemSelector("runs", (index) => {
+        const projectChatRuns = activeProjectChatRuns();
+        const projectChatRun = projectChatRuns[index];
+        if (projectChatRun) {
+          openProjectChatRun(projectChatRun.project.id, projectChatRun.run.threadId);
+          return true;
+        }
+        const run = filteredRuns()[index - projectChatRuns.length];
+        if (!run) {
+          return false;
+        }
+        openRunDetails(run);
+        return true;
+      });
+      onCleanup(unregister);
+    }
+  });
 
   function scrollRunDetailToBottom() {
     if (runDetailViewport) {
@@ -383,22 +455,20 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
   }
 
   return (
-    <section data-test-background-jobs-panel="" class="panel-shell flex h-full min-h-0 flex-col gap-4 rounded-2xl border-t-0 p-4">
+    <LeftPaneShell data-test-background-jobs-panel="" kind={activeSegment() === "jobs" ? "jobs" : activeSegment() === "inbox" ? "runs" : "health"} padding="comfortable">
       <Show when={showLeft()}>
-        <div class="px-1 py-1">
-          <div class="flex items-center justify-between gap-3">
-            <div class="flex items-center gap-2 text-[0.585rem] font-semibold tracking-[0.2em] text-(--muted)">
-              <span>{headerTitle()}</span>
-              <Tooltip content={headerHelp()}>
-                <span class="inline-flex">
-                  <CircleHelp class="h-3.5 w-3.5 text-(--muted)" aria-label={`${headerTitle()} help`} />
-                </span>
-              </Tooltip>
-            </div>
-            <Show when={activeSegment() === "jobs"}>
-              <div class="flex items-center gap-2">
+        <>
+          <LeftPaneHeader
+            title={headerTitle()}
+            help={headerHelp()}
+            actions={
+              <Show when={activeSegment() === "jobs"}>
+                <>
                 <ActionButton
-                  tooltip="Create scheduled AI routine"
+                  tooltip={tooltipWithPrimaryHotkey(
+                    "Create scheduled AI routine",
+                    normalizeAppHotkeyPreferences(state.appHotkeyPreferences).createBackgroundJob[0]
+                  )}
                   icon={<Bot class="h-4 w-4" />}
                   size="icon"
                   variant="ghost"
@@ -421,9 +491,10 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                   ariaLabel={state.backgroundJobNotificationsEnabled ? "Disable desktop notifications" : "Enable desktop notifications"}
                   onClick={handleToggleNotifications}
                 />
-              </div>
-            </Show>
-          </div>
+                </>
+              </Show>
+            }
+          />
           <Show when={formatSchedulerHeartbeatWarning(state.backgroundJobs.schedulerHeartbeatAt)}>
             {(warning) => (
               <div class="mt-3 rounded-[0.9rem] border border-amber-300/70 bg-amber-50 px-3 py-2 text-[0.675rem] leading-5 text-amber-900">
@@ -431,43 +502,23 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
               </div>
             )}
           </Show>
-        </div>
+        </>
       </Show>
 
       <Show when={showLeft()}>
-        <Show when={!props.segment}>
-          <div class="flex items-center gap-2 rounded-2xl border border-(--border) bg-white/55 p-1">
-            <button
-              type="button"
-              class="flex-1 rounded-[0.8rem] px-3 py-2 text-[0.675rem] font-semibold"
-              classList={{ "bg-(--accent)": activeSegment() === "jobs", "text-white": activeSegment() === "jobs", "text-(--foreground)": activeSegment() !== "jobs" }}
-              onClick={() => harnessStore.setJobsPanePreferences({ segment: "jobs" })}
-            >
-              Jobs
-            </button>
-            <button
-              type="button"
-              class="flex-1 rounded-[0.8rem] px-3 py-2 text-[0.675rem] font-semibold"
-              classList={{ "bg-(--accent)": activeSegment() === "inbox", "text-white": activeSegment() === "inbox", "text-(--foreground)": activeSegment() !== "inbox" }}
-              onClick={() => harnessStore.setJobsPanePreferences({ segment: "inbox" })}
-            >
-              Runs
-            </button>
-            <button
-              type="button"
-              class="flex-1 rounded-[0.8rem] px-3 py-2 text-[0.675rem] font-semibold"
-              classList={{ "bg-(--accent)": activeSegment() === "health", "text-white": activeSegment() === "health", "text-(--foreground)": activeSegment() !== "health" }}
-              onClick={() => harnessStore.setJobsPanePreferences({ segment: "health" })}
-            >
-              Health
-            </button>
-          </div>
-        </Show>
         <Show when={activeSegment() !== "health"}>
-          <div class="flex flex-col gap-2">
-            <Input
+          <LeftPaneFilterBlock>
+            <LeftPaneSearchInput
               value={activeSearch()}
-              placeholder={activeSegment() === "jobs" ? "Search jobs" : "Search runs"}
+              aria-label={activeSegment() === "jobs" ? "Search jobs" : "Search runs"}
+              placeholder={activeSegment() === "jobs" ? "Search jobs..." : "Search runs..."}
+              menu={
+                <LeftPaneSearchMenu
+                  ariaLabel={activeSegment() === "jobs" ? "Filter and sort jobs" : "Filter and sort runs"}
+                  tooltip={activeSegment() === "jobs" ? "Filter and sort jobs" : "Filter and sort runs"}
+                  items={jobsPaneMenuItems(state, activeSegment(), !props.segment)}
+                />
+              }
               onInput={(event) =>
                 harnessStore.setJobsPanePreferences(
                   activeSegment() === "jobs"
@@ -476,36 +527,7 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                 )
               }
             />
-            <Show when={activeSegment() === "jobs"}>
-              <div class="grid gap-2 text-[0.675rem] sm:grid-cols-3">
-                <select class="rounded-lg border border-(--border) bg-white/75 px-2 py-2" value={jobsPane().kind ?? ""} onChange={(event) => harnessStore.setJobsPanePreferences({ kind: event.currentTarget.value ? event.currentTarget.value as BackgroundJob["kind"] : undefined })}>
-                  <option value="">All kinds</option>
-                  <option value="ai-routine">AI routine</option>
-                  <option value="shell">Shell</option>
-                </select>
-                <select class="rounded-lg border border-(--border) bg-white/75 px-2 py-2" value={jobsPane().status ?? ""} onChange={(event) => harnessStore.setJobsPanePreferences({ status: event.currentTarget.value ? event.currentTarget.value as BackgroundJob["status"] : undefined })}>
-                  <option value="">All statuses</option>
-                  <option value="enabled">Enabled</option>
-                  <option value="paused">Paused</option>
-                  <option value="disabled">Disabled</option>
-                </select>
-                <select class="rounded-lg border border-(--border) bg-white/75 px-2 py-2" value={jobsPane().risk ?? ""} onChange={(event) => harnessStore.setJobsPanePreferences({ risk: event.currentTarget.value ? event.currentTarget.value as BackgroundJob["riskLevel"] : undefined })}>
-                  <option value="">All risk</option>
-                  <option value="safe">Safe</option>
-                  <option value="slightly-unsafe">Slightly unsafe</option>
-                  <option value="unsafe">Unsafe</option>
-                </select>
-              </div>
-            </Show>
-            <Show when={activeSearch() || jobsPane().kind || jobsPane().status || jobsPane().risk}>
-              <div class="flex flex-wrap gap-2">
-                <ActionButton tooltip="Clear current search" size="sm" variant="ghost" onClick={() => harnessStore.setJobsPanePreferences(activeSegment() === "jobs" ? { jobSearch: "" } : { runSearch: "" })}>Clear search</ActionButton>
-                <Show when={activeSegment() === "jobs" && (jobsPane().kind || jobsPane().status || jobsPane().risk)}>
-                  <ActionButton tooltip="Clear job filters" size="sm" variant="ghost" onClick={() => harnessStore.setJobsPanePreferences({ kind: undefined, status: undefined, risk: undefined })}>Clear filters</ActionButton>
-                </Show>
-              </div>
-            </Show>
-          </div>
+          </LeftPaneFilterBlock>
         </Show>
       </Show>
 
@@ -527,11 +549,7 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
               />
             </Show>
             <Show when={activeSegment() === "jobs"}>
-              <section class="flex min-h-0 min-w-0 flex-col rounded-[1.35rem] border border-(--border) bg-white/55 p-4">
-                <div class="mb-3 flex items-center justify-between gap-3">
-                  <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Jobs</div>
-                  <span class="text-[0.625rem] text-(--muted)">{jobs().length} total</span>
-                </div>
+              <LeftPaneListSection title="Jobs" count={`${jobs().length} total`} class="min-w-0">
                 <VirtualList
                   class="min-h-0 flex-1 pr-2"
                   contentClass="w-full"
@@ -540,7 +558,31 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                   getKey={(job) => job.id}
                   estimateSize={210}
                   pagination={{ kind: "forward", initialCount: 60, batchSize: 60 }}
-                  empty={<EmptyFilteredState message="No scheduled tasks match current search or filters." onClear={() => harnessStore.setJobsPanePreferences({ jobSearch: "", kind: undefined, status: undefined, risk: undefined })} />}
+                  empty={
+                    <EmptyFilteredState
+                      message="No scheduled tasks match current search or filters."
+                      onClear={() => harnessStore.setJobsPanePreferences({ jobSearch: "", kind: undefined, status: undefined, risk: undefined })}
+                      actions={
+                        <>
+                          <ActionButton
+                            tooltip={tooltipWithPrimaryHotkey(
+                              "Schedule AI job",
+                              normalizeAppHotkeyPreferences(state.appHotkeyPreferences).createBackgroundJob[0]
+                            )}
+                            ariaLabel="Schedule job"
+                            size="sm"
+                            icon={<Bot class="h-3.5 w-3.5" />}
+                            onClick={() => handleCreateJob("ai-routine")}
+                          >
+                            Schedule job
+                          </ActionButton>
+                          <ActionButton tooltip="Run shell job" size="sm" variant="secondary" icon={<Terminal class="h-3.5 w-3.5" />} onClick={() => handleCreateJob("shell")}>
+                            Run shell job
+                          </ActionButton>
+                        </>
+                      }
+                    />
+                  }
                 >
                   {(job) => (
                     <article
@@ -571,42 +613,16 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                         <Show when={formatFailureTrackingLine(job)}>{(line) => <div>{line()}</div>}</Show>
                         <For each={formatJobSchedulerLines(job, state.backgroundJobs.runs, state.backgroundJobs.schedulerHeartbeatAt)}>{(line) => <div>{line}</div>}</For>
                         <div>Project: {state.workspace.projects.find((project) => project.id === job.projectId)?.name ?? job.projectId}</div>
+                        <div>Owner: {formatJobOwner(job, state)}</div>
                       </div>
                     </article>
                   )}
                 </VirtualList>
-              </section>
+              </LeftPaneListSection>
             </Show>
 
             <Show when={activeSegment() === "inbox"}>
-              <section class="flex min-h-0 min-w-0 flex-col rounded-[1.35rem] border border-(--border) bg-white/55 p-4">
-                <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
-                  <div class="text-[0.585rem] font-semibold tracking-[0.04em] text-(--muted)">Runs</div>
-                  <div class="flex flex-wrap gap-2">
-                    <For each={["approval", "queued", "running", "failed", "done"] satisfies JobsRunFilter[]}>
-                      {(filter) => (
-                        <Tooltip content={runFilterLabel(filter)}>
-                          <button
-                            class="inline-flex h-8 w-8 items-center justify-center rounded-full border transition"
-                            classList={{
-                              "border-(--accent)": runFilter() === filter,
-                              "bg-(--accent)": runFilter() === filter,
-                              "text-white": runFilter() === filter,
-                              "border-(--border)": runFilter() !== filter,
-                              "bg-white/70": runFilter() !== filter,
-                              "text-(--foreground)": runFilter() !== filter
-                            }}
-                            type="button"
-                            aria-label={runFilterLabel(filter)}
-                            onClick={() => harnessStore.setJobsRunFilter(filter)}
-                          >
-                            {runFilterIcon(filter)}
-                          </button>
-                        </Tooltip>
-                      )}
-                    </For>
-                  </div>
-                </div>
+              <LeftPaneListSection title="Runs" count={`${filteredRuns().length} total`} class="min-w-0">
                 <Show when={activeProjectChatRuns().length > 0}>
                   <div class="mb-4 flex flex-col gap-2">
                     <div class="text-[0.585rem] font-semibold uppercase tracking-[0.16em] text-(--muted)">Project chats</div>
@@ -640,7 +656,7 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                   getKey={(run) => run.id}
                   estimateSize={135}
                   pagination={{ kind: "forward", initialCount: 60, batchSize: 60 }}
-                  empty={<EmptyFilteredState message="No runs match current search or filter." onClear={() => { harnessStore.setJobsPanePreferences({ runSearch: "" }); harnessStore.setJobsRunFilter("approval"); }} />}
+                  empty={<EmptyFilteredState message="Run history appears after first task. No runs match current search or filter." onClear={() => { harnessStore.setJobsPanePreferences({ runSearch: "" }); harnessStore.setJobsRunFilter("approval"); }} />}
                 >
                   {(run) => (
                     <button
@@ -666,7 +682,7 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                     </button>
                   )}
                 </VirtualList>
-              </section>
+              </LeftPaneListSection>
             </Show>
           </div>
         </Show>
@@ -686,7 +702,7 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
               />
             </Show>
             <Show when={activeSegment() !== "jobs" || selectedRun()} fallback={null}>
-              <Show when={selectedRun()} fallback={<div class="flex h-full min-h-80 items-center justify-center rounded-[1.2rem] border border-dashed border-(--border) bg-white/45 p-6 text-center text-[0.675rem] text-(--muted)">Select background run or job to inspect details.</div>}>
+              <Show when={selectedRun()} fallback={<DetailEmptyState>Select background run or job to inspect details.</DetailEmptyState>}>
                 {(run) => (
                   <div class="flex h-full min-h-0 min-w-0 flex-col gap-4">
                     <div class="flex min-w-0 flex-wrap items-start justify-between gap-3">
@@ -809,7 +825,7 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
             </div>
           </Dialog>
       </Show>
-    </section>
+    </LeftPaneShell>
   );
 }
 
@@ -991,16 +1007,242 @@ function HealthTable(props: {
   );
 }
 
-function EmptyFilteredState(props: { message: string; onClear: () => void }) {
+function jobsPaneMenuItems(
+  state: typeof harnessStore.state,
+  segment: "jobs" | "inbox" | "health",
+  allowSegmentSwitch: boolean
+): LeftPaneSearchMenuItem[] {
+  const preferences = state.jobsPanePreferences;
+  const setPreferences = harnessStore.setJobsPanePreferences;
+  const jobSortOption = (label: string, value: JobsPaneJobSort, icon: JSX.Element): LeftPaneSearchMenuItem => ({
+    kind: "option",
+    label,
+    icon,
+    selected: preferences.jobSort === value,
+    onSelect: () => setPreferences({ jobSort: value })
+  });
+  const runSortOption = (label: string, value: JobsPaneRunSort, icon: JSX.Element): LeftPaneSearchMenuItem => ({
+    kind: "option",
+    label,
+    icon,
+    selected: (preferences.runSort ?? "urgency") === value,
+    onSelect: () => setPreferences({ runSort: value })
+  });
+  const segmentItems: LeftPaneSearchMenuItem[] = allowSegmentSwitch
+    ? [
+        {
+          kind: "submenu",
+          label: "View",
+          value: segment === "jobs" ? "Jobs" : segment === "inbox" ? "Runs" : "Health",
+          icon: <BriefcaseBusiness class="h-3.5 w-3.5" />,
+          items: [
+            {
+              kind: "option",
+              label: "Jobs",
+              icon: <BriefcaseBusiness class="h-3.5 w-3.5" />,
+              selected: segment === "jobs",
+              onSelect: () => setPreferences({ segment: "jobs" })
+            },
+            {
+              kind: "option",
+              label: "Runs",
+              icon: <Clock3 class="h-3.5 w-3.5" />,
+              selected: segment === "inbox",
+              onSelect: () => setPreferences({ segment: "inbox" })
+            },
+            {
+              kind: "option",
+              label: "Health",
+              icon: <ShieldCheck class="h-3.5 w-3.5" />,
+              selected: segment === "health",
+              onSelect: () => setPreferences({ segment: "health" })
+            }
+          ]
+        }
+      ]
+    : [];
+
+  if (segment === "jobs") {
+    return [
+      ...segmentItems,
+      {
+        kind: "submenu",
+        label: "Sort jobs",
+        value: formatJobSortLabel(preferences.jobSort),
+        icon: <Clock3 class="h-3.5 w-3.5" />,
+        items: [
+          jobSortOption("Next run", "next-run", <Clock3 class="h-3.5 w-3.5" />),
+          jobSortOption("Updated", "updated", <Calendar class="h-3.5 w-3.5" />),
+          jobSortOption("Created", "created", <Calendar class="h-3.5 w-3.5" />),
+          jobSortOption("Status", "status", <ListFilter class="h-3.5 w-3.5" />),
+          jobSortOption("Risk", "risk", <ShieldCheck class="h-3.5 w-3.5" />)
+        ] as Array<Extract<LeftPaneSearchMenuItem, { kind: "option" }>>
+      },
+      {
+        kind: "submenu",
+        label: "Kind",
+        value: preferences.kind === "ai-routine" ? "AI" : preferences.kind === "shell" ? "Shell" : "All",
+        icon: <ListFilter class="h-3.5 w-3.5" />,
+        items: [
+          {
+            kind: "option",
+            label: "All kinds",
+            icon: <ListFilter class="h-3.5 w-3.5" />,
+            selected: !preferences.kind,
+            onSelect: () => setPreferences({ kind: undefined })
+          },
+          {
+            kind: "option",
+            label: "AI routine",
+            icon: <Bot class="h-3.5 w-3.5" />,
+            selected: preferences.kind === "ai-routine",
+            onSelect: () => setPreferences({ kind: "ai-routine" })
+          },
+          {
+            kind: "option",
+            label: "Shell",
+            icon: <Terminal class="h-3.5 w-3.5" />,
+            selected: preferences.kind === "shell",
+            onSelect: () => setPreferences({ kind: "shell" })
+          }
+        ]
+      },
+      {
+        kind: "submenu",
+        label: "Status",
+        value: preferences.status ? toProperCase(preferences.status) : "All",
+        icon: <Pause class="h-3.5 w-3.5" />,
+        items: [
+          {
+            kind: "option",
+            label: "All statuses",
+            icon: <ListFilter class="h-3.5 w-3.5" />,
+            selected: !preferences.status,
+            onSelect: () => setPreferences({ status: undefined })
+          },
+          ...(["enabled", "paused", "disabled"] as const).map((status) => ({
+            kind: "option" as const,
+            label: toProperCase(status),
+            icon: <Pause class="h-3.5 w-3.5" />,
+            selected: preferences.status === status,
+            onSelect: () => setPreferences({ status })
+          }))
+        ]
+      },
+      {
+        kind: "submenu",
+        label: "Risk",
+        value: preferences.risk ? toProperCase(preferences.risk) : "All",
+        icon: <ShieldCheck class="h-3.5 w-3.5" />,
+        items: [
+          {
+            kind: "option",
+            label: "All risk",
+            icon: <ListFilter class="h-3.5 w-3.5" />,
+            selected: !preferences.risk,
+            onSelect: () => setPreferences({ risk: undefined })
+          },
+          ...(["safe", "slightly-unsafe", "unsafe"] as const).map((risk) => ({
+            kind: "option" as const,
+            label: toProperCase(risk),
+            icon: <ShieldCheck class="h-3.5 w-3.5" />,
+            selected: preferences.risk === risk,
+            onSelect: () => setPreferences({ risk })
+          }))
+        ]
+      },
+      { kind: "separator" },
+      {
+        kind: "option",
+        label: "Clear search and filters",
+        icon: <Trash2 class="h-3.5 w-3.5" />,
+        onSelect: () => setPreferences({ jobSearch: "", kind: undefined, status: undefined, risk: undefined })
+      }
+    ];
+  }
+
+  return [
+    ...segmentItems,
+    {
+      kind: "submenu",
+      label: "Sort runs",
+      value: formatRunSortLabel(preferences.runSort ?? "urgency"),
+      icon: <Clock3 class="h-3.5 w-3.5" />,
+      items: [
+        runSortOption("Urgency", "urgency", <ShieldCheck class="h-3.5 w-3.5" />),
+        runSortOption("Updated", "updated", <Calendar class="h-3.5 w-3.5" />),
+        runSortOption("Queued", "queued", <Clock3 class="h-3.5 w-3.5" />),
+        runSortOption("Status", "status", <ListFilter class="h-3.5 w-3.5" />)
+      ] as Array<Extract<LeftPaneSearchMenuItem, { kind: "option" }>>
+    },
+    {
+      kind: "submenu",
+      label: "Run state",
+      value: runFilterLabel(state.jobsRunFilter),
+      icon: <ShieldCheck class="h-3.5 w-3.5" />,
+      items: (["approval", "queued", "running", "failed", "done"] satisfies JobsRunFilter[]).map((filter) => ({
+        kind: "option" as const,
+        label: runFilterLabel(filter),
+        icon: runFilterIcon(filter),
+        selected: state.jobsRunFilter === filter,
+        onSelect: () => harnessStore.setJobsRunFilter(filter)
+      }))
+    },
+    { kind: "separator" },
+    {
+      kind: "option",
+      label: "Clear search and filters",
+      icon: <Trash2 class="h-3.5 w-3.5" />,
+      onSelect: () => {
+        setPreferences({ runSearch: "" });
+        harnessStore.setJobsRunFilter("approval");
+      }
+    }
+  ];
+}
+
+function formatJobSortLabel(sort: JobsPaneJobSort) {
+  if (sort === "next-run") {
+    return "Next run";
+  }
+  if (sort === "created") {
+    return "Created";
+  }
+  if (sort === "status") {
+    return "Status";
+  }
+  if (sort === "risk") {
+    return "Risk";
+  }
+  return "Updated";
+}
+
+function formatRunSortLabel(sort: JobsPaneRunSort) {
+  if (sort === "queued") {
+    return "Queued";
+  }
+  if (sort === "updated") {
+    return "Updated";
+  }
+  if (sort === "status") {
+    return "Status";
+  }
+  return "Urgency";
+}
+
+function EmptyFilteredState(props: { message: string; onClear: () => void; actions?: JSX.Element }) {
   return (
-    <div class="rounded-[1.2rem] border border-dashed border-(--border) bg-white/45 p-4 text-[0.675rem] leading-5 text-(--muted)">
+    <LeftPaneEmptyState>
       <div>{props.message}</div>
+      <Show when={props.actions}>
+        <div class="mt-3 flex flex-wrap gap-2">{props.actions}</div>
+      </Show>
       <div class="mt-3">
         <ActionButton tooltip="Clear search and filters" size="sm" variant="ghost" onClick={props.onClear}>
           Clear
         </ActionButton>
       </div>
-    </div>
+    </LeftPaneEmptyState>
   );
 }
 
@@ -1072,7 +1314,7 @@ function matchesJobFilters(job: BackgroundJob, state: typeof harnessStore.state)
   return true;
 }
 
-function compareJobs(left: BackgroundJob, right: BackgroundJob, sort: "next-run" | "updated" | "created" | "status" | "risk") {
+function compareJobs(left: BackgroundJob, right: BackgroundJob, sort: JobsPaneJobSort) {
   if (sort === "updated") {
     return right.updatedAt.localeCompare(left.updatedAt);
   }
@@ -1086,6 +1328,19 @@ function compareJobs(left: BackgroundJob, right: BackgroundJob, sort: "next-run"
     return riskRank(right.riskLevel) - riskRank(left.riskLevel) || right.updatedAt.localeCompare(left.updatedAt);
   }
   return compareOptionalIsoAsc(resolveJobNextRunAt(left), resolveJobNextRunAt(right)) || right.updatedAt.localeCompare(left.updatedAt);
+}
+
+function compareRuns(left: BackgroundJobRun, right: BackgroundJobRun, sort: JobsPaneRunSort) {
+  if (sort === "updated") {
+    return right.updatedAt.localeCompare(left.updatedAt);
+  }
+  if (sort === "queued") {
+    return right.queuedAt.localeCompare(left.queuedAt);
+  }
+  if (sort === "status") {
+    return left.status.localeCompare(right.status) || right.updatedAt.localeCompare(left.updatedAt);
+  }
+  return compareRunsByUrgency(left, right);
 }
 
 function compareRunsByUrgency(left: BackgroundJobRun, right: BackgroundJobRun) {
@@ -1297,6 +1552,13 @@ function jobSearchHaystack(job: BackgroundJob, state: typeof harnessStore.state)
     .join(" ");
 }
 
+function formatJobOwner(job: BackgroundJob, state: typeof harnessStore.state) {
+  if (!job.assistantId) {
+    return "Unowned";
+  }
+  return state.assistants.assistants.find((assistant) => assistant.id === job.assistantId)?.name ?? job.assistantId;
+}
+
 function runSearchHaystack(run: BackgroundJobRun, state: typeof harnessStore.state) {
   const job = state.backgroundJobs.jobs.find((entry) => entry.id === run.jobId);
   return [
@@ -1412,6 +1674,7 @@ function JobDetail(props: {
                   <div>Status: {job().status}</div>
                   <div>Kind: {job().kind}</div>
                   <div>Risk: {job().riskLevel}</div>
+                  <div>Owner: {formatJobOwner(job(), harnessStore.state)}</div>
                   <div>Schedule: {job().scheduleInput}</div>
                   <div>Next: {formatJobNextRun(job(), props.runs, props.schedulerHeartbeatAt)}</div>
                   <Show when={job().schedulerStatus}>

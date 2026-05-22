@@ -1,6 +1,7 @@
 import { Show, createEffect, createSignal, onCleanup, type JSX } from "solid-js";
 import { cn } from "../../lib/utils";
 import { PrimitivePortal } from "./primitive-portal";
+import { isTopOverlay, registerOverlay } from "./overlay-stack";
 
 type PopoverProps = {
   open: boolean;
@@ -17,6 +18,7 @@ type PopoverProps = {
 export function Popover(props: PopoverProps) {
   let triggerRef: HTMLDivElement | undefined;
   let contentRef: HTMLDivElement | undefined;
+  const overlayId = `popover-${Math.random().toString(36).slice(2)}`;
   const [position, setPosition] = createSignal({
     top: 0,
     left: 0,
@@ -105,6 +107,7 @@ export function Popover(props: PopoverProps) {
     if (!props.open) {
       return;
     }
+    const unregister = registerOverlay(overlayId);
 
     queueMicrotask(updatePosition);
 
@@ -121,7 +124,7 @@ export function Popover(props: PopoverProps) {
     };
 
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
+      if (event.key === "Escape" && isTopOverlay(overlayId)) {
         props.onClose?.();
       }
     };
@@ -129,6 +132,7 @@ export function Popover(props: PopoverProps) {
     window.addEventListener("mousedown", handlePointerDown);
     window.addEventListener("keydown", handleKeyDown);
     onCleanup(() => {
+      unregister();
       window.removeEventListener("mousedown", handlePointerDown);
       window.removeEventListener("keydown", handleKeyDown);
     });

@@ -5,13 +5,81 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@solidjs/testing-li
 import { ProjectSidebar } from "./project-sidebar";
 import { captureDispatchedCommands, clearBrowserStateForTests, seedHarnessStoreForTests } from "../utils/tests/store-test-utils";
 import { createHarnessStateFixture, createViewProjectFixture } from "../utils/tests/test-fixtures";
-import { createProjectThreadSummary } from "../../../shared/protocol";
-import { readProjectSidebarPreferences } from "../harness-store";
+import { createChatMessage, createEmptySession, createProjectThreadSummary } from "../../../shared/protocol";
+import { harnessStore, readProjectSidebarPreferences } from "../harness-store";
 
 createUiTest("ProjectSidebar", () => {
   beforeEach(() => {
     cleanup();
     clearBrowserStateForTests();
+  });
+
+  it("uses shared left pane shell and empty-state presentation", () => {
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: undefined,
+          projects: []
+        }
+      })
+    );
+
+    render(() => <ProjectSidebar />);
+
+    expect(document.querySelector("[data-test-left-pane-shell][data-left-pane-kind='projects']")).not.toBeNull();
+    expect(screen.getByText(/No workspace roots yet/i).closest("[data-test-left-pane-empty-state]")).not.toBeNull();
+  });
+
+  it("searches projects from the left panel above the project list", () => {
+    const commands: unknown[] = [];
+    const now = new Date().toISOString();
+    const projectAlpha = createViewProjectFixture({
+      id: "project-alpha-search",
+      name: "Alpha dashboard",
+      activeThreadId: "thread-alpha",
+      session: {
+        ...createEmptySession("thread-alpha"),
+        messages: [createChatMessage("user", "Find billing regression")]
+      },
+      threads: [
+        createProjectThreadSummary({
+          id: "thread-alpha",
+          title: "Alpha thread",
+          titleSource: "custom",
+          updatedAt: now,
+          messageCount: 1,
+          lastMessagePreview: "Find billing regression"
+        })
+      ]
+    });
+    const projectBilling = createViewProjectFixture({
+      id: "project-billing-search",
+      name: "Billing api",
+      activeThreadId: "thread-billing",
+      session: createEmptySession("thread-billing")
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: projectAlpha.id,
+          projects: [projectAlpha, projectBilling]
+        }
+      })
+    );
+    captureDispatchedCommands(commands);
+
+    render(() => <ProjectSidebar />);
+    const search = screen.getByPlaceholderText("Search projects...");
+    expect(search.compareDocumentPosition(screen.getByRole("button", { name: "Switch to Billing api" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    fireEvent.input(search, { target: { value: "billing" } });
+    fireEvent.click(screen.getAllByText("Billing api")[0]!);
+
+    expect(commands.at(-1)).toMatchObject({
+      type: "project.activate",
+      payload: { projectId: projectBilling.id }
+    });
+    expect(harnessStore.state.chatPaneTab).toBe("chat");
   });
 
   it("shows streaming badge and only blocks destructive remove while streaming", () => {
@@ -426,48 +494,72 @@ createUiTest("ProjectSidebar", () => {
   });
 
   it("resets the pending delete state after two seconds", async () => {
-    const now = new Date().toISOString();
-    const project = createViewProjectFixture({
-      id: "project-delete-reset",
-      activeThreadId: "thread-1",
-      threads: [
-        createProjectThreadSummary({
-          id: "thread-1",
-          title: "Active thread",
-          titleSource: "generated",
-          status: "active",
-          updatedAt: now
-        }),
-        createProjectThreadSummary({
-          id: "thread-2",
-          title: "Thread to reset",
-          titleSource: "generated",
-          status: "active",
-          updatedAt: now
-        })
-      ]
-    });
-    seedHarnessStoreForTests(
-      createHarnessStateFixture({
-        workspace: {
-          activeProjectId: project.id,
-          projects: [project]
+    const originalSetTimeout = globalThis.setTimeout;
+    const originalClearTimeout = globalThis.clearTimeout;
+    const timerCallbacks = new Map<number, () => void>();
+    let nextTimerId = 0;
+    globalThis.setTimeout = ((callback: TimerHandler, _delay?: number, ...args: unknown[]) => {
+      const timerId = ++nextTimerId;
+      timerCallbacks.set(timerId, () => {
+        if (typeof callback === "function") {
+          callback(...args);
         }
-      })
-    );
-    const commands: unknown[] = [];
-    captureDispatchedCommands(commands);
+      });
+      return timerId as unknown as ReturnType<typeof setTimeout>;
+    }) as unknown as typeof setTimeout;
+    globalThis.clearTimeout = ((timerId?: Parameters<typeof clearTimeout>[0]) => {
+      timerCallbacks.delete(Number(timerId));
+    }) as typeof clearTimeout;
+    try {
+      const now = new Date().toISOString();
+      const project = createViewProjectFixture({
+        id: "project-delete-reset",
+        activeThreadId: "thread-1",
+        threads: [
+          createProjectThreadSummary({
+            id: "thread-1",
+            title: "Active thread",
+            titleSource: "generated",
+            status: "active",
+            updatedAt: now
+          }),
+          createProjectThreadSummary({
+            id: "thread-2",
+            title: "Thread to reset",
+            titleSource: "generated",
+            status: "active",
+            updatedAt: now
+          })
+        ]
+      });
+      seedHarnessStoreForTests(
+        createHarnessStateFixture({
+          workspace: {
+            activeProjectId: project.id,
+            projects: [project]
+          }
+        })
+      );
+      const commands: unknown[] = [];
+      captureDispatchedCommands(commands);
 
-    render(() => <ProjectSidebar />);
+      render(() => <ProjectSidebar />);
 
-    const deleteButton = screen.getAllByRole("button", { name: "Delete" })[1] as HTMLButtonElement;
-    fireEvent.click(deleteButton);
-    await Promise.resolve();
-    await new Promise((resolve) => setTimeout(resolve, 2050));
-    fireEvent.click(deleteButton);
+      const deleteButton = screen.getAllByRole("button", { name: "Delete" })[1] as HTMLButtonElement;
+      fireEvent.click(deleteButton);
+      await Promise.resolve();
+      for (const callback of [...timerCallbacks.values()]) {
+        callback();
+      }
+      await Promise.resolve();
+      fireEvent.click(deleteButton);
 
-    expect(commands).toEqual([]);
-    expect(deleteButton.className).toContain("text-rose-600");
+      expect(commands).toEqual([]);
+      expect(deleteButton.className).toContain("text-rose-600");
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+      globalThis.clearTimeout = originalClearTimeout;
+    }
   });
 
   it("renders sort control and applies project sorting", () => {
@@ -521,7 +613,7 @@ createUiTest("ProjectSidebar", () => {
 
     render(() => <ProjectSidebar />);
 
-    expect(screen.getByRole("button", { name: "Sort projects" })).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Sort and group projects" })).not.toBeNull();
 
     expect(
       screen.getByRole("button", { name: "Switch to repo-two" }).compareDocumentPosition(

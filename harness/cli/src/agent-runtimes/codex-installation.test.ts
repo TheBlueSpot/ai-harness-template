@@ -9,7 +9,7 @@ describe("codex installation", () => {
     expect(resolveBundledCodexTargetTriple("freebsd", "x64")).toBeUndefined();
   });
 
-  test("resolves bundled executable path from package metadata", () => {
+  test("resolves current bundled executable path from package metadata", () => {
     const executablePath = resolveBundledCodexExecutablePath({
       platform: "win32",
       arch: "x64",
@@ -22,6 +22,27 @@ describe("codex installation", () => {
       },
       pathExists() {
         return true;
+      }
+    });
+
+    expect(executablePath).toBe(
+      "C:\\repo\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\bin\\codex.exe"
+    );
+  });
+
+  test("falls back to legacy bundled executable path", () => {
+    const executablePath = resolveBundledCodexExecutablePath({
+      platform: "win32",
+      arch: "x64",
+      resolvePackageJson(specifier) {
+        if (specifier !== "@openai/codex-win32-x64/package.json") {
+          throw new Error(`unexpected package ${specifier}`);
+        }
+
+        return "C:\\repo\\node_modules\\@openai\\codex-win32-x64\\package.json";
+      },
+      pathExists(candidate) {
+        return candidate.endsWith("\\vendor\\x86_64-pc-windows-msvc\\codex\\codex.exe");
       }
     });
 

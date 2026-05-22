@@ -34,9 +34,12 @@ import {
   type ChatPaneTab,
   type ViewProjectState
 } from "../harness-store";
+import { normalizeAppHotkeyPreferences } from "../lib/app-hotkeys";
+import { tooltipWithPrimaryHotkey } from "../lib/hotkey-hints";
 import { uploadFiles } from "../lib/uploadthing";
 import { buildChatTimelineRows, type ChatTimelineRow, type TimelineLiveMessage } from "../lib/chat-timeline-model";
 import { formatShortTimestamp, resolveBrowserTimezone } from "../lib/time-format";
+import { formatProviderModelName } from "../lib/utils";
 import { pushToast } from "../toast-store";
 import { ActionButton } from "./action-button";
 import { CliSessionPanel } from "./cli-session-panel";
@@ -169,7 +172,6 @@ function reactiveArraySnapshot<T>(items: readonly T[] | undefined) {
 
 export function ChatPanel() {
   let messageViewport: HTMLDivElement | undefined;
-  let projectSearchInput: HTMLInputElement | undefined;
   let attachmentInput: HTMLInputElement | undefined;
   let composerTextarea: HTMLTextAreaElement | undefined;
   let countdownTimer: number | undefined;
@@ -195,16 +197,17 @@ export function ChatPanel() {
   const [autoExecutedRunId, setAutoExecutedRunId] = createSignal<string>();
   const currentTab = createMemo(() => state.chatPaneTab);
   const [experimentDialogOpen, setExperimentDialogOpen] = createSignal(false);
+  const [selectedExperimentFilePath, setSelectedExperimentFilePath] = createSignal<string>();
   const [projectRulesDraft, setProjectRulesDraft] = createSignal("");
   const [threadMemoryDraft, setThreadMemoryDraft] = createSignal("");
   const [deleteArmedMemoryId, setDeleteArmedMemoryId] = createSignal<string>();
-  const [draftAttachments, setDraftAttachments] = createSignal<ChatAttachment[]>([]);
+  const [draftAttachments, setDraftAttachments] = createSignal<ChatAttachment[]>(readPersistedDraftAttachments(undefined));
   const [uploadingAttachments, setUploadingAttachments] = createSignal(false);
+  const [draggingAttachments, setDraggingAttachments] = createSignal(false);
+  const [attachmentDraftHydrated, setAttachmentDraftHydrated] = createSignal(false);
   const [composerSettingsOpen, setComposerSettingsOpen] = createSignal(false);
   const [desktopReasoningMenuOpen, setDesktopReasoningMenuOpen] = createSignal(false);
   const [mobileReasoningMenuOpen, setMobileReasoningMenuOpen] = createSignal(false);
-  const [projectChatSearch, setProjectChatSearch] = createSignal("");
-  const [projectChatSearchIndex, setProjectChatSearchIndex] = createSignal(0);
   const pendingQuestion = () => activeProject()?.activeRun?.questions.find((question) => question.status === "pending");
   const resumableRun = () => (activeProject()?.activeRun?.resumable ? activeProject()?.activeRun : undefined);
   const retryableRun = () => (activeProject()?.lastRun?.retryable ? activeProject()?.lastRun : undefined);
@@ -216,6 +219,10 @@ export function ChatPanel() {
       : undefined;
   };
   const activeThreadIsStreaming = () => Boolean(workingRun());
+  const attachmentDraftKey = () => {
+    const project = activeProject();
+    return project ? `ai-harness:chat-draft:v2:${project.id}:${project.activeThreadId}` : undefined;
+  };
   const activeThread = () => activeProject()?.threads.find((thread) => thread.id === activeProject()?.activeThreadId);
   const currentExecutionPlan = () => activeProject()?.latestPlan?.executionPlan ?? readyRun()?.plan;
   const resolvedModes = () => getResolvedModes(state, activeProject());
@@ -304,7 +311,7 @@ export function ChatPanel() {
   const modelDropdownOptions = () =>
     availableExecutionModels().map((model) => ({
       value: model.modelId,
-      label: model.label,
+      label: formatProviderModelName(model.modelId),
       description: getModelCapability(state, model.modelId)?.summary ?? model.modelId
     }));
   const selectedAgentHealthMessage = () => {
@@ -348,7 +355,6 @@ export function ChatPanel() {
   });
   const liveHarnessMessageTimestamp = () => activeProject()?.activeRun?.updatedAt ?? activeProject()?.activeRun?.createdAt;
   const runSubtasks = createMemo(() => reactiveArraySnapshot(activeProject()?.activeRun?.subtasks ?? activeProject()?.lastRun?.subtasks));
-  const projectChatSearchResults = createMemo(() => buildProjectChatSearchResults(state.workspace.projects, projectChatSearch()));
   const liveHarnessMessageKey = () =>
     liveHarnessMessages()
       .map((message) => `${message.id}:${message.locked ? "locked" : "live"}:${message.content}`)
@@ -365,6 +371,18 @@ export function ChatPanel() {
         : uploadingAttachments()
           ? "Attachment upload in progress"
           : undefined;
+  const dropState = () => {
+    if (!state.attachmentsEnabled) {
+      return { label: "Attachments unavailable", detail: "Set UPLOADTHING_TOKEN on the server to enable uploads." };
+    }
+    if (uploadingAttachments()) {
+      return { label: "Uploading attachments", detail: "Wait for the current upload to finish." };
+    }
+    if (attachmentButtonDisabled()) {
+      return { label: "Drop unavailable", detail: attachmentButtonReason() ?? "Drop is unavailable right now." };
+    }
+    return { label: "Drop files to attach", detail: "Images, text, PDFs, and office documents are supported." };
+  };
   const requiresFreshTopLevelSend = () =>
     !pendingQuestion() && activeProject()?.activeRun?.status !== "ready" && !resumableRun();
   const executionPaused = () => state.executionControl.isPaused;
@@ -577,24 +595,6 @@ export function ChatPanel() {
   createEffect(() => {
     activeProject()?.activeThreadId;
     scrollToBottom(true);
-  });
-
-  onMount(() => {
-    const handleSearchShortcut = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      const isTyping = target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable;
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
-        event.preventDefault();
-        projectSearchInput?.focus();
-        return;
-      }
-      if (!isTyping && event.key === "/") {
-        event.preventDefault();
-        projectSearchInput?.focus();
-      }
-    };
-    window.addEventListener("keydown", handleSearchShortcut);
-    onCleanup(() => window.removeEventListener("keydown", handleSearchShortcut));
   });
 
   createEffect(() => {
@@ -819,12 +819,35 @@ export function ChatPanel() {
     harnessStore.setProjectDraft(project.id, "");
   }
 
-  async function handleSelectAttachments(event: Event) {
-    const input = event.currentTarget as HTMLInputElement;
-    const project = activeProject();
-    const files = input.files ? [...input.files] : [];
-    input.value = "";
+  let lastAttachmentDraftKey: string | undefined;
+  onMount(() => {
+    const key = attachmentDraftKey();
+    lastAttachmentDraftKey = key;
+    setDraftAttachments(readPersistedDraftAttachments(key, activeProject()?.activeThreadId));
+    setAttachmentDraftHydrated(true);
+  });
 
+  createEffect(() => {
+    const key = attachmentDraftKey();
+    if (key === lastAttachmentDraftKey) {
+      return;
+    }
+    setAttachmentDraftHydrated(false);
+    lastAttachmentDraftKey = key;
+    setDraftAttachments(readPersistedDraftAttachments(key, activeProject()?.activeThreadId));
+    setAttachmentDraftHydrated(true);
+  });
+
+  createEffect(() => {
+    const key = attachmentDraftKey();
+    if (!key || !attachmentDraftHydrated()) {
+      return;
+    }
+    persistDraftAttachments(key, draftAttachments());
+  });
+
+  async function uploadAttachmentFiles(files: File[]) {
+    const project = activeProject();
     if (!project || files.length === 0) {
       return;
     }
@@ -847,6 +870,10 @@ export function ChatPanel() {
       });
       if (!validation.ok) {
         pushToast("Attachment rejected", `${file.name}: ${validation.reason}`, "error");
+        return;
+      }
+      if (validation.kind === "image" && !hasVisionCapability()) {
+        pushToast("Image blocked", "Current model lacks vision support for image attachments.", "error");
         return;
       }
     }
@@ -894,8 +921,40 @@ export function ChatPanel() {
     }
   }
 
+  async function handleSelectAttachments(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const files = input.files ? [...input.files] : [];
+    input.value = "";
+
+    await uploadAttachmentFiles(files);
+  }
+
   function handleRemoveAttachment(attachmentId: string) {
     setDraftAttachments((current) => current.filter((attachment) => attachment.id !== attachmentId));
+  }
+
+  function handleAttachmentDragOver(event: DragEvent) {
+    if (!event.dataTransfer?.types.includes("Files")) {
+      return;
+    }
+    event.preventDefault();
+    setDraggingAttachments(true);
+  }
+
+  function handleAttachmentDragLeave(event: DragEvent) {
+    if (event.currentTarget instanceof Node && event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) {
+      return;
+    }
+    setDraggingAttachments(false);
+  }
+
+  async function handleAttachmentDrop(event: DragEvent) {
+    if (!event.dataTransfer?.files.length) {
+      return;
+    }
+    event.preventDefault();
+    setDraggingAttachments(false);
+    await uploadAttachmentFiles([...event.dataTransfer.files]);
   }
 
   function handleSubmit(event: SubmitEvent) {
@@ -1046,8 +1105,10 @@ export function ChatPanel() {
     const computedStyle = window.getComputedStyle(composerTextarea);
     const lineHeight = Number.parseFloat(computedStyle.lineHeight) || 18;
     const minHeight = lineHeight * 2;
-    const maxHeight = lineHeight * 8;
+    const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+    const maxHeight = Math.max(lineHeight * 6, Math.floor(viewportHeight * 0.5));
     composerTextarea.style.height = "auto";
+    composerTextarea.style.maxHeight = `${maxHeight}px`;
     const nextHeight = Math.max(minHeight, Math.min(composerTextarea.scrollHeight, maxHeight));
     composerTextarea.style.height = `${nextHeight}px`;
   }
@@ -1796,29 +1857,6 @@ export function ChatPanel() {
     return [summary, cacheLine, totalProcessedLine, "Automatically compacts its context when needed."].filter(Boolean).join("\n");
   }
 
-  function openProjectChatSearchResult(result: ProjectChatSearchResult) {
-    if (state.workspace.activeProjectId !== result.projectId) {
-      sendCommand({
-        type: "project.activate",
-        requestId: createRequestId(),
-        payload: {
-          projectId: result.projectId
-        }
-      });
-    }
-    if (result.threadId) {
-      sendCommand({
-        type: "thread.activate",
-        requestId: createRequestId(),
-        payload: {
-          projectId: result.projectId,
-          threadId: result.threadId
-        }
-      });
-    }
-    harnessStore.setChatPaneTab("chat");
-  }
-
   function getCacheHitPercent(usage: { tokens?: number; cachedInputTokens?: number }) {
     const cachedInputTokens = usage.cachedInputTokens ?? 0;
     const totalInputTokens = (usage.tokens ?? 0) + cachedInputTokens;
@@ -1863,7 +1901,8 @@ export function ChatPanel() {
       backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
       backgroundJobNotificationsEnabled: state.backgroundJobNotificationsEnabled,
       memoryBankEnabledDefault: state.memoryBankEnabledDefault,
-      memoryBankRecordRunsDefault: state.memoryBankRecordRunsDefault
+      memoryBankRecordRunsDefault: state.memoryBankRecordRunsDefault,
+      checkCliUpdatesDefault: state.checkCliUpdatesDefault
     });
 
     sendCommand({
@@ -1885,7 +1924,8 @@ export function ChatPanel() {
         correctnessIterationModeDefault: state.correctnessIterationModeDefault,
         backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
         memoryBankEnabledDefault: state.memoryBankEnabledDefault,
-        memoryBankRecordRunsDefault: state.memoryBankRecordRunsDefault
+        memoryBankRecordRunsDefault: state.memoryBankRecordRunsDefault,
+        checkCliUpdatesDefault: state.checkCliUpdatesDefault
       }
     });
   }
@@ -2351,7 +2391,10 @@ export function ChatPanel() {
 
               <div class="flex shrink-0 flex-wrap gap-2">
                 <ActionButton
-                  tooltip="Create a new thread in this project"
+                  tooltip={tooltipWithPrimaryHotkey(
+                    "Create a new thread in this project",
+                    normalizeAppHotkeyPreferences(harnessStore.state.appHotkeyPreferences).createProjectChat[0]
+                  )}
                   icon={<Plus class="h-4 w-4" />}
                   variant="secondary"
                   onClick={handleReset}
@@ -2383,68 +2426,6 @@ export function ChatPanel() {
                   />
                 </Show>
               </div>
-            </div>
-
-            <div class="rounded-[1.2rem] border border-(--border) bg-white/55 p-2">
-              <Input
-                type="search"
-                ref={(element) => {
-                  projectSearchInput = element;
-                }}
-                value={projectChatSearch()}
-                placeholder="Search projects and active threads"
-                onInput={(event) => {
-                  setProjectChatSearch((event.target as HTMLInputElement).value);
-                  setProjectChatSearchIndex(0);
-                }}
-                onKeyDown={(event) => {
-                  if (!projectChatSearch()) {
-                    return;
-                  }
-                  if (event.key === "Escape") {
-                    event.preventDefault();
-                    setProjectChatSearch("");
-                  }
-                  if (event.key === "ArrowDown") {
-                    event.preventDefault();
-                    setProjectChatSearchIndex((index) => Math.min(index + 1, Math.max(0, projectChatSearchResults().length - 1)));
-                  }
-                  if (event.key === "ArrowUp") {
-                    event.preventDefault();
-                    setProjectChatSearchIndex((index) => Math.max(0, index - 1));
-                  }
-                  if (event.key === "Enter") {
-                    const result = projectChatSearchResults()[projectChatSearchIndex()];
-                    if (result) {
-                      event.preventDefault();
-                      openProjectChatSearchResult(result);
-                    }
-                  }
-                }}
-              />
-              <Show when={projectChatSearch()}>
-                <div class="mt-2 max-h-52 overflow-auto rounded-lg border border-(--border) bg-white/85">
-                  <Show
-                    when={projectChatSearchResults().length > 0}
-                    fallback={<div class="p-3 text-[0.675rem] text-(--muted)">No project or active-thread hits.</div>}
-                  >
-                    <For each={projectChatSearchResults()}>
-                      {(result, index) => (
-                        <button
-                          type="button"
-                          class="flex w-full flex-col gap-1 px-3 py-2 text-left text-[0.675rem]"
-                          classList={{ "bg-teal-50": projectChatSearchIndex() === index(), "text-(--foreground)": projectChatSearchIndex() === index(), "text-(--muted)": projectChatSearchIndex() !== index() }}
-                          onMouseEnter={() => setProjectChatSearchIndex(index())}
-                          onClick={() => openProjectChatSearchResult(result)}
-                        >
-                          <span class="font-semibold text-(--foreground)">{result.title}</span>
-                          <span class="truncate">{result.preview}</span>
-                        </button>
-                      )}
-                    </For>
-                  </Show>
-                </div>
-              </Show>
             </div>
 
             <div class="min-h-0 flex-1 overflow-hidden">
@@ -2650,6 +2631,8 @@ export function ChatPanel() {
                         <div>Status: {project().activeRun?.status ?? project().lastRun?.status ?? "idle"}</div>
                         <div>Retryable: {project().lastRun?.retryable ? "yes" : "no"}</div>
                         <div>Resumable: {project().activeRun?.resumable ? "yes" : "no"}</div>
+                        <RunLedgerCompact run={project().activeRun ?? project().lastRun} />
+                        <RunProofBundleCompact run={project().activeRun ?? project().lastRun} />
                         <Tooltip
                           content={project().activeRun?.latestUserPrompt ?? project().lastRun?.latestUserPrompt ?? undefined}
                           triggerClass="block min-w-0"
@@ -2852,7 +2835,22 @@ export function ChatPanel() {
               </div>
             </Show>
 
-            <form data-test-chat-composer="" class="shrink-0 space-y-3" onSubmit={handleSubmit}>
+            <form
+              data-test-chat-composer=""
+              class="relative shrink-0 space-y-3"
+              onSubmit={handleSubmit}
+              onDragOver={handleAttachmentDragOver}
+              onDragLeave={handleAttachmentDragLeave}
+              onDrop={handleAttachmentDrop}
+            >
+              <Show when={draggingAttachments()}>
+                <div class="pointer-events-none absolute inset-0 z-10 grid place-items-center rounded-2xl border border-dashed border-(--accent) bg-white/85 p-4 text-center shadow-lg">
+                  <div>
+                    <div class="text-[0.75rem] font-semibold text-(--foreground)">{dropState().label}</div>
+                    <div class="mt-1 text-[0.675rem] text-(--muted)">{dropState().detail}</div>
+                  </div>
+                </div>
+              </Show>
               <Show when={pendingQuestion()}>
                 {(question) => (
                   <div class="flex flex-col gap-3 rounded-3xl border border-amber-300/70 bg-amber-50/80 p-4 shadow-sm">
@@ -3200,7 +3198,49 @@ export function ChatPanel() {
                   when={activeProject()?.experimentInspection}
                   fallback={<div class="text-(--muted)">Loading experiment diff...</div>}
                 >
-                  {(inspection) => <MarkdownContent content={() => `\`\`\`diff\n${inspection().diffText}\n\`\`\``} size="compact" />}
+                  {(inspection) => {
+                    const files = () => inspection().files ?? [];
+                    const selectedFile = () => files().find((file) => file.path === selectedExperimentFilePath()) ?? files()[0];
+                    return (
+                      <Show when={files().length > 0} fallback={<MarkdownContent content={() => `\`\`\`diff\n${inspection().diffText}\n\`\`\``} size="compact" />}>
+                        <div class="grid min-h-0 gap-3 lg:grid-cols-[minmax(12rem,18rem)_minmax(0,1fr)]">
+                          <div class="min-h-0 rounded-2xl border border-(--border) bg-white/65 p-2">
+                            <div class="px-2 pb-2 text-[0.585rem] font-semibold uppercase tracking-[0.16em] text-(--muted)">
+                              {files().length} changed paths
+                            </div>
+                            <div class="grid max-h-72 gap-1 overflow-auto">
+                              <For each={files()}>
+                                {(file) => (
+                                  <button
+                                    type="button"
+                                    class="min-w-0 rounded-xl px-2 py-2 text-left transition"
+                                    classList={{
+                                      "bg-(--accent) text-(--accent-foreground)": selectedFile()?.path === file.path,
+                                      "bg-white/70 text-(--foreground) hover:bg-(--panel-strong)": selectedFile()?.path !== file.path
+                                    }}
+                                    onClick={() => setSelectedExperimentFilePath(file.path)}
+                                  >
+                                    <div class="truncate text-[0.7rem] font-semibold">{file.path}</div>
+                                    <div class="text-[0.6rem] opacity-75">+{file.additions} / -{file.deletions}</div>
+                                  </button>
+                                )}
+                              </For>
+                            </div>
+                          </div>
+                          <div class="min-w-0 rounded-2xl border border-(--border) bg-white/65 p-3">
+                            <Show when={inspection().staleReason}>
+                              {(reason) => <div class="mb-3 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-[0.675rem] text-amber-900">{reason()}</div>}
+                            </Show>
+                            <div class="mb-2 flex flex-wrap items-center justify-between gap-2 text-[0.675rem] text-(--muted)">
+                              <span class="font-semibold text-(--foreground)">{selectedFile()?.path}</span>
+                              <span>+{selectedFile()?.additions ?? 0} / -{selectedFile()?.deletions ?? 0}</span>
+                            </div>
+                            <MarkdownContent content={() => `\`\`\`diff\n${selectedFile()?.hunksPreview || inspection().diffText}\n\`\`\``} size="compact" />
+                          </div>
+                        </div>
+                      </Show>
+                    );
+                  }}
                 </Show>
               </div>
             </Dialog>
@@ -3229,6 +3269,45 @@ function formatReasoningOptionLabel(strength: (typeof COMPOSER_REASONING_STRENGT
   return strength === "high" ? `${label} (default)` : label;
 }
 
+function RunLedgerCompact(props: { run?: AgentRunState }) {
+  const ledger = () => props.run?.ledger;
+  return (
+    <Show when={ledger()}>
+      {(entry) => (
+        <div class="mt-2 rounded-xl border border-(--border) bg-white/60 p-3">
+          <div class="text-[0.585rem] font-semibold uppercase tracking-[0.16em] text-(--muted)">Run ledger</div>
+          <div class="mt-1 grid gap-1">
+            <Show when={entry().currentPhase}>{(value) => <div>Phase: {value()}</div>}</Show>
+            <Show when={entry().nextStep}>{(value) => <div>Next: {value()}</div>}</Show>
+            <Show when={entry().waitingOn}>{(value) => <div>Waiting: {value()}</div>}</Show>
+            <Show when={entry().failureClass}>{(value) => <div>Failure: {value()}</div>}</Show>
+            <Show when={entry().lastVerifiedAt}>{(value) => <div>Verified: {formatShortTimestamp(value())}</div>}</Show>
+          </div>
+        </div>
+      )}
+    </Show>
+  );
+}
+
+function RunProofBundleCompact(props: { run?: AgentRunState }) {
+  const bundle = () => props.run?.proofBundle;
+  const evidenceCount = () => (bundle()?.commands?.length ?? 0) + (bundle()?.browserEvidenceRefs?.length ?? 0) + (bundle()?.approvals?.length ?? 0);
+  return (
+    <Show when={bundle()}>
+      {(proof) => (
+        <div class="mt-2 rounded-xl border border-(--border) bg-white/60 p-3">
+          <div class="text-[0.585rem] font-semibold uppercase tracking-[0.16em] text-(--muted)">Proof bundle</div>
+          <div class="mt-1 grid gap-1">
+            <Show when={proof().diffSummary}>{(value) => <div>Diff: {value()}</div>}</Show>
+            <div>Evidence refs: {evidenceCount()}</div>
+            <Show when={proof().finalReviewNotes}>{(value) => <div>Review: {value()}</div>}</Show>
+          </div>
+        </div>
+      )}
+    </Show>
+  );
+}
+
 function estimateTranscriptRowSize(row: ChatTimelineRow) {
   switch (row.kind) {
     case "tool-block":
@@ -3247,56 +3326,53 @@ function estimateTranscriptRowSize(row: ChatTimelineRow) {
   }
 }
 
+function readPersistedDraftAttachments(key: string | undefined, threadId?: string): ChatAttachment[] {
+  const effectiveKey = key ?? findAttachmentDraftKeyForThread(threadId);
+  if (!effectiveKey) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(localStorage.getItem(effectiveKey) ?? "{}") as { attachments?: ChatAttachment[] };
+    return Array.isArray(parsed.attachments)
+      ? parsed.attachments.filter((attachment) => attachment && typeof attachment.id === "string" && typeof attachment.url === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function findAttachmentDraftKeyForThread(threadId?: string) {
+  for (let index = 0; index < localStorage.length; index += 1) {
+    const key = localStorage.key(index);
+    if (key?.startsWith("ai-harness:chat-draft:v2:") && (!threadId || key.endsWith(`:${threadId}`))) {
+      return key;
+    }
+  }
+  return undefined;
+}
+
+function persistDraftAttachments(key: string, attachments: ChatAttachment[]) {
+  try {
+    const existing = JSON.parse(localStorage.getItem(key) ?? "{}") as Record<string, unknown>;
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        ...existing,
+        version: 2,
+        attachments,
+        cleanupNeeded: attachments.length === 0 ? existing.cleanupNeeded : undefined,
+        updatedAt: new Date().toISOString()
+      })
+    );
+  } catch {
+    // Best-effort browser draft persistence.
+  }
+}
+
 const CHAT_TRANSCRIPT_LIMIT = 120;
 const CHAT_RUN_SUBTASK_LIMIT = 24;
 const CHAT_EVENT_LIMIT = 80;
 const CHAT_MEMORY_LIMIT = 80;
-
-type ProjectChatSearchResult = {
-  id: string;
-  projectId: string;
-  threadId?: string;
-  title: string;
-  preview: string;
-};
-
-export function buildProjectChatSearchResults(projects: ViewProjectState[], query: string): ProjectChatSearchResult[] {
-  const tokens = tokenizeSearch(query);
-  if (tokens.length === 0) {
-    return [];
-  }
-  const projectHits = projects
-    .filter((project) => tokens.every((token) => project.name.toLowerCase().includes(token) || project.rootPath.toLowerCase().includes(token)))
-    .map((project) => ({
-      id: `project:${project.id}`,
-      projectId: project.id,
-      title: project.name,
-      preview: project.rootPath
-    }));
-  const transcriptHits = projects.flatMap((project) => {
-    const activeThread = project.threads.find((thread) => thread.id === project.activeThreadId);
-    return project.session.messages
-      .filter((message) => tokens.every((token) => `${message.role} ${message.content}`.toLowerCase().includes(token)))
-      .slice(-8)
-      .reverse()
-      .map((message, index) => ({
-        id: `message:${project.id}:${activeThread?.id ?? project.activeThreadId}:${message.id ?? index}`,
-        projectId: project.id,
-        threadId: activeThread?.id ?? project.activeThreadId,
-        title: `${project.name} / ${activeThread?.title ?? "Active thread"}`,
-        preview: `${message.role}: ${message.content.replace(/\s+/g, " ").slice(0, 180)}`
-      }));
-  });
-  return [...projectHits, ...transcriptHits].slice(0, 24);
-}
-
-function tokenizeSearch(query: string) {
-  return query
-    .toLowerCase()
-    .split(/\s+/)
-    .map((token) => token.trim())
-    .filter(Boolean);
-}
 
 function getStreamingLiveMessages(project: ViewProjectState): TimelineLiveMessage[] {
   const messages: TimelineLiveMessage[] = [];

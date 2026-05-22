@@ -1,6 +1,7 @@
 import { createEffect, onCleanup, Show, type JSX } from "solid-js";
 import { X } from "lucide-solid";
 import { cn } from "../../lib/utils";
+import { isTopOverlay, registerOverlay } from "./overlay-stack";
 
 export function SheetRoot(props: { open: boolean; onOpenChange: (open: boolean) => void; children: JSX.Element }) {
   return <div data-test-sheet-root="">{props.children}</div>;
@@ -27,14 +28,16 @@ export function SheetContent(props: {
   children: JSX.Element;
 }) {
   let surfaceRef: HTMLElement | undefined;
+  const overlayId = `sheet-${Math.random().toString(36).slice(2)}`;
 
   createEffect(() => {
     if (!props.open) {
       return;
     }
+    const unregister = registerOverlay(overlayId);
 
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
+      if (event.key === "Escape" && isTopOverlay(overlayId)) {
         props.onClose?.();
       }
     };
@@ -45,6 +48,7 @@ export function SheetContent(props: {
       surfaceRef?.focus();
     });
     onCleanup(() => {
+      unregister();
       window.removeEventListener("keydown", handleKeyDown);
       document.removeEventListener("keydown", handleKeyDown);
     });
@@ -63,6 +67,9 @@ export function SheetContent(props: {
         ref={surfaceRef}
         onKeyDown={(event) => {
           if (event.key === "Escape") {
+            if (!isTopOverlay(overlayId)) {
+              return;
+            }
             props.onClose?.();
           }
         }}

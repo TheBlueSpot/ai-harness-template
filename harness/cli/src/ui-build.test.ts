@@ -85,11 +85,12 @@ describe("ui build", () => {
 
     try {
       const manager = createUiAssetManager({
-        debounceMs: 30_000,
+        debounceScheduleMs: [1000, 1500, 2000, 2500, 5000, 10000, 15000],
         timerApi: {
           setTimeout: clock.setTimeout,
           clearTimeout: clock.clearTimeout
         },
+        isTrackedFile: (changedPath) => changedPath?.endsWith("app.tsx") === true,
         async buildUiBundle() {
           if (failNextBuild) {
             failNextBuild = false;
@@ -107,9 +108,9 @@ describe("ui build", () => {
       });
 
       manager.startWatching();
-      watcherListener?.();
-      watcherListener?.();
-      watcherListener?.();
+      watcherListener?.(path.resolve(process.cwd(), "harness/ui/src/app.tsx"));
+      watcherListener?.(path.resolve(process.cwd(), "harness/ui/src/app.tsx"));
+      watcherListener?.(path.resolve(process.cwd(), "harness/ui/src/app.tsx"));
 
       expect(buildCalls).toEqual([]);
       expect(manager.getLiveReloadState()).toEqual({
@@ -118,7 +119,7 @@ describe("ui build", () => {
         pending: true
       });
 
-      clock.advanceBy(29_999);
+      clock.advanceBy(1999);
       await flushMicrotasks();
       expect(buildCalls).toEqual([]);
 
@@ -132,8 +133,8 @@ describe("ui build", () => {
       });
 
       failNextBuild = true;
-      watcherListener?.();
-      clock.advanceBy(30_000);
+      watcherListener?.(path.resolve(process.cwd(), "harness/ui/src/app.tsx"));
+      clock.advanceBy(1000);
       await flushMicrotasks();
       expect(buildCalls).toEqual(["build-1"]);
       expect(manager.getLiveReloadState()).toEqual({
@@ -147,10 +148,50 @@ describe("ui build", () => {
     }
   });
 
+  test("uses independent backoff reset after each successful live reload build", async () => {
+    const clock = new FakeClock();
+    const buildCalls: string[] = [];
+    let watcherListener: ((changedPath?: string) => void) | undefined;
+    const manager = createUiAssetManager({
+      debounceScheduleMs: [1000, 1500],
+      timerApi: {
+        setTimeout: clock.setTimeout,
+        clearTimeout: clock.clearTimeout
+      },
+      isTrackedFile: (changedPath) => changedPath?.endsWith("app.tsx") === true,
+      async buildUiBundle() {
+        buildCalls.push(`build-${buildCalls.length + 1}`);
+      },
+      watchSourceDir(_sourceDir, listener) {
+        watcherListener = listener;
+        return {
+          close() {}
+        };
+      }
+    });
+
+    manager.startWatching();
+    watcherListener?.(path.resolve(process.cwd(), "harness/ui/src/app.tsx"));
+    watcherListener?.(path.resolve(process.cwd(), "harness/ui/src/app.tsx"));
+    clock.advanceBy(1499);
+    await flushMicrotasks();
+    expect(buildCalls).toEqual([]);
+    clock.advanceBy(1);
+    await flushMicrotasks();
+    expect(buildCalls).toEqual(["build-1"]);
+
+    watcherListener?.(path.resolve(process.cwd(), "harness/ui/src/app.tsx"));
+    clock.advanceBy(1000);
+    await flushMicrotasks();
+    expect(buildCalls).toEqual(["build-1", "build-2"]);
+    manager.dispose();
+  });
+
   test("ignores context and agent metadata watch events", async () => {
     const buildCalls: string[] = [];
     let watcherListener: ((changedPath?: string) => void) | undefined;
     const manager = createUiAssetManager({
+      isTrackedFile: (changedPath) => changedPath?.includes(path.join("harness", "ui")) === true,
       async buildUiBundle() {
         buildCalls.push(`build-${buildCalls.length + 1}`);
       },
@@ -172,6 +213,38 @@ describe("ui build", () => {
     expect(buildCalls).toEqual([]);
 
     watcherListener?.(path.resolve(process.cwd(), "harness/ui/src/app.tsx"));
+    await flushMicrotasks();
+    expect(buildCalls).toEqual(["build-1"]);
+    manager.dispose();
+  });
+
+  test("watches shared source as ui dependency and ignores untracked output", async () => {
+    const buildCalls: string[] = [];
+    const watchedDirs: string[] = [];
+    const listeners: Array<(changedPath?: string) => void> = [];
+    const manager = createUiAssetManager({
+      isTrackedFile: (changedPath) => changedPath?.includes(path.join("harness", "shared")) === true,
+      async buildUiBundle() {
+        buildCalls.push(`build-${buildCalls.length + 1}`);
+      },
+      watchSourceDir(sourceDir, listener) {
+        watchedDirs.push(sourceDir);
+        listeners.push(listener);
+        return {
+          close() {}
+        };
+      }
+    });
+
+    manager.startWatching();
+    expect(watchedDirs.some((sourceDir) => sourceDir.endsWith(path.join("harness", "ui")))).toBe(true);
+    expect(watchedDirs.some((sourceDir) => sourceDir.endsWith(path.join("harness", "shared")))).toBe(true);
+
+    listeners.forEach((listener) => listener(path.resolve(process.cwd(), "dist/ui/main.js")));
+    await flushMicrotasks();
+    expect(buildCalls).toEqual([]);
+
+    listeners.at(1)?.(path.resolve(process.cwd(), "harness/shared/protocol.ts"));
     await flushMicrotasks();
     expect(buildCalls).toEqual(["build-1"]);
     manager.dispose();

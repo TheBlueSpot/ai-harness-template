@@ -2,6 +2,7 @@ import { createEffect, createMemo, onCleanup, Show, type JSX } from "solid-js";
 import { X } from "lucide-solid";
 import { cn } from "../../lib/utils";
 import { PrimitivePortal } from "./primitive-portal";
+import { isTopOverlay, registerOverlay } from "./overlay-stack";
 
 type DialogProps = {
   open?: boolean;
@@ -17,6 +18,7 @@ type DialogProps = {
 
 export function Dialog(props: DialogProps) {
   let surfaceRef: HTMLElement | undefined;
+  const overlayId = `dialog-${Math.random().toString(36).slice(2)}`;
   const isOpen = createMemo(() => Boolean(props.open));
   const renderChildren = () => (typeof props.children === "function" ? props.children() : props.children);
 
@@ -24,9 +26,10 @@ export function Dialog(props: DialogProps) {
     if (!isOpen()) {
       return;
     }
+    const unregister = registerOverlay(overlayId);
 
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
+      if (event.key === "Escape" && isTopOverlay(overlayId)) {
         props.onClose?.();
       }
     };
@@ -37,6 +40,7 @@ export function Dialog(props: DialogProps) {
       surfaceRef?.focus();
     });
     onCleanup(() => {
+      unregister();
       window.removeEventListener("keydown", handleKeyDown);
       document.removeEventListener("keydown", handleKeyDown);
     });
@@ -60,6 +64,9 @@ export function Dialog(props: DialogProps) {
             ref={surfaceRef}
             onKeyDown={(event) => {
               if (event.key === "Escape") {
+                if (!isTopOverlay(overlayId)) {
+                  return;
+                }
                 props.onClose?.();
               }
             }}

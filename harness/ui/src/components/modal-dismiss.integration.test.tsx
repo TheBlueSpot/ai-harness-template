@@ -22,7 +22,7 @@ createUiTest("Modal dismiss integration", () => {
     );
 
     render(() => <PreferencesModal />);
-    expect(screen.getByRole("heading", { name: "Workspace preferences" })).not.toBeNull();
+    expect(screen.getByText("AI & Providers")).not.toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
     expect(harnessStore.state.activeLeftTab).toBe("projects");

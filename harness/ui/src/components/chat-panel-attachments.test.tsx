@@ -95,4 +95,44 @@ createUiTest("ChatPanel attachment guardrails", () => {
     expect(toastStore.toasts[0]?.description).toBe("Wait for attachments to finish uploading before sending.");
     finishUpload();
   });
+
+  it("restores persisted draft attachment chips", async () => {
+    const project = createViewProjectFixture({
+      id: "project-attachment-restore"
+    });
+    localStorage.setItem(
+      `ai-harness:chat-draft:v2:${project.id}:${project.activeThreadId}`,
+      JSON.stringify({
+        version: 2,
+        attachments: [
+          {
+            id: "restored-1",
+            kind: "document",
+            documentType: "pdf",
+            name: "restored.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: 100,
+            url: "https://example.com/restored.pdf",
+            key: "restored-key",
+            uploadedAt: new Date().toISOString()
+          }
+        ]
+      })
+    );
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        attachmentsEnabled: true,
+        hasUsableApiKey: true,
+        hasUsableOpenAiApiKey: true,
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ChatPanel />);
+
+    expect(await screen.findByText("restored.pdf")).not.toBeNull();
+  });
 });
