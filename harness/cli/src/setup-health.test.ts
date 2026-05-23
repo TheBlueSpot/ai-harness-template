@@ -25,6 +25,8 @@ const basePreferences: PreferencesState = {
   autoCompactContextThresholdPercentDefault: 80,
   planExecutionModeDefault: "countdown",
   planExecutionDelaySecondsDefault: 3,
+  singleAgentModelPreferenceDefault: "intelligence",
+  subagentModelPreferenceDefault: "inference",
   correctnessIterationModeDefault: "ask-before-iterate",
   backgroundJobApprovalPolicyDefault: "ask-risky",
   memoryBankEnabledDefault: true,

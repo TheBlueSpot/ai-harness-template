@@ -65,6 +65,7 @@ import {
   type ProjectId,
   type ProviderBrand,
   type QuestionId,
+  type RunModelPreference,
   type ServerEvent,
   type SetupLaunchMode,
   type SetupState,
@@ -82,6 +83,7 @@ import {
 import { previewBackgroundJobSchedule } from "./background-job-schedule";
 import { isBackgroundRunPastLeaseGrace } from "./background-run-leases";
 import { BackgroundJobScheduler } from "./background-job-scheduler";
+import { DEFAULT_BRANCHFS_RETENTION, pruneBranchfsRoots } from "./branchfs-cleanup";
 import { BranchfsManager, type BranchfsExperimentLease } from "./branchfs-manager";
 import { pickProjectFolder } from "./folder-picker";
 import {
@@ -636,6 +638,10 @@ async function initializeHarnessServerState(input: {
     "runtime capabilities ready",
     async () => baseServices.runtimeRegistry.refreshAll()
   );
+
+  if (!input.existingState) {
+    await repairBranchfsStateOnStartup(repository, runtime);
+  }
 
   const setupResult = await runStartupPhase(
     input.startupTelemetry,
@@ -1585,9 +1591,6 @@ async function handleCommand(
       return;
     }
     case "execution.pause-all": {
-      // Websocket commands are handled concurrently. Yield once so an immediately
-      // preceding start command can create its run before the global pause flips.
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
       repository.setGlobalExecutionPaused(true);
       emitExecutionControlUpdatedToAll(connections, command.requestId, repository.getExecutionControlState());
       return;
@@ -1993,6 +1996,7 @@ async function handleCommand(
       const stoppedProject = repository.setAgentRunStatus(command.payload.projectId, command.payload.runId, "stopped");
       runtime.upsertPersistedProject(stoppedProject);
       emitRunUpdatedById(ws, command.requestId, repository, command.payload.projectId, command.payload.runId);
+      scheduleBranchfsRetentionPrune(runtime.getProject(command.payload.projectId).rootPath);
 
       sendEvent(ws, {
         type: "chat.error",
@@ -2759,6 +2763,7 @@ async function handleCommand(
         assistantMessageContent: command.payload.assistantMessageContent,
         partialReason: command.payload.partialReason
       });
+      scheduleBranchfsRetentionPrune(project.rootPath);
       return;
     }
     case "experiment.inspect": {
@@ -2827,6 +2832,50 @@ async function handleCommand(
       });
       runtime.upsertPersistedProject(updatedProject);
       emitRunUpdated(ws, command.requestId, updatedProject);
+      return;
+    }
+    case "branchfs.cleanup": {
+      const project = runtime.getProject(command.payload.projectId);
+      const repoRoot = await resolveGitRepoRoot(project.rootPath);
+      const wasPaused = repository.getGlobalExecutionPaused();
+      repository.setGlobalExecutionPaused(true);
+      emitExecutionControlUpdatedToAll(connections, command.requestId, repository.getExecutionControlState());
+      let summary;
+      try {
+        summary = await pruneBranchfsRoots({
+          repoRoot,
+          mode: command.payload.mode,
+          retention: DEFAULT_BRANCHFS_RETENTION
+        });
+        if (command.payload.mode === "all") {
+          const stopped = repository.stopInterruptedActiveRuns({
+            projectIds: [command.payload.projectId],
+            reason: "BranchFS cleanup stopped stale interrupted run.",
+            failureCategory: "shutdown-interrupt"
+          });
+          summary.staleRunsStopped = stopped.stoppedRunIds.length;
+          const updatedProject = repository.getProject(command.payload.projectId);
+          runtime.upsertPersistedProject(updatedProject);
+          emitRunUpdated(ws, command.requestId, updatedProject);
+        }
+      } finally {
+        repository.setGlobalExecutionPaused(wasPaused);
+        emitExecutionControlUpdatedToAll(connections, command.requestId, repository.getExecutionControlState());
+      }
+      sendEvent(ws, {
+        type: "branchfs.cleaned",
+        requestId: command.requestId,
+        payload: {
+          projectId: command.payload.projectId,
+          summary
+        }
+      });
+      emitProjectTrace(ws, command.requestId, runtime, command.payload.projectId, project.activeThreadId, {
+        sessionId: project.session.sessionId,
+        stage: "branchfs-cleanup-complete",
+        message: "BranchFS cleanup finished",
+        detail: `${summary.rootsDeleted}/${summary.rootsScanned} roots deleted`
+      });
       return;
     }
     case "memory.list": {
@@ -3195,7 +3244,14 @@ async function handleCommand(
       return;
     }
     case "background-job.save": {
+      const existingJob = repository.getBackgroundJob(command.payload.job.id);
+      if (existingJob && existingJob.projectId !== command.payload.job.projectId) {
+        throw new Error("Background job cannot move projects");
+      }
       const project = runtime.getProject(command.payload.job.projectId);
+      if (command.payload.job.assistantId) {
+        assertAssistantOwnsProjectOrGlobal(repository, command.payload.job.assistantId, command.payload.job.projectId);
+      }
       const riskLevel = computeBackgroundJobRiskLevel(command.payload.job, project, runtime);
       const savedState = repository.saveBackgroundJob({
         ...command.payload.job,
@@ -3282,6 +3338,7 @@ async function handleCommand(
         );
         runtime.upsertPersistedProject(stoppedProject);
         emitRunUpdatedById(ws, command.requestId, repository, existingRun.projectId, existingRun.linkedAgentRunId, connections);
+        scheduleBranchfsRetentionPrune(runtime.getProject(existingRun.projectId).rootPath);
       }
       repository.appendBackgroundJobRunEvent(existingRun.id, "cancelled", "Background run cancelled", "Stopped by user");
       saveBackgroundRunStatusNotification(repository, updatedRun);
@@ -3498,7 +3555,9 @@ async function handleCommand(
     }
     case "assistant.question.answer": {
       assertGlobalExecutionNotPaused(repository);
-      await assistantManager.answerQuestion(command.payload.assistantId, command.payload.questionId, command.payload.content);
+      await assistantManager.answerQuestion(command.payload.assistantId, command.payload.questionId, command.payload.content, {
+        reprioritize: shouldAssistantReprioritize(repository, command.payload.assistantId)
+      });
       archiveNotificationWithLegacyId(repository, [
         "assistant-question",
         command.payload.assistantId,
@@ -3533,7 +3592,9 @@ async function handleCommand(
         }
       }
       for (const answer of command.payload.answers) {
-        await assistantManager.answerQuestion(command.payload.assistantId, answer.questionId, answer.content);
+        await assistantManager.answerQuestion(command.payload.assistantId, answer.questionId, answer.content, {
+          reprioritize: shouldAssistantReprioritize(repository, command.payload.assistantId)
+        });
         archiveNotificationWithLegacyId(repository, [
           "assistant-question",
           command.payload.assistantId,
@@ -3548,33 +3609,33 @@ async function handleCommand(
       return;
     }
     case "assistant.todo.update": {
-      repository.saveAssistantTodo(command.payload.todo);
+      const todo = repository.updateAssistantTodo(command.payload.assistantId, command.payload.todoId, command.payload.patch);
       emitAssistantsUpdatedToAll(connections, repository.loadAssistantsState());
-      assistantManager.scheduleReprioritize(command.payload.todo.assistantId, "manual-todo-update");
+      scheduleAssistantReprioritizeIfActive(repository, assistantManager, todo.assistantId, "manual-todo-update");
       return;
     }
     case "assistant.todo.delete": {
       repository.deleteAssistantTodo(command.payload.assistantId, command.payload.todoId);
       emitAssistantsUpdatedToAll(connections, repository.loadAssistantsState());
-      assistantManager.scheduleReprioritize(command.payload.assistantId, "manual-todo-delete");
+      scheduleAssistantReprioritizeIfActive(repository, assistantManager, command.payload.assistantId, "manual-todo-delete");
       return;
     }
     case "assistant.todo.reorder": {
       repository.reorderAssistantTodos(command.payload.assistantId, command.payload.todoIds);
       emitAssistantsUpdatedToAll(connections, repository.loadAssistantsState());
-      assistantManager.scheduleReprioritize(command.payload.assistantId, "manual-todo-reorder");
+      scheduleAssistantReprioritizeIfActive(repository, assistantManager, command.payload.assistantId, "manual-todo-reorder");
       return;
     }
     case "assistant.learning.delete": {
       repository.deleteAssistantLearning(command.payload.assistantId, command.payload.learningId);
       emitAssistantsUpdatedToAll(connections, repository.loadAssistantsState());
-      assistantManager.scheduleReprioritize(command.payload.assistantId, "manual-learning-delete");
+      scheduleAssistantReprioritizeIfActive(repository, assistantManager, command.payload.assistantId, "manual-learning-delete");
       return;
     }
     case "assistant.learning.reorder": {
       repository.reorderAssistantLearnings(command.payload.assistantId, command.payload.learningIds);
       emitAssistantsUpdatedToAll(connections, repository.loadAssistantsState());
-      assistantManager.scheduleReprioritize(command.payload.assistantId, "manual-learning-reorder");
+      scheduleAssistantReprioritizeIfActive(repository, assistantManager, command.payload.assistantId, "manual-learning-reorder");
       return;
     }
     case "browser.approval.resolve": {
@@ -3703,8 +3764,20 @@ async function handleCommand(
       repository.setAutoCompactContextThresholdPercentDefault(command.payload.autoCompactContextThresholdPercentDefault);
       repository.setPlanExecutionModeDefault(command.payload.planExecutionModeDefault);
       repository.setPlanExecutionDelaySecondsDefault(command.payload.planExecutionDelaySecondsDefault);
+      repository.setSingleAgentModelPreferenceDefault(
+        command.payload.singleAgentModelPreferenceDefault ?? repository.getSingleAgentModelPreferenceDefault()
+      );
+      repository.setSubagentModelPreferenceDefault(
+        command.payload.subagentModelPreferenceDefault ?? repository.getSubagentModelPreferenceDefault()
+      );
       repository.setCorrectnessIterationModeDefault(command.payload.correctnessIterationModeDefault);
       repository.setBackgroundJobApprovalPolicyDefault(command.payload.backgroundJobApprovalPolicyDefault);
+      repository.setAssistantCongestionControlEnabledDefault(
+        command.payload.assistantCongestionControlEnabledDefault ?? repository.getAssistantCongestionControlEnabledDefault()
+      );
+      repository.setAssistantMaxCongestionDefault(
+        command.payload.assistantMaxCongestionDefault ?? repository.getAssistantMaxCongestionDefault()
+      );
       setRepositoryAutoArchiveCompletedThreadsDefault(repository, command.payload.autoArchiveCompletedThreadsDefault ?? false);
       repository.setMemoryBankEnabledDefault(
         command.payload.memoryBankEnabledDefault ?? repository.getMemoryBankEnabledDefault()
@@ -4368,6 +4441,8 @@ async function executeRunLifecycle(
       fastMode: options.fastMode,
       promptCacheIdentity: executionPromptCacheIdentity,
       geminiCachedAttachmentContext: executionGeminiCachedAttachmentContext,
+      singleAgentModelPreference: repository.getSingleAgentModelPreferenceDefault(),
+      subagentModelPreference: repository.getSubagentModelPreferenceDefault(),
       executionPlan: executionPlanWithMemory,
       callbacks: executionCallbacks
     });
@@ -4482,6 +4557,7 @@ async function executeRunLifecycle(
       cwd: reviewCwd
     });
   }
+  scheduleBranchfsRetentionPrune(project.rootPath);
 }
 
 async function executeInlineSubagentRetryLifecycle(
@@ -4529,7 +4605,8 @@ async function executeInlineSubagentRetryLifecycle(
   const subagentModelId = resolveSubagentModelId({
     agentId: options.agentId,
     providerBrand: options.providerBrand,
-    executionModelId: options.readyPlan.executionModelId
+    executionModelId: options.readyPlan.executionModelId,
+    modelPreference: repository.getSubagentModelPreferenceDefault()
   });
   const existingResults = options.sourceRun.subtasks
     .filter((task) => task.id !== options.targetTask.id)
@@ -4569,10 +4646,11 @@ async function executeInlineSubagentRetryLifecycle(
     agentId: options.agentId,
     providerBrand: options.providerBrand,
     executionModelId: options.readyPlan.executionModelId,
+    modelPreference: repository.getSubagentModelPreferenceDefault(),
     task: options.targetTask,
     brief: options.readyPlan.finalExecutionBrief,
     priorAttemptCount: options.sourceRun.subtasks.find((task) => task.id === options.targetTask.id)?.attemptCount ?? 0,
-    reasoningStrength: resolveSubagentReasoningStrength(options.reasoningStrength),
+    reasoningStrength: resolveSubagentReasoningStrength(options.reasoningStrength, repository.getSubagentModelPreferenceDefault()),
     fastMode: options.fastMode,
     abortSignal: options.abortSignal,
     callbacks,
@@ -5243,6 +5321,7 @@ async function runInlineSubagentRetry(
     agentId: "pi" | "copilot-cli" | "codex-cli";
     providerBrand: ProviderBrand;
     executionModelId: string;
+    modelPreference?: RunModelPreference;
     task: PlannerReadyTurn["subtasks"][number];
     brief: string;
     priorAttemptCount: number;
@@ -5256,9 +5335,10 @@ async function runInlineSubagentRetry(
   const subagentModelId = resolveSubagentModelId({
     agentId: options.agentId,
     providerBrand: options.providerBrand,
-    executionModelId: options.executionModelId
+    executionModelId: options.executionModelId,
+    modelPreference: options.modelPreference
   });
-  const subagentReasoningStrength = resolveSubagentReasoningStrength(options.reasoningStrength);
+  const subagentReasoningStrength = resolveSubagentReasoningStrength(options.reasoningStrength, options.modelPreference);
   const repoRoot = resolveRepoRoot(options.cwd);
   const subagentEnvironmentBrief = buildSubagentEnvironmentBrief({
     projectRoot: options.cwd,
@@ -5490,6 +5570,7 @@ async function handleRunFailure(
     }
     runtime.upsertPersistedProject(failedProject);
     emitRunUpdatedById(ws, requestId, repository, projectId, failedRun.id, connections);
+    scheduleBranchfsRetentionPrune(project.rootPath);
     if (repository.getMemoryBankRecordRunsDefault()) {
       extractRunMemories(repository, {
         projectId,
@@ -6692,6 +6773,7 @@ async function stopThreadActivityBeforeArchive(input: {
     const stoppedProject = repository.setAgentRunStatus(projectId, run.id, "stopped", "Thread deleted; active agents stopped");
     runtime.upsertPersistedProject(stoppedProject);
     emitRunUpdatedById(ws, requestId, repository, projectId, run.id);
+    scheduleBranchfsRetentionPrune(runtime.getProject(projectId).rootPath);
   }
 
   runtime.clearProjectTransients(projectId, threadId);
@@ -6760,6 +6842,24 @@ function createExperimentLease(projectRoot: string, experiment: NonNullable<Agen
   };
 }
 
+async function resolveGitRepoRoot(cwd: string) {
+  const proc = Bun.spawn({
+    cmd: ["git", "rev-parse", "--show-toplevel"],
+    cwd,
+    stdout: "pipe",
+    stderr: "pipe"
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited
+  ]);
+  if (exitCode !== 0) {
+    throw new Error(stderr.trim() || stdout.trim() || "Unable to resolve git repository root");
+  }
+  return stdout.trim();
+}
+
 async function resolveGitHead(cwd: string) {
   const proc = Bun.spawn({
     cmd: ["git", "rev-parse", "--verify", "HEAD"],
@@ -6769,6 +6869,36 @@ async function resolveGitHead(cwd: string) {
   });
   const [stdout, exitCode] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
   return exitCode === 0 ? stdout.trim() : undefined;
+}
+
+async function repairBranchfsStateOnStartup(repository: WorkspaceRepository, runtime: WorkspaceRuntimeStore) {
+  const workspace = repository.loadWorkspace();
+  const repoRoots = new Set<string>();
+  for (const project of workspace.projects) {
+    const repoRoot = await resolveGitRepoRoot(project.rootPath).catch(() => undefined);
+    if (repoRoot) {
+      repoRoots.add(repoRoot);
+    }
+  }
+  for (const repoRoot of repoRoots) {
+    await pruneBranchfsRoots({ repoRoot, mode: "retention", retention: DEFAULT_BRANCHFS_RETENTION }).catch(() => undefined);
+  }
+  const stopped = repository.stopInterruptedActiveRuns({
+    reason: "BranchFS cleanup stopped stale interrupted run.",
+    failureCategory: "shutdown-interrupt"
+  });
+  if (stopped.stoppedRunIds.length > 0) {
+    for (const project of repository.loadWorkspace().projects) {
+      runtime.upsertPersistedProject(project);
+    }
+  }
+}
+
+function scheduleBranchfsRetentionPrune(projectRoot: string) {
+  void (async () => {
+    const repoRoot = await resolveGitRepoRoot(projectRoot);
+    await pruneBranchfsRoots({ repoRoot, mode: "retention", retention: DEFAULT_BRANCHFS_RETENTION });
+  })().catch(() => undefined);
 }
 
 async function computeDirtyFingerprint(cwd: string) {
@@ -7175,8 +7305,12 @@ function getPreferencesState(
     autoCompactContextThresholdPercentDefault: repository.getAutoCompactContextThresholdPercentDefault(),
     planExecutionModeDefault: repository.getPlanExecutionModeDefault(),
     planExecutionDelaySecondsDefault: repository.getPlanExecutionDelaySecondsDefault(),
+    singleAgentModelPreferenceDefault: repository.getSingleAgentModelPreferenceDefault(),
+    subagentModelPreferenceDefault: repository.getSubagentModelPreferenceDefault(),
     correctnessIterationModeDefault: repository.getCorrectnessIterationModeDefault(),
     backgroundJobApprovalPolicyDefault: repository.getBackgroundJobApprovalPolicyDefault(),
+    assistantCongestionControlEnabledDefault: repository.getAssistantCongestionControlEnabledDefault(),
+    assistantMaxCongestionDefault: repository.getAssistantMaxCongestionDefault(),
     autoArchiveCompletedThreadsDefault: getRepositoryAutoArchiveCompletedThreadsDefault(repository),
     memoryBankEnabledDefault: repository.getMemoryBankEnabledDefault(),
     memoryBankRecordRunsDefault: repository.getMemoryBankRecordRunsDefault(),
@@ -7529,7 +7663,7 @@ async function executeAssistantChatAction(input: {
 
   switch (action.actionKind) {
     case "chat": {
-      assistant = ensureAssistantActiveForProjectChat(repository, assistant.id, input.connections);
+      assistant = requireAssistantForProjectChat(repository, assistant.id);
       assertAssistantRunnableForLaunch(repository, assistant.id);
       await input.assistantManager.sendAssistantChat(assistant.id, action.answerText ?? action.sourcePrompt);
       content = `Sent message to ${assistant.name}.`;
@@ -7554,8 +7688,9 @@ async function executeAssistantChatAction(input: {
       break;
     }
     case "create-job": {
-      assistant = ensureAssistantActiveForProjectChat(repository, assistant.id, input.connections);
+      assistant = requireAssistantForProjectChat(repository, assistant.id);
       assertAssistantRunnableForLaunch(repository, assistant.id);
+      assertAssistantOwnsProjectOrGlobal(repository, assistant.id, input.projectId);
       const scheduleText = action.scheduleText?.trim();
       if (!scheduleText) {
         throw new Error("Schedule input is required.");
@@ -7602,8 +7737,9 @@ async function executeAssistantChatAction(input: {
       break;
     }
     case "run-job": {
-      assistant = ensureAssistantActiveForProjectChat(repository, assistant.id, input.connections);
+      assistant = requireAssistantForProjectChat(repository, assistant.id);
       assertAssistantRunnableForLaunch(repository, assistant.id);
+      assertAssistantOwnsProjectOrGlobal(repository, assistant.id, input.projectId);
       if (!action.jobId) {
         throw new Error("Background job is required.");
       }
@@ -7672,11 +7808,13 @@ async function executeAssistantChatAction(input: {
       break;
     }
     case "answer-question": {
-      assistant = ensureAssistantActiveForProjectChat(repository, assistant.id, input.connections);
+      assistant = requireAssistantForProjectChat(repository, assistant.id);
       if (!questionId) {
         throw new Error("Assistant question is required.");
       }
-      await input.assistantManager.answerQuestion(assistant.id, questionId, action.answerText ?? action.sourcePrompt);
+      await input.assistantManager.answerQuestion(assistant.id, questionId, action.answerText ?? action.sourcePrompt, {
+        reprioritize: shouldAssistantReprioritize(repository, assistant.id)
+      });
       archiveNotificationWithLegacyId(repository, ["assistant-question", assistant.id, questionId]);
       emitAssistantsUpdatedToAll(input.connections, repository.loadAssistantsState());
       emitNotificationsUpdatedToAll(input.connections, input.requestId, repository.loadNotificationInboxState());
@@ -7684,7 +7822,7 @@ async function executeAssistantChatAction(input: {
       break;
     }
     case "update-todo": {
-      assistant = ensureAssistantActiveForProjectChat(repository, assistant.id, input.connections);
+      assistant = requireAssistantForProjectChat(repository, assistant.id);
       if (!action.todoId) {
         throw new Error("Assistant todo is required.");
       }
@@ -7695,7 +7833,7 @@ async function executeAssistantChatAction(input: {
       const now = new Date().toISOString();
       repository.saveAssistantTodo({ ...todo, state: "completed", completedAt: now, updatedAt: now });
       emitAssistantsUpdatedToAll(input.connections, repository.loadAssistantsState());
-      input.assistantManager.scheduleReprioritize(assistant.id, "project-chat-todo-update");
+      scheduleAssistantReprioritizeIfActive(repository, input.assistantManager, assistant.id, "project-chat-todo-update");
       rows.push({ label: "Todo", value: todo.title });
       content = `Marked ${assistant.name} todo complete.`;
       break;
@@ -7756,11 +7894,7 @@ function cloneAssistantForProject(repository: WorkspaceRepository, source: Assis
   return repository.cloneAssistantToProject(source.id, projectId, clonedAssistant, clonedAssetRefs);
 }
 
-function ensureAssistantActiveForProjectChat(
-  repository: WorkspaceRepository,
-  assistantId: string,
-  connections: Set<Bun.ServerWebSocket<HarnessConnection>>
-) {
+function requireAssistantForProjectChat(repository: WorkspaceRepository, assistantId: string) {
   const assistant = repository.getAssistant(assistantId, true);
   if (!assistant) {
     throw new Error(`Unknown assistant: ${assistantId}`);
@@ -7768,12 +7902,38 @@ function ensureAssistantActiveForProjectChat(
   if (assistant.deletedAt) {
     throw new Error(`Assistant ${assistant.name} is deleted`);
   }
-  if (assistant.runState !== "paused") {
-    return assistant;
+  return assistant;
+}
+
+function assertAssistantOwnsProjectOrGlobal(repository: WorkspaceRepository, assistantId: string, projectId: ProjectId) {
+  const assistant = repository.getAssistant(assistantId, true);
+  if (!assistant || assistant.deletedAt) {
+    throw new Error(`Unknown assistant: ${assistantId}`);
   }
-  const resumed = repository.setAssistantRunState(assistantId, "active");
-  emitAssistantsUpdatedToAll(connections, repository.loadAssistantsState());
-  return resumed;
+  if (assistant.scope === "project" && assistant.projectId !== projectId) {
+    throw new Error("Assistant does not belong to project");
+  }
+  return assistant;
+}
+
+function scheduleAssistantReprioritizeIfActive(
+  repository: WorkspaceRepository,
+  assistantManager: AssistantManager,
+  assistantId: string,
+  reason: string
+) {
+  if (!shouldAssistantReprioritize(repository, assistantId)) {
+    return;
+  }
+  assistantManager.scheduleReprioritize(assistantId, reason);
+}
+
+function shouldAssistantReprioritize(repository: WorkspaceRepository, assistantId: string) {
+  const assistant = repository.getAssistant(assistantId, true);
+  if (!assistant || assistant.deletedAt || assistant.runState === "paused" || assistant.circuitBreakerState === "tripped") {
+    return false;
+  }
+  return true;
 }
 
 function buildAssistantActionCardActions(
@@ -8611,15 +8771,28 @@ async function launchBackgroundJobRun(
   backgroundRunId: string
 ) {
   if (backgroundRunControllers.has(backgroundRunId)) {
+    debugLog("background.run.launch.skip-active-controller", {
+      backgroundRunId,
+      activeControllers: backgroundRunControllers.size
+    });
     return;
   }
 
   if (repository.getGlobalExecutionPaused()) {
+    debugLog("background.run.launch.skip-paused", {
+      backgroundRunId,
+      activeControllers: backgroundRunControllers.size
+    });
     return;
   }
 
   const run = repository.getBackgroundJobRun(backgroundRunId);
   if (!run || run.status !== "queued") {
+    debugLog("background.run.launch.skip-status", {
+      backgroundRunId,
+      status: run?.status,
+      activeControllers: backgroundRunControllers.size
+    });
     return;
   }
 
@@ -8665,6 +8838,13 @@ async function launchBackgroundJobRun(
   const controllerLeaseExpiresAt = new Date(Date.now() + BACKGROUND_RUN_CONTROLLER_LEASE_MS).toISOString();
   const control: BackgroundRunControl = { abortController, controllerInstanceId, controllerLeaseId };
   backgroundRunControllers.set(backgroundRunId, control);
+  debugLog("background.run.launch.start", {
+    backgroundRunId,
+    jobId: job.id,
+    assistantId: job.assistantId,
+    triggerSource: run.triggerSource,
+    activeControllers: backgroundRunControllers.size
+  });
   try {
     const startedRun = repository.setBackgroundJobRunStatus(backgroundRunId, "running", {
       controllerInstanceId,
@@ -8678,9 +8858,20 @@ async function launchBackgroundJobRun(
         new Date(Date.now() + BACKGROUND_RUN_CONTROLLER_LEASE_MS).toISOString()
       );
       if (!persistedRun || persistedRun.status !== "running") {
+        debugLog("background.run.lease.stop", {
+          backgroundRunId,
+          status: persistedRun?.status,
+          activeControllers: backgroundRunControllers.size
+        });
         disposeBackgroundRunControl(control);
         backgroundRunControllers.delete(backgroundRunId);
+        return;
       }
+      debugLog("background.run.lease.renew", {
+        backgroundRunId,
+        status: persistedRun.status,
+        activeControllers: backgroundRunControllers.size
+      });
     }, BACKGROUND_RUN_CONTROLLER_RENEW_MS);
     saveBackgroundRunStatusNotification(repository, startedRun);
     await emitBackgroundJobRunUpdatedToAll(connections, startedRun);
@@ -8815,6 +9006,10 @@ async function launchBackgroundJobRun(
   } finally {
     disposeBackgroundRunControl(control);
     backgroundRunControllers.delete(backgroundRunId);
+    debugLog("background.run.launch.done", {
+      backgroundRunId,
+      activeControllers: backgroundRunControllers.size
+    });
   }
 }
 

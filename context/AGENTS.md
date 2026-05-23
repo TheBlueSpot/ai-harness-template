@@ -5,7 +5,9 @@ These rules define how AI contributors should work in this game-catalog reposito
 
 - Always clarify ambiguous tasks before making shared or structural changes.
 - Start from catalog mindset. This repo is a collection of game entries, not one unified app.
-- Treat each top-level game folder as an independent item unless shared docs say otherwise.
+- Keep playable game entries under `./games/<slug>/`.
+- Treat each folder under `./games/` as an independent item unless shared docs say otherwise.
+- Keep local browser profiles, smoke output, screenshots, scratch traces, and debug-only artifacts under `./.local/`.
 - Preserve direct browser playability where an entry already has it.
 - Keep one reachable next goal visible during active play; progress cues should reinforce mastery, not replace it.
 - Add depth through readable new choices or escalating pressure, not just bigger numbers or bailout rewards.
@@ -32,7 +34,7 @@ These rules define how AI contributors should work in this game-catalog reposito
 - In fast arcade encounters, add pressure through sequencing before stacking simultaneous must-read threats.
 - Prefer mastery-first replay feedback; keep leaderboards optional seasoning, not the only proof of progress.
 - Avoid cross-game coupling, shared abstractions, or repo-wide refactors unless multiple entries clearly need same structure.
-- Keep game-specific notes, assets, and implementation detail inside the game's own folder.
+- Keep game-specific notes, assets, and implementation detail inside the game's own `./games/<slug>/` folder.
 - Keep markdown high-level. Prefer concepts and links to other markdown docs over code-heavy explanation.
 - User review data lives in SQLite; use the catalog review scripts for inspection and targeted edits.
 - Always store repo-local Codex skills in the generic `.agents/skills/` folder, not provider-specific directories, unless the user explicitly asks otherwise.
@@ -42,6 +44,7 @@ These rules define how AI contributors should work in this game-catalog reposito
 - Prefer Bun for local TypeScript script execution. If `bun.ps1` is blocked by PowerShell execution policy, use `bun.cmd`.
 - Update root docs only for shared rules, catalog navigation, or meaningful structural changes.
 - When adding or renaming a game, keep naming consistent with existing kebab-case folder style.
+- When adding a game, create `./games/<kebab-case-slug>/` with its browser entry there.
 - If a task is ambiguous about whether a change is local or shared, ask before restructuring multiple entries.
 - Do not make edits to the harness.
 - when linking to files use relative root (ie `./src/main.js`)

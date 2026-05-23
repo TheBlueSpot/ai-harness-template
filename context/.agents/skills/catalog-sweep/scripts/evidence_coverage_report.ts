@@ -83,7 +83,7 @@ export function classifyLaneCoverage(input: ClassificationInput): {
   const reasons: string[] = [];
 
   if (input.playtestStatus.kind === "missing") {
-    reasons.push("no reusable playtest observation under ./.local");
+    reasons.push("no reusable playtest observation under ./local");
     return { status: "missing", reasons };
   }
 
@@ -140,7 +140,7 @@ const AUDIT_LANES: AuditLaneConfig[] = [
     starterFile: "activation-loop-audit.json",
     findingFile: "activation-loop-audit.md",
     command: (slug) =>
-      `bun.cmd .agents/skills/activation-loop-audit/scripts/activation_loop_audit.ts --observations "./.local/playtest-starters/${slug}/activation-loop-audit.json" --out "./${slug}/activation-loop-audit.md"`,
+      `bun.cmd .agents/skills/activation-loop-audit/scripts/activation_loop_audit.ts --observations "./local/playtest-starters/${slug}/activation-loop-audit.json" --out "./games/${slug}/activation-loop-audit.md"`,
   },
   {
     kind: "audit",
@@ -149,7 +149,7 @@ const AUDIT_LANES: AuditLaneConfig[] = [
     starterFile: "onboarding-critique.json",
     findingFile: "onboarding-review.md",
     command: (slug) =>
-      `bun.cmd .agents/skills/onboarding-critique/scripts/onboarding_review.ts --observations "./.local/playtest-starters/${slug}/onboarding-critique.json" --out "./${slug}/onboarding-review.md"`,
+      `bun.cmd .agents/skills/onboarding-critique/scripts/onboarding_review.ts --observations "./local/playtest-starters/${slug}/onboarding-critique.json" --out "./games/${slug}/onboarding-review.md"`,
   },
   {
     kind: "audit",
@@ -158,7 +158,7 @@ const AUDIT_LANES: AuditLaneConfig[] = [
     starterFile: "hud-readability-audit.json",
     findingFile: "hud-readability-audit.md",
     command: (slug) =>
-      `bun.cmd .agents/skills/hud-readability-audit/scripts/hud_readability_audit.ts --observations "./.local/playtest-starters/${slug}/hud-readability-audit.json" --out "./${slug}/hud-readability-audit.md"`,
+      `bun.cmd .agents/skills/hud-readability-audit/scripts/hud_readability_audit.ts --observations "./local/playtest-starters/${slug}/hud-readability-audit.json" --out "./games/${slug}/hud-readability-audit.md"`,
   },
   {
     kind: "audit",
@@ -167,7 +167,7 @@ const AUDIT_LANES: AuditLaneConfig[] = [
     starterFile: "telegraphing-readability-audit.json",
     findingFile: "telegraphing-readability-audit.md",
     command: (slug) =>
-      `bun.cmd .agents/skills/telegraphing-readability-audit/scripts/telegraphing_readability_audit.ts --observations "./.local/playtest-starters/${slug}/telegraphing-readability-audit.json" --out "./${slug}/telegraphing-readability-audit.md"`,
+      `bun.cmd .agents/skills/telegraphing-readability-audit/scripts/telegraphing_readability_audit.ts --observations "./local/playtest-starters/${slug}/telegraphing-readability-audit.json" --out "./games/${slug}/telegraphing-readability-audit.md"`,
   },
   {
     kind: "audit",
@@ -176,7 +176,7 @@ const AUDIT_LANES: AuditLaneConfig[] = [
     starterFile: "pacing-curve-audit.json",
     findingFile: "pacing-curve-audit.md",
     command: (slug) =>
-      `bun.cmd .agents/skills/pacing-curve-audit/scripts/pacing_curve_audit.ts --observations "./.local/playtest-starters/${slug}/pacing-curve-audit.json" --out "./${slug}/pacing-curve-audit.md"`,
+      `bun.cmd .agents/skills/pacing-curve-audit/scripts/pacing_curve_audit.ts --observations "./local/playtest-starters/${slug}/pacing-curve-audit.json" --out "./games/${slug}/pacing-curve-audit.md"`,
   },
   {
     kind: "audit",
@@ -185,7 +185,7 @@ const AUDIT_LANES: AuditLaneConfig[] = [
     starterFile: "failure-loop-audit.json",
     findingFile: "failure-loop-audit.md",
     command: (slug) =>
-      `bun.cmd .agents/skills/failure-loop-audit/scripts/failure_loop_audit.ts --observations "./.local/playtest-starters/${slug}/failure-loop-audit.json" --out "./${slug}/failure-loop-audit.md"`,
+      `bun.cmd .agents/skills/failure-loop-audit/scripts/failure_loop_audit.ts --observations "./local/playtest-starters/${slug}/failure-loop-audit.json" --out "./games/${slug}/failure-loop-audit.md"`,
   },
   {
     kind: "audit",
@@ -194,7 +194,7 @@ const AUDIT_LANES: AuditLaneConfig[] = [
     starterFile: "mastery-motivation-audit.json",
     findingFile: "mastery-motivation-audit.md",
     command: (slug) =>
-      `bun.cmd .agents/skills/mastery-motivation-audit/scripts/mastery_motivation_audit.ts --observations "./.local/playtest-starters/${slug}/mastery-motivation-audit.json" --out "./${slug}/mastery-motivation-audit.md"`,
+      `bun.cmd .agents/skills/mastery-motivation-audit/scripts/mastery_motivation_audit.ts --observations "./local/playtest-starters/${slug}/mastery-motivation-audit.json" --out "./games/${slug}/mastery-motivation-audit.md"`,
   },
   {
     kind: "audit",
@@ -203,7 +203,7 @@ const AUDIT_LANES: AuditLaneConfig[] = [
     starterFile: "choice-readback-audit.json",
     findingFile: "choice-readback-audit.md",
     command: (slug) =>
-      `bun.cmd .agents/skills/choice-readback-audit/scripts/choice_readback_audit.ts --observations "./.local/playtest-starters/${slug}/choice-readback-audit.json" --out "./${slug}/choice-readback-audit.md"`,
+      `bun.cmd .agents/skills/choice-readback-audit/scripts/choice_readback_audit.ts --observations "./local/playtest-starters/${slug}/choice-readback-audit.json" --out "./games/${slug}/choice-readback-audit.md"`,
   },
   {
     kind: "audit",
@@ -212,7 +212,7 @@ const AUDIT_LANES: AuditLaneConfig[] = [
     starterFile: "readable-progression-audit.json",
     findingFile: "readable-progression-audit.md",
     command: (slug) =>
-      `bun.cmd .agents/skills/readable-progression-audit/scripts/readable_progression_audit.ts --observations "./.local/playtest-starters/${slug}/readable-progression-audit.json" --out "./${slug}/readable-progression-audit.md"`,
+      `bun.cmd .agents/skills/readable-progression-audit/scripts/readable_progression_audit.ts --observations "./local/playtest-starters/${slug}/readable-progression-audit.json" --out "./games/${slug}/readable-progression-audit.md"`,
   },
   {
     kind: "audit",
@@ -221,7 +221,7 @@ const AUDIT_LANES: AuditLaneConfig[] = [
     starterFile: "forgiveness-audit.json",
     findingFile: "forgiveness-audit.md",
     command: (slug) =>
-      `bun.cmd .agents/skills/forgiveness-audit/scripts/forgiveness_audit.ts --observations "./.local/playtest-starters/${slug}/forgiveness-audit.json" --out "./${slug}/forgiveness-audit.md"`,
+      `bun.cmd .agents/skills/forgiveness-audit/scripts/forgiveness_audit.ts --observations "./local/playtest-starters/${slug}/forgiveness-audit.json" --out "./games/${slug}/forgiveness-audit.md"`,
   },
   {
     kind: "audit",
@@ -230,7 +230,7 @@ const AUDIT_LANES: AuditLaneConfig[] = [
     starterFile: "input-demand-audit.json",
     findingFile: "input-demand-audit.md",
     command: (slug) =>
-      `bun.cmd .agents/skills/input-demand-audit/scripts/input_demand_audit.ts --observations "./.local/playtest-starters/${slug}/input-demand-audit.json" --out "./${slug}/input-demand-audit.md"`,
+      `bun.cmd .agents/skills/input-demand-audit/scripts/input_demand_audit.ts --observations "./local/playtest-starters/${slug}/input-demand-audit.json" --out "./games/${slug}/input-demand-audit.md"`,
   },
   {
     kind: "audit",
@@ -239,7 +239,7 @@ const AUDIT_LANES: AuditLaneConfig[] = [
     starterFile: "impact-feel-audit.json",
     findingFile: "impact-feel-audit.md",
     command: (slug) =>
-      `bun.cmd .agents/skills/impact-feel-audit/scripts/impact_feel_audit.ts --observations "./.local/playtest-starters/${slug}/impact-feel-audit.json" --out "./${slug}/impact-feel-audit.md"`,
+      `bun.cmd .agents/skills/impact-feel-audit/scripts/impact_feel_audit.ts --observations "./local/playtest-starters/${slug}/impact-feel-audit.json" --out "./games/${slug}/impact-feel-audit.md"`,
   },
 ];
 
@@ -250,7 +250,7 @@ const SMOKE_LANES: SmokeLaneConfig[] = [
     label: "reminder reentry smoke",
     findingFile: "reminder-reentry-smoke.md",
     command: (slug) =>
-      `bun.cmd .agents/skills/playtest-evidence-capture/scripts/reminder_reentry_smoke.ts --observations "./.local/${slug}-playtest.json" --out "./${slug}/reminder-reentry-smoke.md"`,
+      `bun.cmd .agents/skills/playtest-evidence-capture/scripts/reminder_reentry_smoke.ts --observations "./local/${slug}-playtest.json" --out "./games/${slug}/reminder-reentry-smoke.md"`,
   },
   {
     kind: "smoke",
@@ -258,7 +258,7 @@ const SMOKE_LANES: SmokeLaneConfig[] = [
     label: "busy-frame clutter smoke",
     findingFile: "busy-frame-clutter-smoke.md",
     command: (slug) =>
-      `bun.cmd .agents/skills/playtest-evidence-capture/scripts/busy_frame_clutter_smoke.ts --observations "./.local/${slug}-playtest.json" --out "./${slug}/busy-frame-clutter-smoke.md"`,
+      `bun.cmd .agents/skills/playtest-evidence-capture/scripts/busy_frame_clutter_smoke.ts --observations "./local/${slug}-playtest.json" --out "./games/${slug}/busy-frame-clutter-smoke.md"`,
   },
   {
     kind: "smoke",
@@ -266,7 +266,7 @@ const SMOKE_LANES: SmokeLaneConfig[] = [
     label: "text and motion smoke",
     findingFile: "text-motion-smoke.md",
     command: (slug) =>
-      `bun.cmd .agents/skills/playtest-evidence-capture/scripts/text_motion_smoke.ts --observations "./.local/${slug}-playtest.json" --out "./${slug}/text-motion-smoke.md"`,
+      `bun.cmd .agents/skills/playtest-evidence-capture/scripts/text_motion_smoke.ts --observations "./local/${slug}-playtest.json" --out "./games/${slug}/text-motion-smoke.md"`,
   },
 ];
 
@@ -346,9 +346,9 @@ function getPlaytestArtifacts(slug: string, playtestStatus: ReturnType<typeof in
   }
 
   const artifacts = playtestStatus.artifacts
-    .map((artifact) => `./.local/${artifact.replaceAll("\\", "/")}`)
+    .map((artifact) => `./local/${artifact.replaceAll("\\", "/")}`)
     .filter((artifact) => artifact.endsWith(".json") || artifact.endsWith(".md"));
-  const reportPath = `./${slug}/playtest-evidence.md`;
+  const reportPath = `./games/${slug}/playtest-evidence.md`;
   if (existsSync(resolve(ROOT, reportPath))) {
     artifacts.push(reportPath);
   }
@@ -407,7 +407,7 @@ function buildMissingActions(slug: string, lane: LaneConfig): string[] {
   ];
   if (lane.kind === "audit") {
     actions.push(
-      `bun.cmd .agents/skills/playtest-evidence-capture/scripts/playtest_evidence_capture.ts --observations "./.local/${slug}-playtest.json" --out "./${slug}/playtest-evidence.md" --starter-dir "./.local/playtest-starters/${slug}"`,
+      `bun.cmd .agents/skills/playtest-evidence-capture/scripts/playtest_evidence_capture.ts --observations "./local/${slug}-playtest.json" --out "./games/${slug}/playtest-evidence.md" --starter-dir "./local/playtest-starters/${slug}"`,
     );
   }
   actions.push(lane.command(slug));
@@ -421,7 +421,7 @@ function buildInferenceActions(slug: string, lane: LaneConfig): string[] {
 function buildStaleActions(slug: string, lane: LaneConfig): string[] {
   return [
     `bun.cmd .agents/skills/catalog-sweep/scripts/smoke_refresh_kickoff.ts --slug ${slug}`,
-    `bun.cmd .agents/skills/playtest-evidence-capture/scripts/playtest_evidence_capture.ts --observations "./.local/${slug}-playtest.json" --out "./${slug}/playtest-evidence.md" --starter-dir "./.local/playtest-starters/${slug}"`,
+    `bun.cmd .agents/skills/playtest-evidence-capture/scripts/playtest_evidence_capture.ts --observations "./local/${slug}-playtest.json" --out "./games/${slug}/playtest-evidence.md" --starter-dir "./local/playtest-starters/${slug}"`,
     lane.command(slug),
   ];
 }
@@ -433,9 +433,9 @@ function inspectLaneEntry(
   playtestStatus: ReturnType<typeof inspectPlaytestStatus>,
 ): LaneEntry {
   const observations = getPlaytestArtifacts(slug, playtestStatus);
-  const starterPath = lane.kind === "audit" ? `./.local/playtest-starters/${slug}/${lane.starterFile}` : undefined;
+  const starterPath = lane.kind === "audit" ? `./local/playtest-starters/${slug}/${lane.starterFile}` : undefined;
   const starterArtifact = starterPath ? getFileArtifact(starterPath) : undefined;
-  const findingPath = `./${slug}/${lane.findingFile}`;
+  const findingPath = `./games/${slug}/${lane.findingFile}`;
   const findingArtifact = getFileArtifact(findingPath);
   const starterCoverage = starterPath ? readStarterCoverage(starterPath) : undefined;
   const starterFresh =

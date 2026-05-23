@@ -88,18 +88,18 @@ export function DropdownControl(props: DropdownSelectProps | DropdownTriggerProp
           class={cn("min-w-0", props.class)}
           align={props.popoverAlign ?? "start"}
           side={props.popoverSide ?? "top"}
-          contentClass={cn("rounded-[1rem] p-1.5", props.contentClass)}
+          contentClass={cn("min-w-(--popover-trigger-width) rounded-[1rem] p-1.5", props.contentClass)}
           content={
-            <div class="inline-flex flex-col gap-0.5">
+            <div class="flex min-w-[var(--popover-trigger-width)] flex-col gap-0.5">
               <For each={props.options}>
                 {(option) => {
                   const selected = () => selectedOption()?.value === option.value;
                   return (
-                  <Tooltip content={option.description} triggerClass="block" side="right">
+                  <Tooltip content={option.description} triggerClass="block w-full" side="right">
                     <button
                       type="button"
                       class={cn(
-                        "flex min-w-max items-center gap-1.5 rounded-lg px-1.5 py-1 text-left font-medium text-(--foreground) transition hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-50",
+                        "flex w-full min-w-0 items-center gap-1.5 rounded-lg px-1.5 py-1 text-left font-medium text-(--foreground) transition hover:bg-black/5 focus-visible:bg-black/5 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent",
                         optionLabelClass[size()]
                       )}
                       disabled={option.disabled}
@@ -115,7 +115,7 @@ export function DropdownControl(props: DropdownSelectProps | DropdownTriggerProp
                       <span class="flex h-3.5 w-3.5 shrink-0 items-center justify-center text-(--muted)">
                         <Show when={option.icon}>{option.icon}</Show>
                       </span>
-                      <span class="whitespace-nowrap">{option.label}</span>
+                      <span class="min-w-0 flex-1 whitespace-nowrap">{option.label}</span>
                       <Show when={selected()}>
                         <Check class="h-3 w-3 shrink-0 text-(--foreground)" />
                       </Show>

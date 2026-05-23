@@ -77,6 +77,19 @@ describe("client command validation", () => {
     ).toBe("project.search");
   });
 
+  test("accepts branchfs cleanup payloads", () => {
+    expect(
+      parseClientCommand({
+        type: "branchfs.cleanup",
+        requestId: "req-branchfs-cleanup",
+        payload: {
+          projectId: "project-1",
+          mode: "all"
+        }
+      }).type
+    ).toBe("branchfs.cleanup");
+  });
+
   test("accepts thread cleanup archive payloads", () => {
     const command = parseClientCommand({
       type: "thread.cleanupArchive",
@@ -824,8 +837,7 @@ describe("planner result validation", () => {
   });
 
   test("accepts connection.ready preferences payload", () => {
-    expect(
-      parseServerEvent({
+    const event = parseServerEvent({
         type: "connection.ready",
         payload: {
           agents: [{ id: "pi", label: "Pi" }],
@@ -842,7 +854,7 @@ describe("planner result validation", () => {
                     id: "thread-1",
                     kind: "user",
                     title: "Thread 1",
-                    titleSource: "generated",
+                    titleSource: "manual",
                     status: "active",
                     badgeState: "idle",
                     messageCount: 0,
@@ -913,8 +925,12 @@ describe("planner result validation", () => {
           },
           executionControl: defaultExecutionControl
         }
-      }).type
-    ).toBe("connection.ready");
+      });
+
+    expect(event.type).toBe("connection.ready");
+    if (event.type === "connection.ready") {
+      expect(event.payload.workspace.projects[0]?.threads[0]?.titleSource).toBe("custom");
+    }
   });
 
   test("rejects data URL attachments at command boundary", () => {

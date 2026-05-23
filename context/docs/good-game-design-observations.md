@@ -1,19 +1,19 @@
 # Good Game Design Observations
 
 This note distills repeated strengths from the current `5/5` set:
-[bionic-swing](../bionic-swing/README.md),
-[bloons-pop](../bloons-pop/README.md),
-[bubble-cluster](../bubble-cluster/README.md),
-[duck-hunt-gallery](../duck-hunt-gallery/README.md),
-[hotline-miami-switchboard](../hotline-miami-switchboard/README.md),
-[ikaruga-polarity-drift](../ikaruga-polarity-drift/README.md),
-[joust-pegasus-dash](../joust-pegasus-dash/README.md),
-[line-rider-rush](../line-rider-rush/README.md),
-[marble-madness-gyro](../marble-madness-gyro/README.md),
-[nuclear-throne-crown-rush](../nuclear-throne-crown-rush/README.md),
-[panel-panic](../panel-panic/README.md),
-[punch-out-parry](../punch-out-parry/README.md), and
-[superhot-time-freeze](../superhot-time-freeze/README.md).
+[bionic-swing](../games/bionic-swing/README.md),
+[bloons-pop](../games/bloons-pop/README.md),
+[bubble-cluster](../games/bubble-cluster/README.md),
+[duck-hunt-gallery](../games/duck-hunt-gallery/README.md),
+[hotline-miami-switchboard](../games/hotline-miami-switchboard/README.md),
+[ikaruga-polarity-drift](../games/ikaruga-polarity-drift/README.md),
+[joust-pegasus-dash](../games/joust-pegasus-dash/README.md),
+[line-rider-rush](../games/line-rider-rush/README.md),
+[marble-madness-gyro](../games/marble-madness-gyro/README.md),
+[nuclear-throne-crown-rush](../games/nuclear-throne-crown-rush/README.md),
+[panel-panic](../games/panel-panic/README.md),
+[punch-out-parry](../games/punch-out-parry/README.md), and
+[superhot-time-freeze](../games/superhot-time-freeze/README.md).
 
 The shared pattern is not "more systems." These games usually score well because one strong verb set is made readable, responsive, and replayable, then reinforced by atmosphere and truthful feedback.
 

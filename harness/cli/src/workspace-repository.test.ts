@@ -13,7 +13,8 @@ import {
   createThreadId,
   createExperimentId,
   createMemoryEntryId,
-  createMemoryRetrievalId
+  createMemoryRetrievalId,
+  type ExecutionPlan
 } from "../../shared/protocol";
 import { normalizeWindowsEscapedPath, WorkspaceRepository } from "./workspace-repository";
 
@@ -323,6 +324,61 @@ describe("workspace repository", () => {
     expect(hydratedJob?.schedulerQueueReason).toContain("Queue #2");
     expect(hydratedJob?.schedulerActiveRunId).toBe(run.id);
     expect(hydratedJob?.schedulerOverloaded).toBe(true);
+  });
+
+  test("ignores background heartbeat updates after terminal completion", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    const now = new Date().toISOString();
+    const job = repository.saveBackgroundJob({
+      id: createBackgroundJobId(),
+      projectId: project.id,
+      automationThreadId: createThreadId(),
+      kind: "ai-routine",
+      name: "Terminal heartbeat guard",
+      status: "enabled",
+      riskLevel: "safe",
+      definition: {
+        kind: "ai-routine",
+        prompt: "Check heartbeat."
+      },
+      schedule: {
+        type: "interval",
+        intervalSeconds: 600,
+        nextRunAt: now,
+        sourceText: "10m"
+      },
+      scheduleInput: "10m",
+      nextRunAt: now,
+      createdAt: now,
+      updatedAt: now
+    }).jobs[0]!;
+    const run = repository.createBackgroundJobRun({
+      jobId: job.id,
+      projectId: project.id,
+      automationThreadId: job.automationThreadId,
+      triggerSource: "manual",
+      status: "running",
+      riskLevel: "safe",
+      approvalStatus: "approved"
+    });
+
+    repository.setBackgroundJobRunStatus(run.id, "cancelled", {
+      failureMessage: "Stopped by user",
+      failureCategory: "manual-abort"
+    });
+    const terminalRun = repository.getBackgroundJobRun(run.id);
+    repository.touchBackgroundJobRun(run.id, { stage: "execution-running", detail: "late heartbeat" });
+    repository.appendBackgroundJobRunEvent(run.id, "trace", "Late trace", "late callback");
+
+    const updatedRun = repository.getBackgroundJobRun(run.id);
+    expect(updatedRun?.status).toBe("cancelled");
+    expect(updatedRun?.completedAt).toBe(terminalRun?.completedAt);
+    expect(updatedRun?.updatedAt).toBe(terminalRun?.updatedAt);
+    expect(updatedRun?.lastHeartbeatAt).toBe(terminalRun?.lastHeartbeatAt);
+    expect(updatedRun?.heartbeatStage).toBe("cancelled");
+    expect(updatedRun?.heartbeatDetail).toBe("Stopped by user");
+    expect(updatedRun?.events.some((event) => event.stage === "trace" && event.message === "Late trace")).toBe(true);
   });
 
   test("persists added project history without default bootstrap", () => {
@@ -1000,6 +1056,60 @@ describe("workspace repository", () => {
     expect(repository.getAssistantLearnings(otherAssistant.id).map((entry) => entry.summary)).toEqual(["Keep other learning."]);
   });
 
+  test("updates assistant todos by assistant scope", () => {
+    const repository = createRepository();
+    const assistant = addLearningAssistant(repository);
+    const otherAssistant = addLearningAssistant(repository);
+    const now = new Date().toISOString();
+    const todo = repository.saveAssistantTodo({
+      id: createAssistantTodoId(),
+      assistantId: assistant.id,
+      title: "Original todo",
+      state: "pending",
+      sortOrder: 0,
+      createdAt: now,
+      updatedAt: now
+    });
+
+    expect(() => repository.updateAssistantTodo(otherAssistant.id, todo.id, { title: "Wrong assistant" })).toThrow(
+      "Unknown assistant todo for assistant"
+    );
+
+    const updated = repository.updateAssistantTodo(assistant.id, todo.id, { title: "Updated todo", state: "completed" });
+    expect(updated.title).toBe("Updated todo");
+    expect(updated.state).toBe("completed");
+    expect(updated.completedAt).toBeDefined();
+  });
+
+  test("normalizes legacy custom assistant todo sources during migration", () => {
+    const tempRoot = createTempDir();
+    const dbPath = path.join(tempRoot, `workspace-${crypto.randomUUID()}.sqlite`);
+    const repository = new WorkspaceRepository(dbPath, process.cwd(), { durability: "test-fast" });
+    const assistant = addLearningAssistant(repository);
+    const now = new Date().toISOString();
+    const todo = repository.saveAssistantTodo({
+      id: createAssistantTodoId(),
+      assistantId: assistant.id,
+      title: "Legacy sourced todo",
+      state: "pending",
+      sortOrder: 0,
+      source: "assistant",
+      createdAt: now,
+      updatedAt: now
+    });
+
+    const db = new Database(dbPath, { strict: true });
+    db.query(`UPDATE assistant_todos SET source = 'orrn-research' WHERE id = ?1`).run(todo.id);
+    db.close();
+
+    const reloadedRepository = new WorkspaceRepository(dbPath, process.cwd(), { durability: "test-fast" });
+    expect(reloadedRepository.getAssistantTodos(assistant.id)[0]?.source).toBe("assistant");
+
+    const reloadedDb = new Database(dbPath, { readonly: true, strict: true });
+    expect(reloadedDb.query<{ source: string | null }, [string]>(`SELECT source FROM assistant_todos WHERE id = ?1`).get(todo.id)?.source).toBe("assistant");
+    reloadedDb.close();
+  });
+
   test("reorders assistant learnings by assistant scope", () => {
     const repository = createRepository();
     const assistant = addLearningAssistant(repository);
@@ -1033,7 +1143,10 @@ describe("workspace repository", () => {
       throw new Error("Expected assistant learnings to save");
     }
 
-    repository.reorderAssistantLearnings(assistant.id, [second.id, first.id, other.id]);
+    expect(() => repository.reorderAssistantLearnings(assistant.id, [second.id, first.id, other.id])).toThrow(
+      "Assistant learning reorder contains unknown learning"
+    );
+    repository.reorderAssistantLearnings(assistant.id, [second.id, first.id]);
 
     expect(repository.getAssistantLearnings(assistant.id).map((entry) => entry.summary)).toEqual([
       "Second learning.",
@@ -1286,6 +1399,7 @@ describe("workspace repository", () => {
     });
 
     const db = new Database(dbPath, { strict: true });
+    db.query(`UPDATE project_threads SET title_source = 'manual' WHERE id = ?1`).run(project.activeThreadId);
     db.query(`UPDATE thread_messages SET content = '', attachments_json = 'not-json', metadata_json = 'not-json'`).run();
     db.query(
       `UPDATE agent_runs
@@ -1323,6 +1437,7 @@ describe("workspace repository", () => {
     const memories = repository.listMemoryEntries(project.id);
 
     expect(workspace.projects[0]?.session.messages[0]?.content).toBe("Recovered message");
+    expect(workspace.projects[0]?.threads.find((thread) => thread.id === project.activeThreadId)?.titleSource).toBe("custom");
     expect(workspace.projects[0]?.session.messages[0]?.attachments).toBeUndefined();
     expect(workspace.projects[0]?.session.messages[0]?.metadata).toBeUndefined();
     expect(loadedRun?.latestUserPrompt).toBe("Recovered prompt");
@@ -1877,11 +1992,7 @@ describe("workspace repository", () => {
       ]
     };
 
-    repository.setAgentRunReady(
-      project.id,
-      runId!,
-      readyTurn,
-      {
+    const executionPlan: ExecutionPlan = {
         runId: runId!,
         origin: "initial",
         iteration: 1,
@@ -1898,10 +2009,64 @@ describe("workspace repository", () => {
         prerequisites: [],
         contracts: readyTurn.contracts,
         correctnessPolicy: "ask-before-iterate"
-      },
+      };
+
+    repository.setAgentRunReady(
+      project.id,
+      runId!,
+      readyTurn,
+      executionPlan,
       readyTurn.subtasks,
       "openai/gpt-5.4"
     );
+
+    const db = new Database(dbPath, { strict: true });
+    db.query(`UPDATE agent_runs SET plan_json = ?2, correctness_review_json = ?3 WHERE id = ?1`).run(
+      runId!,
+      JSON.stringify({
+        ...executionPlan,
+        route: "subagents",
+        subagentWorktreeStrategy: "same",
+        gating: { mode: "manual", delaySeconds: 0 },
+        correctnessPolicy: "manual",
+        prerequisites: [
+          {
+            id: "setup-1",
+            title: "Setup",
+            instruction: "Prepare",
+            reason: "Needed",
+            requiredForTaskIds: ["task-1"],
+            owner: "assistant",
+            status: "done"
+          }
+        ],
+        contracts: [{ ...readyTurn.contracts[0], verificationScope: "full-app" }]
+      }),
+      JSON.stringify({
+        status: "failed",
+        summary: "Needs work",
+        gaps: [
+          {
+            id: "gap-1",
+            category: "runtime",
+            severity: "blocker",
+            description: "App does not run",
+            suggestedFix: "Fix runtime",
+            canParallelize: false,
+            ownedPaths: ["index.html"]
+          }
+        ],
+        recommendedPlan: {
+          ...executionPlan,
+          origin: "correctness",
+          route: "single",
+          subagentWorktreeStrategy: "isolated",
+          gating: { mode: "auto", delaySeconds: 0 },
+          correctnessPolicy: "auto"
+        }
+      })
+    );
+    db.close();
 
     const reloadedRepository = new WorkspaceRepository(dbPath, process.cwd(), { durability: "test-fast" });
     const restoredProject = reloadedRepository.getProject(project.id);
@@ -1915,6 +2080,16 @@ describe("workspace repository", () => {
       })
     );
     expect(restoredProject.activeRun?.plan?.contracts[0]?.effortPoints).toBe(8);
+    expect(restoredProject.activeRun?.plan?.route).toBe("pi-subagents");
+    expect(restoredProject.activeRun?.plan?.gating.mode).toBe("approve");
+    expect(restoredProject.activeRun?.plan?.prerequisites[0]?.owner).toBe("main");
+    expect(restoredProject.activeRun?.plan?.prerequisites[0]?.status).toBe("completed");
+    expect(restoredProject.activeRun?.plan?.contracts[0]?.verificationScope).toBe("worktree-full");
+    expect(restoredProject.activeRun?.correctnessReview?.status).toBe("needs-iteration");
+    expect(restoredProject.activeRun?.correctnessReview?.gaps[0]?.category).toBe("runnable-gap");
+    expect(restoredProject.activeRun?.correctnessReview?.gaps[0]?.severity).toBe("high");
+    expect(restoredProject.activeRun?.correctnessReview?.recommendedPlan?.origin).toBe("correctness-followup");
+    expect(restoredProject.activeRun?.correctnessReview?.recommendedPlan?.route).toBe("main");
   });
 
   test("reports repeated prompt hashes, owner prompt sizes, and failure categories", () => {

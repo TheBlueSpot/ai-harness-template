@@ -130,21 +130,21 @@ function buildFiles(
   if (queueOnlyReport) {
     if (workspaceProbe?.folderExists) {
       if (workspaceProbe.hasReadme) {
-        files.push(`./${slug}/README.md`);
+        files.push(`./games/${slug}/README.md`);
       }
       if (workspaceProbe.hasIndexHtml) {
-        files.push(`./${slug}/index.html`);
+        files.push(`./games/${slug}/index.html`);
       }
       if (!workspaceProbe.hasReadme && !workspaceProbe.hasIndexHtml) {
-        files.push(`./${slug}/`);
+        files.push(`./games/${slug}/`);
       }
     }
     return files;
   }
 
-  files.push(`./${slug}/index.html`);
+  files.push(`./games/${slug}/index.html`);
   if (report?.hasReadme) {
-    files.push(`./${slug}/README.md`);
+    files.push(`./games/${slug}/README.md`);
   }
   return files;
 }
@@ -172,7 +172,7 @@ function buildNextSteps(
 
   if (recommendation.kind === "build-pending-folder") {
     return [
-      `Create ./${slug}/ with index.html and a concise README.md.`,
+      `Create ./games/${slug}/ with index.html and a concise README.md.`,
       "Keep the first pass focused on direct browser boot.",
       "Rerun the packet for the same slug after the folder exists.",
     ];
@@ -180,7 +180,7 @@ function buildNextSteps(
 
   if (recommendation.kind === "continue-pending-folder") {
     return [
-      `Inspect ./${slug}/index.html first, then ./${slug}/README.md.`,
+      `Inspect ./games/${slug}/index.html first, then ./games/${slug}/README.md.`,
       report?.issues.length ? "Clear the listed blocker before any new slug work." : "Direct-play the current build before changing queue state.",
       "Keep queue focus on this same slug until it closes.",
     ];
@@ -188,7 +188,7 @@ function buildNextSteps(
 
   if (recommendation.kind === "reconcile-untracked-folder") {
     return [
-      `Inspect ./${slug}/ for direct boot and concise docs.`,
+      `Inspect ./games/${slug}/ for direct boot and concise docs.`,
       "Decide whether ./todo.md should track the slug as pending or completed.",
       "Keep the change local to this folder plus ./todo.md.",
     ];
@@ -197,14 +197,14 @@ function buildNextSteps(
   if (recommendation.kind === "clear-completed-drift") {
     if (workspaceProbe?.folderExists && !workspaceProbe.hasIndexHtml) {
       return [
-        `Inspect the existing ./${slug}/ folder and restore direct browser boot with index.html.`,
+        `Inspect the existing ./games/${slug}/ folder and restore direct browser boot with index.html.`,
         "Keep the queue record only if the folder can still ship as the same slug; otherwise repair the completed history.",
         "Rerun the packet after index.html or queue history is restored.",
       ];
     }
 
     return [
-      `Confirm whether ./${slug}/ was renamed, removed, or never landed.`,
+      `Confirm whether ./games/${slug}/ was renamed, removed, or never landed.`,
       "Repair queue history or restore the playable folder before touching another slug.",
       "Rerun the packet after the queue or folder fix.",
     ];

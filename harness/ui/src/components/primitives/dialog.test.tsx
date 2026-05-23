@@ -5,6 +5,7 @@ import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { clearBrowserStateForTests } from "../../utils/tests/store-test-utils";
 import { Dialog } from "./dialog";
 import { clearOverlayStackForTests } from "./overlay-stack";
+import { Popover } from "./popover";
 
 createUiTest("Dialog", () => {
   beforeEach(() => {
@@ -78,6 +79,62 @@ createUiTest("Dialog", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Inner action" }));
     expect(closed).toBe(false);
+  });
+
+  it("traps Tab focus inside dialog", async () => {
+    const firstButton = document.createElement("button");
+    firstButton.type = "button";
+    firstButton.textContent = "First action";
+    const lastButton = document.createElement("button");
+    lastButton.type = "button";
+    lastButton.textContent = "Last action";
+    render(() => <Dialog open title="Focused dialog"><div>{firstButton}{lastButton}</div></Dialog>);
+
+    await screen.findByRole("dialog", { name: "Focused dialog" });
+    const closeButton = screen.getByRole("button", { name: "Close dialog" });
+    lastButton.focus();
+    fireEvent.keyDown(lastButton, { key: "Tab" });
+
+    expect(document.activeElement).toBe(closeButton);
+  });
+
+  it("restores focus after close", async () => {
+    const opener = document.createElement("button");
+    opener.type = "button";
+    opener.textContent = "Open source";
+    document.body.append(opener);
+    opener.focus();
+    const { unmount } = render(() => <Dialog open title="Restore focus">Body</Dialog>);
+    await screen.findByRole("dialog", { name: "Restore focus" });
+    await Promise.resolve();
+
+    unmount();
+
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
+  });
+
+  it("closes nested popover before dialog on Escape", async () => {
+    let dialogClosed = false;
+    let popoverClosed = false;
+    render(() => (
+      <Dialog open title="Nested dialog" onClose={() => dialogClosed = true}>
+        <Popover
+          open
+          onClose={() => popoverClosed = true}
+          content={<button type="button">Popover action</button>}
+        >
+          <button type="button">Open popover</button>
+        </Popover>
+      </Dialog>
+    ));
+
+    const popoverAction = await screen.findByText("Popover action");
+    await Promise.resolve();
+    fireEvent.keyDown(popoverAction, { key: "Escape" });
+
+    expect(popoverClosed).toBe(true);
+    expect(dialogClosed).toBe(false);
   });
 
 });

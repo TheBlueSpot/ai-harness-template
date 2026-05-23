@@ -1,4 +1,5 @@
 import { For, Show } from "solid-js";
+import { AlertTriangle } from "lucide-solid";
 import type { ExecutionPlan } from "../../../shared/protocol";
 import { harnessStore } from "../harness-store";
 import { MarkdownContent } from "./markdown-content";
@@ -10,6 +11,10 @@ type ExecutionPlanDialogProps = {
 
 export function ExecutionPlanDialog(props: ExecutionPlanDialogProps) {
   const state = harnessStore.state;
+  const hasBranchfsSizeWarning = () =>
+    state.workspace.projects
+      .find((project) => project.id === state.workspace.activeProjectId)
+      ?.traces.some((trace) => trace.stage === "branchfs-size-warning") ?? false;
 
   return (
     <Dialog
@@ -40,6 +45,12 @@ export function ExecutionPlanDialog(props: ExecutionPlanDialogProps) {
               <div>Correctness: {executionPlan().correctnessPolicy}</div>
               <div>Origin: {executionPlan().origin}</div>
             </div>
+            <Show when={hasBranchfsSizeWarning()}>
+              <div class="inline-flex w-fit items-center gap-1 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-[0.625rem] font-medium text-amber-800">
+                <AlertTriangle class="h-3 w-3" />
+                BranchFS large
+              </div>
+            </Show>
 
             <section>
               <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--muted)">

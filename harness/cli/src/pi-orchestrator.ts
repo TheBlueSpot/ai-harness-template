@@ -18,6 +18,7 @@ import {
   type PlanningQuestion,
   type ProviderBrand,
   type ProviderModelId,
+  type RunModelPreference,
   type SubagentContract,
   type SubagentWorktreeStrategy,
   type WorkspaceRuleSource
@@ -49,7 +50,7 @@ import {
   type SubagentResult
 } from "./pi-subagents";
 import { buildPromptAttachmentContext } from "./chat-attachment-prompt";
-import { resolveSubagentModelId, resolveSubagentReasoningStrength } from "./subagent-defaults";
+import { resolveSingleAgentModelId, resolveSubagentModelId, resolveSubagentReasoningStrength } from "./subagent-defaults";
 import { createMilestoneDeltaParser, extractMilestoneLines, stripMilestoneLines } from "./run-milestone-windows";
 import { assembleDeterministicPrompt } from "./deterministic-prompt";
 import type { PromptCacheIdentity } from "./prompt-cache";
@@ -279,9 +280,17 @@ export async function executeReadyRun(
     fastMode?: boolean;
     promptCacheIdentity?: PromptCacheIdentity;
     geminiCachedAttachmentContext?: GeminiCachedAttachmentContext;
+    singleAgentModelPreference?: RunModelPreference;
+    subagentModelPreference?: RunModelPreference;
   }
 ): Promise<ExecutionOutcome> {
   if (!options.readyPlan.usesSubagents) {
+    const singleAgentModelId = resolveSingleAgentModelId({
+      agentId: options.agentId,
+      providerBrand: options.providerBrand,
+      executionModelId: options.readyPlan.executionModelId,
+      modelPreference: options.singleAgentModelPreference
+    });
     return {
       assistantMessage: await executeMainAgent(
         adapter,
@@ -299,7 +308,7 @@ export async function executeReadyRun(
           abortSignal: options.abortSignal,
           callbacks: options.callbacks
         },
-        options.readyPlan.executionModelId,
+        singleAgentModelId,
         options.readyPlan.finalExecutionBrief
       ),
       subagentResults: [],
@@ -346,7 +355,8 @@ export async function executeReadyRun(
   const subagentModelId = resolveSubagentModelId({
     agentId: options.agentId,
     providerBrand: options.providerBrand,
-    executionModelId: options.readyPlan.executionModelId
+    executionModelId: options.readyPlan.executionModelId,
+    modelPreference: options.subagentModelPreference
   });
   const contracts = options.executionPlan?.contracts ?? options.readyPlan.contracts ?? [];
   const { results: freshResults, retainedSnapshots } = await executeSubagents(adapter, {
@@ -358,9 +368,10 @@ export async function executeReadyRun(
     tasks: options.tasksToRun ?? options.readyPlan.subtasks,
     debugEnabled: options.debugEnabled,
     executionModelId: options.readyPlan.executionModelId,
-    reasoningStrength: resolveSubagentReasoningStrength(options.reasoningStrength),
+    reasoningStrength: resolveSubagentReasoningStrength(options.reasoningStrength, options.subagentModelPreference),
     fastMode: options.fastMode,
     promptCacheIdentity: options.promptCacheIdentity,
+    modelPreference: options.subagentModelPreference,
     abortSignal: options.abortSignal,
     verifyResult(input) {
       return verifySubagentResultAgainstContracts(input.task.id, contracts, input.mountPath, input.abortSignal);
@@ -527,6 +538,7 @@ async function executeSameWorktreeSubagents(
     fastMode?: boolean;
     promptCacheIdentity?: PromptCacheIdentity;
     geminiCachedAttachmentContext?: GeminiCachedAttachmentContext;
+    subagentModelPreference?: RunModelPreference;
   }
 ) {
   const tasks = options.tasksToRun ?? options.readyPlan.subtasks;
@@ -534,9 +546,10 @@ async function executeSameWorktreeSubagents(
   const subagentModelId = resolveSubagentModelId({
     agentId: options.agentId,
     providerBrand: options.providerBrand,
-    executionModelId: options.readyPlan.executionModelId
+    executionModelId: options.readyPlan.executionModelId,
+    modelPreference: options.subagentModelPreference
   });
-  const subagentReasoningStrength = resolveSubagentReasoningStrength(options.reasoningStrength);
+  const subagentReasoningStrength = resolveSubagentReasoningStrength(options.reasoningStrength, options.subagentModelPreference);
   const repoRoot = resolveRepoRoot(options.cwd);
   const subagentEnvironmentBrief = buildSubagentEnvironmentBrief({
     projectRoot: options.cwd,

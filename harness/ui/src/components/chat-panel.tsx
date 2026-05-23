@@ -61,6 +61,7 @@ import { VirtualList } from "./primitives/virtual-list";
 import { buttonVariants } from "./primitives/button";
 import {
   Activity,
+  AlertTriangle,
   Brain,
   Bot,
   CalendarClock,
@@ -343,6 +344,7 @@ export function ChatPanel() {
     return project ? getStreamingLiveMessages(project) : [];
   };
   const projectTraces = createMemo(() => reactiveArraySnapshot(activeProject()?.traces));
+  const hasBranchfsSizeWarning = createMemo(() => projectTraces().some((trace) => trace.stage === "branchfs-size-warning"));
   const projectMemoryEntries = createMemo(() => reactiveArraySnapshot(activeProject()?.memoryEntries));
   const transcriptRows = createMemo<ChatTimelineRow[]>(() => {
     const project = activeProject();
@@ -1470,6 +1472,12 @@ export function ChatPanel() {
             <div>Isolation: {getPlanFromMessage(message)?.subagentWorktreeStrategy}</div>
             <div>Correctness: {getPlanFromMessage(message)?.correctnessPolicy}</div>
           </div>
+          <Show when={hasBranchfsSizeWarning()}>
+            <div class="inline-flex w-fit items-center gap-1 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-[0.625rem] font-medium text-amber-800">
+              <AlertTriangle class="h-3 w-3" />
+              BranchFS large
+            </div>
+          </Show>
           <div class="mt-3 flex items-center justify-between gap-3">
             <div class="min-w-0 text-[0.575rem] uppercase tracking-[0.12em] text-(--muted)">
               {formatShortTimestamp(message.createdAt)}

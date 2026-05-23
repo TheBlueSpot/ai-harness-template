@@ -99,6 +99,7 @@ export function LeftPaneSearchMenu(props: {
   ariaLabel: string;
   tooltip: string;
   items: LeftPaneSearchMenuItem[];
+  activeFilterCount?: number;
 }) {
   const [open, setOpen] = createSignal(false);
   const [openSubmenuIndex, setOpenSubmenuIndex] = createSignal<number>();
@@ -173,13 +174,18 @@ export function LeftPaneSearchMenu(props: {
       >
         <button
           type="button"
-          class="inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-lg text-(--muted) transition hover:bg-black/5 hover:text-(--foreground) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring)"
+          class="relative inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-lg text-(--muted) transition hover:bg-black/5 hover:text-(--foreground) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring)"
           aria-label={props.ariaLabel}
           aria-expanded={open()}
           onMouseDown={(event) => event.preventDefault()}
           onClick={() => setOpen((current) => !current)}
         >
           <SlidersHorizontal class="h-3.5 w-3.5" />
+          <Show when={(props.activeFilterCount ?? 0) > 0}>
+            <span class="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-(--accent) px-1 text-[0.55rem] font-semibold leading-none text-white">
+              {props.activeFilterCount}
+            </span>
+          </Show>
         </button>
       </Popover>
     </Tooltip>

@@ -314,8 +314,8 @@ describe("background job scheduler", () => {
     const project = addProject(repository);
     repository.setBackgroundJobApprovalPolicyDefault("allow-all");
     const assistant = saveAssistant(repository, project.id);
-    const activeJob = saveDueJob(repository, project.id, { assistantId: assistant.id, name: "Active assistant job" });
-    const blockedJob = saveDueJob(repository, project.id, { assistantId: assistant.id, name: "Blocked assistant job" });
+    const activeJob = saveDueJob(repository, project.id, { assistantId: assistant.id, lane: "concurrent", name: "Active assistant job" });
+    const blockedJob = saveDueJob(repository, project.id, { assistantId: assistant.id, lane: "concurrent", name: "Blocked assistant job" });
     repository.updateBackgroundJobSchedule(activeJob.id, {
       schedule: {
         type: "interval",
@@ -393,6 +393,8 @@ describe("background job scheduler", () => {
 
     const state = repository.loadBackgroundJobsState();
     expect(state.runs.some((run) => run.id === interruptedRun.id && run.status === "failed")).toBe(true);
+    expect(repository.getRun(project.id, linkedRunId)?.status).toBe("failed");
+    expect(repository.getRun(project.id, linkedRunId)?.failureCategory).toBe("controller-lost");
     expect(state.runs.some((run) => run.id !== interruptedRun.id && run.jobId === job.id && run.status === "queued")).toBe(true);
   });
 
@@ -482,6 +484,8 @@ describe("background job scheduler", () => {
     const repairedRun = state.runs.find((run) => run.id === staleRun.id);
     expect(repairedRun?.status).toBe("failed");
     expect(repairedRun?.events.some((event) => event.message === "Background run repaired: no live controller")).toBe(true);
+    expect(repository.getRun(project.id, linkedRunId)?.status).toBe("failed");
+    expect(repository.getRun(project.id, linkedRunId)?.failureCategory).toBe("controller-lost");
     expect(state.runs.some((run) => run.id !== staleRun.id && run.jobId === job.id && run.status === "queued")).toBe(true);
   });
 
@@ -588,6 +592,7 @@ describe("background job scheduler", () => {
     const now = Date.now();
     const slightlyOverdue = saveDueJob(repository, project.id, {
       assistantId: assistant.id,
+      lane: "concurrent",
       name: "Five minute sweep",
       schedule: {
         type: "interval",
@@ -600,6 +605,7 @@ describe("background job scheduler", () => {
     });
     const veryOverdue = saveDueJob(repository, project.id, {
       assistantId: assistant.id,
+      lane: "concurrent",
       name: "Ten minute review",
       schedule: {
         type: "interval",
@@ -652,7 +658,7 @@ describe("background job scheduler", () => {
     expect(repository.getProject(project.id).threads.some((thread) => thread.id === staleThreadId && thread.kind === "automation")).toBe(true);
   });
 
-  test("marks assistant schedules overloaded when runtime exceeds interval", async () => {
+  test("marks assistant schedules congested and scales next interval", async () => {
     const { repository, dbPath } = createRepositoryWithPath();
     const project = addProject(repository);
     const assistant = saveAssistant(repository, project.id);
@@ -665,17 +671,18 @@ describe("background job scheduler", () => {
         nextRunAt: new Date(Date.now() - 60_000).toISOString(),
         sourceText: "5m"
       },
-      scheduleInput: "5m"
+      scheduleInput: "5m",
+      lastRunAt: new Date(Date.now() - 60_000).toISOString()
     });
     const db = new Database(dbPath);
-    const startedAt = new Date(Date.now() - 11 * 60 * 1000).toISOString();
-    const completedAt = new Date(Date.now() - 5 * 60 * 1000).toISOString();
-    db.query(
-      `UPDATE background_job_runs
-       SET started_at = ?2, completed_at = ?3, status = 'succeeded'
-       WHERE id = ?1`
-    ).run(
-      repository.createBackgroundJobRun({
+    for (let index = 0; index < 5; index += 1) {
+      const completedAt = new Date(Date.now() - (5 + index) * 60 * 1000).toISOString();
+      const startedAt = new Date(Date.now() - (11 + index) * 60 * 1000).toISOString();
+      db.query(
+        `UPDATE background_job_runs
+         SET started_at = ?2, completed_at = ?3, status = 'succeeded'
+         WHERE id = ?1`
+      ).run(repository.createBackgroundJobRun({
         jobId: job.id,
         projectId: job.projectId,
         assistantId: assistant.id,
@@ -684,16 +691,89 @@ describe("background job scheduler", () => {
         status: "succeeded",
         riskLevel: job.riskLevel,
         approvalStatus: "approved"
-      }).id,
-      startedAt,
-      completedAt
-    );
+      }).id, startedAt, completedAt);
+    }
     db.close();
 
     const scheduler = new BackgroundJobScheduler({ repository });
     await scheduler.tick(false);
 
-    expect(repository.getBackgroundJob(job.id)?.schedulerOverloaded).toBe(true);
+    const refreshedJob = repository.getBackgroundJob(job.id);
+    expect(refreshedJob?.schedulerCongested).toBe(true);
+    expect(refreshedJob?.schedulerStatus).toBe("idle");
+    expect(refreshedJob?.schedulerDetail).toContain("Congested");
+    expect(repository.getActiveBackgroundJobRuns(job.id)).toHaveLength(0);
+  });
+
+  test("blocks exclusive assistant jobs when another exclusive assistant job is active", async () => {
+    const { repository, dbPath } = createRepositoryWithPath();
+    const project = addProject(repository);
+    const assistant = saveAssistant(repository, project.id);
+    repository.setBackgroundJobApprovalPolicyDefault("allow-all");
+    const activeJob = saveDueJob(repository, project.id, {
+      assistantId: assistant.id,
+      name: "Active assistant work",
+      schedule: {
+        type: "interval",
+        intervalSeconds: 300,
+        nextRunAt: new Date(Date.now() + 60_000).toISOString(),
+        sourceText: "5m"
+      },
+      scheduleInput: "5m",
+      nextRunAt: new Date(Date.now() + 60_000).toISOString()
+    });
+    const dueJob = saveDueJob(repository, project.id, {
+      assistantId: assistant.id,
+      name: "Due congested work",
+      schedule: {
+        type: "interval",
+        intervalSeconds: 300,
+        nextRunAt: new Date(Date.now() - 60_000).toISOString(),
+        sourceText: "5m"
+      },
+      scheduleInput: "5m",
+      nextRunAt: new Date(Date.now() - 60_000).toISOString()
+    });
+    const activeRun = repository.createBackgroundJobRun({
+      jobId: activeJob.id,
+      projectId: project.id,
+      assistantId: assistant.id,
+      automationThreadId: activeJob.automationThreadId,
+      triggerSource: "manual",
+      status: "running",
+      riskLevel: activeJob.riskLevel,
+      approvalStatus: "approved"
+    });
+
+    const db = new Database(dbPath);
+    for (let index = 0; index < 5; index += 1) {
+      const completedAt = new Date(Date.now() - (5 + index) * 60 * 1000).toISOString();
+      const startedAt = new Date(Date.now() - (11 + index) * 60 * 1000).toISOString();
+      db.query(
+        `UPDATE background_job_runs
+         SET started_at = ?2, completed_at = ?3, status = 'succeeded'
+         WHERE id = ?1`
+      ).run(repository.createBackgroundJobRun({
+        jobId: dueJob.id,
+        projectId: project.id,
+        assistantId: assistant.id,
+        automationThreadId: dueJob.automationThreadId,
+        triggerSource: "manual",
+        status: "succeeded",
+        riskLevel: dueJob.riskLevel,
+        approvalStatus: "approved"
+      }).id, startedAt, completedAt);
+    }
+    db.close();
+
+    const scheduler = new BackgroundJobScheduler({ repository });
+    await scheduler.tick(false);
+
+    const refreshedDueJob = repository.getBackgroundJob(dueJob.id);
+    expect(repository.getActiveBackgroundJobRuns(dueJob.id)).toHaveLength(0);
+    expect(refreshedDueJob?.schedulerStatus).toBe("blocked");
+    expect(refreshedDueJob?.schedulerDetail).toContain(activeRun.id);
+    expect(refreshedDueJob?.schedulerCongested).toBe(true);
   });
 
   test("reconciles active background runs when linked agent runs already failed", async () => {

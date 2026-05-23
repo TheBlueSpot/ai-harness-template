@@ -3,7 +3,7 @@ import { relative, resolve } from "node:path";
 
 const ROOT = process.cwd();
 const DEFAULT_KOJIMA_PATHS = [
-  resolve(ROOT, ".local", "kojima", "learnings.md"),
+  resolve(ROOT, "local", "kojima", "learnings.md"),
   resolve(ROOT, ".agents", "assistants", "kojima-learnings.md"),
 ];
 const DEFAULT_SECTION_LIMIT = 6;

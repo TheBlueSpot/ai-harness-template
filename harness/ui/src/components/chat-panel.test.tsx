@@ -624,6 +624,8 @@ createUiTest("ChatPanel", () => {
           autoCompactContextThresholdPercentDefault: state.autoCompactContextThresholdPercentDefault,
           planExecutionModeDefault: state.planExecutionModeDefault,
           planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
+          singleAgentModelPreferenceDefault: state.singleAgentModelPreferenceDefault,
+          subagentModelPreferenceDefault: state.subagentModelPreferenceDefault,
           correctnessIterationModeDefault: state.correctnessIterationModeDefault,
           backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
           memoryBankEnabledDefault: state.memoryBankEnabledDefault,
@@ -1866,6 +1868,48 @@ it("updates composer effort label and sends reasoning plus fast mode", () => {
     expect(copiedText).toContain("Plan summary");
     expect(copiedText).toContain(`Route: ${plan.route}`);
     expect(toastStore.toasts[0]?.title).toBe("Plan summary copied");
+  });
+
+  it("shows branchfs size warning badge only when warning trace exists", () => {
+    const plan = createExecutionPlanFixture({ runId: "run-branchfs-warning" });
+    const planMessage = createPlanSummaryMessage("run-branchfs-warning", plan);
+    const project = createViewProjectFixture({
+      id: "project-branchfs-warning",
+      session: {
+        ...createViewProjectFixture().session,
+        messages: [planMessage]
+      },
+      traces: [
+        {
+          sessionId: "session-1",
+          stage: "branchfs-size-warning",
+          message: "BranchFS materialization is large"
+        }
+      ]
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    const rendered = render(() => <ChatPanel />);
+    expect(screen.getByText("BranchFS large")).not.toBeNull();
+
+    rendered.unmount();
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [{ ...project, traces: [] }]
+        }
+      })
+    );
+    render(() => <ChatPanel />);
+    expect(screen.queryByText("BranchFS large")).toBeNull();
   });
 
   it("keeps ready plan controls usable when only a stale stream flag remains", () => {

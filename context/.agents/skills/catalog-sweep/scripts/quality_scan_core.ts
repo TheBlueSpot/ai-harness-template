@@ -26,6 +26,7 @@ export type PlaytestStatus =
     };
 
 const LOCAL_ROOT = resolve(process.cwd(), ".local");
+const CATALOG_DIR = "games";
 
 function findLatestContentAt(entryRoot: string): number | undefined {
   const queue = [entryRoot];
@@ -96,7 +97,7 @@ export function inspectPlaytestStatus(root: string, slug: string): PlaytestStatu
     }))
     .sort((left, right) => right.updatedAt - left.updatedAt)[0];
   const smokeStatus = inspectSmokeArtifacts(root, slug);
-  const latestContentAt = findLatestContentAt(resolve(root, slug));
+  const latestContentAt = findLatestContentAt(resolve(root, CATALOG_DIR, slug));
 
   return {
     kind: "present",
@@ -171,9 +172,9 @@ export function buildQualityEntry(root: string, report: CatalogEntryReport): Qua
       queueState: report.queueState,
       lane: "boot-blocked",
       evidence: bootIssues.map((issue) => `${issue.code}: ${issue.detail}`),
-      sourceFiles: ["./todo.md", `./${report.slug}/index.html`, "./.local/"],
+      sourceFiles: ["./todo.md", `./games/${report.slug}/index.html`, "./.local/"],
       nextSteps: [
-        `Repair direct browser boot in ./${report.slug}/ before quality review.`,
+        `Repair direct browser boot in ./games/${report.slug}/ before quality review.`,
         "Rerun local browser smoke after boot is clean.",
         `Capture ./.local/${report.slug}-playtest.json only after browser proof is current.`,
       ],
@@ -190,9 +191,9 @@ export function buildQualityEntry(root: string, report: CatalogEntryReport): Qua
       queueState: report.queueState,
       lane: "refresh-browser-first",
       evidence,
-      sourceFiles: ["./todo.md", `./${report.slug}/index.html`, `./${report.slug}/README.md`, "./.local/"],
+      sourceFiles: ["./todo.md", `./games/${report.slug}/index.html`, `./games/${report.slug}/README.md`, "./.local/"],
       nextSteps: [
-        `Run a fresh browser smoke for ./${report.slug}/ and save proof under ./.local.`,
+        `Run a fresh browser smoke for ./games/${report.slug}/ and save proof under ./.local.`,
         `After smoke is current, use playtest_capture_pack.ts or save ./.local/${report.slug}-playtest.json directly.`,
         "Feed that JSON through playtest-evidence-capture before any focused quality audit.",
       ],
@@ -212,7 +213,7 @@ export function buildQualityEntry(root: string, report: CatalogEntryReport): Qua
               ? ["stale-against-content: latest playtest predates current non-markdown entry content"]
               : []),
           ];
-    const sourceFiles = ["./todo.md", `./${report.slug}/index.html`, `./${report.slug}/README.md`, "./.local/"];
+    const sourceFiles = ["./todo.md", `./games/${report.slug}/index.html`, `./games/${report.slug}/README.md`, "./.local/"];
     if (playtestStatus.kind === "present") {
       sourceFiles.push(...playtestStatus.artifacts.map((artifact) => `./.local/${artifact}`));
     }
@@ -223,7 +224,7 @@ export function buildQualityEntry(root: string, report: CatalogEntryReport): Qua
       evidence,
       sourceFiles,
       nextSteps: [
-        `Run playtest_capture_pack.ts for ./${report.slug}/ to get the exact capture packet and output paths.`,
+        `Run playtest_capture_pack.ts for ./games/${report.slug}/ to get the exact capture packet and output paths.`,
         `Save one short direct browser session as ./.local/${report.slug}-playtest.json.`,
         "Feed that JSON through playtest-evidence-capture, then drive one focused audit lane from the starter output.",
       ],

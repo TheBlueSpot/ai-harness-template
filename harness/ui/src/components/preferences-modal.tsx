@@ -2,7 +2,7 @@
 import { createMemo, createSignal, For, onCleanup, onMount, Show, type JSX } from "solid-js";
 import { render as renderSolidRoot } from "solid-js/web";
 import { formatForDisplay } from "@tanstack/solid-hotkeys";
-import { createRequestId, type ComposerReasoningStrength, type ProviderBrand } from "../../../shared/protocol";
+import { createRequestId, type ComposerReasoningStrength, type ProviderBrand, type RunModelPreference } from "../../../shared/protocol";
 import {
   AlertTriangle,
   Archive,
@@ -63,6 +63,19 @@ import {
 
 function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function formatBytes(bytes: number) {
+  if (bytes >= 1024 * 1024 * 1024) {
+    return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
+  }
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  }
+  if (bytes >= 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${bytes} bytes`;
 }
 
 const PREFERENCES_SECTION_EVENT = "preferences-section-change";
@@ -248,8 +261,12 @@ export function PreferencesPanel() {
       autoCompactContextThresholdPercentDefault: state.autoCompactContextThresholdPercentDefault,
       planExecutionModeDefault: state.planExecutionModeDefault,
       planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
+      singleAgentModelPreferenceDefault: state.singleAgentModelPreferenceDefault,
+      subagentModelPreferenceDefault: state.subagentModelPreferenceDefault,
       correctnessIterationModeDefault: state.correctnessIterationModeDefault,
       backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
+      assistantCongestionControlEnabledDefault: state.assistantCongestionControlEnabledDefault,
+      assistantMaxCongestionDefault: state.assistantMaxCongestionDefault,
       autoArchiveCompletedThreadsDefault: state.autoArchiveCompletedThreadsDefault,
       backgroundJobNotificationsEnabled: state.backgroundJobNotificationsEnabled,
       memoryBankEnabledDefault: state.memoryBankEnabledDefault,
@@ -279,8 +296,12 @@ export function PreferencesPanel() {
         autoCompactContextThresholdPercentDefault: state.autoCompactContextThresholdPercentDefault,
         planExecutionModeDefault: state.planExecutionModeDefault,
         planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
+        singleAgentModelPreferenceDefault: state.singleAgentModelPreferenceDefault,
+        subagentModelPreferenceDefault: state.subagentModelPreferenceDefault,
         correctnessIterationModeDefault: state.correctnessIterationModeDefault,
         backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
+        assistantCongestionControlEnabledDefault: state.assistantCongestionControlEnabledDefault,
+        assistantMaxCongestionDefault: state.assistantMaxCongestionDefault,
         autoArchiveCompletedThreadsDefault: state.autoArchiveCompletedThreadsDefault,
         memoryBankEnabledDefault: state.memoryBankEnabledDefault,
         memoryBankRecordRunsDefault: state.memoryBankRecordRunsDefault,
@@ -293,6 +314,22 @@ export function PreferencesPanel() {
   function updateSavedPreference(update: () => void) {
     update();
     handleSave();
+  }
+
+  function handleBranchfsCleanup() {
+    const projectId = state.workspace.activeProjectId;
+    if (!projectId) {
+      pushToast("No active project", "Open a project before cleaning BranchFS.", "error");
+      return;
+    }
+    sendCommand({
+      type: "branchfs.cleanup",
+      requestId: createRequestId(),
+      payload: {
+        projectId,
+        mode: "all"
+      }
+    });
   }
 
   function handleClearApiKey() {
@@ -309,8 +346,12 @@ export function PreferencesPanel() {
       autoCompactContextThresholdPercentDefault: state.autoCompactContextThresholdPercentDefault,
       planExecutionModeDefault: state.planExecutionModeDefault,
       planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
+      singleAgentModelPreferenceDefault: state.singleAgentModelPreferenceDefault,
+      subagentModelPreferenceDefault: state.subagentModelPreferenceDefault,
       correctnessIterationModeDefault: state.correctnessIterationModeDefault,
       backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
+      assistantCongestionControlEnabledDefault: state.assistantCongestionControlEnabledDefault,
+      assistantMaxCongestionDefault: state.assistantMaxCongestionDefault,
       autoArchiveCompletedThreadsDefault: state.autoArchiveCompletedThreadsDefault,
       backgroundJobNotificationsEnabled: state.backgroundJobNotificationsEnabled,
       memoryBankEnabledDefault: state.memoryBankEnabledDefault,
@@ -333,8 +374,12 @@ export function PreferencesPanel() {
       autoCompactContextThresholdPercentDefault: state.autoCompactContextThresholdPercentDefault,
       planExecutionModeDefault: state.planExecutionModeDefault,
       planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
+      singleAgentModelPreferenceDefault: state.singleAgentModelPreferenceDefault,
+      subagentModelPreferenceDefault: state.subagentModelPreferenceDefault,
       correctnessIterationModeDefault: state.correctnessIterationModeDefault,
       backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
+      assistantCongestionControlEnabledDefault: state.assistantCongestionControlEnabledDefault,
+      assistantMaxCongestionDefault: state.assistantMaxCongestionDefault,
       autoArchiveCompletedThreadsDefault: state.autoArchiveCompletedThreadsDefault,
       memoryBankEnabledDefault: state.memoryBankEnabledDefault,
       memoryBankRecordRunsDefault: state.memoryBankRecordRunsDefault,
@@ -361,8 +406,12 @@ export function PreferencesPanel() {
       autoCompactContextThresholdPercentDefault: state.autoCompactContextThresholdPercentDefault,
       planExecutionModeDefault: state.planExecutionModeDefault,
       planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
+      singleAgentModelPreferenceDefault: state.singleAgentModelPreferenceDefault,
+      subagentModelPreferenceDefault: state.subagentModelPreferenceDefault,
       correctnessIterationModeDefault: state.correctnessIterationModeDefault,
       backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
+      assistantCongestionControlEnabledDefault: state.assistantCongestionControlEnabledDefault,
+      assistantMaxCongestionDefault: state.assistantMaxCongestionDefault,
       autoArchiveCompletedThreadsDefault: state.autoArchiveCompletedThreadsDefault,
       backgroundJobNotificationsEnabled: state.backgroundJobNotificationsEnabled,
       memoryBankEnabledDefault: state.memoryBankEnabledDefault,
@@ -399,8 +448,12 @@ export function PreferencesPanel() {
         autoCompactContextThresholdPercentDefault: number;
         planExecutionModeDefault: "countdown" | "approve" | "immediate";
         planExecutionDelaySecondsDefault: number;
+        singleAgentModelPreferenceDefault: RunModelPreference;
+        subagentModelPreferenceDefault: RunModelPreference;
         correctnessIterationModeDefault: "ask-before-iterate" | "auto-once" | "auto-until-clean";
         backgroundJobApprovalPolicyDefault: "allow-all" | "allow-safe" | "ask-risky" | "always-ask";
+        assistantCongestionControlEnabledDefault: boolean;
+        assistantMaxCongestionDefault: number;
         autoArchiveCompletedThreadsDefault: boolean;
         backgroundJobNotificationsEnabled: boolean;
         memoryBankEnabledDefault: boolean;
@@ -421,8 +474,12 @@ export function PreferencesPanel() {
         autoCompactContextThresholdPercentDefault: parsed.autoCompactContextThresholdPercentDefault,
         planExecutionModeDefault: parsed.planExecutionModeDefault,
         planExecutionDelaySecondsDefault: parsed.planExecutionDelaySecondsDefault,
+        singleAgentModelPreferenceDefault: parsed.singleAgentModelPreferenceDefault,
+        subagentModelPreferenceDefault: parsed.subagentModelPreferenceDefault,
         correctnessIterationModeDefault: parsed.correctnessIterationModeDefault,
         backgroundJobApprovalPolicyDefault: parsed.backgroundJobApprovalPolicyDefault,
+        assistantCongestionControlEnabledDefault: parsed.assistantCongestionControlEnabledDefault,
+        assistantMaxCongestionDefault: parsed.assistantMaxCongestionDefault,
         autoArchiveCompletedThreadsDefault: parsed.autoArchiveCompletedThreadsDefault,
         backgroundJobNotificationsEnabled: parsed.backgroundJobNotificationsEnabled,
         memoryBankEnabledDefault: parsed.memoryBankEnabledDefault,
@@ -446,9 +503,16 @@ export function PreferencesPanel() {
           parsed.autoCompactContextThresholdPercentDefault ?? state.autoCompactContextThresholdPercentDefault,
         planExecutionModeDefault: parsed.planExecutionModeDefault ?? state.planExecutionModeDefault,
         planExecutionDelaySecondsDefault: parsed.planExecutionDelaySecondsDefault ?? state.planExecutionDelaySecondsDefault,
+        singleAgentModelPreferenceDefault:
+          parsed.singleAgentModelPreferenceDefault ?? state.singleAgentModelPreferenceDefault,
+        subagentModelPreferenceDefault: parsed.subagentModelPreferenceDefault ?? state.subagentModelPreferenceDefault,
         correctnessIterationModeDefault: parsed.correctnessIterationModeDefault ?? state.correctnessIterationModeDefault,
         backgroundJobApprovalPolicyDefault:
           parsed.backgroundJobApprovalPolicyDefault ?? state.backgroundJobApprovalPolicyDefault,
+        assistantCongestionControlEnabledDefault:
+          parsed.assistantCongestionControlEnabledDefault ?? state.assistantCongestionControlEnabledDefault,
+        assistantMaxCongestionDefault:
+          parsed.assistantMaxCongestionDefault ?? state.assistantMaxCongestionDefault,
         autoArchiveCompletedThreadsDefault:
           parsed.autoArchiveCompletedThreadsDefault ?? state.autoArchiveCompletedThreadsDefault,
         backgroundJobNotificationsEnabled: parsed.backgroundJobNotificationsEnabled ?? state.backgroundJobNotificationsEnabled,
@@ -542,7 +606,7 @@ export function PreferencesPanel() {
 
   function renderToggle(checked: boolean, onInput: (checked: boolean) => void, label: string) {
     return (
-      <label class="inline-flex cursor-pointer items-center justify-between gap-3 rounded-xl border border-(--border) bg-white/60 px-3 py-2">
+      <label class="inline-flex cursor-pointer items-center justify-between gap-3 rounded-xl border border-(--border) bg-white/60 px-3 py-2 transition hover:bg-[color-mix(in_srgb,rgb(255_255_255_/_0.6)_80%,black)]">
         <span class="text-xs font-medium text-(--foreground)">{label}</span>
         <input
           class="h-4 w-4 accent-(--accent)"
@@ -551,6 +615,35 @@ export function PreferencesPanel() {
           onInput={(event) => updateSavedPreference(() => onInput(event.currentTarget.checked))}
         />
       </label>
+    );
+  }
+
+  function renderModelPreferenceControl(
+    ariaLabel: string,
+    value: RunModelPreference,
+    onChange: (value: RunModelPreference) => void,
+    tooltip: string
+  ) {
+    return (
+      <div class="grid gap-2">
+        <div class="flex min-w-0 items-center gap-2 text-[0.585rem] font-semibold tracking-[0.18em] text-(--muted)">
+          <span class="truncate">{ariaLabel}</span>
+          <Tooltip content={tooltip} side="right">
+            <span tabIndex={0} aria-label={`${ariaLabel} help`} class="inline-flex cursor-help text-(--muted)">
+              <HelpCircle class="h-3.5 w-3.5" />
+            </span>
+          </Tooltip>
+        </div>
+        <SegmentedControl
+          ariaLabel={ariaLabel}
+          value={value}
+          options={[
+            { value: "inference", label: "Inference" },
+            { value: "intelligence", label: "Intelligence" }
+          ]}
+          onChange={(nextValue) => updateSavedPreference(() => onChange(nextValue))}
+        />
+      </div>
     );
   }
 
@@ -930,6 +1023,25 @@ export function PreferencesPanel() {
                 }
               />
             </AdvancedDisclosure>
+            <div class="flex flex-wrap items-center gap-2">
+              <ActionButton
+                tooltip="Delete retained BranchFS workspaces and stop stale interrupted runs"
+                icon={<Trash2 class="h-3.5 w-3.5" />}
+                size="sm"
+                variant="secondary"
+                onClick={handleBranchfsCleanup}
+              >
+                Clean BranchFS
+              </ActionButton>
+              <Show when={state.branchfsCleanupSummary}>
+                {(summary) => (
+                  <span class="text-[0.675rem] text-(--muted)">
+                    {summary().rootsDeleted} roots deleted | {formatBytes(summary().bytesDeleted)} freed
+                    {summary().staleRunsStopped ? ` | ${summary().staleRunsStopped} stale runs stopped` : ""}
+                  </span>
+                )}
+              </Show>
+            </div>
           </div>
         </PreferenceRow>
         <PreferenceRow id="run-safety" title="Run safety" description="Context compaction and correctness follow-up defaults.">
@@ -942,6 +1054,18 @@ export function PreferencesPanel() {
               value={state.autoCompactContextThresholdPercentDefault}
               onChange={(value) => updateSavedPreference(() => store.setAutoCompactContextThresholdPercentDefault(value))}
             />
+            {renderModelPreferenceControl(
+              "Single agent",
+              state.singleAgentModelPreferenceDefault,
+              store.setSingleAgentModelPreferenceDefault,
+              "Controls the main executor when a plan runs without subagents. Inference will cost less and be faster, while Intelligence will be more precise."
+            )}
+            {renderModelPreferenceControl(
+              "Sub agents",
+              state.subagentModelPreferenceDefault,
+              store.setSubagentModelPreferenceDefault,
+              "Controls spawned parallel subagents. Inference will cost less and be faster, while Intelligence will keep subagents closer to the selected execution model and be more precise."
+            )}
             <SegmentedControl
               ariaLabel="Correctness iteration"
               value={state.correctnessIterationModeDefault}
@@ -1074,6 +1198,17 @@ export function PreferencesPanel() {
               onChange={(value) => updateSavedPreference(() => store.setBackgroundJobApprovalPolicyDefault(value))}
             />
             {renderToggle(state.backgroundJobNotificationsEnabled, store.setBackgroundJobNotificationsEnabled, "Desktop notifications")}
+            <RangeControl
+              label="Assistant max congestion"
+              value={state.assistantMaxCongestionDefault}
+              min={0.25}
+              max={3}
+              step={0.25}
+              suffix="x"
+              tooltip="Higher values allow more assistant job load before congestion delays apply, which can lead to jobs running over each other."
+              formatValue={(value) => value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "")}
+              onChange={(value) => updateSavedPreference(() => store.setAssistantMaxCongestionDefault(value))}
+            />
           </div>
         </PreferenceRow>
         <PreferenceRow id="jobs-view" title="Jobs view and sync state" description="Current jobs pane view preferences saved in this browser.">

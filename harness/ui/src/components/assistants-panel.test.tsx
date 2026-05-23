@@ -2,7 +2,7 @@
 import { beforeEach, expect, it } from "bun:test";
 import { cleanup, fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { createEmptyAssistantsState, createInitialViewState, harnessStore, readBrowserUiSession, type HarnessViewState } from "../harness-store";
-import type { AssistantLearning, AssistantTodo, BackgroundJob, BackgroundJobRun } from "../../../shared/protocol";
+import type { AssistantLearning, AssistantLogEntry, AssistantTodo, BackgroundJob, BackgroundJobRun } from "../../../shared/protocol";
 import { formatShortTimestamp } from "../lib/time-format";
 import { toastStore } from "../toast-store";
 import { createUiTest } from "../utils/tests/test-harness";
@@ -43,6 +43,7 @@ function seedAssistantDetailState(input: {
   assistantId: string;
   projectId: string;
   learnings?: AssistantLearning[];
+  logs?: AssistantLogEntry[];
   todos?: AssistantTodo[];
   selectedTab?: "chat" | "todos" | "questions" | "jobs" | "log" | "config" | "learnings";
 }) {
@@ -82,6 +83,7 @@ function seedAssistantDetailState(input: {
         selectedAssistantId: input.assistantId,
         selectedTab: input.selectedTab ?? "learnings",
         learnings: input.learnings ?? [],
+        logs: input.logs ?? [],
         todos: input.todos ?? []
       }
     })
@@ -109,6 +111,24 @@ createUiTest("AssistantsPanel", () => {
     expect(screen.getByRole("button", { name: "New assistant" })).not.toBeNull();
     expect(screen.getByRole("button", { name: "Create from current thread" })).not.toBeNull();
     expect(screen.getByText("Select assistant to inspect config, chat, todos, and logs.").closest("[data-test-detail-empty-state]")).not.toBeNull();
+  });
+
+  it("shows enabled filter count on assistant search menu", () => {
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        activeLeftTab: "assistants",
+        activeSurface: "assistants",
+        assistants: {
+          ...createEmptyAssistantsState(),
+          runStateFilter: "paused",
+          providerBrandFilter: "gpt"
+        }
+      })
+    );
+
+    render(() => <AssistantsPanel variant="roster" />);
+
+    expect(screen.getByRole("button", { name: "Filter and sort assistants" }).textContent).toContain("2");
   });
 
   it("persists and restores assistant learnings tab", () => {
@@ -369,6 +389,35 @@ createUiTest("AssistantsPanel", () => {
         }
       }
     ]);
+  });
+
+  it("sends server-owned assistant todo patch payloads", () => {
+    const commands: unknown[] = [];
+    const assistantId = "assistant-todo-patch";
+    seedAssistantDetailState({
+      assistantId,
+      projectId: "project-todo-patch",
+      selectedTab: "todos"
+    });
+    captureDispatchedCommands(commands);
+
+    render(() => <AssistantsPanel variant="detail" />);
+    fireEvent.input(screen.getByPlaceholderText("Add manual todo."), { target: { value: "Write patch test" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add todo to assistant list" }));
+
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      type: "assistant.todo.update",
+      payload: {
+        assistantId,
+        patch: {
+          title: "Write patch test",
+          state: "pending"
+        }
+      }
+    });
+    expect((commands[0] as { payload: { todo?: unknown; todoId?: string } }).payload.todo).toBeUndefined();
+    expect(typeof (commands[0] as { payload: { todoId?: string } }).payload.todoId).toBe("string");
   });
 
   it("sends reorder commands for assistant todos and learnings", () => {
@@ -827,6 +876,7 @@ createUiTest("AssistantsPanel", () => {
             summary: "Job completed",
             detail: "Collected release notes.",
             detailsJson: { runId: "run-1", files: ["CHANGELOG.md"] },
+            detailsJsonSummary: "Details JSON truncated to 12000 characters.",
             createdAt: now
           }
         ]
@@ -839,6 +889,7 @@ createUiTest("AssistantsPanel", () => {
     await waitFor(() => expect(screen.getByRole("dialog", { name: "Job completed" })).not.toBeNull());
     expect(screen.getAllByText("Collected release notes.").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText(/CHANGELOG.md/)).not.toBeNull();
+    expect(screen.getByText("Details JSON truncated to 12000 characters.")).not.toBeNull();
   });
 
   it("shows assistant job failure tracking and run diagnostics", () => {

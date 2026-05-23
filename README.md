@@ -123,7 +123,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - When `HARNESS_PORT` is unset, dev and bootstrap retry on a random open port if `8787` is already occupied
 - Development startup now prints a temp startup log path immediately, then streams current boot phase, weighted progress, ETA updates, and slow-phase hints to stdout
 - `bun run build:ui` builds the browser bundle through `Bun.build(...)` with Solid and Tailwind plugin support
-- `bun run doctor` prints the shared activation and runtime health report, supports machine-readable JSON output, and exits non-zero when required first-task checks fail
+- `bun run doctor` prints the shared activation and runtime health report, trims oversized `.local` artifacts, supports machine-readable JSON output, and exits non-zero when required first-task checks fail
 - `bun run package:launcher` builds a portable Bun launcher folder for the current OS target
 - Portable launcher startup failures now write a timestamped crash log under `logs/` next to the executable and print that path before exit
 - Development UI builds emit external source maps for browser debugging

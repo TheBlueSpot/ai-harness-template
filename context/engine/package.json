@@ -1,0 +1,51 @@
+{
+  "name": "@catalog/engine",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Small TypeScript and WASM primitives for browser-playable catalog games.",
+  "type": "module",
+  "types": "./dist/src/index.d.ts",
+  "sideEffects": false,
+  "files": [
+    "browser/",
+    "dist/",
+    "wasm/",
+    "readme.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./browser/engine.js"
+    },
+    "./core": {
+      "types": "./dist/src/core.d.ts",
+      "import": "./dist/core.js"
+    },
+    "./browser": {
+      "import": "./browser/engine.js"
+    },
+    "./wasm/collision-kernel.wasm": {
+      "types": "./wasm/collision-kernel.wasm.d.ts",
+      "default": "./wasm/collision-kernel.wasm"
+    },
+    "./wasm/collision-kernel.wasm?url": {
+      "types": "./wasm/collision-kernel.wasm.d.ts",
+      "default": "./wasm/collision-kernel.wasm"
+    }
+  },
+  "scripts": {
+    "build": "bun run build:browser && bun run build:types && bun run build:core",
+    "build:browser": "bun x esbuild ./src/index.ts --bundle --format=esm --outfile=./browser/engine.js",
+    "build:core": "bun x esbuild ./src/core.ts --bundle --format=esm --outfile=./dist/core.js",
+    "build:types": "bun ./scripts/build-types.ts",
+    "check": "bun run typecheck && bun run typecheck:tests && bun run build && bun run smoke:package && bun run smoke:vite-wasm-asset && bun test ./src",
+    "release:package-consumer": "bun run smoke:package:consumer",
+    "smoke:package": "bun ./scripts/package-consumer-smoke.ts",
+    "smoke:package:consumer": "bun ./scripts/package-consumer-smoke.ts --external-consumer",
+    "smoke:vite-wasm-asset": "bun ./scripts/vite-wasm-asset-smoke.ts",
+    "smoke:wasm-hosting": "bun ./scripts/wasm-hosting-smoke.ts",
+    "typecheck": "bun x tsc --noEmit",
+    "typecheck:tests": "bun x tsc --noEmit -p ./tsconfig.test.json",
+    "test": "bun test ./src"
+  }
+}

@@ -182,6 +182,38 @@ createUiTest("BackgroundJobsPanel", () => {
     expect(screen.getByText("Select background run or job to inspect details.").closest("[data-test-detail-empty-state]")).not.toBeNull();
   });
 
+  it("shows enabled filter count on jobs search menu", () => {
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        activeLeftTab: "jobs",
+        activeSurface: "background-jobs",
+        jobsPanePreferences: {
+          ...harnessStore.state.jobsPanePreferences,
+          kind: "shell",
+          risk: "unsafe"
+        }
+      })
+    );
+
+    render(() => <BackgroundJobsPanel variant="left" segment="jobs" />);
+
+    expect(screen.getByRole("button", { name: "Filter and sort jobs" }).textContent).toContain("2");
+  });
+
+  it("shows enabled filter count on runs search menu", () => {
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        activeLeftTab: "runs",
+        activeSurface: "background-jobs",
+        jobsRunFilter: "failed"
+      })
+    );
+
+    render(() => <BackgroundJobsPanel variant="left" segment="runs" />);
+
+    expect(screen.getByRole("button", { name: "Filter and sort runs" }).textContent).toContain("1");
+  });
+
   it("persists and restores jobs segment, split search, and run filter", async () => {
     const project = createViewProjectFixture({ id: "project-jobs-view" });
     seedHarnessStoreForTests(
@@ -414,6 +446,76 @@ createUiTest("BackgroundJobsPanel", () => {
     expect(screen.queryByRole("button", { name: "Create scheduled AI routine" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Create scheduled shell task" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Enable desktop notifications" })).toBeNull();
+  });
+
+  it("shows all run states by default in the runs view", () => {
+    const project = createViewProjectFixture({ id: "project-run-all" });
+    const now = "2026-04-28T12:00:00.000Z";
+    const job: BackgroundJob = {
+      id: "job-all",
+      projectId: project.id,
+      automationThreadId: "thread-automation",
+      kind: "ai-routine",
+      name: "Run state check",
+      status: "enabled",
+      riskLevel: "safe",
+      definition: {
+        kind: "ai-routine",
+        prompt: "Check all run states."
+      },
+      schedule: {
+        type: "one-off",
+        runAt: now,
+        sourceText: "manual"
+      },
+      scheduleInput: "manual",
+      createdAt: now,
+      updatedAt: now
+    };
+    const doneRun: BackgroundJobRun = {
+      id: "run-done",
+      jobId: job.id,
+      projectId: project.id,
+      automationThreadId: job.automationThreadId,
+      triggerSource: "manual",
+      status: "succeeded",
+      riskLevel: "safe",
+      approvalStatus: "not-needed",
+      skippedOccurrenceCount: 0,
+      summary: "Done summary",
+      queuedAt: now,
+      startedAt: now,
+      completedAt: now,
+      createdAt: now,
+      updatedAt: now,
+      events: []
+    };
+    const queuedRun: BackgroundJobRun = {
+      ...doneRun,
+      id: "run-queued",
+      status: "queued",
+      summary: "Queued summary",
+      completedAt: undefined
+    };
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        },
+        backgroundJobs: {
+          jobs: [job],
+          runs: [doneRun, queuedRun],
+          templates: []
+        }
+      })
+    );
+
+    render(() => <BackgroundJobsPanel variant="left" segment="runs" />);
+
+    expect(harnessStore.state.jobsRunFilter).toBe("all");
+    expect(screen.getByText("Done summary")).toBeTruthy();
+    expect(screen.getByText("Queued summary")).toBeTruthy();
   });
 
   it("scrolls selected run detail events to the bottom", async () => {
@@ -801,7 +903,8 @@ createUiTest("BackgroundJobsPanel", () => {
       schedulerActiveRunId: "run-pending",
       schedulerActiveRunStartedAt: oldHeartbeat,
       schedulerLastProgressAt: oldHeartbeat,
-      schedulerOverloaded: true,
+      schedulerCongested: true,
+      schedulerCongestionRatio: 1.12,
       schedule: {
         type: "interval",
         intervalSeconds: 3600,
@@ -846,7 +949,7 @@ createUiTest("BackgroundJobsPanel", () => {
     expect(screen.getAllByText("Next: Due now").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Next: Queue #1: Blocked: Waiting for approval run-pending").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Queue #1: waiting for approval run-pending").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Overloaded: scheduled work overlaps recent assistant runtime").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Congested (112%): scheduled work overlaps recent exclusive-lane runtime").length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Last progress:/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Stale: scheduler has not checked since/).length).toBeGreaterThan(0);
   });
@@ -908,7 +1011,7 @@ createUiTest("BackgroundJobsPanel", () => {
         payload: { projectId: project.id, threadId: "thread-active" }
       }
     ]);
-    expect(harnessStore.state.activeLeftTab).toBe("projects");
+    expect(harnessStore.state.activeLeftTab).toBe("runs");
   });
 
   it("shows failure tracking and prompt stats for jobs and runs", () => {

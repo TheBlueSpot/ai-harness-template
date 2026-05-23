@@ -158,8 +158,8 @@ export const preferencesSettings: PreferencesSettingMeta[] = [
     id: "run-safety",
     sectionId: "safety-guardrails",
     title: "Run safety",
-    description: "Auto-compaction and correctness iteration controls.",
-    keywords: ["context", "compaction", "correctness", "loop", "run"]
+    description: "Auto-compaction, execution model preference, and correctness iteration controls.",
+    keywords: ["context", "compaction", "correctness", "loop", "run", "inference", "intelligence", "subagents", "model"]
   },
   {
     id: "workspace-context",
@@ -186,8 +186,8 @@ export const preferencesSettings: PreferencesSettingMeta[] = [
     id: "job-defaults",
     sectionId: "background-jobs",
     title: "Background job defaults",
-    description: "Approval policy and desktop notification defaults.",
-    keywords: ["jobs", "background", "approval", "notifications"]
+    description: "Approval, notification, and congestion defaults.",
+    keywords: ["jobs", "background", "approval", "notifications", "congestion", "capacity"]
   },
   {
     id: "jobs-view",

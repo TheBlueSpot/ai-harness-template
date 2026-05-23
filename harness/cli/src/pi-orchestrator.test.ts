@@ -358,6 +358,70 @@ describe("pi execution router", () => {
     }
   });
 
+  test("single-agent inference can use a cheaper execution model", async () => {
+    const rootPath = createSeededGitRepo("harness-single-agent-inference-");
+    try {
+      const calls: PiAgentPromptRequest[] = [];
+      const adapter = createExecutionAdapter(calls, async () => ({ text: "done" }));
+      const readyPlan = {
+        ...createReadyPlan(),
+        usesSubagents: false,
+        subtasks: []
+      };
+
+      await executeReadyRun(adapter, {
+        cwd: rootPath,
+        runId: "run-1",
+        sessionId: "thread-1",
+        messages: [],
+        providerBrand: "gpt",
+        readyPlan,
+        executionPlan: { ...createExecutionPlan(readyPlan), route: "main", actualSubagentCount: 0, targetSubagentCount: 0 },
+        debugEnabled: false,
+        singleAgentModelPreference: "inference"
+      });
+
+      expect(calls.find((call) => call.kind === "executor")?.modelId).toBe("openai/gpt-5.4-nano");
+    } finally {
+      rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  test("subagent intelligence keeps the selected execution model and reasoning", async () => {
+    const rootPath = createSeededGitRepo("harness-subagent-intelligence-");
+    try {
+      const calls: PiAgentPromptRequest[] = [];
+      const adapter = createExecutionAdapter(calls, async (request) => {
+        if (request.kind === "subagent") {
+          writeFileSync(path.join(rootPath, "owned.ts"), "export const owned = true;\n");
+          return { text: "Changed owned.ts" };
+        }
+
+        return { text: "aggregated" };
+      });
+      const readyPlan = createReadyPlan();
+
+      await executeReadyRun(adapter, {
+        cwd: rootPath,
+        runId: "run-1",
+        sessionId: "thread-1",
+        messages: [],
+        providerBrand: "gpt",
+        readyPlan,
+        executionPlan: createExecutionPlan(readyPlan),
+        debugEnabled: false,
+        reasoningStrength: "high",
+        subagentModelPreference: "intelligence"
+      });
+
+      const subagentCall = calls.find((call) => call.kind === "subagent");
+      expect(subagentCall?.modelId).toBe("openai/gpt-5.4");
+      expect(subagentCall?.reasoningStrength).toBe("high");
+    } finally {
+      rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
   test("same-worktree drift ignores unchanged preexisting dirty files", async () => {
     const rootPath = createSeededGitRepo("harness-subagent-clean-dirty-");
     try {

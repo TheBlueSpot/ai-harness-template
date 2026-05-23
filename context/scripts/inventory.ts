@@ -21,6 +21,7 @@ export type InventoryReport = {
 };
 
 const rootDir = resolve(import.meta.dir, "..");
+const gamesDir = resolve(rootDir, "games");
 const reviewDbPath = resolve(rootDir, "user-reviews.sqlite");
 
 function readReviewMap() {
@@ -42,11 +43,11 @@ function readReviewMap() {
 
 export function buildInventoryReport(): InventoryReport {
   const reviewMap = readReviewMap();
-  const topLevelEntries = readdirSync(rootDir, { withFileTypes: true })
+  const topLevelEntries = readdirSync(gamesDir, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => ({
       slug: entry.name,
-      path: resolve(rootDir, entry.name),
+      path: resolve(gamesDir, entry.name),
     }))
     .filter((entry) => !entry.slug.startsWith("."));
 
@@ -55,13 +56,13 @@ export function buildInventoryReport(): InventoryReport {
     const readmePath = resolve(entry.path, "README.md");
     const browserPlayable = statSync(indexPath, { throwIfNoEntry: false })?.isFile() ?? false;
     const evidenceSources = [
-      ...(statSync(readmePath, { throwIfNoEntry: false })?.isFile() ? [`./${entry.slug}/README.md`] : []),
-      ...(browserPlayable ? [`./${entry.slug}/index.html`] : []),
+      ...(statSync(readmePath, { throwIfNoEntry: false })?.isFile() ? [`./games/${entry.slug}/README.md`] : []),
+      ...(browserPlayable ? [`./games/${entry.slug}/index.html`] : []),
     ];
     const hasReview = reviewMap.has(entry.slug);
     return {
       slug: entry.slug,
-      topLevelPath: `./${entry.slug}`,
+      topLevelPath: `./games/${entry.slug}`,
       browserPlayable,
       evidenceSources,
       reviewLink: {
@@ -74,7 +75,7 @@ export function buildInventoryReport(): InventoryReport {
 
   return {
     generatedAt: new Date().toISOString(),
-    root: "./",
+    root: "./games",
     rows,
   };
 }

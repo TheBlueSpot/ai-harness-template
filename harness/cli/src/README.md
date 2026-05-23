@@ -9,7 +9,7 @@ Backend websocket handlers and runtime orchestration for harness.
 - Run startup status rows surface active composer controls like fast mode early so refresh or reconnect still leaves control choices visible in transcript context.
 - Background-job commands validate project ownership and allowed run-status transitions before mutating persisted runs.
 - Stopping a background job run also stops its linked agent run, including stale persisted runs after reconnect.
-- Background-job scheduler state persists due, blocked, stale, queued launch, approval, timeout, progress, and overload reasons so overdue work is explainable after long runs or reconnects.
+- Background-job scheduler state persists due, blocked, stale, queued launch, approval, timeout, progress, and congestion/capacity reasons so overdue work is explainable after long runs or reconnects.
 - Background-job scheduling avoids stacking another occurrence while a prior run for the same job is still queued, waiting, or running.
 - Background-run ownership now uses renewable controller leases, startup grace, and explicit shutdown interruption handling so restart recovery does not orphan healthy work or quietly lose ownership.
 - Reliability failure categories flow through one shared classification path so backoff, repair, diagnostics, and operator surfaces agree on why runs failed.

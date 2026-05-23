@@ -1,4 +1,12 @@
-import type { AgentId, AgentTrace, ComposerReasoningStrength, PlannerSubtask, ProjectContextUsage, ProviderBrand } from "../../shared/protocol";
+import type {
+  AgentId,
+  AgentTrace,
+  ComposerReasoningStrength,
+  PlannerSubtask,
+  ProjectContextUsage,
+  ProviderBrand,
+  RunModelPreference
+} from "../../shared/protocol";
 import type { ManagedExecutionState } from "./execution-runtime";
 import { BranchfsManager, type BranchfsExperimentLease } from "./branchfs-manager";
 import { debugLog } from "./logging";
@@ -56,9 +64,11 @@ export type SubagentProgressCallbacks = {
 
 export type BranchfsSubagentSnapshot = {
   taskId: string;
-  manager: BranchfsManager;
+  manager: BranchfsSubagentManager;
   lease: BranchfsExperimentLease;
 };
+
+export type BranchfsSubagentManager = Pick<BranchfsManager, "prepareExperimentLease" | "discardExperiment" | "readInspection">;
 
 export type SubagentVerificationInput = {
   task: PlannerSubtask;
@@ -193,9 +203,14 @@ export async function executeSubagents(
     reasoningStrength?: ComposerReasoningStrength;
     fastMode?: boolean;
     promptCacheIdentity?: PromptCacheIdentity;
+    modelPreference?: RunModelPreference;
     abortSignal?: AbortSignal;
     verifyResult?: (input: SubagentVerificationInput) => Promise<string[] | void>;
     recoveryPrompt?: (input: { task: PlannerSubtask; result: SubagentResult }) => string;
+    branchfsManagerFactory?: (
+      context: { rootPath: string; runId: string },
+      callbacks: { onTrace?: (trace: Pick<AgentTrace, "stage" | "message" | "detail" | "subagentId">) => void }
+    ) => BranchfsSubagentManager;
     callbacks?: SubagentProgressCallbacks;
   }
 ): Promise<{ results: SubagentResult[]; retainedSnapshots: BranchfsSubagentSnapshot[] }> {
@@ -231,7 +246,9 @@ export async function executeSubagents(
         reasoningStrength: options.reasoningStrength,
         fastMode: options.fastMode,
         promptCacheIdentity: options.promptCacheIdentity,
-        verifyResult: options.verifyResult
+        modelPreference: options.modelPreference,
+        verifyResult: options.verifyResult,
+        branchfsManagerFactory: options.branchfsManagerFactory
       });
     },
     async onSettled(_entry, result) {
@@ -286,7 +303,12 @@ async function executeSubagentWithRetry(
     reasoningStrength?: ComposerReasoningStrength;
     fastMode?: boolean;
     promptCacheIdentity?: PromptCacheIdentity;
+    modelPreference?: RunModelPreference;
     verifyResult?: (input: SubagentVerificationInput) => Promise<string[] | void>;
+    branchfsManagerFactory?: (
+      context: { rootPath: string; runId: string },
+      callbacks: { onTrace?: (trace: Pick<AgentTrace, "stage" | "message" | "detail" | "subagentId">) => void }
+    ) => BranchfsSubagentManager;
   }
 ): Promise<{ result: SubagentResult; retainedSnapshot?: BranchfsSubagentSnapshot }> {
   const task = queuedTask.task;
@@ -302,14 +324,17 @@ async function executeSubagentWithRetry(
     }
 
     const worktreePrepareStartedAt = Date.now();
-    const manager = new BranchfsManager(
+    const manager = (options.branchfsManagerFactory ?? ((context, callbacks) => new BranchfsManager(context, callbacks)))(
       {
         rootPath: options.rootPath,
         runId: `${options.runId}-${task.id}-attempt-${attempt}`
       },
       {
         onTrace(trace) {
-          options.callbacks?.onTrace?.(trace);
+          options.callbacks?.onTrace?.({
+            ...trace,
+            subagentId: trace.subagentId ?? task.id
+          });
         }
       }
     );
@@ -320,9 +345,10 @@ async function executeSubagentWithRetry(
       const subagentModelId = resolveSubagentModelId({
         agentId: options.agentId,
         providerBrand,
-        executionModelId: options.executionModelId
+        executionModelId: options.executionModelId,
+        modelPreference: options.modelPreference
       });
-      const subagentReasoningStrength = resolveSubagentReasoningStrength(options.reasoningStrength);
+      const subagentReasoningStrength = resolveSubagentReasoningStrength(options.reasoningStrength, options.modelPreference);
       const repoRoot = resolveRepoRoot(options.rootPath);
       const availableSkillPaths = discoverRepoSkillPaths(repoRoot);
       const basePrompt = buildSubagentPrompt({
@@ -490,6 +516,9 @@ async function executeSubagentWithRetry(
       }
 
       if (!isTransientError(typedError) || attempt > 1) {
+        if (!options.debugEnabled) {
+          await manager.discardExperiment(lease).catch(() => undefined);
+        }
         emitSpawnTiming(options.callbacks, task, {
           dequeuedAt,
           worktreePrepareStartedAt,

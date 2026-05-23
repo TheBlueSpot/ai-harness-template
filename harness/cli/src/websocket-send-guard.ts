@@ -1,3 +1,5 @@
+import { debugLog } from "./logging";
+
 export type GuardedWebSocket = {
   send(data: string | Uint8Array): number | void;
   close(code?: number, reason?: string): void;
@@ -24,7 +26,17 @@ export function guardedWebsocketSend(
     if (status === -1) {
       state.queuedBytes += bytes;
       states.set(key, state);
+      debugLog("websocket.send.backpressured", {
+        bytes,
+        queuedBytes: state.queuedBytes,
+        maxQueuedBytes: options.maxQueuedBytes
+      });
       if (state.queuedBytes > options.maxQueuedBytes) {
+        debugLog("websocket.send.close-slow-client", {
+          bytes,
+          queuedBytes: state.queuedBytes,
+          maxQueuedBytes: options.maxQueuedBytes
+        });
         ws.close(options.slowCloseCode ?? 1011, options.slowCloseReason ?? "Websocket client is too slow");
         states.delete(key);
       }

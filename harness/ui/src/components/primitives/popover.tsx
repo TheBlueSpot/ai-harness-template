@@ -107,7 +107,7 @@ export function Popover(props: PopoverProps) {
     if (!props.open) {
       return;
     }
-    const unregister = registerOverlay(overlayId);
+    const unregister = registerOverlay(overlayId, { onEscape: () => props.onClose?.() });
 
     queueMicrotask(updatePosition);
 
@@ -123,18 +123,10 @@ export function Popover(props: PopoverProps) {
       }
     };
 
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && isTopOverlay(overlayId)) {
-        props.onClose?.();
-      }
-    };
-
     window.addEventListener("mousedown", handlePointerDown);
-    window.addEventListener("keydown", handleKeyDown);
     onCleanup(() => {
       unregister();
       window.removeEventListener("mousedown", handlePointerDown);
-      window.removeEventListener("keydown", handleKeyDown);
     });
   });
 
@@ -165,6 +157,13 @@ export function Popover(props: PopoverProps) {
           left: `${position().left}px`,
           "--popover-trigger-width": `${position().triggerWidth}px`,
           "--popover-trigger-height": `${position().triggerHeight}px`
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && isTopOverlay(overlayId)) {
+            event.preventDefault();
+            event.stopPropagation();
+            props.onClose?.();
+          }
         }}
       >
         {props.content}

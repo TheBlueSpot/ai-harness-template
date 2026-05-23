@@ -37,6 +37,7 @@ import { getPostRunScheduleAdvance } from "./background-job-schedule";
 import { evaluateAssistantQuestionPolicy } from "./assistant-question-policy";
 import { buildWorkspaceConfigHash, type PromptCacheIdentity } from "./prompt-cache";
 import { prepareGeminiCachedAttachmentContext, type GeminiCachedAttachmentContext } from "./gemini-cached-contents";
+import { debugLog } from "./logging";
 
 type BackgroundJobExecutorOptions = {
   repository: WorkspaceRepository;
@@ -329,6 +330,14 @@ async function finalizeBackgroundAiRun(
     googleApiKey: repository.getStoredGoogleApiKey()
   });
   const stopLivenessHeartbeat = startBackgroundRunLivenessHeartbeat(options, options.run.id);
+  debugLog("background.run.execute-ready", {
+    runId: options.run.id,
+    jobId: job.id,
+    agentRunId: activeRun.id,
+    assistantId: job.assistantId,
+    usesSubagents: readyPlan.usesSubagents,
+    promptChars: readyPlan.finalExecutionBrief.length
+  });
   let outcome: Awaited<ReturnType<typeof executeReadyRun>>;
   try {
     outcome = await executeReadyRun(adapter, {
@@ -346,7 +355,9 @@ async function finalizeBackgroundAiRun(
       callbacks: createBackgroundExecutionCallbacks(options, job.projectId, options.run.id, activeRun.id),
       executionPlan: executionPlan ?? undefined,
       promptCacheIdentity,
-      geminiCachedAttachmentContext
+      geminiCachedAttachmentContext,
+      singleAgentModelPreference: repository.getSingleAgentModelPreferenceDefault(),
+      subagentModelPreference: repository.getSubagentModelPreferenceDefault()
     });
   } finally {
     stopLivenessHeartbeat();
@@ -535,19 +546,34 @@ export function startBackgroundRunLivenessHeartbeat(
   runId: string,
   intervalMs = DEFAULT_BACKGROUND_RUN_LIVENESS_HEARTBEAT_MS
 ) {
+  let timer: ReturnType<typeof setInterval> | undefined;
   const touch = () => {
     const run = options.repository.touchBackgroundJobRun(runId, {
       stage: "execution-running",
       detail: "Main Codex CLI execution still running"
     });
-    if (run) {
-      void options.onRunUpdated?.(run);
+    if (!run) {
+      return;
     }
+    debugLog("background.run.liveness", {
+      runId,
+      status: run.status,
+      stage: run.heartbeatStage
+    });
+    if (run.status !== "running") {
+      if (timer) {
+        clearInterval(timer);
+      }
+      return;
+    }
+    void options.onRunUpdated?.(run);
   };
   touch();
-  const timer = setInterval(touch, intervalMs);
+  timer = setInterval(touch, intervalMs);
   return () => {
-    clearInterval(timer);
+    if (timer) {
+      clearInterval(timer);
+    }
   };
 }
 

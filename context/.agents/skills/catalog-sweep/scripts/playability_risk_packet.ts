@@ -190,7 +190,7 @@ function buildEntry(report: CatalogEntryReport): RiskPacketEntry | null {
     lane,
     issueCodes: relevantIssues.map((issue) => issue.code),
     evidence: relevantIssues.map((issue) => `${issue.code}: ${issue.detail}`),
-    sourceFiles: ["./todo.md", `./${report.slug}/index.html`, `./${report.slug}/README.md`, "./.local/"],
+    sourceFiles: ["./todo.md", `./games/${report.slug}/index.html`, `./games/${report.slug}/README.md`, "./.local/"],
     nextSteps: buildNextSteps(report.slug, lane),
     commands: buildCommands(report.slug, lane),
   };
@@ -199,7 +199,7 @@ function buildEntry(report: CatalogEntryReport): RiskPacketEntry | null {
 function buildNextSteps(slug: string, lane: RiskLane): string[] {
   if (lane === "hard-blocker") {
     return [
-      `Repair direct browser boot in ./${slug}/ before any browser rerun.`,
+      `Repair direct browser boot in ./games/${slug}/ before any browser rerun.`,
       "Clear missing local references, broken imports, or syntax faults from the evidence list.",
       "After boot is clean, save fresh smoke proof so verify debt closes in the same pass.",
     ];
@@ -207,14 +207,14 @@ function buildNextSteps(slug: string, lane: RiskLane): string[] {
 
   if (lane === "casing-risk") {
     return [
-      `Normalize path casing in ./${slug}/ before treating the entry as cross-platform safe.`,
+      `Normalize path casing in ./games/${slug}/ before treating the entry as cross-platform safe.`,
       "Recheck the affected HTML or JS import edges after the rename so browser-only hosts will still boot.",
       "Save or refresh smoke proof after the casing fix if the last proof is now stale.",
     ];
   }
 
   return [
-    `Run one fresh direct browser smoke for ./${slug}/ and save proof under ./.local.`,
+    `Run one fresh direct browser smoke for ./games/${slug}/ and save proof under ./.local.`,
     "Treat this as verify closure work, not a rebuild lane.",
     "Use the fresh artifact to keep downstream quality scans on browser-safe entries only.",
   ];

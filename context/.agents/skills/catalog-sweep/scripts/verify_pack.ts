@@ -161,15 +161,15 @@ function buildEntry(report: CatalogEntryReport): VerifyPackEntry | null {
     lane,
     issues: relevantIssues.map((issue) => issue.code),
     evidence: relevantIssues.map((issue) => `${issue.code}: ${issue.detail}`),
-    sourceFiles: ["./todo.md", `./${report.slug}/index.html`, `./${report.slug}/README.md`, "./.local/"],
+    sourceFiles: ["./todo.md", `./games/${report.slug}/index.html`, `./games/${report.slug}/README.md`, "./.local/"],
     nextSteps: hasBootDebt
       ? [
-          `Repair direct browser boot in ./${report.slug}/ before any browser rerun.`,
+          `Repair direct browser boot in ./games/${report.slug}/ before any browser rerun.`,
           "Clear missing references, import casing drift, or syntax breaks from the listed evidence.",
           "After boot is clean, rerun local browser smoke and save fresh proof under ./.local.",
         ]
       : [
-          `Run a fresh local browser smoke for ./${report.slug}/ and save evidence under ./.local.`,
+          `Run a fresh local browser smoke for ./games/${report.slug}/ and save evidence under ./.local.`,
           "Confirm direct folder boot still works before trusting the new proof.",
           "Use the fresh artifact to close verify debt without reopening the same slug for rediscovery.",
         ],

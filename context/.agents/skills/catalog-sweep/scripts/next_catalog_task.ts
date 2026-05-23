@@ -123,19 +123,19 @@ function buildQueueTaskSourceFiles(
   }
 
   if (report) {
-    return ["./todo.md", `./${slug}/index.html`, `./${slug}/README.md`];
+    return ["./todo.md", `./games/${slug}/index.html`, `./games/${slug}/README.md`];
   }
 
   const files = ["./todo.md"];
   if (workspaceProbe?.folderExists) {
     if (workspaceProbe.hasReadme) {
-      files.push(`./${slug}/README.md`);
+      files.push(`./games/${slug}/README.md`);
     }
     if (workspaceProbe.hasIndexHtml) {
-      files.push(`./${slug}/index.html`);
+      files.push(`./games/${slug}/index.html`);
     }
     if (!workspaceProbe.hasReadme && !workspaceProbe.hasIndexHtml) {
-      files.push(`./${slug}/`);
+      files.push(`./games/${slug}/`);
     }
   }
   return files;
@@ -194,13 +194,13 @@ function queueTaskFromRecommendation(
   const nextSteps =
     recommendation.kind === "build-pending-folder"
       ? [
-          `Create ./${slug}/ with index.html and a concise README.md.`,
+          `Create ./games/${slug}/ with index.html and a concise README.md.`,
           "Keep browser boot direct from the folder before adding polish work.",
           "After the folder exists, rerun the sweep and continue only that same slug until it closes.",
         ]
       : recommendation.kind === "continue-pending-folder"
         ? [
-            `Inspect ./${slug}/index.html and ./${slug}/README.md first.`,
+            `Inspect ./games/${slug}/index.html and ./games/${slug}/README.md first.`,
             reportHasBoot
               ? "Clear direct-boot blockers before any new catalog entry."
               : reportHasDocs
@@ -210,19 +210,19 @@ function queueTaskFromRecommendation(
           ]
         : recommendation.kind === "reconcile-untracked-folder"
           ? [
-              `Inspect ./${slug}/ for direct boot, concise docs, and whether it should be completed or pending in ./todo.md.`,
+              `Inspect ./games/${slug}/ for direct boot, concise docs, and whether it should be completed or pending in ./todo.md.`,
               "Update queue state so future sweeps stop rediscovering the same untracked playable folder.",
               "Keep the change local to this one game folder plus ./todo.md.",
             ]
           : recommendation.kind === "clear-completed-drift"
             ? workspaceProbe?.folderExists && !workspaceProbe.hasIndexHtml
               ? [
-                  `Inspect the existing ./${slug}/ folder and restore direct browser boot with index.html.`,
+                  `Inspect the existing ./games/${slug}/ folder and restore direct browser boot with index.html.`,
                   "Keep the completed record only if the surviving folder can still ship as the same slug; otherwise repair queue history.",
                   "Do not move to another slug until this completed-history drift closes.",
                 ]
               : [
-                  `Confirm whether ./${slug}/ was renamed, removed, or never landed.`,
+                  `Confirm whether ./games/${slug}/ was renamed, removed, or never landed.`,
                   "Repair queue history or restore the matching playable folder before cataloging anything else.",
                   "Do not mark new work complete while shipped-history drift remains ambiguous.",
                 ]
@@ -257,24 +257,24 @@ function buildEntryTask(mode: TaskMode, report: CatalogEntryReport, why: string,
   const nextSteps =
     mode === "repair-direct-boot"
       ? [
-          `Inspect ./${report.slug}/index.html and locally referenced scripts first.`,
+          `Inspect ./games/${report.slug}/index.html and locally referenced scripts first.`,
           "Fix missing references, import casing drift, or syntax breaks before browser re-check.",
           "Keep the repair inside this one folder, then rerun verify focus.",
         ]
       : mode === "rewrite-readme"
         ? [
-            `Rewrite ./${report.slug}/README.md to stay high level and say how to launch ./index.html.`,
+            `Rewrite ./games/${report.slug}/README.md to stay high level and say how to launch ./index.html.`,
             "Cut file inventories and patrol-log drift; keep premise, controls, play path, and one concise note.",
             "Rerun docs focus after the edit to confirm the slug leaves the docs lane.",
           ]
         : mode === "refresh-smoke-proof"
           ? [
-              `Run a fresh local browser smoke for ./${report.slug}/ and save evidence under ./.local.`,
+              `Run a fresh local browser smoke for ./games/${report.slug}/ and save evidence under ./.local.`,
               "Use the new capture only after confirming direct boot still works.",
               "Treat this as proof refresh, not a reason to broaden into unrelated polish.",
             ]
           : [
-              `Inspect ./${report.slug}/index.html and ./${report.slug}/README.md together.`,
+              `Inspect ./games/${report.slug}/index.html and ./games/${report.slug}/README.md together.`,
               "Clear the blocker that most directly prevents closure first, then rerun the focused helper.",
               "Keep all edits inside this one game folder unless queue truth itself is wrong.",
             ];
@@ -285,7 +285,7 @@ function buildEntryTask(mode: TaskMode, report: CatalogEntryReport, why: string,
     why,
     evidence: issues.map((issue) => `${issue.code}: ${issue.detail}`),
     nextSteps,
-    sourceFiles: ["./todo.md", `./${report.slug}/index.html`, `./${report.slug}/README.md`],
+    sourceFiles: ["./todo.md", `./games/${report.slug}/index.html`, `./games/${report.slug}/README.md`],
     issues,
   };
 }
@@ -377,11 +377,11 @@ function buildSlugTask(slug: string, focus: SupportedFocus, reports: CatalogEntr
           .filter((issue) => isReconcileIssueCode(issue.code) || isBootIssueCode(issue.code) || isDocsIssueCode(issue.code))
           .map((issue) => `${issue.code}: ${issue.detail}`),
         nextSteps: [
-          `Inspect ./${slug}/ for direct boot and concise docs, then decide whether it belongs in pending or completed state in ./todo.md.`,
+          `Inspect ./games/${slug}/ for direct boot and concise docs, then decide whether it belongs in pending or completed state in ./todo.md.`,
           "Update queue state so future sweeps stop rediscovering the same untracked playable folder.",
           "Keep the change local to this one game folder plus ./todo.md.",
         ],
-        sourceFiles: ["./todo.md", `./${slug}/index.html`, `./${slug}/README.md`],
+        sourceFiles: ["./todo.md", `./games/${slug}/index.html`, `./games/${slug}/README.md`],
         issues: reconcileIssues,
       };
     }
@@ -397,11 +397,11 @@ function buildSlugTask(slug: string, focus: SupportedFocus, reports: CatalogEntr
       why: "A playable folder exists for the requested slug, but queue truth still has no matching record.",
       evidence: report.issues.map((issue) => `${issue.code}: ${issue.detail}`),
       nextSteps: [
-        `Inspect ./${slug}/ for direct boot and concise docs, then decide whether it belongs in pending or completed state in ./todo.md.`,
+        `Inspect ./games/${slug}/ for direct boot and concise docs, then decide whether it belongs in pending or completed state in ./todo.md.`,
         "Update queue state so future sweeps stop rediscovering the same untracked playable folder.",
         "Keep the change local to this one game folder plus ./todo.md.",
       ],
-      sourceFiles: ["./todo.md", `./${slug}/index.html`, `./${slug}/README.md`],
+      sourceFiles: ["./todo.md", `./games/${slug}/index.html`, `./games/${slug}/README.md`],
       issues: reconcileIssues,
     };
   }
@@ -424,11 +424,11 @@ function buildSlugTask(slug: string, focus: SupportedFocus, reports: CatalogEntr
       why: "The requested slug is already the live pending folder and cheap local checks found no queue, boot, docs, or smoke blocker to resolve first.",
       evidence: [`${slug} already has a playable folder, queue coverage, concise docs, and current cheap local checks.`],
       nextSteps: [
-        `Open ./${slug}/index.html and direct-play the current build before marking anything complete.`,
+        `Open ./games/${slug}/index.html and direct-play the current build before marking anything complete.`,
         "Keep the queue on this same slug until the active run closes.",
         "Only broaden beyond this slug if direct play reveals no remaining closure work.",
       ],
-      sourceFiles: ["./todo.md", `./${slug}/index.html`, `./${slug}/README.md`],
+      sourceFiles: ["./todo.md", `./games/${slug}/index.html`, `./games/${slug}/README.md`],
       issues: [],
     };
   }
@@ -439,11 +439,11 @@ function buildSlugTask(slug: string, focus: SupportedFocus, reports: CatalogEntr
     why: "The requested slug is tracked and playable, so the next step is direct play or deeper review rather than another broad sweep.",
     evidence: [`${slug} has no cheap queue, boot, docs, or smoke blocker in the current helper pass.`],
     nextSteps: [
-      `Open ./${slug}/index.html and confirm the live play loop still matches the folder docs.`,
+      `Open ./games/${slug}/index.html and confirm the live play loop still matches the folder docs.`,
       "Keep any follow-up edits local to this one entry.",
       "Rerun the helper after any direct-play finding so the closure packet stays current.",
     ],
-    sourceFiles: ["./todo.md", `./${slug}/index.html`, `./${slug}/README.md`],
+    sourceFiles: ["./todo.md", `./games/${slug}/index.html`, `./games/${slug}/README.md`],
     issues: [],
   };
 }

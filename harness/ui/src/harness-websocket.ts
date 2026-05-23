@@ -148,6 +148,8 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
                 planExecutionDelaySecondsDefault: harnessStore.state.planExecutionDelaySecondsDefault,
                 correctnessIterationModeDefault: harnessStore.state.correctnessIterationModeDefault,
                 backgroundJobApprovalPolicyDefault: harnessStore.state.backgroundJobApprovalPolicyDefault,
+                assistantCongestionControlEnabledDefault: harnessStore.state.assistantCongestionControlEnabledDefault,
+                assistantMaxCongestionDefault: harnessStore.state.assistantMaxCongestionDefault,
                 memoryBankEnabledDefault: harnessStore.state.memoryBankEnabledDefault,
                 memoryBankRecordRunsDefault: harnessStore.state.memoryBankRecordRunsDefault,
                 checkCliUpdatesDefault: harnessStore.state.checkCliUpdatesDefault
@@ -176,6 +178,8 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
             planExecutionDelaySecondsDefault: harnessStore.state.planExecutionDelaySecondsDefault,
             correctnessIterationModeDefault: harnessStore.state.correctnessIterationModeDefault,
             backgroundJobApprovalPolicyDefault: harnessStore.state.backgroundJobApprovalPolicyDefault,
+            assistantCongestionControlEnabledDefault: harnessStore.state.assistantCongestionControlEnabledDefault,
+            assistantMaxCongestionDefault: harnessStore.state.assistantMaxCongestionDefault,
             memoryBankEnabledDefault: harnessStore.state.memoryBankEnabledDefault,
             memoryBankRecordRunsDefault: harnessStore.state.memoryBankRecordRunsDefault,
             checkCliUpdatesDefault: harnessStore.state.checkCliUpdatesDefault,
@@ -208,6 +212,8 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
           planExecutionDelaySecondsDefault: harnessStore.state.planExecutionDelaySecondsDefault,
           correctnessIterationModeDefault: harnessStore.state.correctnessIterationModeDefault,
           backgroundJobApprovalPolicyDefault: harnessStore.state.backgroundJobApprovalPolicyDefault,
+          assistantCongestionControlEnabledDefault: harnessStore.state.assistantCongestionControlEnabledDefault,
+          assistantMaxCongestionDefault: harnessStore.state.assistantMaxCongestionDefault,
           memoryBankEnabledDefault: harnessStore.state.memoryBankEnabledDefault,
           memoryBankRecordRunsDefault: harnessStore.state.memoryBankRecordRunsDefault,
           checkCliUpdatesDefault: harnessStore.state.checkCliUpdatesDefault,
@@ -331,7 +337,7 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
         "error",
         error instanceof Error ? error.message : "Invalid server event"
       );
-      reportUiError(error, "Invalid server event", { rethrow: "dev-only" });
+      reportUiError(error, "Invalid server event", { rethrow: "never" });
     }
   });
 

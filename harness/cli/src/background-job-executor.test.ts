@@ -387,6 +387,53 @@ describe("executeBackgroundJobRun", () => {
     expect(updatedRun?.heartbeatDetail).toBe("Main Codex CLI execution still running");
   });
 
+  test("liveness heartbeat stops without touching cancelled runs", async () => {
+    const repository = createRepository();
+    const projectRoot = path.join(createTempDir(), `repo-${crypto.randomUUID()}`);
+    mkdirSync(projectRoot, { recursive: true });
+    const project = repository.addProject(projectRoot);
+    const now = new Date().toISOString();
+    const job = createAssistantRoutineJob(project.id, saveAssistant(repository, project.id), createThreadId(), now);
+    repository.saveBackgroundJob(job);
+    const run = repository.createBackgroundJobRun({
+      jobId: job.id,
+      projectId: job.projectId,
+      assistantId: job.assistantId,
+      automationThreadId: job.automationThreadId,
+      triggerSource: "schedule",
+      status: "running",
+      riskLevel: job.riskLevel,
+      approvalStatus: "approved"
+    });
+    repository.setBackgroundJobRunStatus(run.id, "cancelled", {
+      failureMessage: "Stopped by user",
+      failureCategory: "manual-abort"
+    });
+    const cancelledRun = repository.getBackgroundJobRun(run.id);
+    const updates: BackgroundJobRun[] = [];
+
+    const stop = startBackgroundRunLivenessHeartbeat(
+      {
+        repository,
+        onRunUpdated(updatedRun) {
+          updates.push(updatedRun);
+        }
+      },
+      run.id,
+      10
+    );
+    await new Promise((resolve) => setTimeout(resolve, 35));
+    stop();
+
+    const updatedRun = repository.getBackgroundJobRun(run.id);
+    expect(updates).toHaveLength(0);
+    expect(updatedRun?.status).toBe("cancelled");
+    expect(updatedRun?.completedAt).toBe(cancelledRun?.completedAt);
+    expect(updatedRun?.updatedAt).toBe(cancelledRun?.updatedAt);
+    expect(updatedRun?.heartbeatStage).toBe("cancelled");
+    expect(updatedRun?.heartbeatDetail).toBe("Stopped by user");
+  });
+
   test("persists deferred questions on inactive automation threads", async () => {
     const repository = createRepository();
     const projectRoot = path.join(createTempDir(), `repo-${crypto.randomUUID()}`);

@@ -176,37 +176,37 @@ function buildPacket(slug: string): MaintenancePacket {
 
   const sources = ["./todo.md", "./user-reviews.sqlite", "./scripts/user-reviews.ts"];
   if (folderPresent) {
-    sources.push(`./${slug}/index.html`);
-    sources.push(`./${slug}/README.md`);
+    sources.push(`./games/${slug}/index.html`);
+    sources.push(`./games/${slug}/README.md`);
   }
   if (smokeStatus.kind === "present") {
     sources.push(`./.local/${smokeStatus.latestSmokeName}`);
-    sources.push(`./${slug}/${smokeStatus.latestContentName}`);
+    sources.push(`./games/${slug}/${smokeStatus.latestContentName}`);
   } else if (folderPresent) {
     sources.push("./.local/");
   }
 
   const nextSteps: string[] = [];
   if (!folderPresent && queueState.state === "pending") {
-    nextSteps.push(`Create ./${slug}/ with direct browser boot before touching another slug.`);
+    nextSteps.push(`Create ./games/${slug}/ with direct browser boot before touching another slug.`);
   }
   if (queueOnlyReport) {
     nextSteps.push(`Reconcile queue coverage for ${slug} so future sweeps stop rediscovering this drift.`);
   }
   const bootIssues = report?.issues.filter((issue) => isBootIssueCode(issue.code)) ?? [];
   if (bootIssues.length > 0) {
-    nextSteps.push(`Repair direct boot in ./${slug}/ before spending time on smoke refresh or quality review.`);
+    nextSteps.push(`Repair direct boot in ./games/${slug}/ before spending time on smoke refresh or quality review.`);
   }
   const docsIssues = report?.issues.filter((issue) => issue.code === "missing-readme" || isDocsIssueCode(issue.code)) ?? [];
   if (docsIssues.length > 0) {
-    nextSteps.push(`Rewrite ./${slug}/README.md as a short high-level launch doc after boot is stable.`);
+    nextSteps.push(`Rewrite ./games/${slug}/README.md as a short high-level launch doc after boot is stable.`);
   }
   const smokeIssues = report?.issues.filter((issue) => isSmokeIssueCode(issue.code)) ?? [];
   if (smokeIssues.length > 0) {
     nextSteps.push(`Refresh local browser proof for ${slug} and save it under one of: ${buildProofTargets(slug).join(" | ")}.`);
   }
   if (review?.lane === "flag-after-edit") {
-    nextSteps.push(`If you edit existing files in ./${slug}/, flag the review row before closing the slug.`);
+    nextSteps.push(`If you edit existing files in ./games/${slug}/, flag the review row before closing the slug.`);
   }
   if (review?.lane === "needs-feedback") {
     nextSteps.push(`Do not use current review evidence for ${slug} until fresh feedback clears needsAdditionalFeedback.`);

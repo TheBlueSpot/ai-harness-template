@@ -15,6 +15,7 @@ import {
   assistantQuestionSchema,
   assistantSchema,
   assistantThreadSchema,
+  assistantTodoPatchSchema,
   assistantTodoSchema,
   backgroundJobRunSchema,
   backgroundJobSchema,
@@ -57,6 +58,7 @@ import {
   type AssistantQuestionStatus,
   type AssistantThread,
   type AssistantTodo,
+  type AssistantTodoPatch,
   type AssistantTodoState,
   type AssistantsState,
   type AgentId,
@@ -108,10 +110,12 @@ import {
   type SubagentWorktreeStrategy,
   type SubagentTaskState,
   type ThreadBadgeState,
+  type ThreadTitleSource,
   type ThreadId,
   type RunExecutionTarget,
   type RunDiagnosticsOwnerPrompt,
   type RunDiagnosticsPromptHash,
+  type RunModelPreference,
   type RunDiagnosticsWindowDays,
   type WorkspaceRuleSource,
   type WorkspaceProjectState,
@@ -136,14 +140,19 @@ const DIRTY_GIT_CHANGE_LIMIT_DEFAULT_KEY = "dirty_git_change_limit_default";
 const AUTO_COMPACT_CONTEXT_THRESHOLD_PERCENT_DEFAULT_KEY = "auto_compact_context_threshold_percent_default";
 const PLAN_EXECUTION_MODE_DEFAULT_KEY = "plan_execution_mode_default";
 const PLAN_EXECUTION_DELAY_SECONDS_DEFAULT_KEY = "plan_execution_delay_seconds_default";
+const SINGLE_AGENT_MODEL_PREFERENCE_DEFAULT_KEY = "single_agent_model_preference_default";
+const SUBAGENT_MODEL_PREFERENCE_DEFAULT_KEY = "subagent_model_preference_default";
 const CORRECTNESS_ITERATION_MODE_DEFAULT_KEY = "correctness_iteration_mode_default";
 const BACKGROUND_JOB_APPROVAL_POLICY_DEFAULT_KEY = "background_job_approval_policy_default";
+const ASSISTANT_CONGESTION_CONTROL_ENABLED_DEFAULT_KEY = "assistant_congestion_control_enabled_default";
+const ASSISTANT_MAX_CONGESTION_DEFAULT_KEY = "assistant_max_congestion_default";
 const AUTO_ARCHIVE_COMPLETED_THREADS_DEFAULT_KEY = "auto_archive_completed_threads_default";
 const BACKGROUND_SCHEDULER_HEARTBEAT_KEY = "background_scheduler_heartbeat_at";
 const MEMORY_BANK_ENABLED_DEFAULT_KEY = "memory_bank_enabled_default";
 const MEMORY_BANK_RECORD_RUNS_DEFAULT_KEY = "memory_bank_record_runs_default";
 const CHECK_CLI_UPDATES_DEFAULT_KEY = "check_cli_updates_default";
 const GLOBAL_EXECUTION_PAUSED_KEY = "global_execution_paused";
+const ASSISTANT_LOG_DETAILS_JSON_MAX_CHARS = 12000;
 const WORKSPACE_RULES_CONTENT_KEY = "workspace_rules_content";
 const WORKSPACE_RULES_UPDATED_AT_KEY = "workspace_rules_updated_at";
 const WORKSPACE_MEMORY_CONTENT_KEY = "workspace_memory_content";
@@ -169,7 +178,7 @@ type ThreadRow = {
   pinned: number;
   kind: BackgroundJobThreadKind;
   title: string;
-  title_source: "generated" | "custom";
+  title_source: string | null;
   updated_at: string;
   forked_from_thread_id: string | null;
   memory_summary_content: string | null;
@@ -334,6 +343,7 @@ type BackgroundJobRow = {
   kind: BackgroundJob["kind"];
   name: string;
   description: string | null;
+  lane: "exclusive" | "concurrent";
   definition_json: string;
   schedule_json: string;
   schedule_input: string;
@@ -352,6 +362,7 @@ type BackgroundJobRow = {
   scheduler_active_run_started_at: string | null;
   scheduler_last_progress_at: string | null;
   scheduler_overloaded: number | null;
+  scheduler_congestion_ratio: number | null;
   consecutive_failure_count: number | null;
   backoff_until: string | null;
   last_failure_category: RunFailureCategory | null;
@@ -512,7 +523,7 @@ type AssistantTodoRow = {
   state: AssistantTodoState;
   sort_order: number;
   blocker_reason: string | null;
-  source: "user" | "assistant" | "bootstrap" | "job" | "question" | null;
+  source: string | null;
   created_at: string;
   updated_at: string;
   completed_at: string | null;
@@ -563,9 +574,17 @@ const ASSISTANT_LEARNING_STOP_WORDS = new Set([
   "to",
   "with"
 ]);
+const ASSISTANT_TODO_SOURCES = new Set(["user", "assistant", "bootstrap", "job", "question"]);
 
 export function normalizeAssistantLearningSource(source: string) {
   return normalizeRequiredString(source, ASSISTANT_LEARNING_SOURCE_MAX_LENGTH, ASSISTANT_LEARNING_SOURCE_FALLBACK);
+}
+
+function normalizeAssistantTodoSource(source: string | null | undefined) {
+  if (!source) {
+    return undefined;
+  }
+  return ASSISTANT_TODO_SOURCES.has(source) ? (source as AssistantTodo["source"]) : "assistant";
 }
 
 type PersistedSchema<T> = {
@@ -629,6 +648,13 @@ function normalizeOptionalInteger(value: unknown, min: number, max: number) {
   return normalizeInteger(value, min, max, min);
 }
 
+function normalizeOptionalNumber(value: unknown, min: number, max: number) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return undefined;
+  }
+  return Math.min(max, Math.max(min, value));
+}
+
 function normalizeBooleanNumber(value: unknown) {
   return value === true || value === 1;
 }
@@ -648,6 +674,13 @@ function normalizeBackgroundJobSchedulerStatus(value: unknown) {
     : undefined;
 }
 
+function normalizeThreadTitleSource(value: unknown): ThreadTitleSource {
+  if (value === "custom" || value === "manual") {
+    return "custom";
+  }
+  return "generated";
+}
+
 function normalizeArray<T>(value: T[], max: number) {
   return value.slice(0, max);
 }
@@ -663,6 +696,30 @@ function parseJsonObjectOrUndefined(input: string | null): Record<string, unknow
   } catch {
     return undefined;
   }
+}
+
+function boundAssistantLogDetailsJson(input: unknown) {
+  if (input === undefined) {
+    return { json: null };
+  }
+  const serialized = JSON.stringify(input);
+  if (serialized.length <= ASSISTANT_LOG_DETAILS_JSON_MAX_CHARS) {
+    return { json: serialized };
+  }
+  return {
+    json: JSON.stringify({
+      truncated: true,
+      originalChars: serialized.length,
+      preview: serialized.slice(0, ASSISTANT_LOG_DETAILS_JSON_MAX_CHARS)
+    })
+  };
+}
+
+function parseAssistantLogDetailsSummary(input: string | null) {
+  if (!input || input.length <= ASSISTANT_LOG_DETAILS_JSON_MAX_CHARS) {
+    return undefined;
+  }
+  return `Details JSON truncated to ${ASSISTANT_LOG_DETAILS_JSON_MAX_CHARS} characters.`;
 }
 
 function parseJsonArrayOrEmpty(input: string | null): unknown[] {
@@ -1809,6 +1866,29 @@ export class WorkspaceRepository {
     return this.readProjectSnapshot(projectId);
   }
 
+  stopInterruptedActiveRuns(input: {
+    projectIds?: ProjectId[];
+    reason: string;
+    failureCategory: "shutdown-interrupt";
+  }): { stoppedRunIds: string[] } {
+    const activeStatuses: AgentRunStatus[] = ["planning", "awaiting-user-input", "running-main", "running-subagents", "aggregating"];
+    const projectIds = input.projectIds && input.projectIds.length > 0 ? new Set(input.projectIds) : undefined;
+    const rows = this.db
+      .query<{ id: string; project_id: string; status: AgentRunStatus }, []>(
+        `SELECT id, project_id, status
+         FROM agent_runs
+         WHERE status IN ('planning', 'awaiting-user-input', 'running-main', 'running-subagents', 'aggregating')`
+      )
+      .all()
+      .filter((row) => !projectIds || projectIds.has(row.project_id as ProjectId));
+    for (const row of rows) {
+      if (activeStatuses.includes(row.status)) {
+        this.setAgentRunStatus(row.project_id as ProjectId, row.id, "stopped", input.reason, input.failureCategory);
+      }
+    }
+    return { stoppedRunIds: rows.map((row) => row.id) };
+  }
+
   setAgentRunRuntimeBudget(projectId: ProjectId, runId: string, maxTurns: number | undefined) {
     if (maxTurns === undefined) {
       return this.readProjectSnapshot(projectId);
@@ -2576,7 +2656,7 @@ export class WorkspaceRepository {
         todo.state,
         todo.sortOrder,
         todo.blockerReason ?? null,
-        todo.source ?? null,
+        normalizeAssistantTodoSource(todo.source) ?? null,
         todo.createdAt,
         todo.updatedAt,
         todo.completedAt ?? null,
@@ -2586,8 +2666,70 @@ export class WorkspaceRepository {
     return this.getAssistantTodo(todo.id)!;
   }
 
+  updateAssistantTodo(assistantId: string, todoId: string, patch: AssistantTodoPatch) {
+    this.assertAssistantExists(assistantId);
+    const parsedPatch = assistantTodoPatchSchema.parse(patch);
+    const existing = this.getAssistantTodo(todoId);
+    const now = new Date().toISOString();
+    if (!existing) {
+      if (!parsedPatch.title) {
+        throw new Error("Unknown assistant todo for assistant");
+      }
+      const sortOrder =
+        this.getAssistantTodos(assistantId).reduce((max, todo) => Math.max(max, todo.sortOrder), -1) + 1;
+      return this.saveAssistantTodo({
+        id: todoId,
+        assistantId,
+        title: parsedPatch.title,
+        description: parsedPatch.description ?? undefined,
+        state: parsedPatch.state ?? "pending",
+        sortOrder,
+        blockerReason: parsedPatch.blockerReason ?? undefined,
+        source: "user",
+        createdAt: now,
+        updatedAt: now,
+        completedAt: parsedPatch.state === "completed" ? now : undefined,
+        cancelledAt: parsedPatch.state === "cancelled" ? now : undefined
+      });
+    }
+    if (existing.assistantId !== assistantId) {
+      throw new Error("Unknown assistant todo for assistant");
+    }
+
+    const nextState = parsedPatch.state ?? existing.state;
+    const updated = this.db
+      .query(
+        `UPDATE assistant_todos
+         SET title = ?3,
+             description = ?4,
+             state = ?5,
+             blocker_reason = ?6,
+             updated_at = ?7,
+             completed_at = ?8,
+             cancelled_at = ?9
+         WHERE id = ?1 AND assistant_id = ?2`
+      )
+      .run(
+        todoId,
+        assistantId,
+        parsedPatch.title ?? existing.title,
+        parsedPatch.description === null ? null : parsedPatch.description ?? existing.description ?? null,
+        nextState,
+        parsedPatch.blockerReason === null ? null : parsedPatch.blockerReason ?? existing.blockerReason ?? null,
+        now,
+        nextState === "completed" ? existing.completedAt ?? now : null,
+        nextState === "cancelled" ? existing.cancelledAt ?? now : null
+      );
+    if (updated.changes === 0) {
+      throw new Error("Unknown assistant todo for assistant");
+    }
+    this.touchAssistant(assistantId, now);
+    return this.getAssistantTodo(todoId)!;
+  }
+
   reorderAssistantTodos(assistantId: string, todoIds: string[]) {
     this.assertAssistantExists(assistantId);
+    this.assertAssistantTodosBelongToAssistant(assistantId, todoIds);
     const now = new Date().toISOString();
     const tx = this.db.transaction(() => {
       todoIds.forEach((todoId, index) => {
@@ -2603,7 +2745,10 @@ export class WorkspaceRepository {
   deleteAssistantTodo(assistantId: string, todoId: string) {
     this.assertAssistantExists(assistantId);
     const now = new Date().toISOString();
-    this.db.query(`DELETE FROM assistant_todos WHERE id = ?1 AND assistant_id = ?2`).run(todoId, assistantId);
+    const deleted = this.db.query(`DELETE FROM assistant_todos WHERE id = ?1 AND assistant_id = ?2`).run(todoId, assistantId);
+    if (deleted.changes === 0) {
+      throw new Error("Unknown assistant todo for assistant");
+    }
     this.touchAssistant(assistantId, now);
   }
 
@@ -2649,6 +2794,7 @@ export class WorkspaceRepository {
 
   reorderAssistantLearnings(assistantId: string, learningIds: string[]) {
     this.assertAssistantExists(assistantId);
+    this.assertAssistantLearningsBelongToAssistant(assistantId, learningIds);
     const now = new Date().toISOString();
     const tx = this.db.transaction(() => {
       learningIds.forEach((learningId, index) => {
@@ -2747,7 +2893,10 @@ export class WorkspaceRepository {
   deleteAssistantLearning(assistantId: string, learningId: string) {
     this.assertAssistantExists(assistantId);
     const now = new Date().toISOString();
-    this.db.query(`DELETE FROM assistant_learnings WHERE id = ?1 AND assistant_id = ?2`).run(learningId, assistantId);
+    const deleted = this.db.query(`DELETE FROM assistant_learnings WHERE id = ?1 AND assistant_id = ?2`).run(learningId, assistantId);
+    if (deleted.changes === 0) {
+      throw new Error("Unknown assistant learning for assistant");
+    }
     this.touchAssistant(assistantId, now);
   }
 
@@ -2824,6 +2973,7 @@ export class WorkspaceRepository {
 
   appendAssistantLogEntry(entry: AssistantLogEntry) {
     this.assertAssistantExists(entry.assistantId);
+    const boundedDetails = boundAssistantLogDetailsJson(entry.detailsJson);
     this.db
       .query(
         `INSERT INTO assistant_log_entries (id, assistant_id, level, summary, detail, details_json, created_at)
@@ -2835,7 +2985,7 @@ export class WorkspaceRepository {
         entry.level,
         entry.summary,
         entry.detail ?? null,
-        entry.detailsJson === undefined ? null : JSON.stringify(entry.detailsJson),
+        boundedDetails.json,
         entry.createdAt
       );
     this.touchAssistant(entry.assistantId, entry.createdAt);
@@ -2888,6 +3038,15 @@ export class WorkspaceRepository {
   getAssistantTodos(assistantId: string) {
     this.assertAssistantExists(assistantId);
     return this.readAssistantTodos().filter((todo) => todo.assistantId === assistantId);
+  }
+
+  getAssistantTodoForAssistant(assistantId: string, todoId: string) {
+    this.assertAssistantExists(assistantId);
+    const todo = this.getAssistantTodo(todoId);
+    if (!todo || todo.assistantId !== assistantId) {
+      throw new Error("Unknown assistant todo for assistant");
+    }
+    return todo;
   }
 
   getAssistantLearnings(assistantId: string) {
@@ -3429,12 +3588,12 @@ export class WorkspaceRepository {
       .query(
         `INSERT INTO background_jobs (
           id, project_id, assistant_id, automation_thread_id, template_id, created_from_run_id, kind, name, description,
-          definition_json, schedule_json, schedule_input, timezone, status, risk_level, next_run_at,
+          lane, definition_json, schedule_json, schedule_input, timezone, status, risk_level, next_run_at,
           last_run_at, last_enqueued_at, scheduler_status, scheduler_detail, last_scheduler_check_at,
           last_blocked_at, blocked_reason, scheduler_queue_position, scheduler_queue_reason, scheduler_blocked_since_at,
           scheduler_active_run_id, scheduler_active_run_started_at, scheduler_last_progress_at, scheduler_overloaded,
-          consecutive_failure_count, backoff_until, last_failure_category, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35)
+          scheduler_congestion_ratio, consecutive_failure_count, backoff_until, last_failure_category, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37)
         ON CONFLICT(id) DO UPDATE SET
           project_id = excluded.project_id,
           assistant_id = excluded.assistant_id,
@@ -3444,6 +3603,7 @@ export class WorkspaceRepository {
           kind = excluded.kind,
           name = excluded.name,
           description = excluded.description,
+          lane = excluded.lane,
           definition_json = excluded.definition_json,
           schedule_json = excluded.schedule_json,
           schedule_input = excluded.schedule_input,
@@ -3465,6 +3625,7 @@ export class WorkspaceRepository {
         job.kind,
         job.name,
         job.description ?? null,
+        job.lane ?? "exclusive",
         JSON.stringify(job.definition),
         JSON.stringify(job.schedule),
         job.scheduleInput,
@@ -3485,7 +3646,8 @@ export class WorkspaceRepository {
         job.schedulerActiveRunId ?? null,
         job.schedulerActiveRunStartedAt ?? null,
         job.schedulerLastProgressAt ?? null,
-        job.schedulerOverloaded ? 1 : 0,
+        (job.schedulerCongested ?? job.schedulerOverloaded) ? 1 : 0,
+        job.schedulerCongestionRatio ?? null,
         job.consecutiveFailureCount ?? 0,
         job.backoffUntil ?? null,
         job.lastFailureCategory ?? null,
@@ -3621,6 +3783,8 @@ export class WorkspaceRepository {
       schedulerActiveRunStartedAt?: string;
       schedulerLastProgressAt?: string;
       schedulerOverloaded?: boolean;
+      schedulerCongested?: boolean;
+      schedulerCongestionRatio?: number;
       consecutiveFailureCount?: number;
       backoffUntil?: string | null;
       lastFailureCategory?: RunFailureCategory;
@@ -3650,10 +3814,11 @@ export class WorkspaceRepository {
              scheduler_active_run_started_at = ?11,
              scheduler_last_progress_at = ?12,
              scheduler_overloaded = ?13,
-             consecutive_failure_count = COALESCE(?14, consecutive_failure_count),
-             backoff_until = ?15,
-             last_failure_category = ?16,
-             updated_at = ?17
+             scheduler_congestion_ratio = ?14,
+             consecutive_failure_count = COALESCE(?15, consecutive_failure_count),
+             backoff_until = ?16,
+             last_failure_category = ?17,
+             updated_at = ?18
          WHERE id = ?1`
       )
       .run(
@@ -3669,7 +3834,12 @@ export class WorkspaceRepository {
         input.schedulerActiveRunId ?? null,
         input.schedulerActiveRunStartedAt ?? null,
         input.schedulerLastProgressAt ?? null,
-        input.schedulerOverloaded === undefined ? null : input.schedulerOverloaded ? 1 : 0,
+        (input.schedulerCongested ?? input.schedulerOverloaded) === undefined
+          ? null
+          : (input.schedulerCongested ?? input.schedulerOverloaded)
+            ? 1
+            : 0,
+        input.schedulerCongestionRatio ?? null,
         input.consecutiveFailureCount ?? null,
         input.backoffUntil ?? null,
         input.lastFailureCategory ?? null,
@@ -3693,10 +3863,10 @@ export class WorkspaceRepository {
       .query<BackgroundJobRow, [string]>(
         `SELECT
           id, project_id, assistant_id, automation_thread_id, template_id, created_from_run_id, kind, name, description,
-          definition_json, schedule_json, schedule_input, timezone, status, risk_level, next_run_at,
+          lane, definition_json, schedule_json, schedule_input, timezone, status, risk_level, next_run_at,
           last_run_at, last_enqueued_at, scheduler_status, scheduler_detail, scheduler_queue_position, scheduler_queue_reason,
           scheduler_blocked_since_at, scheduler_active_run_id, scheduler_active_run_started_at, scheduler_last_progress_at,
-          scheduler_overloaded, consecutive_failure_count, backoff_until, last_failure_category,
+          scheduler_overloaded, scheduler_congestion_ratio, consecutive_failure_count, backoff_until, last_failure_category,
           last_scheduler_check_at, last_blocked_at, blocked_reason, created_at, updated_at
          FROM background_jobs
          WHERE id = ?1`
@@ -3824,6 +3994,24 @@ export class WorkspaceRepository {
       .filter((duration): duration is number => duration !== undefined);
   }
 
+  getAssistantCongestionControlEnabledDefault() {
+    return this.getWorkspaceMetaValue(ASSISTANT_CONGESTION_CONTROL_ENABLED_DEFAULT_KEY) !== "false";
+  }
+
+  setAssistantCongestionControlEnabledDefault(value: boolean) {
+    this.setWorkspaceMetaValue(ASSISTANT_CONGESTION_CONTROL_ENABLED_DEFAULT_KEY, String(value));
+  }
+
+  getAssistantMaxCongestionDefault() {
+    const value = Number.parseFloat(this.getWorkspaceMetaValue(ASSISTANT_MAX_CONGESTION_DEFAULT_KEY) ?? "");
+    return Number.isFinite(value) ? Math.max(0.25, Math.min(3, Math.round(value * 4) / 4)) : 1;
+  }
+
+  setAssistantMaxCongestionDefault(value: number) {
+    const normalized = Math.max(0.25, Math.min(3, Math.round(value * 4) / 4));
+    this.setWorkspaceMetaValue(ASSISTANT_MAX_CONGESTION_DEFAULT_KEY, normalized.toFixed(2).replace(/0+$/, "").replace(/\.$/, ""));
+  }
+
   repairInterruptedBackgroundJobRuns(
     options: {
       jobId?: string;
@@ -3875,6 +4063,7 @@ export class WorkspaceRepository {
           isBackgroundRunPastLeaseGrace(run, now, readyGraceMs)
         ) {
           const failureMessage = "Linked agent run was ready but no background controller resumed execution";
+          this.failLinkedAgentRunIfActive(run.projectId, run.linkedAgentRunId, failureMessage, "controller-lost");
           const repairedRun = this.setBackgroundJobRunStatus(run.id, "failed", {
             summary: linkedRun.summary,
             failureMessage,
@@ -3892,6 +4081,12 @@ export class WorkspaceRepository {
         !options.isRunLive(run) &&
         isBackgroundRunPastLeaseGrace(run, now, readyGraceMs)
       ) {
+        this.failLinkedAgentRunIfActive(
+          run.projectId,
+          run.linkedAgentRunId,
+          "Background run interrupted before completion",
+          "controller-lost"
+        );
         const repairedRun = this.setBackgroundJobRunStatus(run.id, "failed", {
           failureMessage: "Background run interrupted before completion",
           failureCategory: "controller-lost"
@@ -3908,6 +4103,12 @@ export class WorkspaceRepository {
 
       if (run.status === "running" && getBackgroundRunAgeMs(run, now) >= maxRunMs) {
         const detail = formatBackgroundRunTimeoutDetail(run, now, "max runtime");
+        this.failLinkedAgentRunIfActive(
+          run.projectId,
+          run.linkedAgentRunId,
+          "Timed out: background run exceeded max runtime",
+          "max-runtime-timeout"
+        );
         const repairedRun = this.setBackgroundJobRunStatus(run.id, "failed", {
           failureMessage: "Timed out: background run exceeded max runtime",
           failureCategory: "max-runtime-timeout",
@@ -3920,6 +4121,12 @@ export class WorkspaceRepository {
 
       if (run.status === "running" && getBackgroundRunLastProgressAgeMs(run, now) >= noProgressMs) {
         const detail = formatBackgroundRunTimeoutDetail(run, now, "no progress heartbeat");
+        this.failLinkedAgentRunIfActive(
+          run.projectId,
+          run.linkedAgentRunId,
+          "Timed out: no background progress heartbeat",
+          "heartbeat-timeout"
+        );
         const repairedRun = this.setBackgroundJobRunStatus(run.id, "failed", {
           failureMessage: "Timed out: no background progress heartbeat",
           failureCategory: "heartbeat-timeout",
@@ -3930,6 +4137,22 @@ export class WorkspaceRepository {
       }
     }
     return repairedRuns;
+  }
+
+  private failLinkedAgentRunIfActive(
+    projectId: ProjectId,
+    runId: string | undefined,
+    failureMessage: string,
+    failureCategory: RunFailureCategory
+  ) {
+    if (!runId) {
+      return;
+    }
+    const linkedRun = this.getRun(projectId, runId);
+    if (!linkedRun || isTerminalAgentRunStatus(linkedRun.status)) {
+      return;
+    }
+    this.setAgentRunStatus(projectId, runId, "failed", failureMessage, failureCategory);
   }
 
   repairStaleRunningBackgroundJobRuns(
@@ -4007,7 +4230,9 @@ export class WorkspaceRepository {
              heartbeat_stage = ?3,
              heartbeat_detail = ?4,
              updated_at = ?2
-         WHERE id = ?1`
+         WHERE id = ?1
+           AND completed_at IS NULL
+           AND status NOT IN ('succeeded', 'failed', 'cancelled', 'skipped')`
       )
       .run(runId, now, stage, (detail ?? message).slice(0, 1024));
     return this.getBackgroundJobRun(runId)!;
@@ -4022,7 +4247,9 @@ export class WorkspaceRepository {
              heartbeat_stage = ?3,
              heartbeat_detail = ?4,
              updated_at = ?2
-         WHERE id = ?1`
+         WHERE id = ?1
+           AND completed_at IS NULL
+           AND status NOT IN ('succeeded', 'failed', 'cancelled', 'skipped')`
       )
       .run(runId, now, input.stage, input.detail ? input.detail.slice(0, 1024) : null);
     return this.getBackgroundJobRun(runId);
@@ -4366,6 +4593,26 @@ export class WorkspaceRepository {
 
   setPlanExecutionDelaySecondsDefault(value: number) {
     this.setWorkspaceMetaValue(PLAN_EXECUTION_DELAY_SECONDS_DEFAULT_KEY, String(Math.max(0, Math.min(300, Math.round(value)))));
+  }
+
+  getSingleAgentModelPreferenceDefault(): RunModelPreference {
+    return this.getWorkspaceMetaValue(SINGLE_AGENT_MODEL_PREFERENCE_DEFAULT_KEY) === "inference"
+      ? "inference"
+      : "intelligence";
+  }
+
+  setSingleAgentModelPreferenceDefault(value: RunModelPreference) {
+    this.setWorkspaceMetaValue(SINGLE_AGENT_MODEL_PREFERENCE_DEFAULT_KEY, value);
+  }
+
+  getSubagentModelPreferenceDefault(): RunModelPreference {
+    return this.getWorkspaceMetaValue(SUBAGENT_MODEL_PREFERENCE_DEFAULT_KEY) === "intelligence"
+      ? "intelligence"
+      : "inference";
+  }
+
+  setSubagentModelPreferenceDefault(value: RunModelPreference) {
+    this.setWorkspaceMetaValue(SUBAGENT_MODEL_PREFERENCE_DEFAULT_KEY, value);
   }
 
   getCorrectnessIterationModeDefault(): CorrectnessIterationMode {
@@ -4890,6 +5137,7 @@ export class WorkspaceRepository {
         kind TEXT NOT NULL CHECK(kind IN ('ai-routine', 'shell')),
         name TEXT NOT NULL,
         description TEXT NULL,
+        lane TEXT NOT NULL DEFAULT 'exclusive' CHECK(lane IN ('exclusive', 'concurrent')),
         definition_json TEXT NOT NULL,
         schedule_json TEXT NOT NULL,
         schedule_input TEXT NOT NULL,
@@ -4908,6 +5156,7 @@ export class WorkspaceRepository {
         scheduler_active_run_started_at TEXT NULL,
         scheduler_last_progress_at TEXT NULL,
         scheduler_overloaded INTEGER NULL CHECK(scheduler_overloaded IN (0, 1)),
+        scheduler_congestion_ratio REAL NULL,
         consecutive_failure_count INTEGER NULL,
         backoff_until TEXT NULL,
         last_failure_category TEXT NULL,
@@ -5210,6 +5459,7 @@ export class WorkspaceRepository {
     this.addColumnIfMissing("project_threads", "pinned", "INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0, 1))");
     this.addColumnIfMissing("memory_entries", "priority", "INTEGER NOT NULL DEFAULT 50000");
     this.addColumnIfMissing("background_jobs", "assistant_id", "TEXT NULL");
+    this.addColumnIfMissing("background_jobs", "lane", "TEXT NOT NULL DEFAULT 'exclusive' CHECK(lane IN ('exclusive', 'concurrent'))");
     this.addColumnIfMissing(
       "background_jobs",
       "scheduler_status",
@@ -5223,6 +5473,7 @@ export class WorkspaceRepository {
     this.addColumnIfMissing("background_jobs", "scheduler_active_run_started_at", "TEXT NULL");
     this.addColumnIfMissing("background_jobs", "scheduler_last_progress_at", "TEXT NULL");
     this.addColumnIfMissing("background_jobs", "scheduler_overloaded", "INTEGER NULL CHECK(scheduler_overloaded IN (0, 1))");
+    this.addColumnIfMissing("background_jobs", "scheduler_congestion_ratio", "REAL NULL");
     this.addColumnIfMissing("background_jobs", "consecutive_failure_count", "INTEGER NULL");
     this.addColumnIfMissing("background_jobs", "backoff_until", "TEXT NULL");
     this.addColumnIfMissing("background_jobs", "last_failure_category", "TEXT NULL");
@@ -5284,6 +5535,9 @@ export class WorkspaceRepository {
     this.db.exec(`CREATE INDEX IF NOT EXISTS background_job_runs_status_lease_idx ON background_job_runs(status, controller_lease_expires_at);`);
     this.db.exec(`CREATE INDEX IF NOT EXISTS background_jobs_status_backoff_idx ON background_jobs(status, backoff_until);`);
     this.db.exec(`UPDATE project_threads SET status = 'active' WHERE status = 'archived';`);
+    this.db.exec(`UPDATE project_threads SET title_source = 'custom' WHERE title_source = 'manual';`);
+    this.db.exec(`UPDATE project_threads SET title_source = 'generated' WHERE title_source IS NULL OR title_source NOT IN ('generated', 'custom');`);
+    this.normalizeLegacyAssistantTodoSources();
 
     this.rebuildAgentRunQuestionsTableIfNeeded();
     this.rebuildThreadMessagesTableIfNeeded();
@@ -5471,7 +5725,7 @@ export class WorkspaceRepository {
           status: thread.status === "archived" ? "archived" : "active",
           pinned: normalizeBooleanNumber(thread.pinned),
           title: normalizeRequiredTrimmedString(thread.title, 256, "Recovered thread"),
-          titleSource: thread.title_source,
+          titleSource: normalizeThreadTitleSource(thread.title_source),
           badgeState: getThreadBadgeState(latestRun),
           messageCount: normalizeInteger(messageCount, 0, 100000, 0),
           lastMessagePreview: preview ? summarizeMessagePreview(preview) : undefined,
@@ -5673,6 +5927,15 @@ export class WorkspaceRepository {
       }
     });
     tx();
+  }
+
+  private normalizeLegacyAssistantTodoSources() {
+    this.db.exec(
+      `UPDATE assistant_todos
+       SET source = 'assistant'
+       WHERE source IS NOT NULL
+         AND source NOT IN ('user', 'assistant', 'bootstrap', 'job', 'question')`
+    );
   }
 
   private readAssistantQuestions() {
@@ -5900,7 +6163,7 @@ export class WorkspaceRepository {
       state: row.state,
       sortOrder: normalizeInteger(row.sort_order, 0, 1000000, 0),
       blockerReason: normalizeOptionalString(row.blocker_reason, 4000),
-      source: row.source ?? undefined,
+      source: normalizeAssistantTodoSource(row.source),
       createdAt: normalizeRequiredString(row.created_at, 256, new Date().toISOString()),
       updatedAt: normalizeRequiredString(row.updated_at, 256, new Date().toISOString()),
       completedAt: normalizeOptionalString(row.completed_at, 256),
@@ -5956,6 +6219,7 @@ export class WorkspaceRepository {
       summary: normalizeRequiredString(row.summary, 1024, "Recovered log entry"),
       detail: normalizeOptionalString(row.detail, 4000),
       detailsJson: parseJsonObjectOrUndefined(row.details_json),
+      detailsJsonSummary: parseAssistantLogDetailsSummary(row.details_json),
       createdAt: normalizeRequiredString(row.created_at, 256, new Date().toISOString())
       },
       { table: "assistant_log_entries", rowId: row.id }
@@ -6013,6 +6277,36 @@ export class WorkspaceRepository {
   private assertAssistantExists(assistantId: string) {
     if (!this.assistantExists(assistantId)) {
       throw new Error(`Unknown assistant: ${assistantId}`);
+    }
+  }
+
+  private assertAssistantTodosBelongToAssistant(assistantId: string, todoIds: string[]) {
+    if (todoIds.length === 0) {
+      return;
+    }
+    const uniqueIds = [...new Set(todoIds)];
+    const rows = this.db
+      .query<{ id: string }, [string, string]>(
+        `SELECT id FROM assistant_todos WHERE assistant_id = ?1 AND id IN (SELECT value FROM json_each(?2))`
+      )
+      .all(assistantId, JSON.stringify(uniqueIds));
+    if (rows.length !== uniqueIds.length) {
+      throw new Error("Assistant todo reorder contains unknown todo");
+    }
+  }
+
+  private assertAssistantLearningsBelongToAssistant(assistantId: string, learningIds: string[]) {
+    if (learningIds.length === 0) {
+      return;
+    }
+    const uniqueIds = [...new Set(learningIds)];
+    const rows = this.db
+      .query<{ id: string }, [string, string]>(
+        `SELECT id FROM assistant_learnings WHERE assistant_id = ?1 AND id IN (SELECT value FROM json_each(?2))`
+      )
+      .all(assistantId, JSON.stringify(uniqueIds));
+    if (rows.length !== uniqueIds.length) {
+      throw new Error("Assistant learning reorder contains unknown learning");
     }
   }
 
@@ -6453,7 +6747,7 @@ export class WorkspaceRepository {
             .run(
               thread.id,
               normalizeThreadTitle(thread.title ?? toGeneratedThreadTitle(firstUserMessage, `Thread ${index + 1}`)),
-              thread.title_source ?? "generated",
+              normalizeThreadTitleSource(thread.title_source),
               thread.updated_at ?? latestMessageAt ?? thread.created_at
             );
         } catch (error) {
@@ -6810,10 +7104,10 @@ export class WorkspaceRepository {
       .query<BackgroundJobRow, []>(
         `SELECT
           id, project_id, assistant_id, automation_thread_id, template_id, created_from_run_id, kind, name, description,
-          definition_json, schedule_json, schedule_input, timezone, status, risk_level, next_run_at,
+          lane, definition_json, schedule_json, schedule_input, timezone, status, risk_level, next_run_at,
           last_run_at, last_enqueued_at, scheduler_status, scheduler_detail, scheduler_queue_position, scheduler_queue_reason,
           scheduler_blocked_since_at, scheduler_active_run_id, scheduler_active_run_started_at, scheduler_last_progress_at,
-          scheduler_overloaded, consecutive_failure_count, backoff_until, last_failure_category,
+          scheduler_overloaded, scheduler_congestion_ratio, consecutive_failure_count, backoff_until, last_failure_category,
           last_scheduler_check_at, last_blocked_at, blocked_reason, created_at, updated_at
          FROM background_jobs
          ORDER BY updated_at DESC, created_at DESC`
@@ -6894,6 +7188,7 @@ export class WorkspaceRepository {
       kind: row.kind,
       name: normalizeRequiredString(row.name, 256, "Recovered background job"),
       description: normalizeOptionalString(row.description, 1024),
+      lane: row.lane === "concurrent" ? "concurrent" : "exclusive",
       definition: parseBackgroundJobDefinition(row.kind, row.definition_json),
       schedule: parseBackgroundJobSchedule(row.schedule_json, row.next_run_at ?? row.updated_at),
       scheduleInput: normalizeRequiredString(row.schedule_input, 512, "recovered"),
@@ -6914,6 +7209,8 @@ export class WorkspaceRepository {
       schedulerActiveRunStartedAt: normalizeOptionalString(row.scheduler_active_run_started_at, 256),
       schedulerLastProgressAt: normalizeOptionalString(row.scheduler_last_progress_at, 256),
       schedulerOverloaded: row.scheduler_overloaded === null ? undefined : Boolean(row.scheduler_overloaded),
+      schedulerCongested: row.scheduler_overloaded === null ? undefined : Boolean(row.scheduler_overloaded),
+      schedulerCongestionRatio: normalizeOptionalNumber(row.scheduler_congestion_ratio, 0, 1000),
       consecutiveFailureCount: normalizeOptionalInteger(row.consecutive_failure_count, 0, 100000) ?? 0,
       backoffUntil: normalizeOptionalString(row.backoff_until, 256),
       lastFailureCategory: normalizeRunFailureCategory(row.last_failure_category),
@@ -7357,7 +7654,10 @@ function parseExecutionPlan(input: string | null): ExecutionPlan | undefined {
   }
 
   try {
-    return executionPlanSchema.parse(JSON.parse(input));
+    return safeParsePersisted(executionPlanSchema, normalizePersistedExecutionPlan(JSON.parse(input)), {
+      table: "agent_runs",
+      field: "plan_json"
+    });
   } catch {
     return undefined;
   }
@@ -7369,10 +7669,270 @@ function parseCorrectnessReview(input: string | null): CorrectnessReview | undef
   }
 
   try {
-    return correctnessReviewSchema.parse(JSON.parse(input));
+    return safeParsePersisted(correctnessReviewSchema, normalizePersistedCorrectnessReview(JSON.parse(input)), {
+      table: "agent_runs",
+      field: "correctness_review_json"
+    });
   } catch {
     return undefined;
   }
+}
+
+function normalizePersistedCorrectnessReview(input: unknown): unknown {
+  if (!isPlainRecord(input)) {
+    return input;
+  }
+
+  return {
+    ...input,
+    status: normalizeCorrectnessReviewStatus(input.status),
+    gaps: Array.isArray(input.gaps) ? input.gaps.map(normalizePersistedCorrectnessGap) : input.gaps,
+    recommendedPlan: normalizePersistedExecutionPlan(input.recommendedPlan)
+  };
+}
+
+function normalizePersistedCorrectnessGap(input: unknown): unknown {
+  if (!isPlainRecord(input)) {
+    return input;
+  }
+
+  return {
+    ...input,
+    category: normalizeCorrectnessGapCategory(input.category),
+    severity: normalizeCorrectnessGapSeverity(input.severity)
+  };
+}
+
+function normalizePersistedExecutionPlan(input: unknown): unknown {
+  if (!isPlainRecord(input)) {
+    return input;
+  }
+
+  return {
+    ...input,
+    origin: normalizeExecutionPlanOrigin(input.origin),
+    route: normalizeExecutionPlanRoute(input.route),
+    subagentWorktreeStrategy: normalizeSubagentWorktreeStrategy(input.subagentWorktreeStrategy),
+    gating: normalizeExecutionPlanGating(input.gating),
+    prerequisites: Array.isArray(input.prerequisites) ? input.prerequisites.map(normalizePersistedPlanPrerequisite) : input.prerequisites,
+    contracts: Array.isArray(input.contracts) ? input.contracts.map(normalizePersistedSubagentContract) : input.contracts,
+    correctnessPolicy: normalizeCorrectnessIterationMode(input.correctnessPolicy)
+  };
+}
+
+function normalizePersistedPlanPrerequisite(input: unknown): unknown {
+  if (!isPlainRecord(input)) {
+    return input;
+  }
+
+  return {
+    ...input,
+    owner: normalizePersistedPrerequisiteOwner(input.owner),
+    status: normalizePlanPrerequisiteStatus(input.status)
+  };
+}
+
+function normalizePersistedSubagentContract(input: unknown): unknown {
+  if (!isPlainRecord(input)) {
+    return input;
+  }
+
+  return {
+    ...input,
+    verificationScope: normalizePersistedVerificationScope(input.verificationScope)
+  };
+}
+
+function normalizeExecutionPlanGating(input: unknown): unknown {
+  if (!isPlainRecord(input)) {
+    return input;
+  }
+
+  return {
+    ...input,
+    mode: normalizePlanExecutionMode(input.mode)
+  };
+}
+
+function isPlainRecord(input: unknown): input is Record<string, unknown> {
+  return typeof input === "object" && input !== null && !Array.isArray(input);
+}
+
+function normalizeExecutionPlanOrigin(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const normalized = value.trim().toLowerCase().replace(/[_\s]+/g, "-");
+  if (["initial", "quick-task", "correctness-followup"].includes(normalized)) {
+    return normalized;
+  }
+  if (["followup", "correctness", "corrective", "correctness-follow-up"].includes(normalized)) {
+    return "correctness-followup";
+  }
+  return value;
+}
+
+function normalizeExecutionPlanRoute(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const normalized = value.trim().toLowerCase().replace(/[_\s]+/g, "-");
+  if (normalized === "main" || ["single", "main-only", "executor"].includes(normalized)) {
+    return "main";
+  }
+  if (normalized === "pi-subagents" || ["subagents", "pi-subagent", "parallel", "workers"].includes(normalized)) {
+    return "pi-subagents";
+  }
+  return value;
+}
+
+function normalizeSubagentWorktreeStrategy(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const normalized = value.trim().toLowerCase().replace(/[_\s]+/g, "-");
+  if (normalized === "same-worktree" || ["same", "shared-worktree", "current-worktree"].includes(normalized)) {
+    return "same-worktree";
+  }
+  if (normalized === "separate-worktrees" || ["separate", "isolated", "branchfs", "separate-worktree"].includes(normalized)) {
+    return "separate-worktrees";
+  }
+  return value;
+}
+
+function normalizePlanExecutionMode(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const normalized = value.trim().toLowerCase().replace(/[_\s]+/g, "-");
+  if (normalized === "countdown" || normalized === "delay") {
+    return "countdown";
+  }
+  if (normalized === "approve" || ["approval", "manual", "ask"].includes(normalized)) {
+    return "approve";
+  }
+  if (normalized === "immediate" || ["auto", "run-now"].includes(normalized)) {
+    return "immediate";
+  }
+  return value;
+}
+
+function normalizeCorrectnessIterationMode(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const normalized = value.trim().toLowerCase().replace(/[_\s]+/g, "-");
+  if (normalized === "ask-before-iterate" || ["manual", "ask", "ask-before"].includes(normalized)) {
+    return "ask-before-iterate";
+  }
+  if (normalized === "auto-once" || ["auto", "once"].includes(normalized)) {
+    return "auto-once";
+  }
+  if (normalized === "auto-until-clean" || ["until-clean", "auto-clean"].includes(normalized)) {
+    return "auto-until-clean";
+  }
+  return value;
+}
+
+function normalizePersistedPrerequisiteOwner(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const normalized = value.trim().toLowerCase().replace(/[_\s]+/g, "-");
+  if (["main", "user", "human", "developer", "assistant", "executor", "agent"].includes(normalized)) {
+    return "main";
+  }
+  if (["subagent", "sub-agent", "worker"].includes(normalized)) {
+    return "subagent";
+  }
+  return value;
+}
+
+function normalizePlanPrerequisiteStatus(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const normalized = value.trim().toLowerCase().replace(/[_\s]+/g, "-");
+  if (normalized === "pending" || ["todo", "open", "waiting"].includes(normalized)) {
+    return "pending";
+  }
+  if (normalized === "completed" || ["complete", "done", "finished"].includes(normalized)) {
+    return "completed";
+  }
+  return value;
+}
+
+function normalizePersistedVerificationScope(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const normalized = value.trim().toLowerCase().replace(/[_\s]+/g, "-");
+  if (["full-app", "full", "full-worktree", "whole-app", "whole-project", "workspace", "project"].includes(normalized)) {
+    return "worktree-full";
+  }
+  if (["owned", "owned-files", "files-only", "owned-files-only"].includes(normalized)) {
+    return "owned-files-only";
+  }
+  return value;
+}
+
+function normalizeCorrectnessReviewStatus(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const normalized = value.trim().toLowerCase().replace(/[_\s]+/g, "-");
+  if (normalized === "pass" || ["passed", "ok", "clean"].includes(normalized)) {
+    return "pass";
+  }
+  if (normalized === "needs-iteration" || ["fail", "failed", "needs-fix", "needs-work"].includes(normalized)) {
+    return "needs-iteration";
+  }
+  return value;
+}
+
+function normalizeCorrectnessGapCategory(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const normalized = value.trim().toLowerCase().replace(/[_\s]+/g, "-");
+  if (normalized === "plan-gap" || ["planning", "plan"].includes(normalized)) {
+    return "plan-gap";
+  }
+  if (normalized === "runnable-gap" || ["runtime", "runnable", "build", "smoke"].includes(normalized)) {
+    return "runnable-gap";
+  }
+  if (normalized === "quality-gap" || ["quality", "product", "ux"].includes(normalized)) {
+    return "quality-gap";
+  }
+  return value;
+}
+
+function normalizeCorrectnessGapSeverity(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (["high", "critical", "blocker", "blocking"].includes(normalized)) {
+    return "high";
+  }
+  if (["medium", "med", "moderate"].includes(normalized)) {
+    return "medium";
+  }
+  if (["low", "minor"].includes(normalized)) {
+    return "low";
+  }
+  return value;
 }
 
 function buildRunRuntimeBudget(maxTurns: number, turnsUsed: number, reservedCurrentTurn: boolean) {

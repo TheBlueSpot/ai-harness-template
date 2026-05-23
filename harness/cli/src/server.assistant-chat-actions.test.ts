@@ -18,10 +18,12 @@ describe("server assistant chat action wiring", () => {
     expect(serverSource).toContain("createAssistantActionIntentQuestion");
   });
 
-  test("project-chat assistant work resumes paused assistants before launch gate", () => {
-    expect(serverSource).toContain("ensureAssistantActiveForProjectChat");
-    expect(serverSource.indexOf("ensureAssistantActiveForProjectChat(repository, assistant.id, input.connections);")).toBeLessThan(
-      serverSource.indexOf("assertAssistantRunnableForLaunch(repository, assistant.id);")
+  test("project-chat assistant launch checks runnable state without auto-resume", () => {
+    expect(serverSource).toContain("requireAssistantForProjectChat");
+    expect(serverSource).not.toContain("ensureAssistantActiveForProjectChat");
+    const chatCase = serverSource.slice(serverSource.indexOf('case "chat"'), serverSource.indexOf('case "inspect"'));
+    expect(chatCase.indexOf("requireAssistantForProjectChat(repository, assistant.id);")).toBeLessThan(
+      chatCase.indexOf("assertAssistantRunnableForLaunch(repository, assistant.id);")
     );
   });
 

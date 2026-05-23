@@ -39,7 +39,7 @@ Custom sizes use `--viewport 1280x720`. Presets: `desktop`, `mobile`, `tablet`.
 Parse stdout between `--- SCREENSHOT_RESULT_JSON ---` and `--- END ---`.
 It is JSON shaped like `{ runId, screenshots: [{ route, viewport, width, height, path }] }`.
 
-Output path: `.local/screenshots/<runId>/<route-slug>-<viewport>.png`.
+Output path: `./.local/screenshots/<runId>/<route-slug>-<viewport>.png`.
 Screenshots persist after the BranchFS mount is discarded.
 
 ## Requirements

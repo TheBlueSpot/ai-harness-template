@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { Database } from "bun:sqlite";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
+const GAMES_ROOT = join(ROOT, "games");
 const PORT = Number(process.env.PORT ?? 2999);
 const HIDDEN_PREFIX = ".";
 const CATALOG_ENDPOINT = "/__catalog.json";
@@ -23,6 +24,8 @@ const INFRA_DIRECTORIES = new Set([
   "docs",
   "harness",
   "lib",
+  "games",
+  "local",
   "model-provider",
   "node_modules",
   "prompts",
@@ -90,7 +93,7 @@ async function isContentDirectory(name: string) {
     return false;
   }
 
-  const directoryPath = join(ROOT, name);
+  const directoryPath = join(GAMES_ROOT, name);
   const directoryStat = await pathStat(directoryPath);
   if (!directoryStat?.isDirectory()) {
     return false;
@@ -101,7 +104,7 @@ async function isContentDirectory(name: string) {
 }
 
 async function listCatalogEntries(): Promise<CatalogEntry[]> {
-  const directoryEntries = await readdir(ROOT, { withFileTypes: true });
+  const directoryEntries = await readdir(GAMES_ROOT, { withFileTypes: true });
   const names = directoryEntries
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
@@ -366,7 +369,12 @@ async function handleStaticRequest(urlPath: string) {
     return null;
   }
 
-  const candidatePath = safeResolveFromRoot(urlPath);
+  const topLevel = segments[0];
+  if (!(await isContentDirectory(topLevel))) {
+    return null;
+  }
+
+  const candidatePath = safeResolveFromRoot(join("games", ...segments));
   if (!candidatePath) {
     return null;
   }
@@ -378,11 +386,6 @@ async function handleStaticRequest(urlPath: string) {
 
   const requestStat = await pathStat(candidatePath);
   if (!requestStat?.isDirectory()) {
-    return null;
-  }
-
-  const topLevel = candidatePath.slice(ROOT.length + 1).split(/[\\/]/, 1)[0];
-  if (!(await isContentDirectory(topLevel))) {
     return null;
   }
 

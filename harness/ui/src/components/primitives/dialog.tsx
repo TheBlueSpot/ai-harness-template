@@ -2,7 +2,7 @@ import { createEffect, createMemo, onCleanup, Show, type JSX } from "solid-js";
 import { X } from "lucide-solid";
 import { cn } from "../../lib/utils";
 import { PrimitivePortal } from "./primitive-portal";
-import { isTopOverlay, registerOverlay } from "./overlay-stack";
+import { isTopOverlay, registerFocusReturn, registerOverlay, restoreOverlayFocus, trapFocusInOverlay } from "./overlay-stack";
 
 type DialogProps = {
   open?: boolean;
@@ -26,11 +26,12 @@ export function Dialog(props: DialogProps) {
     if (!isOpen()) {
       return;
     }
-    const unregister = registerOverlay(overlayId);
+    const unregister = registerOverlay(overlayId, { onEscape: () => props.onClose?.() });
+    const unregisterFocusReturn = registerFocusReturn(overlayId, document.activeElement instanceof HTMLElement ? document.activeElement : null);
 
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && isTopOverlay(overlayId)) {
-        props.onClose?.();
+      if (isTopOverlay(overlayId)) {
+        trapFocusInOverlay(event, surfaceRef);
       }
     };
 
@@ -43,6 +44,8 @@ export function Dialog(props: DialogProps) {
       unregister();
       window.removeEventListener("keydown", handleKeyDown);
       document.removeEventListener("keydown", handleKeyDown);
+      restoreOverlayFocus(overlayId);
+      unregisterFocusReturn();
     });
   });
 
@@ -64,11 +67,14 @@ export function Dialog(props: DialogProps) {
             ref={surfaceRef}
             onKeyDown={(event) => {
               if (event.key === "Escape") {
-                if (!isTopOverlay(overlayId)) {
-                  return;
+                if (isTopOverlay(overlayId)) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  props.onClose?.();
                 }
-                props.onClose?.();
+                return;
               }
+              trapFocusInOverlay(event, surfaceRef);
             }}
             onClick={(event) => event.stopPropagation()}
           >

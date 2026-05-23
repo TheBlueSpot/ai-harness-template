@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { PlannerSubtask } from "../../shared/protocol";
+import type { PiAgentAdapter, PiAgentExecutionController, PiAgentPromptRequest, PiAgentPromptResult } from "./pi-agent-adapter";
 import {
   canRunSameWorktreeTask,
   isPathWithinSameWorktreeScope,
@@ -7,7 +8,7 @@ import {
   sameWorktreeOwnedPathsOverlap,
   type TaskContractSettings
 } from "./pi-orchestrator";
-import { buildSubagentPrompt, scheduleSubagentTasks, type SubagentResult } from "./pi-subagents";
+import { buildSubagentPrompt, executeSubagents, scheduleSubagentTasks, type SubagentResult } from "./pi-subagents";
 import { buildSubagentEnvironmentBrief } from "./subagent-environment";
 import { WorkspaceRepository } from "./workspace-repository";
 
@@ -362,6 +363,53 @@ describe("subagent scheduler", () => {
 
     expect(retryCount).toBe(0);
   });
+
+  test("failed isolated subagents discard leases and tag branchfs traces", async () => {
+    const traces: Array<{ stage: string; subagentId?: string }> = [];
+    let discardCount = 0;
+    const adapter = createSuccessfulAdapter("subagent output");
+
+    const { results, retainedSnapshots } = await executeSubagents(adapter, {
+      cwd: process.cwd(),
+      runId: "run-branchfs-failure",
+      providerBrand: "gpt",
+      brief: "Do work",
+      tasks: [{ id: "task-a", title: "Task A", instruction: "Fail once" }],
+      debugEnabled: false,
+      executionModelId: "openai/gpt-5.4",
+      async verifyResult() {
+        throw new Error("syntax failed");
+      },
+      branchfsManagerFactory(_context, callbacks) {
+        return {
+          async prepareExperimentLease() {
+            callbacks.onTrace?.({
+              stage: "branchfs-inherit-dirty",
+              message: "Inherited base dirty state into BranchFS mount",
+              detail: "src/a.ts"
+            });
+            return createLease("run-branchfs-failure-task-a-attempt-1");
+          },
+          async discardExperiment() {
+            discardCount += 1;
+          },
+          async readInspection() {
+            throw new Error("inspection should not run");
+          }
+        };
+      },
+      callbacks: {
+        onTrace(trace) {
+          traces.push({ stage: trace.stage, subagentId: trace.subagentId });
+        }
+      }
+    });
+
+    expect(results).toMatchObject([{ id: "task-a", status: "failed", errorMessage: "syntax failed" }]);
+    expect(retainedSnapshots).toHaveLength(0);
+    expect(discardCount).toBe(1);
+    expect(traces).toContainEqual({ stage: "branchfs-inherit-dirty", subagentId: "task-a" });
+  });
 });
 
 function createScopedTask(id: string, ownedPaths: string[], exclusive: boolean = false): ScopedTask {
@@ -423,4 +471,58 @@ async function waitFor(check: () => boolean, timeoutMs: number = 500) {
 
     await Bun.sleep(10);
   }
+}
+
+function createLease(runId: string) {
+  const root = pathForTest(runId);
+  return {
+    experiment: {
+      id: runId,
+      runId,
+      status: "prepared" as const,
+      virtualBranchName: `ai-experiment/${runId}`,
+      repoMountPath: root,
+      projectMountPath: root,
+      baseDirtyFingerprint: "clean",
+      filesChanged: 0,
+      insertions: 0,
+      deletions: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    },
+    repoRoot: root,
+    projectRelativePath: "",
+    repoMountPath: root,
+    projectMountPath: root,
+    baseProjectPath: root,
+    manifestPath: `${root}\\manifest.json`,
+    dirtySeedPath: `${root}\\dirty-seed`,
+    upperPath: `${root}\\upper`
+  };
+}
+
+function pathForTest(id: string) {
+  return `C:\\tmp\\${id}`;
+}
+
+function createSuccessfulAdapter(text: string): PiAgentAdapter {
+  return {
+    async runPrompt(): Promise<PiAgentPromptResult> {
+      return { text };
+    },
+    async startExecution(_request: PiAgentPromptRequest): Promise<PiAgentExecutionController> {
+      return {
+        result: Promise.resolve({ text }),
+        async continueWithPrompt() {
+          return { text };
+        },
+        async abort() {},
+        dispose() {}
+      };
+    },
+    setApiKey() {},
+    hasApiKey() {
+      return true;
+    }
+  };
 }

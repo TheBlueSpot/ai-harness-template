@@ -17,6 +17,7 @@ export type ExecutionLogEntry = {
   createdAt: string | number | Date | undefined;
   detail?: string;
   detailsJson?: unknown;
+  detailsJsonSummary?: string;
 };
 
 type ExecutionLogProps = {
@@ -109,6 +110,9 @@ export function ExecutionLog(props: ExecutionLogProps) {
                 <pre class="overflow-auto rounded-[0.9rem] bg-slate-950/95 p-3 text-[0.625rem] leading-5 text-slate-100">
                   {JSON.stringify(entry().detailsJson, null, 2)}
                 </pre>
+              </Show>
+              <Show when={entry().detailsJsonSummary}>
+                {(summary) => <div class="rounded-[0.9rem] border border-amber-200 bg-amber-50 p-3 text-[0.675rem] text-amber-900">{summary()}</div>}
               </Show>
             </div>
           </Dialog>

@@ -144,6 +144,8 @@ async function runDoctor(options: { json?: boolean } = {}) {
       autoCompactContextThresholdPercentDefault: repository.getAutoCompactContextThresholdPercentDefault(),
       planExecutionModeDefault: repository.getPlanExecutionModeDefault(),
       planExecutionDelaySecondsDefault: repository.getPlanExecutionDelaySecondsDefault(),
+      singleAgentModelPreferenceDefault: repository.getSingleAgentModelPreferenceDefault(),
+      subagentModelPreferenceDefault: repository.getSubagentModelPreferenceDefault(),
       correctnessIterationModeDefault: repository.getCorrectnessIterationModeDefault(),
       backgroundJobApprovalPolicyDefault: repository.getBackgroundJobApprovalPolicyDefault(),
       memoryBankEnabledDefault: repository.getMemoryBankEnabledDefault(),

@@ -171,7 +171,7 @@ function buildEntry(root: string, report: CatalogEntryReport): SmokeRefreshEntry
 
   if (smokeStatus.kind === "present") {
     evidence.push(`latest smoke: ./.local/${smokeStatus.latestSmokeName}`);
-    evidence.push(`latest content: ./${report.slug}/${smokeStatus.latestContentName}`);
+    evidence.push(`latest content: ./games/${report.slug}/${smokeStatus.latestContentName}`);
   } else {
     evidence.push(`expected proof path starts with ./.local/${report.slug}-`);
   }
@@ -180,19 +180,19 @@ function buildEntry(root: string, report: CatalogEntryReport): SmokeRefreshEntry
     evidence.push(`boot blocker: ${issue.detail}`);
   }
 
-  const sourceFiles = ["./todo.md", `./${report.slug}/index.html`, "./.local/"];
+  const sourceFiles = ["./todo.md", `./games/${report.slug}/index.html`, "./.local/"];
   if (smokeStatus.kind === "present") {
-    sourceFiles.push(`./${report.slug}/${smokeStatus.latestContentName}`);
+    sourceFiles.push(`./games/${report.slug}/${smokeStatus.latestContentName}`);
   }
 
   const nextSteps = bootIssues.length > 0
     ? [
-        `Repair direct browser boot in ./${report.slug}/ before refreshing smoke proof.`,
-        `Re-run local browser verification for ./${report.slug}/ and save proof to one of: ${buildProofTargets(report.slug).join(" | ")}.`,
+        `Repair direct browser boot in ./games/${report.slug}/ before refreshing smoke proof.`,
+        `Re-run local browser verification for ./games/${report.slug}/ and save proof to one of: ${buildProofTargets(report.slug).join(" | ")}.`,
         "Confirm the new proof is newer than the latest non-markdown content file before closing smoke debt.",
       ]
     : [
-        `Run direct browser verification for ./${report.slug}/.`,
+        `Run direct browser verification for ./games/${report.slug}/.`,
         `Save proof to one of: ${buildProofTargets(report.slug).join(" | ")}.`,
         "Confirm the new proof is newer than the latest non-markdown content file before closing smoke debt.",
       ];

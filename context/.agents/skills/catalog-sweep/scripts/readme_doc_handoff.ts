@@ -80,7 +80,7 @@ function buildExtraGuidance(supportDocs: SupportDoc[], hasReadme: boolean): stri
 
 function buildEntry(root: string, slug: string): HandoffEntry {
   const queueState = readQueueState(root, slug);
-  const readmePath = resolve(root, slug, "README.md");
+  const readmePath = resolve(root, CATALOG_DIR, slug, "README.md");
   const hasReadme = existsSync(readmePath);
   const readmeText = hasReadme ? readFileSync(readmePath, "utf8") : null;
   const supportDocs = collectSupportDocs(root, slug, readmeText);
@@ -182,3 +182,4 @@ function main(): void {
 if (import.meta.main) {
   main();
 }
+const CATALOG_DIR = "games";

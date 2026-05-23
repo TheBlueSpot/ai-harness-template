@@ -2,6 +2,12 @@
 
 Catalog landing folder for the browser-game archive.
 
+## Repository Layout
+
+- `./games/` contains browser-playable catalog entries, one folder per slug.
+- `./.local/` contains local-only debug output, smoke proof, screenshots, browser profiles, and scratch traces.
+- Root files keep catalog hosting, review data, shared docs, and automation.
+
 ## Current Queue Shape
 
 - Rechecked on 2026-05-06.
@@ -71,4 +77,4 @@ Catalog landing folder for the browser-game archive.
 
 ## Play
 
-Open the local catalog page directly in a browser from `context/`.
+Run `bun.cmd run dev` from `context/`, then open the local catalog page in a browser.

@@ -54,6 +54,7 @@ Use this when touching Solid UI, UI state, primitives, interaction behavior, Tai
 
 - Solid reactive stores, memos, effects, and computations must be created under component-owned roots or providers.
 - Do not create long-lived Solid computations at module scope.
+- App-level keyboard shortcuts are durable user preferences. Any shortcut registered with `createHotkeys` must be represented in the app hotkey preferences model and visible in the Keybinds preference section, unless it is intentionally non-user-configurable and documented at the call site.
 - All visible timestamp renders, including dialog metadata and copied UI summaries, must use the shared formatter from `harness/ui/src/lib/time-format.ts`; raw ISO strings are for data transport, sorting, and persistence only.
 - Keep Tailwind classes in canonical form.
 - Prefer official utilities and canonical CSS variable shorthand over arbitrary-value spellings when Tailwind can express the same style directly.

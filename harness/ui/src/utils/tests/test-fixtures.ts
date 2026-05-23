@@ -34,6 +34,8 @@ export const defaultPreferencesFixture: PreferencesState = {
   autoCompactContextThresholdPercentDefault: 40,
   planExecutionModeDefault: "countdown",
   planExecutionDelaySecondsDefault: 10,
+  singleAgentModelPreferenceDefault: "intelligence",
+  subagentModelPreferenceDefault: "inference",
   correctnessIterationModeDefault: "ask-before-iterate",
   backgroundJobApprovalPolicyDefault: "ask-risky",
   memoryBankEnabledDefault: true,

@@ -11,6 +11,8 @@ import {
 import { buildReadmeGuidance, inspectReadmeHygiene, type ReadmeIssueCode } from "./readme_hygiene";
 import { inspectSmokeArtifacts } from "./smoke_artifacts";
 
+const CATALOG_DIR = "games";
+
 export type EntryIssueCode =
   | "missing-readme"
   | "missing-queue-record"
@@ -214,7 +216,7 @@ function scanJsImports(
 }
 
 export function buildEntryReport(root: string, slug: string, todoRecords: Map<string, QueueRecord[]>): CatalogEntryReport {
-  const entryRoot = resolve(root, slug);
+  const entryRoot = resolve(root, CATALOG_DIR, slug);
   const htmlPath = resolve(entryRoot, "index.html");
   const hasReadme = existsSync(resolve(entryRoot, "README.md"));
   const queueRecords = todoRecords.get(slug) ?? [];
@@ -287,7 +289,7 @@ export function buildReports(
 ): CatalogEntryReport[] {
   const folders = folder ? [folder] : findCatalogFolders(root);
   return folders
-    .filter((slug) => existsSync(resolve(root, slug, "index.html")))
+    .filter((slug) => existsSync(resolve(root, CATALOG_DIR, slug, "index.html")))
     .map((slug) => buildEntryReport(root, slug, todoRecords));
 }
 

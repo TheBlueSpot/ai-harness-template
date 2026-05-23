@@ -195,9 +195,9 @@ function buildDirtyMap(
 
 function buildProofTargets(slug: string): string[] {
   return [
-    `./.local/${slug}-smoke.json`,
-    `./.local/${slug}-verify.png`,
-    `./.local/<run>/${slug}-smoke.txt`,
+    `./..local/${slug}-smoke.json`,
+    `./..local/${slug}-verify.png`,
+    `./..local/<run>/${slug}-smoke.txt`,
   ];
 }
 
@@ -350,7 +350,7 @@ function buildEntries(
       ];
 
       if (smokeStatus.kind === "present") {
-        evidence.push(`latest smoke: ./.local/${smokeStatus.latestSmokeName}`);
+        evidence.push(`latest smoke: ./..local/${smokeStatus.latestSmokeName}`);
       } else if (folderPresent) {
         evidence.push(`smoke proof not found under ./.local for ${slug}`);
       } else {
@@ -360,9 +360,9 @@ function buildEntries(
       const nextSteps: string[] = [];
       const primaryLane = choosePrimaryLane(uniqueIssues, changeKind, details.dirtyReason, review?.lane ?? "none");
       if (primaryLane === "boot-fix-first") {
-        nextSteps.push(`Repair direct browser boot in ./${slug}/ before any closeout verification.`);
+        nextSteps.push(`Repair direct browser boot in ./games/${slug}/ before any closeout verification.`);
       } else if (primaryLane === "verify-after-edit") {
-        nextSteps.push(`Run browser verification for ./${slug}/ after the edit lands.`);
+        nextSteps.push(`Run browser verification for ./games/${slug}/ after the edit lands.`);
         nextSteps.push(`Save fresh proof to one of: ${buildProofTargets(slug).join(" | ")}.`);
       } else if (primaryLane === "review-flag") {
         nextSteps.push(`Apply needsAdditionalFeedback true for ${slug} before finishing this run.`);

@@ -31,6 +31,7 @@ export type ReadmeInspection = {
 const PLAY_PATTERNS = [/open .*index\.html/i, /browser to play/i, /direct browser/i, /boots directly/i, /launches directly from .*index\.html/i];
 const CANONICAL_LAUNCH_PATTERN = /open\s+\[(?:\.\/)?index\.html\]\(\.\/index\.html\)\s+(?:directly\s+)?in\s+(?:a\s+|the\s+)?(?:modern\s+desktop\s+|modern\s+)?browser\b/i;
 const MARKDOWN_LINK_PATTERN = /(^|[^!])\[([^\]]+)\]\(([^)]+)\)/g;
+const CATALOG_DIR = "games";
 
 const IMPLEMENTATION_PATTERNS = [
   /`(?:\.\/)?index\.html`/i,
@@ -54,7 +55,7 @@ export function inspectReadmeHygiene(root: string, slug: string): ReadmeIssue[] 
 }
 
 export function inspectReadme(root: string, slug: string): ReadmeInspection {
-  const readmePath = resolve(root, slug, "README.md");
+  const readmePath = resolve(root, CATALOG_DIR, slug, "README.md");
   if (!existsSync(readmePath)) {
     return {
       issues: [],

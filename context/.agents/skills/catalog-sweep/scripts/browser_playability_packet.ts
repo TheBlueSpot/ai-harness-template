@@ -256,9 +256,9 @@ function buildSmokeSummary(slug: string): string {
 
 function buildProofTargets(slug: string): string[] {
   return [
-    `./.local/${slug}-smoke.json`,
-    `./.local/${slug}-verify.png`,
-    `./.local/<run>/${slug}-smoke.txt`,
+    `./local/${slug}-smoke.json`,
+    `./local/${slug}-verify.png`,
+    `./local/<run>/${slug}-smoke.txt`,
   ];
 }
 
@@ -311,7 +311,7 @@ export function buildPacket(slug: string): Packet {
 }
 
 function buildSourceFiles(htmlPath: string, scripts: ScriptNode[], reviewSources: string[]): string[] {
-  const fileSet = new Set<string>(["./todo.md", toRepoPath(htmlPath), "./.local/"]);
+  const fileSet = new Set<string>(["./todo.md", toRepoPath(htmlPath), "./local/"]);
   const htmlDir = dirname(htmlPath);
   for (const script of scripts) {
     if (!script.path.startsWith("./")) {
@@ -328,9 +328,9 @@ function buildSourceFiles(htmlPath: string, scripts: ScriptNode[], reviewSources
 function buildNextSteps(report: CatalogEntryReport, reviewLane: string, slug: string, hasBootDebt: boolean): string[] {
   const steps: string[] = [];
   if (hasBootDebt) {
-    steps.push(`Repair the listed direct-boot blockers in ./${slug}/ before any browser rerun.`);
+    steps.push(`Repair the listed direct-boot blockers in ./games/${slug}/ before any browser rerun.`);
   } else {
-    steps.push(`Boot surface is mapped. Run one direct browser smoke for ./${slug}/ and save proof under ./.local.`);
+    steps.push(`Boot surface is mapped. Run one direct browser smoke for ./games/${slug}/ and save proof under ./local.`);
   }
 
   const smokeIssue = report.issues.find((issue) => issue.code === "missing-smoke-proof" || issue.code === "stale-smoke-proof");
@@ -341,11 +341,11 @@ function buildNextSteps(report: CatalogEntryReport, reviewLane: string, slug: st
   }
 
   if (reviewLane === "flag-after-edit") {
-    steps.push(`If you change existing files in ./${slug}/, reflag the review row to needsAdditionalFeedback true before closeout.`);
+    steps.push(`If you change existing files in ./games/${slug}/, reflag the review row to needsAdditionalFeedback true before closeout.`);
   } else if (reviewLane === "needs-feedback") {
-    steps.push(`Do not use current review evidence for ./${slug}/ until fresh feedback clears needsAdditionalFeedback.`);
+    steps.push(`Do not use current review evidence for ./games/${slug}/ until fresh feedback clears needsAdditionalFeedback.`);
   } else if (reviewLane === "review-missing") {
-    steps.push(`Do not use player feedback for ./${slug}/ until a review row exists.`);
+    steps.push(`Do not use player feedback for ./games/${slug}/ until a review row exists.`);
   }
 
   steps.push("Use the script and reference lists to open only the real boot surfaces instead of re-spelunking the whole folder.");

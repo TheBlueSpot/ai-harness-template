@@ -1,6 +1,7 @@
 import type { BackgroundJob, BackgroundJobRun, BackgroundJobRunStatus } from "../../shared/protocol";
 import { getDueScheduleAdvance } from "./background-job-schedule";
 import { assertAssistantRunnableForLaunch } from "./assistant-launch-gate";
+import { debugLog } from "./logging";
 import { classifyRunFailure, isBackoffEligibleFailureCategory } from "./run-failure-classification";
 import { WorkspaceRepository } from "./workspace-repository";
 
@@ -21,6 +22,11 @@ type BackgroundJobSchedulerOptions = {
 type DueJob = {
   job: BackgroundJob;
   advance: ReturnType<typeof getDueScheduleAdvance>;
+};
+
+type AssistantCongestion = {
+  congested: boolean;
+  ratio: number;
 };
 
 export class BackgroundJobScheduler {
@@ -86,7 +92,14 @@ export class BackgroundJobScheduler {
       }
 
       const jobs = this.options.repository.loadBackgroundJobsState().jobs.filter((job) => job.status === "enabled");
-      const overloadedAssistants = this.resolveOverloadedAssistants(jobs);
+      const congestionByAssistant = this.resolveAssistantCongestion(jobs);
+      const activeRuns = this.options.repository.getActiveBackgroundJobRuns();
+      debugLog("background.scheduler.tick", {
+        isStartup,
+        enabledJobs: jobs.length,
+        activeRuns: activeRuns.length,
+        congestedAssistants: [...congestionByAssistant.values()].filter((entry) => entry.congested).length
+      });
 
       for (const loadedJob of jobs) {
         const job = this.options.repository.repairBackgroundJobReferences(loadedJob.id) ?? loadedJob;
@@ -95,9 +108,18 @@ export class BackgroundJobScheduler {
         }
         const advance = getDueScheduleAdvance(job.schedule, now);
         const activeRun = this.options.repository.getActiveBackgroundJobRuns(job.id)[0];
-        const overloaded = Boolean(job.assistantId && overloadedAssistants.has(job.assistantId));
+        const congestion = job.assistantId ? congestionByAssistant.get(job.assistantId) : undefined;
+        const congested = Boolean(congestion?.congested);
+        const congestionRatio = congestion?.ratio;
         if (activeRun) {
-          this.markActiveJob(job, activeRun, nowIso, overloaded);
+          this.markActiveJob(job, activeRun, nowIso, congested, congestionRatio);
+          continue;
+        }
+        const activeExclusiveAssistantRun = job.assistantId && job.lane === "exclusive"
+          ? this.getActiveExclusiveAssistantRun(job.assistantId, jobs)
+          : undefined;
+        if (activeExclusiveAssistantRun) {
+          this.markExclusiveAssistantJobBlocked(job, activeExclusiveAssistantRun, nowIso, congested, congestionRatio);
           continue;
         }
 
@@ -110,7 +132,8 @@ export class BackgroundJobScheduler {
               schedulerStatus: "blocked",
               schedulerDetail: message,
               blockedReason: message,
-              schedulerOverloaded: overloaded,
+              schedulerCongested: congested,
+              schedulerCongestionRatio: congestionRatio,
               lastSchedulerCheckAt: nowIso
             });
             continue;
@@ -127,7 +150,8 @@ export class BackgroundJobScheduler {
               consecutiveFailureCount: job.consecutiveFailureCount,
               backoffUntil: job.backoffUntil,
               lastFailureCategory: job.lastFailureCategory,
-              schedulerOverloaded: overloaded,
+              schedulerCongested: congested,
+              schedulerCongestionRatio: congestionRatio,
               lastSchedulerCheckAt: nowIso
             });
             continue;
@@ -141,13 +165,37 @@ export class BackgroundJobScheduler {
             consecutiveFailureCount: job.consecutiveFailureCount,
             backoffUntil: job.backoffUntil,
             lastFailureCategory: job.lastFailureCategory,
-            schedulerOverloaded: overloaded,
+            schedulerCongested: congested,
+            schedulerCongestionRatio: congestionRatio,
             lastSchedulerCheckAt: nowIso
           });
           continue;
         }
 
-        this.queueDueJob({ job, advance }, isStartup, nowIso, overloaded);
+        const congestionDelay = congested ? this.resolveCongestionDelay(job, now) : undefined;
+        if (congestionDelay && congestionDelay.nextRunAt.getTime() > now.getTime()) {
+          this.options.repository.updateBackgroundJobSchedule(job.id, {
+            schedule: congestionDelay.schedule,
+            nextRunAt: congestionDelay.nextRunAt.toISOString(),
+            lastRunAt: job.lastRunAt
+          });
+          this.options.repository.updateBackgroundJobSchedulerState(job.id, {
+            schedulerStatus: "idle",
+            schedulerDetail: `Congested (${formatPercent(congestionRatio)}); scaled next run ${congestionDelay.nextRunAt.toISOString()}`,
+            schedulerCongested: true,
+            schedulerCongestionRatio: congestionRatio,
+            lastSchedulerCheckAt: nowIso
+          });
+          debugLog("background.scheduler.congestion-delay", {
+            jobId: job.id,
+            assistantId: job.assistantId,
+            isStartup,
+            congestionRatio,
+            nextRunAt: congestionDelay.nextRunAt.toISOString()
+          });
+          continue;
+        }
+        this.queueDueJob({ job, advance }, isStartup, nowIso, congested, congestionRatio);
       }
     } finally {
       this.running = false;
@@ -163,27 +211,42 @@ export class BackgroundJobScheduler {
     });
   }
 
-  private resolveOverloadedAssistants(jobs: BackgroundJob[]) {
+  private resolveAssistantCongestion(jobs: BackgroundJob[]) {
     const loadByAssistant = new Map<string, number>();
     for (const job of jobs) {
-      if (!job.assistantId) {
+      if (!job.assistantId || job.lane !== "exclusive") {
         continue;
       }
       const intervalMs = resolveScheduleIntervalMs(job, new Date());
       if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
         continue;
       }
-      const durations = this.options.repository.getRecentSuccessfulBackgroundJobRunDurationsMs(job.id, 10);
-      const medianDuration = median(durations);
-      if (!medianDuration) {
+      const averageDuration = this.getAverageDurationMs(job);
+      if (!averageDuration) {
         continue;
       }
-      loadByAssistant.set(job.assistantId, (loadByAssistant.get(job.assistantId) ?? 0) + medianDuration / intervalMs);
+      loadByAssistant.set(job.assistantId, (loadByAssistant.get(job.assistantId) ?? 0) + averageDuration / intervalMs);
     }
-    return new Set([...loadByAssistant.entries()].filter((entry) => entry[1] > 1).map(([assistantId]) => assistantId));
+    const maxCongestion = this.options.repository.getAssistantMaxCongestionDefault();
+    return new Map([...loadByAssistant.entries()].map(([assistantId, ratio]) => [assistantId, { congested: ratio > maxCongestion, ratio }]));
   }
 
-  private markActiveJob(job: BackgroundJob, run: BackgroundJobRun, nowIso: string, overloaded: boolean) {
+  private getAverageDurationMs(job: BackgroundJob) {
+    const durations = this.options.repository.getRecentSuccessfulBackgroundJobRunDurationsMs(job.id, 5);
+    if (durations.length < 5) {
+      return undefined;
+    }
+    return durations.reduce((sum, duration) => sum + duration, 0) / durations.length;
+  }
+
+  private getActiveExclusiveAssistantRun(assistantId: string, jobs: BackgroundJob[]) {
+    const jobsById = new Map(jobs.map((job) => [job.id, job]));
+    return this.options.repository
+      .getActiveBackgroundJobRunsByAssistant(assistantId)
+      .find((run) => jobsById.get(run.jobId)?.lane !== "concurrent");
+  }
+
+  private markActiveJob(job: BackgroundJob, run: BackgroundJobRun, nowIso: string, congested: boolean, congestionRatio?: number) {
     this.options.repository.updateBackgroundJobSchedulerState(job.id, {
       schedulerStatus: run.status === "queued" ? "queued" : run.status === "running" ? "running" : "blocked",
       schedulerDetail: `Blocked by ${run.status} run ${run.id}`,
@@ -191,17 +254,48 @@ export class BackgroundJobScheduler {
       schedulerActiveRunId: run.id,
       schedulerActiveRunStartedAt: run.startedAt,
       schedulerLastProgressAt: run.lastHeartbeatAt ?? run.updatedAt,
-      schedulerOverloaded: overloaded,
+      schedulerCongested: congested,
+      schedulerCongestionRatio: congestionRatio,
       lastSchedulerCheckAt: nowIso
+    });
+    debugLog("background.scheduler.active-block", {
+      jobId: job.id,
+      runId: run.id,
+      status: run.status,
+      assistantId: job.assistantId,
+      congested
     });
   }
 
-  private queueDueJob(entry: DueJob, isStartup: boolean, nowIso: string, overloaded: boolean) {
+  private markExclusiveAssistantJobBlocked(job: BackgroundJob, run: BackgroundJobRun, nowIso: string, congested: boolean, congestionRatio?: number) {
+    const detail = `Exclusive assistant lane waiting for ${run.status} run ${run.id}`;
+    this.options.repository.updateBackgroundJobSchedulerState(job.id, {
+      schedulerStatus: "blocked",
+      schedulerDetail: detail,
+      blockedReason: detail,
+      schedulerActiveRunId: run.id,
+      schedulerActiveRunStartedAt: run.startedAt,
+      schedulerLastProgressAt: run.lastHeartbeatAt ?? run.updatedAt,
+      schedulerCongested: congested,
+      schedulerCongestionRatio: congestionRatio,
+      lastSchedulerCheckAt: nowIso
+    });
+    debugLog("background.scheduler.exclusive-lane-block", {
+      jobId: job.id,
+      assistantId: job.assistantId,
+      runId: run.id,
+      status: run.status,
+      congested
+    });
+  }
+
+  private queueDueJob(entry: DueJob, isStartup: boolean, nowIso: string, congested: boolean, congestionRatio?: number) {
     const { job, advance } = entry;
     this.options.repository.updateBackgroundJobSchedulerState(job.id, {
       schedulerStatus: "due",
       schedulerDetail: `Due at ${job.nextRunAt ?? advance.nextRunAt ?? nowIso}`,
-      schedulerOverloaded: overloaded,
+      schedulerCongested: congested,
+      schedulerCongestionRatio: congestionRatio,
       lastSchedulerCheckAt: nowIso
     });
     if (this.options.repository.getActiveBackgroundJobRuns(job.id)[0]) {
@@ -209,6 +303,13 @@ export class BackgroundJobScheduler {
     }
 
     const triggerSource = isStartup ? "startup-catchup" : "schedule";
+    debugLog("background.scheduler.queue", {
+      jobId: job.id,
+      assistantId: job.assistantId,
+      triggerSource,
+      skippedOccurrences: advance.skippedOccurrenceCount,
+      congested
+    });
     this.options.repository.updateBackgroundJobSchedule(job.id, {
       schedule: advance.nextSchedule,
       nextRunAt: advance.nextRunAt,
@@ -240,7 +341,8 @@ export class BackgroundJobScheduler {
       schedulerActiveRunId: queuedRun.id,
       schedulerActiveRunStartedAt: queuedRun.startedAt,
       schedulerLastProgressAt: queuedRun.lastHeartbeatAt ?? queuedRun.updatedAt,
-      schedulerOverloaded: overloaded,
+      schedulerCongested: congested,
+      schedulerCongestionRatio: congestionRatio,
       lastSchedulerCheckAt: nowIso
     });
     const handleLaunchFailure = (error: unknown) => {
@@ -254,7 +356,8 @@ export class BackgroundJobScheduler {
           consecutiveFailureCount: this.options.repository.getBackgroundJob(job.id)?.consecutiveFailureCount,
           backoffUntil: this.options.repository.getBackgroundJob(job.id)?.backoffUntil,
           lastFailureCategory: this.options.repository.getBackgroundJob(job.id)?.lastFailureCategory,
-          schedulerOverloaded: overloaded,
+          schedulerCongested: congested,
+          schedulerCongestionRatio: congestionRatio,
           lastSchedulerCheckAt: new Date().toISOString()
         });
         return;
@@ -277,7 +380,8 @@ export class BackgroundJobScheduler {
         consecutiveFailureCount: this.options.repository.getBackgroundJob(job.id)?.consecutiveFailureCount,
         backoffUntil: this.options.repository.getBackgroundJob(job.id)?.backoffUntil,
         lastFailureCategory: this.options.repository.getBackgroundJob(job.id)?.lastFailureCategory,
-        schedulerOverloaded: overloaded,
+        schedulerCongested: congested,
+        schedulerCongestionRatio: congestionRatio,
         lastSchedulerCheckAt: new Date().toISOString()
       });
     };
@@ -288,6 +392,32 @@ export class BackgroundJobScheduler {
     } catch (error) {
       handleLaunchFailure(error);
     }
+  }
+
+  private resolveCongestionDelay(job: BackgroundJob, now: Date) {
+    if (job.schedule.type !== "interval" || !job.lastRunAt) {
+      return undefined;
+    }
+    const averageDuration = this.getAverageDurationMs(job);
+    if (!averageDuration) {
+      return undefined;
+    }
+    const scaledIntervalMs = Math.max(job.schedule.intervalSeconds * 1000, Math.ceil(averageDuration * 1.2));
+    const lastRunAt = Date.parse(job.lastRunAt);
+    if (!Number.isFinite(lastRunAt)) {
+      return undefined;
+    }
+    const nextRunAt = new Date(lastRunAt + scaledIntervalMs);
+    if (nextRunAt.getTime() <= now.getTime()) {
+      return undefined;
+    }
+    return {
+      nextRunAt,
+      schedule: {
+        ...job.schedule,
+        nextRunAt: nextRunAt.toISOString()
+      }
+    };
   }
 }
 
@@ -328,12 +458,8 @@ function getRunLastProgressAgeMs(run: BackgroundJobRun, now: Date) {
   return Number.isFinite(timestamp) ? Math.max(0, now.getTime() - timestamp) : 0;
 }
 
-function median(values: number[]) {
-  if (values.length === 0) {
-    return undefined;
-  }
-  const sorted = [...values].sort((left, right) => left - right);
-  return sorted[Math.floor(sorted.length / 2)];
+function formatPercent(ratio: number | undefined) {
+  return `${Math.round((ratio ?? 0) * 100)}%`;
 }
 
 function resolveQueuedStatus(job: BackgroundJob, policy: ReturnType<WorkspaceRepository["getBackgroundJobApprovalPolicyDefault"]>): BackgroundJobRunStatus {

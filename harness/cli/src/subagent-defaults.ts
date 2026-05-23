@@ -1,5 +1,5 @@
 import { defaultProviderCapabilities } from "../../shared/capabilities";
-import type { AgentId, ComposerReasoningStrength, ProviderBrand } from "../../shared/protocol";
+import type { AgentId, ComposerReasoningStrength, ProviderBrand, RunModelPreference } from "../../shared/protocol";
 
 type RankedModelFamily = {
   family: string;
@@ -33,7 +33,12 @@ export function resolveSubagentModelId(input: {
   agentId?: AgentId;
   providerBrand: ProviderBrand;
   executionModelId?: string;
+  modelPreference?: RunModelPreference;
 }) {
+  if (input.modelPreference === "intelligence") {
+    return input.executionModelId?.trim() ?? getProviderDefaultSubagentModelId(input.providerBrand);
+  }
+
   const executionModelId = input.executionModelId?.trim();
   const availableModelIds = getAvailableModelIds(input.agentId, input.providerBrand);
   const matchedAvailableModelId =
@@ -52,7 +57,27 @@ export function resolveSubagentModelId(input: {
   return executionModelId ?? getProviderDefaultSubagentModelId(input.providerBrand);
 }
 
-export function resolveSubagentReasoningStrength(reasoningStrength?: ComposerReasoningStrength): ComposerReasoningStrength {
+export function resolveSingleAgentModelId(input: {
+  agentId?: AgentId;
+  providerBrand: ProviderBrand;
+  executionModelId: string;
+  modelPreference?: RunModelPreference;
+}) {
+  if (input.modelPreference !== "inference") {
+    return input.executionModelId;
+  }
+
+  return resolveSubagentModelId(input);
+}
+
+export function resolveSubagentReasoningStrength(
+  reasoningStrength?: ComposerReasoningStrength,
+  modelPreference?: RunModelPreference
+): ComposerReasoningStrength {
+  if (modelPreference === "intelligence") {
+    return reasoningStrength ?? "high";
+  }
+
   return reasoningStrength ?? "low";
 }
 

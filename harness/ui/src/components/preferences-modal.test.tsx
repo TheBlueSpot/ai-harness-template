@@ -6,7 +6,7 @@ import { PreferenceSectionNav, PreferencesModal } from "./preferences-modal";
 import { harnessStore, readBrowserUiSession, readLocalPreferences } from "../harness-store";
 import { toastStore } from "../toast-store";
 import { captureDispatchedCommands, clearBrowserStateForTests, seedHarnessStoreForTests } from "../utils/tests/store-test-utils";
-import { createHarnessStateFixture } from "../utils/tests/test-fixtures";
+import { createHarnessStateFixture, createViewProjectFixture } from "../utils/tests/test-fixtures";
 import { clearCurrentTabItemSelectorsForTests, selectCurrentTabItem } from "../lib/current-tab-item-hotkeys";
 
 createUiTest("PreferencesModal", () => {
@@ -122,6 +122,41 @@ createUiTest("PreferencesModal", () => {
 
     expect((screen.getByLabelText("Search settings") as HTMLInputElement).value).toBe("");
     expect(await screen.findByText("Worktree and git safety")).not.toBeNull();
+  });
+
+  it("sends branchfs cleanup and renders compact result", async () => {
+    const commands: unknown[] = [];
+    const project = createViewProjectFixture({ id: "project-branchfs-cleanup" });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        preferencesModalOpen: true,
+        preferencesActiveSectionId: "safety-guardrails",
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        },
+        branchfsCleanupSummary: {
+          rootsScanned: 4,
+          rootsDeleted: 3,
+          rootsRetained: 1,
+          bytesDeleted: 2048,
+          staleRunsStopped: 2,
+          warnings: []
+        }
+      })
+    );
+    captureDispatchedCommands(commands as never[]);
+
+    renderPreferencesWithSideNav();
+    fireEvent.click(screen.getByRole("button", { name: /Safety & Guardrails/i }));
+    expect(await screen.findByText("Worktree and git safety")).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Delete retained BranchFS workspaces and stop stale interrupted runs" }));
+
+    expect((commands[0] as { type: string }).type).toBe("branchfs.cleanup");
+    expect((commands[0] as { payload: { projectId: string; mode: string } }).payload.projectId).toBe(project.id);
+    expect((commands[0] as { payload: { mode: string } }).payload.mode).toBe("all");
+    expect(screen.getByText(/3 roots deleted/)).not.toBeNull();
+    expect(screen.getByText(/2 stale runs stopped/)).not.toBeNull();
   });
 
   it("does not render a save preferences button", () => {
@@ -421,6 +456,11 @@ createUiTest("PreferencesModal", () => {
     renderPreferencesWithSideNav();
     fireEvent.click(screen.getByRole("button", { name: /Keybinds/i }));
     await screen.findByRole("heading", { name: "Keybinds" });
+
+    expect(screen.getByText("New assistant")).not.toBeNull();
+    expect(screen.getByText("New AI job")).not.toBeNull();
+    expect(screen.getByText("Select current tab item 1")).not.toBeNull();
+    expect(screen.getByText("Select current tab item 9")).not.toBeNull();
 
     const preferencesHotkeyInput = screen.getAllByLabelText("Workspace preferences hotkey")[0] as HTMLInputElement;
     preferencesHotkeyInput.value = "Alt+,";

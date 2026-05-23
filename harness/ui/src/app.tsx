@@ -26,7 +26,7 @@ import { Tooltip } from "./components/primitives/tooltip";
 import { connectHarnessWebSocket } from "./harness-websocket";
 import { harnessStore, type AssistantEditorDraft, type BackgroundJobEditorDraft, type HarnessLeftTab, type MainPanelSizes } from "./harness-store";
 import { resolveBrowserTimezone } from "./lib/time-format";
-import { appHotkeySettings, normalizeAppHotkeyPreferences, type AppHotkeyId } from "./lib/app-hotkeys";
+import { appHotkeySettings, currentTabItemHotkeyIds, normalizeAppHotkeyPreferences, type AppHotkeyId } from "./lib/app-hotkeys";
 import { selectCurrentTabItem } from "./lib/current-tab-item-hotkeys";
 import { isEditableTarget } from "./lib/editable-target";
 import { reportUiError } from "./toast-store";
@@ -37,8 +37,7 @@ export function App() {
 
   const appHotkeys = (): CreateHotkeyDefinition[] => {
     const hotkeys = normalizeAppHotkeyPreferences(harnessStore.state.appHotkeyPreferences);
-    return [
-      ...appHotkeySettings.filter((setting) => setting.id !== "focusCurrentSearch").flatMap((setting) =>
+    return appHotkeySettings.filter((setting) => setting.id !== "focusCurrentSearch").flatMap((setting) =>
       hotkeys[setting.id].map((hotkey) => ({
         hotkey: hotkey as CreateHotkeyDefinition["hotkey"],
         callback: () => handleAppHotkey(setting.id),
@@ -49,18 +48,7 @@ export function App() {
           }
         }
       }))
-      ),
-      ...Array.from({ length: 9 }, (_, index) => ({
-        hotkey: `Mod+Shift+${index + 1}` as CreateHotkeyDefinition["hotkey"],
-        callback: () => selectCurrentTabItem(harnessStore.state.activeLeftTab, index),
-        options: {
-          meta: {
-            name: `Select item ${index + 1}`,
-            description: "Select item in the current sidepanel"
-          }
-        }
-      }))
-    ];
+    );
   };
   const searchHotkeys = (): CreateHotkeyDefinition[] => {
     const hotkeys = normalizeAppHotkeyPreferences(harnessStore.state.appHotkeyPreferences);
@@ -333,6 +321,12 @@ export function App() {
 }
 
 function handleAppHotkey(id: AppHotkeyId) {
+  const currentItemIndex = currentTabItemHotkeyIds.findIndex((hotkeyId) => hotkeyId === id);
+  if (currentItemIndex >= 0) {
+    selectCurrentTabItem(harnessStore.state.activeLeftTab, currentItemIndex);
+    return;
+  }
+
   const tab = appHotkeySettings.find((setting) => setting.id === id)?.tab;
   if (tab) {
     harnessStore.setActiveLeftTab(tab);

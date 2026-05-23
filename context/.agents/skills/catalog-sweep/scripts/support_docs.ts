@@ -2,6 +2,8 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { extname, resolve } from "node:path";
 import { parseTodoRecords, type QueueState } from "./catalog_candidates";
 
+const CATALOG_DIR = "games";
+
 export type SupportDoc = {
   file: string;
   title: string;
@@ -49,7 +51,7 @@ export function readQueueState(root: string, slug: string): QueueState {
 }
 
 export function collectSupportDocs(root: string, slug: string, readmeText: string | null): SupportDoc[] {
-  const folder = resolve(root, slug);
+  const folder = resolve(root, CATALOG_DIR, slug);
   if (!existsSync(folder)) {
     return [];
   }

@@ -56,6 +56,8 @@ const defaultPreferences: PreferencesState = {
   autoCompactContextThresholdPercentDefault: 40,
   planExecutionModeDefault: "countdown",
   planExecutionDelaySecondsDefault: 10,
+  singleAgentModelPreferenceDefault: "intelligence",
+  subagentModelPreferenceDefault: "inference",
   correctnessIterationModeDefault: "ask-before-iterate",
   backgroundJobApprovalPolicyDefault: "ask-risky",
   memoryBankEnabledDefault: true,
@@ -215,12 +217,12 @@ describe("harness store reducer", () => {
     expect(store.state.chatPaneTab).toBe("chat");
     expect(store.state.assistants.selectedTab).toBe("chat");
     expect(store.state.jobsPanePreferences.segment).toBe("inbox");
-    expect(store.state.jobsRunFilter).toBe("approval");
+    expect(store.state.jobsRunFilter).toBe("all");
     expect(repaired.activeLeftTab).toBe("projects");
     expect(repaired.chatPaneTab).toBe("chat");
     expect(repaired.assistantPane?.selectedTab).toBe("chat");
     expect(repaired.jobsPane?.segment).toBe("inbox");
-    expect(repaired.jobsPane?.runFilter).toBe("approval");
+    expect(repaired.jobsPane?.runFilter).toBe("all");
   });
 
   test("persists assistant learnings tab across refresh", () => {
@@ -1174,6 +1176,35 @@ describe("harness store reducer", () => {
     expect(project?.session.messages).toHaveLength(0);
   });
 
+  test("caps live trace history per thread", () => {
+    const initialProject = createProject();
+    const projectId = initialProject.id;
+    const threadId = initialProject.activeThreadId;
+    const sessionId = initialProject.session.sessionId;
+    let state = createConnectedState(initialProject);
+
+    for (let index = 0; index < 505; index += 1) {
+      state = reduceServerEvent(state, {
+        type: "agent.trace",
+        requestId: `req-trace-${index}`,
+        payload: {
+          projectId,
+          threadId,
+          trace: {
+            sessionId,
+            stage: "subagent-start",
+            message: `trace ${index}`
+          }
+        }
+      });
+    }
+
+    const project = state.workspace.projects.find((entry) => entry.id === projectId);
+    expect(project?.traces).toHaveLength(500);
+    expect(project?.traces[0]?.message).toBe("trace 5");
+    expect(project?.traces.at(-1)?.message).toBe("trace 504");
+  });
+
   test("clears traces and plan on session reset", () => {
     const initialProject = createProject();
     const initialState = createConnectedState(initialProject);
@@ -1601,6 +1632,61 @@ describe("harness store reducer", () => {
     expect(restoredProject?.session.isStreaming).toBe(true);
     expect(restoredProject?.streamingHeartbeatMessages[0]?.content).toContain("Need routing target.");
     expect(restoredProject?.streamingAssistantText).toBe("Partial assistant");
+  });
+
+  test("routes stale streaming frames by session instead of active thread", () => {
+    const projectId = createProjectId();
+    const threadOne = "thread-1";
+    const threadTwo = "thread-2";
+    const initialProject = createWorkspaceProjectState({
+      id: projectId,
+      name: "repo-stale-frame",
+      rootPath: "C:\\repo-stale-frame",
+      activeThreadId: threadTwo,
+      threads: [
+        createProjectThreadSummary({
+          id: threadOne,
+          title: "Thread 1",
+          titleSource: "generated",
+          updatedAt: new Date().toISOString()
+        }),
+        createProjectThreadSummary({
+          id: threadTwo,
+          title: "Thread 2",
+          titleSource: "generated",
+          updatedAt: new Date().toISOString()
+        })
+      ],
+      session: {
+        ...createEmptySession(threadTwo),
+        messages: [
+          {
+            id: "thread-2-user",
+            role: "user",
+            content: "active thread text",
+            createdAt: new Date().toISOString()
+          }
+        ]
+      }
+    });
+    const initialState = createConnectedState(initialProject);
+
+    const deltaState = reduceServerEvent(initialState, {
+      type: "chat.delta",
+      requestId: "req-stale-delta",
+      payload: {
+        projectId,
+        threadId: threadTwo,
+        sessionId: threadOne,
+        delta: "background stream"
+      }
+    });
+
+    const activeProject = deltaState.workspace.projects[0];
+    expect(activeProject?.activeThreadId).toBe(threadTwo);
+    expect(activeProject?.streamingAssistantText).toBe("");
+    expect(activeProject?.threadLiveTranscriptById[threadOne]?.streamingAssistantText).toBe("background stream");
+    expect(activeProject?.threadLiveTranscriptById[threadTwo]?.streamingAssistantText).toBe("");
   });
 
   test("restores inactive thread pending question and run state when switching back", () => {
@@ -2827,6 +2913,8 @@ describe("harness store reducer", () => {
           autoCompactContextThresholdPercentDefault: 44,
           planExecutionModeDefault: "countdown",
           planExecutionDelaySecondsDefault: 10,
+          singleAgentModelPreferenceDefault: "intelligence",
+          subagentModelPreferenceDefault: "inference",
           correctnessIterationModeDefault: "ask-before-iterate",
           backgroundJobApprovalPolicyDefault: "ask-risky",
           memoryBankEnabledDefault: true,
@@ -3059,6 +3147,28 @@ describe("harness store reducer", () => {
     expect(nextState.setup.checks[0]?.id).toBe("project-selected");
   });
 
+  test("stores branchfs cleanup summaries from websocket events", () => {
+    const project = createProject();
+    const nextState = reduceServerEvent(createConnectedState(project), {
+      type: "branchfs.cleaned",
+      requestId: "req-branchfs-cleaned",
+      payload: {
+        projectId: project.id,
+        summary: {
+          rootsScanned: 4,
+          rootsDeleted: 3,
+          rootsRetained: 1,
+          bytesDeleted: 1024,
+          staleRunsStopped: 2,
+          warnings: []
+        }
+      }
+    });
+
+    expect(nextState.branchfsCleanupSummary?.rootsDeleted).toBe(3);
+    expect(nextState.branchfsCleanupSummary?.staleRunsStopped).toBe(2);
+  });
+
   test("updates usable key state from preferences events", () => {
     const nextState = reduceServerEvent(createInitialViewState(), {
       type: "preferences.saved",
@@ -3081,6 +3191,8 @@ describe("harness store reducer", () => {
         autoCompactContextThresholdPercentDefault: 40,
         planExecutionModeDefault: "countdown",
         planExecutionDelaySecondsDefault: 10,
+        singleAgentModelPreferenceDefault: "intelligence",
+        subagentModelPreferenceDefault: "inference",
         correctnessIterationModeDefault: "ask-before-iterate",
         backgroundJobApprovalPolicyDefault: "ask-risky",
         memoryBankEnabledDefault: true,

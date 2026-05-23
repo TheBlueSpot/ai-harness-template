@@ -242,7 +242,7 @@ export function buildEntry(slug: string, root = ROOT): StarterEntry {
       ? "completed"
       : "untracked";
   const reviewFreshness = buildReviewFreshnessEntries({ slug })[0];
-  const readmePath = resolve(root, slug, "README.md");
+  const readmePath = resolve(root, CATALOG_DIR, slug, "README.md");
 
   if (!existsSync(readmePath)) {
     return {
@@ -330,3 +330,4 @@ function main(): void {
 if (import.meta.main) {
   main();
 }
+const CATALOG_DIR = "games";

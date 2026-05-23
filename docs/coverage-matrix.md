@@ -125,6 +125,7 @@ New `US-*` stories start as `GAP-HIGH` here until at least one colocated or inte
 | US-WORKTREE-008 | harness/cli/src/branchfs-subagent-integration.test.ts | integration | OK |
 | US-WORKTREE-009 | harness/cli/src/pi-subagents.test.ts | unit | OK |
 | US-WORKTREE-010 | harness/cli/src/pi-subagents.test.ts, harness/cli/src/pi-orchestrator.test.ts | unit | GAP-MED |
+| US-WORKTREE-011 | harness/cli/src/branchfs-cleanup.test.ts, harness/cli/src/branchfs-manager.test.ts, harness/cli/src/protocol.test.ts, harness/ui/src/store/store.test.ts | unit+integration | OK |
 
 ## ATTACHMENTS
 
@@ -260,7 +261,7 @@ New `US-*` stories start as `GAP-HIGH` here until at least one colocated or inte
 | US-DEV-004 | harness/cli/src/launch-harness.test.ts, harness/cli/src/server.startup.test.ts | integration | GAP-LOW |
 | US-DEV-005 | harness/cli/src/launch-harness.test.ts | integration | OK |
 | US-DEV-006 | harness/cli/src/ui-build.test.ts | integration | OK |
-| US-DEV-007 | harness/cli/src/cli-options.test.ts, harness/cli/src/cli-entry.test.ts | unit | GAP-MED |
+| US-DEV-007 | harness/cli/src/cli-options.test.ts, harness/cli/src/cli-entry.test.ts, harness/cli/src/doctor-cleanup.test.ts | unit | GAP-MED |
 | US-DEV-008 | harness/cli/src/cli-entry.test.ts, harness/cli/src/cli-options.test.ts, harness/cli/src/fatal-startup-log.test.ts | unit | OK |
 | US-DEV-009 | harness/cli/src/ui-build.test.ts | integration | OK |
 | US-DEV-010 | scripts/test-runner.test.ts | unit | OK |

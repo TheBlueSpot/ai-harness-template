@@ -164,7 +164,8 @@ createUiTest("App shortcuts", () => {
       JSON.stringify({
         openProjectSwitcher: "Alt+P",
         openProjectSwitcherAlternate: "Alt+Shift+P",
-        openPreferences: "Alt+,"
+        openPreferences: "Alt+,",
+        selectCurrentItem3: "Alt+3"
       })
     );
     harnessStore.hydrateLocalPreferences();
@@ -176,6 +177,7 @@ createUiTest("App shortcuts", () => {
     expect(definitions.map((definition) => definition.hotkey)).toContain("Alt+P");
     expect(definitions.map((definition) => definition.hotkey)).toContain("Alt+Shift+P");
     expect(definitions.map((definition) => definition.hotkey)).toContain("Alt+,");
+    expect(definitions.map((definition) => definition.hotkey)).toContain("Alt+3");
   });
 
   it("disables app shortcuts while editable controls own focus", () => {

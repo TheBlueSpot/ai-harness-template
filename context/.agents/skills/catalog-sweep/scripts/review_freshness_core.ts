@@ -118,7 +118,7 @@ export function buildReviewFreshnessEntry(
       reviewSummary: buildReviewSummary(undefined),
       sourceFiles: ["./todo.md", "./user-reviews.sqlite", "./scripts/user-reviews.ts"],
       nextSteps: [
-        `Do not use player feedback as evidence for ./${slug}/ until a review row exists.`,
+        `Do not use player feedback as evidence for ./games/${slug}/ until a review row exists.`,
         `Create or import a review row for ${slug} before using taste or bug notes to guide catalog decisions.`,
         "If you later edit an existing game file, set the canonical review flag back to needsAdditionalFeedback true.",
       ],
@@ -134,7 +134,7 @@ export function buildReviewFreshnessEntry(
       reviewSummary: buildReviewSummary(row),
       sourceFiles: ["./todo.md", "./user-reviews.sqlite", "./scripts/user-reviews.ts"],
       nextSteps: [
-        `Do not use this review as evidence for ./${slug}/ until fresh feedback clears or replaces it.`,
+        `Do not use this review as evidence for ./games/${slug}/ until fresh feedback clears or replaces it.`,
         "Refresh the review, then write needsAdditionalFeedback false only when the new input is current enough to trust.",
         "Keep existing review fields; only replace the stale evidence with fresh player input.",
       ],
@@ -147,9 +147,9 @@ export function buildReviewFreshnessEntry(
     folderPresent,
     lane: "flag-after-edit",
     reviewSummary: buildReviewSummary(row),
-    sourceFiles: ["./todo.md", `./${slug}/`, "./user-reviews.sqlite", "./scripts/user-reviews.ts"],
+    sourceFiles: ["./todo.md", `./games/${slug}/`, "./user-reviews.sqlite", "./scripts/user-reviews.ts"],
     nextSteps: [
-      `If you edit any existing file in ./${slug}/, flag its review row to needsAdditionalFeedback true before finishing.`,
+      `If you edit any existing file in ./games/${slug}/, flag its review row to needsAdditionalFeedback true before finishing.`,
       "Keep the current review usable only while the slug stays unchanged or you are adding brand-new files only.",
       "After the edit lands, gather fresh feedback before using the review again for evidence or prioritization.",
     ],

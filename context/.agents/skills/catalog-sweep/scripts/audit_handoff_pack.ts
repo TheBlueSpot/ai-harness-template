@@ -63,7 +63,7 @@ type StarterPayload = {
 
 const ROOT = process.cwd();
 const TODO_PATH = resolve(ROOT, "todo.md");
-const LOCAL_ROOT = resolve(ROOT, ".local");
+const LOCAL_ROOT = resolve(ROOT, "local");
 
 export const AUDIT_CONFIG: Record<
   AuditName,
@@ -216,11 +216,11 @@ function formatGroupLabel(group: GroupMode): string {
 }
 
 function buildStarterDir(slug: string): string {
-  return `./.local/playtest-starters/${slug}`;
+  return `./local/playtest-starters/${slug}`;
 }
 
 function getAgiSnapshotOutputPath(slug: string): string {
-  return `./.local/${slug}-agi-tags.json`;
+  return `./local/${slug}-agi-tags.json`;
 }
 
 function buildAgiSnapshotCommand(slug: string, observationPath: string): string {
@@ -251,12 +251,12 @@ function toRelativePath(filePath: string): string {
 }
 
 function buildStarterCommand(slug: string, observationPath: string): string {
-  return `bun.cmd .agents/skills/playtest-evidence-capture/scripts/playtest_evidence_capture.ts --observations "${observationPath}" --out "./${slug}/playtest-evidence.md" --starter-dir "${buildStarterDir(slug)}"`;
+  return `bun.cmd .agents/skills/playtest-evidence-capture/scripts/playtest_evidence_capture.ts --observations "${observationPath}" --out "./games/${slug}/playtest-evidence.md" --starter-dir "${buildStarterDir(slug)}"`;
 }
 
 export function buildAuditCommand(slug: string, audit: AuditName): string {
   const config = AUDIT_CONFIG[audit];
-  return `bun.cmd ${config.scriptPath} --observations "${buildStarterDir(slug)}/${config.starterFile}" --out "./${slug}/${config.outputFile}"`;
+  return `bun.cmd ${config.scriptPath} --observations "${buildStarterDir(slug)}/${config.starterFile}" --out "./games/${slug}/${config.outputFile}"`;
 }
 
 function readStarterCoverage(filePath: string): StarterCoverage {
@@ -309,7 +309,7 @@ function inspectAuditStatuses(slug: string): AuditStatus[] {
       label: config.label,
       status: coverage.status,
       starterPath,
-      outputPath: `./${slug}/${config.outputFile}`,
+      outputPath: `./games/${slug}/${config.outputFile}`,
       command: buildAuditCommand(slug, audit),
       reasons: coverage.reasons,
     };
@@ -421,7 +421,7 @@ function buildEntry(root: string, report: CatalogEntryReport, selectedAudit: Aud
   const partialCount = audits.filter((audit) => audit.status === "partial").length;
   const missingCount = audits.filter((audit) => audit.status === "missing").length;
   const lane = chooseLane(readyCount, partialCount, observationPath, qualityEntry?.lane);
-  const sourceFiles = [`./todo.md`, `./${report.slug}/index.html`, `./${report.slug}/README.md`];
+  const sourceFiles = [`./todo.md`, `./games/${report.slug}/index.html`, `./games/${report.slug}/README.md`];
   const evidence: string[] = [];
   const nextSteps: string[] = [];
 
@@ -449,13 +449,13 @@ function buildEntry(root: string, report: CatalogEntryReport, selectedAudit: Aud
     }
   } else if (lane === "capture-first") {
     evidence.push(...(qualityEntry?.evidence ?? ["missing current playtest evidence for downstream audits"]));
-    nextSteps.push(...(qualityEntry?.nextSteps ?? [`Capture fresh playtest evidence for ./${report.slug}/ before opening a focused audit lane.`]));
+    nextSteps.push(...(qualityEntry?.nextSteps ?? [`Capture fresh playtest evidence for ./games/${report.slug}/ before opening a focused audit lane.`]));
   } else if (lane === "refresh-browser-first") {
     evidence.push(...(qualityEntry?.evidence ?? ["browser proof must be refreshed before audit work"]));
-    nextSteps.push(...(qualityEntry?.nextSteps ?? [`Refresh browser proof for ./${report.slug}/ before any audit.`]));
+    nextSteps.push(...(qualityEntry?.nextSteps ?? [`Refresh browser proof for ./games/${report.slug}/ before any audit.`]));
   } else {
     evidence.push(...(qualityEntry?.evidence ?? ["direct browser boot is still broken for this slug"]));
-    nextSteps.push(...(qualityEntry?.nextSteps ?? [`Repair direct browser boot for ./${report.slug}/ before any audit.`]));
+    nextSteps.push(...(qualityEntry?.nextSteps ?? [`Repair direct browser boot for ./games/${report.slug}/ before any audit.`]));
   }
 
   if (agiSnapshot.present) {
@@ -463,7 +463,7 @@ function buildEntry(root: string, report: CatalogEntryReport, selectedAudit: Aud
   } else if (observationPath) {
     nextSteps.push(`Build AGI tags from ${observationPath} with ${buildAgiSnapshotCommand(report.slug, observationPath)}`);
   } else {
-    const fallbackObservationPath = `./.local/${report.slug}-playtest.json`;
+    const fallbackObservationPath = `./local/${report.slug}-playtest.json`;
     nextSteps.push(`Build AGI tags from the playtest observation first, then run ${buildAgiSnapshotCommand(report.slug, fallbackObservationPath)}`);
   }
 

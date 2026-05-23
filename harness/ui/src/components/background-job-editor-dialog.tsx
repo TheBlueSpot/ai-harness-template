@@ -31,6 +31,7 @@ export function BackgroundJobEditorDialog() {
   const [assistantId, setAssistantId] = createSignal("");
   const [templateId, setTemplateId] = createSignal("");
   const [kind, setKind] = createSignal<BackgroundJob["kind"]>("ai-routine");
+  const [lane, setLane] = createSignal<BackgroundJob["lane"]>("exclusive");
   const [name, setName] = createSignal("");
   const [description, setDescription] = createSignal("");
   const [scheduleInput, setScheduleInput] = createSignal("");
@@ -97,6 +98,10 @@ export function BackgroundJobEditorDialog() {
   const kindOptions = () => [
     { value: "ai-routine", label: "AI routine", description: "Prompt-driven autonomous background task.", icon: <Bot class="h-3 w-3" /> },
     { value: "shell", label: "Shell", description: "Typed executable plus args/env background task.", icon: <ClipboardList class="h-3 w-3" /> }
+  ];
+  const laneOptions = () => [
+    { value: "exclusive", label: "Exclusive", description: "Serializes file edits and assistant memory updates." },
+    { value: "concurrent", label: "Concurrent", description: "For read-only observation jobs that can run elastically." }
   ];
   const modeOptions = createMemo(() => [
     { value: "", label: "Project default", description: "Use project-selected mode when job runs.", icon: <Split class="h-3 w-3" /> },
@@ -185,6 +190,7 @@ export function BackgroundJobEditorDialog() {
     setAssistantId(draft.assistantId ?? "");
     setTemplateId(draft.templateId ?? (draft.source === "create" && draft.kind === "ai-routine" ? "scheduled-task" : ""));
     setKind(draft.kind);
+    setLane(draft.lane ?? "exclusive");
     setName(draft.name);
     setDescription(draft.description);
     setScheduleInput(draft.scheduleInput);
@@ -300,6 +306,7 @@ export function BackgroundJobEditorDialog() {
           templateId: selectedTemplate()?.id ?? draft.templateId ?? undefined,
           createdFromRunId: draft.createdFromRunId,
           kind: definition.kind,
+          lane: lane(),
           name: trimmedName,
           description: description().trim() || undefined,
           status: draft.status ?? "enabled",
@@ -391,6 +398,20 @@ export function BackgroundJobEditorDialog() {
             value={kind()}
             options={kindOptions()}
             onChange={(value) => setKind(value as BackgroundJob["kind"])}
+          />
+        </label>
+
+        <label class="space-y-2">
+          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Lane</span>
+          <DropdownControl
+            kind="select"
+            ariaLabel="Select background job lane"
+            icon={<Split class="h-3.5 w-3.5" />}
+            size="md"
+            class="w-full"
+            value={lane() ?? "exclusive"}
+            options={laneOptions()}
+            onChange={(value) => setLane(value === "concurrent" ? "concurrent" : "exclusive")}
           />
         </label>
 

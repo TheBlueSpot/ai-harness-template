@@ -348,14 +348,15 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
   );
   const visibleLogs = createMemo(() => selectedLogs().filter((entry) => fuzzyMatches([entry.summary, entry.detail, entry.level, entry.detailsJson].filter(Boolean).join(" "), state.assistants.detailSearch)));
   const selectedExecutionLogs = createMemo(() =>
-    visibleLogs().map((entry) => ({
+    visibleLogs().slice(0, 500).map((entry) => ({
       id: entry.id,
       message: entry.summary,
       rowSummary: [entry.summary, entry.detail].filter(Boolean).join(" "),
       level: entry.level,
       createdAt: entry.createdAt,
       detail: entry.detail,
-      detailsJson: entry.detailsJson
+      detailsJson: entry.detailsJson,
+      detailsJsonSummary: entry.detailsJsonSummary
     }))
   );
   const selectedAssetRefs = createMemo(() =>
@@ -576,21 +577,15 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
     if (!assistant || !trimmedTitle) {
       return;
     }
-    const sortOrder = selectedTodos().length === 0 ? 0 : Math.max(...selectedTodos().map((todo) => todo.sortOrder)) + 1;
     sendCommand({
       type: "assistant.todo.update",
       requestId: createRequestId(),
       payload: {
-        todo: {
-          id: createAssistantTodoId(),
-          assistantId: assistant.id,
+        assistantId: assistant.id,
+        todoId: createAssistantTodoId(),
+        patch: {
           title: trimmedTitle,
-          description: undefined,
-          state: "pending",
-          sortOrder,
-          source: "user",
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
+          state: "pending"
         }
       }
     });
@@ -598,17 +593,17 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
   }
 
   function updateTodo(todo: AssistantTodo, patch: Partial<AssistantTodo>) {
-    const nextState = patch.state ?? todo.state;
     sendCommand({
       type: "assistant.todo.update",
       requestId: createRequestId(),
       payload: {
-        todo: {
-          ...todo,
-          ...patch,
-          updatedAt: new Date().toISOString(),
-          completedAt: nextState === "completed" ? new Date().toISOString() : undefined,
-          cancelledAt: nextState === "cancelled" ? new Date().toISOString() : undefined
+        assistantId: todo.assistantId,
+        todoId: todo.id,
+        patch: {
+          title: patch.title,
+          description: patch.description,
+          state: patch.state,
+          blockerReason: patch.blockerReason
         }
       }
     });
@@ -927,6 +922,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                 <LeftPaneSearchMenu
                   ariaLabel="Filter and sort assistants"
                   tooltip="Filter and sort assistants"
+                  activeFilterCount={activeAssistantRosterFilterCount(state)}
                   items={assistantRosterMenuItems(state)}
                 />
               }
@@ -1127,7 +1123,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                 </Show>
 
                 <Show when={activeTab() === "chat"}>
-                  <div class="grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
+                  <div class="flex min-h-0 flex-1 flex-col gap-4">
                     <section class="flex min-h-0 flex-col">
                       <div class="mb-3 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Assistant chat</div>
                       <div class="relative flex min-h-0 flex-1 flex-col">
@@ -1245,14 +1241,14 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                       />
                     </section>
 
-                    <section>
+                    <section class="shrink-0">
                       <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Working memory</div>
-                      <div class="mt-3 space-y-4 text-[0.675rem] leading-5 text-(--muted)">
-                        <div>
+                      <div class="mt-3 grid max-h-32 gap-4 overflow-auto rounded-xl border border-(--border) bg-white/55 p-3 text-[0.675rem] leading-5 text-(--muted) lg:grid-cols-[minmax(0,1fr)_minmax(16rem,24rem)]">
+                        <div class="min-w-0">
                           <div class="font-semibold text-(--foreground)">Summary</div>
                           <div class="mt-1 whitespace-pre-wrap">{selectedThread()?.memorySummary?.content ?? "No rolled summary yet."}</div>
                         </div>
-                        <div>
+                        <div class="min-w-0">
                           <div class="font-semibold text-(--foreground)">Active todos</div>
                           <ul class="mt-1 space-y-1">
                             <For each={visibleTodos().filter((todo) => isActiveTodo(todo.state)).slice(0, 8)}>
@@ -1733,6 +1729,15 @@ function assistantRosterMenuItems(state: typeof harnessStore.state): LeftPaneSea
         })
     }
   ];
+}
+
+function activeAssistantRosterFilterCount(state: typeof harnessStore.state) {
+  return [
+    state.assistants.runStateFilter,
+    state.assistants.bootstrapStateFilter,
+    state.assistants.providerBrandFilter,
+    state.assistants.projectIdFilter
+  ].filter(Boolean).length;
 }
 
 function formatAssistantRosterSortLabel(sort: AssistantRosterSort) {

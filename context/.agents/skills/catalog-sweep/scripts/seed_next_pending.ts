@@ -108,7 +108,7 @@ function buildPacket(options: CliOptions): SeedPacket {
     }
     const probe = probeSlugWorkspace(ROOT, slug);
     if (probe.folderExists) {
-      inputStatus.push(`slug folder already exists: ./${slug}/`);
+      inputStatus.push(`slug folder already exists: ./games/${slug}/`);
     }
   }
 

@@ -330,6 +330,7 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
         template?.definition.kind === "ai-routine"
           ? template.definition.subagentWorktreeStrategy ?? state.subagentWorktreeStrategyDefault
           : state.subagentWorktreeStrategyDefault,
+      lane: "exclusive",
       shellExecutable: "",
       shellArgsText: "",
       shellCwd: "",
@@ -354,6 +355,7 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
       createdFromRunId: job.createdFromRunId,
       templateId: job.templateId,
       status: job.status,
+      lane: job.lane ?? "exclusive",
       kind: job.kind,
       name: job.name,
       description: job.description ?? "",
@@ -408,7 +410,6 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
       });
     }
 
-    harnessStore.setActiveLeftTab("projects");
   }
 
   async function handleToggleNotifications() {
@@ -450,6 +451,8 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
       planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
       correctnessIterationModeDefault: state.correctnessIterationModeDefault,
       backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
+      assistantCongestionControlEnabledDefault: state.assistantCongestionControlEnabledDefault,
+      assistantMaxCongestionDefault: state.assistantMaxCongestionDefault,
       backgroundJobNotificationsEnabled
     });
   }
@@ -516,6 +519,7 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                 <LeftPaneSearchMenu
                   ariaLabel={activeSegment() === "jobs" ? "Filter and sort jobs" : "Filter and sort runs"}
                   tooltip={activeSegment() === "jobs" ? "Filter and sort jobs" : "Filter and sort runs"}
+                  activeFilterCount={activeJobsPaneFilterCount(state, activeSegment())}
                   items={jobsPaneMenuItems(state, activeSegment(), !props.segment)}
                 />
               }
@@ -550,6 +554,7 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
             </Show>
             <Show when={activeSegment() === "jobs"}>
               <LeftPaneListSection title="Jobs" count={`${jobs().length} total`} class="min-w-0">
+                <CapacityBar jobs={jobs()} />
                 <VirtualList
                   class="min-h-0 flex-1 pr-2"
                   contentClass="w-full"
@@ -607,7 +612,7 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                         <ActionButton tooltip="Delete task" icon={<Trash2 class="h-3 w-3" />} size="icon" variant="ghost" ariaLabel={`Delete ${job.name}`} onClick={(event) => { event.stopPropagation(); sendCommand({ type: "background-job.delete", requestId: createRequestId(), payload: { projectId: job.projectId, jobId: job.id } }); }} />
                       </div>
                       <div class="mt-3 break-words text-[0.675rem] leading-5 text-(--muted) [overflow-wrap:anywhere]">
-                        <div class="mt-1 text-[0.625rem] uppercase tracking-[0.14em] text-(--muted)">{job.kind} | {job.status} | {job.riskLevel}</div>
+                        <div class="mt-1 text-[0.625rem] uppercase tracking-[0.14em] text-(--muted)">{job.kind} | {job.status} | {job.riskLevel} | {job.lane ?? "exclusive"}</div>
                         <div>{job.description ?? job.scheduleInput}</div>
                         <div class="mt-1">Next: {formatJobNextRun(job, state.backgroundJobs.runs, state.backgroundJobs.schedulerHeartbeatAt)}</div>
                         <Show when={formatFailureTrackingLine(job)}>{(line) => <div>{line()}</div>}</Show>
@@ -656,7 +661,7 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                   getKey={(run) => run.id}
                   estimateSize={135}
                   pagination={{ kind: "forward", initialCount: 60, batchSize: 60 }}
-                  empty={<EmptyFilteredState message="Run history appears after first task. No runs match current search or filter." onClear={() => { harnessStore.setJobsPanePreferences({ runSearch: "" }); harnessStore.setJobsRunFilter("approval"); }} />}
+                  empty={<EmptyFilteredState message="Run history appears after first task. No runs match current search or filter." onClear={() => { harnessStore.setJobsPanePreferences({ runSearch: "" }); harnessStore.setJobsRunFilter("all"); }} />}
                 >
                   {(run) => (
                     <button
@@ -1180,7 +1185,7 @@ function jobsPaneMenuItems(
       label: "Run state",
       value: runFilterLabel(state.jobsRunFilter),
       icon: <ShieldCheck class="h-3.5 w-3.5" />,
-      items: (["approval", "queued", "running", "failed", "done"] satisfies JobsRunFilter[]).map((filter) => ({
+      items: (["all", "approval", "queued", "running", "failed", "done"] satisfies JobsRunFilter[]).map((filter) => ({
         kind: "option" as const,
         label: runFilterLabel(filter),
         icon: runFilterIcon(filter),
@@ -1195,10 +1200,20 @@ function jobsPaneMenuItems(
       icon: <Trash2 class="h-3.5 w-3.5" />,
       onSelect: () => {
         setPreferences({ runSearch: "" });
-        harnessStore.setJobsRunFilter("approval");
+        harnessStore.setJobsRunFilter("all");
       }
     }
   ];
+}
+
+function activeJobsPaneFilterCount(state: typeof harnessStore.state, segment: "jobs" | "inbox" | "health") {
+  if (segment === "jobs") {
+    return [state.jobsPanePreferences.kind, state.jobsPanePreferences.status, state.jobsPanePreferences.risk].filter(Boolean).length;
+  }
+  if (segment === "inbox") {
+    return state.jobsRunFilter === "all" ? 0 : 1;
+  }
+  return 0;
 }
 
 function formatJobSortLabel(sort: JobsPaneJobSort) {
@@ -1281,6 +1296,8 @@ function formatShare(value: number) {
 
 function matchesRunFilter(run: BackgroundJobRun, filter: JobsRunFilter) {
   switch (filter) {
+    case "all":
+      return true;
     case "approval":
       return run.status === "awaiting-approval" || run.status === "awaiting-user-input" || run.approvalStatus === "pending";
     case "queued":
@@ -1397,6 +1414,42 @@ function resolveJobNextRunAt(job: BackgroundJob) {
   return job.schedule.consumedAt ? undefined : job.schedule.runAt;
 }
 
+function CapacityBar(props: { jobs: BackgroundJob[] }) {
+  const ratio = createMemo(() => Math.max(0, ...props.jobs.map((job) => job.schedulerCongestionRatio ?? 0)));
+  const percent = createMemo(() => Math.round(ratio() * 100));
+  const status = createMemo(() => {
+    if (ratio() > 1) {
+      return `Congested (${percent()}%) - Skipping runs`;
+    }
+    if (ratio() >= 0.8) {
+      return `Tight (${percent()}%)`;
+    }
+    return `Healthy (${percent()}%)`;
+  });
+  const barClass = createMemo(() => {
+    if (ratio() > 1) {
+      return "bg-rose-500";
+    }
+    if (ratio() >= 0.8) {
+      return "bg-amber-500";
+    }
+    return "bg-emerald-500";
+  });
+  return (
+    <Tooltip content="Recurring tasks are taking longer than their frequency. Some runs will be skipped to prevent state corruption.">
+      <div class="mb-3 rounded-xl border border-(--border) bg-white/60 px-3 py-2">
+        <div class="flex items-center justify-between gap-3 text-[0.625rem] font-semibold uppercase tracking-[0.14em] text-(--muted)">
+          <span>Capacity</span>
+          <span>{status()}</span>
+        </div>
+        <div class="mt-2 h-2 overflow-hidden rounded-full bg-(--muted)/15">
+          <div class={`h-full rounded-full ${barClass()}`} style={{ width: `${Math.min(100, percent())}%` }} />
+        </div>
+      </div>
+    </Tooltip>
+  );
+}
+
 function formatJobNextRun(job: BackgroundJob, runs: BackgroundJobRun[], schedulerHeartbeatAt?: string) {
   const activeRun = findActiveJobRun(job, runs);
   if (activeRun) {
@@ -1427,8 +1480,9 @@ function formatJobNextRun(job: BackgroundJob, runs: BackgroundJobRun[], schedule
 
 function formatJobSchedulerLines(job: BackgroundJob, runs: BackgroundJobRun[], schedulerHeartbeatAt?: string) {
   const lines: string[] = [];
-  if (job.schedulerOverloaded) {
-    lines.push("Overloaded: scheduled work overlaps recent assistant runtime");
+  const congested = job.schedulerCongested ?? job.schedulerOverloaded;
+  if (congested) {
+    lines.push(`Congested (${Math.round((job.schedulerCongestionRatio ?? 0) * 100)}%): scheduled work overlaps recent exclusive-lane runtime`);
   }
   if (job.schedulerQueueReason) {
     lines.push(job.schedulerQueueReason);
@@ -1674,6 +1728,7 @@ function JobDetail(props: {
                   <div>Status: {job().status}</div>
                   <div>Kind: {job().kind}</div>
                   <div>Risk: {job().riskLevel}</div>
+                  <div>Lane: {job().lane ?? "exclusive"}</div>
                   <div>Owner: {formatJobOwner(job(), harnessStore.state)}</div>
                   <div>Schedule: {job().scheduleInput}</div>
                   <div>Next: {formatJobNextRun(job(), props.runs, props.schedulerHeartbeatAt)}</div>
@@ -1739,6 +1794,8 @@ function JobDetail(props: {
 
 function runFilterLabel(filter: JobsRunFilter) {
   switch (filter) {
+    case "all":
+      return "All";
     case "approval":
       return "Approval";
     case "queued":
@@ -1754,6 +1811,8 @@ function runFilterLabel(filter: JobsRunFilter) {
 
 function runFilterIcon(filter: JobsRunFilter) {
   switch (filter) {
+    case "all":
+      return <ListFilter class="h-3.5 w-3.5" />;
     case "approval":
       return <ShieldCheck class="h-3.5 w-3.5" />;
     case "queued":

@@ -5,6 +5,7 @@ import { cn } from "../../lib/utils";
 import { ActionButton } from "../action-button";
 import { Button } from "../primitives/button";
 import { Input } from "../primitives/input";
+import { Tooltip } from "../primitives/tooltip";
 
 export function PreferenceSection(props: { title: string; description: string; children: JSX.Element }) {
   return (
@@ -76,17 +77,28 @@ export function RangeControl(props: {
   value: number;
   min: number;
   max: number;
+  step?: number;
   suffix: string;
+  tooltip?: string;
+  formatValue?: (value: number) => string;
   onChange: (value: number) => void;
 }) {
-  const clamp = (value: number) => Math.max(props.min, Math.min(props.max, Math.round(value)));
+  const clamp = (value: number) => Math.max(props.min, Math.min(props.max, props.step ? Math.round(value / props.step) * props.step : Math.round(value)));
+  const formatValue = (value: number) => props.formatValue?.(value) ?? String(value);
+  const label = () => <span class="min-w-0 truncate text-[0.585rem] font-semibold tracking-[0.18em] text-(--muted)">{props.label}</span>;
 
   return (
     <label class="grid gap-2">
       <div class="flex min-w-0 items-center justify-between gap-3 text-xs">
-        <span class="min-w-0 truncate text-[0.585rem] font-semibold tracking-[0.18em] text-(--muted)">{props.label}</span>
+        <Show when={props.tooltip} fallback={label()}>
+          {(tooltip) => (
+            <Tooltip content={tooltip()} triggerClass="min-w-0">
+              {label()}
+            </Tooltip>
+          )}
+        </Show>
         <span class="shrink-0 rounded-lg border border-(--border) bg-white/70 px-2 py-1 font-semibold text-(--foreground)">
-          {props.value}
+          {formatValue(props.value)}
           {props.suffix}
         </span>
       </div>
@@ -96,16 +108,17 @@ export function RangeControl(props: {
         type="range"
         min={props.min}
         max={props.max}
+        step={props.step ?? 1}
         value={props.value}
         onInput={(event) => props.onChange(clamp(Number(event.currentTarget.value)))}
       />
       <div class="flex justify-between text-[0.65rem] text-(--muted)">
         <span>
-          {props.min}
+          {formatValue(props.min)}
           {props.suffix}
         </span>
         <span>
-          {props.max}
+          {formatValue(props.max)}
           {props.suffix}
         </span>
       </div>

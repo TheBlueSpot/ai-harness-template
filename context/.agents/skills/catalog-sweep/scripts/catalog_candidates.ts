@@ -35,11 +35,12 @@ export type SlugWorkspaceProbe = {
 };
 
 const NON_GAME_QUEUE_SLUGS = new Set(["context"]);
+const CATALOG_DIR = "games";
 
 const IGNORE_DIRS = new Set([
   ".agents",
   ".git",
-  ".local",
+  "local",
   "architecture",
   "assets",
   "command-protocol",
@@ -83,13 +84,14 @@ export function isGameQueueSlug(slug: string): boolean {
 }
 
 export function findCatalogFolders(root: string): string[] {
-  return readdirSync(root)
+  const catalogRoot = resolve(root, CATALOG_DIR);
+  return readdirSync(catalogRoot)
     .filter((name) => {
       if (IGNORE_DIRS.has(name) || name.startsWith(".")) {
         return false;
       }
 
-      const folderPath = resolve(root, name);
+      const folderPath = resolve(catalogRoot, name);
       if (!statSync(folderPath).isDirectory()) {
         return false;
       }
@@ -167,7 +169,7 @@ export function buildQueueSnapshot(root: string, todoRecords: Map<string, QueueR
 }
 
 export function probeSlugWorkspace(root: string, slug: string, limit = 6): SlugWorkspaceProbe {
-  const folderPath = resolve(root, slug);
+  const folderPath = resolve(root, CATALOG_DIR, slug);
   if (!existsSync(folderPath) || !statSync(folderPath).isDirectory()) {
     return {
       folderExists: false,

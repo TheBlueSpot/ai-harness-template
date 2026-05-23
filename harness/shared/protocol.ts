@@ -51,11 +51,15 @@ export const dirtyGitChangeLimitSchema = z.number().int().min(0).max(10000);
 export const autoCompactContextThresholdPercentSchema = z.number().int().min(10).max(95);
 export const preflightSeveritySchema = z.enum(["warning", "blocking"]);
 export const preflightKindSchema = z.enum(["git-dirty", "git-not-repo"]);
-export const threadTitleSourceSchema = z.enum(["generated", "custom"]);
+export const threadTitleSourceSchema = z.preprocess(
+  (value) => (value === "manual" ? "custom" : value),
+  z.enum(["generated", "custom"])
+);
 export const threadBadgeStateSchema = z.enum(["idle", "needs-input", "planning", "executing", "error", "done"]);
 export const backgroundJobKindSchema = z.enum(["ai-routine", "shell"]);
 export const backgroundJobStatusSchema = z.enum(["enabled", "paused", "disabled"]);
 export const backgroundJobSchedulerStatusSchema = z.enum(["idle", "due", "queued", "blocked", "running", "stale"]);
+export const backgroundJobLaneSchema = z.enum(["exclusive", "concurrent"]);
 export const backgroundJobRunStatusSchema = z.enum([
   "queued",
   "awaiting-approval",
@@ -133,6 +137,9 @@ export const agentTraceStageSchema = z.enum([
   "branchfs-diff-read",
   "branchfs-flushed",
   "branchfs-unmounted",
+  "branchfs-size-warning",
+  "branchfs-cleanup-warning",
+  "branchfs-cleanup-complete",
   "worktree-provision",
   "worktree-cleanup",
   "prerequisite-start",
@@ -655,6 +662,7 @@ export const backgroundJobSchema = z.object({
   name: z.string().min(1).max(256),
   description: z.string().min(1).max(1024).optional(),
   status: backgroundJobStatusSchema,
+  lane: backgroundJobLaneSchema.optional(),
   riskLevel: backgroundJobRiskLevelSchema,
   definition: backgroundJobDefinitionSchema,
   schedule: backgroundJobScheduleSchema,
@@ -672,6 +680,8 @@ export const backgroundJobSchema = z.object({
   schedulerActiveRunStartedAt: z.string().datetime().or(z.string().min(1)).optional(),
   schedulerLastProgressAt: z.string().datetime().or(z.string().min(1)).optional(),
   schedulerOverloaded: z.boolean().optional(),
+  schedulerCongested: z.boolean().optional(),
+  schedulerCongestionRatio: z.number().min(0).max(1000).optional(),
   consecutiveFailureCount: z.number().int().min(0).max(100000).optional(),
   backoffUntil: z.string().datetime().or(z.string().min(1)).optional(),
   lastFailureCategory: runFailureCategorySchema.optional(),
@@ -824,6 +834,15 @@ export const backgroundRunStatusNotificationSchema = notificationInboxItemBaseSc
   severity: notificationSeveritySchema
 });
 
+export const branchfsCleanupSummarySchema = z.object({
+  rootsScanned: z.number().int().min(0),
+  rootsDeleted: z.number().int().min(0),
+  rootsRetained: z.number().int().min(0),
+  bytesDeleted: z.number().int().min(0),
+  staleRunsStopped: z.number().int().min(0).optional(),
+  warnings: z.array(z.string().min(1).max(2000)).max(64)
+});
+
 export const cliUpdateNotificationSchema = notificationInboxItemBaseSchema.extend({
   kind: z.literal("cli-update"),
   interactive: z.literal(true),
@@ -906,6 +925,13 @@ export const assistantTodoSchema = z.object({
   cancelledAt: z.string().datetime().or(z.string().min(1)).optional()
 });
 
+export const assistantTodoPatchSchema = z.object({
+  title: z.string().trim().min(1).max(512).optional(),
+  description: z.string().min(1).max(4000).optional().nullable(),
+  state: assistantTodoStateSchema.optional(),
+  blockerReason: z.string().min(1).max(4000).optional().nullable()
+});
+
 export const assistantLearningSchema = z.object({
   id: assistantLearningIdSchema,
   assistantId: assistantIdSchema,
@@ -937,6 +963,7 @@ export const assistantLogEntrySchema = z.object({
   summary: z.string().min(1).max(1024),
   detail: z.string().min(1).max(4000).optional(),
   detailsJson: z.unknown().optional(),
+  detailsJsonSummary: z.string().min(1).max(4000).optional(),
   createdAt: z.string().datetime().or(z.string().min(1))
 });
 
@@ -998,6 +1025,9 @@ export const setupStateSchema = z.object({
   checks: z.array(setupCheckSchema).max(32)
 });
 
+export const runModelPreferenceSchema = z.enum(["inference", "intelligence"]);
+export const assistantMaxCongestionDefaultSchema = z.number().min(0.25).max(3);
+
 export const preferencesStateSchema = z.object({
   hasUsableApiKey: z.boolean(),
   hasStoredApiKey: z.boolean(),
@@ -1016,8 +1046,12 @@ export const preferencesStateSchema = z.object({
   autoCompactContextThresholdPercentDefault: autoCompactContextThresholdPercentSchema,
   planExecutionModeDefault: planExecutionModeSchema,
   planExecutionDelaySecondsDefault: z.number().int().min(0).max(300),
+  singleAgentModelPreferenceDefault: runModelPreferenceSchema.default("intelligence"),
+  subagentModelPreferenceDefault: runModelPreferenceSchema.default("inference"),
   correctnessIterationModeDefault: correctnessIterationModeSchema,
   backgroundJobApprovalPolicyDefault: backgroundJobApprovalPolicySchema,
+  assistantCongestionControlEnabledDefault: z.boolean().optional(),
+  assistantMaxCongestionDefault: assistantMaxCongestionDefaultSchema.optional(),
   autoArchiveCompletedThreadsDefault: z.boolean().optional(),
   memoryBankEnabledDefault: z.boolean(),
   memoryBankRecordRunsDefault: z.boolean().default(true),
@@ -1563,6 +1597,14 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     })
   }),
   z.object({
+    type: z.literal("branchfs.cleanup"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      mode: z.enum(["all", "retention"])
+    })
+  }),
+  z.object({
     type: z.literal("project.git.initBaseline"),
     requestId: requestIdSchema,
     payload: z.object({
@@ -2098,7 +2140,9 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     type: z.literal("assistant.todo.update"),
     requestId: requestIdSchema,
     payload: z.object({
-      todo: assistantTodoSchema
+      assistantId: assistantIdSchema,
+      todoId: assistantTodoIdSchema,
+      patch: assistantTodoPatchSchema
     })
   }),
   z.object({
@@ -2283,8 +2327,12 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       autoCompactContextThresholdPercentDefault: autoCompactContextThresholdPercentSchema,
       planExecutionModeDefault: planExecutionModeSchema,
       planExecutionDelaySecondsDefault: z.number().int().min(0).max(300),
+      singleAgentModelPreferenceDefault: runModelPreferenceSchema.optional(),
+      subagentModelPreferenceDefault: runModelPreferenceSchema.optional(),
       correctnessIterationModeDefault: correctnessIterationModeSchema,
       backgroundJobApprovalPolicyDefault: backgroundJobApprovalPolicySchema,
+      assistantCongestionControlEnabledDefault: z.boolean().optional(),
+      assistantMaxCongestionDefault: assistantMaxCongestionDefaultSchema.optional(),
       autoArchiveCompletedThreadsDefault: z.boolean().optional(),
       memoryBankEnabledDefault: z.boolean().optional(),
       memoryBankRecordRunsDefault: z.boolean().optional(),
@@ -2814,6 +2862,14 @@ export const serverEventSchema = z.discriminatedUnion("type", [
     })
   }),
   z.object({
+    type: z.literal("branchfs.cleaned"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      summary: branchfsCleanupSummarySchema
+    })
+  }),
+  z.object({
     type: z.literal("preferences.providerConnectionTested"),
     requestId: requestIdSchema,
     payload: z.object({
@@ -2904,6 +2960,7 @@ export type ProviderBrand = z.infer<typeof providerBrandSchema>;
 export type RuntimeKind = z.infer<typeof runtimeKindSchema>;
 export type ModelDiscoveryConfidence = z.infer<typeof modelDiscoveryConfidenceSchema>;
 export type ComposerReasoningStrength = z.infer<typeof composerReasoningStrengthSchema>;
+export type RunModelPreference = z.infer<typeof runModelPreferenceSchema>;
 export type SetupLaunchMode = z.infer<typeof setupLaunchModeSchema>;
 export type SetupCheckStatus = z.infer<typeof setupCheckStatusSchema>;
 export type SetupActionKind = z.infer<typeof setupActionKindSchema>;
@@ -2918,6 +2975,7 @@ export type ThreadBadgeState = z.infer<typeof threadBadgeStateSchema>;
 export type BackgroundJobKind = z.infer<typeof backgroundJobKindSchema>;
 export type BackgroundJobStatus = z.infer<typeof backgroundJobStatusSchema>;
 export type BackgroundJobSchedulerStatus = z.infer<typeof backgroundJobSchedulerStatusSchema>;
+export type BackgroundJobLane = z.infer<typeof backgroundJobLaneSchema>;
 export type BackgroundJobRunStatus = z.infer<typeof backgroundJobRunStatusSchema>;
 export type BackgroundJobRiskLevel = z.infer<typeof backgroundJobRiskLevelSchema>;
 export type BackgroundJobApprovalPolicy = z.infer<typeof backgroundJobApprovalPolicySchema>;
@@ -2973,6 +3031,7 @@ export type NotificationInboxState = z.infer<typeof notificationInboxStateSchema
 export type ExperimentRunStatus = z.infer<typeof experimentRunStatusSchema>;
 export type ExperimentRun = z.infer<typeof experimentRunSchema>;
 export type ExperimentInspection = z.infer<typeof experimentInspectionSchema>;
+export type BranchfsCleanupSummary = z.infer<typeof branchfsCleanupSummarySchema>;
 export type MemoryEntryKind = z.infer<typeof memoryEntryKindSchema>;
 export type MemoryEntryStatus = z.infer<typeof memoryEntryStatusSchema>;
 export type MemoryConfidence = z.infer<typeof memoryConfidenceSchema>;
@@ -2997,6 +3056,7 @@ export type AssistantActionPlanningIntent = z.infer<typeof assistantActionPlanni
 export type Assistant = z.infer<typeof assistantSchema>;
 export type AssistantThread = z.infer<typeof assistantThreadSchema>;
 export type AssistantTodo = z.infer<typeof assistantTodoSchema>;
+export type AssistantTodoPatch = z.infer<typeof assistantTodoPatchSchema>;
 export type AssistantLearning = z.infer<typeof assistantLearningSchema>;
 export type AssistantQuestion = z.infer<typeof assistantQuestionSchema>;
 export type AssistantLogEntry = z.infer<typeof assistantLogEntrySchema>;

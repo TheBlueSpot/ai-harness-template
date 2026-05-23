@@ -116,18 +116,18 @@ function buildSeedPacket(candidate: PendingSeedCandidate | undefined): SeedPacke
 
   const workspaceProbe = probeSlugWorkspace(ROOT, candidate.slug);
   const starterPaths = [
-    `./${candidate.slug}/`,
-    `./${candidate.slug}/index.html`,
-    `./${candidate.slug}/README.md`,
+    `./games/${candidate.slug}/`,
+    `./games/${candidate.slug}/index.html`,
+    `./games/${candidate.slug}/README.md`,
   ];
   const starterSteps = workspaceProbe.folderExists
     ? [
-        `Keep work isolated inside ./${candidate.slug}/ and restore direct browser boot with ./index.html.`,
+        `Keep work isolated inside ./games/${candidate.slug}/ and restore direct browser boot with ./index.html.`,
         "Write a concise README.md that stays high level and says how to launch the folder locally.",
         "Keep the first scaffold plain local HTML, CSS, and JS paths so direct file boot works before polish.",
       ]
     : [
-        `Create the top-level folder ./${candidate.slug}/ for this one queued game.`,
+        `Create the top-level folder ./games/${candidate.slug}/ for this one queued game.`,
         "Add index.html first so direct browser boot exists before deeper implementation.",
         "Add a concise README.md with premise, controls, and the local launch path only.",
       ];

@@ -2,6 +2,7 @@ import { copyFile, lstat, mkdir, readFile, readdir, readlink, rm, stat, symlink,
 import path from "node:path";
 import { createHash } from "node:crypto";
 import type { AgentTrace, ExperimentInspection, ExperimentRun } from "../../shared/protocol";
+import { DEFAULT_BRANCHFS_RETENTION, pruneBranchfsRoots } from "./branchfs-cleanup";
 
 type BranchfsTrace = {
   stage: AgentTrace["stage"];
@@ -34,6 +35,22 @@ type BranchfsManifest = {
   deletedRelativePaths: string[];
 };
 
+type BranchfsWarning = {
+  kind: "large-materialization";
+  message: string;
+  estimatedBytes: number;
+};
+
+type BranchfsMaterializationPlan = {
+  repoRoot: string;
+  projectRelativePath: string;
+  includedPaths: string[];
+  passthroughDirectories: string[];
+  estimatedBytes: number;
+  estimatedFiles: number;
+  warnings: BranchfsWarning[];
+};
+
 export type BranchfsExecutionContext = {
   rootPath: string;
   runId: string;
@@ -54,6 +71,8 @@ export type BranchfsExperimentLease = {
 const BRANCHFS_DIRNAME = ".local/branchfs";
 const PASSTHROUGH_DIRECTORIES = ["node_modules", "dist", ".bun"];
 const GIT_EXECUTABLE = process.platform === "win32" ? "git.exe" : "git";
+const LARGE_MATERIALIZATION_BYTES = 2 * 1024 * 1024 * 1024;
+const LARGE_MATERIALIZATION_FILES = 50000;
 
 // Current BranchFS is a local materialized mount shim with isolated diff/flush semantics.
 // It preserves the command surface for a future true CoW virtual filesystem.
@@ -80,82 +99,116 @@ export class BranchfsManager {
     const metaPath = path.join(runRoot, "meta");
     const manifestPath = path.join(metaPath, "manifest.json");
 
-    await rm(runRoot, { recursive: true, force: true }).catch(() => undefined);
-    await mkdir(repoMountPath, { recursive: true });
-    await mkdir(baseProjectPath, { recursive: true });
-    await mkdir(dirtySeedPath, { recursive: true });
-    await mkdir(upperPath, { recursive: true });
-    await mkdir(metaPath, { recursive: true });
-
-    const baseCommitSha = await this.resolveHeadCommit(repoRoot);
-    const baseBranchName = await this.resolveBranchName(repoRoot);
-    const dirtyEntries = await this.readDirtyStatus(repoRoot, projectRelativePath);
-    const baseDirtyFingerprint = await this.computeDirtyFingerprint(repoRoot, dirtyEntries);
-
-    await this.materializeMount(repoRoot, repoMountPath, runRoot);
-    await this.captureDirtySeed(repoRoot, dirtySeedPath, dirtyEntries);
-    this.emitTrace({
-      stage: "branchfs-inherit-dirty",
-      message: "Inherited base dirty state into BranchFS mount",
-      detail: dirtyEntries.length > 0 ? dirtyEntries.map((entry) => entry.path).join(", ") : "clean"
+    await pruneBranchfsRoots({ repoRoot, mode: "retention", retention: DEFAULT_BRANCHFS_RETENTION }).catch((error: unknown) => {
+      this.emitTrace({
+        stage: "branchfs-cleanup-warning",
+        message: "BranchFS retention cleanup failed",
+        detail: formatError(error)
+      });
     });
 
-    await this.snapshotProjectBaseline(projectMountPath, baseProjectPath);
-    const baselineFiles = await hashTree(baseProjectPath);
-    const virtualBranchName = `ai-experiment/${this.context.runId}`;
-    const createdAt = new Date().toISOString();
-    const experiment: ExperimentRun = {
-      id: this.context.runId,
-      runId: this.context.runId,
-      status: "prepared",
-      virtualBranchName,
-      repoMountPath,
-      projectMountPath,
-      baseCommitSha,
-      baseBranchName,
-      baseDirtyFingerprint,
-      filesChanged: 0,
-      insertions: 0,
-      deletions: 0,
-      createdAt,
-      updatedAt: createdAt
-    };
-    const manifest: BranchfsManifest = {
-      runId: this.context.runId,
-      repoRoot,
-      projectRelativePath,
-      baseCommitSha,
-      baseBranchName,
-      baseDirtyFingerprint,
-      virtualBranchName,
-      passthroughDirectories: PASSTHROUGH_DIRECTORIES.filter((entry) => pathExists(path.join(repoRoot, entry))),
-      createdAt,
-      baselineFiles,
-      deletedRelativePaths: []
-    };
-    await writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
-    this.emitTrace({
-      stage: "branchfs-mounted",
-      message: "Mounted BranchFS experiment workspace",
-      detail: projectMountPath
-    });
+    try {
+      await rm(runRoot, { recursive: true, force: true }).catch(() => undefined);
+      await mkdir(repoMountPath, { recursive: true });
+      await mkdir(baseProjectPath, { recursive: true });
+      await mkdir(dirtySeedPath, { recursive: true });
+      await mkdir(upperPath, { recursive: true });
+      await mkdir(metaPath, { recursive: true });
 
-    return {
-      experiment,
-      repoRoot,
-      projectRelativePath,
-      repoMountPath,
-      projectMountPath,
-      baseProjectPath,
-      manifestPath,
-      dirtySeedPath,
-      upperPath
-    };
+      const baseCommitSha = await this.resolveHeadCommit(repoRoot);
+      const baseBranchName = await this.resolveBranchName(repoRoot);
+      const dirtyEntries = await this.readDirtyStatus(repoRoot, projectRelativePath);
+      const baseDirtyFingerprint = await this.computeDirtyFingerprint(repoRoot, dirtyEntries);
+      const materializationPlan = await this.createMaterializationPlan(repoRoot, projectRelativePath);
+      for (const warning of materializationPlan.warnings) {
+        this.emitTrace({
+          stage: "branchfs-size-warning",
+          message: warning.message,
+          detail: `${formatBytes(warning.estimatedBytes)} across ${materializationPlan.estimatedFiles} files`
+        });
+      }
+
+      await this.materializeMount(materializationPlan, repoMountPath, runRoot);
+      await this.captureDirtySeed(repoRoot, dirtySeedPath, dirtyEntries);
+      this.emitTrace({
+        stage: "branchfs-inherit-dirty",
+        message: "Inherited base dirty state into BranchFS mount",
+        detail: dirtyEntries.length > 0 ? dirtyEntries.map((entry) => entry.path).join(", ") : "clean"
+      });
+
+      await this.snapshotProjectBaseline(projectMountPath, baseProjectPath);
+      const baselineFiles = await hashTree(baseProjectPath);
+      const virtualBranchName = `ai-experiment/${this.context.runId}`;
+      const createdAt = new Date().toISOString();
+      const experiment: ExperimentRun = {
+        id: this.context.runId,
+        runId: this.context.runId,
+        status: "prepared",
+        virtualBranchName,
+        repoMountPath,
+        projectMountPath,
+        baseCommitSha,
+        baseBranchName,
+        baseDirtyFingerprint,
+        filesChanged: 0,
+        insertions: 0,
+        deletions: 0,
+        createdAt,
+        updatedAt: createdAt
+      };
+      const manifest: BranchfsManifest = {
+        runId: this.context.runId,
+        repoRoot,
+        projectRelativePath,
+        baseCommitSha,
+        baseBranchName,
+        baseDirtyFingerprint,
+        virtualBranchName,
+        passthroughDirectories: materializationPlan.passthroughDirectories,
+        createdAt,
+        baselineFiles,
+        deletedRelativePaths: []
+      };
+      await writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
+      this.emitTrace({
+        stage: "branchfs-mounted",
+        message: "Mounted BranchFS experiment workspace",
+        detail: projectMountPath
+      });
+
+      return {
+        experiment,
+        repoRoot,
+        projectRelativePath,
+        repoMountPath,
+        projectMountPath,
+        baseProjectPath,
+        manifestPath,
+        dirtySeedPath,
+        upperPath
+      };
+    } catch (error) {
+      await rm(runRoot, { recursive: true, force: true })
+        .then(() => {
+          this.emitTrace({
+            stage: "branchfs-unmounted",
+            message: "Unmounted failed BranchFS experiment workspace"
+          });
+        })
+        .catch((cleanupError: unknown) => {
+          this.emitTrace({
+            stage: "branchfs-cleanup-warning",
+            message: "Failed to clean up partial BranchFS workspace",
+            detail: formatError(cleanupError)
+          });
+        });
+      throw error;
+    }
   }
 
   async readInspection(lease: BranchfsExperimentLease): Promise<ExperimentInspection> {
     const changedPaths = await collectChangedPaths(lease.baseProjectPath, lease.projectMountPath);
-    const diffText = await this.diffDirectories(lease.baseProjectPath, lease.projectMountPath);
+    const diffText = await this.diffDirectories(lease.baseProjectPath, lease.projectMountPath, changedPaths);
     const { insertions, deletions } = summarizeDiffText(diffText);
     const inspectedAt = new Date().toISOString();
     this.emitTrace({
@@ -220,22 +273,62 @@ export class BranchfsManager {
     });
   }
 
-  private async materializeMount(repoRoot: string, repoMountPath: string, runRoot: string) {
-    const excluded = new Set([".git", ".local"]);
-    const entries = await readdir(repoRoot, { withFileTypes: true });
-    for (const entry of entries) {
-      if (excluded.has(entry.name)) {
+  private async createMaterializationPlan(repoRoot: string, projectRelativePath: string): Promise<BranchfsMaterializationPlan> {
+    const result = await this.runCommand(
+      [GIT_EXECUTABLE, "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+      repoRoot
+    );
+    const includedPaths = result.stdout
+      .split("\0")
+      .filter(Boolean)
+      .map((entry) => entry.replace(/\\/g, "/"))
+      .filter((entry) => !isExcludedMaterializationPath(entry))
+      .sort();
+    const passthroughDirectories = PASSTHROUGH_DIRECTORIES.filter((entry) => pathExists(path.join(repoRoot, entry)));
+    let estimatedBytes = 0;
+    let estimatedFiles = 0;
+    for (const relativePath of includedPaths) {
+      const entryStats = await lstat(path.join(repoRoot, relativePath)).catch(() => undefined);
+      if (!entryStats || entryStats.isSymbolicLink() || !entryStats.isFile()) {
         continue;
       }
+      estimatedBytes += entryStats.size;
+      estimatedFiles += 1;
+    }
+    const warnings: BranchfsWarning[] = [];
+    if (estimatedBytes > LARGE_MATERIALIZATION_BYTES || estimatedFiles > LARGE_MATERIALIZATION_FILES) {
+      warnings.push({
+        kind: "large-materialization",
+        message: "BranchFS materialization is large; continuing automatically",
+        estimatedBytes
+      });
+    }
+    return {
+      repoRoot,
+      projectRelativePath,
+      includedPaths,
+      passthroughDirectories,
+      estimatedBytes,
+      estimatedFiles,
+      warnings
+    };
+  }
 
-      const sourcePath = path.join(repoRoot, entry.name);
-      const targetPath = path.join(repoMountPath, entry.name);
-      if (entry.isDirectory() && PASSTHROUGH_DIRECTORIES.includes(entry.name)) {
-        await symlink(sourcePath, targetPath, "junction");
+  private async materializeMount(plan: BranchfsMaterializationPlan, repoMountPath: string, runRoot: string) {
+    for (const directory of plan.passthroughDirectories) {
+      await mkdir(path.dirname(path.join(repoMountPath, directory)), { recursive: true });
+      await symlink(path.join(plan.repoRoot, directory), path.join(repoMountPath, directory), "junction");
+    }
+
+    for (const relativePath of plan.includedPaths) {
+      if (isWithinPassthrough(relativePath)) {
         continue;
       }
-
-      await copyRecursiveRobust(sourcePath, targetPath);
+      const sourceStats = await lstatIfPresent(path.join(plan.repoRoot, relativePath));
+      if (!sourceStats) {
+        continue;
+      }
+      await copyRecursiveRobust(path.join(plan.repoRoot, relativePath), path.join(repoMountPath, relativePath));
     }
 
     await mkdir(path.join(runRoot, "upper"), { recursive: true });
@@ -306,7 +399,8 @@ export class BranchfsManager {
       hash.update(entry.path);
       const targetPath = path.join(repoRoot, entry.path);
       if (await pathExists(targetPath)) {
-        hash.update(await readFile(targetPath));
+        const content = await readFileIfPresent(targetPath);
+        hash.update(content ?? "<deleted>");
       } else {
         hash.update("<deleted>");
       }
@@ -314,7 +408,7 @@ export class BranchfsManager {
     return hash.digest("hex");
   }
 
-  private async diffDirectories(baseDir: string, nextDir: string) {
+  private async diffDirectories(baseDir: string, nextDir: string, changedPaths: string[] = []) {
     const result = await this.tryRunCommand(
       [GIT_EXECUTABLE, "diff", "--no-index", "--binary", "--", baseDir, nextDir],
       this.context.rootPath
@@ -322,7 +416,10 @@ export class BranchfsManager {
     if (result.exitCode !== 0 && result.exitCode !== 1) {
       throw new Error(result.detail);
     }
-    return result.stdout;
+    if (result.stdout.trim().length > 0 || changedPaths.length === 0) {
+      return result.stdout;
+    }
+    return createSimpleDiffText(baseDir, nextDir, changedPaths);
   }
 
   private emitTrace(trace: BranchfsTrace) {
@@ -380,21 +477,77 @@ async function collectDeletedPaths(baseDir: string, nextDir: string) {
     .sort();
 }
 
+async function createSimpleDiffText(baseDir: string, nextDir: string, changedPaths: string[]) {
+  const diffs: string[] = [];
+  for (const relativePath of changedPaths) {
+    const basePath = path.join(baseDir, relativePath);
+    const nextPath = path.join(nextDir, relativePath);
+    const [baseStats, nextStats] = await Promise.all([lstatIfPresent(basePath), lstatIfPresent(nextPath)]);
+    if (baseStats?.isSymbolicLink() || nextStats?.isSymbolicLink() || baseStats?.isDirectory() || nextStats?.isDirectory()) {
+      continue;
+    }
+    const [baseContent, nextContent] = await Promise.all([
+      baseStats?.isFile() ? readFileIfPresent(basePath) : undefined,
+      nextStats?.isFile() ? readFileIfPresent(nextPath) : undefined
+    ]);
+    const lines = [
+      `diff --git a/${relativePath} b/${relativePath}`,
+      baseContent ? `--- a/${relativePath}` : "--- /dev/null",
+      nextContent ? `+++ b/${relativePath}` : "+++ /dev/null",
+      "@@"
+    ];
+    for (const line of splitDiffLines(baseContent)) {
+      lines.push(`-${line}`);
+    }
+    for (const line of splitDiffLines(nextContent)) {
+      lines.push(`+${line}`);
+    }
+    diffs.push(lines.join("\n"));
+  }
+  return diffs.join("\n");
+}
+
+function splitDiffLines(content: Buffer | undefined) {
+  if (!content) {
+    return [];
+  }
+  const lines = content.toString("utf8").split(/\r?\n/);
+  if (lines.at(-1) === "") {
+    lines.pop();
+  }
+  return lines;
+}
+
 async function hashTree(rootPath: string, currentPath: string = rootPath, results: Record<string, string> = {}) {
   if (!(await pathExists(currentPath))) {
     return results;
   }
 
-  const entryStats = await stat(currentPath);
+  const entryStats = await lstatIfPresent(currentPath);
+  if (!entryStats) {
+    return results;
+  }
+  if (entryStats.isSymbolicLink()) {
+    return results;
+  }
   if (entryStats.isFile()) {
     const relativePath = path.relative(rootPath, currentPath).replace(/\\/g, "/");
+    const content = await readFileIfPresent(currentPath);
+    if (!content) {
+      return results;
+    }
     const hash = createHash("sha256");
-    hash.update(await readFile(currentPath));
+    hash.update(content);
     results[relativePath] = hash.digest("hex");
     return results;
   }
 
-  const entries = await readdir(currentPath, { withFileTypes: true });
+  const entries = await readdir(currentPath, { withFileTypes: true }).catch((error: unknown) => {
+    if (isMissingPathError(error)) {
+      return [];
+    }
+    throw error;
+  });
   for (const entry of entries) {
     await hashTree(rootPath, path.join(currentPath, entry.name), results);
   }
@@ -484,6 +637,37 @@ async function pathExists(targetPath: string) {
   return (await stat(targetPath).catch(() => undefined)) !== undefined;
 }
 
+async function statIfPresent(targetPath: string) {
+  return stat(targetPath).catch((error: unknown) => {
+    if (isMissingPathError(error)) {
+      return undefined;
+    }
+    throw error;
+  });
+}
+
+async function lstatIfPresent(targetPath: string) {
+  return lstat(targetPath).catch((error: unknown) => {
+    if (isMissingPathError(error)) {
+      return undefined;
+    }
+    throw error;
+  });
+}
+
+async function readFileIfPresent(targetPath: string) {
+  return readFile(targetPath).catch((error: unknown) => {
+    if (isMissingPathError(error)) {
+      return undefined;
+    }
+    throw error;
+  });
+}
+
+function isMissingPathError(error: unknown) {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+}
+
 async function copyRecursiveRobust(sourcePath: string, targetPath: string) {
   const sourceStats = await withFsRetry(() => lstat(sourcePath));
   if (sourceStats.isSymbolicLink()) {
@@ -507,6 +691,34 @@ async function copyRecursiveRobust(sourcePath: string, targetPath: string) {
     await mkdir(path.dirname(targetPath), { recursive: true });
     await copyFile(sourcePath, targetPath);
   });
+}
+
+function isExcludedMaterializationPath(relativePath: string) {
+  return (
+    relativePath === ".git" ||
+    relativePath.startsWith(".git/") ||
+    relativePath === ".local" ||
+    relativePath.startsWith(".local/") ||
+    isWithinPassthrough(relativePath)
+  );
+}
+
+function isWithinPassthrough(relativePath: string) {
+  return PASSTHROUGH_DIRECTORIES.some((directory) => relativePath === directory || relativePath.startsWith(`${directory}/`));
+}
+
+function formatBytes(bytes: number) {
+  if (bytes >= 1024 * 1024 * 1024) {
+    return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
+  }
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  }
+  return `${bytes} bytes`;
+}
+
+function formatError(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 async function withFsRetry<T>(operation: () => Promise<T>) {

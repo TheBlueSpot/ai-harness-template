@@ -5,7 +5,7 @@ import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { ExecutionPlanDialog } from "./execution-plan-dialog";
 import { harnessStore } from "../harness-store";
 import { clearBrowserStateForTests, seedHarnessStoreForTests } from "../utils/tests/store-test-utils";
-import { createExecutionPlanFixture, createHarnessStateFixture } from "../utils/tests/test-fixtures";
+import { createExecutionPlanFixture, createHarnessStateFixture, createViewProjectFixture } from "../utils/tests/test-fixtures";
 
 createUiTest("ExecutionPlanDialog", () => {
   beforeEach(() => {
@@ -86,5 +86,33 @@ createUiTest("ExecutionPlanDialog", () => {
 
     fireEvent.click(backdrop);
     expect(harnessStore.state.executionPlanDialogOpen).toBe(false);
+  });
+
+  it("shows branchfs size warning badge from active project traces", () => {
+    const plan = createExecutionPlanFixture();
+    const project = createViewProjectFixture({
+      id: "project-plan-warning",
+      traces: [
+        {
+          sessionId: "session-1",
+          stage: "branchfs-size-warning",
+          message: "BranchFS materialization is large"
+        }
+      ]
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        executionPlanDialogOpen: true,
+        selectedExecutionPlan: plan,
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ExecutionPlanDialog executionPlan={harnessStore.state.selectedExecutionPlan} />);
+
+    expect(screen.getByText("BranchFS large")).not.toBeNull();
   });
 });

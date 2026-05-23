@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chip's Challenge Circuit</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="shell">
+    <header class="hud">
+      <div>
+        <p class="label">Level</p>
+        <h1 id="level-name">Chip's Challenge Circuit</h1>
+      </div>
+      <div class="stats">
+        <div class="stat">
+          <span class="label">Chips Left</span>
+          <strong id="chips-left">0</strong>
+        </div>
+        <div class="stat">
+          <span class="label">Keys</span>
+          <strong id="keys-held">-</strong>
+        </div>
+        <div class="stat">
+          <span class="label">Boots</span>
+          <strong id="boots-held">-</strong>
+        </div>
+      </div>
+    </header>
+
+    <main class="board-wrap">
+      <canvas id="board" width="528" height="432" aria-label="Puzzle board"></canvas>
+
+      <section id="overlay" class="overlay">
+        <div class="panel">
+          <p class="eyebrow" id="overlay-kicker">Puzzle Routing</p>
+          <h2 id="overlay-title">Chip's Challenge Circuit</h2>
+          <p id="overlay-copy">Collect every chip, route through doors, grab boots before hazards, and let force floors shove you only when the line is safe.</p>
+          <div class="overlay-actions">
+            <button id="primary-action" type="button">Start Run</button>
+            <button id="restart-action" type="button">Restart Level</button>
+          </div>
+          <p class="controls">Move: Arrow keys or WASD. Restart: R. Continue: Enter.</p>
+        </div>
+      </section>
+    </main>
+
+    <footer class="status-bar">
+      <p id="status-text">Collect the chips and unlock the exit.</p>
+    </footer>
+  </div>
+
+  <script type="module" src="./game.js"></script>
+</body>
+</html>

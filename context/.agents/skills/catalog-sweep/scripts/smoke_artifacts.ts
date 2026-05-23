@@ -2,6 +2,7 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 
 const LOCAL_DIR = ".local";
+const CATALOG_DIR = "games";
 const IGNORE_CONTENT_EXTENSIONS = new Set([".md"]);
 const EVIDENCE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".json", ".txt"]);
 const EVIDENCE_NAME_TOKENS = ["autoplay", "patrol", "play", "smoke", "screenshot", "verify"];
@@ -20,7 +21,7 @@ export type SmokeStatus =
 
 export function inspectSmokeArtifacts(root: string, slug: string): SmokeStatus {
   const localRoot = resolve(root, LOCAL_DIR);
-  const entryRoot = resolve(root, slug);
+  const entryRoot = resolve(root, CATALOG_DIR, slug);
   const latestContent = findLatestContentTimestamp(entryRoot);
 
   if (!existsSync(localRoot) || !latestContent) {

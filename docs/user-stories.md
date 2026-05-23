@@ -20,7 +20,7 @@ Roles: `user`, `developer`, `reviewer`.
 | RUNS | 16 |
 | PROVIDERS | 7 |
 | RUNTIMES | 6 |
-| WORKTREE | 10 |
+| WORKTREE | 11 |
 | ATTACHMENTS | 4 |
 | MODES | 7 |
 | ASSISTANTS | 4 |
@@ -211,6 +211,8 @@ US-WORKTREE-009: As a user, I see same-worktree scaffold and import-root work ru
 
 US-WORKTREE-010: As a user, I see subagents avoid visible browser or dev-server verification, guessed skill paths, unnecessary media conversion probes, and brittle Windows search quoting so background work stays focused. (README L176)
 
+US-WORKTREE-011: As a user, BranchFS stays automatic while ignored local data is excluded, old or failed roots are pruned, large materialization is quietly surfaced, and manual cleanup is available from Preferences so isolated work remains useful without consuming unbounded disk. (BranchFS maintenance)
+
 ### ATTACHMENTS
 
 US-ATTACHMENTS-001: As a user, I attach screenshots, PDFs, and text or office-doc specs through UploadThing-backed attachments that persist with chat history and route into prompts. (README L16)
@@ -253,7 +255,7 @@ US-ASSISTANTS-005: As a user, assistant operators make reasonable assumptions, s
 
 ### JOBS
 
-US-JOBS-001: As a user, I use local scheduled tasks and background jobs with durable SQLite history, startup catch-up, approval policy defaults, hidden automation threads, renewable ownership leases, visible due, blocked, stale, concurrent launch, timeout, progress, overload scheduler state, and a dedicated health view for recent reliability. (README L22)
+US-JOBS-001: As a user, I use local scheduled tasks and background jobs with durable SQLite history, startup catch-up, approval policy defaults, hidden automation threads, renewable ownership leases, visible due, blocked, stale, concurrent launch, timeout, progress, congestion/capacity scheduler state, and a dedicated health view for recent reliability. (README L22)
 
 US-JOBS-002: As a user, I use searchable and filterable Jobs, Runs, and Health tabs to inspect scheduled work, approval-needed runs, failures, concise execution milestones, backoff-blocked jobs, dominant failure classes, and prompt repetition outside normal project chat threads. (README L102)
 
@@ -393,7 +395,7 @@ US-DEV-005: As a developer, I see dev and bootstrap retry on a random open port 
 
 US-DEV-006: As a developer, I run `bun run build:ui` which builds the browser bundle through `Bun.build` with Solid and Tailwind plugin support. (README L119)
 
-US-DEV-007: As a developer, I run `bun run doctor` which prints the shared activation and runtime health report and exits non-zero when required first-task checks fail. (README L120)
+US-DEV-007: As a developer, I run `bun run doctor` which prints the shared activation and runtime health report, trims oversized `.local` artifacts, and exits non-zero when required first-task checks fail. (README L120)
 
 US-DEV-008: As a developer, I run `bun run package:launcher` which builds a portable Bun launcher folder for the current OS target, and launcher startup failures write a timestamped crash log beside the executable before exit. (README L121)
 

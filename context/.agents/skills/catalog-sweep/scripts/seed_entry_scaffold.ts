@@ -115,7 +115,7 @@ function buildScaffoldPacket(candidate: SeedCandidate | undefined, options: CliO
   }
 
   const workspaceProbe = probeSlugWorkspace(ROOT, candidate.slug);
-  const folder = `./${candidate.slug}`;
+  const folder = `./games/${candidate.slug}`;
   const filePlans = [
     buildFilePlan(candidate.slug, "index.html"),
     buildFilePlan(candidate.slug, "styles.css"),
@@ -154,8 +154,8 @@ function buildScaffoldPacket(candidate: SeedCandidate | undefined, options: CliO
 }
 
 function buildFilePlan(slug: string, fileName: string): FilePlan {
-  const relativePath = `./${slug}/${fileName}`;
-  const exists = existsSync(resolve(ROOT, slug, fileName));
+  const relativePath = `./games/${slug}/${fileName}`;
+  const exists = existsSync(resolve(ROOT, "games", slug, fileName));
 
   return {
     path: relativePath,
@@ -305,7 +305,7 @@ function applyScaffold(packet: ScaffoldPacket): void {
     return;
   }
 
-  mkdirSync(resolve(ROOT, packet.slug), { recursive: true });
+  mkdirSync(resolve(ROOT, "games", packet.slug), { recursive: true });
 
   for (const plan of packet.filePlans) {
     if (plan.action === "skip") {

@@ -11,6 +11,8 @@ import {
   type AssistantQuestion,
   type AssistantTodo,
   type AssistantThread,
+  type AgentId,
+  type AgentRuntimeCapability,
   type ChatMessage,
   type ComposerReasoningStrength,
   type ModeDefinition,
@@ -397,7 +399,7 @@ export class AssistantManager {
     }
   }
 
-  async answerQuestion(assistantId: string, questionId: string, content: string) {
+  async answerQuestion(assistantId: string, questionId: string, content: string, options: { reprioritize?: boolean } = {}) {
     const question = this.repository.answerAssistantQuestion(assistantId, questionId, content.trim());
     for (const todoId of question.linkedTodoIds ?? []) {
       const todo = this.repository.getAssistantTodos(assistantId).find((entry) => entry.id === todoId);
@@ -427,7 +429,9 @@ export class AssistantManager {
     });
     await this.maybeCompactAssistantLearnings(assistantId, "question-answer");
     this.callbacks.onAssistantsUpdated();
-    this.scheduleReprioritize(assistantId, "question-answer");
+    if (options.reprioritize !== false) {
+      this.scheduleReprioritize(assistantId, "question-answer");
+    }
     return question;
   }
 
@@ -1061,11 +1065,22 @@ export class AssistantManager {
 
     const cwd = assistant.projectId ? this.repository.getProject(assistant.projectId).rootPath : process.cwd();
     const project = assistant.projectId ? this.repository.getProject(assistant.projectId) : undefined;
-    const modelId =
-      controls.executionModelId ??
-      assistant.executionModelId ??
-      runtime.getDefaultExecutionModelId(providerBrand) ??
-      getDefaultExecutionModelId(providerBrand);
+    const resolvedModel = resolveAssistantExecutionModel({
+      agentId: assistant.agentId,
+      capability,
+      providerBrand,
+      runtimeDefaultModelId: runtime.getDefaultExecutionModelId(providerBrand) ?? getDefaultExecutionModelId(providerBrand),
+      requestedModelId: controls.executionModelId,
+      persistedModelId: assistant.executionModelId
+    });
+    if (resolvedModel.rejectedModelId) {
+      this.appendLog({
+        assistantId: assistant.id,
+        level: "warning",
+        summary: "Assistant model fallback",
+        detail: `${resolvedModel.rejectedModelId} is not available for ${runtime.label}; using ${resolvedModel.modelId}.`
+      });
+    }
     const mode = resolveAssistantMode(controls.modeId ?? assistant.modeId, this.repository.loadWorkspace().workspaceModes ?? [], project);
     const readOnly = modeUsesReadOnlyExecution(mode) || !assistant.projectId;
     debugLog("assistant.runtime.resolved", {
@@ -1076,7 +1091,7 @@ export class AssistantManager {
     return {
       adapter: runtime.getAdapter(),
       cwd,
-      modelId,
+      modelId: resolvedModel.modelId,
       readOnly,
       reasoningStrength: controls.reasoningStrength ?? assistant.reasoningStrength,
       fastMode: controls.fastMode ?? assistant.fastMode,
@@ -1416,6 +1431,46 @@ function buildAssistantPromptCacheIdentity(input: {
 
 function resolveAssistantMode(modeId: string | undefined, workspaceModes: ModeDefinition[], project?: WorkspaceProjectState) {
   return resolveModeById(modeId ?? project?.selectedModeId, workspaceModes, project?.projectModes ?? []);
+}
+
+function resolveAssistantExecutionModel(input: {
+  agentId: AgentId;
+  capability: AgentRuntimeCapability;
+  providerBrand: ProviderBrand;
+  runtimeDefaultModelId: string;
+  requestedModelId?: string;
+  persistedModelId?: string;
+}) {
+  const requestedModelId = isAssistantExecutionModelAvailable(input.agentId, input.capability, input.requestedModelId, input.providerBrand)
+    ? input.requestedModelId
+    : undefined;
+  const persistedModelId = isAssistantExecutionModelAvailable(input.agentId, input.capability, input.persistedModelId, input.providerBrand)
+    ? input.persistedModelId
+    : undefined;
+  return {
+    modelId: requestedModelId ?? persistedModelId ?? input.runtimeDefaultModelId,
+    rejectedModelId:
+      input.requestedModelId && requestedModelId !== input.requestedModelId
+        ? input.requestedModelId
+        : input.persistedModelId && !persistedModelId
+          ? input.persistedModelId
+          : undefined
+  };
+}
+
+function isAssistantExecutionModelAvailable(
+  agentId: AgentId,
+  capability: AgentRuntimeCapability,
+  modelId: string | undefined,
+  providerBrand: ProviderBrand
+) {
+  if (!modelId) {
+    return false;
+  }
+  if (agentId !== "pi") {
+    return capability.activeModel === modelId || capability.discoveredModels.includes(modelId);
+  }
+  return providerBrand === "gemini" ? modelId.startsWith("google/") : modelId.startsWith("openai/");
 }
 
 function renderMessages(messages: ChatMessage[]) {

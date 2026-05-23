@@ -186,6 +186,25 @@ describe("assistant manager bootstrap", () => {
     expect(repository.getAssistant(assistant.id)?.bootstrapState).toBe("completed");
   });
 
+  test("falls back from stale assistant execution model", async () => {
+    const repository = createRepository();
+    const assistant = createAssistant(repository, {
+      executionModelId: "openai/retired-model",
+      providerBrand: "gemini",
+      bootstrapState: "completed"
+    });
+    const adapter = new DeferredAdapter();
+    const manager = createManager(repository, adapter);
+
+    const send = manager.sendAssistantChat(assistant.id, "hello");
+    await waitForCalls(adapter, 1);
+    expect(adapter.calls[0]?.modelId).toBe("openai/gpt-5.4");
+    adapter.resolvers[0]?.({ text: "done" });
+    await send;
+
+    expect(repository.getAssistantLogEntries(assistant.id).some((entry) => entry.summary === "Assistant model fallback")).toBe(true);
+  });
+
   test("ignores stale bootstrap completion after force retry starts newer attempt", async () => {
     const repository = createRepository();
     const assistant = createAssistant(repository);

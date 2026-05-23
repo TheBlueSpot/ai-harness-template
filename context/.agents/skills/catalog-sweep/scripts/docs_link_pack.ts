@@ -82,7 +82,7 @@ function listPlayableSlugs(root: string): string[] {
   return readdirSync(root, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
     .map((entry) => entry.name)
-    .filter((slug) => existsSync(resolve(root, slug, "index.html")))
+    .filter((slug) => existsSync(resolve(root, CATALOG_DIR, slug, "index.html")))
     .sort((left, right) => left.localeCompare(right));
 }
 
@@ -104,7 +104,7 @@ function buildExtraGuidance(supportDocs: SupportDoc[], hasReadme: boolean): stri
 function buildEntries(root: string): Entry[] {
   return listPlayableSlugs(root)
     .map((slug) => {
-      const readmePath = resolve(root, slug, "README.md");
+      const readmePath = resolve(root, CATALOG_DIR, slug, "README.md");
       const hasReadme = existsSync(readmePath);
       const readmeText = hasReadme ? readFileSync(readmePath, "utf8") : null;
       const supportDocs = collectSupportDocs(root, slug, readmeText);
@@ -224,3 +224,4 @@ function main(): void {
 if (import.meta.main) {
   main();
 }
+const CATALOG_DIR = "games";
