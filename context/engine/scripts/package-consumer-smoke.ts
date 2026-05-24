@@ -134,6 +134,18 @@ assertCameraDeclarationsStayPublic(cameraDeclarations);
 const browserBuild = await import(pathToFileURL(join(rootDir, "browser/engine.js")).href);
 const coreBuild = await import(pathToFileURL(join(rootDir, "dist/core.js")).href);
 
+const deferredRootExports = [
+  "createOnScreenGamepad",
+  "createAssetLoader",
+  "createAudioSystem",
+  "createRenderer",
+  "createSceneGraph",
+] as const;
+
+for (const exportName of deferredRootExports) {
+  assert(!(exportName in browserBuild), `${exportName} must stay off the root/browser package surface until consumer proof earns it`);
+}
+
 function getDeclarationValueExports(source: string) {
   const declarationValueExports = new Set<string>();
   for (const [, clause] of source.matchAll(/export\s*\{([^}]+)\}\s*from\s*["'][^"']+["'];/g)) {
@@ -176,8 +188,31 @@ for (const exportName of [
   "createCollisionKernel",
   "resolveCollisionKernelWasmUrl",
   "circleRectOverlap",
+  "postProcessApiProfiles",
 ]) {
-  assert(typeof browserBuild[exportName] === "function", `browser build is missing ${exportName}`);
+  assert(exportName in browserBuild, `browser build is missing ${exportName}`);
+}
+
+assert(typeof browserBuild.createFixedStepLoop === "function", "browser build is missing createFixedStepLoop");
+assert(typeof browserBuild.createCollisionBroadphase === "function", "browser build is missing createCollisionBroadphase");
+assert(typeof browserBuild.createCollisionKernel === "function", "browser build is missing createCollisionKernel");
+assert(typeof browserBuild.resolveCollisionKernelWasmUrl === "function", "browser build is missing resolveCollisionKernelWasmUrl");
+assert(typeof browserBuild.circleRectOverlap === "function", "browser build is missing circleRectOverlap");
+
+const postProcessApiProfiles = browserBuild.postProcessApiProfiles as Record<
+  string,
+  { status?: string; promotion?: string; exposure?: string }
+>;
+
+for (const [name, profile] of Object.entries(postProcessApiProfiles)) {
+  if (profile.status === "prototype") {
+    assert(profile.promotion === "blocked", `${name} prototype post-processing helper must stay promotion-blocked`);
+    assert(profile.exposure === "prototype-root", `${name} prototype post-processing helper must stay quarantined as prototype-root`);
+  }
+  if (profile.status === "stable") {
+    assert(profile.promotion === "stable", `${name} stable post-processing helper must keep stable promotion metadata`);
+    assert(profile.exposure === "root", `${name} stable post-processing helper must keep root exposure metadata`);
+  }
 }
 
 if (!runExternalConsumer) {
