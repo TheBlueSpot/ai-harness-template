@@ -1,3 +1,8 @@
+---
+name: telegraphing-readability-audit
+description: Review browser-game telegraph legibility, early-response windows, future-path readability, and competing must-read cues. Use when Codex needs a focused pass on whether threats, prompts, windups, dodge paths, or other reaction cues are readable under motion and pressure.
+---
+
 # Telegraphing Readability Audit
 
 Use this skill when a browser game needs a focused read on telegraph legibility, early-response windows, and future-path readability.

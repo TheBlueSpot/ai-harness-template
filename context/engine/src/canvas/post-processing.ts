@@ -40,6 +40,114 @@ export type PostProcessBudgetReport = {
   violations: string[];
 };
 
+export type PostProcessApiStatus = "stable" | "prototype";
+export type PostProcessApiProof = "engine-contract" | "migrated-game" | "candidate";
+export type PostProcessApiPromotion = "stable" | "blocked";
+export type PostProcessApiExposure = "root" | "prototype-root";
+
+export type PostProcessApiProfile = {
+  status: PostProcessApiStatus;
+  tier: PostProcessCostTier;
+  proof: PostProcessApiProof;
+  promotion: PostProcessApiPromotion;
+  exposure: PostProcessApiExposure;
+};
+
+export const postProcessApiProfileNames = [
+  "createPostProcessStack",
+  "getPostProcessEffectCost",
+  "summarizePostProcessCost",
+  "checkPostProcessBudget",
+  "grayscale",
+  "invert",
+  "brightness",
+  "contrast",
+  "sepia",
+  "threshold",
+  "tint",
+  "posterize",
+  "gamma",
+  "colorGrading",
+  "filmGrain",
+  "digitalNoise",
+  "retroDithering",
+  "vignette",
+  "colorLut",
+  "screenShake",
+  "bloom",
+  "neonGlow",
+  "flashbang",
+  "crtScanlines",
+  "scanlineFlicker",
+  "chromaticAberration",
+  "colorFringe",
+  "chromaticDistortion",
+  "motionBlur",
+  "radialBlur",
+  "lensFlare",
+  "starStreak",
+  "pixelate",
+  "barrelDistortion",
+  "shockwaveDistortion",
+  "heatHaze",
+  "glitch"
+] as const;
+
+export type PostProcessApiProfileName = (typeof postProcessApiProfileNames)[number];
+
+const stableProfile = (
+  tier: PostProcessCostTier,
+  proof: PostProcessApiProof = "engine-contract"
+): PostProcessApiProfile => ({ status: "stable", tier, proof, promotion: "stable", exposure: "root" });
+
+const prototypeProfile = (tier: PostProcessCostTier, proof: PostProcessApiProof = "candidate"): PostProcessApiProfile => ({
+  status: "prototype",
+  tier,
+  proof,
+  promotion: "blocked",
+  exposure: "prototype-root"
+});
+
+export const postProcessApiProfiles = {
+  createPostProcessStack: stableProfile("pixel"),
+  getPostProcessEffectCost: stableProfile("overlay"),
+  summarizePostProcessCost: stableProfile("overlay"),
+  checkPostProcessBudget: stableProfile("overlay"),
+  grayscale: stableProfile("pixel"),
+  invert: stableProfile("pixel"),
+  brightness: stableProfile("pixel"),
+  contrast: stableProfile("pixel"),
+  sepia: stableProfile("pixel"),
+  threshold: stableProfile("pixel"),
+  tint: stableProfile("pixel"),
+  posterize: stableProfile("pixel"),
+  gamma: stableProfile("pixel"),
+  colorGrading: stableProfile("pixel"),
+  filmGrain: stableProfile("pixel"),
+  digitalNoise: stableProfile("pixel"),
+  retroDithering: stableProfile("pixel"),
+  vignette: stableProfile("pixel"),
+  colorLut: stableProfile("pixel"),
+  screenShake: stableProfile("overlay", "migrated-game"),
+  bloom: prototypeProfile("overlay"),
+  neonGlow: prototypeProfile("overlay"),
+  flashbang: prototypeProfile("overlay", "migrated-game"),
+  crtScanlines: stableProfile("overlay"),
+  scanlineFlicker: prototypeProfile("overlay"),
+  chromaticAberration: prototypeProfile("overlay"),
+  colorFringe: prototypeProfile("overlay"),
+  chromaticDistortion: prototypeProfile("overlay"),
+  motionBlur: prototypeProfile("overlay"),
+  radialBlur: prototypeProfile("overlay"),
+  lensFlare: prototypeProfile("overlay"),
+  starStreak: prototypeProfile("overlay"),
+  pixelate: prototypeProfile("distortion"),
+  barrelDistortion: prototypeProfile("distortion"),
+  shockwaveDistortion: prototypeProfile("distortion"),
+  heatHaze: prototypeProfile("distortion"),
+  glitch: prototypeProfile("distortion")
+} as const satisfies Record<PostProcessApiProfileName, PostProcessApiProfile>;
+
 export type PixelEffect = {
   name: string;
   cost?: PostProcessEffectCost;

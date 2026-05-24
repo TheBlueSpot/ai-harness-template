@@ -84,6 +84,7 @@ export type LeftPaneSearchMenuItem =
       label: string;
       icon: JSX.Element;
       selected?: boolean;
+      active?: boolean;
       disabled?: boolean;
       onSelect: () => void;
     }
@@ -92,6 +93,7 @@ export type LeftPaneSearchMenuItem =
       label: string;
       value?: string;
       icon: JSX.Element;
+      active?: boolean;
       items: Array<Extract<LeftPaneSearchMenuItem, { kind: "option" }>>;
     };
 
@@ -103,11 +105,15 @@ export function LeftPaneSearchMenu(props: {
 }) {
   const [open, setOpen] = createSignal(false);
   const [openSubmenuIndex, setOpenSubmenuIndex] = createSignal<number>();
+  const activeTextStyle = { color: "var(--accent-strong)" };
+  const activeIconStyle = { color: "var(--accent)" };
 
   const renderOption = (item: Extract<LeftPaneSearchMenuItem, { kind: "option" }>) => (
     <button
       type="button"
       class="flex min-h-8 w-full cursor-pointer items-center gap-2 rounded-lg px-2 text-left text-(--foreground) transition hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-50"
+      classList={{ "text-(--accent-strong)": item.active }}
+      style={item.active ? activeTextStyle : undefined}
       disabled={item.disabled}
       onClick={() => {
         if (item.disabled) {
@@ -117,10 +123,12 @@ export function LeftPaneSearchMenu(props: {
         setOpen(false);
       }}
     >
-      <span class="flex h-4 w-4 shrink-0 items-center justify-center text-(--muted)">{item.icon}</span>
+      <span class="flex h-4 w-4 shrink-0 items-center justify-center text-(--muted)" classList={{ "text-(--accent)": item.active }} style={item.active ? activeIconStyle : undefined}>
+        {item.icon}
+      </span>
       <span class="min-w-0 flex-1 truncate">{item.label}</span>
       <Show when={item.selected}>
-        <Check class="h-3.5 w-3.5 shrink-0 text-(--foreground)" />
+        <Check class="h-3.5 w-3.5 shrink-0 text-(--foreground)" classList={{ "text-(--accent)": item.active }} style={item.active ? activeIconStyle : undefined} />
       </Show>
     </button>
   );
@@ -145,16 +153,23 @@ export function LeftPaneSearchMenu(props: {
                 }
                 if (item.kind === "submenu") {
                   const active = () => openSubmenuIndex() === index();
+                  const hasActiveFilter = () => item.active ?? item.items.some((subitem) => subitem.active);
                   return (
                     <div class="relative" onMouseEnter={() => setOpenSubmenuIndex(index())} onFocusIn={() => setOpenSubmenuIndex(index())}>
                       <button
                         type="button"
                         class="flex min-h-8 w-full cursor-pointer items-center gap-2 rounded-lg px-2 text-left text-(--foreground) transition hover:bg-black/5"
+                        classList={{ "text-(--accent-strong)": hasActiveFilter() }}
+                        style={hasActiveFilter() ? activeTextStyle : undefined}
                       >
-                        <span class="flex h-4 w-4 shrink-0 items-center justify-center text-(--muted)">{item.icon}</span>
+                        <span class="flex h-4 w-4 shrink-0 items-center justify-center text-(--muted)" classList={{ "text-(--accent)": hasActiveFilter() }} style={hasActiveFilter() ? activeIconStyle : undefined}>
+                          {item.icon}
+                        </span>
                         <span class="min-w-0 flex-1 truncate">{item.label}</span>
                         <Show when={item.value}>
-                          <span class="max-w-20 truncate text-[0.625rem] text-(--muted)">{item.value}</span>
+                          <span class="max-w-20 truncate text-[0.625rem] text-(--muted)" classList={{ "text-(--accent-strong)": hasActiveFilter() }} style={hasActiveFilter() ? activeTextStyle : undefined}>
+                            {item.value}
+                          </span>
                         </Show>
                         <ChevronRight class="h-3.5 w-3.5 shrink-0 text-(--muted)" />
                       </button>

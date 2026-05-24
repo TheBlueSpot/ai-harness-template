@@ -180,6 +180,14 @@ const STREAM_PERSIST_INTERVAL_MS = 1000;
 const BACKGROUND_RUN_CONTROLLER_LEASE_MS = 15 * 60 * 1000;
 const BACKGROUND_RUN_CONTROLLER_RENEW_MS = 60 * 1000;
 const BACKGROUND_RUN_STARTUP_GRACE_MS = 2 * 60 * 1000;
+const BACKGROUND_JOB_RUNTIME_CONTRACT_VERSION = 2;
+const BACKGROUND_JOB_REPOSITORY_CONTRACT_METHODS = [
+  "appendBackgroundJobRunEventIfOwned",
+  "touchBackgroundJobRunIfOwned",
+  "setBackgroundJobRunStatusIfOwned",
+  "renewBackgroundJobRunLease",
+  "isBackgroundRunOwnedBy"
+] as const;
 
 type TimerApi = {
   setTimeout: typeof globalThis.setTimeout;
@@ -429,16 +437,34 @@ async function startHotReloadableHarnessServer(
     HarnessWebSocketOptions
   >();
 
-  if (singleton && singleton.version !== options.hotSingletonVersion) {
+  const hotRestartReason = singleton
+    ? getHotSingletonRestartReason(singleton, options.hotSingletonVersion)
+    : undefined;
+  if (singleton && hotRestartReason) {
     clearPendingHotReloadUpdate(singleton, options.timerApi);
     if (process.env.NODE_ENV !== "test") {
-      console.warn(
-        `[dev] hot singleton schema changed (${singleton.version} -> ${options.hotSingletonVersion}); restarting server state`
-      );
+      console.warn(`[dev] ${hotRestartReason}; restarting server state`);
     }
     await singleton.server.stop(true);
     clearDevHarnessServerSingleton();
     singleton = undefined;
+  }
+
+  if (singleton) {
+    const hasBackendHotReloadChange = options.backendHotReloadChangeDetector
+      ? options.backendHotReloadChangeDetector()
+      : consumeTrackedBackendHotReloadChange(singleton);
+    if (!hasBackendHotReloadChange) {
+      options.startupTelemetry?.phaseStart("serve", "ignoring dev hot reload without tracked backend file changes");
+      return finalizeHarnessServerStartup({
+        server: singleton.server,
+        state: singleton.state,
+        startupTelemetry: options.startupTelemetry,
+        openBrowser: options.openBrowser,
+        browserLauncher: options.browserLauncher,
+        browserOpenState: singleton
+      });
+    }
   }
 
   const state = await initializeHarnessServerState({
@@ -458,21 +484,6 @@ async function startHotReloadableHarnessServer(
   const handlerRefs = createHarnessHandlerRefs(state, { derivedProgressHeartbeatMs: options.derivedProgressHeartbeatMs });
 
   if (singleton) {
-    const hasBackendHotReloadChange = options.backendHotReloadChangeDetector
-      ? options.backendHotReloadChangeDetector()
-      : consumeTrackedBackendHotReloadChange(singleton);
-    if (!hasBackendHotReloadChange) {
-      options.startupTelemetry?.phaseStart("serve", "ignoring dev hot reload without tracked backend file changes");
-      return finalizeHarnessServerStartup({
-        server: singleton.server,
-        state: singleton.state,
-        startupTelemetry: options.startupTelemetry,
-        openBrowser: options.openBrowser,
-        browserLauncher: options.browserLauncher,
-        browserOpenState: singleton
-      });
-    }
-
     const nextReloadDelayMs = peekNextHotReloadDelay(singleton, options.hotReloadDebouncePolicy);
     options.startupTelemetry?.phaseStart(
       "serve",
@@ -519,6 +530,7 @@ async function startHotReloadableHarnessServer(
 
   singleton = setDevHarnessServerSingleton({
     version: options.hotSingletonVersion,
+    runtimeContractVersion: BACKGROUND_JOB_RUNTIME_CONTRACT_VERSION,
     state,
     handlerRefs,
     server,
@@ -1185,6 +1197,38 @@ function resolveUiServingState(input: {
   };
 }
 
+function getHotSingletonRestartReason(
+  singleton: NonNullable<
+    ReturnType<
+      typeof getDevHarnessServerSingleton<
+        HarnessServerState,
+        HarnessHandlerRefs,
+        Awaited<ReturnType<typeof Bun.serve<HarnessConnection>>>,
+        HarnessWebSocketOptions
+      >
+    >
+  >,
+  hotSingletonVersion: number
+) {
+  if (singleton.version !== hotSingletonVersion) {
+    return `hot singleton schema changed (${singleton.version} -> ${hotSingletonVersion})`;
+  }
+  if (singleton.runtimeContractVersion !== BACKGROUND_JOB_RUNTIME_CONTRACT_VERSION) {
+    return `background job runtime contract changed (${singleton.runtimeContractVersion ?? "missing"} -> ${BACKGROUND_JOB_RUNTIME_CONTRACT_VERSION})`;
+  }
+  const repositoryMismatch = getBackgroundJobRepositoryRuntimeContractMismatch(singleton.state.repository);
+  return repositoryMismatch ? `background job runtime contract mismatch: ${repositoryMismatch}` : undefined;
+}
+
+function getBackgroundJobRepositoryRuntimeContractMismatch(repository: unknown) {
+  if (!repository || typeof repository !== "object") {
+    return "repository missing";
+  }
+  const record = repository as Record<string, unknown>;
+  const missingMethod = BACKGROUND_JOB_REPOSITORY_CONTRACT_METHODS.find((methodName) => typeof record[methodName] !== "function");
+  return missingMethod ? `${missingMethod} is not available` : undefined;
+}
+
 function queueHotReloadUpdate(input: {
   singleton: NonNullable<
     ReturnType<
@@ -1294,13 +1338,25 @@ function readTrackedBackendHotReloadSnapshot() {
 
   const snapshot = new Map<string, number>();
   for (const filePath of result.stdout.toString().split("\0")) {
-    if (!filePath) {
+    if (!filePath || isBackendHotReloadIgnoredPath(filePath)) {
       continue;
     }
 
     snapshot.set(filePath, readFileMtimeMs(path.resolve(process.cwd(), filePath)));
   }
   return snapshot;
+}
+
+function isBackendHotReloadIgnoredPath(filePath: string) {
+  const normalizedPath = filePath.replace(/\\/g, "/").toLowerCase();
+  const basename = path.basename(normalizedPath);
+  return (
+    /\.(?:test|spec)\.[cm]?[tj]sx?$/.test(basename) ||
+    /\.integration\.test\.[cm]?[tj]sx?$/.test(basename) ||
+    normalizedPath.includes("/test-support/") ||
+    normalizedPath.includes("/utils/tests/") ||
+    normalizedPath.includes("/__tests__/")
+  );
 }
 
 function readFileMtimeMs(filePath: string) {
@@ -8290,7 +8346,7 @@ async function resumeAndRepairBackgroundJobRuns(
 
   return reconcileBackgroundJobRunBlockers(
     repository,
-    (run) => backgroundRunControllers.has(run.id),
+    (run) => isBackgroundRunLive(backgroundRunControllers, runtime, run),
     { now }
   );
 }
@@ -8364,7 +8420,7 @@ function reconcileBackgroundJobRunBlockers(
 }
 
 function syncBackgroundJobFailureTracking(repository: WorkspaceRepository, run: BackgroundJobRun) {
-  if (run.status === "succeeded" || run.status === "skipped") {
+  if (run.status === "succeeded" || run.status === "partial-complete" || run.status === "skipped") {
     repository.clearBackgroundJobFailureTracking(run.jobId);
     return;
   }
@@ -8397,7 +8453,11 @@ function resolveAssistantPolicyAnswer(decision: ReturnType<typeof evaluateAssist
 
 function formatActiveBackgroundRunError(run: BackgroundJobRun) {
   const detail = run.summary ?? run.failureMessage;
-  return `Background job already has active run ${run.id} in status ${run.status}${detail ? `: ${detail}` : ""}`;
+  const leaseDetail =
+    run.status === "running" && run.controllerLeaseExpiresAt
+      ? `; controller lease active until ${run.controllerLeaseExpiresAt}`
+      : "";
+  return `Background job already has active run ${run.id} in status ${run.status}${leaseDetail}${detail ? `: ${detail}` : ""}`;
 }
 
 async function finalizeAutoResolvedAssistantQuestionRun(
@@ -8752,6 +8812,8 @@ function backgroundRunNotificationMeta(
       return { title: "Background task needs input", severity: "warning", fallbackVerb: "needs input" };
     case "succeeded":
       return { title: "Background task done", severity: "info", fallbackVerb: "finished" };
+    case "partial-complete":
+      return { title: "Background task partially done", severity: "warning", fallbackVerb: "finished with warnings" };
     case "failed":
       return { title: "Background task failed", severity: "error", fallbackVerb: "failed" };
     case "cancelled":
@@ -8804,6 +8866,31 @@ async function launchBackgroundJobRun(
     });
     syncBackgroundJobFailureTracking(repository, failedRun);
     saveBackgroundRunStatusNotification(repository, failedRun);
+    emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
+    await emitBackgroundJobRunUpdatedToAll(connections, failedRun);
+    emitNotificationsUpdatedToAll(connections, `bg:auto:${crypto.randomUUID()}`, repository.loadNotificationInboxState());
+    return;
+  }
+
+  const repositoryContractMismatch = getBackgroundJobRepositoryRuntimeContractMismatch(repository);
+  if (repositoryContractMismatch) {
+    const failureMessage = `Background job runtime contract mismatch: ${repositoryContractMismatch}`;
+    const failedRun = repository.setBackgroundJobRunStatus(backgroundRunId, "failed", {
+      failureMessage,
+      failureCategory: "runtime-contract-mismatch"
+    });
+    repository.appendBackgroundJobRunEvent(backgroundRunId, "failed", "Background run failed", failureMessage);
+    syncBackgroundJobFailureTracking(repository, failedRun);
+    saveBackgroundRunStatusNotification(repository, failedRun);
+    repository.updateBackgroundJobSchedulerState(job.id, {
+      schedulerStatus: "blocked",
+      schedulerDetail: failureMessage,
+      blockedReason: failureMessage,
+      consecutiveFailureCount: repository.getBackgroundJob(job.id)?.consecutiveFailureCount,
+      backoffUntil: repository.getBackgroundJob(job.id)?.backoffUntil,
+      lastFailureCategory: repository.getBackgroundJob(job.id)?.lastFailureCategory,
+      lastSchedulerCheckAt: new Date().toISOString()
+    });
     emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
     await emitBackgroundJobRunUpdatedToAll(connections, failedRun);
     emitNotificationsUpdatedToAll(connections, `bg:auto:${crypto.randomUUID()}`, repository.loadNotificationInboxState());
@@ -8904,6 +8991,8 @@ async function launchBackgroundJobRun(
       agentId: agentRuntime.id,
       job,
       run,
+      controllerInstanceId,
+      controllerLeaseId,
       providerBrand,
       planningModelId: agentRuntime.getDefaultPlanningModelId(providerBrand),
       executionModelId: resolvedExecutionModelId,
@@ -8920,6 +9009,8 @@ async function launchBackgroundJobRun(
         status:
           nextRun.status === "succeeded"
             ? "succeeded"
+            : nextRun.status === "partial-complete"
+              ? "partial-complete"
             : nextRun.status === "awaiting-user-input"
               ? "awaiting-user-input"
               : "failed",
@@ -8933,15 +9024,16 @@ async function launchBackgroundJobRun(
     }
     saveBackgroundRunStatusNotification(repository, nextRun);
     syncBackgroundJobFailureTracking(repository, nextRun);
+    const completedWithoutHardFailure = nextRun.status === "succeeded" || nextRun.status === "partial-complete" || nextRun.status === "skipped";
     repository.updateBackgroundJobSchedulerState(job.id, {
-      schedulerStatus: nextRun.status === "succeeded" || nextRun.status === "skipped" ? "idle" : "blocked",
+      schedulerStatus: completedWithoutHardFailure ? "idle" : "blocked",
       schedulerDetail: nextRun.summary ?? nextRun.failureMessage ?? `${job.name} ${nextRun.status}`,
       blockedReason:
-        nextRun.status === "succeeded" || nextRun.status === "skipped"
+        completedWithoutHardFailure
           ? undefined
           : nextRun.failureMessage ?? nextRun.summary ?? `${job.name} ${nextRun.status}`,
       consecutiveFailureCount:
-        nextRun.status === "succeeded" || nextRun.status === "skipped"
+        completedWithoutHardFailure
           ? 0
           : repository.getBackgroundJob(job.id)?.consecutiveFailureCount,
       backoffUntil: repository.getBackgroundJob(job.id)?.backoffUntil,

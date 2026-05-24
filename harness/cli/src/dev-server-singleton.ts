@@ -1,5 +1,6 @@
 type DevHarnessServerSingleton<TState, THandlerRefs, TServer, TWebSocketShell> = {
   version: number;
+  runtimeContractVersion?: number;
   state: TState;
   handlerRefs: THandlerRefs;
   server: TServer;

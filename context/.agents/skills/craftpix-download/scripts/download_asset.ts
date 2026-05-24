@@ -15,6 +15,7 @@ type Options = {
   resolveOnly: boolean;
   overwrite: boolean;
   timeout: number;
+  debug: boolean;
 };
 
 function printUsage(): void {
@@ -34,6 +35,7 @@ Options:
   --resolve-only          Print the resolved download URL without downloading
   --overwrite             Replace an existing output file
   --timeout <seconds>     HTTP timeout in seconds (default: ${DEFAULT_TIMEOUT})
+  --debug                 Log resolved cookie file path and parsed cookie names
   -h, --help              Show this help message`);
 }
 
@@ -47,6 +49,7 @@ function parseArgs(argv: string[]): Options {
     resolveOnly: false,
     overwrite: false,
     timeout: DEFAULT_TIMEOUT,
+    debug: false,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -105,6 +108,9 @@ function parseArgs(argv: string[]): Options {
         break;
       case "--overwrite":
         options.overwrite = true;
+        break;
+      case "--debug":
+        options.debug = true;
         break;
       default:
         throw new CraftpixDownloadError(`Unknown argument: ${arg}`);

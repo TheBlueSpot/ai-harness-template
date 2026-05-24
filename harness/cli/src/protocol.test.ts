@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { defaultProviderCapabilities } from "../../shared/capabilities";
 import {
+  backgroundJobRunSchema,
   chatMessageSchema,
   createProjectThreadSummary,
   memoryEntrySchema,
@@ -9,7 +10,8 @@ import {
   planPrerequisiteSchema,
   preferencesStateSchema,
   planningQuestionSchema,
-  plannerResultSchema
+  plannerResultSchema,
+  runFailureCategorySchema
 } from "../../shared/protocol";
 import { testExports as plannerTestExports } from "./pi-planner";
 
@@ -1633,5 +1635,34 @@ describe("planner result validation", () => {
         }
       }).type
     ).toBe("run-diagnostics.inspected");
+  });
+
+  test("accepts partial-complete background job runs", () => {
+    const now = new Date().toISOString();
+    expect(
+      backgroundJobRunSchema.parse({
+        id: "background-run-1",
+        jobId: "background-job-1",
+        projectId: "project-1",
+        automationThreadId: "thread-1",
+        triggerSource: "schedule",
+        status: "partial-complete",
+        riskLevel: "safe",
+        approvalStatus: "approved",
+        skippedOccurrenceCount: 0,
+        summary: "Useful output captured.",
+        failureMessage: "Some subagent work failed.",
+        queuedAt: now,
+        completedAt: now,
+        createdAt: now,
+        updatedAt: now,
+        events: []
+      }).status
+    ).toBe("partial-complete");
+  });
+
+  test("accepts background job failure reduction categories", () => {
+    expect(runFailureCategorySchema.parse("runtime-contract-mismatch")).toBe("runtime-contract-mismatch");
+    expect(runFailureCategorySchema.parse("partial-subagent-failure")).toBe("partial-subagent-failure");
   });
 });

@@ -3,6 +3,7 @@ import { createRequestId, type AgentRunState, type BackgroundJob, type Backgroun
 import { formatForDisplay } from "@tanstack/solid-hotkeys";
 import {
   type BackgroundJobEditorDraft,
+  type JobsJobStateFilter,
   type JobsPaneJobSort,
   type JobsPaneRunSort,
   type JobsRunFilter,
@@ -58,6 +59,22 @@ type BackgroundJobsPanelProps = {
   segment?: "jobs" | "runs" | "health";
   healthRefreshThrottleMs?: number;
 };
+
+type ProjectChatRunEntry = {
+  project: typeof harnessStore.state.workspace.projects[number];
+  thread: typeof harnessStore.state.workspace.projects[number]["threads"][number] | undefined;
+  run: AgentRunState;
+};
+
+type RunListItem =
+  | {
+      kind: "background";
+      run: BackgroundJobRun;
+    }
+  | {
+      kind: "project-chat";
+      entry: ProjectChatRunEntry;
+    };
 
 function formatHotkeyHint(hotkey: string) {
   return formatForDisplay(hotkey)
@@ -125,8 +142,14 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
           run
         }));
       })
+      .filter((entry) => matchesProjectChatRunFilter(entry.run, runFilter()))
       .filter((entry) => fuzzyMatches(projectChatRunSearchHaystack(entry), jobsPane().runSearch ?? ""))
-      .sort((left, right) => right.run.updatedAt.localeCompare(left.run.updatedAt))
+  );
+  const runListItems = createMemo<RunListItem[]>(() =>
+    [
+      ...activeProjectChatRuns().map((entry) => ({ kind: "project-chat" as const, entry })),
+      ...filteredRuns().map((run) => ({ kind: "background" as const, run }))
+    ].sort((left, right) => compareRunListItems(left, right, jobsPane().runSort ?? "urgency"))
   );
   const selectedRun = createMemo(() => {
     const explicitRunId = selectedRunId();
@@ -189,17 +212,15 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
     }
     if (activeSegment() === "inbox") {
       const unregister = registerCurrentTabItemSelector("runs", (index) => {
-        const projectChatRuns = activeProjectChatRuns();
-        const projectChatRun = projectChatRuns[index];
-        if (projectChatRun) {
-          openProjectChatRun(projectChatRun.project.id, projectChatRun.run.threadId);
-          return true;
-        }
-        const run = filteredRuns()[index - projectChatRuns.length];
-        if (!run) {
+        const item = runListItems()[index];
+        if (!item) {
           return false;
         }
-        openRunDetails(run);
+        if (item.kind === "project-chat") {
+          openProjectChatRun(item.entry.project.id, item.entry.run.threadId);
+        } else {
+          openRunDetails(item.run);
+        }
         return true;
       });
       onCleanup(unregister);
@@ -553,7 +574,7 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
               />
             </Show>
             <Show when={activeSegment() === "jobs"}>
-              <LeftPaneListSection title="Jobs" count={`${jobs().length} total`} class="min-w-0">
+              <LeftPaneListSection title="Jobs" count={`${jobs().length} total`} class="min-w-0 border-0 bg-transparent p-0">
                 <CapacityBar jobs={jobs()} />
                 <VirtualList
                   class="min-h-0 flex-1 pr-2"
@@ -563,10 +584,10 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                   getKey={(job) => job.id}
                   estimateSize={210}
                   pagination={{ kind: "forward", initialCount: 60, batchSize: 60 }}
-                  empty={
+                      empty={
                     <EmptyFilteredState
                       message="No scheduled tasks match current search or filters."
-                      onClear={() => harnessStore.setJobsPanePreferences({ jobSearch: "", kind: undefined, status: undefined, risk: undefined })}
+                      onClear={() => harnessStore.setJobsPanePreferences({ jobSearch: "", kind: undefined, status: undefined, jobState: "all", risk: undefined })}
                       actions={
                         <>
                           <ActionButton
@@ -591,11 +612,14 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                 >
                   {(job) => (
                     <article
-                      class="min-w-0 cursor-pointer rounded-[1.2rem] border p-3"
+                      class="min-w-0 cursor-pointer rounded-[0.8rem] border border-l-4 p-3 shadow-sm transition hover:border-(--accent-strong)"
                       classList={{
                         "border-(--accent)": selectedJob()?.id === job.id,
+                        "border-l-(--accent-strong)": selectedJob()?.id === job.id,
                         "bg-[linear-gradient(135deg,rgba(15,118,110,0.14),rgba(255,255,255,0.92))]": selectedJob()?.id === job.id,
                         "border-(--border)": selectedJob()?.id !== job.id,
+                        "border-l-emerald-500": selectedJob()?.id !== job.id && job.status === "enabled",
+                        "border-l-slate-300": selectedJob()?.id !== job.id && job.status !== "enabled",
                         "bg-white/70": selectedJob()?.id !== job.id
                       }}
                       onClick={() => openJobDetails(job)}
@@ -604,6 +628,9 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                         <button type="button" class="min-w-0 flex-1 text-left cursor-pointer" aria-label={`Select ${job.name}`} onClick={() => openJobDetails(job)}>
                           <span class="break-words text-[0.75rem] font-semibold text-(--foreground) [overflow-wrap:anywhere]">{job.name}</span>
                         </button>
+                        <span class={`shrink-0 rounded-full px-2 py-0.5 text-[0.55rem] font-semibold uppercase tracking-[0.12em] ${jobStatusBadgeClass(job.status)}`}>
+                          {job.status}
+                        </span>
                       </div>
                       <div class="flex gap-0.25">
                         <ActionButton tooltip="Run task now" disabled={executionPaused()} disabledReason={executionPauseReason} icon={<Play class="h-3 w-3" />} size="icon" variant="ghost" ariaLabel={`Run ${job.name} now`} onClick={(event) => { event.stopPropagation(); sendCommand({ type: "background-job.run-now", requestId: createRequestId(), payload: { projectId: job.projectId, jobId: job.id } }); }} />
@@ -612,7 +639,7 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                         <ActionButton tooltip="Delete task" icon={<Trash2 class="h-3 w-3" />} size="icon" variant="ghost" ariaLabel={`Delete ${job.name}`} onClick={(event) => { event.stopPropagation(); sendCommand({ type: "background-job.delete", requestId: createRequestId(), payload: { projectId: job.projectId, jobId: job.id } }); }} />
                       </div>
                       <div class="mt-3 break-words text-[0.675rem] leading-5 text-(--muted) [overflow-wrap:anywhere]">
-                        <div class="mt-1 text-[0.625rem] uppercase tracking-[0.14em] text-(--muted)">{job.kind} | {job.status} | {job.riskLevel} | {job.lane ?? "exclusive"}</div>
+                        <div class="mt-1 text-[0.625rem] uppercase tracking-[0.14em] text-(--muted)">{job.kind} | {job.riskLevel} | {job.lane ?? "exclusive"}</div>
                         <div>{job.description ?? job.scheduleInput}</div>
                         <div class="mt-1">Next: {formatJobNextRun(job, state.backgroundJobs.runs, state.backgroundJobs.schedulerHeartbeatAt)}</div>
                         <Show when={formatFailureTrackingLine(job)}>{(line) => <div>{line()}</div>}</Show>
@@ -627,65 +654,18 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
             </Show>
 
             <Show when={activeSegment() === "inbox"}>
-              <LeftPaneListSection title="Runs" count={`${filteredRuns().length} total`} class="min-w-0">
-                <Show when={activeProjectChatRuns().length > 0}>
-                  <div class="mb-4 flex flex-col gap-2">
-                    <div class="text-[0.585rem] font-semibold uppercase tracking-[0.16em] text-(--muted)">Project chats</div>
-                    <For each={activeProjectChatRuns()}>
-                      {(entry) => (
-                        <button
-                          class="min-w-0 rounded-[1rem] border border-(--accent) bg-[linear-gradient(135deg,rgba(15,118,110,0.12),rgba(255,255,255,0.92))] p-3 text-left transition hover:border-(--accent-strong)"
-                          type="button"
-                          onClick={() => openProjectChatRun(entry.project.id, entry.run.threadId)}
-                        >
-                          <div class="flex min-w-0 items-center justify-between gap-3">
-                            <div class="min-w-0 break-words text-[0.725rem] font-semibold text-(--foreground) [overflow-wrap:anywhere]">
-                              {entry.project.name} / {entry.thread?.title ?? entry.run.threadId}
-                            </div>
-                            <div class="shrink-0 text-[0.575rem] uppercase tracking-[0.16em] text-(--accent-strong)">{entry.run.status}</div>
-                          </div>
-                          <div class="mt-2 break-words text-[0.675rem] leading-5 text-(--muted) [overflow-wrap:anywhere]">
-                            <div>{entry.run.latestUserPrompt}</div>
-                            <div class="mt-1">Updated: {formatShortTimestamp(entry.run.updatedAt)}</div>
-                          </div>
-                        </button>
-                      )}
-                    </For>
-                  </div>
-                </Show>
+              <LeftPaneListSection title="Runs" count={`${runListItems().length} total`} class="min-w-0 border-0 bg-transparent p-0">
                 <VirtualList
                   class="min-h-0 flex-1 pr-2"
                   contentClass="w-full"
                   itemClass="pb-3"
-                  items={filteredRuns()}
-                  getKey={(run) => run.id}
+                  items={runListItems()}
+                  getKey={(item) => (item.kind === "project-chat" ? `project-chat:${item.entry.project.id}:${item.entry.run.id}` : `background:${item.run.id}`)}
                   estimateSize={135}
                   pagination={{ kind: "forward", initialCount: 60, batchSize: 60 }}
                   empty={<EmptyFilteredState message="Run history appears after first task. No runs match current search or filter." onClear={() => { harnessStore.setJobsPanePreferences({ runSearch: "" }); harnessStore.setJobsRunFilter("all"); }} />}
                 >
-                  {(run) => (
-                    <button
-                      class="min-w-0 w-full rounded-[1.2rem] border p-3 text-left transition"
-                      classList={{
-                        "border-(--accent)": selectedRun()?.id === run.id,
-                        "bg-[linear-gradient(135deg,rgba(15,118,110,0.14),rgba(255,255,255,0.92))]": selectedRun()?.id === run.id,
-                        "border-(--border)": selectedRun()?.id !== run.id,
-                        "bg-white/70": selectedRun()?.id !== run.id
-                      }}
-                      type="button"
-                      onClick={() => openRunDetails(run)}
-                    >
-                      <div class="flex min-w-0 items-center justify-between gap-3">
-                        <div class="min-w-0 break-words text-[0.725rem] font-semibold text-(--foreground) [overflow-wrap:anywhere]">{state.backgroundJobs.jobs.find((job) => job.id === run.jobId)?.name ?? run.jobId}</div>
-                        <div class="shrink-0 text-[0.575rem] uppercase tracking-[0.16em] text-(--muted)">{run.status}</div>
-                      </div>
-                      <div class="mt-2 break-words text-[0.675rem] leading-5 text-(--muted) [overflow-wrap:anywhere]">
-                        <div>{formatRunSummary(run)}</div>
-                        <Show when={formatRunProgress(run)}>{(progress) => <div>{progress()}</div>}</Show>
-                        <div class="mt-1">Queued: {formatShortTimestamp(run.queuedAt)}</div>
-                      </div>
-                    </button>
-                  )}
+                  {(item) => <RunListButton item={item} selectedRunId={selectedRun()?.id} onOpenRun={openRunDetails} onOpenProjectChatRun={openProjectChatRun} />}
                 </VirtualList>
               </LeftPaneListSection>
             </Show>
@@ -693,7 +673,7 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
         </Show>
 
         <Show when={showDetail() && activeSegment() !== "health"}>
-          <section class="flex min-h-0 min-w-0 flex-col rounded-[1.35rem] border border-(--border) bg-white/55 p-4">
+          <section class="flex min-h-0 min-w-0 flex-col p-4">
             <Show when={activeSegment() === "jobs" && !selectedRun()}>
               <JobDetail
                 job={selectedJob()}
@@ -710,13 +690,18 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
               <Show when={selectedRun()} fallback={<DetailEmptyState>Select background run or job to inspect details.</DetailEmptyState>}>
                 {(run) => (
                   <div class="flex h-full min-h-0 min-w-0 flex-col gap-4">
-                    <div class="flex min-w-0 flex-wrap items-start justify-between gap-3">
+                    <div class="flex min-w-0 flex-wrap items-start justify-between gap-3 border-b border-(--border) pb-4">
                       <div class="min-w-0">
-                        <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Run detail</div>
-                        <h2 class="mt-1 break-words text-[1.2rem] font-semibold tracking-[-0.04em] text-(--foreground) [overflow-wrap:anywhere]">{selectedJob()?.name}</h2>
-                        <div class="mt-2 break-words text-[0.675rem] leading-5 text-(--muted) [overflow-wrap:anywhere]">
-                          <div class="flex flex-wrap items-center gap-2">
-                            <span>Run: {run().id}</span>
+                        <div class="flex flex-wrap items-center gap-2">
+                          <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Run detail</div>
+                          <span class={`rounded-full px-2 py-0.5 text-[0.55rem] font-semibold uppercase tracking-[0.12em] ${runStatusBadgeClass(run().status)}`}>
+                            {run().status}
+                          </span>
+                        </div>
+                        <h2 class="mt-1 break-words text-[1.2rem] font-semibold text-(--foreground) [overflow-wrap:anywhere]">{selectedJob()?.name}</h2>
+                        <div class="mt-3 grid gap-x-5 gap-y-1 border-l-2 border-(--border) pl-4 text-[0.675rem] leading-5 text-(--muted) sm:grid-cols-2 xl:grid-cols-3">
+                          <RunFact label="Run">
+                            <span class="min-w-0 break-all">{run().id}</span>
                             <CopyTextButton
                               value={run().id}
                               tooltip="Copy run id"
@@ -725,21 +710,20 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                               size="sm"
                               variant="ghost"
                             />
-                          </div>
-                          <div>Status: {run().status}</div>
-                          <div>Trigger: {run().triggerSource}</div>
-                          <div>Approval: {run().approvalStatus}</div>
+                          </RunFact>
+                          <RunFact label="Trigger">{run().triggerSource}</RunFact>
+                          <RunFact label="Approval">{run().approvalStatus}</RunFact>
                           <Show when={formatRunProgress(run())}>
-                            {(progress) => <div>{progress()}</div>}
+                            {(progress) => <RunFact label="Progress">{progress()}</RunFact>}
                           </Show>
-                          <div>Summary: {run().summary ?? "n/a"}</div>
+                          <RunFact label="Summary">{run().summary ?? "n/a"}</RunFact>
                           <Show when={run().failureCategory}>
-                            {(category) => <div>Failure category: {formatFailureCategory(category())}</div>}
+                            {(category) => <RunFact label="Failure category">{formatFailureCategory(category())}</RunFact>}
                           </Show>
                           <Show when={formatPromptStats(run().promptStats)}>
-                            {(stats) => <div>Prompt: {stats()}</div>}
+                            {(stats) => <RunFact label="Prompt">{stats()}</RunFact>}
                           </Show>
-                          <Show when={run().failureMessage}><div>Failure: {run().failureMessage}</div></Show>
+                          <Show when={run().failureMessage}><RunFact label="Failure">{run().failureMessage}</RunFact></Show>
                         </div>
                       </div>
 
@@ -771,8 +755,8 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                       stickToEnd
                     >
                       {(event) => (
-                        <article class="min-w-0 rounded-[1.1rem] border border-(--border) bg-white/70 p-4">
-                          <div class="flex items-center justify-between gap-3 text-[0.585rem] font-semibold uppercase tracking-[0.16em] text-(--accent-strong)">
+                        <article class={`min-w-0 border-l-2 py-3 pl-4 pr-2 ${runEventStageBorderClass(event.stage)}`}>
+                          <div class="flex items-center justify-between gap-3 text-[0.585rem] font-semibold uppercase tracking-[0.16em] text-(--muted)">
                             <span>{event.stage}</span>
                             <span>{formatShortTimestamp(event.createdAt)}</span>
                           </div>
@@ -831,6 +815,57 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
           </Dialog>
       </Show>
     </LeftPaneShell>
+  );
+}
+
+function RunFact(props: { label: string; children: JSX.Element }) {
+  return (
+    <div class="min-w-0 break-words [overflow-wrap:anywhere]">
+      <span class="font-semibold text-(--foreground)">{props.label}: </span>
+      <span>{props.children}</span>
+    </div>
+  );
+}
+
+function RunListButton(props: {
+  item: RunListItem;
+  selectedRunId?: string;
+  onOpenRun: (run: BackgroundJobRun) => void;
+  onOpenProjectChatRun: (projectId: string, threadId: string) => void;
+}) {
+  const selected = createMemo(() => props.item.kind === "background" && props.selectedRunId === props.item.run.id);
+  return (
+    <button
+      class="min-w-0 w-full rounded-[0.8rem] border border-l-4 p-3 text-left shadow-sm transition hover:border-(--accent-strong)"
+      classList={{
+        "border-(--accent)": selected(),
+        "border-l-(--accent-strong)": selected(),
+        "bg-[linear-gradient(135deg,rgba(15,118,110,0.14),rgba(255,255,255,0.92))]": selected(),
+        "border-(--border)": !selected(),
+        [runListItemBorderClass(props.item)]: !selected(),
+        "bg-white/70": !selected()
+      }}
+      type="button"
+      onClick={() =>
+        props.item.kind === "project-chat"
+          ? props.onOpenProjectChatRun(props.item.entry.project.id, props.item.entry.run.threadId)
+          : props.onOpenRun(props.item.run)
+      }
+    >
+      <div class="flex min-w-0 items-center justify-between gap-3">
+        <div class="min-w-0 truncate text-[0.725rem] font-semibold text-(--foreground)">{formatRunListItemTitle(props.item)}</div>
+        <div class={`shrink-0 rounded-full px-2 py-0.5 text-[0.55rem] font-semibold uppercase tracking-[0.12em] ${runListItemBadgeClass(props.item)}`}>
+          {runListItemStatus(props.item)}
+        </div>
+      </div>
+      <div class="mt-2 break-words text-[0.675rem] leading-5 text-(--muted) [overflow-wrap:anywhere]">
+        <div class="[display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:3] overflow-hidden">{formatRunListItemSummary(props.item)}</div>
+        <Show when={props.item.kind === "background" && formatRunProgress((props.item as { kind: "background"; run: BackgroundJobRun }).run)}>
+          {(progress) => <div class="truncate">{progress()}</div>}
+        </Show>
+        <div class="mt-1 truncate">{formatRunListItemTime(props.item)}</div>
+      </div>
+    </button>
   );
 }
 
@@ -1088,6 +1123,7 @@ function jobsPaneMenuItems(
         label: "Kind",
         value: preferences.kind === "ai-routine" ? "AI" : preferences.kind === "shell" ? "Shell" : "All",
         icon: <ListFilter class="h-3.5 w-3.5" />,
+        active: Boolean(preferences.kind),
         items: [
           {
             kind: "option",
@@ -1101,6 +1137,7 @@ function jobsPaneMenuItems(
             label: "AI routine",
             icon: <Bot class="h-3.5 w-3.5" />,
             selected: preferences.kind === "ai-routine",
+            active: preferences.kind === "ai-routine",
             onSelect: () => setPreferences({ kind: "ai-routine" })
           },
           {
@@ -1108,6 +1145,7 @@ function jobsPaneMenuItems(
             label: "Shell",
             icon: <Terminal class="h-3.5 w-3.5" />,
             selected: preferences.kind === "shell",
+            active: preferences.kind === "shell",
             onSelect: () => setPreferences({ kind: "shell" })
           }
         ]
@@ -1117,6 +1155,7 @@ function jobsPaneMenuItems(
         label: "Status",
         value: preferences.status ? toProperCase(preferences.status) : "All",
         icon: <Pause class="h-3.5 w-3.5" />,
+        active: Boolean(preferences.status),
         items: [
           {
             kind: "option",
@@ -1130,15 +1169,32 @@ function jobsPaneMenuItems(
             label: toProperCase(status),
             icon: <Pause class="h-3.5 w-3.5" />,
             selected: preferences.status === status,
+            active: preferences.status === status,
             onSelect: () => setPreferences({ status })
           }))
         ]
       },
       {
         kind: "submenu",
+        label: "Job state",
+        value: jobStateFilterLabel(preferences.jobState ?? "all"),
+        icon: <ShieldCheck class="h-3.5 w-3.5" />,
+        active: (preferences.jobState ?? "all") !== "all",
+        items: (["all", "idle", "due", "queued", "blocked", "running", "stale", "backoff"] satisfies JobsJobStateFilter[]).map((jobState) => ({
+          kind: "option" as const,
+          label: jobStateFilterLabel(jobState),
+          icon: jobStateFilterIcon(jobState),
+          selected: (preferences.jobState ?? "all") === jobState,
+          active: jobState !== "all" && (preferences.jobState ?? "all") === jobState,
+          onSelect: () => setPreferences({ jobState })
+        }))
+      },
+      {
+        kind: "submenu",
         label: "Risk",
         value: preferences.risk ? toProperCase(preferences.risk) : "All",
         icon: <ShieldCheck class="h-3.5 w-3.5" />,
+        active: Boolean(preferences.risk),
         items: [
           {
             kind: "option",
@@ -1152,6 +1208,7 @@ function jobsPaneMenuItems(
             label: toProperCase(risk),
             icon: <ShieldCheck class="h-3.5 w-3.5" />,
             selected: preferences.risk === risk,
+            active: preferences.risk === risk,
             onSelect: () => setPreferences({ risk })
           }))
         ]
@@ -1161,7 +1218,7 @@ function jobsPaneMenuItems(
         kind: "option",
         label: "Clear search and filters",
         icon: <Trash2 class="h-3.5 w-3.5" />,
-        onSelect: () => setPreferences({ jobSearch: "", kind: undefined, status: undefined, risk: undefined })
+        onSelect: () => setPreferences({ jobSearch: "", kind: undefined, status: undefined, jobState: "all", risk: undefined })
       }
     ];
   }
@@ -1185,11 +1242,13 @@ function jobsPaneMenuItems(
       label: "Run state",
       value: runFilterLabel(state.jobsRunFilter),
       icon: <ShieldCheck class="h-3.5 w-3.5" />,
+      active: state.jobsRunFilter !== "all",
       items: (["all", "approval", "queued", "running", "failed", "done"] satisfies JobsRunFilter[]).map((filter) => ({
         kind: "option" as const,
         label: runFilterLabel(filter),
         icon: runFilterIcon(filter),
         selected: state.jobsRunFilter === filter,
+        active: filter !== "all" && state.jobsRunFilter === filter,
         onSelect: () => harnessStore.setJobsRunFilter(filter)
       }))
     },
@@ -1208,7 +1267,12 @@ function jobsPaneMenuItems(
 
 function activeJobsPaneFilterCount(state: typeof harnessStore.state, segment: "jobs" | "inbox" | "health") {
   if (segment === "jobs") {
-    return [state.jobsPanePreferences.kind, state.jobsPanePreferences.status, state.jobsPanePreferences.risk].filter(Boolean).length;
+    return [
+      state.jobsPanePreferences.kind,
+      state.jobsPanePreferences.status,
+      state.jobsPanePreferences.jobState && state.jobsPanePreferences.jobState !== "all" ? state.jobsPanePreferences.jobState : undefined,
+      state.jobsPanePreferences.risk
+    ].filter(Boolean).length;
   }
   if (segment === "inbox") {
     return state.jobsRunFilter === "all" ? 0 : 1;
@@ -1307,7 +1371,24 @@ function matchesRunFilter(run: BackgroundJobRun, filter: JobsRunFilter) {
     case "failed":
       return run.status === "failed" || run.status === "cancelled";
     case "done":
-      return run.status === "succeeded" || run.status === "skipped";
+      return run.status === "succeeded" || run.status === "partial-complete" || run.status === "skipped";
+  }
+}
+
+function matchesProjectChatRunFilter(run: AgentRunState, filter: JobsRunFilter) {
+  switch (filter) {
+    case "all":
+      return true;
+    case "approval":
+      return run.status === "awaiting-user-input";
+    case "queued":
+      return run.status === "planning" || run.status === "ready";
+    case "running":
+      return isRunningProjectChatRunStatus(run.status);
+    case "failed":
+      return run.status === "failed" || run.status === "stopped";
+    case "done":
+      return run.status === "completed" || run.status === "partial-complete";
   }
 }
 
@@ -1325,10 +1406,20 @@ function matchesJobFilters(job: BackgroundJob, state: typeof harnessStore.state)
   if (preferences.status && job.status !== preferences.status) {
     return false;
   }
+  if (preferences.jobState && preferences.jobState !== "all" && !matchesJobStateFilter(job, preferences.jobState)) {
+    return false;
+  }
   if (preferences.risk && job.riskLevel !== preferences.risk) {
     return false;
   }
   return true;
+}
+
+function matchesJobStateFilter(job: BackgroundJob, filter: Exclude<JobsJobStateFilter, "all">) {
+  if (filter === "backoff") {
+    return Boolean(job.backoffUntil);
+  }
+  return job.schedulerStatus === filter;
 }
 
 function compareJobs(left: BackgroundJob, right: BackgroundJob, sort: JobsPaneJobSort) {
@@ -1360,8 +1451,25 @@ function compareRuns(left: BackgroundJobRun, right: BackgroundJobRun, sort: Jobs
   return compareRunsByUrgency(left, right);
 }
 
+function compareRunListItems(left: RunListItem, right: RunListItem, sort: JobsPaneRunSort) {
+  if (sort === "updated") {
+    return runListItemUpdatedAt(right).localeCompare(runListItemUpdatedAt(left));
+  }
+  if (sort === "queued") {
+    return runListItemQueuedAt(right).localeCompare(runListItemQueuedAt(left));
+  }
+  if (sort === "status") {
+    return runListItemStatus(left).localeCompare(runListItemStatus(right)) || runListItemUpdatedAt(right).localeCompare(runListItemUpdatedAt(left));
+  }
+  return compareRunListItemsByUrgency(left, right);
+}
+
 function compareRunsByUrgency(left: BackgroundJobRun, right: BackgroundJobRun) {
   return runUrgencyRank(left) - runUrgencyRank(right) || right.updatedAt.localeCompare(left.updatedAt);
+}
+
+function compareRunListItemsByUrgency(left: RunListItem, right: RunListItem) {
+  return runListItemUrgencyRank(left) - runListItemUrgencyRank(right) || runListItemUpdatedAt(right).localeCompare(runListItemUpdatedAt(left));
 }
 
 function runUrgencyRank(run: BackgroundJobRun) {
@@ -1374,10 +1482,48 @@ function runUrgencyRank(run: BackgroundJobRun) {
   if (run.status === "failed" || run.status === "cancelled") {
     return 2;
   }
+  if (run.status === "partial-complete") {
+    return 3;
+  }
   if (run.status === "queued") {
+    return 4;
+  }
+  return 5;
+}
+
+function runListItemUrgencyRank(item: RunListItem) {
+  if (item.kind === "background") {
+    return runUrgencyRank(item.run);
+  }
+  if (item.entry.run.status === "awaiting-user-input") {
+    return 0;
+  }
+  if (isRunningProjectChatRunStatus(item.entry.run.status)) {
+    return 1;
+  }
+  if (item.entry.run.status === "failed" || item.entry.run.status === "stopped" || item.entry.run.status === "partial-complete") {
+    return 2;
+  }
+  if (item.entry.run.status === "planning" || item.entry.run.status === "ready") {
     return 3;
   }
   return 4;
+}
+
+function isRunningProjectChatRunStatus(status: AgentRunState["status"]) {
+  return status === "running-main" || status === "running-subagents" || status === "aggregating";
+}
+
+function runListItemStatus(item: RunListItem) {
+  return item.kind === "project-chat" ? item.entry.run.status : item.run.status;
+}
+
+function runListItemUpdatedAt(item: RunListItem) {
+  return item.kind === "project-chat" ? item.entry.run.updatedAt : item.run.updatedAt;
+}
+
+function runListItemQueuedAt(item: RunListItem) {
+  return item.kind === "project-chat" ? item.entry.run.createdAt : item.run.queuedAt;
 }
 
 function riskRank(risk: BackgroundJob["riskLevel"]) {
@@ -1437,7 +1583,7 @@ function CapacityBar(props: { jobs: BackgroundJob[] }) {
   });
   return (
     <Tooltip content="Recurring tasks are taking longer than their frequency. Some runs will be skipped to prevent state corruption.">
-      <div class="mb-3 rounded-xl border border-(--border) bg-white/60 px-3 py-2">
+      <div class="mb-3 border-l-2 border-(--border) px-3 py-2">
         <div class="flex items-center justify-between gap-3 text-[0.625rem] font-semibold uppercase tracking-[0.14em] text-(--muted)">
           <span>Capacity</span>
           <span>{status()}</span>
@@ -1639,6 +1785,27 @@ function projectChatRunSearchHaystack(entry: {
     .join(" ");
 }
 
+function formatRunListItemTitle(item: RunListItem) {
+  if (item.kind === "project-chat") {
+    return `${item.entry.project.name} / ${item.entry.thread?.title ?? item.entry.run.threadId}`;
+  }
+  return harnessStore.state.backgroundJobs.jobs.find((job) => job.id === item.run.jobId)?.name ?? item.run.jobId;
+}
+
+function formatRunListItemSummary(item: RunListItem) {
+  if (item.kind === "project-chat") {
+    return item.entry.run.failureMessage ?? item.entry.run.latestUserPrompt ?? item.entry.run.summary;
+  }
+  return formatRunSummary(item.run);
+}
+
+function formatRunListItemTime(item: RunListItem) {
+  if (item.kind === "project-chat") {
+    return `Updated: ${formatShortTimestamp(item.entry.run.updatedAt)}`;
+  }
+  return `Queued: ${formatShortTimestamp(item.run.queuedAt)}`;
+}
+
 function formatRunSummary(run: BackgroundJobRun) {
   return run.failureMessage ?? run.summary ?? latestRunEventDetail(run) ?? `${run.triggerSource} run`;
 }
@@ -1655,6 +1822,120 @@ function formatRunProgress(run: BackgroundJobRun) {
 
 function formatFailureCategory(value: string) {
   return value.replace(/-/g, " ");
+}
+
+function jobStatusBadgeClass(status: BackgroundJob["status"]) {
+  if (status === "enabled") {
+    return "bg-emerald-100 text-emerald-800";
+  }
+  return "bg-slate-200 text-slate-700";
+}
+
+function runStatusBadgeClass(status: BackgroundJobRun["status"]) {
+  switch (status) {
+    case "succeeded":
+      return "bg-emerald-100 text-emerald-800";
+    case "partial-complete":
+      return "bg-amber-100 text-amber-900";
+    case "failed":
+    case "cancelled":
+      return "bg-rose-100 text-rose-800";
+    case "awaiting-approval":
+    case "awaiting-user-input":
+      return "bg-amber-100 text-amber-900";
+    case "running":
+      return "bg-sky-100 text-sky-800";
+    case "queued":
+      return "bg-slate-200 text-slate-700";
+    case "skipped":
+      return "bg-stone-200 text-stone-700";
+  }
+}
+
+function runListItemBadgeClass(item: RunListItem) {
+  if (item.kind === "background") {
+    return runStatusBadgeClass(item.run.status);
+  }
+  switch (item.entry.run.status) {
+    case "completed":
+      return "bg-emerald-100 text-emerald-800";
+    case "partial-complete":
+      return "bg-amber-100 text-amber-900";
+    case "failed":
+    case "stopped":
+      return "bg-rose-100 text-rose-800";
+    case "awaiting-user-input":
+      return "bg-amber-100 text-amber-900";
+    case "running-main":
+    case "running-subagents":
+    case "aggregating":
+      return "bg-sky-100 text-sky-800";
+    case "planning":
+    case "ready":
+      return "bg-slate-200 text-slate-700";
+  }
+}
+
+function runStatusBorderClass(status: BackgroundJobRun["status"]) {
+  switch (status) {
+    case "succeeded":
+      return "border-l-emerald-500";
+    case "partial-complete":
+      return "border-l-amber-400";
+    case "failed":
+    case "cancelled":
+      return "border-l-rose-400";
+    case "awaiting-approval":
+    case "awaiting-user-input":
+      return "border-l-amber-400";
+    case "running":
+      return "border-l-sky-400";
+    case "queued":
+      return "border-l-slate-300";
+    case "skipped":
+      return "border-l-stone-300";
+  }
+}
+
+function runListItemBorderClass(item: RunListItem) {
+  if (item.kind === "background") {
+    return runStatusBorderClass(item.run.status);
+  }
+  switch (item.entry.run.status) {
+    case "completed":
+      return "border-l-emerald-500";
+    case "partial-complete":
+      return "border-l-amber-400";
+    case "failed":
+    case "stopped":
+      return "border-l-rose-400";
+    case "awaiting-user-input":
+      return "border-l-amber-400";
+    case "running-main":
+    case "running-subagents":
+    case "aggregating":
+      return "border-l-sky-400";
+    case "planning":
+    case "ready":
+      return "border-l-slate-300";
+  }
+}
+
+function runEventStageBorderClass(stage: string) {
+  const normalized = stage.toLowerCase();
+  if (normalized.includes("fail") || normalized.includes("error") || normalized.includes("cancel")) {
+    return "border-rose-400";
+  }
+  if (normalized.includes("approval") || normalized.includes("input") || normalized.includes("warn")) {
+    return "border-amber-400";
+  }
+  if (normalized.includes("done") || normalized.includes("complete") || normalized.includes("success")) {
+    return "border-emerald-500";
+  }
+  if (normalized.includes("exec") || normalized.includes("run")) {
+    return "border-sky-400";
+  }
+  return "border-(--border)";
 }
 
 function formatPromptStats(promptStats: BackgroundJobRun["promptStats"] | undefined) {
@@ -1712,40 +1993,44 @@ function JobDetail(props: {
     <Show
       when={props.job}
       fallback={
-        <div class="flex h-full min-h-80 items-center justify-center rounded-[1.2rem] border border-dashed border-(--border) bg-white/45 p-6 text-center text-[0.675rem] text-(--muted)">
+        <div class="flex h-full min-h-80 items-center justify-center border border-dashed border-(--border) p-6 text-center text-[0.675rem] text-(--muted)">
           Select background job to inspect schedule and actions.
         </div>
       }
     >
       {(job) => (
         <div class="flex h-full min-h-0 flex-col gap-4">
-          <div>
+          <div class="border-b border-(--border) pb-4">
             <div class="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Job detail</div>
-                <h2 class="mt-1 text-[1.2rem] font-semibold tracking-[-0.04em] text-(--foreground)">{job().name}</h2>
-                <div class="mt-2 text-[0.675rem] leading-5 text-(--muted)">
-                  <div>Status: {job().status}</div>
-                  <div>Kind: {job().kind}</div>
-                  <div>Risk: {job().riskLevel}</div>
-                  <div>Lane: {job().lane ?? "exclusive"}</div>
-                  <div>Owner: {formatJobOwner(job(), harnessStore.state)}</div>
-                  <div>Schedule: {job().scheduleInput}</div>
-                  <div>Next: {formatJobNextRun(job(), props.runs, props.schedulerHeartbeatAt)}</div>
+                <div class="flex flex-wrap items-center gap-2">
+                  <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Job detail</div>
+                  <span class={`rounded-full px-2 py-0.5 text-[0.55rem] font-semibold uppercase tracking-[0.12em] ${jobStatusBadgeClass(job().status)}`}>
+                    {job().status}
+                  </span>
+                </div>
+                <h2 class="mt-1 break-words text-[1.2rem] font-semibold text-(--foreground) [overflow-wrap:anywhere]">{job().name}</h2>
+                <div class="mt-3 grid gap-x-5 gap-y-1 border-l-2 border-(--border) pl-4 text-[0.675rem] leading-5 text-(--muted) sm:grid-cols-2 xl:grid-cols-3">
+                  <RunFact label="Kind">{job().kind}</RunFact>
+                  <RunFact label="Risk">{job().riskLevel}</RunFact>
+                  <RunFact label="Lane">{job().lane ?? "exclusive"}</RunFact>
+                  <RunFact label="Owner">{formatJobOwner(job(), harnessStore.state)}</RunFact>
+                  <RunFact label="Schedule">{job().scheduleInput}</RunFact>
+                  <RunFact label="Next">{formatJobNextRun(job(), props.runs, props.schedulerHeartbeatAt)}</RunFact>
                   <Show when={job().schedulerStatus}>
-                    {(status) => <div>Scheduler: {status()}{job().schedulerDetail ? ` - ${job().schedulerDetail}` : ""}</div>}
+                    {(status) => <RunFact label="Scheduler">{status()}{job().schedulerDetail ? ` - ${job().schedulerDetail}` : ""}</RunFact>}
                   </Show>
                   <Show when={formatFailureTrackingLine(job())}>
-                    {(line) => <div>{line()}</div>}
+                    {(line) => <RunFact label="Failure">{line()}</RunFact>}
                   </Show>
                   <For each={formatJobSchedulerLines(job(), props.runs, props.schedulerHeartbeatAt)}>
-                    {(line) => <div>{line}</div>}
+                    {(line) => <RunFact label="Scheduler">{line}</RunFact>}
                   </For>
                   <Show when={activeRun()}>
-                    {(run) => <div>Blocked by: {run().status} run {run().id}</div>}
+                    {(run) => <div class="min-w-0 break-words [overflow-wrap:anywhere]">Blocked by: {run().status} run {run().id}</div>}
                   </Show>
                   <Show when={job().description}>
-                    <div>Description: {job().description}</div>
+                    <RunFact label="Description">{job().description}</RunFact>
                   </Show>
                 </div>
               </div>
@@ -1781,9 +2066,9 @@ function JobDetail(props: {
             </div>
             <Show
               when={latestRun()?.events.length}
-              fallback={<div class="rounded-[0.9rem] border border-dashed border-(--border) bg-white/45 p-3 text-[0.675rem] text-(--muted)">No execution log yet.</div>}
+              fallback={<div class="border-l-2 border-dashed border-(--border) py-3 pl-4 text-[0.675rem] text-(--muted)">No execution log yet.</div>}
             >
-              <ExecutionLog entries={latestRunEvents()} emptyMessage="No execution log yet." />
+              <ExecutionLog entries={latestRunEvents()} emptyMessage="No execution log yet." rowVariant="flat" />
             </Show>
           </section>
         </div>
@@ -1806,6 +2091,36 @@ function runFilterLabel(filter: JobsRunFilter) {
       return "Failed";
     case "done":
       return "Done";
+  }
+}
+
+function jobStateFilterLabel(filter: JobsJobStateFilter) {
+  switch (filter) {
+    case "all":
+      return "All";
+    case "backoff":
+      return "Backoff";
+    default:
+      return toProperCase(filter);
+  }
+}
+
+function jobStateFilterIcon(filter: JobsJobStateFilter) {
+  switch (filter) {
+    case "all":
+      return <ListFilter class="h-3.5 w-3.5" />;
+    case "due":
+    case "queued":
+      return <Clock3 class="h-3.5 w-3.5" />;
+    case "blocked":
+    case "backoff":
+      return <CircleX class="h-3.5 w-3.5" />;
+    case "running":
+      return <LoaderCircle class="h-3.5 w-3.5" />;
+    case "stale":
+      return <RefreshCcw class="h-3.5 w-3.5" />;
+    case "idle":
+      return <CheckCircle2 class="h-3.5 w-3.5" />;
   }
 }
 

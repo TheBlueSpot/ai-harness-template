@@ -1,0 +1,4 @@
+interface:
+  display_name: "UI Audit"
+  short_description: "Deep screenshot-backed UX audits."
+  default_prompt: "Deeply scan this app UI, capture key surfaces, write a holistic UX analysis, and produce a high-fidelity polish plan."

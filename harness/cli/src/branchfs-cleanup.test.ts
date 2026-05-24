@@ -40,11 +40,12 @@ describe("branchfs cleanup", () => {
     await Bun.sleep(5);
     await createBranchfsRoot(repoRoot, "complete-4", true);
     await createBranchfsRoot(repoRoot, "partial", false);
+    await Bun.sleep(5);
 
     const summary = await pruneBranchfsRoots({
       repoRoot,
       mode: "retention",
-      retention: { maxAgeMs: 24 * 60 * 60 * 1000, maxRoots: 3, maxBytes: 1024 * 1024 * 1024 }
+      retention: { maxAgeMs: 24 * 60 * 60 * 1000, maxRoots: 3, maxBytes: 1024 * 1024 * 1024, partialGraceMs: 0 }
     });
 
     expect(summary.rootsScanned).toBe(5);
@@ -52,6 +53,22 @@ describe("branchfs cleanup", () => {
     expect(existsSync(path.join(repoRoot, ".local", "branchfs", "complete-1"))).toBe(false);
     expect(existsSync(path.join(repoRoot, ".local", "branchfs", "partial"))).toBe(false);
     expect(existsSync(path.join(repoRoot, ".local", "branchfs", "complete-4"))).toBe(true);
+  });
+
+  test("retention keeps fresh partial roots so concurrent leases can finish", async () => {
+    const repoRoot = await fixture.createRepoClone("branchfs-cleanup-fresh-partial");
+    await createBranchfsRoot(repoRoot, "complete", true);
+    const partialRoot = await createBranchfsRoot(repoRoot, "partial", false);
+
+    const summary = await pruneBranchfsRoots({
+      repoRoot,
+      mode: "retention",
+      retention: { maxAgeMs: 24 * 60 * 60 * 1000, maxRoots: 3, maxBytes: 1024 * 1024 * 1024, partialGraceMs: 60_000 }
+    });
+
+    expect(summary.rootsScanned).toBe(2);
+    expect(summary.rootsDeleted).toBe(0);
+    expect(existsSync(partialRoot)).toBe(true);
   });
 });
 

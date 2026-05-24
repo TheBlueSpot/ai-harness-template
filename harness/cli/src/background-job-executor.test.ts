@@ -185,6 +185,208 @@ class ReadyRoutineAdapter implements PiAgentAdapter {
   }
 }
 
+class TerminalDuringExecutionAdapter extends ReadyRoutineAdapter {
+  constructor(private readonly onExecution: () => void) {
+    super();
+  }
+
+  async startExecution(request: PiAgentPromptRequest): Promise<PiAgentExecutionController> {
+    this.calls.push(request);
+    this.onExecution();
+    return {
+      result: Promise.resolve({ text: "Late success should not overwrite terminal run." }),
+      continueWithPrompt: async () => ({ text: "Late success should not overwrite terminal run." }),
+      abort: async () => {},
+      dispose() {}
+    };
+  }
+}
+
+class TerminalBeforeSubagentCompleteAdapter implements PiAgentAdapter {
+  readonly calls: PiAgentPromptRequest[] = [];
+  private terminalTriggered = false;
+
+  constructor(private readonly onSubagentExecution: () => void) {}
+
+  async runPrompt(request: PiAgentPromptRequest): Promise<PiAgentPromptResult> {
+    this.calls.push(request);
+    if (request.kind === "planner") {
+      return {
+        text: JSON.stringify({
+          type: "ready",
+          difficultyScore: 80,
+          summary: "Run stale subagent routine.",
+          executionModelId: "openai/gpt-5.4",
+          usesSubagents: true,
+          subtasks: [
+            {
+              id: "task-1",
+              title: "Late task",
+              instruction: "Finish after repair."
+            },
+            {
+              id: "task-2",
+              title: "Second late task",
+              instruction: "Also finish after repair."
+            }
+          ],
+          finalExecutionBrief: "Aggregate stale result.",
+          prerequisites: [],
+          contracts: [
+            {
+              taskId: "task-1",
+              title: "Late task",
+              instruction: "Finish after repair.",
+              effortPoints: 1,
+              ownedPaths: ["owned.ts"],
+              dependsOnPrerequisiteIds: [],
+              deliverables: ["none"],
+              integrationPoints: ["aggregator"],
+              verificationScope: "owned-files-only",
+              verificationCommands: [],
+              mergeNotes: "No merge."
+            },
+            {
+              taskId: "task-2",
+              title: "Second late task",
+              instruction: "Also finish after repair.",
+              effortPoints: 1,
+              ownedPaths: ["owned-2.ts"],
+              dependsOnPrerequisiteIds: [],
+              deliverables: ["none"],
+              integrationPoints: ["aggregator"],
+              verificationScope: "owned-files-only",
+              verificationCommands: [],
+              mergeNotes: "No merge."
+            }
+          ]
+        })
+      };
+    }
+    if (request.kind === "subagent") {
+      this.onSubagentExecution();
+      return { text: "Late subagent success should not be persisted." };
+    }
+    return { text: "Late aggregate should not be persisted." };
+  }
+
+  async startExecution(request: PiAgentPromptRequest): Promise<PiAgentExecutionController> {
+    this.calls.push(request);
+    if (request.kind === "subagent") {
+      if (!this.terminalTriggered) {
+        this.terminalTriggered = true;
+        this.onSubagentExecution();
+      }
+      return {
+        result: Promise.resolve({ text: "Late subagent success should not be persisted." }),
+        continueWithPrompt: async () => ({ text: "Late subagent success should not be persisted." }),
+        abort: async () => {},
+        dispose() {}
+      };
+    }
+    return {
+      result: Promise.resolve({ text: "Late aggregate should not be persisted." }),
+      continueWithPrompt: async () => ({ text: "Late aggregate should not be persisted." }),
+      abort: async () => {},
+      dispose() {}
+    };
+  }
+
+  setApiKey() {}
+
+  hasApiKey() {
+    return true;
+  }
+}
+
+class PartialSubagentRoutineAdapter implements PiAgentAdapter {
+  readonly calls: PiAgentPromptRequest[] = [];
+
+  async runPrompt(request: PiAgentPromptRequest): Promise<PiAgentPromptResult> {
+    this.calls.push(request);
+    if (request.kind === "planner") {
+      return {
+        text: JSON.stringify({
+          type: "ready",
+          difficultyScore: 80,
+          summary: "Run partial routine.",
+          executionModelId: "openai/gpt-5.4",
+          usesSubagents: true,
+          subtasks: [
+            {
+              id: "task-1",
+              title: "Failing task",
+              instruction: "Fail for test."
+            },
+            {
+              id: "task-2",
+              title: "Second failing task",
+              instruction: "Fail for test too."
+            }
+          ],
+          finalExecutionBrief: "Aggregate partial result.",
+          prerequisites: [],
+          contracts: [
+            {
+              taskId: "task-1",
+              title: "Failing task",
+              instruction: "Fail for test.",
+              effortPoints: 1,
+              ownedPaths: ["owned.ts"],
+              dependsOnPrerequisiteIds: [],
+              deliverables: ["none"],
+              integrationPoints: ["aggregator"],
+              verificationScope: "owned-files-only",
+              verificationCommands: [],
+              mergeNotes: "No merge."
+            },
+            {
+              taskId: "task-2",
+              title: "Second failing task",
+              instruction: "Fail for test too.",
+              effortPoints: 1,
+              ownedPaths: ["owned-2.ts"],
+              dependsOnPrerequisiteIds: [],
+              deliverables: ["none"],
+              integrationPoints: ["aggregator"],
+              verificationScope: "owned-files-only",
+              verificationCommands: [],
+              mergeNotes: "No merge."
+            }
+          ]
+        })
+      };
+    }
+    return { text: "Partial aggregate summary." };
+  }
+
+  async startExecution(request: PiAgentPromptRequest): Promise<PiAgentExecutionController> {
+    this.calls.push(request);
+    if (request.kind === "subagent") {
+      return {
+        result: Promise.reject(new Error("subagent failed")),
+        continueWithPrompt: async () => {
+          throw new Error("subagent failed");
+        },
+        abort: async () => {},
+        dispose() {}
+      };
+    }
+    return {
+      result: Promise.resolve({ text: "Partial aggregate summary." }),
+      continueWithPrompt: async () => ({ text: "Partial aggregate summary." }),
+      abort: async () => {},
+      dispose() {}
+    };
+  }
+
+  setApiKey() {}
+
+  hasApiKey() {
+    return true;
+  }
+}
+
 function plannerChoices(answerText: string = "Use existing guidance.") {
   return [
     {
@@ -805,6 +1007,217 @@ describe("executeBackgroundJobRun", () => {
     expect(result.status).toBe("failed");
     expect(completedJob.lastRunAt).toBeDefined();
     expect(new Date(completedJob.nextRunAt ?? 0).getTime()).toBeGreaterThan(new Date(completedJob.lastRunAt ?? 0).getTime());
+  });
+
+  test("does not overwrite a terminal background run when stale execution returns later", async () => {
+    const repository = createRepository();
+    const projectRoot = path.join(createTempDir(), `repo-${crypto.randomUUID()}`);
+    mkdirSync(projectRoot, { recursive: true });
+    const project = repository.addProject(projectRoot);
+    const now = new Date().toISOString();
+    const job = createAssistantRoutineJob(project.id, saveAssistant(repository, project.id), createThreadId(), now);
+    repository.saveBackgroundJob(job);
+    const savedJob = repository.getBackgroundJob(job.id)!;
+    const run = repository.createBackgroundJobRun({
+      jobId: savedJob.id,
+      projectId: savedJob.projectId,
+      assistantId: savedJob.assistantId,
+      automationThreadId: savedJob.automationThreadId,
+      triggerSource: "schedule",
+      status: "queued",
+      riskLevel: savedJob.riskLevel,
+      approvalStatus: "approved"
+    });
+    repository.setBackgroundJobRunStatus(run.id, "running", {
+      controllerInstanceId: "controller-1",
+      controllerLeaseId: "lease-1",
+      controllerLeaseExpiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString()
+    });
+    const adapter = new TerminalDuringExecutionAdapter(() => {
+      const linkedRun = repository.getLatestThreadRun(project.id, savedJob.automationThreadId);
+      expect(linkedRun).toBeDefined();
+      repository.setAgentRunStatus(project.id, linkedRun!.id, "failed", "Background run interrupted before completion", "controller-lost");
+      repository.setBackgroundJobRunStatus(run.id, "failed", {
+        failureMessage: "Background run interrupted before completion",
+        failureCategory: "controller-lost"
+      });
+      repository.appendBackgroundJobRunEvent(run.id, "failed", "Background run repaired: no live controller", "No live background controller owns this running row.");
+    });
+
+    const result = await executeBackgroundJobRun({
+      repository,
+      adapter,
+      agentId: "pi",
+      job: savedJob,
+      run,
+      controllerInstanceId: "controller-1",
+      controllerLeaseId: "lease-1",
+      providerBrand: "gpt",
+      planningModelId: "openai/gpt-5.4",
+      executionModelId: "openai/gpt-5.4",
+      debugEnabled: false
+    });
+
+    const updatedRun = repository.getBackgroundJobRun(run.id);
+    const linkedRun = repository.getLatestThreadRun(project.id, savedJob.automationThreadId);
+    expect(result.status).toBe("failed");
+    expect(updatedRun?.status).toBe("failed");
+    expect(updatedRun?.failureCategory).toBe("controller-lost");
+    expect(updatedRun?.events.some((event) => event.message === "Background AI run completed.")).toBe(false);
+    expect(linkedRun?.status).toBe("failed");
+  });
+
+  test("owned background status writes complete a leased routine run", async () => {
+    const repository = createRepository();
+    const projectRoot = path.join(createTempDir(), `repo-${crypto.randomUUID()}`);
+    mkdirSync(projectRoot, { recursive: true });
+    const project = repository.addProject(projectRoot);
+    const now = new Date().toISOString();
+    const job = createAssistantRoutineJob(project.id, saveAssistant(repository, project.id), createThreadId(), now);
+    repository.saveBackgroundJob(job);
+    const savedJob = repository.getBackgroundJob(job.id)!;
+    const run = repository.createBackgroundJobRun({
+      jobId: savedJob.id,
+      projectId: savedJob.projectId,
+      assistantId: savedJob.assistantId,
+      automationThreadId: savedJob.automationThreadId,
+      triggerSource: "schedule",
+      status: "queued",
+      riskLevel: savedJob.riskLevel,
+      approvalStatus: "approved"
+    });
+    repository.setBackgroundJobRunStatus(run.id, "running", {
+      controllerInstanceId: "controller-1",
+      controllerLeaseId: "lease-1",
+      controllerLeaseExpiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString()
+    });
+
+    const result = await executeBackgroundJobRun({
+      repository,
+      adapter: new ReadyRoutineAdapter(),
+      agentId: "pi",
+      job: savedJob,
+      run,
+      controllerInstanceId: "controller-1",
+      controllerLeaseId: "lease-1",
+      providerBrand: "gpt",
+      planningModelId: "openai/gpt-5.4",
+      executionModelId: "openai/gpt-5.4",
+      debugEnabled: false
+    });
+
+    expect(result.status).toBe("succeeded");
+    expect(result.events.some((event) => event.message === "Background AI run completed.")).toBe(true);
+    expect(repository.getBackgroundJobRun(run.id)?.controllerLeaseId).toBe("lease-1");
+  });
+
+  test("drops late subagent and aggregation events after terminal repair", async () => {
+    const repository = createRepository();
+    const projectRoot = path.join(createTempDir(), `repo-${crypto.randomUUID()}`);
+    mkdirSync(projectRoot, { recursive: true });
+    Bun.spawnSync({ cmd: ["git", "init"], cwd: projectRoot, stdout: "pipe", stderr: "pipe" });
+    const project = repository.addProject(projectRoot);
+    const now = new Date().toISOString();
+    const job = createAssistantRoutineJob(project.id, saveAssistant(repository, project.id), createThreadId(), now);
+    if (job.definition.kind === "ai-routine") {
+      job.definition.subagentWorktreeStrategy = "same-worktree";
+    }
+    repository.saveBackgroundJob(job);
+    const savedJob = repository.getBackgroundJob(job.id)!;
+    const run = repository.createBackgroundJobRun({
+      jobId: savedJob.id,
+      projectId: savedJob.projectId,
+      assistantId: savedJob.assistantId,
+      automationThreadId: savedJob.automationThreadId,
+      triggerSource: "schedule",
+      status: "queued",
+      riskLevel: savedJob.riskLevel,
+      approvalStatus: "approved"
+    });
+    repository.setBackgroundJobRunStatus(run.id, "running", {
+      controllerInstanceId: "controller-1",
+      controllerLeaseId: "lease-1",
+      controllerLeaseExpiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString()
+    });
+    const adapter = new TerminalBeforeSubagentCompleteAdapter(() => {
+      const linkedRun = repository.getLatestThreadRun(project.id, savedJob.automationThreadId);
+      expect(linkedRun).toBeDefined();
+      repository.setAgentRunStatus(project.id, linkedRun!.id, "failed", "Background run interrupted before completion", "controller-lost");
+      repository.setBackgroundJobRunStatus(run.id, "failed", {
+        failureMessage: "Background run interrupted before completion",
+        failureCategory: "controller-lost"
+      });
+      repository.appendBackgroundJobRunEvent(run.id, "failed", "Background run repaired: no live controller", "No live background controller owns this running row.");
+    });
+
+    const result = await executeBackgroundJobRun({
+      repository,
+      adapter,
+      agentId: "pi",
+      job: savedJob,
+      run,
+      controllerInstanceId: "controller-1",
+      controllerLeaseId: "lease-1",
+      providerBrand: "gpt",
+      planningModelId: "openai/gpt-5.4",
+      executionModelId: "openai/gpt-5.4",
+      debugEnabled: false
+    });
+
+    const updatedRun = repository.getBackgroundJobRun(run.id);
+    expect(result.status).toBe("failed");
+    expect(updatedRun?.events.some((event) => event.stage === "subagent-complete")).toBe(false);
+    expect(updatedRun?.events.some((event) => event.stage === "aggregation-start")).toBe(false);
+    expect(updatedRun?.events.some((event) => event.stage === "aggregation-complete")).toBe(false);
+    expect(updatedRun?.events.some((event) => event.stage === "done" || event.stage === "partial-complete")).toBe(false);
+  });
+
+  test("stores partial subagent AI routine as partial-complete background run", async () => {
+    const repository = createRepository();
+    const projectRoot = path.join(createTempDir(), `repo-${crypto.randomUUID()}`);
+    mkdirSync(projectRoot, { recursive: true });
+    Bun.spawnSync({ cmd: ["git", "init"], cwd: projectRoot, stdout: "pipe", stderr: "pipe" });
+    const project = repository.addProject(projectRoot);
+    const now = new Date().toISOString();
+    const job = createAssistantRoutineJob(project.id, saveAssistant(repository, project.id), createThreadId(), now);
+    if (job.definition.kind === "ai-routine") {
+      job.definition.subagentWorktreeStrategy = "same-worktree";
+    }
+    repository.saveBackgroundJob(job);
+    const savedJob = repository.getBackgroundJob(job.id)!;
+    const run = repository.createBackgroundJobRun({
+      jobId: savedJob.id,
+      projectId: savedJob.projectId,
+      assistantId: savedJob.assistantId,
+      automationThreadId: savedJob.automationThreadId,
+      triggerSource: "schedule",
+      status: "queued",
+      riskLevel: savedJob.riskLevel,
+      approvalStatus: "approved"
+    });
+
+    const result = await executeBackgroundJobRun({
+      repository,
+      adapter: new PartialSubagentRoutineAdapter(),
+      agentId: "pi",
+      job: savedJob,
+      run,
+      providerBrand: "gpt",
+      planningModelId: "openai/gpt-5.4",
+      executionModelId: "openai/gpt-5.4",
+      debugEnabled: false
+    });
+
+    const linkedRun = repository.getRun(project.id, result.linkedAgentRunId!);
+    const refreshedJob = repository.getBackgroundJob(job.id)!;
+    expect(result.status).toBe("partial-complete");
+    expect(result.summary).toBe("Partial aggregate summary.");
+    expect(result.failureMessage).toBe("Some subagent work failed.");
+    expect(result.failureCategory).toBeUndefined();
+    expect(result.events.some((event) => event.stage === "partial-complete")).toBe(true);
+    expect(linkedRun?.status).toBe("partial-complete");
+    expect(refreshedJob.lastRunAt).toBeDefined();
+    expect(new Date(refreshedJob.nextRunAt ?? 0).getTime()).toBeGreaterThan(new Date(refreshedJob.lastRunAt ?? 0).getTime());
   });
 
   test("assistant-owned routine prompt renders cleaned profile and guidance context", async () => {

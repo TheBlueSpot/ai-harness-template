@@ -17,4 +17,15 @@ export {
   type RectLike,
   type Vec2
 } from "./math/collision.ts";
+export {
+  aabbsOverlap,
+  createAabb,
+  createCollisionBroadphase,
+  normalizeAabb,
+  type CollisionAabb,
+  type CollisionBroadphaseEntry,
+  type CollisionBroadphaseId,
+  type CollisionBroadphaseOptions,
+  type CollisionBroadphasePair
+} from "./math/broadphase.ts";
 export { gridKey, inBounds, sameCell, opposite } from "./math/grid.ts";

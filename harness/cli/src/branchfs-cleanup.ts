@@ -8,7 +8,8 @@ const BRANCHFS_DELETING_DIRNAME = ".local/branchfs-deleting";
 export const DEFAULT_BRANCHFS_RETENTION = {
   maxAgeMs: 24 * 60 * 60 * 1000,
   maxRoots: 3,
-  maxBytes: 20 * 1024 * 1024 * 1024
+  maxBytes: 20 * 1024 * 1024 * 1024,
+  partialGraceMs: 10 * 60 * 1000
 };
 
 type PruneInput = {
@@ -18,6 +19,7 @@ type PruneInput = {
     maxAgeMs: number;
     maxRoots: number;
     maxBytes: number;
+    partialGraceMs?: number;
   };
 };
 
@@ -66,8 +68,9 @@ export async function pruneBranchfsRoots(input: PruneInput): Promise<BranchfsCle
   } else {
     const retention = input.retention ?? DEFAULT_BRANCHFS_RETENTION;
     const now = Date.now();
+    const partialGraceMs = retention.partialGraceMs ?? DEFAULT_BRANCHFS_RETENTION.partialGraceMs;
     for (const root of roots) {
-      if (root.partial || now - root.createdMs > retention.maxAgeMs) {
+      if ((root.partial && now - root.createdMs > partialGraceMs) || now - root.createdMs > retention.maxAgeMs) {
         deleteNames.add(root.name);
       }
     }

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Improve UX"
+  short_description: "Evidence-backed UX polish workflow"
+  default_prompt: "Use $improve-ux to improve this interface with evidence-backed hierarchy, affordances, and verification."

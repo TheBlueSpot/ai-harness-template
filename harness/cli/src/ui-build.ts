@@ -45,41 +45,41 @@ type CreateUiAssetManagerOptions = {
 export async function buildUiBundle({ minify = false }: UiBuildOptions = {}) {
   const start = performance.now();
 
-  await rm(uiOutDir, { recursive: true, force: true });
-  await mkdir(uiOutDir, { recursive: true });
+  try {
+    await prepareUiOutDir();
 
-  const result = await Bun.build({
-    entrypoints: [uiEntryPoint],
-    outdir: uiOutDir,
-    format: "iife",
-    target: "browser",
-    sourcemap: minify ? "none" : "external",
-    minify,
-    plugins: [
-      SolidPlugin({
-        generate: "dom",
-        hydratable: false,
-        sourceMaps: !minify,
-        debug: !minify
-      }),
-      tailwindPlugin
-    ]
-  });
+    const result = await Bun.build({
+      entrypoints: [uiEntryPoint],
+      outdir: uiOutDir,
+      format: "iife",
+      target: "browser",
+      sourcemap: minify ? "none" : "external",
+      minify,
+      plugins: [
+        SolidPlugin({
+          generate: "dom",
+          hydratable: false,
+          sourceMaps: !minify,
+          debug: !minify
+        }),
+        tailwindPlugin
+      ]
+    });
 
-  if (!result.success) {
-    throw new AggregateError(
-      result.logs.map((log) => new Error(log.message)),
-      "UI build failed"
-    );
-  }
+    if (!result.success) {
+      throw new AggregateError(
+        result.logs.map((log) => new Error(log.message)),
+        "UI build failed"
+      );
+    }
 
-  if (!minify) {
-    await appendDevSourceMapReference();
-  }
+    if (!minify) {
+      await appendDevSourceMapReference();
+    }
 
-  await writeFile(
-    path.join(uiOutDir, "index.html"),
-    `<!doctype html>
+    await writeFile(
+      path.join(uiOutDir, "index.html"),
+      `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -93,9 +93,48 @@ export async function buildUiBundle({ minify = false }: UiBuildOptions = {}) {
   </body>
 </html>
 `
-  );
+    );
+  } catch (error) {
+    throw enrichUiBuildFileSystemError(error);
+  }
 
   console.log(`Bundled page in ${Math.round(performance.now() - start)}ms: dist/ui/index.html`);
+}
+
+export async function prepareUiOutDir() {
+  await rm(uiOutDir, { recursive: true, force: true });
+  try {
+    await mkdir(uiOutDir, { recursive: true });
+  } catch (error) {
+    if (!isNodeErrorCode(error, "EEXIST")) {
+      throw error;
+    }
+    await rm(uiOutDir, { recursive: true, force: true });
+    await mkdir(uiOutDir, { recursive: true });
+  }
+}
+
+export function enrichUiBuildFileSystemError(error: unknown) {
+  if (!hasNodeErrorCode(error, "ENOSPC")) {
+    return error;
+  }
+  const message =
+    "UI build failed because the filesystem is out of space. Free disk space or clean temporary harness artifacts such as .local/branchfs, .tmp-test-data, and dist/ui, then restart the harness.";
+  return new Error(message, { cause: error });
+}
+
+function isNodeErrorCode(error: unknown, code: string) {
+  return error instanceof Error && "code" in error && error.code === code;
+}
+
+function hasNodeErrorCode(error: unknown, code: string): boolean {
+  if (isNodeErrorCode(error, code)) {
+    return true;
+  }
+  if (error instanceof AggregateError) {
+    return error.errors.some((entry) => hasNodeErrorCode(entry, code));
+  }
+  return error instanceof Error && error.cause !== undefined && hasNodeErrorCode(error.cause, code);
 }
 
 async function appendDevSourceMapReference() {
@@ -264,6 +303,10 @@ function isIgnoredLiveReloadWatchPath(changedPath: string | undefined) {
   }
 
   const resolvedPath = path.resolve(changedPath);
+  if (isHarnessTestSourcePath(resolvedPath)) {
+    return true;
+  }
+
   if (isPathWithin(contextSourceDir, resolvedPath)) {
     return true;
   }
@@ -276,6 +319,23 @@ function isIgnoredLiveReloadWatchPath(changedPath: string | undefined) {
   const segments = repoRelativePath.split(path.sep);
   const firstSegment = segments[0]?.toLowerCase();
   return firstSegment === ".agent" || firstSegment === ".agents" || path.basename(resolvedPath).toLowerCase() === "agents.md";
+}
+
+function isHarnessTestSourcePath(resolvedPath: string) {
+  const repoRelativePath = path.relative(repoRoot, resolvedPath);
+  if (repoRelativePath === "" || repoRelativePath.startsWith("..") || path.isAbsolute(repoRelativePath)) {
+    return false;
+  }
+
+  const normalizedPath = normalizeGitPath(repoRelativePath).toLowerCase();
+  const basename = path.basename(normalizedPath);
+  return (
+    /\.(?:test|spec)\.[cm]?[tj]sx?$/.test(basename) ||
+    /\.integration\.test\.[cm]?[tj]sx?$/.test(basename) ||
+    normalizedPath.includes("/test-support/") ||
+    normalizedPath.includes("/utils/tests/") ||
+    normalizedPath.includes("/__tests__/")
+  );
 }
 
 function createGitTrackedFilePredicate() {

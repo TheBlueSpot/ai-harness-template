@@ -247,10 +247,14 @@ export class BackgroundJobScheduler {
   }
 
   private markActiveJob(job: BackgroundJob, run: BackgroundJobRun, nowIso: string, congested: boolean, congestionRatio?: number) {
+    const activeLeaseDetail =
+      run.status === "running" && isFutureIso(run.controllerLeaseExpiresAt, nowIso)
+        ? `controller lease active until ${run.controllerLeaseExpiresAt}`
+        : undefined;
     this.options.repository.updateBackgroundJobSchedulerState(job.id, {
       schedulerStatus: run.status === "queued" ? "queued" : run.status === "running" ? "running" : "blocked",
-      schedulerDetail: `Blocked by ${run.status} run ${run.id}`,
-      blockedReason: `Job already has ${run.status} run ${run.id}`,
+      schedulerDetail: activeLeaseDetail ? `Blocked by ${run.status} run ${run.id}; ${activeLeaseDetail}` : `Blocked by ${run.status} run ${run.id}`,
+      blockedReason: activeLeaseDetail ? `Job already has ${run.status} run ${run.id}; ${activeLeaseDetail}` : `Job already has ${run.status} run ${run.id}`,
       schedulerActiveRunId: run.id,
       schedulerActiveRunStartedAt: run.startedAt,
       schedulerLastProgressAt: run.lastHeartbeatAt ?? run.updatedAt,
@@ -268,7 +272,11 @@ export class BackgroundJobScheduler {
   }
 
   private markExclusiveAssistantJobBlocked(job: BackgroundJob, run: BackgroundJobRun, nowIso: string, congested: boolean, congestionRatio?: number) {
-    const detail = `Exclusive assistant lane waiting for ${run.status} run ${run.id}`;
+    const activeLeaseDetail =
+      run.status === "running" && isFutureIso(run.controllerLeaseExpiresAt, nowIso)
+        ? `; controller lease active until ${run.controllerLeaseExpiresAt}`
+        : "";
+    const detail = `Exclusive assistant lane waiting for ${run.status} run ${run.id}${activeLeaseDetail}`;
     this.options.repository.updateBackgroundJobSchedulerState(job.id, {
       schedulerStatus: "blocked",
       schedulerDetail: detail,
@@ -456,6 +464,12 @@ function getRunAgeMs(run: BackgroundJobRun, now: Date) {
 function getRunLastProgressAgeMs(run: BackgroundJobRun, now: Date) {
   const timestamp = Date.parse(run.lastHeartbeatAt ?? run.updatedAt ?? run.startedAt ?? run.queuedAt);
   return Number.isFinite(timestamp) ? Math.max(0, now.getTime() - timestamp) : 0;
+}
+
+function isFutureIso(value: string | undefined, nowIso: string) {
+  const timestamp = Date.parse(value ?? "");
+  const now = Date.parse(nowIso);
+  return Number.isFinite(timestamp) && Number.isFinite(now) && timestamp > now;
 }
 
 function formatPercent(ratio: number | undefined) {

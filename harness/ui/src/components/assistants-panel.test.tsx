@@ -131,6 +131,71 @@ createUiTest("AssistantsPanel", () => {
     expect(screen.getByRole("button", { name: "Filter and sort assistants" }).textContent).toContain("2");
   });
 
+  it("clears assistant bootstrap filter state", () => {
+    const now = new Date().toISOString();
+    const project = createViewProjectFixture({ id: "project-bootstrap-filter" });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        activeLeftTab: "assistants",
+        activeSurface: "assistants",
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        },
+        assistants: {
+          ...createEmptyAssistantsState(),
+          bootstrapStateFilter: "failed",
+          assistants: [
+            {
+              id: "assistant-failed",
+              name: "Failed bootstrap",
+              scope: "project",
+              projectId: project.id,
+              description: "Needs retry",
+              personalityPrompt: "Repair",
+              jobPrompt: "Retry setup",
+              agentId: "pi",
+              runState: "active",
+              bootstrapState: "failed",
+              failureStreakCount: 0,
+              circuitBreakerState: "closed",
+              unreadQuestionCount: 0,
+              createdAt: now,
+              updatedAt: now
+            },
+            {
+              id: "assistant-completed",
+              name: "Completed bootstrap",
+              scope: "project",
+              projectId: project.id,
+              description: "Ready",
+              personalityPrompt: "Ship",
+              jobPrompt: "Work",
+              agentId: "pi",
+              runState: "active",
+              bootstrapState: "completed",
+              failureStreakCount: 0,
+              circuitBreakerState: "closed",
+              unreadQuestionCount: 0,
+              createdAt: now,
+              updatedAt: now
+            }
+          ]
+        }
+      })
+    );
+
+    render(() => <AssistantsPanel variant="roster" />);
+
+    expect(screen.getByText("Failed bootstrap")).toBeTruthy();
+    expect(screen.queryByText("Completed bootstrap")).toBeNull();
+
+    harnessStore.setAssistantPaneFilters({ bootstrapStateFilter: undefined });
+
+    expect(harnessStore.state.assistants.bootstrapStateFilter).toBeUndefined();
+    expect(readBrowserUiSession().assistantPane?.bootstrapState).toBeUndefined();
+  });
+
   it("persists and restores assistant learnings tab", () => {
     const now = new Date().toISOString();
     const project = createViewProjectFixture({
@@ -176,7 +241,7 @@ createUiTest("AssistantsPanel", () => {
     );
 
     render(() => <AssistantsPanel />);
-    fireEvent.click(screen.getByRole("button", { name: "Open learnings tab" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Learnings" }));
 
     expect(harnessStore.state.assistants.selectedTab).toBe("learnings");
     expect(readBrowserUiSession().assistantPane?.selectedTab).toBe("learnings");
@@ -202,7 +267,7 @@ createUiTest("AssistantsPanel", () => {
     render(() => <AssistantsPanel />);
 
     expect(harnessStore.state.assistants.selectedTab).toBe("learnings");
-    expect(screen.getByRole("button", { name: "Open learnings tab" }).className).toContain("bg-(--accent)");
+    expect(screen.getByRole("tab", { name: "Learnings" }).className).toContain("border-(--accent)");
   });
 
   it("filters assistant roster by search and persists query", async () => {
@@ -276,6 +341,24 @@ createUiTest("AssistantsPanel", () => {
     render(() => <AssistantsPanel variant="detail" />);
 
     expect(screen.getByText("No learnings yet.")).not.toBeNull();
+  });
+
+  it("renders assistant detail navigation as tabs", () => {
+    cleanup();
+    seedAssistantDetailState({
+      assistantId: "assistant-detail-tabs",
+      projectId: "project-detail-tabs",
+      selectedTab: "chat"
+    });
+
+    render(() => <AssistantsPanel variant="detail" />);
+
+    expect(screen.getByRole("tablist", { name: "Assistant detail sections" })).not.toBeNull();
+    expect(screen.getByRole("tab", { name: "Chat" }).getAttribute("aria-selected")).toBe(
+      String(harnessStore.state.assistants.selectedTab === "chat")
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "Todos" }));
+    expect(harnessStore.state.assistants.selectedTab).toBe("todos");
   });
 
   it("virtualizes assistant learnings without a batch control", () => {

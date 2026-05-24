@@ -27,6 +27,7 @@ type ExecutionLogProps = {
   detailEyebrow?: string;
   selectedEntryId?: string;
   onSelectedEntryIdChange?: (entryId?: string) => void;
+  rowVariant?: "card" | "flat";
   class?: string;
 };
 
@@ -55,7 +56,18 @@ export function ExecutionLog(props: ExecutionLogProps) {
     <div data-test-execution-log="" class={cn("flex min-h-0 flex-1 flex-col", props.class)}>
       <Show
         when={props.entries.length > 0}
-        fallback={<div class="rounded-[0.9rem] border border-dashed border-(--border) bg-white/45 p-3 text-[0.675rem] text-(--muted)">{props.emptyMessage ?? "No execution log yet."}</div>}
+        fallback={
+          <div
+            class={cn(
+              "text-[0.675rem] text-(--muted)",
+              props.rowVariant === "flat"
+                ? "border-l-2 border-dashed border-(--border) py-3 pl-4"
+                : "rounded-[0.9rem] border border-dashed border-(--border) bg-white/45 p-3"
+            )}
+          >
+            {props.emptyMessage ?? "No execution log yet."}
+          </div>
+        }
       >
         <VirtualList
           class="min-h-0 flex-1 pr-2"
@@ -69,7 +81,14 @@ export function ExecutionLog(props: ExecutionLogProps) {
           {(entry) => {
             const rowSummary = () => entry.rowSummary ?? entry.message;
             return (
-              <article class="rounded-[0.9rem] border border-(--border) bg-white/70 p-3">
+              <article
+                class={cn(
+                  props.rowVariant === "flat"
+                    ? "border-l-2 py-3 pl-4 pr-2"
+                    : "rounded-[0.9rem] border border-(--border) bg-white/70 p-3",
+                  executionLogLevelBorderClass(entry.level)
+                )}
+              >
                 <div class="flex flex-wrap items-start justify-between gap-3">
                   <div class="min-w-0 flex-1">
                     <div class="break-words text-[0.675rem] text-(--foreground)">
@@ -128,4 +147,21 @@ export function truncateLogText(value: string, maxLength = defaultSummaryLength)
     return normalized;
   }
   return `${normalized.slice(0, maxLength).trimEnd()}...`;
+}
+
+function executionLogLevelBorderClass(level: string) {
+  const normalized = level.toLowerCase();
+  if (normalized.includes("fail") || normalized.includes("error") || normalized.includes("cancel")) {
+    return "border-rose-400";
+  }
+  if (normalized.includes("warn") || normalized.includes("approval") || normalized.includes("input")) {
+    return "border-amber-400";
+  }
+  if (normalized.includes("done") || normalized.includes("complete") || normalized.includes("success")) {
+    return "border-emerald-500";
+  }
+  if (normalized.includes("run") || normalized.includes("exec")) {
+    return "border-sky-400";
+  }
+  return "border-(--border)";
 }

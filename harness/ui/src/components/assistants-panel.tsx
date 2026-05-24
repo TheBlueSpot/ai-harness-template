@@ -63,7 +63,7 @@ import {
 import { pushToast } from "../toast-store";
 import { ActionButton } from "./action-button";
 import { MarkdownContent } from "./markdown-content";
-import { buttonVariants } from "./primitives/button";
+import { Button } from "./primitives/button";
 import { ChatComposer } from "./primitives/chat-composer";
 import { CopyTextButton } from "./primitives/copy-text-button";
 import { Dialog } from "./primitives/dialog";
@@ -83,7 +83,6 @@ import { DropdownControl } from "./primitives/dropdown";
 import { Input } from "./primitives/input";
 import { ScrollArea } from "./primitives/scroll-area";
 import { Textarea } from "./primitives/textarea";
-import { Tooltip } from "./primitives/tooltip";
 import { VirtualList } from "./primitives/virtual-list";
 
 const assistantTodoStateOptions = [
@@ -929,7 +928,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
               onInput={(event) => harnessStore.setAssistantPaneFilters({ rosterSearch: (event.target as HTMLInputElement).value })}
             />
           </LeftPaneFilterBlock>
-          <LeftPaneListSection title="Roster" count={`${visibleAssistants().length} total`} class="p-3">
+          <LeftPaneListSection title="Roster" count={`${visibleAssistants().length} total`} class="border-0 bg-transparent p-0">
           <VirtualList
             class="min-h-0 flex-1 pr-2"
             contentClass="w-full"
@@ -971,11 +970,13 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
           >
             {(assistant) => (
               <button
-                class="w-full rounded-[1.2rem] border p-3 text-left transition"
+                class="w-full rounded-[0.8rem] border border-l-4 p-3 text-left shadow-sm transition hover:border-(--accent-strong)"
                 classList={{
                   "border-(--accent)": selectedAssistant()?.id === assistant.id,
+                  "border-l-(--accent-strong)": selectedAssistant()?.id === assistant.id,
                   "bg-[linear-gradient(135deg,rgba(15,118,110,0.14),rgba(255,255,255,0.92))]": selectedAssistant()?.id === assistant.id,
                   "border-(--border)": selectedAssistant()?.id !== assistant.id,
+                  [assistantRunStateBorderClass(assistant.runState)]: selectedAssistant()?.id !== assistant.id,
                   "bg-white/70": selectedAssistant()?.id !== assistant.id
                 }}
                 type="button"
@@ -984,8 +985,11 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                 <div class="flex items-start justify-between gap-3">
                   <div>
                     <div class="text-[0.775rem] font-semibold text-(--foreground)">{assistant.name}</div>
-                    <div class="mt-1 text-[0.575rem] uppercase tracking-[0.16em] text-(--muted)">{assistant.scope} | {assistant.runState} | {assistant.bootstrapState}</div>
+                    <div class="mt-1 text-[0.575rem] uppercase tracking-[0.16em] text-(--muted)">{assistant.scope} | {assistant.bootstrapState}</div>
                   </div>
+                  <span class={`shrink-0 rounded-full px-2 py-0.5 text-[0.55rem] font-semibold uppercase tracking-[0.12em] ${assistantRunStateBadgeClass(assistant.runState)}`}>
+                    {assistant.runState}
+                  </span>
                   <Show when={assistant.unreadQuestionCount > 0}>
                     <span class="rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[0.55rem] font-semibold uppercase tracking-[0.12em] text-amber-900">{assistant.unreadQuestionCount} q</span>
                   </Show>
@@ -1002,7 +1006,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
         </Show>
 
         <Show when={showDetail()}>
-        <section class="flex min-h-0 flex-col rounded-[1.35rem] border border-(--border) bg-white/55 p-4">
+        <section class="flex min-h-0 flex-col p-4">
           <Show
             when={selectedAssistant()}
             fallback={
@@ -1013,46 +1017,51 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
           >
             {(assistant) => (
               <div class="flex h-full min-h-0 flex-col gap-4">
-                <div>
+                <div class="border-b border-(--border) pb-4">
                   <div class="flex flex-wrap items-start justify-between gap-4">
                     <div>
-                      <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Inspector</div>
-                      <h2 class="mt-1 text-[1.2rem] font-semibold tracking-[-0.04em] text-(--foreground)">{assistant().name}</h2>
-                      <div class="mt-2 flex flex-wrap gap-2 text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">
-                        <StatusPill label={assistant().scope} />
-                        <StatusPill label={assistant().runState} />
-                        <StatusPill label={assistant().bootstrapState} />
+                      <div class="flex flex-wrap items-center gap-2">
+                        <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Inspector</div>
+                        <span class={`rounded-full px-2 py-0.5 text-[0.55rem] font-semibold uppercase tracking-[0.12em] ${assistantRunStateBadgeClass(assistant().runState)}`}>
+                          {assistant().runState}
+                        </span>
                         <Show when={assistant().circuitBreakerState === "tripped"}>
                           <StatusPill label="circuit breaker" tone="error" />
                         </Show>
                       </div>
+                      <h2 class="mt-1 break-words text-[1.2rem] font-semibold text-(--foreground) [overflow-wrap:anywhere]">{assistant().name}</h2>
+                      <div class="mt-3 grid gap-x-5 gap-y-1 border-l-2 border-(--border) pl-4 text-[0.675rem] leading-5 text-(--muted) sm:grid-cols-2 xl:grid-cols-3">
+                        <AssistantFact label="Scope">{assistant().scope}</AssistantFact>
+                        <AssistantFact label="Bootstrap">{assistant().bootstrapState}</AssistantFact>
+                        <AssistantFact label="Questions">{String(assistant().unreadQuestionCount)}</AssistantFact>
+                      </div>
                       <Show when={assistant().description}>
-                        <div class="mt-3 text-[0.675rem] leading-5 text-(--muted)">{assistant().description}</div>
+                        <div class="mt-3 max-w-3xl border-l-2 border-(--border) pl-4 text-[0.675rem] leading-5 text-(--muted)">{assistant().description}</div>
                       </Show>
                     </div>
 
                     <div class="flex flex-wrap gap-2">
                       <Show when={assistant().circuitBreakerState === "tripped"}>
-                        <Tooltip content="Inspect circuit breaker failure and retry">
-                          <button
-                            type="button"
-                            class={buttonVariants({ variant: "warning" })}
-                            aria-label="Inspect failure"
-                            on:click={(event) => {
-                              event.stopPropagation();
-                              setSelectedCircuitBreakerAssistantId(assistant().id);
-                            }}
-                          >
-                            <CircleAlert class="h-4 w-4" />
-                            Inspect failure
-                          </button>
-                        </Tooltip>
+                        <ActionButton
+                          tooltip="Inspect circuit breaker failure and retry"
+                          ariaLabel="Inspect failure"
+                          icon={<CircleAlert class="h-4 w-4" />}
+                          variant="secondary"
+                          class="border-amber-300 text-amber-900 hover:bg-amber-50"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setSelectedCircuitBreakerAssistantId(assistant().id);
+                          }}
+                        >
+                          Inspect failure
+                        </ActionButton>
                       </Show>
                       <ActionButton tooltip="Edit assistant config" icon={<SquarePen class="h-4 w-4" />} variant="secondary" onClick={() => openEditAssistant(assistant())}>Edit</ActionButton>
                       <ActionButton
                         tooltip={assistant().runState === "paused" ? "Resume assistant background work" : "Pause assistant background work"}
                         icon={assistant().runState === "paused" ? <CirclePlay class="h-4 w-4" /> : <CirclePause class="h-4 w-4" />}
-                        variant={assistant().runState === "paused" ? "default" : "warning"}
+                        variant="secondary"
+                        class={assistant().runState === "paused" ? "border-(--accent) text-(--accent-strong) hover:bg-(--panel)" : "border-amber-300 text-amber-900 hover:bg-amber-50"}
                         onClick={() =>
                           sendCommand({
                             type: assistant().runState === "paused" ? "assistant.resume" : "assistant.pause",
@@ -1095,12 +1104,12 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                           Clone to project
                         </ActionButton>
                       </Show>
-                      <ActionButton tooltip="Delete assistant" icon={<Trash2 class="h-4 w-4" />} variant="danger" onClick={() => handleDeleteAssistant(assistant())}>Delete</ActionButton>
+                      <ActionButton tooltip="Delete assistant" icon={<Trash2 class="h-4 w-4" />} variant="secondary" class="border-rose-200 text-rose-700 hover:bg-rose-50" onClick={() => handleDeleteAssistant(assistant())}>Delete</ActionButton>
                     </div>
                   </div>
                 </div>
 
-                <div class="flex flex-wrap gap-2">
+                <div role="tablist" aria-label="Assistant detail sections" class="flex gap-1 overflow-x-auto border-b border-(--border)">
                   <TabButton icon={<MessageSquare class="h-4 w-4" />} label="Chat" active={activeTab() === "chat"} onClick={() => harnessStore.setAssistantDetailTab("chat")} />
                   <TabButton icon={<ListChecks class="h-4 w-4" />} label="Todos" active={activeTab() === "todos"} onClick={() => harnessStore.setAssistantDetailTab("todos")} />
                   <TabButton icon={<ClipboardList class="h-4 w-4" />} label="Questions" active={activeTab() === "questions"} onClick={() => harnessStore.setAssistantDetailTab("questions")} />
@@ -1243,7 +1252,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
 
                     <section class="shrink-0">
                       <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Working memory</div>
-                      <div class="mt-3 grid max-h-32 gap-4 overflow-auto rounded-xl border border-(--border) bg-white/55 p-3 text-[0.675rem] leading-5 text-(--muted) lg:grid-cols-[minmax(0,1fr)_minmax(16rem,24rem)]">
+                      <div class="mt-3 grid max-h-32 gap-4 overflow-auto border-l-2 border-(--border) py-2 pl-4 text-[0.675rem] leading-5 text-(--muted) lg:grid-cols-[minmax(0,1fr)_minmax(16rem,24rem)]">
                         <div class="min-w-0">
                           <div class="font-semibold text-(--foreground)">Summary</div>
                           <div class="mt-1 whitespace-pre-wrap">{selectedThread()?.memorySummary?.content ?? "No rolled summary yet."}</div>
@@ -1269,7 +1278,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                     </div>
                     <VirtualList class="min-h-0 flex-1 pr-2" contentClass="w-full" itemClass="pb-3" items={visibleTodos()} getKey={(todo) => todo.id} estimateSize={128} pagination={{ kind: "forward", initialCount: 60, batchSize: 60 }}>
                       {(todo) => (
-                        <article class="rounded-2xl border border-(--border) bg-white/75 p-3">
+                        <article class={`border-l-2 py-3 pl-4 pr-2 ${todoStateBorderClass(todo.state)}`}>
                           <div class="flex flex-wrap items-start justify-between gap-3">
                             <div>
                               <div class="text-[0.75rem] font-semibold text-(--foreground)">{todo.title}</div>
@@ -1283,7 +1292,10 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                               <ActionButton tooltip="Delete assistant todo" ariaLabel={`Delete ${todo.title}`} icon={<Trash2 class="h-4 w-4" />} size="icon" variant="ghost" class="h-8 w-8 text-rose-700 hover:bg-rose-50" onClick={() => deleteTodo(todo)} />
                             </div>
                           </div>
-                          <div class="mt-2 text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">{todo.source ?? "assistant"} | sort {todo.sortOrder}</div>
+                          <div class="mt-2 flex flex-wrap items-center gap-2 text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">
+                            <span class={`rounded-full px-2 py-0.5 ${todoStateBadgeClass(todo.state)}`}>{todo.state}</span>
+                            <span>{todo.source ?? "assistant"} | sort {todo.sortOrder}</span>
+                          </div>
                         </article>
                       )}
                     </VirtualList>
@@ -1328,12 +1340,15 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                         getKey={(job) => job.id}
                         estimateSize={120}
                         pagination={{ kind: "forward", initialCount: 60, batchSize: 60 }}
-                        empty={<div class="rounded-2xl border border-dashed border-(--border) bg-white/55 p-3 text-[0.675rem] text-(--muted)">No assistant-owned background jobs.</div>}
+                        empty={<div class="border-l-2 border-dashed border-(--border) py-3 pl-4 text-[0.675rem] text-(--muted)">No assistant-owned background jobs.</div>}
                       >
                         {(job) => (
-                          <article class="overflow-hidden rounded-2xl border border-(--border) bg-white/75 p-3">
-                            <div class="break-words text-[0.75rem] font-semibold text-(--foreground)">{job.name}</div>
-                            <div class="mt-1 text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">{job.status} | {job.kind}</div>
+                          <article class={`overflow-hidden border-l-2 py-3 pl-4 pr-2 ${backgroundJobStatusBorderClass(job.status)}`}>
+                            <div class="flex items-start justify-between gap-3">
+                              <div class="break-words text-[0.75rem] font-semibold text-(--foreground)">{job.name}</div>
+                              <span class={`shrink-0 rounded-full px-2 py-0.5 text-[0.55rem] font-semibold uppercase tracking-[0.12em] ${backgroundJobStatusBadgeClass(job.status)}`}>{job.status}</span>
+                            </div>
+                            <div class="mt-1 text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">{job.kind}</div>
                             <div class="mt-2 break-words text-[0.675rem] leading-5 text-(--muted) [overflow-wrap:anywhere]">
                               <div>{job.description ?? job.scheduleInput}</div>
                               <Show when={formatFailureTracking(job)}>{(line) => <div class="mt-1">{line()}</div>}</Show>
@@ -1346,10 +1361,10 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                       <div class="mb-3 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Recent runs</div>
                       <VirtualList class="h-120 pr-2 lg:h-full" contentClass="w-full" itemClass="pb-3" items={visibleRuns()} getKey={(run) => run.id} estimateSize={145} pagination={{ kind: "forward", initialCount: 60, batchSize: 60 }}>
                         {(run) => (
-                          <article class="overflow-hidden rounded-2xl border border-(--border) bg-white/75 p-3">
+                          <article class={`overflow-hidden border-l-2 py-3 pl-4 pr-2 ${backgroundRunStatusBorderClass(run.status)}`}>
                             <div class="flex items-center justify-between gap-3">
                               <div class="min-w-0 break-words text-[0.75rem] font-semibold text-(--foreground) [overflow-wrap:anywhere]">{run.summary ?? run.id}</div>
-                              <div class="shrink-0 text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">{run.status}</div>
+                              <div class={`shrink-0 rounded-full px-2 py-0.5 text-[0.55rem] font-semibold uppercase tracking-[0.12em] ${backgroundRunStatusBadgeClass(run.status)}`}>{run.status}</div>
                             </div>
                             <div class="mt-2 break-words text-[0.675rem] leading-5 text-(--muted) [overflow-wrap:anywhere]">
                               <div>{run.failureMessage ?? `Triggered by ${run.triggerSource}`}</div>
@@ -1373,6 +1388,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                       detailEyebrow="Assistant log details"
                       selectedEntryId={state.assistants.selectedLogDetailsId}
                       onSelectedEntryIdChange={harnessStore.setAssistantLogDetailsId}
+                      rowVariant="flat"
                     />
                   </section>
                 </Show>
@@ -1396,7 +1412,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                         <div class="space-y-2">
                           <For each={selectedAssetRefs()}>
                             {(assetRef) => (
-                              <div class="rounded-[0.9rem] border border-(--border) bg-white/75 p-2">
+                              <div class="border-l-2 border-(--border) py-2 pl-3">
                                 <div class="text-[0.625rem] uppercase tracking-[0.14em] text-(--muted)">{assetRef.kind}</div>
                                 <div class="font-semibold text-(--foreground)">{assetRef.label}</div>
                                 <div class="break-all text-[0.675rem] text-(--muted)">{assetRef.value}</div>
@@ -1419,10 +1435,10 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                       getKey={(learning) => learning.id}
                       estimateSize={115}
                       pagination={{ kind: "forward", initialCount: 50, batchSize: 50 }}
-                      empty={<div class="rounded-lg border border-dashed border-(--border) bg-white/60 p-4 text-[0.75rem] text-(--muted)">No learnings yet.</div>}
+                      empty={<div class="border-l-2 border-dashed border-(--border) py-3 pl-4 text-[0.75rem] text-(--muted)">No learnings yet.</div>}
                     >
                       {(learning) => (
-                        <article class="rounded-lg border border-(--border) bg-white/75 p-3">
+                        <article class="border-l-2 border-(--border) py-3 pl-4 pr-2">
                           <div class="flex items-start justify-between gap-3">
                             <div class="min-w-0">
                               <div class="text-[0.75rem] font-semibold leading-5 text-(--foreground)">{learning.summary}</div>
@@ -1455,10 +1471,145 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
 
 function TabButton(props: { icon: JSX.Element; label: Capitalize<AssistantDetailTab>; active: boolean; onClick: () => void }) {
   return (
-    <ActionButton tooltip={`Open ${props.label.toLowerCase()} tab`} icon={props.icon} variant={props.active ? "default" : "secondary"} onClick={props.onClick}>
+    <Button
+      tooltip={`Open ${props.label.toLowerCase()} tab`}
+      role="tab"
+      aria-selected={props.active}
+      tabIndex={props.active ? 0 : -1}
+      variant="ghost"
+      size="sm"
+      class={`h-9 shrink-0 rounded-none border-b-2 px-2.5 hover:text-(--foreground) ${
+        props.active
+          ? "border-(--accent) bg-transparent text-(--accent-strong) hover:bg-transparent hover:text-(--accent-strong)"
+          : "border-transparent text-(--muted) hover:bg-(--panel-strong)"
+      }`}
+      onClick={props.onClick}
+    >
+      {props.icon}
       {props.label}
-    </ActionButton>
+    </Button>
   );
+}
+
+function AssistantFact(props: { label: string; children: JSX.Element }) {
+  return (
+    <div class="min-w-0 break-words [overflow-wrap:anywhere]">
+      <span class="font-semibold text-(--foreground)">{props.label}: </span>
+      <span>{props.children}</span>
+    </div>
+  );
+}
+
+function assistantRunStateBadgeClass(runState: Assistant["runState"]) {
+  return runState === "active" ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-900";
+}
+
+function assistantRunStateBorderClass(runState: Assistant["runState"]) {
+  return runState === "active" ? "border-l-emerald-500" : "border-l-amber-400";
+}
+
+function todoStateBadgeClass(state: AssistantTodo["state"]) {
+  switch (state) {
+    case "completed":
+      return "bg-emerald-100 text-emerald-800";
+    case "failed":
+    case "cancelled":
+      return "bg-rose-100 text-rose-800";
+    case "blocked":
+      return "bg-amber-100 text-amber-900";
+    case "in-progress":
+      return "bg-sky-100 text-sky-800";
+    case "pending":
+      return "bg-slate-200 text-slate-700";
+  }
+}
+
+function todoStateBorderClass(state: AssistantTodo["state"]) {
+  switch (state) {
+    case "completed":
+      return "border-emerald-500";
+    case "failed":
+    case "cancelled":
+      return "border-rose-400";
+    case "blocked":
+      return "border-amber-400";
+    case "in-progress":
+      return "border-sky-400";
+    case "pending":
+      return "border-(--border)";
+  }
+}
+
+function questionStatusBadgeClass(status: AssistantQuestion["status"]) {
+  switch (status) {
+    case "answered":
+      return "bg-emerald-100 text-emerald-800";
+    case "pending":
+      return "bg-amber-100 text-amber-900";
+    case "deferred":
+      return "bg-sky-100 text-sky-800";
+    case "dismissed":
+      return "bg-slate-200 text-slate-700";
+  }
+}
+
+function questionStatusBorderClass(status: AssistantQuestion["status"]) {
+  switch (status) {
+    case "answered":
+      return "border-emerald-500";
+    case "pending":
+      return "border-amber-400";
+    case "deferred":
+      return "border-sky-400";
+    case "dismissed":
+      return "border-slate-300";
+  }
+}
+
+function backgroundJobStatusBadgeClass(status: BackgroundJob["status"]) {
+  return status === "enabled" ? "bg-emerald-100 text-emerald-800" : "bg-slate-200 text-slate-700";
+}
+
+function backgroundJobStatusBorderClass(status: BackgroundJob["status"]) {
+  return status === "enabled" ? "border-emerald-500" : "border-slate-300";
+}
+
+function backgroundRunStatusBadgeClass(status: BackgroundJobRun["status"]) {
+  switch (status) {
+    case "succeeded":
+      return "bg-emerald-100 text-emerald-800";
+    case "failed":
+    case "cancelled":
+      return "bg-rose-100 text-rose-800";
+    case "awaiting-approval":
+    case "awaiting-user-input":
+      return "bg-amber-100 text-amber-900";
+    case "running":
+      return "bg-sky-100 text-sky-800";
+    case "queued":
+      return "bg-slate-200 text-slate-700";
+    case "skipped":
+      return "bg-stone-200 text-stone-700";
+  }
+}
+
+function backgroundRunStatusBorderClass(status: BackgroundJobRun["status"]) {
+  switch (status) {
+    case "succeeded":
+      return "border-emerald-500";
+    case "failed":
+    case "cancelled":
+      return "border-rose-400";
+    case "awaiting-approval":
+    case "awaiting-user-input":
+      return "border-amber-400";
+    case "running":
+      return "border-sky-400";
+    case "queued":
+      return "border-slate-300";
+    case "skipped":
+      return "border-stone-300";
+  }
 }
 
 function StatusPill(props: { label: string; tone?: "default" | "error" }) {
@@ -1499,12 +1650,15 @@ function QuestionColumn(props: {
         getKey={(question) => question.id}
         estimateSize={220}
         pagination={{ kind: "forward", initialCount: 60, batchSize: 60 }}
-        empty={<div class="rounded-2xl border border-dashed border-(--border) bg-white/55 p-3 text-[0.675rem] text-(--muted)">No questions here.</div>}
+        empty={<div class="border-l-2 border-dashed border-(--border) py-3 pl-4 text-[0.675rem] text-(--muted)">No questions here.</div>}
       >
         {(question) => (
-          <article class="rounded-2xl border border-(--border) bg-white/75 p-3">
+          <article class={`border-l-2 py-3 pl-4 pr-2 ${questionStatusBorderClass(question.status)}`}>
             <div class="text-[0.75rem] font-semibold text-(--foreground)">{question.prompt}</div>
-            <div class="mt-1 text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">{question.status} | {formatShortTimestamp(question.askedAt)}</div>
+            <div class="mt-1 flex flex-wrap items-center gap-2 text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">
+              <span class={`rounded-full px-2 py-0.5 ${questionStatusBadgeClass(question.status)}`}>{question.status}</span>
+              <span>{formatShortTimestamp(question.askedAt)}</span>
+            </div>
             <Show when={question.status === "pending"}>
               <div class="mt-3 flex flex-col gap-2">
                 <div class="grid gap-2">
@@ -1624,6 +1778,7 @@ function assistantRosterMenuItems(state: typeof harnessStore.state): LeftPaneSea
       label: "Run state",
       value: state.assistants.runStateFilter ?? "All",
       icon: <CirclePlay class="h-3.5 w-3.5" />,
+      active: Boolean(state.assistants.runStateFilter),
       items: [
         {
           kind: "option",
@@ -1637,6 +1792,7 @@ function assistantRosterMenuItems(state: typeof harnessStore.state): LeftPaneSea
           label: "Active",
           icon: <CirclePlay class="h-3.5 w-3.5" />,
           selected: state.assistants.runStateFilter === "active",
+          active: state.assistants.runStateFilter === "active",
           onSelect: () => setFilters({ runStateFilter: "active" })
         },
         {
@@ -1644,6 +1800,7 @@ function assistantRosterMenuItems(state: typeof harnessStore.state): LeftPaneSea
           label: "Paused",
           icon: <CirclePause class="h-3.5 w-3.5" />,
           selected: state.assistants.runStateFilter === "paused",
+          active: state.assistants.runStateFilter === "paused",
           onSelect: () => setFilters({ runStateFilter: "paused" })
         }
       ]
@@ -1653,6 +1810,7 @@ function assistantRosterMenuItems(state: typeof harnessStore.state): LeftPaneSea
       label: "Bootstrap",
       value: state.assistants.bootstrapStateFilter ? toProperCase(state.assistants.bootstrapStateFilter) : "All",
       icon: <ListChecks class="h-3.5 w-3.5" />,
+      active: Boolean(state.assistants.bootstrapStateFilter),
       items: [
         {
           kind: "option",
@@ -1666,6 +1824,7 @@ function assistantRosterMenuItems(state: typeof harnessStore.state): LeftPaneSea
           label: toProperCase(value),
           icon: <ListChecks class="h-3.5 w-3.5" />,
           selected: state.assistants.bootstrapStateFilter === value,
+          active: state.assistants.bootstrapStateFilter === value,
           onSelect: () => setFilters({ bootstrapStateFilter: value })
         }))
       ]
@@ -1675,6 +1834,7 @@ function assistantRosterMenuItems(state: typeof harnessStore.state): LeftPaneSea
       label: "Provider",
       value: state.assistants.providerBrandFilter ? toProperCase(state.assistants.providerBrandFilter) : "All",
       icon: <Bot class="h-3.5 w-3.5" />,
+      active: Boolean(state.assistants.providerBrandFilter),
       items: [
         {
           kind: "option",
@@ -1688,6 +1848,7 @@ function assistantRosterMenuItems(state: typeof harnessStore.state): LeftPaneSea
           label: toProperCase(value),
           icon: <Bot class="h-3.5 w-3.5" />,
           selected: state.assistants.providerBrandFilter === value,
+          active: state.assistants.providerBrandFilter === value,
           onSelect: () => setFilters({ providerBrandFilter: value })
         }))
       ]
@@ -1697,6 +1858,7 @@ function assistantRosterMenuItems(state: typeof harnessStore.state): LeftPaneSea
       label: "Project",
       value: state.workspace.projects.find((project) => project.id === state.assistants.projectIdFilter)?.name ?? "All",
       icon: <Folder class="h-3.5 w-3.5" />,
+      active: Boolean(state.assistants.projectIdFilter),
       items: [
         {
           kind: "option",
@@ -1710,6 +1872,7 @@ function assistantRosterMenuItems(state: typeof harnessStore.state): LeftPaneSea
           label: project.name,
           icon: <Folder class="h-3.5 w-3.5" />,
           selected: state.assistants.projectIdFilter === project.id,
+          active: state.assistants.projectIdFilter === project.id,
           onSelect: () => setFilters({ projectIdFilter: project.id })
         }))
       ]

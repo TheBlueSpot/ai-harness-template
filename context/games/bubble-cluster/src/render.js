@@ -1,3 +1,5 @@
+import { flashbang, screenShake } from "../../../engine/browser/engine.js";
+
 function getColor(palette, colorId) {
   return palette.find((entry) => entry.id === colorId);
 }
@@ -76,10 +78,9 @@ function renderGame(ctx, frameState) {
   ctx.clearRect(0, 0, width, height);
 
   const shake = frameState.screenShake * 8;
-  const shakeX = shake ? Math.sin(performance.now() * 0.06) * shake : 0;
-  const shakeY = shake ? Math.cos(performance.now() * 0.08) * shake * 0.6 : 0;
+  const shakeOffset = shake > 0 ? screenShake(shake, frameState.time || 0) : { x: 0, y: 0 };
   ctx.save();
-  ctx.translate(shakeX, shakeY);
+  ctx.translate(shakeOffset.x, shakeOffset.y);
 
   const background = ctx.createLinearGradient(0, 0, 0, height);
   background.addColorStop(0, "#162042");
@@ -291,8 +292,7 @@ function renderGame(ctx, frameState) {
   }
 
   if (frameState.flash > 0) {
-    ctx.fillStyle = `rgba(255,255,255,${frameState.flash * 0.14})`;
-    ctx.fillRect(0, 0, width, height);
+    flashbang(ctx, frameState.flash * 0.14);
   }
 
   ctx.restore();

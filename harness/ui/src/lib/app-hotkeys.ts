@@ -21,6 +21,7 @@ export type AppHotkeyId =
   | "openJobs"
   | "openRuns"
   | "openPreferences"
+  | "toggleTracePanel"
   | "createProjectChat"
   | "createAssistant"
   | "createBackgroundJob"
@@ -36,6 +37,7 @@ export const DEFAULT_APP_HOTKEY_PREFERENCES: AppHotkeyPreferences = {
   openJobs: ["Mod+3"],
   openRuns: ["Mod+4"],
   openPreferences: ["Mod+5", "Mod+,"],
+  toggleTracePanel: ["Mod+T"],
   createProjectChat: ["Mod+N"],
   createAssistant: ["Mod+Shift+A"],
   createBackgroundJob: ["Mod+Shift+J"],
@@ -91,6 +93,11 @@ export const appHotkeySettings: Array<{
     label: "Workspace preferences",
     description: "Open the preferences sidepanel.",
     tab: "preferences"
+  },
+  {
+    id: "toggleTracePanel",
+    label: "Trace panel",
+    description: "Cycle the trace panel closed, peek, and open."
   },
   {
     id: "createProjectChat",
@@ -189,6 +196,7 @@ export function normalizeAppHotkeyPreferences(input: unknown): AppHotkeyPreferen
     openJobs: normalizeAppHotkeys(parsed.openJobs, DEFAULT_APP_HOTKEY_PREFERENCES.openJobs),
     openRuns: normalizeAppHotkeys(parsed.openRuns, DEFAULT_APP_HOTKEY_PREFERENCES.openRuns),
     openPreferences: normalizeAppHotkeys(parsed.openPreferences, DEFAULT_APP_HOTKEY_PREFERENCES.openPreferences),
+    toggleTracePanel: normalizeAppHotkeys(parsed.toggleTracePanel, DEFAULT_APP_HOTKEY_PREFERENCES.toggleTracePanel),
     createProjectChat: normalizeAppHotkeys(parsed.createProjectChat, DEFAULT_APP_HOTKEY_PREFERENCES.createProjectChat),
     createAssistant: normalizeAppHotkeys(parsed.createAssistant, DEFAULT_APP_HOTKEY_PREFERENCES.createAssistant),
     createBackgroundJob: normalizeAppHotkeys(parsed.createBackgroundJob, DEFAULT_APP_HOTKEY_PREFERENCES.createBackgroundJob),

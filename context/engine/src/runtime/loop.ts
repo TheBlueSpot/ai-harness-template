@@ -4,6 +4,7 @@ import { updateInputFrame } from "../../input.ts";
 export type FixedStepLoopOptions = {
   step?: number;
   maxFrame?: number;
+  advanceGlobalInput?: boolean;
   update: (step: number) => void;
   render: (alpha: number) => void;
   now?: () => number;
@@ -12,6 +13,7 @@ export type FixedStepLoopOptions = {
 export function createFixedStepLoop({
   step = 1 / 60,
   maxFrame = 0.05,
+  advanceGlobalInput = true,
   update,
   render,
   now = () => performance.now()
@@ -30,7 +32,7 @@ export function createFixedStepLoop({
     while (accumulator >= step) {
       updateGamepads();
       update(step);
-      updateInputFrame();
+      if (advanceGlobalInput) updateInputFrame();
       accumulator -= step;
     }
 

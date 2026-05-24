@@ -13,8 +13,10 @@ export function Toaster() {
               "cursor-pointer": Boolean(toast.onClick),
               "border-red-200/80": toast.tone === "error",
               "bg-red-50/92": toast.tone === "error",
-              "border-(--border)": toast.tone !== "error",
-              "bg-(--panel)": toast.tone !== "error"
+              "border-amber-200/80": toast.tone === "warning",
+              "bg-amber-50/92": toast.tone === "warning",
+              "border-(--border)": toast.tone !== "error" && toast.tone !== "warning",
+              "bg-(--panel)": toast.tone !== "error" && toast.tone !== "warning"
             }}
             onClick={() => toast.onClick?.()}
           >

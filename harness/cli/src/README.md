@@ -12,6 +12,7 @@ Backend websocket handlers and runtime orchestration for harness.
 - Background-job scheduler state persists due, blocked, stale, queued launch, approval, timeout, progress, and congestion/capacity reasons so overdue work is explainable after long runs or reconnects.
 - Background-job scheduling avoids stacking another occurrence while a prior run for the same job is still queued, waiting, or running.
 - Background-run ownership now uses renewable controller leases, startup grace, and explicit shutdown interruption handling so restart recovery does not orphan healthy work or quietly lose ownership.
+- Background AI runs can finish `partial-complete` when useful output exists despite subagent failures; this warning state is terminal but does not count as a hard failure or trigger backoff.
 - Reliability failure categories flow through one shared classification path so backoff, repair, diagnostics, and operator surfaces agree on why runs failed.
 - Recent run diagnostics roll up health, active backoff, dominant failures, and prompt repetition for 1d, 7d, and 30d operator review in-product.
 - Assistant-owned background jobs can launch concurrently with other jobs owned by the same assistant.

@@ -50,11 +50,11 @@ export type Camera = {
   state(): CameraState;
 };
 
-function lerp(from: number, to: number, amount: number) {
+function lerp(from: number, to: number, amount: number): number {
   return from + (to - from) * amount;
 }
 
-function targetCenter(target: CameraTarget) {
+function targetCenter(target: CameraTarget): Point {
   return {
     x: target.x + (target.w ?? target.width ?? 0) * 0.5,
     y: target.y + (target.h ?? target.height ?? 0) * 0.5
@@ -75,15 +75,15 @@ export function createCamera(options: CameraOptions): Camera {
   let deadzoneY = options.deadzoneY ?? 0;
   let smoothing = options.smoothing ?? 1;
 
-  function visibleWidth() {
+  function visibleWidth(): number {
     return viewportWidth / zoom;
   }
 
-  function visibleHeight() {
+  function visibleHeight(): number {
     return viewportHeight / zoom;
   }
 
-  function constrain() {
+  function constrain(): void {
     zoom = clamp(zoom, minZoom, maxZoom);
     if (!bounds) return;
 
@@ -102,18 +102,26 @@ export function createCamera(options: CameraOptions): Camera {
     }
   }
 
-  function moveToward(targetX: number, targetY: number, amount = smoothing) {
+  function moveToward(targetX: number, targetY: number, amount = smoothing): void {
     const t = clamp(amount, 0, 1);
     x = lerp(x, targetX, t);
     y = lerp(y, targetY, t);
     constrain();
   }
 
-  function centerOn(point: Point, amount = 1) {
+  function centerOn(point: Point, amount = 1): void {
     moveToward(point.x - visibleWidth() * 0.5, point.y - visibleHeight() * 0.5, amount);
   }
 
-  function update() {
+  function worldToScreen(point: Point): Point {
+    return { x: (point.x - x) * zoom, y: (point.y - y) * zoom };
+  }
+
+  function screenToWorld(point: Point): Point {
+    return { x: x + point.x / zoom, y: y + point.y / zoom };
+  }
+
+  function update(): void {
     if (!followTarget) {
       constrain();
       return;
@@ -137,57 +145,53 @@ export function createCamera(options: CameraOptions): Camera {
 
   constrain();
 
-  return {
-    pan(dx: number, dy: number) {
+  const camera: Camera = {
+    pan(dx: number, dy: number): Camera {
       x += dx;
       y += dy;
       constrain();
-      return this;
+      return camera;
     },
-    centerOn(point: Point, amount = 1) {
+    centerOn(point: Point, amount = 1): Camera {
       centerOn(point, amount);
-      return this;
+      return camera;
     },
-    follow(target: CameraTarget | null, followOptions: FollowOptions = {}) {
+    follow(target: CameraTarget | null, followOptions: FollowOptions = {}): Camera {
       followTarget = target;
       deadzoneX = followOptions.deadzoneX ?? deadzoneX;
       deadzoneY = followOptions.deadzoneY ?? deadzoneY;
       smoothing = followOptions.smoothing ?? smoothing;
-      return this;
+      return camera;
     },
-    clearFollow() {
+    clearFollow(): Camera {
       followTarget = null;
-      return this;
+      return camera;
     },
     update,
-    zoomTo(value: number, anchor: Point = { x: viewportWidth * 0.5, y: viewportHeight * 0.5 }) {
-      const worldAnchor = this.screenToWorld(anchor);
+    zoomTo(value: number, anchor: Point = { x: viewportWidth * 0.5, y: viewportHeight * 0.5 }): Camera {
+      const worldAnchor = screenToWorld(anchor);
       zoom = clamp(value, minZoom, maxZoom);
       x = worldAnchor.x - anchor.x / zoom;
       y = worldAnchor.y - anchor.y / zoom;
       constrain();
-      return this;
+      return camera;
     },
-    zoomBy(factor: number, anchor?: Point) {
-      return this.zoomTo(zoom * factor, anchor);
+    zoomBy(factor: number, anchor?: Point): Camera {
+      return camera.zoomTo(zoom * factor, anchor);
     },
-    setViewport(width: number, height: number) {
+    setViewport(width: number, height: number): Camera {
       viewportWidth = width;
       viewportHeight = height;
       constrain();
-      return this;
+      return camera;
     },
-    setBounds(nextBounds: CameraBounds | null) {
+    setBounds(nextBounds: CameraBounds | null): Camera {
       bounds = nextBounds;
       constrain();
-      return this;
+      return camera;
     },
-    worldToScreen(point: Point) {
-      return { x: (point.x - x) * zoom, y: (point.y - y) * zoom };
-    },
-    screenToWorld(point: Point) {
-      return { x: x + point.x / zoom, y: y + point.y / zoom };
-    },
+    worldToScreen,
+    screenToWorld,
     visibleRect() {
       return { x, y, w: visibleWidth(), h: visibleHeight() };
     },
@@ -202,4 +206,6 @@ export function createCamera(options: CameraOptions): Camera {
       return { x, y, zoom, viewportWidth, viewportHeight, bounds, follow: followTarget };
     }
   };
+
+  return camera;
 }

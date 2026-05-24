@@ -14,6 +14,7 @@ type PlanDefaults = {
   overwrite?: boolean;
   resolveOnly?: boolean;
   timeout?: number;
+  debug?: boolean;
 };
 
 type PlanItem = {
@@ -25,6 +26,7 @@ type PlanItem = {
   overwrite?: boolean;
   resolveOnly?: boolean;
   timeout?: number;
+  debug?: boolean;
   note?: string;
 };
 
@@ -38,6 +40,7 @@ type CliOptions = {
   continueOnError: boolean;
   forceResolveOnly: boolean;
   forceOverwrite: boolean;
+  debug: boolean;
 };
 
 function printUsage(): void {
@@ -53,6 +56,7 @@ Options:
   --continue-on-error     Keep running later entries after a failure
   --resolve-only          Resolve URLs only, do not download archives
   --overwrite             Replace existing output files for every entry
+  --debug                 Log resolved cookie file path and parsed cookie names
   -h, --help              Show this help message`);
 }
 
@@ -61,6 +65,7 @@ function parseArgs(argv: string[]): CliOptions {
   let continueOnError = false;
   let forceResolveOnly = false;
   let forceOverwrite = false;
+  let debug = false;
 
   for (const arg of argv) {
     if (arg === "-h" || arg === "--help") {
@@ -82,6 +87,9 @@ function parseArgs(argv: string[]): CliOptions {
       case "--overwrite":
         forceOverwrite = true;
         break;
+      case "--debug":
+        debug = true;
+        break;
       default:
         throw new CraftpixDownloadError(`Unknown argument: ${arg}`);
     }
@@ -96,6 +104,7 @@ function parseArgs(argv: string[]): CliOptions {
     continueOnError,
     forceResolveOnly,
     forceOverwrite,
+    debug,
   };
 }
 
@@ -155,6 +164,7 @@ async function main(): Promise<number> {
           resolveOnly,
           overwrite,
           timeout,
+          debug: cli.debug || item.debug || defaults.debug || false,
         });
 
         if (resolveOnly) {

@@ -95,8 +95,11 @@ function buildFatalStartupLog(input: {
 
 function normalizeFatalStartupError(error: unknown) {
   if (error instanceof Error) {
+    const message = hasNodeErrorCode(error, "ENOSPC")
+      ? `${error.message}\nDisk appears full. Free space or clean harness temporary artifacts such as .local/branchfs, .tmp-test-data, and dist/ui, then restart.`
+      : error.message;
     return {
-      message: error.message,
+      message,
       stack: error.stack
     };
   }
@@ -105,6 +108,16 @@ function normalizeFatalStartupError(error: unknown) {
     message: String(error),
     stack: undefined
   };
+}
+
+function hasNodeErrorCode(error: unknown, code: string): boolean {
+  if (error instanceof Error && "code" in error && error.code === code) {
+    return true;
+  }
+  if (error instanceof AggregateError) {
+    return error.errors.some((entry) => hasNodeErrorCode(entry, code));
+  }
+  return error instanceof Error && error.cause !== undefined && hasNodeErrorCode(error.cause, code);
 }
 
 function formatFileTimestamp(timestampMs: number) {

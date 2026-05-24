@@ -1,3 +1,4 @@
+import { screenShake } from "../../../engine/browser/engine.js";
 import { HEIGHT, WIDTH } from "./data.js";
 
 function drawTrack(ctx, state) {
@@ -615,10 +616,9 @@ function drawCombatGrade(ctx, state) {
 
 export function renderScene(ctx, state) {
   const shake = state.screenShake || 0;
-  const offsetX = shake > 0.05 ? Math.sin((state.time || 0) * 52) * shake : 0;
-  const offsetY = shake > 0.05 ? Math.cos((state.time || 0) * 44) * shake * 0.75 : 0;
+  const shakeOffset = shake > 0.05 ? screenShake(shake, state.time || 0) : { x: 0, y: 0 };
   ctx.save();
-  ctx.translate(offsetX, offsetY);
+  ctx.translate(shakeOffset.x, shakeOffset.y);
   drawBackground(ctx, state.theme);
   drawTrack(ctx, state);
   drawRouteBeacons(ctx, state);

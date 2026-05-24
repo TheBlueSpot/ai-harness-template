@@ -87,6 +87,7 @@ export class BranchfsManager {
 
   async prepareExperimentLease(): Promise<BranchfsExperimentLease> {
     await this.ensureExecutable(GIT_EXECUTABLE, "git");
+    assertSafeRunId(this.context.runId);
     const repoRoot = await this.resolveRepoRoot(this.context.rootPath);
     const resolvedRootPath = path.resolve(this.context.rootPath);
     const projectRelativePath = path.relative(repoRoot, resolvedRootPath);
@@ -670,7 +671,11 @@ function isMissingPathError(error: unknown) {
 
 async function copyRecursiveRobust(sourcePath: string, targetPath: string) {
   const sourceStats = await withFsRetry(() => lstat(sourcePath));
+  const targetStats = await lstatIfPresent(targetPath);
   if (sourceStats.isSymbolicLink()) {
+    if (targetStats) {
+      await rm(targetPath, { recursive: true, force: true });
+    }
     const linkTarget = await withFsRetry(() => readlink(sourcePath));
     await mkdir(path.dirname(targetPath), { recursive: true });
     await withFsRetry(() => symlink(linkTarget, targetPath, "junction"));
@@ -678,6 +683,9 @@ async function copyRecursiveRobust(sourcePath: string, targetPath: string) {
   }
 
   if (sourceStats.isDirectory()) {
+    if (targetStats && !targetStats.isDirectory()) {
+      await rm(targetPath, { recursive: true, force: true });
+    }
     await mkdir(targetPath, { recursive: true });
     const entries = await withFsRetry(() => readdir(sourcePath, { withFileTypes: true }));
     for (const entry of entries) {
@@ -686,6 +694,9 @@ async function copyRecursiveRobust(sourcePath: string, targetPath: string) {
     return;
   }
 
+  if (targetStats && !targetStats.isFile()) {
+    await rm(targetPath, { recursive: true, force: true });
+  }
   await mkdir(path.dirname(targetPath), { recursive: true });
   await withFsRetry(async () => {
     await mkdir(path.dirname(targetPath), { recursive: true });
@@ -705,6 +716,20 @@ function isExcludedMaterializationPath(relativePath: string) {
 
 function isWithinPassthrough(relativePath: string) {
   return PASSTHROUGH_DIRECTORIES.some((directory) => relativePath === directory || relativePath.startsWith(`${directory}/`));
+}
+
+function assertSafeRunId(runId: string) {
+  if (
+    !runId.trim() ||
+    runId === "." ||
+    runId === ".." ||
+    path.isAbsolute(runId) ||
+    runId.includes("/") ||
+    runId.includes("\\") ||
+    !/^[A-Za-z0-9._-]+$/.test(runId)
+  ) {
+    throw new Error("BranchFS runId must be a single safe path segment");
+  }
 }
 
 function formatBytes(bytes: number) {

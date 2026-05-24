@@ -33,6 +33,23 @@ createUiTest("SheetContent", () => {
     expect(screen.getByText("Sheet child")).not.toBeNull();
   });
 
+  it("keeps body shrinkable and viewport-filled for mobile workspace sheets", () => {
+    render(() => (
+      <SheetContent open title="Workspace">
+        <div>Sheet child</div>
+      </SheetContent>
+    ));
+
+    const sheet = screen.getByText("Workspace").closest("aside");
+    const body = document.querySelector("[data-test-sheet-body]");
+
+    expect(sheet?.className).toContain("h-[100dvh]");
+    expect(sheet?.className).toContain("overflow-hidden");
+    expect(body?.className).toContain("min-h-0");
+    expect(body?.className).toContain("flex-1");
+    expect(body?.className).toContain("overflow-hidden");
+  });
+
   it("closes from backdrop click and close button click", () => {
     let closeCount = 0;
     render(() => (

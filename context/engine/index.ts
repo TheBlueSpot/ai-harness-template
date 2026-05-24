@@ -15,4 +15,3 @@ export {
   updateInputFrame,
   unbindKey
 } from "./input.ts";
-export { createOnScreenGamepad } from "./src/onScreenGamepad.ts";

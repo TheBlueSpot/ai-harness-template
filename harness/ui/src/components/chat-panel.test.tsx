@@ -36,7 +36,7 @@ createUiTest("ChatPanel", () => {
     );
 
     render(() => <ChatPanel />);
-    fireEvent.click(screen.getByRole("button", { name: "Open events pane" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Events" }));
 
     expect(harnessStore.state.chatPaneTab).toBe("events");
     expect(readBrowserUiSession().chatPaneTab).toBe("events");
@@ -56,7 +56,7 @@ createUiTest("ChatPanel", () => {
     );
     render(() => <ChatPanel />);
 
-    expect(screen.getByRole("button", { name: "Open events pane" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("tab", { name: "Events" }).getAttribute("aria-selected")).toBe("true");
   });
 
   it("shows the create-thread hotkey in the chat toolbar tooltip", async () => {
@@ -286,11 +286,12 @@ createUiTest("ChatPanel", () => {
     render(() => <ChatPanel />);
 
     expect(document.querySelector("[data-test-task-cockpit]")).toBeNull();
-    expect(screen.getByRole("button", { name: "Open chat pane" }).getAttribute("aria-pressed")).toBe("true");
-    expect(screen.getByRole("button", { name: "Open plan pane" })).not.toBeNull();
-    expect(screen.getByRole("button", { name: "Open run pane" })).not.toBeNull();
-    expect(screen.getByRole("button", { name: "Open memory pane" })).not.toBeNull();
-    expect(screen.getByRole("button", { name: "Open events pane" })).not.toBeNull();
+    expect(screen.getByRole("tablist", { name: "Project panes" })).not.toBeNull();
+    expect(screen.getByRole("tab", { name: "Chat" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("tab", { name: "Plan" })).not.toBeNull();
+    expect(screen.getByRole("tab", { name: "Run" })).not.toBeNull();
+    expect(screen.getByRole("tab", { name: "Memory" })).not.toBeNull();
+    expect(screen.getByRole("tab", { name: "Events" })).not.toBeNull();
     expect(screen.queryByText(/transcript\s*\|/i)).toBeNull();
   });
 
@@ -348,7 +349,7 @@ createUiTest("ChatPanel", () => {
 
     captureDispatchedCommands(commands as never[]);
     render(() => <ChatPanel />);
-    fireEvent.click(screen.getByRole("button", { name: "Open memory pane" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Memory" }));
 
     expect(screen.getByText("priority 100 | medium | fresh | hits 0")).not.toBeNull();
     fireEvent.click(screen.getAllByRole("button", { name: "Move memory down" })[0]!);
@@ -381,7 +382,7 @@ createUiTest("ChatPanel", () => {
     render(() => <ChatPanel />);
 
     expect(commands.some((command) => (command as { type: string }).type === "memory.list")).toBe(false);
-    fireEvent.click(screen.getByRole("button", { name: "Open memory pane" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Memory" }));
 
     await waitFor(() => expect((commands.at(-1) as { type: string } | undefined)?.type).toBe("memory.list"));
     expect((commands.at(-1) as { payload: { projectId: string } }).payload.projectId).toBe(project.id);

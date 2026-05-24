@@ -109,7 +109,7 @@ function clearBrowserUiSessionStorage() {
 describe("harness store reducer", () => {
   test("browser trace session override beats default trace preference on ready", () => {
     clearBrowserUiSessionStorage();
-    persistBrowserUiSession({ tracePanelOpen: false });
+    persistBrowserUiSession({ tracePanelMode: "closed" });
 
     const store = createHarnessStore();
     store.actions.hydrateBrowserUiSession();
@@ -134,7 +134,20 @@ describe("harness store reducer", () => {
     });
 
     expect(store.state.tracePanelOpen).toBe(false);
+    expect(store.state.tracePanelMode).toBe("closed");
     expect(store.state.hasPersistedTracePanelOpen).toBe(true);
+  });
+
+  test("migrates legacy trace panel boolean session state to trace mode", () => {
+    clearBrowserUiSessionStorage();
+    globalThis.localStorage?.setItem(BROWSER_UI_SESSION_STORAGE_KEY, JSON.stringify({ tracePanelOpen: false }));
+
+    const store = createHarnessStore();
+    store.actions.hydrateBrowserUiSession();
+
+    expect(store.state.tracePanelMode).toBe("closed");
+    expect(store.state.tracePanelOpen).toBe(false);
+    expect(readBrowserUiSession().tracePanelMode).toBe("closed");
   });
 
   test("repairs invalid browser ui session selections during hydrate", () => {

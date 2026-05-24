@@ -41,6 +41,18 @@ export function classifyRunFailure(input: ClassifyRunFailureInput): RunFailureCa
   if (normalized.includes("not runnable") || normalized.includes("definition no longer exists")) {
     return "launch-failure";
   }
+  if (
+    normalized.includes("runtime contract mismatch") ||
+    normalized.includes("setbackgroundjobrunstatusifowned is not a function") ||
+    normalized.includes("appendbackgroundjobruneventifowned is not a function") ||
+    normalized.includes("touchbackgroundjobrunifowned is not a function") ||
+    normalized.includes("renewbackgroundjobrunlease is not a function")
+  ) {
+    return "runtime-contract-mismatch";
+  }
+  if (normalized.includes("subagent work failed") || normalized.includes("partial subagent")) {
+    return "partial-subagent-failure";
+  }
   if (normalized.includes("no background progress heartbeat") || normalized.includes("heartbeat timeout")) {
     return "heartbeat-timeout";
   }
@@ -61,12 +73,11 @@ export function classifyRunFailure(input: ClassifyRunFailureInput): RunFailureCa
 
 export function isBackoffEligibleFailureCategory(category: RunFailureCategory | undefined) {
   return (
-    category === "empty-response" ||
-    category === "stream-disconnect" ||
-    category === "invalid-json" ||
     category === "controller-lost" ||
     category === "heartbeat-timeout" ||
-    category === "launch-failure"
+    category === "max-runtime-timeout" ||
+    category === "launch-failure" ||
+    category === "runtime-contract-mismatch"
   );
 }
 
@@ -74,8 +85,9 @@ export function isLifecycleFailureCategory(category: RunFailureCategory | undefi
   return (
     category === "controller-lost" ||
     category === "heartbeat-timeout" ||
-    category === "launch-failure" ||
     category === "max-runtime-timeout" ||
+    category === "launch-failure" ||
+    category === "runtime-contract-mismatch" ||
     category === "shutdown-interrupt"
   );
 }

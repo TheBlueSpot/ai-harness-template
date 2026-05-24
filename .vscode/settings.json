@@ -2,5 +2,8 @@
   "tailwindCSS.experimental.configFile": "harness/ui/src/styles.css",
   "tailwindCSS.validate": true,
   "tailwindCSS.lint.suggestCanonicalClasses": "error",
-  "cSpell.words": ["thisbeyond", "uploadthing", "worktree"]
+  "cSpell.words": ["thisbeyond", "uploadthing", "worktree"],
+  "files.associations": {
+    "**/assembly/**/*.ts": "assemblyscript"
+  }
 }

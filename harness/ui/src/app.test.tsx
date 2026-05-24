@@ -23,10 +23,11 @@ mock.module("./harness-websocket", () => ({
 import { App, shouldCollapseTabStrip } from "./app";
 
 function getCreateHotkeysCall() {
+  type HotkeyOptions = { enabled: boolean; ignoreInputs: boolean; preventDefault: boolean; stopPropagation: boolean };
   const calls = createHotkeysMock.mock.calls as unknown as Array<
     [
       Array<{ hotkey: string; callback: () => void }> | (() => Array<{ hotkey: string; callback: () => void }>),
-      () => { enabled: boolean; ignoreInputs: boolean }
+      () => HotkeyOptions
     ]
   >;
   const call = calls.find(([hotkeys]) => {
@@ -41,7 +42,7 @@ function getCreateHotkeysCall() {
   const definitions = typeof hotkeys === "function" ? hotkeys() : hotkeys;
   return [definitions, getOptions] as [
     Array<{ hotkey: string; callback: () => void }>,
-    () => { enabled: boolean; ignoreInputs: boolean }
+    () => HotkeyOptions
   ];
 }
 
@@ -69,6 +70,7 @@ createUiTest("App shortcuts", () => {
       "Mod+4",
       "Mod+5",
       "Mod+,",
+      "Mod+T",
       "Mod+N",
       "Mod+Shift+A",
       "Mod+Shift+J",
@@ -84,7 +86,9 @@ createUiTest("App shortcuts", () => {
     ]);
     expect(getOptions()).toEqual({
       enabled: true,
-      ignoreInputs: false
+      ignoreInputs: false,
+      preventDefault: true,
+      stopPropagation: true
     });
   });
 
@@ -125,6 +129,20 @@ createUiTest("App shortcuts", () => {
 
     definitions.find((definition) => definition.hotkey === "Mod+4")?.callback();
     expect(harnessStore.state.activeLeftTab).toBe("runs");
+  });
+
+  it("cycles trace panel from the shortcut callback", () => {
+    render(() => <App />);
+
+    const [definitions] = getCreateHotkeysCall();
+    const traceShortcut = definitions.find((definition) => definition.hotkey === "Mod+T");
+
+    expect(harnessStore.state.tracePanelMode).toBe("open");
+
+    traceShortcut?.callback();
+
+    expect(harnessStore.state.tracePanelMode).toBe("closed");
+    expect(readBrowserUiSession().tracePanelMode).toBe("closed");
   });
 
   it("opens create dialogs from assistant and job shortcuts", () => {
@@ -180,7 +198,7 @@ createUiTest("App shortcuts", () => {
     expect(definitions.map((definition) => definition.hotkey)).toContain("Alt+3");
   });
 
-  it("disables app shortcuts while editable controls own focus", () => {
+  it("keeps app shortcuts enabled while editable controls own focus", () => {
     render(() => <App />);
 
     const [, getOptions] = getCreateHotkeysCall();
@@ -188,7 +206,7 @@ createUiTest("App shortcuts", () => {
     document.body.append(textarea);
     textarea.focus();
 
-    expect(getOptions().enabled).toBe(false);
+    expect(getOptions().enabled).toBe(true);
 
     textarea.remove();
     const textbox = document.createElement("div");
@@ -197,7 +215,7 @@ createUiTest("App shortcuts", () => {
     document.body.append(textbox);
     textbox.focus();
 
-    expect(getOptions().enabled).toBe(false);
+    expect(getOptions().enabled).toBe(true);
   });
 
   it("keeps search shortcut enabled while editable controls own focus", () => {
@@ -205,7 +223,7 @@ createUiTest("App shortcuts", () => {
     const calls = createHotkeysMock.mock.calls as unknown as Array<
       [
         Array<{ hotkey: string; callback: () => void }> | (() => Array<{ hotkey: string; callback: () => void }>),
-        () => { enabled: boolean; ignoreInputs: boolean }
+        () => { enabled: boolean; ignoreInputs: boolean; preventDefault: boolean; stopPropagation: boolean }
       ]
     >;
     const searchCall = calls.find(([hotkeys]) => {
@@ -221,21 +239,25 @@ createUiTest("App shortcuts", () => {
     textarea.focus();
 
     expect(searchCall[1]().enabled).toBe(true);
+    expect(searchCall[1]().preventDefault).toBe(true);
+    expect(searchCall[1]().stopPropagation).toBe(true);
   });
 
-  it("renders left tabs with aria-owned active styling state", () => {
+  it("renders left tabs with tab-owned active styling state", () => {
     render(() => <App />);
 
     const nav = document.querySelector("[data-test-left-tab-nav]");
     const buttons = [...(nav?.querySelectorAll("button") ?? [])] as HTMLButtonElement[];
 
+    expect(nav?.getAttribute("role")).toBe("tablist");
     expect(buttons[0]?.getAttribute("aria-label")).toBe("Projects");
     expect(buttons[1]?.getAttribute("aria-label")).toBe("Assistants");
     expect(buttons[2]?.getAttribute("aria-label")).toBe("Jobs");
     expect(buttons[3]?.getAttribute("aria-label")).toBe("Runs");
     expect(buttons[4]?.getAttribute("aria-label")).toBe("Settings");
-    expect(buttons[0]?.getAttribute("aria-pressed")).toBe("true");
-    expect(buttons[1]?.getAttribute("aria-pressed")).toBe("false");
+    expect(buttons[0]?.getAttribute("role")).toBe("tab");
+    expect(buttons[0]?.getAttribute("aria-selected")).toBe("true");
+    expect(buttons[1]?.getAttribute("aria-selected")).toBe("false");
     expect(buttons[0]?.className).toBe("surface-tab");
   });
 
@@ -295,6 +317,32 @@ createUiTest("App shortcuts", () => {
     expect(readBrowserUiSession().mainPanelSizes).toEqual({ left: 2, center: 4, right: 1.5 });
   });
 
+  it("cycles trace panel through closed and peek states", async () => {
+    render(() => <App />);
+
+    const traceButton = screen.getByRole("button", { name: /Trace panel:/ });
+
+    expect(harnessStore.state.tracePanelMode).toBe("open");
+
+    fireEvent.click(traceButton);
+    await Promise.resolve();
+    expect(harnessStore.state.tracePanelMode).toBe("closed");
+    expect(readBrowserUiSession().tracePanelMode).toBe("closed");
+
+    fireEvent.click(traceButton);
+    await Promise.resolve();
+    expect(harnessStore.state.tracePanelMode).toBe("peek");
+    expect(readBrowserUiSession().tracePanelMode).toBe("peek");
+  });
+
+  it("renders trace peek rail when session mode is peek", () => {
+    harnessStore.setTracePanelMode("peek");
+
+    render(() => <App />);
+
+    expect(document.querySelector("[data-test-trace-peek-rail]")).not.toBeNull();
+  });
+
   it("moves active tab styling when switching left tabs", async () => {
     render(() => <App />);
     const nav = document.querySelector("[data-test-left-tab-nav]");
@@ -302,7 +350,7 @@ createUiTest("App shortcuts", () => {
     const assistantsTab = buttons[1];
     const runsTab = buttons[3];
 
-    expect(assistantsTab?.getAttribute("aria-pressed")).toBe("false");
+    expect(assistantsTab?.getAttribute("aria-selected")).toBe("false");
 
     if (assistantsTab) {
       fireEvent.click(assistantsTab);

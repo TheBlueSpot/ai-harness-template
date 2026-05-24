@@ -460,7 +460,7 @@ export class AssistantManager {
 
   async handleBackgroundJobRunOutcome(input: {
     assistantId: string;
-    status: "succeeded" | "failed" | "cancelled" | "awaiting-user-input";
+    status: "succeeded" | "partial-complete" | "failed" | "cancelled" | "awaiting-user-input";
     summary?: string;
     failureMessage?: string;
   }) {
@@ -483,6 +483,23 @@ export class AssistantManager {
       });
       this.callbacks.onAssistantsUpdated();
       this.scheduleReprioritize(input.assistantId, "job-succeeded");
+      return { blocked: false };
+    }
+
+    if (input.status === "partial-complete") {
+      this.repository.updateAssistantFailureState(input.assistantId, {
+        failureStreakCount: 0,
+        circuitBreakerState: "closed",
+        circuitBreakerReason: undefined
+      });
+      this.appendLog({
+        assistantId: input.assistantId,
+        level: "warning",
+        summary: "Assistant job partially completed",
+        detail: input.failureMessage ?? input.summary
+      });
+      this.callbacks.onAssistantsUpdated();
+      this.scheduleReprioritize(input.assistantId, "job-partial-complete");
       return { blocked: false };
     }
 

@@ -1843,9 +1843,24 @@ export class WorkspaceRepository {
     runId: string,
     status: AgentRunStatus,
     failureMessage?: string,
-    failureCategory?: RunFailureCategory
+    failureCategory?: RunFailureCategory,
+    allowTerminalRewrite = false
   ) {
     const now = new Date().toISOString();
+    const current = this.db
+      .query<{ status: AgentRunStatus }, [string, ProjectId]>(
+        `SELECT status
+         FROM agent_runs
+         WHERE id = ?1 AND project_id = ?2`
+      )
+      .get(runId, projectId);
+    if (
+      current &&
+      isTerminalAgentRunStatus(current.status) &&
+      (!allowTerminalRewrite || !isTerminalAgentRunStatus(status))
+    ) {
+      return this.readProjectSnapshot(projectId);
+    }
     const completedAt = isTerminalAgentRunStatus(status) ? now : null;
     const updated = this.db
       .query(
@@ -4028,12 +4043,14 @@ export class WorkspaceRepository {
     const noProgressMs = options.noProgressMs ?? 10 * 60 * 1000;
     const repairedRuns: BackgroundJobRun[] = [];
     for (const run of this.getActiveBackgroundJobRuns(options.jobId)) {
+      const runLive = options.isRunLive?.(run) ?? false;
+      const leaseGraceActive = run.status === "running" && hasBackgroundRunActiveLeaseGrace(run, now, readyGraceMs);
       if (run.linkedAgentRunId) {
         const linkedRun = this.getRun(run.projectId, run.linkedAgentRunId);
         const terminalStatus = linkedRun ? mapAgentRunStatusToBackgroundRunStatus(linkedRun.status) : undefined;
         if (terminalStatus) {
           const failureMessage =
-            terminalStatus === "succeeded"
+            terminalStatus === "succeeded" || terminalStatus === "partial-complete"
               ? undefined
               : linkedRun?.failureMessage ?? `Linked agent run ended with status ${linkedRun?.status ?? "missing"}`;
           const repairedRun = this.setBackgroundJobRunStatus(run.id, terminalStatus, {
@@ -4049,7 +4066,7 @@ export class WorkspaceRepository {
           });
           this.appendBackgroundJobRunEvent(
             run.id,
-            terminalStatus === "succeeded" ? "done" : "failed",
+            terminalStatus === "succeeded" ? "done" : terminalStatus,
             "Reconciled linked agent run",
             failureMessage ?? linkedRun?.summary
           );
@@ -4059,7 +4076,8 @@ export class WorkspaceRepository {
         if (
           linkedRun?.status === "ready" &&
           options.isRunLive &&
-          !options.isRunLive(run) &&
+          !runLive &&
+          !leaseGraceActive &&
           isBackgroundRunPastLeaseGrace(run, now, readyGraceMs)
         ) {
           const failureMessage = "Linked agent run was ready but no background controller resumed execution";
@@ -4078,7 +4096,8 @@ export class WorkspaceRepository {
       if (
         run.status === "running" &&
         options.isRunLive &&
-        !options.isRunLive(run) &&
+        !runLive &&
+        !leaseGraceActive &&
         isBackgroundRunPastLeaseGrace(run, now, readyGraceMs)
       ) {
         this.failLinkedAgentRunIfActive(
@@ -4101,7 +4120,7 @@ export class WorkspaceRepository {
         continue;
       }
 
-      if (run.status === "running" && getBackgroundRunAgeMs(run, now) >= maxRunMs) {
+      if (run.status === "running" && (runLive || !leaseGraceActive) && getBackgroundRunAgeMs(run, now) >= maxRunMs) {
         const detail = formatBackgroundRunTimeoutDetail(run, now, "max runtime");
         this.failLinkedAgentRunIfActive(
           run.projectId,
@@ -4119,7 +4138,7 @@ export class WorkspaceRepository {
         continue;
       }
 
-      if (run.status === "running" && getBackgroundRunLastProgressAgeMs(run, now) >= noProgressMs) {
+      if (run.status === "running" && (runLive || !leaseGraceActive) && getBackgroundRunLastProgressAgeMs(run, now) >= noProgressMs) {
         const detail = formatBackgroundRunTimeoutDetail(run, now, "no progress heartbeat");
         this.failLinkedAgentRunIfActive(
           run.projectId,
@@ -4213,6 +4232,10 @@ export class WorkspaceRepository {
 
   appendBackgroundJobRunEvent(runId: string, stage: string, message: string, detail?: string) {
     const now = new Date().toISOString();
+    const currentRun = this.getBackgroundJobRun(runId);
+    if (currentRun && isTerminalBackgroundJobRunStatus(currentRun.status) && !isTerminalBackgroundJobRunEventStage(stage)) {
+      return currentRun;
+    }
     const ordinal =
       (this.db
         .query<{ count: number }, [string]>(`SELECT COUNT(*) AS count FROM background_job_run_events WHERE run_id = ?1`)
@@ -4232,10 +4255,17 @@ export class WorkspaceRepository {
              updated_at = ?2
          WHERE id = ?1
            AND completed_at IS NULL
-           AND status NOT IN ('succeeded', 'failed', 'cancelled', 'skipped')`
+           AND status NOT IN ('succeeded', 'partial-complete', 'failed', 'cancelled', 'skipped')`
       )
       .run(runId, now, stage, (detail ?? message).slice(0, 1024));
     return this.getBackgroundJobRun(runId)!;
+  }
+
+  appendBackgroundJobRunEventIfOwned(runId: string, controllerLeaseId: string, stage: string, message: string, detail?: string) {
+    if (!this.isBackgroundRunOwnedBy(runId, controllerLeaseId)) {
+      return undefined;
+    }
+    return this.appendBackgroundJobRunEvent(runId, stage, message, detail);
   }
 
   touchBackgroundJobRun(runId: string, input: { stage: string; detail?: string; now?: Date }) {
@@ -4249,10 +4279,17 @@ export class WorkspaceRepository {
              updated_at = ?2
          WHERE id = ?1
            AND completed_at IS NULL
-           AND status NOT IN ('succeeded', 'failed', 'cancelled', 'skipped')`
+           AND status NOT IN ('succeeded', 'partial-complete', 'failed', 'cancelled', 'skipped')`
       )
       .run(runId, now, input.stage, input.detail ? input.detail.slice(0, 1024) : null);
     return this.getBackgroundJobRun(runId);
+  }
+
+  touchBackgroundJobRunIfOwned(runId: string, controllerLeaseId: string, input: { stage: string; detail?: string; now?: Date }) {
+    if (!this.isBackgroundRunOwnedBy(runId, controllerLeaseId)) {
+      return undefined;
+    }
+    return this.touchBackgroundJobRun(runId, input);
   }
 
   renewBackgroundJobRunLease(runId: string, controllerLeaseId: string, expiresAt: string) {
@@ -4266,6 +4303,11 @@ export class WorkspaceRepository {
       )
       .run(runId, controllerLeaseId, expiresAt);
     return this.getBackgroundJobRun(runId);
+  }
+
+  isBackgroundRunOwnedBy(runId: string, controllerLeaseId: string) {
+    const run = this.getBackgroundJobRun(runId);
+    return Boolean(run && run.status === "running" && run.controllerLeaseId === controllerLeaseId);
   }
 
   setBackgroundJobRunStatus(
@@ -4282,9 +4324,18 @@ export class WorkspaceRepository {
       controllerLeaseId?: string | null;
       controllerLeaseExpiresAt?: string | null;
       resumeAttemptCount?: number;
+      allowTerminalRewrite?: boolean;
     } = {}
   ) {
     const now = new Date().toISOString();
+    const currentRun = this.getBackgroundJobRun(runId);
+    if (
+      currentRun &&
+      isTerminalBackgroundJobRunStatus(currentRun.status) &&
+      (!input.allowTerminalRewrite || !isTerminalBackgroundJobRunStatus(status))
+    ) {
+      return currentRun;
+    }
     this.db
       .query(
         `UPDATE background_job_runs
@@ -4295,11 +4346,11 @@ export class WorkspaceRepository {
              linked_agent_run_id = COALESCE(?6, linked_agent_run_id),
              approval_status = COALESCE(?7, approval_status),
              started_at = CASE WHEN ?2 = 'running' AND started_at IS NULL THEN ?8 ELSE started_at END,
-             completed_at = CASE WHEN ?2 IN ('succeeded', 'failed', 'cancelled', 'skipped') THEN ?8 ELSE completed_at END,
+             completed_at = CASE WHEN ?2 IN ('succeeded', 'partial-complete', 'failed', 'cancelled', 'skipped') THEN ?8 ELSE completed_at END,
              last_heartbeat_at = ?8,
              heartbeat_stage = ?2,
              heartbeat_detail = COALESCE(?9, ?3, heartbeat_detail),
-             timed_out_at = COALESCE(?10, timed_out_at),
+             timed_out_at = COALESCE(timed_out_at, ?10),
              controller_instance_id = COALESCE(?11, controller_instance_id),
              controller_lease_id = COALESCE(?12, controller_lease_id),
              controller_lease_expires_at = CASE WHEN ?13 = 1 THEN ?14 ELSE controller_lease_expires_at END,
@@ -4325,6 +4376,18 @@ export class WorkspaceRepository {
         input.resumeAttemptCount ?? null
       );
     return this.getBackgroundJobRun(runId)!;
+  }
+
+  setBackgroundJobRunStatusIfOwned(
+    runId: string,
+    controllerLeaseId: string,
+    status: BackgroundJobRunStatus,
+    input: Parameters<WorkspaceRepository["setBackgroundJobRunStatus"]>[2] = {}
+  ) {
+    if (!this.isBackgroundRunOwnedBy(runId, controllerLeaseId)) {
+      return undefined;
+    }
+    return this.setBackgroundJobRunStatus(runId, status, input);
   }
 
   setBackgroundJobRunPromptStats(runId: string, promptStats: RunPromptStats) {
@@ -5180,7 +5243,7 @@ export class WorkspaceRepository {
         assistant_id TEXT NULL,
         automation_thread_id TEXT NOT NULL,
         trigger_source TEXT NOT NULL CHECK(trigger_source IN ('schedule', 'startup-catchup', 'manual', 'approval-release', 'retry')),
-        status TEXT NOT NULL CHECK(status IN ('queued', 'awaiting-approval', 'awaiting-user-input', 'running', 'succeeded', 'failed', 'cancelled', 'skipped')),
+        status TEXT NOT NULL CHECK(status IN ('queued', 'awaiting-approval', 'awaiting-user-input', 'running', 'succeeded', 'partial-complete', 'failed', 'cancelled', 'skipped')),
         risk_level TEXT NOT NULL CHECK(risk_level IN ('safe', 'slightly-unsafe', 'unsafe')),
         approval_status TEXT NOT NULL CHECK(approval_status IN ('not-needed', 'pending', 'approved', 'rejected')),
         skipped_occurrence_count INTEGER NOT NULL DEFAULT 0,
@@ -6885,7 +6948,7 @@ export class WorkspaceRepository {
 
   private rebuildBackgroundJobRunsTableIfNeeded() {
     const createSql = this.readTableCreateSql("background_job_runs");
-    if (createSql.includes("'awaiting-user-input'")) {
+    if (createSql.includes("'awaiting-user-input'") && createSql.includes("'partial-complete'")) {
       return;
     }
 
@@ -6898,7 +6961,7 @@ export class WorkspaceRepository {
         assistant_id TEXT NULL,
         automation_thread_id TEXT NOT NULL,
         trigger_source TEXT NOT NULL CHECK(trigger_source IN ('schedule', 'startup-catchup', 'manual', 'approval-release', 'retry')),
-        status TEXT NOT NULL CHECK(status IN ('queued', 'awaiting-approval', 'awaiting-user-input', 'running', 'succeeded', 'failed', 'cancelled', 'skipped')),
+        status TEXT NOT NULL CHECK(status IN ('queued', 'awaiting-approval', 'awaiting-user-input', 'running', 'succeeded', 'partial-complete', 'failed', 'cancelled', 'skipped')),
         risk_level TEXT NOT NULL CHECK(risk_level IN ('safe', 'slightly-unsafe', 'unsafe')),
         approval_status TEXT NOT NULL CHECK(approval_status IN ('not-needed', 'pending', 'approved', 'rejected')),
         skipped_occurrence_count INTEGER NOT NULL DEFAULT 0,
@@ -6914,6 +6977,10 @@ export class WorkspaceRepository {
         controller_lease_id TEXT NULL,
         controller_lease_expires_at TEXT NULL,
         resume_attempt_count INTEGER NULL,
+        last_heartbeat_at TEXT NULL,
+        heartbeat_stage TEXT NULL,
+        heartbeat_detail TEXT NULL,
+        timed_out_at TEXT NULL,
         queued_at TEXT NOT NULL,
         started_at TEXT NULL,
         completed_at TEXT NULL,
@@ -6929,11 +6996,15 @@ export class WorkspaceRepository {
         skipped_occurrence_count, linked_agent_run_id, summary, failure_message, failure_category,
         prompt_chars, prompt_hash, transcript_chars, latest_task_chars,
         controller_instance_id, controller_lease_id, controller_lease_expires_at, resume_attempt_count,
+        last_heartbeat_at, heartbeat_stage, heartbeat_detail, timed_out_at,
         queued_at, started_at, completed_at, created_at, updated_at
       )
       SELECT
         id, job_id, project_id, assistant_id, automation_thread_id, trigger_source, status, risk_level, approval_status,
-        skipped_occurrence_count, linked_agent_run_id, summary, failure_message, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0,
+        skipped_occurrence_count, linked_agent_run_id, summary, failure_message, failure_category,
+        prompt_chars, prompt_hash, transcript_chars, latest_task_chars,
+        controller_instance_id, controller_lease_id, controller_lease_expires_at, COALESCE(resume_attempt_count, 0),
+        last_heartbeat_at, heartbeat_stage, heartbeat_detail, timed_out_at,
         queued_at, started_at, completed_at, created_at, updated_at
       FROM background_job_runs_legacy;
       DROP TABLE background_job_runs_legacy;
@@ -7265,6 +7336,9 @@ export class WorkspaceRepository {
         transcriptChars: row.transcript_chars,
         latestTaskChars: row.latest_task_chars
       }),
+      controllerInstanceId: normalizeOptionalString(row.controller_instance_id, 128),
+      controllerLeaseId: normalizeOptionalString(row.controller_lease_id, 128),
+      controllerLeaseExpiresAt: normalizeOptionalString(row.controller_lease_expires_at, 256),
       lastHeartbeatAt: normalizeOptionalString(row.last_heartbeat_at, 256),
       heartbeatStage: normalizeOptionalString(row.heartbeat_stage, 64),
       heartbeatDetail: normalizeOptionalString(row.heartbeat_detail, 1024),
@@ -8377,6 +8451,7 @@ function mapAgentRunStatusToBackgroundRunStatus(status: AgentRunStatus): Backgro
     case "completed":
       return "succeeded";
     case "partial-complete":
+      return "partial-complete";
     case "failed":
       return "failed";
     case "stopped":
@@ -8384,6 +8459,19 @@ function mapAgentRunStatusToBackgroundRunStatus(status: AgentRunStatus): Backgro
     default:
       return undefined;
   }
+}
+
+function isTerminalBackgroundJobRunStatus(status: BackgroundJobRunStatus) {
+  return status === "succeeded" || status === "partial-complete" || status === "failed" || status === "cancelled" || status === "skipped";
+}
+
+function isTerminalBackgroundJobRunEventStage(stage: string) {
+  return stage === "done" || stage === "partial-complete" || stage === "failed" || stage === "cancelled" || stage === "skipped";
+}
+
+function hasBackgroundRunActiveLeaseGrace(run: BackgroundJobRun, now: Date, startupGraceMs: number) {
+  const leaseExpiresAt = Date.parse(run.controllerLeaseExpiresAt ?? "");
+  return Number.isFinite(leaseExpiresAt) && leaseExpiresAt + startupGraceMs > now.getTime();
 }
 
 function getBackgroundRunAgeMs(run: BackgroundJobRun, now: Date) {

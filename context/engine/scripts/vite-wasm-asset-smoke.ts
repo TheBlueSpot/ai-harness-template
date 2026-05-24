@@ -7,6 +7,8 @@ type PackOutput = Array<{ filename: string }>;
 
 const rootDir = join(import.meta.dir, "..");
 const supportedViteVersions = ["8.0.14"] as const;
+const runCurrentVite = process.argv.includes("--current");
+const viteVersions = runCurrentVite ? (["latest"] as const) : supportedViteVersions;
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -21,7 +23,7 @@ try {
   const [tarball] = JSON.parse(tarballOutput) as PackOutput;
   assert(tarball?.filename, "npm pack did not produce an engine tarball");
 
-  for (const viteVersion of supportedViteVersions) {
+  for (const viteVersion of viteVersions) {
     const consumerDir = mkdtempSync(join(tmpdir(), `catalog-engine-vite-${viteVersion.replaceAll(".", "-")}-`));
 
     try {

@@ -29,10 +29,24 @@ describe("run failure classification", () => {
     );
   });
 
+  test("classifies background job runtime and partial-subagent failures", () => {
+    expect(
+      classifyRunFailure({
+        message:
+          "options.repository.setBackgroundJobRunStatusIfOwned is not a function. (In 'options.repository.setBackgroundJobRunStatusIfOwned(...)')"
+      })
+    ).toBe("runtime-contract-mismatch");
+    expect(classifyRunFailure({ message: "Some subagent work failed." })).toBe("partial-subagent-failure");
+  });
+
   test("tracks backoff and lifecycle eligibility per phase rules", () => {
     expect(isBackoffEligibleFailureCategory("controller-lost")).toBe(true);
+    expect(isBackoffEligibleFailureCategory("max-runtime-timeout")).toBe(true);
+    expect(isBackoffEligibleFailureCategory("runtime-contract-mismatch")).toBe(true);
+    expect(isBackoffEligibleFailureCategory("empty-response")).toBe(false);
     expect(isBackoffEligibleFailureCategory("shutdown-interrupt")).toBe(false);
     expect(isLifecycleFailureCategory("heartbeat-timeout")).toBe(true);
+    expect(isLifecycleFailureCategory("runtime-contract-mismatch")).toBe(true);
     expect(isLifecycleFailureCategory("planner-question")).toBe(false);
   });
 });

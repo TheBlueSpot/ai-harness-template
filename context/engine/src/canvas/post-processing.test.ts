@@ -10,6 +10,8 @@ import {
   grayscale,
   invert,
   posterize,
+  postProcessApiProfileNames,
+  postProcessApiProfiles,
   radialBlur,
   screenShake,
   summarizePostProcessCost,
@@ -73,4 +75,51 @@ test("post process costs make stack budget visible", () => {
     fullCanvasPasses: 3,
     violations: ["pixel effects 2 exceeds 1", "full canvas passes 3 exceeds 2"]
   });
+});
+
+test("post process profiles classify stable API separately from prototype helpers", () => {
+  expect(postProcessApiProfiles.createPostProcessStack.status).toBe("stable");
+  expect(postProcessApiProfiles.grayscale.tier).toBe("pixel");
+  expect(postProcessApiProfiles.crtScanlines.status).toBe("stable");
+  expect(postProcessApiProfiles.radialBlur.status).toBe("prototype");
+  expect(postProcessApiProfiles.radialBlur.exposure).toBe("prototype-root");
+  expect(postProcessApiProfiles.shockwaveDistortion.tier).toBe("distortion");
+});
+
+test("post process profiles isolate migrated proof from candidate helpers", () => {
+  const migratedPrototypeHelpers = Object.entries(postProcessApiProfiles)
+    .filter(([, profile]) => profile.status === "prototype" && profile.proof === "migrated-game")
+    .map(([name]) => name);
+  const promotionBlockedHelpers = Object.entries(postProcessApiProfiles)
+    .filter(([, profile]) => profile.promotion === "blocked")
+    .map(([name]) => name);
+
+  expect(postProcessApiProfiles.flashbang.proof).toBe("migrated-game");
+  expect(postProcessApiProfiles.flashbang.promotion).toBe("blocked");
+  expect(postProcessApiProfiles.flashbang.exposure).toBe("prototype-root");
+  expect(postProcessApiProfiles.bloom.proof).toBe("candidate");
+  expect(postProcessApiProfiles.pixelate.proof).toBe("candidate");
+  expect(migratedPrototypeHelpers).toEqual(["flashbang"]);
+  expect(promotionBlockedHelpers).toEqual(
+    Object.entries(postProcessApiProfiles)
+      .filter(([, profile]) => profile.status === "prototype")
+      .map(([name]) => name)
+  );
+});
+
+test("post process prototype helpers remain root-exposed quarantine, not stable API", () => {
+  for (const [name, profile] of Object.entries(postProcessApiProfiles)) {
+    if (profile.status === "prototype") {
+      expect(profile.exposure, name).toBe("prototype-root");
+      expect(profile.promotion, name).toBe("blocked");
+      continue;
+    }
+
+    expect(profile.exposure, name).toBe("root");
+    expect(profile.promotion, name).toBe("stable");
+  }
+});
+
+test("post process profile names match profiled helpers", () => {
+  expect(Object.keys(postProcessApiProfiles).sort()).toEqual([...postProcessApiProfileNames].sort());
 });

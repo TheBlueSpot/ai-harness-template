@@ -13,6 +13,7 @@ Solid UI source for harness frontend.
 - The Background Jobs surface now includes a Health segment with recent reliability diagnostics, active backoff visibility, dominant failure categories, and prompt repetition signals, while keeping the selected segment browser-local.
 - Job details expose active-run recovery actions so blocked scheduled work can be stopped without switching to the run inbox.
 - Run notifications open the Runs tab on the matching status bucket so selected execution details stay visible.
+- Partial-complete background runs render as warning/completed outcomes instead of hard failures, keeping failed filters focused on true failures.
 - Assistant-owned job notifications route to the owning assistant log so scheduled work evidence stays near assistant history, with compact row summaries and full details in dialogs.
 - Execution log detail dialogs share transcript markdown formatting so long prompts stay readable without changing compact list rows.
 - Assistant chat follows project chat scroll behavior, opening at latest messages and exposing a return-to-latest control when browsing history.

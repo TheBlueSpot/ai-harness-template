@@ -332,19 +332,20 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
 
     const renderCard = (sortable: ProjectCardSortableState) => (
       <section
-        class="rounded-[1.4rem] border p-3 transition"
+        class="group relative overflow-hidden rounded-lg border p-2.5 transition"
         classList={{
           "opacity-80": sortable.isDragging,
           "shadow-lg": sortable.isDragging,
-          "border-(--accent)": isActiveProject(),
-          "bg-[linear-gradient(135deg,rgba(15,118,110,0.18),rgba(255,255,255,0.9))]": isActiveProject(),
-          "shadow-md": isActiveProject(),
+          "border-teal-500/45 bg-[linear-gradient(135deg,rgba(15,118,110,0.12),rgba(255,255,255,0.86))] shadow-sm": isActiveProject(),
           "border-(--border)": !isActiveProject(),
-          "bg-white/55": !isActiveProject()
+          "bg-white/60 hover:border-slate-400/30 hover:bg-white/75": !isActiveProject()
         }}
         ref={sortable.ref}
         style={sortable.style}
       >
+        <Show when={isActiveProject()}>
+          <div class="absolute inset-y-2 left-0 w-0.5 rounded-r-full bg-(--accent)" />
+        </Show>
         <div class="flex min-w-0 items-start gap-1.5">
           <Show when={manualSortActive()}>
             <button
@@ -378,11 +379,9 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
           </Show>
           <ActionButton
             tooltip={isActiveProject() ? `${project.name} is active` : `Switch to ${project.name}`}
-            disabledReason="Project already active"
-            disabled={isActiveProject()}
             icon={<Folder class="h-3.5 w-3.5 shrink-0" />}
-            variant={isActiveProject() ? "secondary" : "ghost"}
-            class="flex min-h-8 w-full min-w-0 justify-start rounded-xl px-2 py-1.5 gap-0"
+            variant="ghost"
+            class="flex min-h-10 w-full min-w-0 justify-start rounded-lg px-2 py-1.5 gap-2"
             wrapperClass="flex min-w-0 flex-1"
             onClick={() => handleActivateProject(project.id)}
           >
@@ -391,67 +390,73 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
               <div class="truncate text-[0.585rem] text-(--muted)">
                 {truncateMiddle(project.rootPath, props.compact ? 24 : 30)}
               </div>
-              <div class="flex flex-wrap gap-0.5 text-[0.585rem] text-(--muted)">
+              <div class="mt-0.5 flex flex-wrap items-center gap-1.5 text-[0.585rem] text-(--muted)">
                 <span>{project.threadCount} threads</span>
                 {project.isStreaming ? <span>streaming</span> : null}
-                {isActiveProject() ? <span>active</span> : null}
+                {isActiveProject() ? (
+                  <span class="rounded-full bg-teal-600 px-1.5 py-0.5 text-[0.48rem] font-semibold uppercase tracking-[0.1em] text-white">
+                    Active
+                  </span>
+                ) : null}
               </div>
             </div>
           </ActionButton>
 
-          <ActionButton
-            tooltip={tooltipWithPrimaryHotkey(
-              "Create a new thread in this project",
-              normalizeAppHotkeyPreferences(harnessStore.state.appHotkeyPreferences).createProjectChat[0]
-            )}
-            icon={<Plus class="h-3 w-3" />}
-            variant="ghost"
-            size="icon"
-            class="h-6 w-6 rounded-lg"
-            ariaLabel={`Create a new thread in ${project.name}`}
-            onClick={() => {
-              handleCreateThread(project.id);
-            }}
-          />
+          <div class="flex shrink-0 items-center gap-0.5 opacity-70 transition group-focus-within:opacity-100 group-hover:opacity-100">
+            <ActionButton
+              tooltip={tooltipWithPrimaryHotkey(
+                "Create a new thread in this project",
+                normalizeAppHotkeyPreferences(harnessStore.state.appHotkeyPreferences).createProjectChat[0]
+              )}
+              icon={<Plus class="h-3 w-3" />}
+              variant="ghost"
+              size="icon"
+              class="h-6 w-6 rounded-lg"
+              ariaLabel={`Create a new thread in ${project.name}`}
+              onClick={() => {
+                handleCreateThread(project.id);
+              }}
+            />
 
-          <ActionButton
-            tooltip={`Remove ${project.name}`}
-            disabledReason={removeDisabledReason()}
-            disabled={Boolean(removeDisabledReason())}
-            icon={<Trash2 class="h-3 w-3" />}
-            variant="ghost"
-            size="icon"
-            class="h-6 w-6 rounded-lg"
-            ariaLabel={`Remove ${project.name}`}
-            onClick={() => handleRemoveProject(project.id)}
-          />
-          <Show when={manualSortActive()}>
             <ActionButton
-              tooltip={`Move ${project.name} up`}
-              disabledReason="Already first project"
-              disabled={visibleProjectIds().indexOf(project.id) === 0}
-              icon={<ArrowUp class="h-3 w-3" />}
+              tooltip={`Remove ${project.name}`}
+              disabledReason={removeDisabledReason()}
+              disabled={Boolean(removeDisabledReason())}
+              icon={<Trash2 class="h-3 w-3" />}
               variant="ghost"
               size="icon"
               class="h-6 w-6 rounded-lg"
-              ariaLabel={`Move ${project.name} up`}
-              onClick={() => moveProject(project.id, -1)}
+              ariaLabel={`Remove ${project.name}`}
+              onClick={() => handleRemoveProject(project.id)}
             />
-            <ActionButton
-              tooltip={`Move ${project.name} down`}
-              disabledReason="Already last project"
-              disabled={visibleProjectIds().indexOf(project.id) === visibleProjectIds().length - 1}
-              icon={<ArrowDown class="h-3 w-3" />}
-              variant="ghost"
-              size="icon"
-              class="h-6 w-6 rounded-lg"
-              ariaLabel={`Move ${project.name} down`}
-              onClick={() => moveProject(project.id, 1)}
-            />
-          </Show>
+            <Show when={manualSortActive()}>
+              <ActionButton
+                tooltip={`Move ${project.name} up`}
+                disabledReason="Already first project"
+                disabled={visibleProjectIds().indexOf(project.id) === 0}
+                icon={<ArrowUp class="h-3 w-3" />}
+                variant="ghost"
+                size="icon"
+                class="h-6 w-6 rounded-lg"
+                ariaLabel={`Move ${project.name} up`}
+                onClick={() => moveProject(project.id, -1)}
+              />
+              <ActionButton
+                tooltip={`Move ${project.name} down`}
+                disabledReason="Already last project"
+                disabled={visibleProjectIds().indexOf(project.id) === visibleProjectIds().length - 1}
+                icon={<ArrowDown class="h-3 w-3" />}
+                variant="ghost"
+                size="icon"
+                class="h-6 w-6 rounded-lg"
+                ariaLabel={`Move ${project.name} down`}
+                onClick={() => moveProject(project.id, 1)}
+              />
+            </Show>
+          </div>
         </div>
         {project.threads.length > 0 ? (
-          <div ref={threadListElement} class="mt-2 flex flex-col gap-2" hidden={isCollapsed()}>
+          <div ref={threadListElement} class="mt-2 flex flex-col gap-1.5" hidden={isCollapsed()}>
             {project.threads.map((thread) => (
               <ProjectThreadRow project={project} thread={thread} />
             ))}
@@ -550,14 +555,16 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
 
     return (
       <div
-        class="rounded-2xl border px-3 py-2"
+        class="group/thread relative overflow-hidden rounded-lg border px-2.5 py-2 transition"
         classList={{
-          "border-teal-500/50": isActiveThread(),
-          "bg-white/80": isActiveThread(),
+          "border-teal-500/45 bg-white/90 shadow-sm": isActiveThread(),
           "border-(--border)": !isActiveThread(),
-          "bg-white/60": !isActiveThread()
+          "bg-white/60 hover:bg-white/75": !isActiveThread()
         }}
       >
+        <Show when={isActiveThread()}>
+          <div class="absolute inset-y-2 left-0 w-0.5 rounded-r-full bg-(--accent)" />
+        </Show>
         <div class="flex min-w-0 items-start justify-between gap-1.5">
           <button
             class="flex min-w-0 flex-1 cursor-pointer flex-col text-left disabled:cursor-not-allowed"
@@ -608,7 +615,12 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
             </div>
           </button>
 
-          <ButtonGroup items={actionItems} menuLabel="Thread actions" collapseBelowWidth="22rem" />
+          <ButtonGroup
+            items={actionItems}
+            menuLabel="Thread actions"
+            class="opacity-70 transition group-focus-within/thread:opacity-100 group-hover/thread:opacity-100"
+            collapseBelowWidth="22rem"
+          />
         </div>
       </div>
     );

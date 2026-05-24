@@ -1,5 +1,5 @@
 import { createMemo, createSignal, For, Show } from "solid-js";
-import { createRequestId, type ExecutionToolActivity } from "../../../shared/protocol";
+import { createRequestId, type AgentRunState, type BackgroundJob, type BackgroundJobRun, type ExecutionToolActivity } from "../../../shared/protocol";
 import { getActiveProject, harnessStore } from "../harness-store";
 import { getLatestTaskStatusText, getRunRefreshState, getVisibleProjectTraces, isRunWorking } from "../lib/run-status";
 import { formatShortTimestamp } from "../lib/time-format";
@@ -26,11 +26,14 @@ import {
   CircleAlert,
   CircleHelp,
   ClipboardList,
+  Eye,
   LoaderCircle,
+  PanelRightOpen,
   RefreshCcw,
   ShieldCheck,
   ShieldX,
-  Terminal
+  Terminal,
+  X
 } from "lucide-solid";
 
 export function TracePanel() {
@@ -208,11 +211,17 @@ export function TracePanel() {
         </div>
       </div>
 
-      <div class="rounded-3xl border border-(--border) bg-white/55 p-3">
-        <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">{traceTitle().eyebrow}</div>
-        <div class="mt-1 truncate text-[0.8rem] font-semibold text-(--foreground)">{traceTitle().title}</div>
-        <div class="mt-1 text-[0.625rem] text-(--muted)">Source: {traceTitle().source}</div>
-      </div>
+      <TraceContextSummary
+        title={traceTitle()}
+        runningCounts={runningCounts()}
+        run={runToShow()}
+        assistant={assistantSnapshot()?.assistant}
+        assistantJobsCount={assistantSnapshot()?.jobs.length}
+        assistantRunsCount={assistantSnapshot()?.runs.length}
+        job={jobSnapshot()?.job}
+        jobRun={jobSnapshot()?.run}
+        jobRunCount={jobSnapshot()?.runs.length}
+      />
 
       <Show
         when={threadProject()}
@@ -221,16 +230,6 @@ export function TracePanel() {
             <Show when={assistantSnapshot()}>
               {(snapshot) => (
                 <div class="flex min-h-0 flex-1 flex-col gap-4">
-                  <div class="rounded-3xl border border-(--border) bg-white/55 p-3">
-                    <div class="mb-3 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Assistant status</div>
-                    <div class="space-y-1 text-[0.675rem] text-(--muted)">
-                      <div>Name: {snapshot().assistant.name}</div>
-                      <div>State: {snapshot().assistant.runState}</div>
-                      <div>Bootstrap: {snapshot().assistant.bootstrapState}</div>
-                      <div>Jobs: {snapshot().jobs.length}</div>
-                      <div>Runs: {snapshot().runs.length}</div>
-                    </div>
-                  </div>
                   <div class="rounded-3xl border border-(--border) bg-white/55 p-3">
                     <div class="mb-3 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Assistant jobs</div>
                     <Show
@@ -285,35 +284,6 @@ export function TracePanel() {
             <Show when={jobSnapshot()}>
               {(snapshot) => (
                 <div class="flex min-h-0 flex-1 flex-col gap-4">
-                  <div class="rounded-3xl border border-(--border) bg-white/55 p-3">
-                    <div class="mb-3 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Job status</div>
-                    <div class="space-y-1 text-[0.675rem] text-(--muted)">
-                      <div>Name: {snapshot().job.name}</div>
-                      <div>Kind: {snapshot().job.kind}</div>
-                      <div>Status: {snapshot().job.status}</div>
-                      <div>Risk: {snapshot().job.riskLevel}</div>
-                      <div>Runs: {snapshot().runs.length}</div>
-                    </div>
-                  </div>
-                  <div class="rounded-3xl border border-(--border) bg-white/55 p-3">
-                    <div class="mb-3 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Run</div>
-                    <Show
-                      when={snapshot().run}
-                      fallback={<div class="rounded-2xl border border-dashed border-(--border) bg-white/45 p-3 text-[0.675rem] text-(--muted)">No run yet.</div>}
-                    >
-                      {(run) => (
-                        <div class="space-y-1 text-[0.675rem] text-(--muted)">
-                          <div>Status: {run().status}</div>
-                          <div>Trigger: {run().triggerSource}</div>
-                          <div>Approval: {run().approvalStatus}</div>
-                          <div>Summary: {run().summary ?? "n/a"}</div>
-                          <Show when={run().failureMessage}>
-                            <div>Failure: {run().failureMessage}</div>
-                          </Show>
-                        </div>
-                      )}
-                    </Show>
-                  </div>
                   <section class="flex min-h-0 flex-1 flex-col rounded-3xl border border-(--border) bg-white/55 p-3">
                     <div class="mb-3 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Execution log</div>
                     <ExecutionLog entries={executionLogEntries()} emptyMessage="No execution log yet." />
@@ -709,6 +679,270 @@ export function TracePanel() {
       </div>
     </aside>
   );
+}
+
+function TraceContextSummary(props: {
+  title: { eyebrow: string; title: string; source: string };
+  runningCounts: { current: number; total: number };
+  run?: AgentRunState;
+  assistant?: { runState: string; bootstrapState: string };
+  assistantJobsCount?: number;
+  assistantRunsCount?: number;
+  job?: BackgroundJob;
+  jobRun?: BackgroundJobRun;
+  jobRunCount?: number;
+}) {
+  return (
+    <section data-test-trace-context-summary="" class="trace-context-summary">
+      <div class="trace-context-summary-header">
+        <div class="min-w-0">
+          <div class="trace-context-eyebrow">{props.title.eyebrow}</div>
+          <div class="trace-context-title">{props.title.title}</div>
+          <div class="trace-context-source">Source: {props.title.source}</div>
+        </div>
+        <div
+          class="trace-context-agent-pill"
+          classList={{
+            "trace-context-agent-pill-active": props.runningCounts.current > 0
+          }}
+        >
+          <span class="trace-context-pill-dot" />
+          <span>{props.runningCounts.current}</span>
+          <span class="text-(--muted)">/ {props.runningCounts.total}</span>
+        </div>
+      </div>
+
+      <div class="trace-context-metrics">
+        <Show when={props.assistant}>
+          {(assistant) => (
+            <>
+              <TraceContextMetric label="State" value={assistant().runState} tone={toneForStatus(assistant().runState)} />
+              <TraceContextMetric label="Bootstrap" value={assistant().bootstrapState} tone={toneForStatus(assistant().bootstrapState)} />
+              <TraceContextMetric label="Jobs" value={String(props.assistantJobsCount ?? 0)} tone="info" />
+              <TraceContextMetric label="Runs" value={String(props.assistantRunsCount ?? 0)} tone="neutral" />
+            </>
+          )}
+        </Show>
+        <Show when={props.job}>
+          {(job) => (
+            <>
+              <TraceContextMetric label="Kind" value={job().kind} tone="info" />
+              <TraceContextMetric label="Status" value={job().status} tone={toneForStatus(job().status)} />
+              <TraceContextMetric label="Risk" value={job().riskLevel} tone={toneForRisk(job().riskLevel)} />
+              <TraceContextMetric label="Runs" value={String(props.jobRunCount ?? 0)} tone="neutral" />
+            </>
+          )}
+        </Show>
+        <Show when={!props.assistant && !props.job && props.run}>
+          {(run) => (
+            <>
+              <TraceContextMetric label="Run" value={run().status} tone={toneForStatus(run().status)} />
+              <TraceContextMetric label="Retry" value={run().retryable ? "yes" : "no"} tone={run().retryable ? "info" : "neutral"} />
+              <TraceContextMetric label="Resume" value={run().resumable ? "yes" : "no"} tone={run().resumable ? "info" : "neutral"} />
+            </>
+          )}
+        </Show>
+      </div>
+
+      <Show when={props.job}>
+        <TraceJobRunSummary run={props.jobRun} />
+      </Show>
+
+      <Show when={!props.job && props.run}>
+        {(run) => (
+          <div class="trace-context-runline">
+            <Tooltip content={run().latestUserPrompt} triggerClass="block min-w-0">
+              <div class="truncate">Prompt: {run().latestUserPrompt}</div>
+            </Tooltip>
+            <Show when={run().failureMessage}>
+              <div class="wrap-anywhere text-rose-800">Failure: {run().failureMessage}</div>
+            </Show>
+          </div>
+        )}
+      </Show>
+    </section>
+  );
+}
+
+function TraceContextMetric(props: { label: string; value: string; tone: "neutral" | "success" | "warning" | "danger" | "info" }) {
+  return (
+    <div
+      class="trace-context-metric"
+      classList={{
+        "trace-context-metric-success": props.tone === "success",
+        "trace-context-metric-warning": props.tone === "warning",
+        "trace-context-metric-danger": props.tone === "danger",
+        "trace-context-metric-info": props.tone === "info"
+      }}
+    >
+      <div class="trace-context-metric-label">{props.label}</div>
+      <div class="trace-context-metric-value">{props.value}</div>
+    </div>
+  );
+}
+
+function TraceJobRunSummary(props: { run?: BackgroundJobRun }) {
+  return (
+    <Show
+      when={props.run}
+      fallback={<div class="trace-context-runline trace-context-runline-empty">No run yet.</div>}
+    >
+      {(run) => (
+        <div
+          class="trace-context-run-summary"
+          classList={{
+            "trace-context-run-summary-danger": toneForStatus(run().status) === "danger",
+            "trace-context-run-summary-warning": toneForStatus(run().status) === "warning",
+            "trace-context-run-summary-success": toneForStatus(run().status) === "success"
+          }}
+        >
+          <div class="trace-context-run-status">
+            <span class="trace-context-run-dot" />
+            <span>{run().status}</span>
+          </div>
+          <div class="trace-context-run-facts">
+            <span>Trigger: {run().triggerSource}</span>
+            <span>Approval: {run().approvalStatus}</span>
+          </div>
+          <div class="trace-context-run-copy">Summary: {run().summary ?? "n/a"}</div>
+          <Show when={run().failureMessage}>
+            <div class="trace-context-run-copy text-rose-900">Failure: {run().failureMessage}</div>
+          </Show>
+        </div>
+      )}
+    </Show>
+  );
+}
+
+function toneForRisk(risk: string): "neutral" | "success" | "warning" | "danger" | "info" {
+  if (risk === "unsafe") {
+    return "danger";
+  }
+  if (risk === "slightly-unsafe") {
+    return "warning";
+  }
+  return "success";
+}
+
+function toneForStatus(status: string): "neutral" | "success" | "warning" | "danger" | "info" {
+  if (status.includes("failed") || status.includes("cancelled") || status.includes("error") || status.includes("open")) {
+    return "danger";
+  }
+  if (status.includes("partial-complete")) {
+    return "warning";
+  }
+  if (status.includes("running") || status.includes("queued") || status.includes("awaiting") || status.includes("pending") || status.includes("due")) {
+    return "warning";
+  }
+  if (status.includes("succeeded") || status.includes("completed") || status.includes("enabled") || status.includes("active") || status.includes("closed")) {
+    return "success";
+  }
+  if (status.includes("paused") || status.includes("idle")) {
+    return "info";
+  }
+  return "neutral";
+}
+
+export function TracePeekRail() {
+  const state = harnessStore.state;
+  const traceEntity = createMemo(() => resolveTracePanelEntity(state));
+  const traceTitle = createMemo(() => getTracePanelTitle(state, traceEntity()));
+  const threadSnapshot = createMemo(() => {
+    const entity = traceEntity();
+    return entity?.type === "thread" ? getThreadTracePanelSnapshot(state, entity) : undefined;
+  });
+  const assistantSnapshot = createMemo(() => {
+    const entity = traceEntity();
+    return entity?.type === "assistant" ? getAssistantTracePanelSnapshot(state, entity) : undefined;
+  });
+  const jobSnapshot = createMemo(() => {
+    const entity = traceEntity();
+    return entity?.type === "job" ? getJobTracePanelSnapshot(state, entity) : undefined;
+  });
+  const runningCounts = createMemo(() => getTracePanelRunningCounts(state, traceEntity()));
+  const runStatus = createMemo(() => threadSnapshot()?.runToShow?.status ?? jobSnapshot()?.run?.status);
+  const failureText = createMemo(() => threadSnapshot()?.runToShow?.failureMessage ?? jobSnapshot()?.run?.failureMessage);
+  const assistantState = createMemo(() => {
+    const assistant = assistantSnapshot()?.assistant;
+    return assistant ? `${assistant.runState} / ${assistant.bootstrapState}` : undefined;
+  });
+
+  return (
+    <aside data-test-trace-peek-rail="" class="trace-peek-rail panel-shell flex h-full min-h-0 flex-col gap-3 rounded-xl border-t-0 p-3">
+      <div class="flex items-center justify-between gap-2">
+        <div class="flex min-w-0 items-center gap-2 text-[0.585rem] font-semibold uppercase tracking-[0.16em] text-(--muted)">
+          <Eye class="h-3.5 w-3.5" />
+          <span class="truncate">Trace peek</span>
+        </div>
+        <div class="flex gap-1">
+          <ActionButton
+            tooltip="Open full trace inspector"
+            ariaLabel="Open full trace inspector"
+            icon={<PanelRightOpen class="h-3.5 w-3.5" />}
+            size="icon"
+            variant="ghost"
+            onClick={() => harnessStore.setTracePanelMode("open")}
+          />
+          <ActionButton
+            tooltip="Close trace panel"
+            ariaLabel="Close trace panel"
+            icon={<X class="h-3.5 w-3.5" />}
+            size="icon"
+            variant="ghost"
+            onClick={() => harnessStore.setTracePanelMode("closed")}
+          />
+        </div>
+      </div>
+
+      <div class="trace-summary-card">
+        <div class="trace-summary-eyebrow">{traceTitle().eyebrow}</div>
+        <div class="truncate text-[0.76rem] font-semibold text-(--foreground)">{traceTitle().title}</div>
+        <div class="mt-1 truncate text-[0.62rem] text-(--muted)">{traceTitle().source}</div>
+      </div>
+
+      <div class="grid gap-2">
+        <TracePeekMetric label="Agents" value={`${runningCounts().current}/${runningCounts().total}`} tone={runningCounts().current > 0 ? "info" : "neutral"} />
+        <Show when={runStatus()}>
+          {(status) => <TracePeekMetric label="Run" value={status()} tone={isAttentionStatus(status()) ? "warning" : "success"} />}
+        </Show>
+        <Show when={assistantState()}>
+          {(status) => <TracePeekMetric label="Assistant" value={status()} tone="info" />}
+        </Show>
+      </div>
+
+      <Show
+        when={failureText()}
+        fallback={<div class="trace-summary-card text-[0.65rem] leading-5 text-(--muted)">No active failure surfaced for this context.</div>}
+      >
+        {(failure) => (
+          <div class="trace-summary-card border-rose-300 bg-rose-50/85 text-[0.65rem] leading-5 text-rose-950">
+            <div class="mb-1 font-semibold">Failure digest</div>
+            <div class="line-clamp-6 wrap-anywhere">{failure()}</div>
+          </div>
+        )}
+      </Show>
+    </aside>
+  );
+}
+
+function TracePeekMetric(props: { label: string; value: string; tone: "neutral" | "success" | "warning" | "info" }) {
+  return (
+    <div
+      class="trace-peek-metric"
+      classList={{
+        "trace-peek-metric-success": props.tone === "success",
+        "trace-peek-metric-warning": props.tone === "warning",
+        "trace-peek-metric-info": props.tone === "info"
+      }}
+    >
+      <div class="text-[0.55rem] font-semibold uppercase tracking-[0.14em] opacity-75">{props.label}</div>
+      <div class="mt-1 truncate text-[0.72rem] font-semibold">{props.value}</div>
+    </div>
+  );
+}
+
+function isAttentionStatus(status: string) {
+  return status.includes("failed") || status.includes("cancelled") || status.includes("approval") || status.includes("running") || status.includes("queued");
 }
 
 const TRACE_SUBTASK_LIMIT = 24;

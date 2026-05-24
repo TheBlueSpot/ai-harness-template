@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test as bunTest } from "bun:test";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createMemoryEntryId, type AgentRuntimeCapability, type Assistant, type BackgroundJob, type ProviderBrand } from "../../../shared/protocol";
@@ -1474,6 +1474,70 @@ export function registerServerStartupTests(options: ServerTestShardOptions = {})
         expect(await singletonAfterIgnoredReload?.state.pickFolder()).toBe(firstRoot);
       });
 
+      serverTest("hot dev mode ignores context-only reloads without refreshing server state", async () => {
+        await stopServerForTest(server);
+        const firstRoot = fixture.createTempDir(`first-hot-context-root-${crypto.randomUUID()}`);
+        const secondRoot = fixture.createTempDir(`second-hot-context-root-${crypto.randomUUID()}`);
+        const contextProbePath = path.resolve(process.cwd(), "context", `.hmr-ignore-${crypto.randomUUID()}.md`);
+        const uiAssetCalls: string[] = [];
+
+        const uiAssetManagerFactory = () => ({
+          async ensureBuilt() {
+            uiAssetCalls.push("ensureBuilt");
+          },
+          startWatching() {
+            uiAssetCalls.push("startWatching");
+          },
+          resolveAsset() {
+            return undefined;
+          },
+          getLiveReloadState() {
+            return {
+              revision: 0,
+              building: false,
+              pending: false
+            };
+          },
+          dispose() {
+            uiAssetCalls.push("dispose");
+          }
+        });
+
+        try {
+          server = await startHarnessServer({
+            port: 0,
+            adapter,
+            repository,
+            runtimeRegistry: createFastTestRuntimeRegistry(adapter),
+            pickFolder: async () => firstRoot,
+            serverOnly: false,
+            devHotMode: true,
+            hotReloadDebounceMs: 0,
+            uiAssetManagerFactory
+          });
+
+          writeFileSync(contextProbePath, "context-only hot reload probe\n");
+          const reloadedServer = await startHarnessServer({
+            port: 0,
+            adapter,
+            repository,
+            runtimeRegistry: createFastTestRuntimeRegistry(adapter),
+            pickFolder: async () => secondRoot,
+            serverOnly: false,
+            devHotMode: true,
+            hotReloadDebounceMs: 0,
+            uiAssetManagerFactory
+          });
+
+          const singletonAfterIgnoredReload = getDevHarnessServerSingleton<any, any, any, any>();
+          expect(reloadedServer).toBe(server);
+          expect(await singletonAfterIgnoredReload?.state.pickFolder()).toBe(firstRoot);
+          expect(uiAssetCalls).toEqual(["ensureBuilt", "startWatching"]);
+        } finally {
+          rmSync(contextProbePath, { force: true });
+        }
+      });
+
 
       serverTest("hot singleton version mismatch forces one controlled restart", async () => {
         await stopServerForTest(server);
@@ -1499,6 +1563,37 @@ export function registerServerStartupTests(options: ServerTestShardOptions = {})
           serverOnly: true,
           devHotMode: true,
           hotSingletonVersion: 2
+        });
+
+        server = restartedServer;
+        expect(restartedServer).not.toBe(firstServer);
+      });
+
+      serverTest("hot singleton runtime contract mismatch forces one controlled restart", async () => {
+        await stopServerForTest(server);
+
+        server = await startHarnessServer({
+          port: 0,
+          adapter,
+          repository,
+          runtimeRegistry: createFastTestRuntimeRegistry(adapter),
+          pickFolder: async () => extraProjectRoot,
+          serverOnly: true,
+          devHotMode: true
+        });
+        const firstServer = server;
+        const singleton = getDevHarnessServerSingleton<any, any, any, any>();
+        expect(singleton).toBeDefined();
+        singleton!.runtimeContractVersion = 0;
+
+        const restartedServer = await startHarnessServer({
+          port: 0,
+          adapter,
+          repository,
+          runtimeRegistry: createFastTestRuntimeRegistry(adapter),
+          pickFolder: async () => extraProjectRoot,
+          serverOnly: true,
+          devHotMode: true
         });
 
         server = restartedServer;
@@ -2893,7 +2988,13 @@ ec32e89b-08a3-41a5-80bf-6823701343f0
           riskLevel: "safe",
           approvalStatus: "not-needed"
         });
-        repository.setBackgroundJobRunStatus(activeRun.id, "running", { summary: "Still executing" });
+        const leaseExpiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+        repository.setBackgroundJobRunStatus(activeRun.id, "running", {
+          summary: "Still executing",
+          controllerInstanceId: "controller-1",
+          controllerLeaseId: "lease-1",
+          controllerLeaseExpiresAt: leaseExpiresAt
+        });
 
         const rejectedPromise = waitForEvent(socket, "command.rejected", (event) => event.requestId === "req-active-blocker-job");
         socket.send(
@@ -2909,9 +3010,76 @@ ec32e89b-08a3-41a5-80bf-6823701343f0
 
         const rejected = await rejectedPromise;
         expect(rejected.payload.detail).toContain(`Background job already has active run ${activeRun.id} in status running`);
+        expect(rejected.payload.detail).toContain(`controller lease active until ${leaseExpiresAt}`);
         expect(rejected.payload.detail).toContain("Still executing");
         expect(repository.getActiveBackgroundJobRuns(jobId)).toHaveLength(1);
         socket.close();
+      }, 60000);
+
+      serverTest("background job runtime contract mismatch is classified", async () => {
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot);
+        const projectId = opened.payload.project.id;
+        const now = new Date().toISOString();
+        const jobId = crypto.randomUUID();
+        repository.saveBackgroundJob({
+          id: jobId,
+          projectId,
+          automationThreadId: crypto.randomUUID(),
+          kind: "ai-routine",
+          name: "Runtime contract job",
+          status: "enabled",
+          riskLevel: "safe",
+          definition: {
+            kind: "ai-routine",
+            prompt: "runtime contract test",
+            modeId: "implement"
+          },
+          schedule: {
+            type: "one-off",
+            runAt: now,
+            sourceText: "now"
+          },
+          scheduleInput: "now",
+          nextRunAt: now,
+          createdAt: now,
+          updatedAt: now
+        } satisfies BackgroundJob);
+
+        Object.defineProperty(repository, "setBackgroundJobRunStatusIfOwned", {
+          value: undefined,
+          configurable: true
+        });
+
+        try {
+          const failedPromise = waitForEvent(
+            socket,
+            "background-job-run.updated",
+            (event) =>
+              event.payload.run.jobId === jobId &&
+              event.payload.run.status === "failed" &&
+              event.payload.run.failureCategory === "runtime-contract-mismatch",
+            10000
+          );
+          socket.send(
+            JSON.stringify({
+              type: "background-job.run-now",
+              requestId: "req-runtime-contract-job",
+              payload: {
+                projectId,
+                jobId
+              }
+            })
+          );
+
+          const failed = await failedPromise;
+          expect(failed.payload.run.failureMessage).toContain("runtime contract mismatch");
+          expect(repository.getBackgroundJob(jobId)?.lastFailureCategory).toBe("runtime-contract-mismatch");
+        } finally {
+          delete (repository as unknown as Record<string, unknown>).setBackgroundJobRunStatusIfOwned;
+          socket.close();
+        }
       }, 60000);
 
       serverTest("background job stop-run stops stale linked agent run", async () => {

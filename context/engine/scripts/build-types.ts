@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { $ } from "bun";
 
 const distDir = join(import.meta.dir, "..", "dist");
@@ -40,5 +40,31 @@ function assertNoElidedAnyDeclarations(dir: string) {
   }
 }
 
+function assertCameraDeclarationsStayPublic(dir: string) {
+  const cameraDeclarationPath = join(dir, "src", "canvas", "camera.d.ts");
+  const source = readFileSync(cameraDeclarationPath, "utf8");
+
+  if (source.includes("any")) {
+    throw new Error(`${basename(cameraDeclarationPath)} must not expose any in the public camera surface`);
+  }
+
+  for (const signature of [
+    "pan(dx: number, dy: number): Camera;",
+    "centerOn(point: Point, amount?: number): Camera;",
+    "follow(target: CameraTarget | null, followOptions?: FollowOptions): Camera;",
+    "clearFollow(): Camera;",
+    "zoomTo(value: number, anchor?: Point): Camera;",
+    "zoomBy(factor: number, anchor?: Point): Camera;",
+    "setViewport(width: number, height: number): Camera;",
+    "setBounds(nextBounds: CameraBounds | null): Camera;",
+    "export declare function createCamera(options: CameraOptions): Camera;",
+  ]) {
+    if (!source.includes(signature)) {
+      throw new Error(`${basename(cameraDeclarationPath)} lost public camera signature: ${signature}`);
+    }
+  }
+}
+
 rewriteDeclarationImports(distDir);
 assertNoElidedAnyDeclarations(distDir);
+assertCameraDeclarationsStayPublic(distDir);

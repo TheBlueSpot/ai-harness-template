@@ -2246,7 +2246,7 @@ export function ChatPanel() {
   }
 
   return (
-    <section data-test-chat-panel="" class="panel-shell flex h-full min-h-0 flex-col gap-1 rounded-2xl border-t-0 p-4">
+    <section data-test-chat-panel="" class="panel-shell flex h-full min-h-0 flex-col gap-3 rounded-2xl border-t-0 p-[0.8rem]">
       <Dialog
         open={Boolean(state.blockingNonGitPreflight)}
         title="Git setup required"
@@ -2336,11 +2336,13 @@ export function ChatPanel() {
         }
       >
           <>
-          <div class="flex min-w-0 flex-col lg:gap-4 lg:flex-row lg:items-start lg:justify-between">
-              <div class="flex min-w-0 flex-1 flex-col gap-2">
-                <div class="inline-flex min-w-0 max-w-full items-center gap-2 rounded-full bg-white/60 px-3 py-1 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--muted)">
-                  Active project
-                  <span class="min-w-0 truncate text-(--foreground)">{project().name}</span>
+          <div class="flex min-w-0 flex-col gap-3 border-b border-(--border) pb-3 lg:flex-row lg:items-start lg:justify-between">
+              <div class="flex min-w-0 flex-1 flex-col gap-1.5">
+                <div class="flex min-w-0 items-center gap-2 text-[0.585rem] font-semibold uppercase tracking-[0.16em] text-(--muted)">
+                  <Folder class="h-3.5 w-3.5 shrink-0 text-(--accent)" />
+                  <Tooltip content={project().rootPath} triggerClass="min-w-0">
+                    <span class="block min-w-0 truncate">{project().name}</span>
+                  </Tooltip>
                 </div>
                 <div class="min-w-0">
                   <div class="inline-flex min-w-0 max-w-full items-center gap-1.5">
@@ -2348,7 +2350,7 @@ export function ChatPanel() {
                       when={editingThreadTitle()}
                       fallback={
                         <Tooltip content={activeThread()?.title ?? "Thread"} triggerClass="block min-w-0 max-w-full">
-                          <h3 class="max-w-full truncate font-display text-[1.6875rem] tracking-[-0.06em] text-(--foreground) md:text-[2.025rem]">
+                          <h3 class="max-w-full truncate font-display text-[1.35rem] text-(--foreground) md:text-[1.65rem]">
                             {activeThread()?.title ?? "Thread"}
                           </h3>
                         </Tooltip>
@@ -2382,7 +2384,9 @@ export function ChatPanel() {
                     />
                   </div>
                   <div class="flex min-w-0 flex-wrap items-center gap-2 text-[0.625rem] text-(--muted)">
-                    <span>thread-id</span>
+                    <span>{activeThread()?.messageCount ?? 0} msgs</span>
+                    <span class="h-1 w-1 rounded-full bg-(--border)" />
+                    <span>thread</span>
                     <span class="min-w-0 max-w-full break-all font-mono text-[0.6rem]">{activeThread()?.id}</span>
                     <CopyTextButton
                       value={activeThread()?.id ?? ""}
@@ -2397,7 +2401,7 @@ export function ChatPanel() {
                 </div>
               </div>
 
-              <div class="flex shrink-0 flex-wrap gap-2">
+              <div class="flex shrink-0 flex-wrap gap-2 lg:justify-end">
                 <ActionButton
                   tooltip={tooltipWithPrimaryHotkey(
                     "Create a new thread in this project",
@@ -2440,7 +2444,7 @@ export function ChatPanel() {
             <Show when={currentTab()} keyed>
               {(selectedTab) => (
                 <div class="flex h-full min-h-0 flex-col">
-                  <div data-test-chat-pane-nav="" class="surface-tab-strip px-0">
+                  <div data-test-chat-pane-nav="" role="tablist" aria-label="Project panes" class="surface-tab-strip px-0">
                     <div class="flex flex-wrap items-center gap-1">
                       <For each={visibleTabs()}>
                         {(tab) => {
@@ -2450,9 +2454,11 @@ export function ChatPanel() {
                             <Tooltip content={tab.tooltip}>
                               <button
                                 type="button"
+                                role="tab"
                                 class={cn(buttonVariants({ variant: "ghost" }), "surface-tab")}
-                                aria-label={`Open ${tab.label.toLowerCase()} pane`}
-                                attr:aria-pressed={pressed ? "true" : "false"}
+                                aria-label={tab.label}
+                                attr:aria-selected={pressed ? "true" : "false"}
+                                tabIndex={pressed ? 0 : -1}
                                 data-test-chat-pane-tab={tab.id}
                                 onClick={() => handleSelectPaneTab(tab.id)}
                               >
@@ -2465,6 +2471,40 @@ export function ChatPanel() {
                       </For>
                     </div>
                   </div>
+                  <Show when={resumableRun()}>
+                    {(run) => (
+                      <div class="my-3 flex flex-col gap-3 rounded-lg border border-rose-300/70 bg-rose-50/80 p-3 shadow-sm lg:flex-row lg:items-center lg:justify-between">
+                        <div class="min-w-0">
+                          <div class="flex items-center gap-2 text-[0.585rem] font-semibold uppercase tracking-[0.16em] text-rose-800">
+                            <AlertTriangle class="h-3.5 w-3.5" />
+                            Resumable run
+                          </div>
+                          <div class="mt-1 text-[0.75rem] leading-5 text-rose-950">
+                            Status: {run().status}. Failed subtasks: {failedSubtaskCount()}.
+                          </div>
+                          <div class="mt-1 text-[0.65rem] leading-5 text-rose-900/75">
+                            Resume reruns failed or pending subtasks only. Composer text becomes extra guidance.
+                          </div>
+                        </div>
+                        <ActionButton
+                          tooltip="Resume failed or pending subagents"
+                          disabledReason={
+                            executionPaused()
+                              ? executionPauseReason()
+                              : activeThreadIsStreaming()
+                                ? "Project is streaming"
+                                : "No resumable run"
+                          }
+                          disabled={executionPaused() || !resumableRun() || activeThreadIsStreaming()}
+                          icon={<RefreshCcw class="h-4 w-4" />}
+                          type="button"
+                          onClick={handleResume}
+                        >
+                          Resume failed agents
+                        </ActionButton>
+                      </div>
+                    )}
+                  </Show>
 
                   <Switch>
                     <Match when={selectedTab === "chat"}>
@@ -2485,8 +2525,8 @@ export function ChatPanel() {
                           stickToEnd
                           onScroll={updateScrollLock}
                           empty={
-                            <div class="flex min-h-56 items-center justify-center rounded-3xl border border-dashed border-(--border) bg-white/40 p-8 text-center text-[0.675rem] text-(--muted)">
-                              Choose project, then send task. Each project keeps its own persisted thread history.
+                            <div class="flex min-h-44 items-center justify-center rounded-lg border border-dashed border-(--border) bg-white/38 p-6 text-center text-[0.675rem] text-(--muted)">
+                              No messages in this thread yet. Send a task from the composer.
                             </div>
                           }
                         >
@@ -2915,22 +2955,6 @@ export function ChatPanel() {
                 )}
               </Show>
 
-              <Show when={resumableRun()}>
-                {(run) => (
-                  <div class="flex flex-col gap-2 rounded-3xl border border-rose-300/70 bg-rose-50/80 p-4 shadow-sm">
-                    <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-rose-800">
-                      Resumable run
-                    </div>
-                    <div class="text-[0.7875rem] leading-6 text-rose-950">
-                      Status: {run().status}. Failed subtasks: {failedSubtaskCount()}.
-                    </div>
-                    <div class="text-[0.675rem] leading-5 text-rose-900/75">
-                      Use resume to rerun failed or pending subtasks only. Draft text below will be sent as extra guidance.
-                    </div>
-                  </div>
-                )}
-              </Show>
-
               <Show when={selectedAgentHealthMessage()}>
                 {(message) => (
                   <div class="rounded-[1.2rem] border border-sky-200 bg-sky-50/80 p-3 text-[0.675rem] leading-6 text-sky-950">
@@ -3140,24 +3164,6 @@ export function ChatPanel() {
                   </Show>
                 </div>
                 <div class="flex flex-wrap gap-2">
-                  <Show when={resumableRun()}>
-                    <ActionButton
-                      tooltip="Resume failed or pending subagents"
-                      disabledReason={
-                        executionPaused()
-                          ? executionPauseReason()
-                          : activeThreadIsStreaming()
-                            ? "Project is streaming"
-                            : "No resumable run"
-                      }
-                      disabled={executionPaused() || !resumableRun() || activeThreadIsStreaming()}
-                      icon={<RefreshCcw class="h-4 w-4" />}
-                      type="button"
-                      onClick={handleResume}
-                    >
-                      Resume failed agents
-                    </ActionButton>
-                  </Show>
                   {/*
                     Open live session is intentionally hidden for MVP.
                     This is unneeded at the moment, but can be reintroduced post-MVP.

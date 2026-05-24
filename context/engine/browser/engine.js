@@ -1,3 +1,239 @@
+// src/animation.ts
+var DEFAULT_FRAME_DURATION_MS = 100;
+function normalizeFrameRef(frame) {
+  return typeof frame === "string" ? { frame } : { frame: frame.frame, durationMs: frame.durationMs };
+}
+function resolveFrameDurationMs(options) {
+  if (options.frameDurationMs && options.frameDurationMs > 0) return options.frameDurationMs;
+  if (options.fps && options.fps > 0) return 1e3 / options.fps;
+  return DEFAULT_FRAME_DURATION_MS;
+}
+function buildPlaybackFrames(frames, pingPong, defaultDurationMs) {
+  const forward = frames.map((frame) => ({
+    frame: frame.frame,
+    durationMs: frame.durationMs ?? defaultDurationMs
+  }));
+  if (!pingPong || forward.length < 2) return forward;
+  const reverse = forward.slice().reverse().slice(1).map((frame) => ({
+    frame: frame.frame,
+    durationMs: frame.durationMs
+  }));
+  return [...forward, ...reverse];
+}
+function sumDurations(frames) {
+  return frames.reduce((total, frame) => total + frame.durationMs, 0);
+}
+function resolveFrameIndex(frames, elapsedMs) {
+  if (frames.length === 0) return -1;
+  const totalDurationMs = sumDurations(frames);
+  if (totalDurationMs <= 0) return 0;
+  if (elapsedMs >= totalDurationMs) return frames.length - 1;
+  let remaining = elapsedMs;
+  for (let index = 0; index < frames.length; index += 1) {
+    const frame = frames[index];
+    if (remaining < frame.durationMs) return index;
+    remaining -= frame.durationMs;
+  }
+  return frames.length - 1;
+}
+function createAnimationClip(options) {
+  const frames = options.frames.map(normalizeFrameRef);
+  const frameDurationMs = resolveFrameDurationMs(options);
+  const playbackFrames = buildPlaybackFrames(frames, options.pingPong ?? false, frameDurationMs);
+  return {
+    id: options.id,
+    frames,
+    playbackFrames,
+    fps: options.fps && options.fps > 0 ? options.fps : 1e3 / frameDurationMs,
+    frameDurationMs,
+    loop: options.loop ?? "loop",
+    pingPong: options.pingPong ?? false,
+    totalDurationMs: sumDurations(playbackFrames)
+  };
+}
+function createAnimationPlayer(clip, atlas) {
+  let currentClip = clip;
+  let defaultAtlas = atlas;
+  let speed = 1;
+  let playing = false;
+  let finished = false;
+  let elapsedMs = 0;
+  let frameIndex = currentClip.playbackFrames.length > 0 ? 0 : -1;
+  let loopCount = 0;
+  function rewind() {
+    elapsedMs = 0;
+    frameIndex = currentClip.playbackFrames.length > 0 ? 0 : -1;
+    loopCount = 0;
+    finished = false;
+  }
+  function currentFrame() {
+    if (frameIndex < 0) return void 0;
+    return currentClip.playbackFrames[frameIndex];
+  }
+  function syncFrame() {
+    frameIndex = resolveFrameIndex(currentClip.playbackFrames, elapsedMs);
+  }
+  function update(deltaMs) {
+    if (!playing || finished || deltaMs <= 0 || speed <= 0) return player;
+    if (currentClip.playbackFrames.length === 0) return player;
+    const advanceMs = deltaMs * speed;
+    if (currentClip.totalDurationMs <= 0) {
+      if (currentClip.loop === "once") {
+        finished = true;
+        playing = false;
+      }
+      return player;
+    }
+    const nextElapsed = elapsedMs + advanceMs;
+    if (currentClip.loop === "loop") {
+      loopCount += Math.floor(nextElapsed / currentClip.totalDurationMs);
+      elapsedMs = nextElapsed % currentClip.totalDurationMs;
+    } else if (nextElapsed >= currentClip.totalDurationMs) {
+      elapsedMs = currentClip.totalDurationMs;
+      finished = true;
+      playing = false;
+      loopCount = Math.max(loopCount, 1);
+    } else {
+      elapsedMs = nextElapsed;
+    }
+    syncFrame();
+    return player;
+  }
+  const player = {
+    play() {
+      playing = true;
+      return player;
+    },
+    pause() {
+      playing = false;
+      return player;
+    },
+    stop() {
+      playing = false;
+      rewind();
+      return player;
+    },
+    reset() {
+      rewind();
+      return player;
+    },
+    setClip(nextClip) {
+      const wasPlaying = playing;
+      currentClip = nextClip;
+      rewind();
+      playing = wasPlaying;
+      return player;
+    },
+    setSpeed(nextSpeed) {
+      speed = nextSpeed > 0 ? nextSpeed : 0;
+      return player;
+    },
+    update,
+    getCurrentFrame() {
+      return currentFrame();
+    },
+    getCurrentAtlasFrame(nextAtlas) {
+      const activeAtlas = nextAtlas ?? defaultAtlas;
+      const frame = currentFrame();
+      return frame ? activeAtlas?.getFrame(frame.frame) : void 0;
+    },
+    isFinished() {
+      return finished;
+    },
+    state() {
+      const frame = currentFrame();
+      return {
+        clipId: currentClip.id,
+        frameIndex,
+        frameName: frame?.frame,
+        elapsedMs,
+        speed,
+        playing,
+        finished,
+        loopCount
+      };
+    }
+  };
+  syncFrame();
+  return player;
+}
+function resolveClipIndex(frameNames, frame) {
+  if (frame === void 0) return 0;
+  if (typeof frame === "number") {
+    if (!Number.isInteger(frame)) throw new RangeError("Frame index must be an integer");
+    if (frame < 0 || frame >= frameNames.length) {
+      throw new RangeError(`Frame index ${frame} is outside the clip range`);
+    }
+    return frame;
+  }
+  const index = frameNames.indexOf(frame);
+  if (index < 0) throw new Error(`TexturePacker frame not found in clip: ${frame}`);
+  return index;
+}
+function createAtlasClip(atlas, frameNames, options = {}) {
+  if (frameNames.length === 0) throw new Error("Atlas clip needs at least one frame name");
+  const frames = frameNames.map((name) => atlas.requireFrame(name));
+  const framesPerSecond = options.framesPerSecond ?? 12;
+  if (!Number.isFinite(framesPerSecond) || framesPerSecond <= 0) {
+    throw new RangeError("framesPerSecond must be a positive number");
+  }
+  const frameDuration = 1 / framesPerSecond;
+  const clip = {
+    atlas,
+    frames,
+    frameNames,
+    loop: options.loop ?? true,
+    framesPerSecond,
+    speed: options.speed ?? 1,
+    index: resolveClipIndex(frameNames, options.startFrame),
+    elapsed: 0,
+    done: false,
+    update(deltaSeconds) {
+      if (!Number.isFinite(deltaSeconds) || deltaSeconds < 0) {
+        throw new RangeError("deltaSeconds must be a non-negative finite number");
+      }
+      if (this.done && !this.loop) return this.currentFrame();
+      this.elapsed += deltaSeconds * this.speed;
+      while (this.elapsed >= frameDuration) {
+        this.elapsed -= frameDuration;
+        if (this.index < this.frames.length - 1) {
+          this.index += 1;
+          continue;
+        }
+        if (this.loop) {
+          this.index = 0;
+          continue;
+        }
+        this.index = this.frames.length - 1;
+        this.elapsed = 0;
+        this.done = true;
+        break;
+      }
+      return this.currentFrame();
+    },
+    reset(frame) {
+      this.index = resolveClipIndex(this.frameNames, frame);
+      this.elapsed = 0;
+      this.done = false;
+      return this.currentFrame();
+    },
+    currentFrame() {
+      return this.frames[this.index];
+    },
+    currentFrameName() {
+      return this.frameNames[this.index];
+    },
+    setSpeed(speed) {
+      if (!Number.isFinite(speed) || speed < 0) {
+        throw new RangeError("speed must be a non-negative finite number");
+      }
+      this.speed = speed;
+      return this;
+    }
+  };
+  return clip;
+}
+
 // src/input/gamepad.ts
 var GAMEPAD_AXIS_DEADZONE = 0.15;
 var buttonAliases = /* @__PURE__ */ new Map([
@@ -306,6 +542,7 @@ function isActionReleased(action) {
 function createFixedStepLoop({
   step = 1 / 60,
   maxFrame = 0.05,
+  advanceGlobalInput = true,
   update,
   render,
   now = () => performance.now()
@@ -322,7 +559,7 @@ function createFixedStepLoop({
     while (accumulator >= step) {
       updateGamepads();
       update(step);
-      updateInputFrame();
+      if (advanceGlobalInput) updateInputFrame();
       accumulator -= step;
     }
     render(accumulator / step);
@@ -462,6 +699,154 @@ function createStage({ updateEntity, renderEntity } = {}) {
   };
 }
 
+// src/atlas.ts
+function normalizeFrame(name, data) {
+  const sourceSize2 = data.sourceSize ?? data.frame;
+  const sourceRect = data.spriteSourceSize ?? { x: 0, y: 0, w: sourceSize2.w, h: sourceSize2.h };
+  const frame = {
+    x: data.frame.x,
+    y: data.frame.y,
+    w: data.frame.w,
+    h: data.frame.h
+  };
+  const normalized = {
+    name,
+    x: frame.x,
+    y: frame.y,
+    w: frame.w,
+    h: frame.h,
+    frame,
+    rotated: data.rotated ?? false,
+    trimmed: data.trimmed ?? false,
+    sourceX: sourceRect.x,
+    sourceY: sourceRect.y,
+    sourceWidth: sourceSize2.w,
+    sourceHeight: sourceSize2.h,
+    pivotX: data.pivot?.x ?? 0.5,
+    pivotY: data.pivot?.y ?? 0.5
+  };
+  Object.defineProperty(normalized, "frame", {
+    value: frame,
+    enumerable: false,
+    configurable: false,
+    writable: false
+  });
+  return normalized;
+}
+function createTextureAtlas(json, image) {
+  const frames = /* @__PURE__ */ new Map();
+  if (Array.isArray(json.frames)) {
+    for (const entry of json.frames) {
+      const name = entry.filename ?? entry.name;
+      if (!name) continue;
+      frames.set(name, normalizeFrame(name, entry));
+    }
+  } else {
+    for (const [name, entry] of Object.entries(json.frames)) {
+      frames.set(name, normalizeFrame(name, entry));
+    }
+  }
+  return {
+    image,
+    meta: json.meta,
+    getFrame(name) {
+      return frames.get(name);
+    },
+    requireFrame(name) {
+      const frame = frames.get(name);
+      if (!frame) throw new Error(`Texture atlas frame not found: ${name}`);
+      return frame;
+    },
+    hasFrame(name) {
+      return frames.has(name);
+    },
+    frameNames() {
+      return [...frames.keys()];
+    },
+    frames() {
+      return [...frames.values()];
+    }
+  };
+}
+function parseTexturePackerAtlas(json, image) {
+  return createTextureAtlas(json, image);
+}
+function createTexturePackerAtlas(json, image) {
+  return createTextureAtlas(json, image);
+}
+
+// src/canvas/animation.ts
+function resolveFrames(atlas, frames, defaultDuration) {
+  return frames.map((frame) => {
+    const name = typeof frame === "string" ? frame : frame.name;
+    return {
+      name,
+      duration: typeof frame === "string" ? defaultDuration : frame.duration ?? defaultDuration,
+      frame: atlas.requireFrame(name)
+    };
+  });
+}
+function createAtlasAnimation(atlas, frames, options = {}) {
+  const resolved = resolveFrames(atlas, frames, options.frameDuration ?? 100);
+  if (!resolved.length) {
+    throw new Error("Atlas animation needs at least one frame.");
+  }
+  const loop = options.loop ?? true;
+  let timeMs = 0;
+  function frameIndexAt(time) {
+    const total = resolved.reduce((sum, item) => sum + item.duration, 0);
+    if (total <= 0) return 0;
+    const normalized = loop ? (time % total + total) % total : Math.min(Math.max(time, 0), total - 1);
+    let elapsed = 0;
+    for (let index = 0; index < resolved.length; index += 1) {
+      elapsed += resolved[index].duration;
+      if (normalized < elapsed) return index;
+    }
+    return resolved.length - 1;
+  }
+  function current() {
+    return resolved[frameIndexAt(timeMs)].frame;
+  }
+  return {
+    atlas,
+    loop,
+    get frameCount() {
+      return resolved.length;
+    },
+    frameNames() {
+      return resolved.map((frame) => frame.name);
+    },
+    frameAt(index) {
+      const normalized = (Math.trunc(index) % resolved.length + resolved.length) % resolved.length;
+      return resolved[normalized].frame;
+    },
+    currentFrame() {
+      return current();
+    },
+    currentFrameName() {
+      return resolved[frameIndexAt(timeMs)].name;
+    },
+    reset() {
+      timeMs = 0;
+      return current();
+    },
+    advance(deltaMs) {
+      timeMs += deltaMs;
+      return current();
+    },
+    setTime(time) {
+      timeMs = time;
+      return current();
+    },
+    getFrame(name) {
+      return atlas.getFrame(name);
+    },
+    requireFrame(name) {
+      return atlas.requireFrame(name);
+    }
+  };
+}
+
 // src/input/keyboard.ts
 var activeKeyboardStates = /* @__PURE__ */ new Set();
 function createKeyboardState(bindings = {}) {
@@ -545,168 +930,6 @@ function createKeyboardActions(bindings, target = window) {
       state.dispose();
     }
   };
-}
-
-// src/onScreenGamepad.ts
-var DEFAULT_MAPPING = {
-  ArrowLeft: "left",
-  ArrowRight: "right",
-  ArrowUp: "up",
-  ArrowDown: "down",
-  Space: "jump",
-  KeyZ: "action",
-  KeyX: "action2"
-};
-var DEFAULT_BUTTONS = ["jump", "action", "action2"];
-var styleInjected = false;
-function injectStyles() {
-  if (styleInjected) return;
-  styleInjected = true;
-  const style = document.createElement("style");
-  style.setAttribute("data-onscreen-gamepad", "true");
-  style.textContent = `
-    .codex-gamepad {
-      position: fixed;
-      inset: auto 0 0 0;
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-end;
-      gap: 1rem;
-      padding: 1rem;
-      pointer-events: none;
-      z-index: 2147483647;
-      touch-action: none;
-      user-select: none;
-    }
-    .codex-gamepad[hidden] { display: none; }
-    .codex-gamepad__cluster {
-      display: grid;
-      gap: 0.5rem;
-      pointer-events: auto;
-    }
-    .codex-gamepad__dpad {
-      grid-template-columns: repeat(3, 3rem);
-      grid-template-rows: repeat(3, 3rem);
-    }
-    .codex-gamepad__buttons {
-      grid-auto-flow: column;
-      grid-auto-columns: 3.5rem;
-      align-items: end;
-    }
-    .codex-gamepad__key {
-      border: 1px solid rgba(255,255,255,0.18);
-      border-radius: 999px;
-      background: rgba(18, 18, 22, 0.72);
-      color: #fff;
-      font: 600 0.72rem/1 system-ui, sans-serif;
-      letter-spacing: 0.03em;
-      text-transform: uppercase;
-      min-width: 3rem;
-      min-height: 3rem;
-      display: grid;
-      place-items: center;
-      -webkit-tap-highlight-color: transparent;
-    }
-    .codex-gamepad__key:active,
-    .codex-gamepad__key.is-down {
-      background: rgba(255,255,255,0.18);
-      transform: translateY(1px);
-    }
-    .codex-gamepad__spacer { visibility: hidden; }
-  `;
-  document.head.appendChild(style);
-}
-function createButton(label, code) {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "codex-gamepad__key";
-  button.textContent = label;
-  button.dataset.code = code;
-  button.dataset.action = code;
-  const activePointers = /* @__PURE__ */ new Set();
-  const down = (pointerId) => {
-    activePointers.add(pointerId);
-    setVirtualKeyState(code, true);
-    button.classList.add("is-down");
-  };
-  const up = (pointerId) => {
-    activePointers.delete(pointerId);
-    if (activePointers.size === 0) {
-      setVirtualKeyState(code, false);
-      button.classList.remove("is-down");
-    }
-  };
-  button.addEventListener("pointerdown", (event) => {
-    event.preventDefault();
-    button.setPointerCapture?.(event.pointerId);
-    down(event.pointerId);
-  });
-  button.addEventListener("pointerup", (event) => {
-    event.preventDefault();
-    up(event.pointerId);
-  });
-  button.addEventListener("pointercancel", (event) => {
-    event.preventDefault();
-    up(event.pointerId);
-  });
-  button.addEventListener("lostpointercapture", (event) => {
-    up(event.pointerId);
-  });
-  return { button, down, up };
-}
-function createOnScreenGamepad(options = {}) {
-  injectStyles();
-  const container = options.container ?? document.body;
-  const root = document.createElement("div");
-  root.className = "codex-gamepad";
-  root.hidden = options.visible === false;
-  const controls = [];
-  const mapping = { ...DEFAULT_MAPPING, ...options.mapping ?? {} };
-  for (const [code, action] of Object.entries(mapping)) bindKey(action, code);
-  const dpad = document.createElement("div");
-  dpad.className = "codex-gamepad__cluster codex-gamepad__dpad";
-  const dpadLayout = [null, { code: "ArrowUp", label: "Up" }, null, { code: "ArrowLeft", label: "Left" }, { code: "ArrowDown", label: "Down" }, { code: "ArrowRight", label: "Right" }, null, null, null];
-  for (const spec of dpadLayout) {
-    if (!spec) {
-      const spacer = document.createElement("span");
-      spacer.className = "codex-gamepad__key codex-gamepad__spacer";
-      dpad.appendChild(spacer);
-      continue;
-    }
-    const control = createButton(spec.label, spec.code);
-    dpad.appendChild(control.button);
-    controls.push(control);
-  }
-  const buttons = document.createElement("div");
-  buttons.className = "codex-gamepad__cluster codex-gamepad__buttons";
-  const labels = options.buttons ?? DEFAULT_BUTTONS;
-  const mappings = labels.map((label, index) => {
-    const code = index === 0 ? "Space" : index === 1 ? "KeyZ" : `Key${String.fromCharCode(88 + index - 2)}`;
-    return { code, label };
-  });
-  for (const spec of mappings) {
-    const control = createButton(spec.label, spec.code);
-    buttons.appendChild(control.button);
-    controls.push(control);
-  }
-  root.append(dpad, buttons);
-  container.appendChild(root);
-  function show() {
-    root.hidden = false;
-  }
-  function hide() {
-    root.hidden = true;
-  }
-  function destroy() {
-    for (const control of controls) {
-      control.button.remove();
-    }
-    root.remove();
-  }
-  function setButtonMapping(mapping2) {
-    for (const [code, action] of Object.entries(mapping2)) bindKey(action, code);
-  }
-  return { destroy, show, hide, setButtonMapping };
 }
 
 // src/input/pointer.ts
@@ -985,6 +1208,232 @@ function rayIntersectMap(x1, y1, x2, y2, boxes) {
   return false;
 }
 
+// src/math/broadphase.ts
+var DEFAULT_MAX_ENTRIES = 12;
+function createAabb(x, y, w, h) {
+  return normalizeAabb({
+    minX: x,
+    minY: y,
+    maxX: x + w,
+    maxY: y + h
+  });
+}
+function aabbsOverlap(a, b) {
+  return a.minX < b.maxX && a.maxX > b.minX && a.minY < b.maxY && a.maxY > b.minY;
+}
+function normalizeAabb(bounds) {
+  return {
+    minX: Math.min(bounds.minX, bounds.maxX),
+    minY: Math.min(bounds.minY, bounds.maxY),
+    maxX: Math.max(bounds.minX, bounds.maxX),
+    maxY: Math.max(bounds.minY, bounds.maxY)
+  };
+}
+function createCollisionBroadphase(options = {}) {
+  const maxEntries = Math.max(4, Math.floor(options.maxEntries ?? DEFAULT_MAX_ENTRIES));
+  const entries = /* @__PURE__ */ new Map();
+  let root = emptyBranch();
+  let nextOrder = 1;
+  function rebuild(items) {
+    clear();
+    for (const item of items) {
+      upsert(item.id, item);
+    }
+  }
+  function upsert(id, bounds) {
+    remove(id);
+    const normalized = normalizeAabb(bounds);
+    const entry = {
+      ...normalized,
+      id,
+      order: nextOrder,
+      leaf: true,
+      children: []
+    };
+    nextOrder += 1;
+    entries.set(id, entry);
+    insert(entry);
+    return entry;
+  }
+  function remove(id) {
+    if (!entries.has(id)) return false;
+    entries.delete(id);
+    root = emptyBranch();
+    for (const entry of entries.values()) {
+      insert(entry);
+    }
+    return true;
+  }
+  function clear() {
+    entries.clear();
+    root = emptyBranch();
+    nextOrder = 1;
+  }
+  function query(bounds, out = []) {
+    const normalized = normalizeAabb(bounds);
+    queryNode(root, normalized, out);
+    return out;
+  }
+  function queryEntries(bounds, out = []) {
+    const ids = query(bounds);
+    for (let i = 0; i < ids.length; i += 1) {
+      const entry = entries.get(ids[i]);
+      if (!entry) continue;
+      out.push({ id: ids[i], minX: entry.minX, minY: entry.minY, maxX: entry.maxX, maxY: entry.maxY });
+    }
+    return out;
+  }
+  function collides(bounds) {
+    return hasOverlap(root, normalizeAabb(bounds));
+  }
+  function pairs(out = []) {
+    for (const entry of entries.values()) {
+      const candidates = [];
+      queryNode(root, entry, candidates);
+      for (let i = 0; i < candidates.length; i += 1) {
+        const other = entries.get(candidates[i]);
+        if (!other || other.id === entry.id || (other.order ?? 0) <= (entry.order ?? 0)) continue;
+        out.push({ a: entry.id, b: other.id });
+      }
+    }
+    return out;
+  }
+  function insert(entry) {
+    const split = insertInto(root, entry);
+    if (!split) return;
+    root = branchFromChildren([root, split]);
+  }
+  function insertInto(node, entry) {
+    if (node.leaf) {
+      throw new Error("Cannot insert into a leaf entry");
+    }
+    if (node.children.length === 0 || node.children[0].leaf) {
+      node.children.push(entry);
+    } else {
+      const child = chooseSubtree(node.children, entry);
+      const split = insertInto(child, entry);
+      if (split) node.children.push(split);
+    }
+    recalculateBounds(node);
+    if (node.children.length <= maxEntries) return void 0;
+    return splitNode(node);
+  }
+  function splitNode(node) {
+    const axis = boundsWidth(node) >= boundsHeight(node) ? "x" : "y";
+    node.children.sort((a, b) => axis === "x" ? a.minX - b.minX : a.minY - b.minY);
+    const half = Math.ceil(node.children.length / 2);
+    const siblingChildren = node.children.splice(half);
+    recalculateBounds(node);
+    return branchFromChildren(siblingChildren);
+  }
+  function queryNode(node, bounds, out) {
+    if (!aabbsOverlap(node, bounds)) return;
+    if (node.leaf) {
+      out.push(node.id);
+      return;
+    }
+    for (let i = 0; i < node.children.length; i += 1) {
+      queryNode(node.children[i], bounds, out);
+    }
+  }
+  function hasOverlap(node, bounds) {
+    if (!aabbsOverlap(node, bounds)) return false;
+    if (node.leaf) return true;
+    for (let i = 0; i < node.children.length; i += 1) {
+      if (hasOverlap(node.children[i], bounds)) return true;
+    }
+    return false;
+  }
+  return {
+    upsert,
+    remove,
+    clear,
+    rebuild,
+    query,
+    queryEntries,
+    collides,
+    pairs,
+    count() {
+      return entries.size;
+    },
+    boundsOf(id) {
+      const entry = entries.get(id);
+      if (!entry) return void 0;
+      return { minX: entry.minX, minY: entry.minY, maxX: entry.maxX, maxY: entry.maxY };
+    }
+  };
+}
+function emptyBranch() {
+  return {
+    minX: Number.POSITIVE_INFINITY,
+    minY: Number.POSITIVE_INFINITY,
+    maxX: Number.NEGATIVE_INFINITY,
+    maxY: Number.NEGATIVE_INFINITY,
+    leaf: false,
+    children: []
+  };
+}
+function branchFromChildren(children) {
+  const node = emptyBranch();
+  node.children = children;
+  recalculateBounds(node);
+  return node;
+}
+function recalculateBounds(node) {
+  if (node.children.length === 0) {
+    node.minX = Number.POSITIVE_INFINITY;
+    node.minY = Number.POSITIVE_INFINITY;
+    node.maxX = Number.NEGATIVE_INFINITY;
+    node.maxY = Number.NEGATIVE_INFINITY;
+    return;
+  }
+  node.minX = Number.POSITIVE_INFINITY;
+  node.minY = Number.POSITIVE_INFINITY;
+  node.maxX = Number.NEGATIVE_INFINITY;
+  node.maxY = Number.NEGATIVE_INFINITY;
+  for (let i = 0; i < node.children.length; i += 1) {
+    expandToInclude(node, node.children[i]);
+  }
+}
+function chooseSubtree(children, entry) {
+  let best = children[0];
+  let bestEnlargement = enlargement(best, entry);
+  let bestArea = area(best);
+  for (let i = 1; i < children.length; i += 1) {
+    const child = children[i];
+    const nextEnlargement = enlargement(child, entry);
+    const nextArea = area(child);
+    if (nextEnlargement < bestEnlargement || nextEnlargement === bestEnlargement && nextArea < bestArea) {
+      best = child;
+      bestEnlargement = nextEnlargement;
+      bestArea = nextArea;
+    }
+  }
+  return best;
+}
+function expandToInclude(target, bounds) {
+  target.minX = Math.min(target.minX, bounds.minX);
+  target.minY = Math.min(target.minY, bounds.minY);
+  target.maxX = Math.max(target.maxX, bounds.maxX);
+  target.maxY = Math.max(target.maxY, bounds.maxY);
+}
+function enlargement(a, b) {
+  const minX = Math.min(a.minX, b.minX);
+  const minY = Math.min(a.minY, b.minY);
+  const maxX = Math.max(a.maxX, b.maxX);
+  const maxY = Math.max(a.maxY, b.maxY);
+  return (maxX - minX) * (maxY - minY) - area(a);
+}
+function area(bounds) {
+  return boundsWidth(bounds) * boundsHeight(bounds);
+}
+function boundsWidth(bounds) {
+  return Math.max(0, bounds.maxX - bounds.minX);
+}
+function boundsHeight(bounds) {
+  return Math.max(0, bounds.maxY - bounds.minY);
+}
+
 // src/math/grid.ts
 function gridKey(cell) {
   return `${cell.x},${cell.y}`;
@@ -1003,6 +1452,239 @@ function opposite(a, b) {
 function isCircleRectExport(value) {
   return typeof value === "function";
 }
+function isWasmBatchExport(value) {
+  return typeof value === "function";
+}
+function isWasmAllocatorExport(value) {
+  return typeof value === "function";
+}
+function assertBatchLength(name, value, count) {
+  if (value.length < count) {
+    throw new RangeError(`${name} length ${value.length} is smaller than count ${count}`);
+  }
+}
+function countBatch(name, explicitCount, values) {
+  const count = explicitCount ?? Math.min(...values.map((value) => value.length));
+  if (!Number.isInteger(count) || count < 0) {
+    throw new RangeError(`${name} count must be a non-negative integer`);
+  }
+  for (let i = 0; i < values.length; i += 1) {
+    assertBatchLength(`${name}[${i}]`, values[i], count);
+  }
+  return count;
+}
+function writeF32(target, offset, values, count) {
+  for (let i = 0; i < count; i += 1) {
+    target[offset + i] = values[i];
+  }
+}
+function readF32(source, offset, target, count) {
+  for (let i = 0; i < count; i += 1) {
+    target[i] = source[offset + i];
+  }
+}
+function readMask(source, offset, target, count) {
+  for (let i = 0; i < count; i += 1) {
+    target[i] = source[offset + i];
+  }
+}
+function rangeFilterFallback(batch) {
+  const count = countBatch("rangeFilterBatch", batch.count, [batch.values, batch.out]);
+  let hits = 0;
+  for (let i = 0; i < count; i += 1) {
+    const hit = batch.values[i] >= batch.min && batch.values[i] <= batch.max ? 1 : 0;
+    batch.out[i] = hit;
+    hits += hit;
+  }
+  return hits;
+}
+function integrateMovementFallback(batch) {
+  const count = countBatch("integrateMovementBatch", batch.count, [batch.x, batch.y, batch.vx, batch.vy]);
+  for (let i = 0; i < count; i += 1) {
+    batch.x[i] += batch.vx[i] * batch.dt;
+    batch.y[i] += batch.vy[i] * batch.dt;
+  }
+}
+function rotatePointsFallback(batch) {
+  const count = countBatch("rotatePointsBatch", batch.count, [batch.x, batch.y, batch.outX, batch.outY]);
+  const sin = Math.sin(batch.angle);
+  const cos = Math.cos(batch.angle);
+  for (let i = 0; i < count; i += 1) {
+    const x = batch.x[i];
+    const y = batch.y[i];
+    batch.outX[i] = x * cos - y * sin;
+    batch.outY[i] = x * sin + y * cos;
+  }
+}
+function rotateVectorsFallback(batch) {
+  rotatePointsFallback(batch);
+}
+function testRectOverlapBatchFallback(batch) {
+  const count = countBatch("testRectOverlapBatch", batch.count, [
+    batch.ax,
+    batch.ay,
+    batch.aw,
+    batch.ah,
+    batch.bx,
+    batch.by,
+    batch.bw,
+    batch.bh,
+    batch.out
+  ]);
+  let hits = 0;
+  for (let i = 0; i < count; i += 1) {
+    const hit = testOverlapRect(batch.ax[i], batch.ay[i], batch.aw[i], batch.ah[i], batch.bx[i], batch.by[i], batch.bw[i], batch.bh[i]) ? 1 : 0;
+    batch.out[i] = hit;
+    hits += hit;
+  }
+  return hits;
+}
+function testCircleRectOverlapBatchFallback(batch) {
+  const count = countBatch("testCircleRectOverlapBatch", batch.count, [
+    batch.cx,
+    batch.cy,
+    batch.radius,
+    batch.rx,
+    batch.ry,
+    batch.rw,
+    batch.rh,
+    batch.out
+  ]);
+  let hits = 0;
+  for (let i = 0; i < count; i += 1) {
+    const hit = testCircleRectOverlap(batch.cx[i], batch.cy[i], batch.radius[i], batch.rx[i], batch.ry[i], batch.rw[i], batch.rh[i]) ? 1 : 0;
+    batch.out[i] = hit;
+    hits += hit;
+  }
+  return hits;
+}
+function createWasmBatchBridge(exports) {
+  const memory = exports.memory instanceof WebAssembly.Memory ? exports.memory : void 0;
+  const allocate = isWasmAllocatorExport(exports.__new) ? exports.__new : void 0;
+  const integrate = isWasmBatchExport(exports.integrate_movement_f32) ? exports.integrate_movement_f32 : void 0;
+  const rotate = isWasmBatchExport(exports.rotate_points_f32) ? exports.rotate_points_f32 : void 0;
+  const rotateVectors = isWasmBatchExport(exports.rotate_vectors_f32) ? exports.rotate_vectors_f32 : rotate;
+  const range = isWasmBatchExport(exports.range_filter_f32) ? exports.range_filter_f32 : isWasmBatchExport(exports.predicate_filter_mask_f32) ? exports.predicate_filter_mask_f32 : void 0;
+  const rectRect = isWasmBatchExport(exports.rect_rect_overlap_batch_f32) ? exports.rect_rect_overlap_batch_f32 : void 0;
+  const circleRect = isWasmBatchExport(exports.circle_rect_overlap_batch_f32) ? exports.circle_rect_overlap_batch_f32 : void 0;
+  let scratchPtr = 0;
+  let scratchBytes = 0;
+  function ensureScratch(bytes) {
+    if (!memory || !allocate) return void 0;
+    if (bytes > scratchBytes) {
+      scratchPtr = allocate(bytes);
+      scratchBytes = bytes;
+    }
+    return scratchPtr;
+  }
+  function f32View() {
+    if (!memory) throw new Error("WASM memory export missing");
+    return new Float32Array(memory.buffer);
+  }
+  function u8View() {
+    if (!memory) throw new Error("WASM memory export missing");
+    return new Uint8Array(memory.buffer);
+  }
+  function f32Ptr(base, index, count) {
+    return base + index * count * 4;
+  }
+  function u8Ptr(base, f32Count, index) {
+    return base + f32Count * 4 + index;
+  }
+  function runRangeFilter(batch) {
+    const count = countBatch("rangeFilterBatch", batch.count, [batch.values, batch.out]);
+    const ptr = ensureScratch(count * 4 + count);
+    if (count === 0 || ptr === void 0 || !range) return rangeFilterFallback(batch);
+    let heap = f32View();
+    writeF32(heap, ptr >> 2, batch.values, count);
+    const outPtr = u8Ptr(ptr, count, 0);
+    const hits = Number(range(ptr, batch.min, batch.max, outPtr, count));
+    readMask(u8View(), outPtr, batch.out, count);
+    return hits;
+  }
+  return {
+    integrateMovementBatch(batch) {
+      const count = countBatch("integrateMovementBatch", batch.count, [batch.x, batch.y, batch.vx, batch.vy]);
+      const ptr = ensureScratch(count * 4 * 4);
+      if (count === 0 || ptr === void 0 || !integrate) return integrateMovementFallback(batch);
+      let heap = f32View();
+      writeF32(heap, ptr >> 2, batch.x, count);
+      writeF32(heap, (ptr >> 2) + count, batch.y, count);
+      writeF32(heap, (ptr >> 2) + count * 2, batch.vx, count);
+      writeF32(heap, (ptr >> 2) + count * 3, batch.vy, count);
+      integrate(f32Ptr(ptr, 0, count), f32Ptr(ptr, 1, count), f32Ptr(ptr, 2, count), f32Ptr(ptr, 3, count), batch.dt, count);
+      heap = f32View();
+      readF32(heap, ptr >> 2, batch.x, count);
+      readF32(heap, (ptr >> 2) + count, batch.y, count);
+    },
+    rotatePointsBatch(batch) {
+      const count = countBatch("rotatePointsBatch", batch.count, [batch.x, batch.y, batch.outX, batch.outY]);
+      const ptr = ensureScratch(count * 4 * 4);
+      if (count === 0 || ptr === void 0 || !rotate) return rotatePointsFallback(batch);
+      let heap = f32View();
+      writeF32(heap, ptr >> 2, batch.x, count);
+      writeF32(heap, (ptr >> 2) + count, batch.y, count);
+      rotate(
+        f32Ptr(ptr, 0, count),
+        f32Ptr(ptr, 1, count),
+        f32Ptr(ptr, 2, count),
+        f32Ptr(ptr, 3, count),
+        Math.sin(batch.angle),
+        Math.cos(batch.angle),
+        count
+      );
+      heap = f32View();
+      readF32(heap, (ptr >> 2) + count * 2, batch.outX, count);
+      readF32(heap, (ptr >> 2) + count * 3, batch.outY, count);
+    },
+    rotateVectorsBatch(batch) {
+      const count = countBatch("rotateVectorsBatch", batch.count, [batch.x, batch.y, batch.outX, batch.outY]);
+      const ptr = ensureScratch(count * 4 * 4);
+      if (count === 0 || ptr === void 0 || !rotateVectors) return rotateVectorsFallback(batch);
+      let heap = f32View();
+      writeF32(heap, ptr >> 2, batch.x, count);
+      writeF32(heap, (ptr >> 2) + count, batch.y, count);
+      rotateVectors(
+        f32Ptr(ptr, 0, count),
+        f32Ptr(ptr, 1, count),
+        f32Ptr(ptr, 2, count),
+        f32Ptr(ptr, 3, count),
+        Math.sin(batch.angle),
+        Math.cos(batch.angle),
+        count
+      );
+      heap = f32View();
+      readF32(heap, (ptr >> 2) + count * 2, batch.outX, count);
+      readF32(heap, (ptr >> 2) + count * 3, batch.outY, count);
+    },
+    rangeFilterBatch: runRangeFilter,
+    predicateFilterMaskBatch: runRangeFilter,
+    testRectOverlapBatch(batch) {
+      const values = [batch.ax, batch.ay, batch.aw, batch.ah, batch.bx, batch.by, batch.bw, batch.bh];
+      const count = countBatch("testRectOverlapBatch", batch.count, [...values, batch.out]);
+      const ptr = ensureScratch(count * 4 * values.length + count);
+      if (count === 0 || ptr === void 0 || !rectRect) return testRectOverlapBatchFallback(batch);
+      let heap = f32View();
+      values.forEach((value, index) => writeF32(heap, (ptr >> 2) + count * index, value, count));
+      const outPtr = u8Ptr(ptr, count * values.length, 0);
+      const hits = Number(rectRect(...values.map((_, index) => f32Ptr(ptr, index, count)), outPtr, count));
+      readMask(u8View(), outPtr, batch.out, count);
+      return hits;
+    },
+    testCircleRectOverlapBatch(batch) {
+      const values = [batch.cx, batch.cy, batch.radius, batch.rx, batch.ry, batch.rw, batch.rh];
+      const count = countBatch("testCircleRectOverlapBatch", batch.count, [...values, batch.out]);
+      const ptr = ensureScratch(count * 4 * values.length + count);
+      if (count === 0 || ptr === void 0 || !circleRect) return testCircleRectOverlapBatchFallback(batch);
+      let heap = f32View();
+      values.forEach((value, index) => writeF32(heap, (ptr >> 2) + count * index, value, count));
+      const outPtr = u8Ptr(ptr, count * values.length, 0);
+      const hits = Number(circleRect(...values.map((_, index) => f32Ptr(ptr, index, count)), outPtr, count));
+      readMask(u8View(), outPtr, batch.out, count);
+      return hits;
+    }
+  };
+}
 function testCircleRectOverlap(cx, cy, radius, rx, ry, rw, rh) {
   const closestX = Math.max(rx, Math.min(rx + rw, cx));
   const closestY = Math.max(ry, Math.min(ry + rh, cy));
@@ -1018,17 +1700,23 @@ function resolveCollisionKernelWasmUrl(options = {}) {
 }
 function normalizeCollisionKernelOptions(input = {}) {
   if (typeof input === "string") {
-    return { url: input };
+    return { url: input, fetch: globalThis.fetch };
   }
-  return { url: input.url ?? resolveCollisionKernelWasmUrl(), onFallback: input.onFallback };
+  return {
+    url: input.url ?? resolveCollisionKernelWasmUrl(),
+    fetch: input.fetch ?? globalThis.fetch,
+    onFallback: input.onFallback
+  };
 }
 async function createCollisionKernel(options = {}) {
-  const { url, onFallback } = normalizeCollisionKernelOptions(options);
+  const { url, fetch: fetchWasm, onFallback } = normalizeCollisionKernelOptions(options);
   try {
-    const response = await fetch(url);
+    const response = await fetchWasm(url);
     let exports;
     try {
-      const instance = typeof WebAssembly.instantiateStreaming === "function" && response.headers.get("content-type") === "application/wasm" ? await WebAssembly.instantiateStreaming(Promise.resolve(response), {}) : await WebAssembly.instantiate(await response.arrayBuffer(), {});
+      const imports = { env: { abort() {
+      } } };
+      const instance = await instantiateWasmResponse(response, imports);
       exports = instance.instance.exports;
     } catch (error) {
       onFallback?.({ reason: "instantiate", url, error });
@@ -1036,6 +1724,7 @@ async function createCollisionKernel(options = {}) {
     }
     const circleRect = exports.circle_rect_overlap;
     if (isCircleRectExport(circleRect)) {
+      const batchBridge = createWasmBatchBridge(exports);
       return {
         backend: "wasm",
         testOverlapRect,
@@ -1050,7 +1739,8 @@ async function createCollisionKernel(options = {}) {
         vecDistance,
         vecAngle,
         vecNormalize,
-        rayIntersectMap
+        rayIntersectMap,
+        ...batchBridge
       };
     }
     onFallback?.({ reason: "missing-export", url });
@@ -1058,6 +1748,18 @@ async function createCollisionKernel(options = {}) {
     onFallback?.({ reason: "fetch", url, error });
   }
   return createTypescriptCollisionKernel();
+}
+async function instantiateWasmResponse(response, imports) {
+  if (typeof WebAssembly.instantiateStreaming === "function" && response.headers.get("content-type") === "application/wasm") {
+    try {
+      return await WebAssembly.instantiateStreaming(Promise.resolve(response), imports);
+    } catch (error) {
+      if (response.bodyUsed) {
+        throw error;
+      }
+    }
+  }
+  return await WebAssembly.instantiate(await response.arrayBuffer(), imports);
 }
 function createTypescriptCollisionKernel() {
   return {
@@ -1070,7 +1772,14 @@ function createTypescriptCollisionKernel() {
     vecDistance,
     vecAngle,
     vecNormalize,
-    rayIntersectMap
+    rayIntersectMap,
+    integrateMovementBatch: integrateMovementFallback,
+    rotatePointsBatch: rotatePointsFallback,
+    rotateVectorsBatch: rotateVectorsFallback,
+    rangeFilterBatch: rangeFilterFallback,
+    predicateFilterMaskBatch: rangeFilterFallback,
+    testRectOverlapBatch: testRectOverlapBatchFallback,
+    testCircleRectOverlapBatch: testCircleRectOverlapBatchFallback
   };
 }
 
@@ -1128,6 +1837,12 @@ function createCamera(options) {
   function centerOn(point, amount = 1) {
     moveToward(point.x - visibleWidth() * 0.5, point.y - visibleHeight() * 0.5, amount);
   }
+  function worldToScreen(point) {
+    return { x: (point.x - x) * zoom, y: (point.y - y) * zoom };
+  }
+  function screenToWorld(point) {
+    return { x: x + point.x / zoom, y: y + point.y / zoom };
+  }
   function update() {
     if (!followTarget) {
       constrain();
@@ -1147,57 +1862,53 @@ function createCamera(options) {
     moveToward(targetX, targetY);
   }
   constrain();
-  return {
+  const camera = {
     pan(dx, dy) {
       x += dx;
       y += dy;
       constrain();
-      return this;
+      return camera;
     },
     centerOn(point, amount = 1) {
       centerOn(point, amount);
-      return this;
+      return camera;
     },
     follow(target, followOptions = {}) {
       followTarget = target;
       deadzoneX = followOptions.deadzoneX ?? deadzoneX;
       deadzoneY = followOptions.deadzoneY ?? deadzoneY;
       smoothing = followOptions.smoothing ?? smoothing;
-      return this;
+      return camera;
     },
     clearFollow() {
       followTarget = null;
-      return this;
+      return camera;
     },
     update,
     zoomTo(value, anchor = { x: viewportWidth * 0.5, y: viewportHeight * 0.5 }) {
-      const worldAnchor = this.screenToWorld(anchor);
+      const worldAnchor = screenToWorld(anchor);
       zoom = clamp(value, minZoom, maxZoom);
       x = worldAnchor.x - anchor.x / zoom;
       y = worldAnchor.y - anchor.y / zoom;
       constrain();
-      return this;
+      return camera;
     },
     zoomBy(factor, anchor) {
-      return this.zoomTo(zoom * factor, anchor);
+      return camera.zoomTo(zoom * factor, anchor);
     },
     setViewport(width, height) {
       viewportWidth = width;
       viewportHeight = height;
       constrain();
-      return this;
+      return camera;
     },
     setBounds(nextBounds) {
       bounds = nextBounds;
       constrain();
-      return this;
+      return camera;
     },
-    worldToScreen(point) {
-      return { x: (point.x - x) * zoom, y: (point.y - y) * zoom };
-    },
-    screenToWorld(point) {
-      return { x: x + point.x / zoom, y: y + point.y / zoom };
-    },
+    worldToScreen,
+    screenToWorld,
     visibleRect() {
       return { x, y, w: visibleWidth(), h: visibleHeight() };
     },
@@ -1212,6 +1923,7 @@ function createCamera(options) {
       return { x, y, zoom, viewportWidth, viewportHeight, bounds, follow: followTarget };
     }
   };
+  return camera;
 }
 
 // src/canvas/bootstrap.ts
@@ -1581,6 +2293,92 @@ var postProcessCosts = {
   overlay: { tier: "overlay", readsPixels: false, writesPixels: false, fullCanvasPasses: 1 },
   pixel: { tier: "pixel", readsPixels: true, writesPixels: true, fullCanvasPasses: 1 },
   distortion: { tier: "distortion", readsPixels: true, writesPixels: true, fullCanvasPasses: 2 }
+};
+var postProcessApiProfileNames = [
+  "createPostProcessStack",
+  "getPostProcessEffectCost",
+  "summarizePostProcessCost",
+  "checkPostProcessBudget",
+  "grayscale",
+  "invert",
+  "brightness",
+  "contrast",
+  "sepia",
+  "threshold",
+  "tint",
+  "posterize",
+  "gamma",
+  "colorGrading",
+  "filmGrain",
+  "digitalNoise",
+  "retroDithering",
+  "vignette",
+  "colorLut",
+  "screenShake",
+  "bloom",
+  "neonGlow",
+  "flashbang",
+  "crtScanlines",
+  "scanlineFlicker",
+  "chromaticAberration",
+  "colorFringe",
+  "chromaticDistortion",
+  "motionBlur",
+  "radialBlur",
+  "lensFlare",
+  "starStreak",
+  "pixelate",
+  "barrelDistortion",
+  "shockwaveDistortion",
+  "heatHaze",
+  "glitch"
+];
+var stableProfile = (tier, proof = "engine-contract") => ({ status: "stable", tier, proof, promotion: "stable", exposure: "root" });
+var prototypeProfile = (tier, proof = "candidate") => ({
+  status: "prototype",
+  tier,
+  proof,
+  promotion: "blocked",
+  exposure: "prototype-root"
+});
+var postProcessApiProfiles = {
+  createPostProcessStack: stableProfile("pixel"),
+  getPostProcessEffectCost: stableProfile("overlay"),
+  summarizePostProcessCost: stableProfile("overlay"),
+  checkPostProcessBudget: stableProfile("overlay"),
+  grayscale: stableProfile("pixel"),
+  invert: stableProfile("pixel"),
+  brightness: stableProfile("pixel"),
+  contrast: stableProfile("pixel"),
+  sepia: stableProfile("pixel"),
+  threshold: stableProfile("pixel"),
+  tint: stableProfile("pixel"),
+  posterize: stableProfile("pixel"),
+  gamma: stableProfile("pixel"),
+  colorGrading: stableProfile("pixel"),
+  filmGrain: stableProfile("pixel"),
+  digitalNoise: stableProfile("pixel"),
+  retroDithering: stableProfile("pixel"),
+  vignette: stableProfile("pixel"),
+  colorLut: stableProfile("pixel"),
+  screenShake: stableProfile("overlay", "migrated-game"),
+  bloom: prototypeProfile("overlay"),
+  neonGlow: prototypeProfile("overlay"),
+  flashbang: prototypeProfile("overlay", "migrated-game"),
+  crtScanlines: stableProfile("overlay"),
+  scanlineFlicker: prototypeProfile("overlay"),
+  chromaticAberration: prototypeProfile("overlay"),
+  colorFringe: prototypeProfile("overlay"),
+  chromaticDistortion: prototypeProfile("overlay"),
+  motionBlur: prototypeProfile("overlay"),
+  radialBlur: prototypeProfile("overlay"),
+  lensFlare: prototypeProfile("overlay"),
+  starStreak: prototypeProfile("overlay"),
+  pixelate: prototypeProfile("distortion"),
+  barrelDistortion: prototypeProfile("distortion"),
+  shockwaveDistortion: prototypeProfile("distortion"),
+  heatHaze: prototypeProfile("distortion"),
+  glitch: prototypeProfile("distortion")
 };
 var clampByte = (value) => Math.max(0, Math.min(255, Math.round(value)));
 var clampUnit = (value) => Math.max(0, Math.min(1, value));
@@ -1968,8 +2766,475 @@ function distort(ctx, map) {
   }
   ctx.putImageData(output, 0, 0);
 }
+
+// src/map/tileset.ts
+function imageSize(image) {
+  if (!image) return { width: 0, height: 0 };
+  if ("naturalWidth" in image && image.naturalWidth) return { width: image.naturalWidth, height: image.naturalHeight };
+  if ("videoWidth" in image && image.videoWidth) return { width: image.videoWidth, height: image.videoHeight };
+  if ("width" in image && "height" in image) return { width: Number(image.width) || 0, height: Number(image.height) || 0 };
+  return { width: 0, height: 0 };
+}
+function toMetadataEntries(tiles) {
+  if (!tiles) return [];
+  if (Array.isArray(tiles)) {
+    return tiles.map((tile, index) => [tile.id ?? index, tile]);
+  }
+  return Object.entries(tiles).map(([id, tile]) => [Number(id), { ...tile, id: tile.id ?? Number(id) }]);
+}
+function sourceFor(id, columns, tileWidth, tileHeight, spacing, margin) {
+  const columnCount = Math.max(1, columns);
+  const column = id % columnCount;
+  const row = Math.floor(id / columnCount);
+  return {
+    x: margin + column * (tileWidth + spacing),
+    y: margin + row * (tileHeight + spacing),
+    w: tileWidth,
+    h: tileHeight
+  };
+}
+function createTileset(options) {
+  const tileWidth = options.tileWidth ?? options.tileSize ?? 16;
+  const tileHeight = options.tileHeight ?? options.tileSize ?? tileWidth;
+  const spacing = options.spacing ?? 0;
+  const margin = options.margin ?? 0;
+  const size = imageSize(options.image);
+  const inferredColumns = Math.max(1, Math.floor((size.width - margin * 2 + spacing) / (tileWidth + spacing)));
+  const columns = Math.max(1, options.columns ?? inferredColumns);
+  const inferredRows = size.height > 0 ? Math.max(1, Math.floor((size.height - margin * 2 + spacing) / (tileHeight + spacing))) : void 0;
+  const metadataEntries = toMetadataEntries(options.tiles);
+  const highestMetadataId = metadataEntries.reduce((highest, [id]) => Math.max(highest, id), -1);
+  const rows = options.rows ?? inferredRows;
+  const tileCount = Math.max(0, options.tileCount ?? (rows ? columns * rows : highestMetadataId + 1));
+  const tiles = /* @__PURE__ */ new Map();
+  for (let id = 0; id < tileCount; id += 1) {
+    tiles.set(id, {
+      id,
+      tags: [],
+      solid: false,
+      collision: false,
+      source: sourceFor(id, columns, tileWidth, tileHeight, spacing, margin)
+    });
+  }
+  for (const [id, metadata] of metadataEntries) {
+    const base = tiles.get(id) ?? {
+      id,
+      tags: [],
+      solid: false,
+      collision: false,
+      source: sourceFor(id, columns, tileWidth, tileHeight, spacing, margin)
+    };
+    const source = metadata.source ?? {};
+    tiles.set(id, {
+      ...base,
+      name: metadata.name ?? base.name,
+      tags: metadata.tags ? [...metadata.tags] : base.tags,
+      solid: metadata.solid ?? base.solid,
+      collision: metadata.collision ?? metadata.solid ?? base.collision,
+      spawn: metadata.spawn ?? base.spawn,
+      metadata: metadata.metadata ?? base.metadata,
+      source: {
+        x: source.x ?? base.source.x,
+        y: source.y ?? base.source.y,
+        w: source.w ?? base.source.w,
+        h: source.h ?? base.source.h
+      }
+    });
+  }
+  return {
+    image: options.image,
+    imageUrl: options.imageUrl,
+    tileWidth,
+    tileHeight,
+    spacing,
+    margin,
+    columns,
+    rows,
+    tileCount: Math.max(tileCount, highestMetadataId + 1),
+    getTile(id) {
+      return tiles.get(id);
+    },
+    requireTile(id) {
+      const tile = tiles.get(id);
+      if (!tile) throw new Error(`Tile not found: ${id}`);
+      return tile;
+    },
+    hasTile(id) {
+      return tiles.has(id);
+    },
+    tiles() {
+      return [...tiles.values()];
+    },
+    tileIdsByTag(tag) {
+      return [...tiles.values()].filter((tile) => tile.tags.includes(tag)).map((tile) => tile.id);
+    }
+  };
+}
+
+// src/map/tile-map.ts
+function decodeToken(token, legend) {
+  if (legend && token in legend) return legend[token];
+  if (token === "." || token === "_" || token === "-") return null;
+  const value = Number.parseInt(token, 10);
+  return Number.isFinite(value) ? value : null;
+}
+function parseRows(rows, width, height, legend) {
+  const tiles = [];
+  for (const row of rows) {
+    if (typeof row === "string") {
+      const trimmed = row.trim();
+      const tokens = trimmed.includes(" ") ? trimmed.split(/\s+/) : [...trimmed];
+      for (const token of tokens) tiles.push(decodeToken(token, legend));
+    } else {
+      tiles.push(...row);
+    }
+  }
+  return normalizeTileCount(tiles, width, height);
+}
+function normalizeTileCount(tiles, width, height) {
+  const expected = width * height;
+  if (tiles.length === expected) return [...tiles];
+  const normalized = new Array(expected).fill(null);
+  for (let i = 0; i < Math.min(expected, tiles.length); i += 1) normalized[i] = tiles[i] ?? null;
+  return normalized;
+}
+function normalizeTiles(spec, width, height) {
+  const data = spec.tiles ?? spec.data ?? [];
+  if (typeof data === "string") {
+    return parseRows(data.split(/\r?\n/).filter((row) => row.trim().length > 0), width, height, spec.legend);
+  }
+  if (Array.isArray(data) && data.some((entry) => typeof entry === "string" || Array.isArray(entry))) {
+    return parseRows(data, width, height, spec.legend);
+  }
+  return normalizeTileCount(data, width, height);
+}
+function layerId(spec, index) {
+  return spec.id ?? spec.name ?? `layer-${index}`;
+}
+function createTileMap(options) {
+  const tileWidth = options.tileWidth ?? options.tileSize ?? options.tileset.tileWidth;
+  const tileHeight = options.tileHeight ?? options.tileSize ?? options.tileset.tileHeight;
+  const layers = options.layers.map((layer, index) => {
+    const width = layer.width ?? options.width;
+    const height = layer.height ?? options.height;
+    const id = layerId(layer, index);
+    return {
+      id,
+      name: layer.name ?? id,
+      width,
+      height,
+      tiles: normalizeTiles(layer, width, height),
+      visible: layer.visible ?? true,
+      opacity: layer.opacity ?? 1,
+      offsetX: layer.offsetX ?? 0,
+      offsetY: layer.offsetY ?? 0,
+      parallaxX: layer.parallaxX ?? 1,
+      parallaxY: layer.parallaxY ?? 1,
+      metadata: layer.metadata
+    };
+  });
+  const map = {
+    tileset: options.tileset,
+    width: options.width,
+    height: options.height,
+    tileWidth,
+    tileHeight,
+    pixelWidth: options.width * tileWidth,
+    pixelHeight: options.height * tileHeight,
+    layers,
+    markers: options.markers ? [...options.markers] : [],
+    outOfBoundsTile: options.outOfBoundsTile ?? null,
+    metadata: options.metadata,
+    getLayer(layer = 0) {
+      return typeof layer === "number" ? layers[layer] : layers.find((candidate) => candidate.id === layer || candidate.name === layer);
+    },
+    getTileAt(x, y, layer = 0) {
+      return getTileAt(map, x, y, layer);
+    },
+    worldToTile(x, y) {
+      return worldToTile(map, x, y);
+    },
+    tileToWorld(x, y, anchor = "top-left") {
+      return tileToWorld(map, x, y, anchor);
+    }
+  };
+  return map;
+}
+function getTileAt(map, x, y, layer = 0) {
+  const targetLayer = map.getLayer(layer);
+  if (!targetLayer) return void 0;
+  if (x < 0 || y < 0 || x >= targetLayer.width || y >= targetLayer.height) {
+    if (map.outOfBoundsTile === null) return void 0;
+    return {
+      x,
+      y,
+      index: -1,
+      tileId: map.outOfBoundsTile,
+      tile: map.outOfBoundsTile === null ? void 0 : map.tileset.getTile(map.outOfBoundsTile),
+      layer: targetLayer
+    };
+  }
+  const index = y * targetLayer.width + x;
+  const tileId = targetLayer.tiles[index] ?? null;
+  return {
+    x,
+    y,
+    index,
+    tileId,
+    tile: tileId === null ? void 0 : map.tileset.getTile(tileId),
+    layer: targetLayer
+  };
+}
+function worldToTile(map, x, y) {
+  return {
+    x: Math.floor(x / map.tileWidth),
+    y: Math.floor(y / map.tileHeight)
+  };
+}
+function tileToWorld(map, x, y, anchor = "top-left") {
+  const offsetX = anchor === "center" ? map.tileWidth * 0.5 : 0;
+  const offsetY = anchor === "center" ? map.tileHeight * 0.5 : 0;
+  return {
+    x: x * map.tileWidth + offsetX,
+    y: y * map.tileHeight + offsetY
+  };
+}
+
+// src/map/generator.ts
+function hashSeed(seed) {
+  if (seed === void 0) return 3737844653;
+  if (typeof seed === "number") return seed >>> 0;
+  let hash = 2166136261;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash ^= seed.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+function seededRandom(seed = 3737844653) {
+  let value = hashSeed(seed);
+  return () => {
+    value = Math.imul(value, 1664525) + 1013904223 >>> 0;
+    return value / 4294967296;
+  };
+}
+function choice(items, rng) {
+  if (items.length === 0) return void 0;
+  return items[Math.floor(rng() * items.length) % items.length];
+}
+function resolveTile(tileset, rng, tile, tag) {
+  if (tile !== void 0) return tile;
+  if (!tag) return null;
+  return choice(tileset.tileIdsByTag(tag), rng) ?? null;
+}
+function hasAvoidedTag(tileset, tileId, avoidTags) {
+  if (tileId === null || !avoidTags || avoidTags.length === 0) return false;
+  const tile = tileset.getTile(tileId);
+  return tile ? avoidTags.some((tag) => tile.tags.includes(tag)) : false;
+}
+function indexOf(x, y, width) {
+  return y * width + x;
+}
+function setBrush(tiles, width, height, x, y, radius, tile) {
+  for (let ty = y - radius; ty <= y + radius; ty += 1) {
+    for (let tx = x - radius; tx <= x + radius; tx += 1) {
+      if (tx >= 0 && ty >= 0 && tx < width && ty < height) tiles[indexOf(tx, ty, width)] = tile;
+    }
+  }
+}
+function generateTileMap(options) {
+  const rng = seededRandom(options.seed);
+  const baseTile = options.baseTile ?? null;
+  const initialLayerSpecs = options.layers?.length ? options.layers : [{ id: "ground", name: "ground", tiles: new Array(options.width * options.height).fill(baseTile) }];
+  const initialMap = createTileMap({
+    tileset: options.tileset,
+    width: options.width,
+    height: options.height,
+    tileSize: options.tileSize,
+    tileWidth: options.tileWidth,
+    tileHeight: options.tileHeight,
+    layers: initialLayerSpecs,
+    markers: options.markers,
+    outOfBoundsTile: options.outOfBoundsTile,
+    metadata: options.metadata
+  });
+  const mutableLayers = /* @__PURE__ */ new Map();
+  const markers = options.markers ? [...options.markers] : [];
+  for (const layer of initialMap.layers) {
+    mutableLayers.set(layer.id, [...layer.tiles]);
+  }
+  const firstLayerId = initialMap.layers[0]?.id ?? "ground";
+  const getLayerTiles = (id = firstLayerId) => mutableLayers.get(id) ?? mutableLayers.get(firstLayerId);
+  for (const rule of options.rules ?? []) {
+    const tiles = getLayerTiles(rule.layer);
+    if (!tiles) continue;
+    const tile = resolveTile(options.tileset, rng, "tile" in rule ? rule.tile : void 0, "tag" in rule ? rule.tag : void 0);
+    if (rule.type === "fill") {
+      tiles.fill(tile);
+    } else if (rule.type === "border") {
+      const thickness = Math.max(1, rule.thickness ?? 1);
+      for (let y = 0; y < options.height; y += 1) {
+        for (let x = 0; x < options.width; x += 1) {
+          if (x < thickness || y < thickness || x >= options.width - thickness || y >= options.height - thickness) {
+            tiles[indexOf(x, y, options.width)] = tile;
+          }
+        }
+      }
+    } else if (rule.type === "noise") {
+      for (let i = 0; i < tiles.length; i += 1) tiles[i] = rng() < rule.chance ? tile : rule.emptyTile ?? tiles[i] ?? null;
+    } else if (rule.type === "scatter") {
+      const count = rule.count ?? Math.round(options.width * options.height * (rule.chance ?? 0.05));
+      let placed = 0;
+      let attempts = 0;
+      while (placed < count && attempts < count * 20) {
+        attempts += 1;
+        const x = Math.floor(rng() * options.width);
+        const y = Math.floor(rng() * options.height);
+        const index = indexOf(x, y, options.width);
+        if (hasAvoidedTag(options.tileset, tiles[index], rule.avoidTags)) continue;
+        tiles[index] = tile;
+        placed += 1;
+      }
+    } else if (rule.type === "path") {
+      const from = rule.from ?? { x: Math.floor(options.width * 0.5), y: options.height - 1 };
+      const to = rule.to ?? { x: Math.floor(options.width * 0.5), y: 0 };
+      const radius = Math.max(0, Math.floor((rule.width ?? 1) * 0.5));
+      let x = from.x;
+      let y = from.y;
+      let favorX = Math.abs(to.x - x) > Math.abs(to.y - y);
+      while (x !== to.x || y !== to.y) {
+        setBrush(tiles, options.width, options.height, x, y, radius, tile);
+        if (rng() < (rule.turnChance ?? 0.28)) favorX = !favorX;
+        if (favorX && x !== to.x || y === to.y) x += Math.sign(to.x - x);
+        else y += Math.sign(to.y - y);
+      }
+      setBrush(tiles, options.width, options.height, to.x, to.y, radius, tile);
+    } else if (rule.type === "marker") {
+      const count = rule.count ?? 1;
+      let placed = 0;
+      let attempts = 0;
+      while (placed < count && attempts < count * 30) {
+        attempts += 1;
+        const x = Math.floor(rng() * options.width);
+        const y = Math.floor(rng() * options.height);
+        if (hasAvoidedTag(options.tileset, tiles[indexOf(x, y, options.width)], rule.avoidTags)) continue;
+        if (tile !== null) tiles[indexOf(x, y, options.width)] = tile;
+        markers.push({
+          type: rule.markerType,
+          tileX: x,
+          tileY: y,
+          x: x * (options.tileWidth ?? options.tileSize ?? options.tileset.tileWidth) + (options.tileWidth ?? options.tileSize ?? options.tileset.tileWidth) * 0.5,
+          y: y * (options.tileHeight ?? options.tileSize ?? options.tileset.tileHeight) + (options.tileHeight ?? options.tileSize ?? options.tileset.tileHeight) * 0.5,
+          layer: rule.layer ?? firstLayerId
+        });
+        placed += 1;
+      }
+    }
+  }
+  return createTileMap({
+    tileset: options.tileset,
+    width: options.width,
+    height: options.height,
+    tileSize: options.tileSize,
+    tileWidth: options.tileWidth,
+    tileHeight: options.tileHeight,
+    layers: initialMap.layers.map((layer) => ({
+      ...layer,
+      tiles: mutableLayers.get(layer.id) ?? []
+    })),
+    markers,
+    outOfBoundsTile: options.outOfBoundsTile,
+    metadata: options.metadata
+  });
+}
+
+// src/map/collision.ts
+function defaultCollision(tile, tags) {
+  return tile.collision || tile.solid || tags.some((tag) => tile.tags.includes(tag));
+}
+function mergeRows(rects) {
+  const merged = [];
+  for (const rect of rects) {
+    const existing = merged.find((candidate) => candidate.x === rect.x && candidate.w === rect.w && candidate.y + candidate.h === rect.y);
+    if (existing) existing.h += rect.h;
+    else merged.push({ ...rect });
+  }
+  return merged;
+}
+function extractCollisionRects(map, options = {}) {
+  const layer = map.getLayer(options.layer ?? 0);
+  if (!layer) return [];
+  const tags = options.tags ?? ["solid"];
+  const rects = [];
+  for (let y = 0; y < layer.height; y += 1) {
+    let runStart = -1;
+    for (let x = 0; x <= layer.width; x += 1) {
+      const cell = x < layer.width ? map.getTileAt(x, y, layer.id) : void 0;
+      const collides = cell?.tile ? options.predicate?.(cell.tile, x, y, layer.id) ?? defaultCollision(cell.tile, tags) : false;
+      if (collides && runStart < 0) runStart = x;
+      if ((!collides || x === layer.width) && runStart >= 0) {
+        rects.push({
+          x: runStart * map.tileWidth + layer.offsetX,
+          y: y * map.tileHeight + layer.offsetY,
+          w: (x - runStart) * map.tileWidth,
+          h: map.tileHeight
+        });
+        runStart = -1;
+      }
+    }
+  }
+  return options.merge === false ? rects : mergeRows(rects);
+}
+
+// src/map/render.ts
+function resolveLayer(map, layer) {
+  if (!layer) return map.getLayer(0);
+  if (typeof layer === "object") return layer;
+  return map.getLayer(layer);
+}
+function renderTileLayer(map, options = {}) {
+  const layer = resolveLayer(map, options.layer);
+  const image = options.image ?? map.tileset.image;
+  if (!layer || !layer.visible || !image) return { drawn: 0, skipped: layer ? layer.tiles.length : 0 };
+  const ctx = getDrawContext(options);
+  const scale = options.scale ?? 1;
+  const viewport = options.viewport;
+  const minX = viewport ? Math.max(0, Math.floor((viewport.x - layer.offsetX) / map.tileWidth) - 1) : 0;
+  const minY = viewport ? Math.max(0, Math.floor((viewport.y - layer.offsetY) / map.tileHeight) - 1) : 0;
+  const maxX = viewport ? Math.min(layer.width - 1, Math.ceil((viewport.x + viewport.w - layer.offsetX) / map.tileWidth) + 1) : layer.width - 1;
+  const maxY = viewport ? Math.min(layer.height - 1, Math.ceil((viewport.y + viewport.h - layer.offsetY) / map.tileHeight) + 1) : layer.height - 1;
+  let drawn = 0;
+  let skipped = 0;
+  ctx.save();
+  ctx.globalAlpha *= layer.opacity * (options.alpha ?? 1);
+  for (let y = minY; y <= maxY; y += 1) {
+    for (let x = minX; x <= maxX; x += 1) {
+      const cell = map.getTileAt(x, y, layer.id);
+      if (!cell?.tile) {
+        skipped += 1;
+        continue;
+      }
+      const source = cell.tile.source;
+      ctx.drawImage(
+        image,
+        source.x,
+        source.y,
+        source.w,
+        source.h,
+        layer.offsetX + x * map.tileWidth * scale,
+        layer.offsetY + y * map.tileHeight * scale,
+        map.tileWidth * scale,
+        map.tileHeight * scale
+      );
+      drawn += 1;
+    }
+  }
+  ctx.restore();
+  return { drawn, skipped };
+}
 export {
   GAMEPAD_AXIS_DEADZONE,
+  aabbsOverlap,
   barrelDistortion,
   bindKey,
   bloom,
@@ -1983,16 +3248,25 @@ export {
   colorGrading,
   colorLut,
   contrast,
+  createAabb,
+  createAnimationClip,
+  createAnimationPlayer,
+  createAtlasAnimation,
+  createAtlasClip,
   createCamera,
   createCanvasObjectEvents,
+  createCollisionBroadphase,
   createCollisionKernel,
   createFixedStepLoop,
   createKeyboardActions,
   createObjectPool,
-  createOnScreenGamepad,
   createPointerInput,
   createPostProcessStack,
   createStage,
+  createTextureAtlas,
+  createTexturePackerAtlas,
+  createTileMap,
+  createTileset,
   crtScanlines,
   digitalNoise,
   drawCircle,
@@ -2002,15 +3276,18 @@ export {
   drawSprite,
   drawSpriteSlice,
   drawText,
+  extractCollisionRects,
   filmGrain,
   flashbang,
   gamma,
+  generateTileMap,
   getGamepad,
   getGamepadAxis,
   getGamepads,
   getPointerPos,
   getPostProcessEffectCost,
   getSprite,
+  getTileAt,
   glitch,
   grayscale,
   gridKey,
@@ -2035,10 +3312,14 @@ export {
   measureText,
   motionBlur,
   neonGlow,
+  normalizeAabb,
   opposite,
+  parseTexturePackerAtlas,
   pixelate,
   pointInRect,
   popTransform,
+  postProcessApiProfileNames,
+  postProcessApiProfiles,
   postProcessCosts,
   posterize,
   pushTransform,
@@ -2048,11 +3329,13 @@ export {
   rectsOverlap,
   registerFont,
   registerSprite,
+  renderTileLayer,
   resolveCollisionKernelWasmUrl,
   retroDithering,
   sameCell,
   scanlineFlicker,
   screenShake,
+  seededRandom,
   sepia,
   setDrawContext,
   setVirtualKeyState,
@@ -2064,6 +3347,7 @@ export {
   testOverlapRect,
   textReady,
   threshold,
+  tileToWorld,
   tint,
   unbindKey,
   unregisterSprite,
@@ -2072,5 +3356,6 @@ export {
   vecAngle,
   vecDistance,
   vecNormalize,
-  vignette
+  vignette,
+  worldToTile
 };

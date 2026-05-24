@@ -813,6 +813,7 @@ class Game {
       : { bounces: 0, endpoint: null, points: [] };
     return {
       mode: this.mode,
+      time: this.time,
       score: this.score,
       round: this.round,
       totalRounds: this.totalRounds,

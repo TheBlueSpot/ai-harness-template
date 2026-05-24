@@ -5,7 +5,7 @@ export type ToastEntry = {
   id: string;
   title: string;
   description?: string;
-  tone?: "error" | "info";
+  tone?: "error" | "warning" | "info";
   onClick?: () => void;
 };
 

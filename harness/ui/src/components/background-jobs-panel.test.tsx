@@ -200,6 +200,69 @@ createUiTest("BackgroundJobsPanel", () => {
     expect(screen.getByRole("button", { name: "Filter and sort jobs" }).textContent).toContain("2");
   });
 
+  it("filters scheduled jobs by job state", () => {
+    const project = createViewProjectFixture({ id: "project-job-state-filter" });
+    const now = "2026-05-01T12:00:00.000Z";
+    const baseJob = {
+      projectId: project.id,
+      automationThreadId: "thread-automation",
+      kind: "ai-routine" as const,
+      status: "enabled" as const,
+      riskLevel: "safe" as const,
+      definition: {
+        kind: "ai-routine" as const,
+        prompt: "Review project."
+      },
+      schedule: {
+        type: "interval" as const,
+        intervalSeconds: 3600,
+        nextRunAt: now,
+        sourceText: "1h"
+      },
+      scheduleInput: "1h",
+      createdAt: now,
+      updatedAt: now
+    };
+    const blockedJob: BackgroundJob = {
+      ...baseJob,
+      id: "job-state-blocked",
+      name: "Blocked review",
+      schedulerStatus: "blocked"
+    };
+    const dueJob: BackgroundJob = {
+      ...baseJob,
+      id: "job-state-due",
+      name: "Due review",
+      schedulerStatus: "due"
+    };
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        activeLeftTab: "jobs",
+        activeSurface: "background-jobs",
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        },
+        backgroundJobs: {
+          jobs: [blockedJob, dueJob],
+          runs: [],
+          templates: []
+        },
+        jobsPanePreferences: {
+          ...harnessStore.state.jobsPanePreferences,
+          segment: "jobs",
+          jobState: "blocked"
+        }
+      })
+    );
+
+    render(() => <BackgroundJobsPanel variant="left" segment="jobs" />);
+
+    expect(screen.getByRole("button", { name: "Filter and sort jobs" }).textContent).toContain("1");
+    expect(screen.getByText("Blocked review")).toBeTruthy();
+    expect(screen.queryByText("Due review")).toBeNull();
+  });
+
   it("shows enabled filter count on runs search menu", () => {
     seedHarnessStoreForTests(
       createHarnessStateFixture({
@@ -226,17 +289,19 @@ createUiTest("BackgroundJobsPanel", () => {
     );
 
     render(() => <BackgroundJobsPanel />);
-    harnessStore.setJobsPanePreferences({ segment: "jobs", jobSearch: "nightly" });
+    harnessStore.setJobsPanePreferences({ segment: "jobs", jobSearch: "nightly", jobState: "blocked" });
     harnessStore.setJobsPanePreferences({ segment: "inbox", runSearch: "approval" });
     harnessStore.setJobsRunFilter("failed");
 
     expect(harnessStore.state.jobsPanePreferences.segment).toBe("inbox");
     expect(harnessStore.state.jobsPanePreferences.jobSearch).toBe("nightly");
+    expect(harnessStore.state.jobsPanePreferences.jobState).toBe("blocked");
     expect(harnessStore.state.jobsPanePreferences.runSearch).toBe("approval");
     expect(harnessStore.state.jobsRunFilter).toBe("failed");
     expect(readBrowserUiSession().jobsPane).toMatchObject({
       segment: "inbox",
       jobSearch: "nightly",
+      jobState: "blocked",
       runSearch: "approval",
       runFilter: "failed"
     });
@@ -258,6 +323,7 @@ createUiTest("BackgroundJobsPanel", () => {
     render(() => <BackgroundJobsPanel />);
 
     expect(harnessStore.state.jobsRunFilter).toBe("failed");
+    expect(harnessStore.state.jobsPanePreferences.jobState).toBe("blocked");
   });
 
   it("persists and restores the health segment", () => {
@@ -954,7 +1020,7 @@ createUiTest("BackgroundJobsPanel", () => {
     expect(screen.getAllByText(/Stale: scheduler has not checked since/).length).toBeGreaterThan(0);
   });
 
-  it("shows active project chat runs in the runs view and opens their chat", () => {
+  it("shows active project chat runs in the shared runs list and opens their chat", () => {
     const commands: unknown[] = [];
     const activeRun = createRunFixture({
       id: "run-project-chat",
@@ -995,9 +1061,10 @@ createUiTest("BackgroundJobsPanel", () => {
 
     render(() => <BackgroundJobsPanel variant="left" segment="runs" />);
 
-    expect(screen.getByText("Project chats")).toBeTruthy();
+    expect(screen.getByText("1 total")).toBeTruthy();
     expect(screen.getByText("Harness / Active chat")).toBeTruthy();
     expect(screen.getByText("Implement active run visibility")).toBeTruthy();
+    expect(screen.getByText("Implement active run visibility").className).toContain("[-webkit-line-clamp:3]");
 
     fireEvent.click(screen.getByRole("button", { name: /Harness \/ Active chat/ }));
 
@@ -1012,6 +1079,91 @@ createUiTest("BackgroundJobsPanel", () => {
       }
     ]);
     expect(harnessStore.state.activeLeftTab).toBe("runs");
+  });
+
+  it("filters and sorts project chat runs with background runs", () => {
+    const projectChatRun = createRunFixture({
+      id: "run-project-chat-filtered",
+      threadId: "thread-filtered",
+      status: "running-main",
+      latestUserPrompt: "Chat run should stay with running work",
+      createdAt: "2026-05-06T10:00:00.000Z",
+      updatedAt: "2026-05-06T12:00:00.000Z"
+    });
+    const project = createViewProjectFixture({
+      id: "project-chat-filtered",
+      name: "Harness",
+      activeThreadId: "thread-filtered",
+      activeRun: projectChatRun,
+      threads: [
+        createProjectThreadSummary({
+          id: "thread-filtered",
+          title: "Chat filtered",
+          titleSource: "generated",
+          updatedAt: "2026-05-06T12:00:00.000Z"
+        })
+      ]
+    });
+    const backgroundRun: BackgroundJobRun = {
+      id: "background-run-filtered",
+      jobId: "job-filtered",
+      projectId: project.id,
+      automationThreadId: "thread-automation",
+      triggerSource: "manual",
+      status: "failed",
+      riskLevel: "safe",
+      approvalStatus: "approved",
+      skippedOccurrenceCount: 0,
+      queuedAt: "2026-05-06T11:00:00.000Z",
+      startedAt: "2026-05-06T11:01:00.000Z",
+      completedAt: "2026-05-06T11:10:00.000Z",
+      updatedAt: "2026-05-06T11:10:00.000Z",
+      events: [],
+      summary: "Background run should be filtered out",
+      createdAt: "2026-05-06T11:00:00.000Z"
+    };
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        activeLeftTab: "runs",
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        },
+        backgroundJobs: {
+          jobs: [
+            {
+              id: "job-filtered",
+              projectId: project.id,
+              automationThreadId: "thread-automation",
+              kind: "ai-routine",
+              name: "Filtered background",
+              status: "enabled",
+              riskLevel: "safe",
+              definition: { kind: "ai-routine", prompt: "Run filtered background." },
+              schedule: { type: "one-off", runAt: "2026-05-06T10:30:00.000Z", sourceText: "manual" },
+              scheduleInput: "manual",
+              createdAt: "2026-05-06T10:30:00.000Z",
+              updatedAt: "2026-05-06T10:30:00.000Z"
+            }
+          ],
+          runs: [backgroundRun],
+          templates: []
+        },
+        jobsRunFilter: "running",
+        jobsPanePreferences: {
+          segment: "inbox",
+          search: "",
+          jobSort: "updated",
+          runSort: "updated"
+        }
+      })
+    );
+
+    render(() => <BackgroundJobsPanel variant="left" segment="runs" />);
+
+    expect(screen.getByText("1 total")).toBeTruthy();
+    expect(screen.getByText("Harness / Chat filtered")).toBeTruthy();
+    expect(screen.queryByText("Filtered background")).toBeNull();
   });
 
   it("shows failure tracking and prompt stats for jobs and runs", () => {
@@ -1095,5 +1247,102 @@ createUiTest("BackgroundJobsPanel", () => {
     expect(screen.getAllByText(/Failure streak 3/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Failure category: controller lost/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Prompt: 2048 chars, hash hash-1234/).length).toBeGreaterThan(0);
+  });
+
+  it("treats partial-complete background runs as warning done, not failed", () => {
+    const project = createViewProjectFixture({ id: "project-partial-run" });
+    const now = "2026-04-28T12:00:00.000Z";
+    const job: BackgroundJob = {
+      id: "job-partial-run",
+      projectId: project.id,
+      automationThreadId: "thread-automation",
+      kind: "ai-routine",
+      name: "Partial routine",
+      status: "enabled",
+      riskLevel: "safe",
+      definition: {
+        kind: "ai-routine",
+        prompt: "Inspect partial."
+      },
+      schedule: {
+        type: "interval",
+        intervalSeconds: 600,
+        nextRunAt: now,
+        sourceText: "10m"
+      },
+      scheduleInput: "10m",
+      createdAt: now,
+      updatedAt: now
+    };
+    const run: BackgroundJobRun = {
+      id: "run-partial",
+      jobId: job.id,
+      projectId: project.id,
+      automationThreadId: job.automationThreadId,
+      triggerSource: "schedule",
+      status: "partial-complete",
+      riskLevel: "safe",
+      approvalStatus: "approved",
+      skippedOccurrenceCount: 0,
+      summary: "Useful partial output.",
+      failureMessage: "Some subagent work failed.",
+      queuedAt: now,
+      startedAt: now,
+      completedAt: now,
+      createdAt: now,
+      updatedAt: now,
+      events: []
+    };
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        activeLeftTab: "runs",
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        },
+        backgroundJobs: {
+          jobs: [job],
+          runs: [run],
+          templates: []
+        },
+        jobsRunFilter: "failed",
+        jobsPanePreferences: {
+          segment: "inbox",
+          search: "",
+          jobSort: "updated",
+          runSort: "updated"
+        }
+      })
+    );
+
+    render(() => <BackgroundJobsPanel variant="left" segment="runs" />);
+    expect(screen.queryByText("Partial routine")).toBeNull();
+
+    cleanup();
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        activeLeftTab: "runs",
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        },
+        backgroundJobs: {
+          jobs: [job],
+          runs: [run],
+          templates: []
+        },
+        jobsRunFilter: "done",
+        jobsPanePreferences: {
+          segment: "inbox",
+          search: "",
+          jobSort: "updated",
+          runSort: "updated"
+        }
+      })
+    );
+
+    render(() => <BackgroundJobsPanel variant="left" segment="runs" />);
+    expect(screen.getByText("Partial routine")).toBeTruthy();
+    expect(screen.getByText("partial-complete")).toBeTruthy();
   });
 });

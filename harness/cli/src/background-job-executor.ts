@@ -45,6 +45,8 @@ type BackgroundJobExecutorOptions = {
   agentId: AgentId;
   job: BackgroundJob;
   run: BackgroundJobRun;
+  controllerInstanceId?: string;
+  controllerLeaseId?: string;
   providerBrand: ProviderBrand;
   planningModelId: string;
   executionModelId: string;
@@ -184,6 +186,10 @@ async function executeAiRoutineJob(options: BackgroundJobExecutorOptions) {
     promptCacheIdentity,
     geminiCachedAttachmentContext
   });
+  const stoppedAfterPlanning = getStoppedBackgroundExecutionRun(options, run.id, activeRun.id, "planning");
+  if (stoppedAfterPlanning) {
+    return stoppedAfterPlanning;
+  }
   repository.setAgentRunPromptStats(job.projectId, activeRun.id, plannerTurn.promptStats);
   repository.setBackgroundJobRunPromptStats(run.id, plannerTurn.promptStats);
   let autoQuestionRounds = 0;
@@ -231,8 +237,17 @@ async function executeAiRoutineJob(options: BackgroundJobExecutorOptions) {
       promptCacheIdentity,
       geminiCachedAttachmentContext
     });
+    const stoppedAfterQuestionPlanning = getStoppedBackgroundExecutionRun(options, run.id, activeRun.id, "planning-question-rerun");
+    if (stoppedAfterQuestionPlanning) {
+      return stoppedAfterQuestionPlanning;
+    }
     repository.setAgentRunPromptStats(job.projectId, activeRun.id, plannerTurn.promptStats);
     repository.setBackgroundJobRunPromptStats(run.id, plannerTurn.promptStats);
+  }
+
+  const stoppedBeforePlannerResultPersistence = getStoppedBackgroundExecutionRun(options, run.id, activeRun.id, "planner-result-persist");
+  if (stoppedBeforePlannerResultPersistence) {
+    return stoppedBeforePlannerResultPersistence;
   }
 
   if (plannerTurn.plannerResult.type === "question") {
@@ -363,6 +378,11 @@ async function finalizeBackgroundAiRun(
     stopLivenessHeartbeat();
   }
 
+  const stoppedBeforeFinalize = getStoppedBackgroundExecutionRun(options, options.run.id, activeRun.id, "finalize");
+  if (stoppedBeforeFinalize) {
+    return stoppedBeforeFinalize;
+  }
+
   if (!assistantOwned) {
     repository.appendMessage(job.projectId, "assistant", outcome.assistantMessage.content, {
       threadId
@@ -377,8 +397,8 @@ async function finalizeBackgroundAiRun(
   appendBackgroundJobRunEvent(
     options,
     options.run.id,
-    outcome.partial ? "failed" : "done",
-    outcome.partial ? "Background AI run completed with failures." : "Background AI run completed.",
+    outcome.partial ? "partial-complete" : "done",
+    outcome.partial ? "Background AI run completed with partial failures." : "Background AI run completed.",
     outcome.assistantMessage.content.slice(0, 2000)
   );
   if (job.assistantId) {
@@ -396,12 +416,44 @@ async function finalizeBackgroundAiRun(
       createdAt: new Date().toISOString()
     });
   }
-  setBackgroundJobRunStatus(options, options.run.id, outcome.partial ? "failed" : "succeeded", {
+  setBackgroundJobRunStatus(options, options.run.id, outcome.partial ? "partial-complete" : "succeeded", {
     summary: summarizeBackgroundAssistantMessage(outcome.assistantMessage),
-    failureMessage: outcome.partial ? "Some subagent work failed." : undefined
+    failureMessage: outcome.partial ? outcome.partialReason ?? "Some subagent work failed." : undefined
   });
   updateJobCompletionSchedule(repository, job.id);
   return repository.getBackgroundJobRun(options.run.id)!;
+}
+
+function isTerminalBackgroundJobRunStatus(status: BackgroundJobRun["status"]) {
+  return status === "succeeded" || status === "partial-complete" || status === "failed" || status === "cancelled" || status === "skipped";
+}
+
+function getStoppedBackgroundExecutionRun(
+  options: Pick<BackgroundJobExecutorOptions, "repository" | "controllerLeaseId" | "run">,
+  backgroundRunId: string,
+  linkedAgentRunId: string,
+  phase: string
+) {
+  const currentBackgroundRun = options.repository.getBackgroundJobRun(backgroundRunId);
+  if (currentBackgroundRun && isTerminalBackgroundJobRunStatus(currentBackgroundRun.status)) {
+    debugLog("background.run.skip-terminal", {
+      runId: backgroundRunId,
+      status: currentBackgroundRun.status,
+      linkedAgentRunId,
+      phase
+    });
+    return currentBackgroundRun;
+  }
+  if (!isBackgroundExecutionOwned(options, currentBackgroundRun)) {
+    debugLog("background.run.skip-unowned", {
+      runId: backgroundRunId,
+      status: currentBackgroundRun?.status,
+      linkedAgentRunId,
+      phase
+    });
+    return currentBackgroundRun ?? options.run;
+  }
+  return undefined;
 }
 
 async function executeShellJob(options: BackgroundJobExecutorOptions) {
@@ -437,13 +489,13 @@ async function executeShellJob(options: BackgroundJobExecutorOptions) {
       outputLimitMessage ??= message;
       void terminateProcessTree(proc);
     }, () => {
-      repository.touchBackgroundJobRun(run.id, { stage: "stdout", detail: "Shell stdout received" });
+      touchBackgroundJobRun(options, run.id, { stage: "stdout", detail: "Shell stdout received" });
     }),
     consumeBoundedStream(proc.stderr, "stderr", (message) => {
       outputLimitMessage ??= message;
       void terminateProcessTree(proc);
     }, () => {
-      repository.touchBackgroundJobRun(run.id, { stage: "stderr", detail: "Shell stderr received" });
+      touchBackgroundJobRun(options, run.id, { stage: "stderr", detail: "Shell stderr received" });
     }),
     proc.exited
   ]).finally(() => {
@@ -484,7 +536,7 @@ async function executeShellJob(options: BackgroundJobExecutorOptions) {
 }
 
 function createBackgroundExecutionCallbacks(
-  options: Pick<BackgroundJobExecutorOptions, "repository" | "onRunUpdated">,
+  options: Pick<BackgroundJobExecutorOptions, "repository" | "onRunUpdated" | "controllerLeaseId">,
   projectId: string,
   backgroundRunId: string,
   agentRunId: string
@@ -504,6 +556,9 @@ function createBackgroundExecutionCallbacks(
       );
     },
     onSubagentStart(task: PlannerReadyTurn["subtasks"][number]) {
+      if (!isBackgroundExecutionOwned(options, repository.getBackgroundJobRun(backgroundRunId))) {
+        return;
+      }
       const currentTask = repository.getRun(projectId, agentRunId)?.subtasks.find((entry) => entry.id === task.id);
       repository.markSubtaskStarted(projectId, agentRunId, task.id, (currentTask?.attemptCount ?? 0) + 1);
     },
@@ -516,6 +571,9 @@ function createBackgroundExecutionCallbacks(
       commitSha?: string;
       worktreePath?: string;
     }) {
+      if (!isBackgroundExecutionOwned(options, repository.getBackgroundJobRun(backgroundRunId))) {
+        return;
+      }
       if (result.status === "completed") {
         repository.markSubtaskCompleted(
           projectId,
@@ -542,13 +600,13 @@ function createBackgroundExecutionCallbacks(
 }
 
 export function startBackgroundRunLivenessHeartbeat(
-  options: Pick<BackgroundJobExecutorOptions, "repository" | "onRunUpdated">,
+  options: Pick<BackgroundJobExecutorOptions, "repository" | "onRunUpdated" | "controllerLeaseId">,
   runId: string,
   intervalMs = DEFAULT_BACKGROUND_RUN_LIVENESS_HEARTBEAT_MS
 ) {
   let timer: ReturnType<typeof setInterval> | undefined;
   const touch = () => {
-    const run = options.repository.touchBackgroundJobRun(runId, {
+    const run = touchBackgroundJobRun(options, runId, {
       stage: "execution-running",
       detail: "Main Codex CLI execution still running"
     });
@@ -736,26 +794,51 @@ function resolveAssistantPolicyAnswer(decision: ReturnType<typeof evaluateAssist
 }
 
 function appendBackgroundJobRunEvent(
-  options: Pick<BackgroundJobExecutorOptions, "repository" | "onRunUpdated">,
+  options: Pick<BackgroundJobExecutorOptions, "repository" | "onRunUpdated" | "controllerLeaseId">,
   runId: string,
   stage: string,
   message: string,
   detail?: string
 ) {
-  const run = options.repository.appendBackgroundJobRunEvent(runId, stage, message, detail);
-  void options.onRunUpdated?.(run);
+  const run = options.controllerLeaseId
+    ? options.repository.appendBackgroundJobRunEventIfOwned(runId, options.controllerLeaseId, stage, message, detail)
+    : options.repository.appendBackgroundJobRunEvent(runId, stage, message, detail);
+  if (run) {
+    void options.onRunUpdated?.(run);
+  }
   return run;
 }
 
 function setBackgroundJobRunStatus(
-  options: Pick<BackgroundJobExecutorOptions, "repository" | "onRunUpdated">,
+  options: Pick<BackgroundJobExecutorOptions, "repository" | "onRunUpdated" | "controllerLeaseId">,
   runId: string,
   status: Parameters<WorkspaceRepository["setBackgroundJobRunStatus"]>[1],
   input?: Parameters<WorkspaceRepository["setBackgroundJobRunStatus"]>[2]
 ) {
-  const run = options.repository.setBackgroundJobRunStatus(runId, status, input);
-  void options.onRunUpdated?.(run);
+  const run = options.controllerLeaseId
+    ? options.repository.setBackgroundJobRunStatusIfOwned(runId, options.controllerLeaseId, status, input)
+    : options.repository.setBackgroundJobRunStatus(runId, status, input);
+  if (run) {
+    void options.onRunUpdated?.(run);
+  }
   return run;
+}
+
+function touchBackgroundJobRun(
+  options: Pick<BackgroundJobExecutorOptions, "repository" | "controllerLeaseId">,
+  runId: string,
+  input: Parameters<WorkspaceRepository["touchBackgroundJobRun"]>[1]
+) {
+  return options.controllerLeaseId
+    ? options.repository.touchBackgroundJobRunIfOwned(runId, options.controllerLeaseId, input)
+    : options.repository.touchBackgroundJobRun(runId, input);
+}
+
+function isBackgroundExecutionOwned(
+  options: Pick<BackgroundJobExecutorOptions, "repository" | "controllerLeaseId">,
+  run: BackgroundJobRun | undefined
+) {
+  return !options.controllerLeaseId || Boolean(run && run.status === "running" && run.controllerLeaseId === options.controllerLeaseId);
 }
 
 function summarizeBackgroundAssistantMessage(message: ReturnType<typeof createChatMessage>) {

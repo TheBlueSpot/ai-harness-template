@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { readFile, rm } from "node:fs/promises";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { lstat, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import {
   discardBranchfsIntegrationLease,
@@ -113,6 +113,47 @@ describe("branchfs subagent integration", () => {
 
     expect(normalizeNewlines(await readFile(path.join(rootPath, "task-1.txt"), "utf8"))).toBe("task-1\n");
     expect(normalizeNewlines(await readFile(path.join(rootPath, "task-2.txt"), "utf8"))).toBe("task-2\n");
+  });
+
+  test("integrates file and directory replacements from isolated snapshots", async () => {
+    const rootPath = await gitFixture.createRepoClone("branchfs-subagent-shape-change");
+    writeFileSync(path.join(rootPath, "shape"), "file\n");
+    mkdirSync(path.join(rootPath, "tree"), { recursive: true });
+    writeFileSync(path.join(rootPath, "tree", "child.txt"), "child\n");
+    runSync(["git", "add", "."], rootPath);
+    runSync(["git", "commit", "-m", "shape base"], rootPath);
+
+    const snapshots = [
+      await createSnapshot(rootPath, "task-1", (lease) => {
+        rmSync(path.join(lease.projectMountPath, "shape"));
+        mkdirSync(path.join(lease.projectMountPath, "shape"), { recursive: true });
+        writeFileSync(path.join(lease.projectMountPath, "shape", "child.txt"), "dir child\n");
+        rmSync(path.join(lease.projectMountPath, "tree"), { recursive: true, force: true });
+        writeFileSync(path.join(lease.projectMountPath, "tree"), "file replacement\n");
+      })
+    ];
+
+    const integration = await prepareBranchfsIntegrationLease(
+      new MergeResolverAdapter(),
+      {
+        rootPath,
+        runId: "run-shape-change",
+        executionModelId: "openai/gpt-5.4"
+      },
+      {
+        tasks: [{ id: "task-1", title: "Task 1", instruction: "Replace file and directory shapes" }],
+        snapshots
+      }
+    );
+
+    await flushBranchfsIntegrationLease(integration!);
+    await discardBranchfsIntegrationLease(integration);
+    await discardBranchfsSnapshots(snapshots);
+
+    expect((await lstat(path.join(rootPath, "shape"))).isDirectory()).toBe(true);
+    expect(normalizeNewlines(await readFile(path.join(rootPath, "shape", "child.txt"), "utf8"))).toBe("dir child\n");
+    expect((await lstat(path.join(rootPath, "tree"))).isFile()).toBe(true);
+    expect(normalizeNewlines(await readFile(path.join(rootPath, "tree"), "utf8"))).toBe("file replacement\n");
   });
 
   test("uses merge resolver when isolated subagent snapshots conflict", async () => {

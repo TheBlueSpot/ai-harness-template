@@ -66,6 +66,7 @@ export const backgroundJobRunStatusSchema = z.enum([
   "awaiting-user-input",
   "running",
   "succeeded",
+  "partial-complete",
   "failed",
   "cancelled",
   "skipped"
@@ -561,6 +562,8 @@ export const runFailureCategorySchema = z.enum([
   "max-runtime-timeout",
   "turn-budget-exhausted",
   "launch-failure",
+  "runtime-contract-mismatch",
+  "partial-subagent-failure",
   "planner-question",
   "unknown"
 ]);
@@ -716,6 +719,9 @@ export const backgroundJobRunSchema = z.object({
   failureMessage: z.string().min(1).max(4000).optional(),
   failureCategory: runFailureCategorySchema.optional(),
   promptStats: runPromptStatsSchema.optional(),
+  controllerInstanceId: z.string().min(1).max(128).optional(),
+  controllerLeaseId: z.string().min(1).max(128).optional(),
+  controllerLeaseExpiresAt: z.string().datetime().or(z.string().min(1)).optional(),
   lastHeartbeatAt: z.string().datetime().or(z.string().min(1)).optional(),
   heartbeatStage: z.string().min(1).max(64).optional(),
   heartbeatDetail: z.string().min(1).max(1024).optional(),

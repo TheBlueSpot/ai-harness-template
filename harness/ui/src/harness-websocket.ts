@@ -410,14 +410,14 @@ export function closeCliSessionSocket(sessionId: string) {
   harnessStore.setCliTerminalConnected(sessionId, false);
 }
 
-function notifyBackgroundRun(runId: string) {
+export function notifyBackgroundRun(runId: string) {
   const state = harnessStore.state;
   const run = state.backgroundJobs.runs.find((entry) => entry.id === runId);
   if (!run) {
     return;
   }
 
-  if (run.status !== "succeeded" && run.status !== "failed" && run.status !== "awaiting-approval") {
+  if (run.status !== "succeeded" && run.status !== "partial-complete" && run.status !== "failed" && run.status !== "awaiting-approval") {
     notifiedBackgroundRunStatuses.delete(run.id);
     return;
   }
@@ -432,12 +432,20 @@ function notifyBackgroundRun(runId: string) {
   const title =
     run.status === "succeeded"
       ? "Background task done"
+      : run.status === "partial-complete"
+      ? "Background task partially done"
       : run.status === "failed"
       ? "Background task failed"
       : "Background task needs approval";
   const body = run.summary ?? run.failureMessage ?? jobName;
+  const openRun = () => openBackgroundRunInJobsPane(harnessStore.state, run.id, run.jobId);
 
-  pushToast(title, `${jobName} | ${body}`, run.status === "failed" ? "error" : "info");
+  pushToast(
+    title,
+    `${jobName} | ${body}`,
+    run.status === "failed" ? "error" : run.status === "partial-complete" ? "warning" : "info",
+    openRun
+  );
   if (!state.backgroundJobNotificationsEnabled || typeof Notification === "undefined" || Notification.permission !== "granted") {
     return;
   }
@@ -447,7 +455,7 @@ function notifyBackgroundRun(runId: string) {
   });
   notification.onclick = () => {
     window.focus();
-    openBackgroundRunInJobsPane(harnessStore.state, run.id, run.jobId);
+    openRun();
     notification.close();
   };
 }

@@ -20,6 +20,7 @@ import {
   type AgentRuntimeCapability,
   type BackgroundJob,
   type BackgroundJobApprovalPolicy,
+  type BackgroundJobSchedulerStatus,
   type BackgroundJobsState,
   type BackgroundJobSchedulePreview,
   type BranchfsCleanupSummary,
@@ -94,6 +95,7 @@ export const PROJECT_SIDEBAR_PREFERENCES_STORAGE_KEY = "pi-harness:project-sideb
 export const DEFAULT_COMPOSER_REASONING_STRENGTH: ComposerReasoningStrength = "high";
 export const COMPOSER_REASONING_STRENGTHS: ComposerReasoningStrength[] = ["low", "medium", "high", "extra-high"];
 const MAX_STREAMING_MESSAGE_HEARTBEATS = 2;
+const MAX_LIVE_TRACE_HISTORY = 500;
 
 export type HarnessActiveSurface = "chat" | "background-jobs" | "assistants" | "preferences";
 export type HarnessLeftTab = "projects" | "assistants" | "jobs" | "runs" | "preferences";
@@ -107,7 +109,9 @@ export type JobsPaneSegment = "jobs" | "inbox" | "health";
 export type AssistantRosterSort = "updated" | "created" | "name" | "run-state" | "bootstrap-state";
 export type JobsPaneJobSort = "next-run" | "updated" | "created" | "status" | "risk";
 export type JobsPaneRunSort = "urgency" | "updated" | "queued" | "status";
+export type JobsJobStateFilter = "all" | BackgroundJobSchedulerStatus | "backoff";
 export type JobsRunFilter = "all" | "approval" | "queued" | "running" | "failed" | "done";
+export type TracePanelMode = "closed" | "peek" | "open";
 
 export type RunDiagnosticsViewState = {
   loading: boolean;
@@ -134,6 +138,7 @@ export type JobsPanePreferences = {
   assistantId?: string;
   kind?: BackgroundJob["kind"];
   status?: BackgroundJob["status"];
+  jobState?: JobsJobStateFilter;
   risk?: BackgroundJob["riskLevel"];
   selectedJobId?: string;
   selectedRunId?: string;
@@ -167,6 +172,7 @@ export type BrowserUiSessionState = {
   selectedExecutionModelId?: ExecutionModelId;
   selectedReasoningStrength?: ComposerReasoningStrength;
   selectedFastMode?: boolean;
+  tracePanelMode?: TracePanelMode;
   tracePanelOpen?: boolean;
   activeLeftTab?: HarnessLeftTab;
   mainPanelSizes?: MainPanelSizes;
@@ -350,6 +356,7 @@ export type HarnessViewState = {
   hasGlobalSelectedReasoningStrength: boolean;
   selectedFastMode: boolean;
   hasGlobalSelectedFastMode: boolean;
+  tracePanelMode: TracePanelMode;
   tracePanelOpen: boolean;
   tracePanelDefaultOpen: boolean;
   hasPersistedTracePanelOpen: boolean;
@@ -503,6 +510,7 @@ export function createDefaultJobsPanePreferences(): JobsPanePreferences {
     assistantId: undefined,
     kind: undefined,
     status: undefined,
+    jobState: "all",
     risk: undefined,
     selectedJobId: undefined,
     selectedRunId: undefined,
@@ -630,6 +638,7 @@ export function createInitialViewState(): HarnessViewState {
     hasGlobalSelectedReasoningStrength: false,
     selectedFastMode: false,
     hasGlobalSelectedFastMode: false,
+    tracePanelMode: "open",
     tracePanelOpen: true,
     tracePanelDefaultOpen: true,
     hasPersistedTracePanelOpen: false,
@@ -901,27 +910,28 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
         );
       });
     case "chat.delta":
-      return updateProjectState(state, event.payload.projectId, (project) =>
-        applyThreadLiveTranscriptState(
+      return updateProjectState(state, event.payload.projectId, (project) => {
+        const targetThreadId = event.payload.sessionId;
+        return applyThreadLiveTranscriptState(
           {
             ...project,
-            threads: setThreadBadge(project.threads, event.payload.threadId, "executing")
+            threads: setThreadBadge(project.threads, targetThreadId, "executing")
           },
-          event.payload.threadId,
+          targetThreadId,
           createThreadLiveTranscriptState({
-            ...(project.threadLiveTranscriptById[event.payload.threadId] ??
-              (project.activeThreadId === event.payload.threadId
+            ...(project.threadLiveTranscriptById[targetThreadId] ??
+              (project.activeThreadId === targetThreadId
                 ? getActiveThreadLiveTranscriptState(project)
                 : undefined)),
             isStreaming: true,
             streamingAssistantText: `${
-              (project.threadLiveTranscriptById[event.payload.threadId]?.streamingAssistantText ??
-                (project.activeThreadId === event.payload.threadId ? project.streamingAssistantText : ""))
+              (project.threadLiveTranscriptById[targetThreadId]?.streamingAssistantText ??
+                (project.activeThreadId === targetThreadId ? project.streamingAssistantText : ""))
             }${event.payload.delta}`,
             lastError: undefined
           })
-        )
-      );
+        );
+      });
     case "chat.streaming-tail-updated":
       return updateProjectState(state, event.payload.projectId, (project) => {
         const priorLiveTranscript =
@@ -1585,8 +1595,9 @@ export function createHarnessStore() {
           },
           jobsPanePreferences: normalizeJobsPanePreferences(browserUiSession.jobsPane ?? state.jobsPanePreferences),
           jobsRunFilter: normalizeJobsRunFilter(browserUiSession.jobsPane?.runFilter ?? state.jobsRunFilter),
-          tracePanelOpen: browserUiSession.tracePanelOpen ?? state.tracePanelOpen,
-          hasPersistedTracePanelOpen: browserUiSession.tracePanelOpen !== undefined,
+          tracePanelMode: browserUiSession.tracePanelMode ?? state.tracePanelMode,
+          tracePanelOpen: (browserUiSession.tracePanelMode ?? state.tracePanelMode) !== "closed",
+          hasPersistedTracePanelOpen: browserUiSession.tracePanelMode !== undefined,
           lastActiveProjectId: browserUiSession.lastActiveProjectId,
           lastActiveThreadByProjectId: { ...(browserUiSession.lastActiveThreadByProjectId ?? {}) }
         });
@@ -1745,17 +1756,18 @@ export function createHarnessStore() {
     },
     setAssistantPaneFilters(filters: Partial<Pick<ViewAssistantsState, "rosterSearch" | "detailSearch" | "runStateFilter" | "bootstrapStateFilter" | "providerBrandFilter" | "projectIdFilter" | "rosterSort">>) {
       const previousSnapshot = getBrowserUiSessionSnapshot(state);
+      const hasFilter = (key: keyof typeof filters) => Object.prototype.hasOwnProperty.call(filters, key);
       const nextState = finalizeHarnessViewState({
         ...state,
         assistants: {
           ...state.assistants,
-          rosterSearch: normalizeSearchText(filters.rosterSearch ?? state.assistants.rosterSearch),
-          detailSearch: normalizeSearchText(filters.detailSearch ?? state.assistants.detailSearch),
-          runStateFilter: normalizeAssistantRunStateFilter(filters.runStateFilter ?? state.assistants.runStateFilter),
-          bootstrapStateFilter: normalizeAssistantBootstrapStateFilter(filters.bootstrapStateFilter ?? state.assistants.bootstrapStateFilter),
-          providerBrandFilter: normalizeAssistantProviderBrandFilter(filters.providerBrandFilter ?? state.assistants.providerBrandFilter),
-          projectIdFilter: normalizeOptionalStorageString(filters.projectIdFilter ?? state.assistants.projectIdFilter),
-          rosterSort: normalizeAssistantRosterSort(filters.rosterSort ?? state.assistants.rosterSort)
+          rosterSearch: normalizeSearchText(hasFilter("rosterSearch") ? filters.rosterSearch : state.assistants.rosterSearch),
+          detailSearch: normalizeSearchText(hasFilter("detailSearch") ? filters.detailSearch : state.assistants.detailSearch),
+          runStateFilter: normalizeAssistantRunStateFilter(hasFilter("runStateFilter") ? filters.runStateFilter : state.assistants.runStateFilter),
+          bootstrapStateFilter: normalizeAssistantBootstrapStateFilter(hasFilter("bootstrapStateFilter") ? filters.bootstrapStateFilter : state.assistants.bootstrapStateFilter),
+          providerBrandFilter: normalizeAssistantProviderBrandFilter(hasFilter("providerBrandFilter") ? filters.providerBrandFilter : state.assistants.providerBrandFilter),
+          projectIdFilter: normalizeOptionalStorageString(hasFilter("projectIdFilter") ? filters.projectIdFilter : state.assistants.projectIdFilter),
+          rosterSort: normalizeAssistantRosterSort(hasFilter("rosterSort") ? filters.rosterSort : state.assistants.rosterSort)
         }
       });
       setState(reconcile(nextState));
@@ -1983,9 +1995,22 @@ export function createHarnessStore() {
     },
     setTracePanelOpen(tracePanelOpen: boolean) {
       const previousSnapshot = getBrowserUiSessionSnapshot(state);
+      const tracePanelMode: TracePanelMode = tracePanelOpen ? "open" : "closed";
       const nextState = finalizeHarnessViewState({
         ...state,
+        tracePanelMode,
         tracePanelOpen,
+        hasPersistedTracePanelOpen: true
+      });
+      setState(reconcile(nextState));
+      persistBrowserUiStateIfChanged(previousSnapshot, nextState);
+    },
+    setTracePanelMode(tracePanelMode: TracePanelMode) {
+      const previousSnapshot = getBrowserUiSessionSnapshot(state);
+      const nextState = finalizeHarnessViewState({
+        ...state,
+        tracePanelMode,
+        tracePanelOpen: tracePanelMode !== "closed",
         hasPersistedTracePanelOpen: true
       });
       setState(reconcile(nextState));
@@ -1993,9 +2018,11 @@ export function createHarnessStore() {
     },
     toggleTracePanel() {
       const previousSnapshot = getBrowserUiSessionSnapshot(state);
+      const tracePanelMode: TracePanelMode = state.tracePanelMode === "closed" ? "peek" : state.tracePanelMode === "peek" ? "open" : "closed";
       const nextState = finalizeHarnessViewState({
         ...state,
-        tracePanelOpen: !state.tracePanelOpen,
+        tracePanelMode,
+        tracePanelOpen: tracePanelMode !== "closed",
         hasPersistedTracePanelOpen: true
       });
       setState(reconcile(nextState));
@@ -2006,6 +2033,7 @@ export function createHarnessStore() {
       const nextState = finalizeHarnessViewState({
         ...state,
         tracePanelDefaultOpen,
+        tracePanelMode: state.hasPersistedTracePanelOpen ? state.tracePanelMode : tracePanelDefaultOpen ? "open" : "closed",
         tracePanelOpen: state.hasPersistedTracePanelOpen ? state.tracePanelOpen : tracePanelDefaultOpen
       });
       setState(reconcile(nextState));
@@ -2234,6 +2262,12 @@ export function createHarnessStore() {
         providerBrand: localPreferences.providerBrand ?? state.providerBrand,
         debugEnabled: localPreferences.debugEnabled ?? state.debugEnabled,
         tracePanelDefaultOpen: localPreferences.tracePanelDefaultOpen ?? state.tracePanelDefaultOpen,
+        tracePanelMode:
+          state.hasPersistedTracePanelOpen
+            ? state.tracePanelMode
+            : localPreferences.tracePanelDefaultOpen ?? state.tracePanelDefaultOpen
+              ? "open"
+              : "closed",
         tracePanelOpen:
           state.hasPersistedTracePanelOpen ? state.tracePanelOpen : localPreferences.tracePanelDefaultOpen ?? state.tracePanelDefaultOpen,
         subagentWorktreeStrategyDefault:
@@ -2317,6 +2351,12 @@ export function createHarnessStore() {
         providerBrand: localPreferences.providerBrand ?? state.providerBrand,
         debugEnabled: localPreferences.debugEnabled ?? state.debugEnabled,
         tracePanelDefaultOpen: localPreferences.tracePanelDefaultOpen ?? state.tracePanelDefaultOpen,
+        tracePanelMode:
+          state.hasPersistedTracePanelOpen
+            ? state.tracePanelMode
+            : localPreferences.tracePanelDefaultOpen ?? state.tracePanelOpen
+              ? "open"
+              : "closed",
         tracePanelOpen:
           state.hasPersistedTracePanelOpen ? state.tracePanelOpen : localPreferences.tracePanelDefaultOpen ?? state.tracePanelOpen,
         subagentWorktreeStrategyDefault:
@@ -2663,7 +2703,7 @@ function createThreadLiveTranscriptState(
     streamingHeartbeatMessages: overrides.streamingHeartbeatMessages ?? [],
     latestPlan: overrides.latestPlan,
     contextUsage: overrides.contextUsage,
-    traces: overrides.traces ?? [],
+    traces: capLiveTraceHistory(overrides.traces ?? []),
     activeRun: overrides.activeRun,
     lastRun: overrides.lastRun,
     runSummaries: overrides.runSummaries ?? [],
@@ -2960,6 +3000,12 @@ function applyReadyPreferencesState(state: HarnessViewState, preferences: Prefer
     providerBrand,
     debugEnabled: state.hasLocalDebugPreference ? state.debugEnabled : preferences.debugEnabledDefault,
     tracePanelDefaultOpen,
+    tracePanelMode:
+      state.hasPersistedTracePanelOpen || state.hasLocalTracePreference
+        ? state.tracePanelMode
+        : tracePanelDefaultOpen
+          ? "open"
+          : "closed",
     tracePanelOpen:
       state.hasPersistedTracePanelOpen || state.hasLocalTracePreference ? state.tracePanelOpen : tracePanelDefaultOpen,
     subagentWorktreeStrategyDefault: state.hasLocalSubagentWorktreeStrategyPreference
@@ -3317,6 +3363,11 @@ export function readBrowserUiSession(): BrowserUiSessionState {
     if (typeof parsed.selectedFastMode === "boolean") {
       result.selectedFastMode = parsed.selectedFastMode;
     }
+    if (isTracePanelMode(parsed.tracePanelMode)) {
+      result.tracePanelMode = parsed.tracePanelMode;
+    } else if (typeof parsed.tracePanelOpen === "boolean") {
+      result.tracePanelMode = parsed.tracePanelOpen ? "open" : "closed";
+    }
     if (typeof parsed.tracePanelOpen === "boolean") {
       result.tracePanelOpen = parsed.tracePanelOpen;
     }
@@ -3400,6 +3451,7 @@ export function persistBrowserUiSession(input: BrowserUiSessionState) {
       : undefined,
     selectedReasoningStrength: input.selectedReasoningStrength,
     selectedFastMode: input.selectedFastMode,
+    tracePanelMode: input.tracePanelMode ? normalizeTracePanelMode(input.tracePanelMode) : undefined,
     tracePanelOpen: input.tracePanelOpen,
     activeLeftTab: input.activeLeftTab ? normalizeLeftTab(input.activeLeftTab) : undefined,
     mainPanelSizes: input.mainPanelSizes ? normalizeMainPanelSizes(input.mainPanelSizes) : undefined,
@@ -3443,6 +3495,7 @@ export function persistBrowserUiSession(input: BrowserUiSessionState) {
     !normalizedInput.selectedExecutionModelId &&
     !normalizedInput.selectedReasoningStrength &&
     normalizedInput.selectedFastMode === undefined &&
+    normalizedInput.tracePanelMode === undefined &&
     normalizedInput.tracePanelOpen === undefined &&
     normalizedInput.activeLeftTab === undefined &&
     normalizedInput.mainPanelSizes === undefined &&
@@ -3513,7 +3566,7 @@ function getBrowserUiSessionSnapshot(state: HarnessViewState): BrowserUiSessionS
     selectedExecutionModelId: state.hasGlobalSelectedExecutionModelId ? state.selectedExecutionModelId : undefined,
     selectedReasoningStrength: state.hasGlobalSelectedReasoningStrength ? state.selectedReasoningStrength : undefined,
     selectedFastMode: state.hasGlobalSelectedFastMode ? state.selectedFastMode : undefined,
-    tracePanelOpen: state.hasPersistedTracePanelOpen ? state.tracePanelOpen : undefined,
+    tracePanelMode: state.hasPersistedTracePanelOpen ? state.tracePanelMode : undefined,
     activeLeftTab: state.activeLeftTab,
     mainPanelSizes: state.mainPanelSizes,
     chatPaneTab: state.chatPaneTab,
@@ -3574,6 +3627,14 @@ function normalizeChatPaneTab(input: unknown): ChatPaneTab {
   return input === "chat" || input === "plan" || input === "run" || input === "events" || input === "memory" ? input : "chat";
 }
 
+function isTracePanelMode(input: unknown): input is TracePanelMode {
+  return input === "closed" || input === "peek" || input === "open";
+}
+
+function normalizeTracePanelMode(input: unknown): TracePanelMode {
+  return isTracePanelMode(input) ? input : "closed";
+}
+
 function normalizeAssistantDetailTab(input: unknown): AssistantDetailTab {
   return input === "chat" ||
     input === "todos" ||
@@ -3632,6 +3693,19 @@ function normalizeJobsRunFilter(input: unknown): JobsRunFilter {
     : "all";
 }
 
+function normalizeJobsJobStateFilter(input: unknown): JobsJobStateFilter {
+  return input === "all" ||
+    input === "idle" ||
+    input === "due" ||
+    input === "queued" ||
+    input === "blocked" ||
+    input === "running" ||
+    input === "stale" ||
+    input === "backoff"
+    ? input
+    : "all";
+}
+
 function normalizeJobsPanePreferences(input: unknown, state?: HarnessViewState, clearMissingIds: boolean = false): JobsPanePreferences {
   const source = isRecord(input) ? input : {};
   const preferences: JobsPanePreferences = {
@@ -3645,6 +3719,7 @@ function normalizeJobsPanePreferences(input: unknown, state?: HarnessViewState, 
     assistantId: normalizeOptionalStorageString(source.assistantId),
     kind: source.kind === "ai-routine" || source.kind === "shell" ? source.kind : undefined,
     status: source.status === "enabled" || source.status === "paused" || source.status === "disabled" ? source.status : undefined,
+    jobState: normalizeJobsJobStateFilter(source.jobState),
     risk: source.risk === "safe" || source.risk === "slightly-unsafe" || source.risk === "unsafe" ? source.risk : undefined,
     selectedJobId: normalizeOptionalStorageString(source.selectedJobId),
     selectedRunId: normalizeOptionalStorageString(source.selectedRunId),
@@ -3790,8 +3865,14 @@ function finalizeHarnessViewState(state: HarnessViewState): HarnessViewState {
     projectSidebarPreferences,
     lastActiveProjectId: nextLastActiveProjectId,
     lastActiveThreadByProjectId,
-    tracePanelOpen: state.hasPersistedTracePanelOpen ? state.tracePanelOpen : state.tracePanelDefaultOpen
+    tracePanelMode: state.hasPersistedTracePanelOpen ? state.tracePanelMode : state.tracePanelDefaultOpen ? "open" : "closed",
+    tracePanelOpen:
+      state.hasPersistedTracePanelOpen ? state.tracePanelMode !== "closed" : state.tracePanelDefaultOpen
   };
+}
+
+function capLiveTraceHistory(traces: AgentTrace[]) {
+  return traces.length > MAX_LIVE_TRACE_HISTORY ? traces.slice(-MAX_LIVE_TRACE_HISTORY) : traces;
 }
 
 function resolveProjectSelectedAgentId(

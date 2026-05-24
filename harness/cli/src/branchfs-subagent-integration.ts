@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { AgentTrace, ComposerReasoningStrength, PlannerSubtask } from "../../shared/protocol";
 import { BranchfsManager, type BranchfsExperimentLease } from "./branchfs-manager";
@@ -308,6 +308,28 @@ async function copyChangedPath(sourcePath: string, destinationPath: string) {
     return;
   }
 
+  await copyRecursiveRobust(sourcePath, destinationPath);
+}
+
+async function copyRecursiveRobust(sourcePath: string, destinationPath: string) {
+  const sourceStats = await withFsRetry(() => lstat(sourcePath));
+  const destinationStats = await lstat(destinationPath).catch(() => undefined);
+
+  if (sourceStats.isDirectory()) {
+    if (destinationStats && !destinationStats.isDirectory()) {
+      await rm(destinationPath, { recursive: true, force: true });
+    }
+    await mkdir(destinationPath, { recursive: true });
+    const entries = await withFsRetry(() => readdir(sourcePath, { withFileTypes: true }));
+    for (const entry of entries) {
+      await copyRecursiveRobust(path.join(sourcePath, entry.name), path.join(destinationPath, entry.name));
+    }
+    return;
+  }
+
+  if (destinationStats && !destinationStats.isFile()) {
+    await rm(destinationPath, { recursive: true, force: true });
+  }
   await mkdir(path.dirname(destinationPath), { recursive: true });
   await withFsRetry(async () => {
     await mkdir(path.dirname(destinationPath), { recursive: true });
@@ -324,7 +346,6 @@ async function hashPath(targetPath: string) {
   if (entry.isDirectory()) {
     const hash = createHash("sha256");
     hash.update("directory");
-    hash.update(targetPath);
     return hash.digest("hex");
   }
 

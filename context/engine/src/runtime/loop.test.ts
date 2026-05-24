@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { isKeyPressed, setVirtualKeyState, updateInputFrame } from "../../input.ts";
 import { createFixedStepLoop } from "./loop.ts";
 
 test("fixed step loop exposes pause and resume aliases", () => {
@@ -89,6 +90,43 @@ test("fixed step loop clears stale accumulator when restarted", () => {
     expect(updates).toBe(0);
     expect(alpha).toBe(0.5);
   } finally {
+    globalThis.requestAnimationFrame = originalRequest;
+    globalThis.cancelAnimationFrame = originalCancel;
+  }
+});
+
+test("fixed step loop can leave legacy global input frame state untouched", () => {
+  const queuedFrames: FrameRequestCallback[] = [];
+  const originalRequest = globalThis.requestAnimationFrame;
+  const originalCancel = globalThis.cancelAnimationFrame;
+
+  globalThis.requestAnimationFrame = (callback) => {
+    queuedFrames.push(callback);
+    return queuedFrames.length;
+  };
+  globalThis.cancelAnimationFrame = () => {};
+
+  try {
+    setVirtualKeyState("KeyT", true);
+    expect(isKeyPressed("KeyT")).toBe(true);
+
+    const loop = createFixedStepLoop({
+      step: 0.1,
+      maxFrame: 1,
+      advanceGlobalInput: false,
+      update: () => undefined,
+      render: () => undefined,
+      now: () => 0
+    });
+
+    loop.start();
+    queuedFrames[0](100);
+
+    expect(queuedFrames).toHaveLength(2);
+    expect(isKeyPressed("KeyT")).toBe(true);
+  } finally {
+    setVirtualKeyState("KeyT", false);
+    updateInputFrame();
     globalThis.requestAnimationFrame = originalRequest;
     globalThis.cancelAnimationFrame = originalCancel;
   }

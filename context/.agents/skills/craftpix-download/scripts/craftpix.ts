@@ -1,6 +1,6 @@
-import { createWriteStream, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
@@ -16,6 +16,14 @@ const DIRECT_DOWNLOAD_RE =
 const PRODUCT_ID_RE = /product_ID\s*=\s*"(?<productId>\d+)"/;
 const SHORTLINK_RE = /https:\/\/craftpix\.net\/\?p=(?<productId>\d+)/;
 const TITLE_RE = /<title>(?<title>[^<]+)<\/title>/i;
+const SIGN_IN_TITLE_RE = /<title>[^<]*\b(sign in|log in)\b[^<]*<\/title>/i;
+const LOGIN_FORM_RE = /<form[^>]*\bid="loginform"[^>]*>|action="[^"]*wp-login\.php"/i;
+const DOWNLOAD_INTERSTITIAL_RE =
+  /Your download is starting|endCountdown\(\)|id="down-iframe"/i;
+const CDN_ARCHIVE_URL_RE = /https:\/\/files\.craftpix\.net\/[^"'\s]+\.zip/gi;
+const CRAFTPIX_COOKIE_DOMAIN_RE = /^(?:[\w-]+\.)*craftpix\.net$/i;
+const SCRIPT_DIR = import.meta.dir;
+const HTML_BODY_PREVIEW_LENGTH = 240;
 
 export class CraftpixDownloadError extends Error {
   constructor(message: string) {
@@ -39,6 +47,13 @@ export type DownloadRequest = {
   resolveOnly: boolean;
   overwrite: boolean;
   timeout: number;
+  debug?: boolean;
+};
+
+export type ParsedCookies = {
+  resolvedCookieFile: string;
+  names: string[];
+  header?: string;
 };
 
 function extractMatch(pattern: RegExp, value: string, groupName: string): string | undefined {
@@ -54,6 +69,39 @@ export function expandUserPath(inputPath: string): string {
     return resolve(homedir(), inputPath.slice(2));
   }
   return inputPath;
+}
+
+function findWorkspaceRoot(startDir: string = SCRIPT_DIR): string {
+  let dir = startDir;
+  let cookieRoot: string | undefined;
+  let gitRoot: string | undefined;
+
+  while (true) {
+    if (!gitRoot && existsSync(resolve(dir, ".git"))) {
+      gitRoot = dir;
+    }
+    if (existsSync(resolve(dir, ".local/craftpix/cookies.txt"))) {
+      cookieRoot = dir;
+    }
+    if (!gitRoot && existsSync(resolve(dir, "context")) && existsSync(resolve(dir, "harness"))) {
+      gitRoot = dir;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) {
+      break;
+    }
+    dir = parent;
+  }
+
+  return gitRoot ?? cookieRoot ?? process.cwd();
+}
+
+export function resolveWorkspacePath(inputPath: string): string {
+  const expanded = expandUserPath(inputPath);
+  if (isAbsolute(expanded)) {
+    return resolve(expanded);
+  }
+  return resolve(findWorkspaceRoot(), expanded);
 }
 
 export function getCookieFile(candidate?: string): string {
@@ -83,19 +131,23 @@ export function normalizeCraftpixUrl(rawUrl: string): string {
   return parsed.toString();
 }
 
-export function buildCookieHeader(cookieFile: string, requireCookies: boolean): string | undefined {
-  const resolvedCookieFile = resolve(expandUserPath(cookieFile));
+export function parseCookieFile(cookieFile: string, requireCookies: boolean): ParsedCookies {
+  const resolvedCookieFile = resolveWorkspacePath(cookieFile);
   if (!existsSync(resolvedCookieFile)) {
     if (requireCookies) {
       throw new CraftpixDownloadError(
         `Cookie file not found: ${resolvedCookieFile}. Export Craftpix cookies to Netscape format first.`,
       );
     }
-    return undefined;
+    return {
+      resolvedCookieFile,
+      names: [],
+      header: undefined,
+    };
   }
 
   const raw = readFileSync(resolvedCookieFile, "utf8");
-  const cookies: string[] = [];
+  const cookieEntries = new Map<string, { name: string; value: string }>();
   for (const line of raw.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#") && !trimmed.startsWith("#HttpOnly_")) {
@@ -108,9 +160,10 @@ export function buildCookieHeader(cookieFile: string, requireCookies: boolean): 
       continue;
     }
 
-    const [domain, , path, secure, , name, value] = parts;
+    const [domain, , path, secure, expirationRaw, name, ...valueParts] = parts;
+    const value = valueParts.join("\t");
     const normalizedDomain = domain.replace(/^\./, "").toLowerCase();
-    if (normalizedDomain !== "craftpix.net") {
+    if (!CRAFTPIX_COOKIE_DOMAIN_RE.test(normalizedDomain)) {
       continue;
     }
     if (secure.toUpperCase() === "TRUE" && !BASE_URL.startsWith("https://")) {
@@ -119,8 +172,11 @@ export function buildCookieHeader(cookieFile: string, requireCookies: boolean): 
     if (!path.startsWith("/")) {
       continue;
     }
-    cookies.push(`${name}=${value}`);
+    cookieEntries.set(name, { name, value });
   }
+
+  const names = [...cookieEntries.keys()];
+  const cookies = names.map((name) => `${name}=${cookieEntries.get(name)?.value ?? ""}`);
 
   if (requireCookies && cookies.length === 0) {
     throw new CraftpixDownloadError(
@@ -128,19 +184,47 @@ export function buildCookieHeader(cookieFile: string, requireCookies: boolean): 
     );
   }
 
-  return cookies.length > 0 ? cookies.join("; ") : undefined;
+  return {
+    resolvedCookieFile,
+    names,
+    header: cookies.length > 0 ? cookies.join("; ") : undefined,
+  };
 }
 
-export function buildHeaders(cookieHeader?: string): HeadersInit {
+export function buildCookieHeader(cookieFile: string, requireCookies: boolean): string | undefined {
+  return parseCookieFile(cookieFile, requireCookies).header;
+}
+
+export function buildHeaders(cookieHeader?: string, referer = `${BASE_URL}/`): HeadersInit {
   const headers: Record<string, string> = {
     "User-Agent": USER_AGENT,
     Accept: "*/*",
-    Referer: `${BASE_URL}/`,
+    "Accept-Language": "en-US,en;q=0.9",
+    Referer: referer,
   };
   if (cookieHeader) {
     headers.Cookie = cookieHeader;
   }
   return headers;
+}
+
+function isDownloadInterstitial(html: string): boolean {
+  return DOWNLOAD_INTERSTITIAL_RE.test(html);
+}
+
+export function extractCdnArchiveUrl(html: string): string | undefined {
+  const matches = html.match(CDN_ARCHIVE_URL_RE);
+  if (!matches?.length) {
+    return undefined;
+  }
+  return matches[0];
+}
+
+function isZipResponse(contentType: string, firstBytes: Uint8Array): boolean {
+  if (contentType.includes("zip") || contentType.includes("octet-stream")) {
+    return true;
+  }
+  return firstBytes.length >= 2 && firstBytes[0] === 0x50 && firstBytes[1] === 0x4b;
 }
 
 async function fetchText(url: string, headers: HeadersInit, timeout: number): Promise<{ finalUrl: string; body: string }> {
@@ -235,43 +319,100 @@ function inferFilename(
   return `${slugify(fallbackTitle)}.zip`;
 }
 
-function detectHtmlError(finalUrl: string, text: string): CraftpixDownloadError {
-  if (text.includes("UNLOCK DOWNLOAD") || finalUrl.includes("/membership/")) {
+function summarizeHtmlBody(text: string): string {
+  const collapsed = text.replace(/\s+/g, " ").trim();
+  if (collapsed.length <= HTML_BODY_PREVIEW_LENGTH) {
+    return collapsed;
+  }
+  return `${collapsed.slice(0, HTML_BODY_PREVIEW_LENGTH)}...`;
+}
+
+function formatHtmlFailureDetails(finalUrl: string, contentType: string, body: string): string {
+  return [
+    `final URL: ${finalUrl}`,
+    `content-type: ${contentType || "(missing)"}`,
+    `body preview: ${summarizeHtmlBody(body)}`,
+  ].join("\n  ");
+}
+
+function looksLikeSignInPage(finalUrl: string, text: string): boolean {
+  if (isDownloadInterstitial(text) || /\/download\/\d+/i.test(finalUrl)) {
+    return false;
+  }
+  if (finalUrl.includes("/wp-login.php")) {
+    return true;
+  }
+  if (finalUrl.includes("/my-account/") && (LOGIN_FORM_RE.test(text) || SIGN_IN_TITLE_RE.test(text))) {
+    return true;
+  }
+  if (LOGIN_FORM_RE.test(text) && SIGN_IN_TITLE_RE.test(text)) {
+    return true;
+  }
+  return false;
+}
+
+function detectHtmlError(finalUrl: string, contentType: string, text: string): CraftpixDownloadError {
+  const details = formatHtmlFailureDetails(finalUrl, contentType, text);
+  if (isDownloadInterstitial(text)) {
+    const archiveUrl = extractCdnArchiveUrl(text);
+    if (archiveUrl) {
+      return new CraftpixDownloadError(
+        `Craftpix returned a download landing page but the archive could not be fetched from ${archiveUrl}. ` +
+          "Re-export cookies after completing one browser download on craftpix.net (include files.craftpix.net / Cloudflare cookies if your exporter captured them).\n  " +
+          details,
+      );
+    }
     return new CraftpixDownloadError(
-      "Craftpix returned a membership page instead of an archive. Refresh the exported cookies.",
+      `Craftpix returned a download landing page without an archive link. Check product access.\n  ${details}`,
     );
   }
-  if (text.includes("Sign in") || finalUrl.includes("/my-account/")) {
+  if (text.includes("UNLOCK DOWNLOAD") || finalUrl.includes("/membership/")) {
     return new CraftpixDownloadError(
-      "Craftpix returned a sign-in page instead of an archive. Re-export logged-in cookies.",
+      `Craftpix returned a membership page instead of an archive. Refresh the exported cookies.\n  ${details}`,
+    );
+  }
+  if (looksLikeSignInPage(finalUrl, text)) {
+    return new CraftpixDownloadError(
+      `Craftpix returned a sign-in page instead of an archive. Re-export logged-in cookies.\n  ${details}`,
     );
   }
   return new CraftpixDownloadError(
-    `Craftpix returned HTML instead of an archive from ${finalUrl}. Check cookies and source URL.`,
+    `Craftpix returned HTML instead of an archive. Check cookies and source URL.\n  ${details}`,
   );
 }
 
-export async function downloadArchive(
-  downloadUrl: string,
-  outputDir: string,
-  filenameOverride: string | undefined,
-  overwrite: boolean,
-  timeout: number,
-  fallbackTitle: string,
-  headers: HeadersInit,
-): Promise<string> {
-  const resolvedOutputDir = resolve(expandUserPath(outputDir));
-  mkdirSync(resolvedOutputDir, { recursive: true });
+function withReferer(headers: HeadersInit, referer: string): HeadersInit {
+  const next = new Headers(headers);
+  next.set("Referer", referer);
+  return next;
+}
 
-  const response = await fetch(downloadUrl, {
-    headers,
+async function fetchArchiveResponse(
+  archiveUrl: string,
+  referer: string,
+  headers: HeadersInit,
+  timeout: number,
+): Promise<Response> {
+  return fetch(archiveUrl, {
+    headers: withReferer(headers, referer),
     redirect: "follow",
     signal: AbortSignal.timeout(timeout * 1000),
   });
-  const contentType = response.headers.get("content-type") ?? "";
-  if (contentType.startsWith("text/")) {
-    throw detectHtmlError(response.url, await response.text());
+}
+
+function logDebug(enabled: boolean | undefined, message: string): void {
+  if (enabled) {
+    console.error(`[craftpix debug] ${message}`);
   }
+}
+
+async function writeArchiveResponse(
+  response: Response,
+  resolvedOutputDir: string,
+  filenameOverride: string | undefined,
+  overwrite: boolean,
+  fallbackTitle: string,
+): Promise<string> {
   if (!response.ok) {
     throw new CraftpixDownloadError(`Craftpix download failed with HTTP ${response.status} from ${response.url}.`);
   }
@@ -294,14 +435,79 @@ export async function downloadArchive(
   return destination;
 }
 
+export async function downloadArchive(
+  downloadUrl: string,
+  outputDir: string,
+  filenameOverride: string | undefined,
+  overwrite: boolean,
+  timeout: number,
+  fallbackTitle: string,
+  headers: HeadersInit,
+  debug?: boolean,
+): Promise<string> {
+  const resolvedOutputDir = resolve(expandUserPath(outputDir));
+  mkdirSync(resolvedOutputDir, { recursive: true });
+
+  const landingResponse = await fetch(downloadUrl, {
+    headers,
+    redirect: "follow",
+    signal: AbortSignal.timeout(timeout * 1000),
+  });
+  const landingContentType = landingResponse.headers.get("content-type") ?? "";
+  if (!landingContentType.startsWith("text/")) {
+    return writeArchiveResponse(landingResponse, resolvedOutputDir, filenameOverride, overwrite, fallbackTitle);
+  }
+
+  const landingHtml = await landingResponse.text();
+  const archiveUrl = extractCdnArchiveUrl(landingHtml);
+  if (!archiveUrl) {
+    throw detectHtmlError(landingResponse.url, landingContentType, landingHtml);
+  }
+
+  logDebug(debug, `resolved CDN archive URL: ${archiveUrl}`);
+  const archiveResponse = await fetchArchiveResponse(archiveUrl, landingResponse.url, headers, timeout);
+  const archiveContentType = archiveResponse.headers.get("content-type") ?? "";
+  if (archiveContentType.startsWith("text/")) {
+    const archiveHtml = await archiveResponse.text();
+    throw detectHtmlError(archiveResponse.url, archiveContentType, archiveHtml);
+  }
+
+  const archiveBytes = new Uint8Array(await archiveResponse.arrayBuffer());
+  if (!isZipResponse(archiveContentType, archiveBytes)) {
+    throw new CraftpixDownloadError(
+      `Craftpix CDN response from ${archiveResponse.url} was not a zip archive (content-type: ${archiveContentType || "unknown"}).`,
+    );
+  }
+
+  const filename =
+    filenameOverride ??
+    inferFilename(archiveResponse.headers.get("content-disposition"), archiveResponse.url, fallbackTitle);
+  const destination = resolve(resolvedOutputDir, filename);
+  if (existsSync(destination) && !overwrite) {
+    throw new CraftpixDownloadError(
+      `Refusing to overwrite existing file: ${destination}. Pass --overwrite to replace it.`,
+    );
+  }
+  mkdirSync(dirname(destination), { recursive: true });
+  writeFileSync(destination, archiveBytes);
+  return destination;
+}
+
 export async function executeDownload(request: DownloadRequest): Promise<{
   resolved: ResolvedDownload;
   destination?: string;
 }> {
   const sourceUrl = normalizeCraftpixUrl(request.sourceUrl);
-  const cookieHeader = buildCookieHeader(getCookieFile(request.cookieFile), !request.resolveOnly);
-  const headers = buildHeaders(cookieHeader);
+  const cookieFile = getCookieFile(request.cookieFile);
+  const parsedCookies = parseCookieFile(cookieFile, !request.resolveOnly);
+  logDebug(request.debug, `cookie file: ${parsedCookies.resolvedCookieFile}`);
+  logDebug(
+    request.debug,
+    `parsed ${parsedCookies.names.length} craftpix.net cookie(s): ${parsedCookies.names.join(", ") || "(none)"}`,
+  );
+  const headers = buildHeaders(parsedCookies.header);
   const resolved = await resolveDownloadUrl(sourceUrl, request.subitem, headers, request.timeout);
+  logDebug(request.debug, `resolved download URL: ${resolved.downloadUrl}`);
 
   if (request.resolveOnly) {
     return { resolved };
@@ -319,6 +525,7 @@ export async function executeDownload(request: DownloadRequest): Promise<{
     request.timeout,
     resolved.title,
     headers,
+    request.debug,
   );
 
   return {

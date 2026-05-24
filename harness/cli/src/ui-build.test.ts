@@ -1,7 +1,7 @@
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { buildUiBundle, createUiAssetManager } from "./ui-build";
+import { buildUiBundle, createUiAssetManager, enrichUiBuildFileSystemError } from "./ui-build";
 
 class FakeClock {
   private nextTimerId = 1;
@@ -49,6 +49,15 @@ const flushMicrotasks = () => Promise.resolve().then(() => Promise.resolve());
 setDefaultTimeout(15000);
 
 describe("ui build", () => {
+  test("rebuilds when dist ui directory already exists", async () => {
+    const uiOutDir = path.resolve(process.cwd(), "dist/ui");
+    mkdirSync(uiOutDir, { recursive: true });
+
+    await buildUiBundle();
+
+    expect(existsSync(path.join(uiOutDir, "index.html"))).toBe(true);
+  });
+
   test("emits external source maps in development build", async () => {
     await buildUiBundle();
 
@@ -73,6 +82,15 @@ describe("ui build", () => {
     expect(existsSync(jsPath)).toBe(true);
     expect(existsSync(mapPath)).toBe(false);
     expect(readFileSync(jsPath, "utf8")).not.toContain("sourceMappingURL");
+  });
+
+  test("adds cleanup guidance to out-of-space build failures", () => {
+    const error = Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
+    const enriched = enrichUiBuildFileSystemError(error);
+
+    expect(enriched).toBeInstanceOf(Error);
+    expect((enriched as Error).message).toContain("filesystem is out of space");
+    expect((enriched as Error).message).toContain(".local/branchfs");
   });
 
   test("debounces watch storms and publishes live reload revision only after successful rebuild", async () => {
@@ -187,11 +205,11 @@ describe("ui build", () => {
     manager.dispose();
   });
 
-  test("ignores context and agent metadata watch events", async () => {
+  test("ignores test, context, and agent metadata watch events", async () => {
     const buildCalls: string[] = [];
     let watcherListener: ((changedPath?: string) => void) | undefined;
     const manager = createUiAssetManager({
-      isTrackedFile: (changedPath) => changedPath?.includes(path.join("harness", "ui")) === true,
+      isTrackedFile: (changedPath) => changedPath !== undefined,
       async buildUiBundle() {
         buildCalls.push(`build-${buildCalls.length + 1}`);
       },
@@ -209,6 +227,10 @@ describe("ui build", () => {
     watcherListener?.(path.resolve(process.cwd(), ".agents/skills/caveman/SKILL.md"));
     watcherListener?.(path.resolve(process.cwd(), "AGENTS.md"));
     watcherListener?.(path.resolve(process.cwd(), "nested/agents.md"));
+    watcherListener?.(path.resolve(process.cwd(), "harness/ui/src/app.test.tsx"));
+    watcherListener?.(path.resolve(process.cwd(), "harness/ui/src/components/chat-panel.integration.test.tsx"));
+    watcherListener?.(path.resolve(process.cwd(), "harness/shared/mode-intent.test.ts"));
+    watcherListener?.(path.resolve(process.cwd(), "harness/ui/src/utils/tests/test-harness.ts"));
     await flushMicrotasks();
     expect(buildCalls).toEqual([]);
 

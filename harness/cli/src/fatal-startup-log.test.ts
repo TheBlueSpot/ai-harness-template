@@ -51,4 +51,21 @@ describe("fatal startup logger", () => {
     expect(secondRecord).toBe(firstRecord);
     expect(stderrLines.filter((line) => line.startsWith("Fatal "))).toHaveLength(1);
   });
+
+  test("adds cleanup guidance for out-of-space startup failures", () => {
+    const stderrLines: string[] = [];
+    const logger = createFatalStartupLogger({
+      launchMode: "source",
+      stderrWrite(line) {
+        stderrLines.push(line);
+      }
+    });
+    const error = Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
+
+    const record = logger(error, "startup");
+
+    expect(record.message).toContain("Disk appears full");
+    expect(record.message).toContain(".local/branchfs");
+    expect(stderrLines[0]).toContain("Disk appears full");
+  });
 });

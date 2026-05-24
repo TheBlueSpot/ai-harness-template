@@ -378,7 +378,108 @@ describe("workspace repository", () => {
     expect(updatedRun?.lastHeartbeatAt).toBe(terminalRun?.lastHeartbeatAt);
     expect(updatedRun?.heartbeatStage).toBe("cancelled");
     expect(updatedRun?.heartbeatDetail).toBe("Stopped by user");
-    expect(updatedRun?.events.some((event) => event.stage === "trace" && event.message === "Late trace")).toBe(true);
+    expect(updatedRun?.events.some((event) => event.stage === "trace" && event.message === "Late trace")).toBe(false);
+  });
+
+  test("persists partial-complete background runs as terminal warning state", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    const now = new Date().toISOString();
+    const job = repository.saveBackgroundJob({
+      id: createBackgroundJobId(),
+      projectId: project.id,
+      automationThreadId: createThreadId(),
+      kind: "ai-routine",
+      name: "Partial job",
+      status: "enabled",
+      riskLevel: "safe",
+      definition: {
+        kind: "ai-routine",
+        prompt: "Do partial work."
+      },
+      schedule: {
+        type: "interval",
+        intervalSeconds: 600,
+        nextRunAt: now,
+        sourceText: "10m"
+      },
+      scheduleInput: "10m",
+      nextRunAt: now,
+      createdAt: now,
+      updatedAt: now
+    }).jobs[0]!;
+    const run = repository.createBackgroundJobRun({
+      jobId: job.id,
+      projectId: project.id,
+      automationThreadId: job.automationThreadId,
+      triggerSource: "manual",
+      status: "running",
+      riskLevel: "safe",
+      approvalStatus: "approved"
+    });
+
+    repository.setBackgroundJobRunStatus(run.id, "partial-complete", {
+      summary: "Useful result.",
+      failureMessage: "Some subagent work failed."
+    });
+    repository.touchBackgroundJobRun(run.id, { stage: "late-progress", detail: "should not move terminal row" });
+
+    const restoredRepository = new WorkspaceRepository((repository as any).dbPath, process.cwd());
+    const restoredRun = restoredRepository.getBackgroundJobRun(run.id);
+    expect(restoredRun?.status).toBe("partial-complete");
+    expect(restoredRun?.summary).toBe("Useful result.");
+    expect(restoredRun?.failureMessage).toBe("Some subagent work failed.");
+    expect(restoredRun?.completedAt).toBeTruthy();
+    expect(restoredRun?.heartbeatStage).toBe("partial-complete");
+    expect(restoredRepository.getActiveBackgroundJobRuns(job.id)).toHaveLength(0);
+  });
+
+  test("reconciles linked partial-complete agent runs without hard failure", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    const now = new Date().toISOString();
+    const job = repository.saveBackgroundJob({
+      id: createBackgroundJobId(),
+      projectId: project.id,
+      automationThreadId: createThreadId(),
+      kind: "ai-routine",
+      name: "Partial reconcile job",
+      status: "enabled",
+      riskLevel: "safe",
+      definition: {
+        kind: "ai-routine",
+        prompt: "Do partial work."
+      },
+      schedule: {
+        type: "interval",
+        intervalSeconds: 600,
+        nextRunAt: now,
+        sourceText: "10m"
+      },
+      scheduleInput: "10m",
+      nextRunAt: now,
+      createdAt: now,
+      updatedAt: now
+    }).jobs[0]!;
+    repository.createAgentRun(project.id, "linked work", "openai/gpt-5.4", job.automationThreadId);
+    const linkedRunId = repository.getLatestThreadRun(project.id, job.automationThreadId)!.id;
+    repository.setAgentRunStatus(project.id, linkedRunId, "partial-complete", "Background run partial complete");
+    const run = repository.createBackgroundJobRun({
+      jobId: job.id,
+      projectId: project.id,
+      automationThreadId: job.automationThreadId,
+      triggerSource: "manual",
+      status: "running",
+      riskLevel: "safe",
+      approvalStatus: "approved"
+    });
+    repository.setBackgroundJobRunStatus(run.id, "running", { linkedAgentRunId: linkedRunId });
+
+    const repaired = repository.repairInterruptedBackgroundJobRuns();
+
+    expect(repaired[0]?.status).toBe("partial-complete");
+    expect(repaired[0]?.failureCategory).toBeUndefined();
+    expect(repository.getBackgroundJobRun(run.id)?.events.some((event) => event.stage === "partial-complete")).toBe(true);
   });
 
   test("persists added project history without default bootstrap", () => {
@@ -2274,6 +2375,88 @@ describe("workspace repository", () => {
     db.close(false);
   });
 
+  test("requires owned controller lease for live background writes and keeps terminal states monotonic", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    const now = new Date().toISOString();
+    const job = repository.saveBackgroundJob({
+      id: createBackgroundJobId(),
+      projectId: project.id,
+      automationThreadId: createThreadId(),
+      kind: "ai-routine",
+      name: "Owned writes",
+      status: "enabled",
+      riskLevel: "safe",
+      definition: {
+        kind: "ai-routine",
+        prompt: "Check ownership."
+      },
+      schedule: {
+        type: "interval",
+        intervalSeconds: 600,
+        nextRunAt: now,
+        sourceText: "10m"
+      },
+      scheduleInput: "10m",
+      createdAt: now,
+      updatedAt: now
+    }).jobs[0]!;
+    const run = repository.createBackgroundJobRun({
+      jobId: job.id,
+      projectId: project.id,
+      automationThreadId: job.automationThreadId,
+      triggerSource: "manual",
+      status: "queued",
+      riskLevel: "safe",
+      approvalStatus: "approved"
+    });
+    repository.setBackgroundJobRunStatus(run.id, "running", {
+      controllerInstanceId: "controller-1",
+      controllerLeaseId: "lease-1",
+      controllerLeaseExpiresAt: "2026-05-01T15:00:00.000Z"
+    });
+
+    expect(repository.appendBackgroundJobRunEventIfOwned(run.id, "lease-2", "trace", "Late trace")).toBeUndefined();
+    expect(
+      repository.touchBackgroundJobRunIfOwned(run.id, "lease-2", { stage: "late-heartbeat", detail: "wrong owner" })
+    ).toBeUndefined();
+    expect(repository.setBackgroundJobRunStatusIfOwned(run.id, "lease-2", "succeeded", { summary: "wrong owner" })).toBeUndefined();
+
+    let refreshedRun = repository.getBackgroundJobRun(run.id);
+    expect(refreshedRun?.status).toBe("running");
+    expect(refreshedRun?.heartbeatStage).toBe("running");
+    expect(refreshedRun?.events.some((event) => event.message === "Late trace")).toBe(false);
+
+    repository.appendBackgroundJobRunEventIfOwned(run.id, "lease-1", "trace", "Owned trace");
+    const firstTimedOutAt = "2026-05-01T15:30:00.000Z";
+    const secondTimedOutAt = "2026-05-01T15:45:00.000Z";
+    repository.setBackgroundJobRunStatusIfOwned(run.id, "lease-1", "failed", {
+      failureMessage: "Background run interrupted before completion",
+      failureCategory: "controller-lost",
+      timedOutAt: firstTimedOutAt
+    });
+    repository.setBackgroundJobRunStatus(run.id, "succeeded", { summary: "late success" });
+    repository.setBackgroundJobRunStatus(run.id, "failed", {
+      failureMessage: "late timeout rewrite",
+      failureCategory: "max-runtime-timeout",
+      timedOutAt: secondTimedOutAt,
+      allowTerminalRewrite: true
+    });
+    repository.appendBackgroundJobRunEvent(run.id, "trace", "Late non-terminal trace");
+    refreshedRun = repository.getBackgroundJobRun(run.id);
+    expect(refreshedRun?.status).toBe("failed");
+    expect(refreshedRun?.failureCategory).toBe("max-runtime-timeout");
+    expect(refreshedRun?.timedOutAt).toBe(firstTimedOutAt);
+    expect(refreshedRun?.events.some((event) => event.message === "Owned trace")).toBe(true);
+    expect(refreshedRun?.events.some((event) => event.message === "Late non-terminal trace")).toBe(false);
+
+    repository.createAgentRun(project.id, "terminal run", "openai/gpt-5.4", job.automationThreadId);
+    const agentRunId = repository.getLatestThreadRun(project.id, job.automationThreadId)!.id;
+    repository.setAgentRunStatus(project.id, agentRunId, "failed", "failed first", "controller-lost");
+    repository.setAgentRunStatus(project.id, agentRunId, "completed");
+    expect(repository.getRun(project.id, agentRunId)?.status).toBe("failed");
+  });
+
   test("scopes repeated planner question ids per run", () => {
     const repository = createRepository();
     const project = addProject(repository);
@@ -2506,7 +2689,7 @@ describe("workspace repository", () => {
     const repairedDb = new Database(dbPath, { readonly: true, strict: true });
     const schemas = repairedDb
       .query<{ name: string; sql: string }, []>(
-        `SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name IN ('background_job_run_events', 'notifications')`
+        `SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name IN ('background_job_runs', 'background_job_run_events', 'notifications')`
       )
       .all();
     repairedDb.close(false);
@@ -2517,7 +2700,8 @@ describe("workspace repository", () => {
       templates: expect.any(Array)
     });
     expect(schemas.every((row) => !row.sql.includes("background_job_runs_legacy"))).toBe(true);
-    expect(schemas.every((row) => row.sql.includes("REFERENCES background_job_runs"))).toBe(true);
+    expect(schemas.filter((row) => row.name !== "background_job_runs").every((row) => row.sql.includes("REFERENCES background_job_runs"))).toBe(true);
+    expect(schemas.find((row) => row.name === "background_job_runs")?.sql).toContain("'partial-complete'");
     expect(schemas.find((row) => row.name === "notifications")?.sql).toContain("'cli-update'");
   });
 

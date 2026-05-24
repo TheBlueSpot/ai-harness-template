@@ -62,7 +62,7 @@ export function SheetContent(props: {
       <div data-test-sheet-backdrop="" class="fixed inset-0 z-40 bg-black/45 backdrop-blur-sm" onClick={() => props.onClose?.()} />
       <aside
         class={cn(
-          "fixed inset-y-0 left-0 z-50 flex w-[88vw] max-w-sm flex-col border-r border-(--border) bg-(--panel) p-3 shadow-2xl",
+          "fixed inset-y-0 left-0 z-50 flex h-[100dvh] w-[88vw] max-w-sm flex-col overflow-hidden border-r border-(--border) bg-(--panel) p-3 shadow-2xl",
           props.class
         )}
         data-test-sheet=""
@@ -81,7 +81,7 @@ export function SheetContent(props: {
         }}
         onClick={(event) => event.stopPropagation()}
       >
-        <div class="mb-4 flex items-center justify-between gap-3">
+        <div class="mb-3 flex shrink-0 items-center justify-between gap-3">
           <div class="text-xs font-semibold uppercase tracking-[0.18em] text-(--muted)">{props.title}</div>
           <button
             class="inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg text-(--foreground) transition hover:bg-(--panel-strong) disabled:cursor-not-allowed"
@@ -92,7 +92,9 @@ export function SheetContent(props: {
             <X class="h-4 w-4" />
           </button>
         </div>
-        {props.children}
+        <div data-test-sheet-body="" class="flex min-h-0 flex-1 flex-col overflow-hidden">
+          {props.children}
+        </div>
       </aside>
     </Show>
   );

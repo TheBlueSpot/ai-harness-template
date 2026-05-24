@@ -16,7 +16,7 @@ import { PreferenceSectionNav, PreferencesPanel } from "./components/preferences
 import { ProjectSidebar } from "./components/project-sidebar";
 import { ProjectSwitcherDialog } from "./components/project-switcher-dialog";
 import { Toaster } from "./components/toaster";
-import { TracePanel } from "./components/trace-panel";
+import { TracePanel, TracePeekRail } from "./components/trace-panel";
 import { getTutorialDefinition } from "./components/tutorial-definitions";
 import { TutorialOverlay } from "./components/tutorial-overlay";
 import { ActionButton } from "./components/action-button";
@@ -28,7 +28,6 @@ import { harnessStore, type AssistantEditorDraft, type BackgroundJobEditorDraft,
 import { resolveBrowserTimezone } from "./lib/time-format";
 import { appHotkeySettings, currentTabItemHotkeyIds, normalizeAppHotkeyPreferences, type AppHotkeyId } from "./lib/app-hotkeys";
 import { selectCurrentTabItem } from "./lib/current-tab-item-hotkeys";
-import { isEditableTarget } from "./lib/editable-target";
 import { reportUiError } from "./toast-store";
 
 export function App() {
@@ -67,15 +66,19 @@ export function App() {
   createHotkeys(
     appHotkeys,
     () => ({
-      enabled: !harnessStore.state.projectSwitcherOpen && !isProjectSwitcherInputFocused() && !isEditableTarget(document.activeElement),
-      ignoreInputs: false
+      enabled: !harnessStore.state.projectSwitcherOpen && !isProjectSwitcherInputFocused(),
+      ignoreInputs: false,
+      preventDefault: true,
+      stopPropagation: true
     })
   );
   createHotkeys(
     searchHotkeys,
     () => ({
       enabled: !harnessStore.state.projectSwitcherOpen && !isProjectSwitcherInputFocused(),
-      ignoreInputs: false
+      ignoreInputs: false,
+      preventDefault: true,
+      stopPropagation: true
     })
   );
 
@@ -129,7 +132,7 @@ export function App() {
     event.preventDefault();
     const startX = event.clientX;
     const startSizes = { ...state.mainPanelSizes };
-    const total = state.tracePanelOpen
+    const total = state.tracePanelMode === "open"
       ? startSizes.left + startSizes.center + startSizes.right
       : startSizes.left + startSizes.center;
     const pixelsPerFr = Math.max(80, window.innerWidth / total);
@@ -163,33 +166,33 @@ export function App() {
     return `Resume new executions | queued ${state.executionControl.deferredPlanningQuestionCount} planner, ${state.executionControl.deferredAssistantQuestionCount} assistant, ${state.executionControl.deferredBrowserApprovalCount} browser`;
   };
   return (
-    <main data-test-app-shell="" class="app-zoom-shell relative overflow-auto px-[0.6rem] py-[0.6rem] md:px-4 md:py-4 lg:overflow-hidden">
+    <main data-test-app-shell="" class="app-zoom-shell relative overflow-auto px-2 py-2 md:px-3 md:py-3 lg:overflow-hidden">
       <div class="app-background" />
-      <div class="mx-auto flex h-full min-h-0 flex-col gap-4">
-        <header data-test-app-header="" class="panel-shell flex flex-col gap-3 rounded-2xl px-[0.8rem] py-[0.6rem] md:flex-row md:items-center md:justify-between">
-          <div class="flex items-center gap-3">
+      <div class="mx-auto flex h-full min-h-0 flex-col gap-3">
+        <header data-test-app-header="" class="panel-shell app-command-bar flex flex-col gap-2 rounded-xl px-3 py-2 md:flex-row md:items-center md:justify-between">
+          <div class="flex min-w-0 items-center gap-3">
             <SheetRoot open={sidebarOpen()} onOpenChange={setSidebarOpen}>
               <div class="lg:hidden">
                 <SheetTrigger
-                  class="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-(--border) bg-white/60 text-(--foreground)"
+                  class="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-(--border) bg-white/75 text-(--foreground)"
                   aria-label="Open projects"
                   data-tour-id="project-sidebar"
                   onClick={() => setSidebarOpen(true)}
                 >
                   <Menu class="h-4 w-4" />
                 </SheetTrigger>
-                <SheetContent open={sidebarOpen()} onClose={() => setSidebarOpen(false)} title="Workspace">
+                <SheetContent open={sidebarOpen()} onClose={() => setSidebarOpen(false)} title="Workspace" class="h-[100dvh]">
                   <TabbedLeftPane compact onNavigate={() => setSidebarOpen(false)} />
                 </SheetContent>
               </div>
             </SheetRoot>
 
-            <div class="space-y-1">
-              <div class="flex items-center gap-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--muted)">
+            <div class="min-w-0">
+              <div class="flex min-w-0 items-center gap-2 text-[0.585rem] font-semibold uppercase tracking-[0.16em] text-(--muted)">
                 <Workflow class="h-3.5 w-3.5" />
-                AI harness workspace
+                <span class="truncate">AI harness workspace</span>
               </div>
-              <div data-test-mobile-surface-label="" class="inline-flex items-center gap-1.5 rounded-full border border-(--border) bg-white/60 px-2 py-1 text-[0.625rem] font-semibold text-(--foreground) lg:hidden">
+              <div data-test-mobile-surface-label="" class="mt-1 inline-flex max-w-full items-center gap-1.5 rounded-md border border-(--border) bg-white/75 px-2 py-1 text-[0.625rem] font-semibold text-(--foreground) lg:hidden">
                 {(() => {
                   const Icon = activeLeftTabDefinition().icon;
                   return <Icon class="h-3.5 w-3.5" />;
@@ -199,7 +202,7 @@ export function App() {
             </div>
           </div>
 
-          <div class="flex flex-wrap items-center gap-3">
+          <div class="flex flex-wrap items-center gap-2">
             <ConnectionBanner />
             <NotificationInbox />
             <ActionButton
@@ -230,12 +233,14 @@ export function App() {
             >
             </ActionButton>
             <ActionButton
-              tooltip={state.tracePanelOpen ? "Hide developer trace panel" : "Show developer trace panel"}
+              tooltip={withPrimaryHotkey(`Trace panel: ${state.tracePanelMode}. Click to cycle closed, peek, open.`, "toggleTracePanel")}
               icon={<PanelsTopLeft class="h-4 w-4" />}
               variant="secondary"
               dataTourId="trace-panel-toggle"
               onClick={() => harnessStore.toggleTracePanel()}
-            />
+            >
+              <span class="hidden sm:inline">{state.tracePanelMode === "closed" ? "Trace" : state.tracePanelMode}</span>
+            </ActionButton>
           </div>
         </header>
 
@@ -243,8 +248,9 @@ export function App() {
           data-test-main-panel-grid=""
           class="grid min-h-0 flex-1 auto-rows-min gap-4 lg:auto-rows-fr lg:gap-x-2"
           classList={{
-            "lg:grid-cols-[minmax(0,var(--left-panel-size))_0.35rem_minmax(0,var(--center-panel-size))_0.35rem_minmax(0,var(--right-panel-size))]": state.tracePanelOpen,
-            "lg:grid-cols-[minmax(0,var(--left-panel-size))_0.35rem_minmax(0,var(--center-panel-size))]": !state.tracePanelOpen
+            "lg:grid-cols-[minmax(0,var(--left-panel-size))_0.35rem_minmax(0,var(--center-panel-size))_0.35rem_minmax(0,var(--right-panel-size))]": state.tracePanelMode === "open",
+            "lg:grid-cols-[minmax(0,var(--left-panel-size))_0.35rem_minmax(0,var(--center-panel-size))_0.35rem_12rem]": state.tracePanelMode === "peek",
+            "lg:grid-cols-[minmax(0,var(--left-panel-size))_0.35rem_minmax(0,var(--center-panel-size))]": state.tracePanelMode === "closed"
           }}
           style={mainPanelGridStyle()}
         >
@@ -273,11 +279,15 @@ export function App() {
               <BackgroundJobsPanel variant="detail" segment={activeLeftTab() === "jobs" ? "jobs" : "runs"} />
             </Show>
           </div>
-          <Show when={state.tracePanelOpen}>
+          <Show when={state.tracePanelMode !== "closed"}>
             <>
-              <PanelResizeHandle label="Resize center and trace panels" onPointerDown={(event) => startPanelResize("right", event)} />
+              <Show when={state.tracePanelMode === "open"} fallback={<div class="hidden lg:block" />}>
+                <PanelResizeHandle label="Resize center and trace panels" onPointerDown={(event) => startPanelResize("right", event)} />
+              </Show>
               <div class="min-h-0 min-w-0">
-                <TracePanel />
+                <Show when={state.tracePanelMode === "open"} fallback={<TracePeekRail />}>
+                  <TracePanel />
+                </Show>
               </div>
             </>
           </Show>
@@ -336,6 +346,9 @@ function handleAppHotkey(id: AppHotkeyId) {
   switch (id) {
     case "openProjectSwitcher":
       harnessStore.openProjectSwitcher();
+      return;
+    case "toggleTracePanel":
+      harnessStore.toggleTracePanel();
       return;
     case "createProjectChat":
       createProjectChatFromHotkey();
@@ -550,6 +563,8 @@ function TabbedLeftPane(props: { compact?: boolean; onNavigate?: () => void } = 
       <nav
           ref={navRef}
           data-test-left-tab-nav=""
+          role="tablist"
+          aria-label="Workspace panels"
           class="surface-tab-strip px-4 lg:px-5"
           classList={{ "surface-tab-strip-icons-only": iconsOnly() }}
       >
@@ -561,9 +576,11 @@ function TabbedLeftPane(props: { compact?: boolean; onNavigate?: () => void } = 
               <Tooltip content={tooltip()}>
                 <button
                   type="button"
+                  role="tab"
                   class="surface-tab"
                   aria-label={tab.label}
-                  attr:aria-pressed={state.activeLeftTab === tab.id ? "true" : "false"}
+                  attr:aria-selected={state.activeLeftTab === tab.id ? "true" : "false"}
+                  tabIndex={state.activeLeftTab === tab.id ? 0 : -1}
                   onClick={() => {
                     harnessStore.setActiveLeftTab(tab.id);
                     props.onNavigate?.();
@@ -577,7 +594,7 @@ function TabbedLeftPane(props: { compact?: boolean; onNavigate?: () => void } = 
           }}
         </For>
       </nav>
-      <div class="min-h-0 flex-1 rounded-b-2xl">
+      <div class="min-h-0 flex-1 overflow-hidden rounded-b-xl">
         <Show
           when={state.activeLeftTab === "jobs" || state.activeLeftTab === "runs"}
           fallback={

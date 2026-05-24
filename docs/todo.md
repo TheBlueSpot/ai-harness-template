@@ -35,6 +35,15 @@
 - Treat memory, skills, and reusable playbooks as governed assets with source, freshness, hit history, and clear update controls; Hermes-style learning loops are sticky, but opaque or over-broad memory would conflict with this harness's local-first trust model
 - Source caveat: YouTube signals were gathered from public pages, search snippets, transcripts, and mirrors only; direct comment coverage is incomplete, so GitHub, docs, forums, and Reddit carry more weight
 
+## Engine Package Priorities
+
+- P1: Keep root and browser exports restrained until every public primitive has clear consumer proof, strong naming, and a defensible reason to live outside a game-local helper
+- P1: Treat packed-artifact consumer proof as the release gate for engine DX, including explicit exports, declaration output, subpath imports, and WASM asset reachability from real package installs
+- P2: Preserve generated declaration hygiene; camera declarations are currently green, but every generated surface must stay free of elided `any` leaks before API growth resumes
+- P2: Keep WASM boundaries narrow and boring: deterministic TypeScript fallback, MIME-aware streaming fallback, opt-in diagnostics, parity tests, and benchmark gates before any new kernel is admitted
+- P3: Delay benchmark threshold tightening until migrated games provide real hot-path evidence; synthetic parity remains necessary but should not pretend to be product proof
+- P3: Keep native WASM asset-hosting proof documented as a lower-risk release lane, not a reason to widen the runtime surface
+
 ## Activation And Onboarding
 
 - Add signed installers, update channels, and polish around portable launcher distribution without pulling the product into a full desktop-shell rewrite

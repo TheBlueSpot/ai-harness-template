@@ -68,6 +68,21 @@ describe("branchfs manager", () => {
     await manager.unmountExperiment(lease);
   });
 
+  test("prepares concurrent leases without pruning in-flight partial roots", async () => {
+    const rootPath = await fixture.createRepoClone("branchfs-concurrent");
+    const managers = [
+      new BranchfsManager({ rootPath, runId: "run-concurrent-a" }),
+      new BranchfsManager({ rootPath, runId: "run-concurrent-b" })
+    ];
+
+    const leases = await Promise.all(managers.map((manager) => manager.prepareExperimentLease()));
+
+    expect(existsSync(leases[0].manifestPath)).toBe(true);
+    expect(existsSync(leases[1].manifestPath)).toBe(true);
+
+    await Promise.all(managers.map((manager, index) => manager.unmountExperiment(leases[index])));
+  });
+
   test("handles dirty tracked files deleted before lease creation", async () => {
     const rootPath = await fixture.createRepoClone("branchfs-deleted-dirty");
     await rm(path.join(rootPath, "tracked.txt"), { force: true });
@@ -79,6 +94,14 @@ describe("branchfs manager", () => {
 
     await manager.unmountExperiment(lease);
     expect(existsSync(lease.repoMountPath)).toBe(false);
+  });
+
+  test("rejects unsafe run ids before touching branchfs roots", async () => {
+    const rootPath = await fixture.createRepoClone("branchfs-unsafe-run-id");
+    const manager = new BranchfsManager({ rootPath, runId: "../outside" });
+
+    await expect(manager.prepareExperimentLease()).rejects.toThrow("BranchFS runId must be a single safe path segment");
+    expect(existsSync(path.join(rootPath, ".local", "outside"))).toBe(false);
   });
 
   test("reads diff and flushes experiment changes back to disk", async () => {
@@ -106,6 +129,41 @@ describe("branchfs manager", () => {
 
     await manager.discardExperiment(lease);
     expect(existsSync(path.dirname(lease.repoMountPath))).toBe(false);
+  });
+
+  test("flushes file to directory replacements back to disk", async () => {
+    const rootPath = await fixture.createRepoClone("branchfs-file-to-dir");
+
+    const manager = new BranchfsManager({ rootPath, runId: "run-file-to-dir" });
+    const lease = await manager.prepareExperimentLease();
+
+    await rm(path.join(lease.projectMountPath, "tracked.txt"), { force: true });
+    await mkdir(path.join(lease.projectMountPath, "tracked.txt"), { recursive: true });
+    writeFileSync(path.join(lease.projectMountPath, "tracked.txt", "child.txt"), "child\n");
+
+    await manager.flushExperiment(lease);
+
+    expect((await lstat(path.join(rootPath, "tracked.txt"))).isDirectory()).toBe(true);
+    expect(await readText(path.join(rootPath, "tracked.txt", "child.txt"))).toBe("child\n");
+
+    await manager.discardExperiment(lease);
+  });
+
+  test("flushes directory to file replacements back to disk", async () => {
+    const rootPath = await fixture.createRepoClone("branchfs-dir-to-file");
+
+    const manager = new BranchfsManager({ rootPath, runId: "run-dir-to-file" });
+    const lease = await manager.prepareExperimentLease();
+
+    await rm(path.join(lease.projectMountPath, "nested"), { recursive: true, force: true });
+    writeFileSync(path.join(lease.projectMountPath, "nested"), "replacement file\n");
+
+    await manager.flushExperiment(lease);
+
+    expect((await lstat(path.join(rootPath, "nested"))).isFile()).toBe(true);
+    expect(await readText(path.join(rootPath, "nested"))).toBe("replacement file\n");
+
+    await manager.discardExperiment(lease);
   });
 });
 
