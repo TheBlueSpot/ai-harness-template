@@ -11,6 +11,7 @@ type ChatComposerProps = {
   disabledReason?: string;
   onInput: (value: string) => void;
   onSubmit: () => void;
+  onKeyDown?: JSX.EventHandlerUnion<HTMLTextAreaElement, KeyboardEvent>;
   leftControls?: JSX.Element;
   rightActions?: JSX.Element;
   textareaRef?: (element: HTMLTextAreaElement) => void;
@@ -30,7 +31,15 @@ export function ChatComposer(props: ChatComposerProps) {
         disabled={props.disabled}
         aria-description={props.disabled && props.disabledReason ? props.disabledReason : undefined}
         class={cn("w-full resize-none rounded-xl pb-12 pr-14", props.textareaClass)}
-        onKeyDown={submitOnEnter(props.onSubmit)}
+        onKeyDown={(event) => {
+          if (typeof props.onKeyDown === "function") {
+            props.onKeyDown(event);
+            if (event.defaultPrevented) {
+              return;
+            }
+          }
+          submitOnEnter(props.onSubmit)(event);
+        }}
         onInput={(event) => props.onInput(event.currentTarget.value)}
       />
       <div class="pointer-events-none absolute bottom-2 right-2 flex items-center gap-1.5">{props.rightActions}</div>

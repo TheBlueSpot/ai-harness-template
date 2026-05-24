@@ -314,6 +314,7 @@ export type HarnessViewState = {
   connectionState: ConnectionState;
   connectionError?: string;
   availableAgents: AgentOption[];
+  availableSkillPaths: string[];
   agentRuntimes: AgentRuntimeCapability[];
   setup: SetupState;
   workspace: ViewWorkspaceState;
@@ -599,6 +600,7 @@ export function createInitialViewState(): HarnessViewState {
     connectionState: "disconnected",
     connectionError: undefined,
     availableAgents: [...defaultAgentCatalog],
+    availableSkillPaths: [],
     agentRuntimes: [],
     setup: createInitialSetupState(),
     workspace: createInitialWorkspaceState(),
@@ -756,6 +758,7 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
       const readyState = {
         ...state,
         availableAgents: [...event.payload.agents],
+        availableSkillPaths: event.payload.availableSkillPaths ?? [],
         setup: event.payload.setup,
         workspace,
         assistants,
@@ -792,6 +795,7 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
     case "project.opened":
       return {
         ...state,
+        availableSkillPaths: event.payload.availableSkillPaths ?? state.availableSkillPaths,
         projectSwitcherOpen: false,
         projectSearchQuery: "",
         projectSearchLoading: false,
@@ -813,6 +817,7 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
     case "project.activated":
       return {
         ...state,
+        availableSkillPaths: event.payload.availableSkillPaths ?? state.availableSkillPaths,
         projectSwitcherOpen: false,
         projectSearchQuery: "",
         projectSearchLoading: false,

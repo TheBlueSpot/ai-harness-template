@@ -12,7 +12,7 @@ import {
   isDirectWorkspaceImplementTask
 } from "../../shared/mode-intent";
 import { createHash } from "node:crypto";
-import { mkdirSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, statSync, writeFileSync, type Dirent } from "node:fs";
 import path from "node:path";
 import { createRouteHandler } from "uploadthing/server";
 import {
@@ -1003,7 +1003,8 @@ function createHarnessHandlerRefs(
           type: "connection.ready",
           payload: {
             agents: [...defaultAgentCatalog],
-            workspace: state.runtime.getWorkspace(),
+            availableSkillPaths: discoverSkillPathsForActiveProject(state.runtime),
+            workspace: enrichWorkspaceForComposer(state.runtime.getWorkspace()),
             executionControl: state.repository.getExecutionControlState(),
             preferences: getCurrentPreferencesState(),
             setup: state.currentSetupState,
@@ -1750,8 +1751,9 @@ async function handleCommand(
         type: "project.opened",
         requestId: command.requestId,
         payload: {
-          project: runtime.getProject(result.project.id),
+          project: enrichProjectForComposer(runtime.getProject(result.project.id)),
           activeProjectId: runtime.getWorkspace().activeProjectId!,
+          availableSkillPaths: discoverSkillPathsForProjectRoot(result.project.rootPath),
           resolution: result.resolution
         }
       });
@@ -1767,8 +1769,9 @@ async function handleCommand(
         type: "project.opened",
         requestId: command.requestId,
         payload: {
-          project: runtime.getProject(result.project.id),
+          project: enrichProjectForComposer(runtime.getProject(result.project.id)),
           activeProjectId: runtime.getWorkspace().activeProjectId!,
+          availableSkillPaths: discoverSkillPathsForProjectRoot(result.project.rootPath),
           resolution: result.resolution
         }
       });
@@ -1804,8 +1807,9 @@ async function handleCommand(
         type: "project.opened",
         requestId: command.requestId,
         payload: {
-          project: runtime.getProject(result.project.id),
+          project: enrichProjectForComposer(runtime.getProject(result.project.id)),
           activeProjectId: runtime.getWorkspace().activeProjectId!,
+          availableSkillPaths: discoverSkillPathsForProjectRoot(result.project.rootPath),
           resolution: result.resolution
         }
       });
@@ -1838,11 +1842,13 @@ async function handleCommand(
     case "project.activate": {
       repository.activateProject(command.payload.projectId);
       runtime.setActiveProject(command.payload.projectId);
+      const project = runtime.getProject(command.payload.projectId);
       sendEvent(ws, {
         type: "project.activated",
         requestId: command.requestId,
         payload: {
-          projectId: command.payload.projectId
+          projectId: command.payload.projectId,
+          availableSkillPaths: discoverSkillPathsForProjectRoot(project.rootPath)
         }
       });
       await emitSetupRefresh(command.requestId);
@@ -1899,7 +1905,7 @@ async function handleCommand(
         requestId: command.requestId,
         payload: {
           projectId: command.payload.projectId,
-          project: runtime.getProject(command.payload.projectId)
+          project: enrichProjectForComposer(runtime.getProject(command.payload.projectId))
         }
       });
       await emitSetupRefresh(command.requestId);
@@ -1913,7 +1919,7 @@ async function handleCommand(
         requestId: command.requestId,
         payload: {
           projectId: command.payload.projectId,
-          project: runtime.getProject(command.payload.projectId)
+          project: enrichProjectForComposer(runtime.getProject(command.payload.projectId))
         }
       });
       await emitSetupRefresh(command.requestId);
@@ -1928,7 +1934,7 @@ async function handleCommand(
         requestId: command.requestId,
         payload: {
           projectId: command.payload.projectId,
-          project: runtime.getProject(command.payload.projectId)
+          project: enrichProjectForComposer(runtime.getProject(command.payload.projectId))
         }
       });
       return;
@@ -6322,7 +6328,7 @@ function emitWorkspaceUpdated(ws: Bun.ServerWebSocket<HarnessConnection>, reques
     type: "workspace.updated",
     requestId,
     payload: {
-      workspace: runtime.getWorkspace()
+      workspace: enrichWorkspaceForComposer(runtime.getWorkspace())
     }
   });
 }
@@ -6338,9 +6344,78 @@ function emitProjectUpdated(
     requestId,
     payload: {
       projectId,
-      project
+      project: enrichProjectForComposer(project)
     }
   });
+}
+
+function enrichWorkspaceForComposer(workspace: ReturnType<WorkspaceRuntimeStore["getWorkspace"]>) {
+  return {
+    ...workspace,
+    projects: workspace.projects.map((project) => enrichProjectForComposer(project))
+  };
+}
+
+function enrichProjectForComposer(project: WorkspaceProjectState): WorkspaceProjectState {
+  return {
+    ...project,
+    filePaths: discoverComposerFilePaths(project.rootPath)
+  };
+}
+
+function discoverSkillPathsForActiveProject(runtime: WorkspaceRuntimeStore) {
+  const workspace = runtime.getWorkspace();
+  const activeProject = workspace.projects.find((project) => project.id === workspace.activeProjectId);
+  return discoverSkillPathsForProjectRoot(activeProject?.rootPath);
+}
+
+function discoverSkillPathsForProjectRoot(rootPath?: string) {
+  return discoverRepoSkillPaths(resolveRepoRoot(rootPath ?? process.cwd()));
+}
+
+const composerFileSkipDirs = new Set([
+  ".git",
+  ".next",
+  ".turbo",
+  ".vite",
+  "coverage",
+  "dist",
+  "node_modules",
+  "out",
+  "target"
+]);
+
+function discoverComposerFilePaths(rootPath: string) {
+  const results: string[] = [];
+  const stack = [rootPath];
+  while (stack.length > 0 && results.length < 5000) {
+    const current = stack.pop()!;
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (results.length >= 5000) {
+        break;
+      }
+      if (entry.name.startsWith(".") && entry.name !== ".agents") {
+        continue;
+      }
+      const absolutePath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        if (!composerFileSkipDirs.has(entry.name)) {
+          stack.push(absolutePath);
+        }
+        continue;
+      }
+      if (entry.isFile()) {
+        results.push(path.relative(rootPath, absolutePath).replace(/\\/g, "/"));
+      }
+    }
+  }
+  return results.sort((left, right) => left.localeCompare(right));
 }
 
 async function runCorrectnessReview(

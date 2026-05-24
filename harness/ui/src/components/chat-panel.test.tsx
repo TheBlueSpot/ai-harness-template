@@ -960,6 +960,59 @@ it("updates composer effort label and sends reasoning plus fast mode", () => {
     expect((commands[0] as { type: string }).type).toBe("chat.send");
   });
 
+  it("shows skill lookup after slash and inserts the selected skill", () => {
+    const project = createViewProjectFixture({
+      id: "project-skill-lookup",
+      draft: "/"
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        availableSkillPaths: [".agents/skills/forgiveness-audit/SKILL.md"],
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ChatPanel />);
+    const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
+    textbox.focus();
+    textbox.setSelectionRange(1, 1);
+
+    expect(screen.getByText("forgiveness-audit")).toBeTruthy();
+    fireEvent.keyDown(textbox, { key: "Enter" });
+
+    expect(harnessStore.state.workspace.projects[0]?.draft).toBe("/forgiveness-audit ");
+  });
+
+  it("shows file lookup after at sign and inserts selected file path", () => {
+    const project = createViewProjectFixture({
+      id: "project-file-lookup",
+      draft: "@fo",
+      filePaths: ["docs/forgiveness-audit.md", "src/app.tsx"]
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ChatPanel />);
+    const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
+    textbox.focus();
+    textbox.setSelectionRange(3, 3);
+    fireEvent.input(textbox, { target: { value: "@fo" } });
+
+    expect(screen.getByText("forgiveness-audit.md")).toBeTruthy();
+    fireEvent.keyDown(textbox, { key: "Enter" });
+
+    expect(harnessStore.state.workspace.projects[0]?.draft).toBe("@docs/forgiveness-audit.md ");
+  });
+
   it("grows composer to a viewport-bound height before internal scroll", () => {
     const project = createViewProjectFixture({
       id: "project-composer-height",

@@ -64,6 +64,7 @@ import {
   AlertTriangle,
   Brain,
   Bot,
+  Briefcase,
   CalendarClock,
   ClipboardList,
   Clipboard,
@@ -83,11 +84,16 @@ import {
   ArrowDown,
   ArrowUp,
   Check,
+  File,
+  FileCode,
+  FileJson,
+  FileText,
+  Image,
   SendHorizontal,
   Settings,
+  WandSparkles,
   X,
-  Split,
-  Briefcase
+  Split
 } from "lucide-solid";
 import { cn } from "../lib/utils";
 
@@ -209,6 +215,8 @@ export function ChatPanel() {
   const [composerSettingsOpen, setComposerSettingsOpen] = createSignal(false);
   const [desktopReasoningMenuOpen, setDesktopReasoningMenuOpen] = createSignal(false);
   const [mobileReasoningMenuOpen, setMobileReasoningMenuOpen] = createSignal(false);
+  const [composerLookupIndex, setComposerLookupIndex] = createSignal(0);
+  const [selectedComposerFilePaths, setSelectedComposerFilePaths] = createSignal<string[]>([]);
   const pendingQuestion = () => activeProject()?.activeRun?.questions.find((question) => question.status === "pending");
   const resumableRun = () => (activeProject()?.activeRun?.resumable ? activeProject()?.activeRun : undefined);
   const retryableRun = () => (activeProject()?.lastRun?.retryable ? activeProject()?.lastRun : undefined);
@@ -373,6 +381,41 @@ export function ChatPanel() {
         : uploadingAttachments()
           ? "Attachment upload in progress"
           : undefined;
+  const composerLookup = createMemo(() => {
+    const currentProject = activeProject();
+    if (!currentProject) {
+      return undefined;
+    }
+    return getComposerLookup(currentProject.draft, composerTextarea?.selectionStart ?? currentProject.draft.length);
+  });
+  const skillOptions = createMemo(() =>
+    state.availableSkillPaths.map((skillPath) => ({
+      label: getSkillName(skillPath),
+      detail: skillPath,
+      insertText: `/${getSkillName(skillPath)} `
+    }))
+  );
+  const fileOptions = createMemo(() =>
+    (activeProject()?.filePaths ?? []).map((filePath) => ({
+      label: getFileName(filePath),
+      detail: getDirectoryName(filePath),
+      insertText: `@${filePath} `
+    }))
+  );
+  const composerLookupOptions = createMemo(() => {
+    const lookup = composerLookup();
+    if (!lookup) {
+      return [];
+    }
+    const query = lookup.query.toLowerCase();
+    const source = lookup.kind === "skill" ? skillOptions() : fileOptions();
+    return source
+      .filter((option) => `${option.label} ${option.detail}`.toLowerCase().includes(query))
+      .slice(0, 10);
+  });
+  const composerFileBadges = () => [
+    ...new Set([...selectedComposerFilePaths(), ...getComposerFileBadges(activeProject()?.draft ?? "", activeProject()?.filePaths ?? [])])
+  ];
   const dropState = () => {
     if (!state.attachmentsEnabled) {
       return { label: "Attachments unavailable", detail: "Set UPLOADTHING_TOKEN on the server to enable uploads." };
@@ -933,6 +976,51 @@ export function ChatPanel() {
 
   function handleRemoveAttachment(attachmentId: string) {
     setDraftAttachments((current) => current.filter((attachment) => attachment.id !== attachmentId));
+  }
+
+  function applyComposerLookupOption(index = composerLookupIndex()) {
+    const lookup = composerLookup();
+    const option = composerLookupOptions()[index];
+    if (!lookup || !option) {
+      return;
+    }
+    const draft = project().draft;
+    const nextDraft = `${draft.slice(0, lookup.start)}${option.insertText}${draft.slice(lookup.end)}`;
+    harnessStore.setProjectDraft(project().id, nextDraft);
+    if (lookup.kind === "file") {
+      setSelectedComposerFilePaths((paths) => [...new Set([...paths, option.insertText.slice(1).trim()])]);
+    }
+    queueMicrotask(() => {
+      const nextCaret = lookup.start + option.insertText.length;
+      composerTextarea?.focus();
+      composerTextarea?.setSelectionRange(nextCaret, nextCaret);
+      resizeComposer();
+    });
+  }
+
+  function handleComposerKeyDown(event: KeyboardEvent) {
+    if (composerLookupOptions().length === 0) {
+      return;
+    }
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setComposerLookupIndex((index) => (index + 1) % composerLookupOptions().length);
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setComposerLookupIndex((index) => (index + composerLookupOptions().length - 1) % composerLookupOptions().length);
+      return;
+    }
+    if (event.key === "Enter" || event.key === "Tab") {
+      event.preventDefault();
+      applyComposerLookupOption();
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setComposerLookupIndex(0);
+    }
   }
 
   function handleAttachmentDragOver(event: DragEvent) {
@@ -2994,8 +3082,10 @@ export function ChatPanel() {
                 disabled={executionPaused()}
                 disabledReason={executionPauseReason()}
                 onSubmit={() => composerTextarea?.form?.requestSubmit()}
+                onKeyDown={handleComposerKeyDown}
                 onInput={(value) => {
                   harnessStore.setProjectDraft(project().id, value);
+                  setComposerLookupIndex(0);
                   resizeComposer();
                 }}
                 rightActions={
@@ -3084,6 +3174,33 @@ export function ChatPanel() {
                   </>
                 }
               />
+              <Show when={composerLookupOptions().length > 0}>
+                <div class="absolute bottom-[7.75rem] left-8 right-8 z-20 max-h-64 overflow-auto rounded-xl border border-(--border) bg-(--panel) p-1 shadow-xl">
+                  <For each={composerLookupOptions()}>
+                    {(option, index) => (
+                      <button
+                        type="button"
+                        class="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-[0.65625rem]"
+                        classList={{
+                          "bg-white/70": index() === composerLookupIndex()
+                        }}
+                        onMouseDown={(event) => {
+                          event.preventDefault();
+                          applyComposerLookupOption(index());
+                        }}
+                      >
+                        <Show when={composerLookup()?.kind === "skill"} fallback={getFileTypeIcon(option.insertText.slice(1).trim(), "h-3.5 w-3.5")}>
+                          <WandSparkles class="h-3.5 w-3.5 text-(--muted)" />
+                        </Show>
+                        <span class="min-w-0 flex-1">
+                          <span class="block truncate font-semibold text-(--foreground)">{option.label}</span>
+                          <span class="block truncate text-[0.5625rem] text-(--muted)">{option.detail}</span>
+                        </span>
+                      </button>
+                    )}
+                  </For>
+                </div>
+              </Show>
               <input
                 ref={attachmentInput}
                 class="hidden"
@@ -3117,6 +3234,18 @@ export function ChatPanel() {
                       Uploading attachments
                     </span>
                   </Show>
+                </div>
+              </Show>
+              <Show when={composerFileBadges().length > 0}>
+                <div class="flex flex-wrap gap-2">
+                  <For each={composerFileBadges()}>
+                    {(filePath) => (
+                      <span class="inline-flex max-w-full items-center gap-2 rounded-full border border-(--border) bg-white/75 px-2.5 py-1 text-[0.50625rem] font-semibold text-(--foreground)">
+                        {getFileTypeIcon(filePath, "h-3 w-3")}
+                        <span class="truncate">{filePath}</span>
+                      </span>
+                    )}
+                  </For>
                 </div>
               </Show>
 
@@ -3477,6 +3606,91 @@ function isProjectRunStreaming(project: ViewProjectState) {
 
 function isBlockingRunStatus(status: AgentRunState["status"]) {
   return status === "planning" || status === "running-main" || status === "running-subagents" || status === "aggregating";
+}
+
+function getComposerLookup(draft: string, caret: number) {
+  const tokenStart = Math.max(draft.lastIndexOf(" ", caret - 1), draft.lastIndexOf("\n", caret - 1), draft.lastIndexOf("\t", caret - 1)) + 1;
+  const token = draft.slice(tokenStart, caret);
+  if (token.length < 1 || token.includes(" ")) {
+    return undefined;
+  }
+  if (token.startsWith("/") && token.length >= 1) {
+    return { kind: "skill" as const, query: token.slice(1), start: tokenStart, end: caret };
+  }
+  if (token.startsWith("@") && token.length >= 1) {
+    return { kind: "file" as const, query: token.slice(1), start: tokenStart, end: caret };
+  }
+  return undefined;
+}
+
+function getSkillName(skillPath: string) {
+  const parts = skillPath.replace(/\\/g, "/").split("/");
+  const skillMdIndex = parts.lastIndexOf("SKILL.md");
+  return skillMdIndex > 0 ? parts[skillMdIndex - 1]! : parts.at(-1) ?? skillPath;
+}
+
+function getFileName(filePath: string) {
+  return filePath.replace(/\\/g, "/").split("/").at(-1) ?? filePath;
+}
+
+function getDirectoryName(filePath: string) {
+  const normalized = filePath.replace(/\\/g, "/");
+  const index = normalized.lastIndexOf("/");
+  return index > 0 ? normalized.slice(0, index) : ".";
+}
+
+function getComposerFileBadges(draft: string, filePaths: string[]) {
+  const known = new Set(filePaths);
+  const badges = new Set<string>();
+  for (const match of draft.matchAll(/(?:^|\s)@([^\s]+)/g)) {
+    const filePath = match[1];
+    if (filePath && known.has(filePath)) {
+      badges.add(filePath);
+    }
+  }
+  return [...badges];
+}
+
+function getFileTypeIcon(filePath: string, className: string) {
+  const extension = filePath.split(".").at(-1)?.toLowerCase();
+  if (!extension || extension === filePath.toLowerCase()) {
+    return <File class={`${className} text-(--muted)`} />;
+  }
+  if (["png", "jpg", "jpeg", "gif", "webp", "avif", "svg", "ico"].includes(extension)) {
+    return <Image class={`${className} text-(--muted)`} />;
+  }
+  if (["json", "jsonc"].includes(extension)) {
+    return <FileJson class={`${className} text-(--muted)`} />;
+  }
+  if (["md", "markdown", "txt", "log", "csv"].includes(extension)) {
+    return <FileText class={`${className} text-(--muted)`} />;
+  }
+  if (
+    [
+      "ts",
+      "tsx",
+      "js",
+      "jsx",
+      "mjs",
+      "cjs",
+      "css",
+      "html",
+      "py",
+      "rb",
+      "go",
+      "rs",
+      "java",
+      "kt",
+      "swift",
+      "sql",
+      "sh",
+      "bash",
+      "zsh"
+    ].includes(extension)
+  ) {
+    return <FileCode class={`${className} text-(--muted)`} />;
+  }
+  return <File class={`${className} text-(--muted)`} />;
 }
 
 function formatTokenCount(value: number | undefined) {

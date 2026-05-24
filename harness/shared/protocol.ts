@@ -1516,6 +1516,7 @@ export const workspaceProjectStateSchema = z.object({
   id: projectIdSchema,
   name: projectNameSchema,
   rootPath: projectRootPathSchema,
+  filePaths: z.array(z.string().min(1).max(4096)).max(5000).optional(),
   activeThreadId: threadIdSchema,
   selectedModeId: modeIdSchema.optional(),
   projectModes: z.array(modeDefinitionSchema).max(16).optional(),
@@ -2373,6 +2374,7 @@ export const serverEventSchema = z.discriminatedUnion("type", [
     type: z.literal("connection.ready"),
     payload: z.object({
       agents: z.array(agentOptionSchema),
+      availableSkillPaths: z.array(z.string().min(1).max(4096)).max(256).optional(),
       workspace: workspaceStateSchema,
       executionControl: executionControlStateSchema,
       preferences: preferencesStateSchema,
@@ -2418,6 +2420,7 @@ export const serverEventSchema = z.discriminatedUnion("type", [
     payload: z.object({
       project: workspaceProjectStateSchema,
       activeProjectId: projectIdSchema,
+      availableSkillPaths: z.array(z.string().min(1).max(4096)).max(256).optional(),
       resolution: z.enum(["created-project", "existing-project-new-thread"])
     })
   }),
@@ -2443,7 +2446,8 @@ export const serverEventSchema = z.discriminatedUnion("type", [
     type: z.literal("project.activated"),
     requestId: requestIdSchema,
     payload: z.object({
-      projectId: projectIdSchema
+      projectId: projectIdSchema,
+      availableSkillPaths: z.array(z.string().min(1).max(4096)).max(256).optional()
     })
   }),
   z.object({
@@ -3272,6 +3276,7 @@ export function createProjectThreadSummary(
 
 export function createWorkspaceProjectState(
   input: Pick<WorkspaceProjectState, "id" | "name" | "rootPath"> & {
+    filePaths?: string[];
     activeThreadId?: ThreadId;
     session?: ChatSessionState;
     threads?: ProjectThreadSummary[];
@@ -3286,6 +3291,7 @@ export function createWorkspaceProjectState(
     id: input.id,
     name: input.name,
     rootPath: input.rootPath,
+    filePaths: input.filePaths,
     activeThreadId,
     selectedModeId: input.selectedModeId ?? "implement",
     projectModes: input.projectModes ?? [],

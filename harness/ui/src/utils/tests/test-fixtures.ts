@@ -210,6 +210,7 @@ export function createViewProjectFixture(overrides: Partial<ViewProjectState> = 
     id: projectId,
     name: overrides.name ?? "repo-one",
     rootPath: overrides.rootPath ?? "C:\\repo-one",
+    filePaths: overrides.filePaths,
     activeThreadId,
     threads:
       overrides.threads ??
