@@ -16,6 +16,7 @@
 - 2026-05-24 fast refresh: repository evidence still leaves no completed current-day Orrn todo older than one day to remove. Source, README, generated profiles, browser build, package metadata, smoke scripts, benchmark tests, and game imports all keep the same top task: prove or quarantine exactly one remaining prototype post-processing helper before any promotion, renderer convenience, subpath, or WASM kernel growth.
 - 2026-05-24 export-surface refresh: assistant DB state was reconciled after the latest engine scan and 6 completed todos older than one day were removed. Current root/core/browser/WASM package proof is green enough that the next implementation should audit root and `@catalog/engine/browser` exports before any growth, with prototype post-processing and benchmark thresholds still blocked on fresh migrated-game evidence.
 - 2026-05-24 Orrn audit refresh: reconciled the active note with current engine metadata, README, root/core/browser exports, WASM loader, smoke/release scripts, benchmark lane, generated declaration guards, and assistant memory. No completed current-day markdown todo is older than one day. The single top task is now root/browser API weight classification before any package-surface growth.
+- 2026-05-24 deep refresh: rechecked Orrn notes, existing note status, package metadata, README contract, root/core/browser exports, deferred root guardrails, post-processing profile metadata, WASM URL/hosting scripts, release lanes, benchmark tests, and local engine research. Existing current-day completed items are not older than one day. The single highest-priority implementation task stays root/browser export-surface classification before any helper, subpath, renderer, or WASM growth.
 
 ## External Sources
 
@@ -141,9 +142,8 @@ P1 TOP: Keep root and `@catalog/engine/browser` API weight classified before any
 
 ## Acceptance Criteria
 
-- One migrated browser game imports one remaining prototype post-processing helper from `./engine/browser/engine.js`, or the chosen helper is explicitly kept prototype/game-local because no smaller real call site exists.
-- The migration replaces local effect plumbing only where the engine helper makes the call site smaller and clearer.
-- Game-local readability, HUD, audio, art, rules, and presentation decisions stay inside `./games/<slug>/`.
-- Direct browser playability is preserved.
-- No new runtime helper, package subpath, or WASM kernel is added.
-- `bun.cmd run typecheck` and `bun.cmd run smoke:package` stay green if engine exports or generated artifacts are touched.
+- Classify the existing root and `@catalog/engine/browser` value exports against the README contract: stable root, browser-only, deferred/future subpath, prototype-root, or game-local.
+- Keep already-deferred helpers such as on-screen touch controls, renderer, asset, audio, and scene-graph conveniences off the root/browser package surface unless migrated-consumer proof earns them.
+- Keep prototype post-processing helpers promotion-blocked unless a separate migrated browser game proves a smaller call site with game-owned timing, intensity, readability, HUD, audio, art, and rules.
+- Do not add new runtime helpers, package subpaths, renderer convenience, or WASM kernels during the audit.
+- `bun.cmd run typecheck` and `bun.cmd run smoke:package` stay green if engine exports, generated artifacts, or package-surface guards are touched.
