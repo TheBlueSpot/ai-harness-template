@@ -30,7 +30,7 @@ Use this when a task touches broad harness conventions, naming, docs policy, or 
 - After finishing a harness task, locate the nearest `readme.md` and update it as needed.
 - If no nearby `readme.md` exists, create one only when the change creates durable knowledge future agents need.
 - Skill work under `.agents/skills/**` does not need README updates.
-- Keep README updates high-level. Link to context and skill docs rather than embedding code-heavy explanations.
+- Keep README updates high-level. Link to durable docs and skill docs rather than embedding code-heavy explanations.
 
 ## Workflow
 

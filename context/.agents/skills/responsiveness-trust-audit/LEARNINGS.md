@@ -1,1 +1,0 @@
-- Responsiveness review should keep `measured`, `estimated`, `unsupported`, and `missing` evidence separate in this catalog, because a weak browser timing surface is an evidence ceiling while a slow measured answer is a product defect.

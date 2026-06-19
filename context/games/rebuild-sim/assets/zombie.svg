@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
-  <!-- Original artwork for this project, dedicated to the public domain (CC0 1.0). -->
-  <circle cx="64" cy="34" r="19" fill="#87A96B"/>
-  <path d="M38 124V84c0-14 11-25 26-25s26 11 26 25v40" fill="#5E4B66"/>
-  <path d="M46 31h10M72 31h10" stroke="#2A1D1F" stroke-width="7" stroke-linecap="round"/>
-  <path d="M56 44c4 4 12 4 16 0" stroke="#2A1D1F" stroke-width="6" stroke-linecap="round"/>
-  <path d="M34 84l-10 14M94 84l10 14M51 100l-8 22M77 100l8 22" stroke="#2A1D1F" stroke-width="9" stroke-linecap="round"/>
-</svg>

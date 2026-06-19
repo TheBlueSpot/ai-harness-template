@@ -4,7 +4,6 @@
 
 Source set:
 - [Todo research notes](../../docs/research/todo-research-notes.md)
-- [Todo comparison baseline](../../context/docs/research/todo-comparison-baseline.md)
 - [Current queue](../../todo.md)
 - [OpenAI models docs](https://platform.openai.com/docs/models)
 - [OpenAI Responses API docs](https://platform.openai.com/docs/api-reference/responses/tutorials-and-guides)
@@ -35,4 +34,3 @@ Candidate shared tooling ideas:
 Current ranking truth:
 - The current queue only shows completed items, so there is no fresh evidence here that beats the local maintenance pick.
 - This refresh should not reorder the roadmap beyond the established trust-first sequence in the comparison baseline.
-

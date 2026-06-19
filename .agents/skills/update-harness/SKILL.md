@@ -15,7 +15,6 @@ Use this file only to choose references.
 ## Scope
 
 - Use for `harness/**`, `scripts/**`, root Bun or TypeScript config, websocket contract docs, and harness-facing README updates.
-- Treat `/context` as search source for harness knowledge before guessing.
 
 ## Loading Rule
 

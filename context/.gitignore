@@ -1,5 +1,0 @@
-.local/
-.edge-headless-profile/
-*.sqlite-journal
-*.sqlite-shm
-*.sqlite-wal

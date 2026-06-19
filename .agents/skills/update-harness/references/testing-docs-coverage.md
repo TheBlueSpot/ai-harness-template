@@ -21,7 +21,7 @@ Use this when deciding verification scope, updating README/docs, changing user-f
 ## Docs
 
 - Keep README updates high-level.
-- Prefer linking to context and skill docs over embedding code-heavy explanations.
+- Prefer linking to durable docs and skill docs over embedding code-heavy explanations.
 - Do not turn Markdown files into code mirrors. Keep them focused on concepts, workflows, and links to deeper docs.
 
 ## User Stories And Coverage

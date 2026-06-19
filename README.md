@@ -198,12 +198,8 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - Development builds re-surface swallowed UI and command errors after toast display so local debugging keeps mapped stacks visible
 - Tailwind class canonicalization is enforced through editor diagnostics and focused linting so shared UI utilities stay in one preferred form
 
-## Context
+## Direction
 
 - Product direction: maximize PMF by reducing setup friction, making capability limits explicit, preserving recoverability, keeping active context inspectable, and making unattended work easier to trust
 - Dense UI preference: keep default layouts tight, and require secondary controls or summaries to earn their visual footprint
-- [Architecture Overview](context/architecture/overview.md)
-- [Websocket Contract](context/command-protocol/websocket-contract.md)
-- [Pi OpenAI Provider Notes](context/model-provider/pi-openai.md)
-- [Operational Rules](context/prompts/operational-rules.md)
 - [Roadmap TODOs](docs/todo.md)

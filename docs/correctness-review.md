@@ -15,7 +15,7 @@ Last merged targeted UI-magic affordance scan: 2026-04-25.
 Last merged targeted reliability diagnostics and background ownership closeout: 2026-05-01.
 Last merged working-tree branch scan: 2026-05-12.
 
-Source of truth: [user-stories.md](user-stories.md), [coverage-matrix.md](coverage-matrix.md), [architecture overview](../context/architecture/overview.md), and harness implementation under [harness](../harness).
+Source of truth: [user-stories.md](user-stories.md), [coverage-matrix.md](coverage-matrix.md), [root README](../README.md), and harness implementation under [harness](../harness).
 
 This review focuses on correctness gaps outside the expected happy path. It does not replace `bun test`; it maps shipped stories to likely edge failures and extraction opportunities.
 

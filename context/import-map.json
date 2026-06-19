@@ -1,5 +1,0 @@
-{
-  "imports": {
-    "three": "./lib/3js/build/three.module.js"
-  }
-}
