@@ -39,8 +39,14 @@
 
 - P1: Keep root and browser exports restrained until every public primitive has clear consumer proof, strong naming, and a defensible reason to live outside a game-local helper
 - P1: Treat packed-artifact consumer proof as the release gate for engine DX, including explicit exports, declaration output, subpath imports, and WASM asset reachability from real package installs
+- P1: Make authoritative multiplayer proof real end-to-end before widening MMO claims: joined clients must receive initial state, streamed deltas or snapshots, reconnect-safe baselines, and an example that renders replicated state from the public package surface
+- P1: Add package-consumer examples that use published subpaths instead of repo source or dist paths so every getting-started path proves install-time DX, not only monorepo-local wiring
+- P1: Grow 3D camera support through `@catalog/engine/render/3d` consumer proof: third-person orbit, smooth follow, chained transitions, framing offsets, and obstacle/deocclusion hooks should feel like a premium default without leaking game-local controls or content into root exports
+- P1: Keep performance promises tied to stable evidence: reduce allocation-heavy protocol and interest-grid hot paths before tightening benchmark thresholds, and make perf gates deterministic enough to avoid CI noise
 - P2: Preserve generated declaration hygiene; camera declarations are currently green, but every generated surface must stay free of elided `any` leaks before API growth resumes
 - P2: Keep WASM boundaries narrow and boring: deterministic TypeScript fallback, MIME-aware streaming fallback, opt-in diagnostics, parity tests, and benchmark gates before any new kernel is admitted
+- P2: Split prototype-heavy rendering helpers away from the root mental model; cost metadata helps, but root discovery should emphasize proven loop, input, map, collision, animation, and replication primitives over spectacle helpers
+- P2: Add a tiny browser-playable multiplayer client with interpolation, debug stats, and failure readback so server APIs have the same activation proof as canvas/map APIs
 - P3: Delay benchmark threshold tightening until migrated games provide real hot-path evidence; synthetic parity remains necessary but should not pretend to be product proof
 - P3: Keep native WASM asset-hosting proof documented as a lower-risk release lane, not a reason to widen the runtime surface
 

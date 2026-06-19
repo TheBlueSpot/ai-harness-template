@@ -29,6 +29,12 @@ describe("run failure classification", () => {
     );
   });
 
+  test("classifies git-not-repo output as workspace context", () => {
+    expect(classifyRunFailure({ message: "fatal: not a git repository (or any of the parent directories): .git" })).toBe(
+      "workspace-context"
+    );
+  });
+
   test("classifies background job runtime and partial-subagent failures", () => {
     expect(
       classifyRunFailure({

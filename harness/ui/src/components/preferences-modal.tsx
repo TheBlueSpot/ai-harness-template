@@ -8,6 +8,7 @@ import {
   Archive,
   Bell,
   BriefcaseBusiness,
+  CirclePause,
   Download,
   FileJson,
   FolderOpen,
@@ -37,6 +38,7 @@ import {
   type AppHotkeyId
 } from "../lib/app-hotkeys";
 import { registerCurrentTabItemSelector } from "../lib/current-tab-item-hotkeys";
+import { DEFAULT_IDE_EDITOR_SETTINGS, ideStore, type IdeAutoSaveMode, type IdeEditorSettings, type IdeIndentStyle, type IdeTabSize, type IdeWordWrapMode } from "../ide/ide-store";
 import { pushToast } from "../toast-store";
 import { ActionButton } from "./action-button";
 import { ModeEditorPanel } from "./mode-editor-panel";
@@ -154,6 +156,77 @@ function formatHotkeyForDisplay(value: string) {
     .join(" + ");
 }
 
+type PreferencesSearchResult = {
+  id: string;
+  sectionId: PreferencesActiveSectionId;
+  title: string;
+  description: string;
+  keywords: string[];
+  targetId: string;
+  kind: "setting" | "keybind";
+  keybindId?: AppHotkeyId;
+};
+
+function keybindRowElementId(id: AppHotkeyId) {
+  return `keybind-${id}`;
+}
+
+function scrollToPreferenceTarget(targetId: string) {
+  const target = document.getElementById(targetId);
+  if (!target) {
+    return;
+  }
+  target.scrollIntoView?.({ block: "center", inline: "nearest" });
+  target.focus({ preventScroll: true });
+}
+
+function settingSearchResult(setting: PreferencesSettingMeta): PreferencesSearchResult {
+  return {
+    id: setting.id,
+    sectionId: setting.sectionId,
+    title: setting.title,
+    description: setting.description,
+    keywords: setting.keywords,
+    targetId: setting.id,
+    kind: "setting"
+  };
+}
+
+function keybindSearchResult(
+  setting: (typeof appHotkeySettings)[number],
+  hotkeys: string[]
+): PreferencesSearchResult {
+  const scopeLabel = setting.scope === "ide" ? "IDE keybind" : "App keybind";
+  return {
+    id: `keybind-${setting.id}`,
+    sectionId: "keybinds",
+    title: setting.label,
+    description: `${scopeLabel}: ${setting.description}`,
+    keywords: [
+      "keybind",
+      "keybinding",
+      "hotkey",
+      "shortcut",
+      scopeLabel,
+      setting.scope ?? "app",
+      ...hotkeys,
+      ...hotkeys.map(formatHotkeyForDisplay)
+    ],
+    targetId: keybindRowElementId(setting.id),
+    kind: "keybind",
+    keybindId: setting.id
+  };
+}
+
+function matchesPreferencesSearchResult(result: PreferencesSearchResult, query: string) {
+  const section = getPreferencesSection(result.sectionId);
+  const searchableValues =
+    result.kind === "setting"
+      ? [result.title, result.description, section.label, ...result.keywords]
+      : [result.title, result.description, ...result.keywords];
+  return searchableValues.some((value) => value.toLowerCase().includes(query));
+}
+
 export function PreferencesPanel() {
   const store = harnessStore;
   const state = store.state;
@@ -197,6 +270,9 @@ export function PreferencesPanel() {
   const workspaceModes = () => state.workspace.workspaceModes ?? [];
   const workspaceRuleDraft = () => state.workspace.workspaceRuleSource?.content ?? "";
   const workspaceMemoryDraft = () => state.workspace.workspaceMemorySummary?.content ?? "";
+  const enabledAssistantBackgroundJobCount = createMemo(
+    () => state.backgroundJobs.jobs.filter((job) => job.assistantId && job.status === "enabled").length
+  );
 
   const searchResults = () => {
     const query = searchQuery().trim().toLowerCase();
@@ -204,12 +280,11 @@ export function PreferencesPanel() {
       return [];
     }
 
-    return preferencesSettings.filter((setting) => {
-      const section = getPreferencesSection(setting.sectionId);
-      return [setting.title, setting.description, section.label, ...setting.keywords].some((value) =>
-        value.toLowerCase().includes(query)
-      );
-    });
+    const hotkeys = normalizeAppHotkeyPreferences(state.appHotkeyPreferences);
+    return [
+      ...preferencesSettings.map(settingSearchResult),
+      ...appHotkeySettings.map((setting) => keybindSearchResult(setting, hotkeys[setting.id]))
+    ].filter((setting) => matchesPreferencesSearchResult(setting, query));
   };
 
   const groupedSearchResults = () =>
@@ -329,6 +404,13 @@ export function PreferencesPanel() {
         projectId,
         mode: "all"
       }
+    });
+  }
+
+  function handlePauseAssistantBackgroundJobs() {
+    sendCommand({
+      type: "background-job.pause-assistant-jobs",
+      requestId: createRequestId()
     });
   }
 
@@ -590,8 +672,10 @@ export function PreferencesPanel() {
     return "No key";
   }
 
-  function openSearchResult(setting: PreferencesSettingMeta) {
-    const sectionId = setting.sectionId as PreferencesActiveSectionId;
+  function openSearchResult(setting: PreferencesSearchResult) {
+    const sectionId = setting.sectionId;
+    const keybindQuery = setting.kind === "keybind" ? searchQuery().trim() : "";
+    setKeybindSearchQuery(keybindQuery);
     setSelectedSectionId(sectionId);
     setSearchQuery("");
     const searchInput = document.querySelector<HTMLInputElement>('[aria-label="Search settings"]');
@@ -601,12 +685,12 @@ export function PreferencesPanel() {
     store.setPreferencesActiveSectionId(sectionId);
     emitPreferencesSectionChange(sectionId);
     renderDetailRoot();
-    queueMicrotask(() => document.getElementById(setting.id)?.focus());
+    queueMicrotask(() => scrollToPreferenceTarget(setting.targetId));
   }
 
   function renderToggle(checked: boolean, onInput: (checked: boolean) => void, label: string) {
     return (
-      <label class="inline-flex cursor-pointer items-center justify-between gap-3 rounded-xl border border-(--border) bg-white/60 px-3 py-2 transition hover:bg-[color-mix(in_srgb,rgb(255_255_255_/_0.6)_80%,black)]">
+      <label class="inline-flex min-h-9 cursor-pointer items-center justify-between gap-3 rounded-xl border border-(--border) bg-white/60 px-3 py-2 transition hover:bg-[color-mix(in_srgb,rgb(255_255_255_/_0.6)_80%,black)]">
         <span class="text-xs font-medium text-(--foreground)">{label}</span>
         <input
           class="h-4 w-4 accent-(--accent)"
@@ -615,6 +699,18 @@ export function PreferencesPanel() {
           onInput={(event) => updateSavedPreference(() => onInput(event.currentTarget.checked))}
         />
       </label>
+    );
+  }
+
+  function renderSettingControl(title: string, description: string, control: JSX.Element) {
+    return (
+      <div class="grid min-w-0 gap-2 rounded-xl border border-(--border) bg-white/45 p-3 md:grid-cols-[minmax(10rem,0.8fr)_minmax(0,1.4fr)] md:items-center">
+        <div class="min-w-0">
+          <div class="text-xs font-semibold text-(--foreground)">{title}</div>
+          <div class="mt-1 text-[0.7rem] leading-4 text-(--muted)">{description}</div>
+        </div>
+        <div class="min-w-0">{control}</div>
+      </div>
     );
   }
 
@@ -707,8 +803,8 @@ export function PreferencesPanel() {
     };
 
     return (
-      <PreferenceSection title="Keybinds" description="Customize app-level hotkeys for this browser.">
-        <div id="keyboard-shortcuts" class="grid gap-4">
+      <PreferenceSection title="Keybinds" description="Customize app and IDE hotkeys for this browser.">
+        <div id="keyboard-shortcuts" tabIndex={-1} class="grid gap-4">
           <div class="flex flex-wrap items-center justify-between gap-3 border-b border-(--border) pb-3">
             <div class="text-[0.675rem] leading-5 text-(--muted)">{filteredSettings().length} keybindings</div>
             <div class="flex min-w-0 flex-wrap items-center gap-2">
@@ -725,8 +821,38 @@ export function PreferencesPanel() {
             </div>
           </div>
 
-          <section class="grid gap-2">
-            <For each={filteredSettings()}>
+          <div class="grid gap-4">
+            {renderHotkeyGroup("App keybinds", filteredSettings().filter((setting) => setting.scope !== "ide"))}
+            {renderHotkeyGroup("IDE keybinds", filteredSettings().filter((setting) => setting.scope === "ide"))}
+          </div>
+
+          <div>
+            <ActionButton
+              tooltip="Restore default keyboard shortcuts"
+              variant="secondary"
+              icon={<RotateCcw class="h-4 w-4" />}
+              onClick={() => {
+                setHotkeyDrafts({ ...DEFAULT_APP_HOTKEY_PREFERENCES });
+                for (const setting of appHotkeySettings) {
+                  store.setAppHotkeyPreference(setting.id, DEFAULT_APP_HOTKEY_PREFERENCES[setting.id]);
+                }
+                handleSave();
+              }}
+            >
+              Restore shortcuts
+            </ActionButton>
+          </div>
+        </div>
+      </PreferenceSection>
+    );
+  }
+
+  function renderHotkeyGroup(title: string, settings: typeof appHotkeySettings) {
+    const preferences = () => normalizeAppHotkeyPreferences(state.appHotkeyPreferences);
+    return (
+      <section class="grid gap-2" data-test-keybind-group={title.toLowerCase().replace(/\s+/g, "-")}>
+        <div class="text-[0.62rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">{title}</div>
+        <For each={settings}>
               {(setting) => {
                 const draftValue = () => hotkeyDrafts()[setting.id];
                 const duplicate = () =>
@@ -742,7 +868,9 @@ export function PreferencesPanel() {
                   );
                 return (
                   <div
+                    id={keybindRowElementId(setting.id)}
                     data-test-keybind-row={setting.id}
+                    tabIndex={-1}
                     class="rounded-2xl border border-(--border) bg-white/55 px-4 py-3 shadow-sm transition hover:bg-white/70"
                   >
                     <div class="grid items-center gap-4 md:grid-cols-[minmax(12rem,0.85fr)_minmax(0,2.15fr)_auto]">
@@ -819,25 +947,107 @@ export function PreferencesPanel() {
                 );
               }}
             </For>
-          </section>
+      </section>
+    );
+  }
 
-          <div>
+  function renderIdeSettings() {
+    const settings = () => ideStore.state.editorSettings;
+    const setSetting = <K extends keyof IdeEditorSettings>(key: K, value: IdeEditorSettings[K]) => {
+      ideStore.setEditorSetting(key, value);
+    };
+    return (
+      <PreferenceSection title="IDE Settings" description="IDE behavior and formatting defaults for this browser.">
+        <PreferenceRow
+          id="ide-editor-settings"
+          title="IDE behavior"
+          description="Each IDE default is labeled with its effect."
+          class="md:grid-cols-[minmax(0,0.45fr)_minmax(0,1.55fr)]"
+        >
+          <div class="grid gap-2">
+            {renderSettingControl(
+              "Auto save",
+              "Choose when dirty IDE files save without pressing the save command.",
+              <SegmentedControl<IdeAutoSaveMode>
+                ariaLabel="Auto save"
+                value={settings().autoSave}
+                options={[
+                  { value: "off", label: "Off" },
+                  { value: "afterDelay", label: "After delay" },
+                  { value: "onFocusChange", label: "On focus change" }
+                ]}
+                onChange={(value) => setSetting("autoSave", value)}
+              />
+            )}
+            {renderSettingControl(
+              "Word wrap",
+              "Wrap long lines in the IDE viewport instead of scrolling horizontally.",
+              <SegmentedControl<IdeWordWrapMode>
+                ariaLabel="Word wrap"
+                value={settings().wordWrap}
+                options={[
+                  { value: "off", label: "Off" },
+                  { value: "on", label: "On" }
+                ]}
+                onChange={(value) => setSetting("wordWrap", value)}
+              />
+            )}
+            {renderSettingControl(
+              "Indent style",
+              "Pick whether Tab inserts spaces or tab characters.",
+              <SegmentedControl<IdeIndentStyle>
+                ariaLabel="Indent style"
+                value={settings().insertSpaces}
+                options={[
+                  { value: "spaces", label: "Spaces" },
+                  { value: "tabs", label: "Tabs" }
+                ]}
+                onChange={(value) => setSetting("insertSpaces", value)}
+              />
+            )}
+            {renderSettingControl(
+              "Tab size",
+              "Set indentation width for tab stops and inserted spaces.",
+              <SegmentedControl<IdeTabSize>
+                ariaLabel="Tab size"
+                value={settings().tabSize}
+                options={[
+                  { value: 2, label: "2" },
+                  { value: 4, label: "4" }
+                ]}
+                onChange={(value) => setSetting("tabSize", value)}
+              />
+            )}
+            {renderSettingControl(
+              "Format on save",
+              "Run available formatting when an editable file is saved.",
+              renderToggle(settings().formatOnSave, (value) => setSetting("formatOnSave", value), "Enabled")
+            )}
+            {renderSettingControl(
+              "Breadcrumbs",
+              "Show the current file path above the IDE.",
+              renderToggle(settings().breadcrumbsEnabled, (value) => setSetting("breadcrumbsEnabled", value), "Enabled")
+            )}
+            {renderSettingControl(
+              "Bracket pair colorization",
+              "Use matching colors for nested brackets in code.",
+              renderToggle(settings().bracketPairColorization, (value) => setSetting("bracketPairColorization", value), "Enabled")
+            )}
             <ActionButton
-              tooltip="Restore default keyboard shortcuts"
+              tooltip="Restore IDE defaults"
               variant="secondary"
+              class="justify-self-start"
               icon={<RotateCcw class="h-4 w-4" />}
               onClick={() => {
-                setHotkeyDrafts({ ...DEFAULT_APP_HOTKEY_PREFERENCES });
-                for (const setting of appHotkeySettings) {
-                  store.setAppHotkeyPreference(setting.id, DEFAULT_APP_HOTKEY_PREFERENCES[setting.id]);
+                for (const [key, value] of Object.entries(DEFAULT_IDE_EDITOR_SETTINGS)) {
+                  ideStore.setEditorSetting(key as keyof typeof DEFAULT_IDE_EDITOR_SETTINGS, value as never);
                 }
-                handleSave();
               }}
             >
-              Restore shortcuts
+              Restore IDE defaults
             </ActionButton>
           </div>
-        </div>
+        </PreferenceRow>
       </PreferenceSection>
     );
   }
@@ -1211,6 +1421,24 @@ export function PreferencesPanel() {
             />
           </div>
         </PreferenceRow>
+        <PreferenceRow id="assistant-job-controls" title="Assistant job controls" description="Pause enabled jobs owned by assistants across projects.">
+          <div class="grid gap-2">
+            <ActionButton
+              tooltip="Pause every enabled assistant-owned background job"
+              disabled={enabledAssistantBackgroundJobCount() === 0}
+              disabledReason="No enabled assistant-owned background jobs"
+              variant="secondary"
+              icon={<CirclePause class="h-4 w-4" />}
+              ariaLabel="Pause assistant jobs"
+              onClick={handlePauseAssistantBackgroundJobs}
+            >
+              Pause assistant jobs
+            </ActionButton>
+            <div class="text-[0.675rem] leading-5 text-(--muted)">
+              Enabled assistant jobs: {enabledAssistantBackgroundJobCount()}
+            </div>
+          </div>
+        </PreferenceRow>
         <PreferenceRow id="jobs-view" title="Jobs view and sync state" description="Current jobs pane view preferences saved in this browser.">
           <div class="grid gap-2 text-xs text-(--muted)">
             <div class="rounded-xl border border-(--border) bg-white/60 p-3 text-(--foreground)">Segment: {state.jobsPanePreferences.segment}</div>
@@ -1299,6 +1527,8 @@ export function PreferencesPanel() {
     switch (selectedSectionId()) {
       case "keybinds":
         return renderKeybinds();
+      case "ide-settings":
+        return renderIdeSettings();
       case "general-ui":
         return renderGeneralUi();
       case "safety-guardrails":

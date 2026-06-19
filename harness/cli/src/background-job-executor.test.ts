@@ -738,7 +738,59 @@ describe("executeBackgroundJobRun", () => {
     expect(result.status).toBe("succeeded");
     expect(adapter.calls.filter((call) => call.kind === "planner")).toHaveLength(2);
     expect(linkedRun?.questions[0]?.status).toBe("answered");
+    expect(linkedRun?.runtimeBudget?.maxTurns).toBe(20);
+    expect(adapter.calls[0]?.prompt).toContain("not a git repository");
     expect(result.events.some((event) => event.stage === "question-auto-resolved")).toBe(true);
+  });
+
+  test("assistant routine planner prompt includes active todo metadata", async () => {
+    const repository = createRepository();
+    const projectRoot = path.join(createTempDir(), `repo-${crypto.randomUUID()}`);
+    mkdirSync(projectRoot, { recursive: true });
+    const project = repository.addProject(projectRoot);
+    const now = new Date().toISOString();
+    const assistantId = saveAssistant(repository, project.id);
+    repository.saveAssistantTodo({
+      id: "todo-build-ui",
+      assistantId,
+      title: "Implement first screen",
+      state: "pending",
+      sortOrder: 0,
+      workKind: "app-code",
+      workTarget: "src/app.tsx",
+      createdAt: now,
+      updatedAt: now
+    });
+    const job = createAssistantRoutineJob(project.id, assistantId, createThreadId(), now);
+    repository.saveBackgroundJob(job);
+    const savedJob = repository.getBackgroundJob(job.id)!;
+    const run = repository.createBackgroundJobRun({
+      jobId: savedJob.id,
+      projectId: savedJob.projectId,
+      assistantId: savedJob.assistantId,
+      automationThreadId: savedJob.automationThreadId,
+      triggerSource: "schedule",
+      status: "queued",
+      riskLevel: savedJob.riskLevel,
+      approvalStatus: "approved"
+    });
+    const adapter = new ReadyRoutineAdapter();
+
+    await executeBackgroundJobRun({
+      repository,
+      adapter,
+      agentId: "pi",
+      job: savedJob,
+      run,
+      providerBrand: "gpt",
+      planningModelId: "openai/gpt-5.4",
+      executionModelId: "openai/gpt-5.4",
+      debugEnabled: false
+    });
+
+    expect(adapter.calls[0]?.prompt).toContain("Active assistant todos:");
+    expect(adapter.calls[0]?.prompt).toContain("workKind=app-code");
+    expect(adapter.calls[0]?.prompt).toContain("target=src/app.tsx");
   });
 
   test("keeps assistant-owned schedule questions awaiting user input", async () => {

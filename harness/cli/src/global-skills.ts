@@ -2,15 +2,6 @@ import { cpSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { resolveGlobalSkillsRoot } from "./harness-paths";
 
-const DEFAULT_GLOBAL_SKILLS = [
-  "assistant-actions",
-  "branchfs",
-  "caveman",
-  "grill-me",
-  "market-research",
-  "screenshot"
-];
-
 export function syncBundledSkillsToGlobalRoot(options: {
   sourceRoot?: string;
   globalSkillsRoot?: string;
@@ -25,7 +16,7 @@ export function syncBundledSkillsToGlobalRoot(options: {
 
   mkdirSync(globalSkillsRoot, { recursive: true });
   const synced: string[] = [];
-  for (const skillName of options.skillNames ?? DEFAULT_GLOBAL_SKILLS) {
+  for (const skillName of options.skillNames ?? discoverBundledSkillNames(sourceSkillsRoot)) {
     const sourcePath = path.join(sourceSkillsRoot, skillName);
     const destinationPath = path.join(globalSkillsRoot, skillName);
     if (!existsSync(path.join(sourcePath, "SKILL.md"))) {
@@ -40,6 +31,14 @@ export function syncBundledSkillsToGlobalRoot(options: {
   }
 
   return synced;
+}
+
+function discoverBundledSkillNames(sourceSkillsRoot: string) {
+  return readdirSync(sourceSkillsRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+    .map((entry) => entry.name)
+    .filter((skillName) => existsSync(path.join(sourceSkillsRoot, skillName, "SKILL.md")))
+    .sort();
 }
 
 function isDestinationCurrent(sourcePath: string, destinationPath: string) {

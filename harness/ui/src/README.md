@@ -17,13 +17,16 @@ Solid UI source for harness frontend.
 - Assistant-owned job notifications route to the owning assistant log so scheduled work evidence stays near assistant history, with compact row summaries and full details in dialogs.
 - Execution log detail dialogs share transcript markdown formatting so long prompts stay readable without changing compact list rows.
 - Assistant chat follows project chat scroll behavior, opening at latest messages and exposing a return-to-latest control when browsing history.
+- Assistant roster refreshes stay summary-only; selected assistant detail hydrates on demand through bounded pages.
 - Assistant learnings render with empty states and bounded batches so large memory sets stay inspectable without special compacted-summary labeling.
 - Dense transcript, assistant, job, run, trace, and log collections use virtual infinite scrolling so tab switches stay responsive with large histories.
-- Assistant todo and learning rows expose cleanup actions while completed todos age out through backend retention.
+- Assistant todo rows expose cleanup, work category, and work target controls while completed todos age out through backend retention.
 - Trace panel follows selected Projects, Assistants, or Jobs context and shows unified execution evidence, task timing, and running-agent counts.
 - Provider preferences and context usage surfaces include Claude and cached-input visibility for efficient runs.
 - Shared time formatting keeps visible timestamps compact and browser-local.
 - The app shell uses a compact global scale so dense workflows fit without manual browser zoom.
+- `ide/` contains the first-pass coding workbench shell for file navigation, search, source control, editor tabs, command palette, resizable panes, terminal, themes, and editor-context actions.
+- `terminal/` owns the integrated bottom drawer, terminal tabs, splits, search, renderer adapters, and terminal websocket attachment state.
 - Shared overlay primitives route portal content through reusable document roots so closed tooltips, popovers, and dialogs do not leave document-level empty containers.
 - `components/` renders transcript, planning, run state, assistants, and supporting surfaces.
 - The inbox surfaces assistant questions only after backend policy classifies them as high-confidence blockers; soft repeats stay in assistant guidance and logs.

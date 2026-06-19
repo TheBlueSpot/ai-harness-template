@@ -1,4 +1,5 @@
 import path from "node:path";
+import { existsSync } from "node:fs";
 import { withAgentsMdRuleSource } from "./agent-rules";
 import { resolveModeById } from "../../shared/modes";
 import {
@@ -51,6 +52,7 @@ type BackgroundJobExecutorOptions = {
   planningModelId: string;
   executionModelId: string;
   reasoningStrength?: ComposerReasoningStrength;
+  fastMode?: boolean;
   debugEnabled: boolean;
   abortSignal?: AbortSignal;
   onRunUpdated?: (run: BackgroundJobRun) => void | Promise<void>;
@@ -76,6 +78,17 @@ export function resolveShellTimeoutMs(input: unknown) {
   return clamped * 1000;
 }
 
+function resolveBackgroundRunMaxTurns(job: BackgroundJob) {
+  if (!job.assistantId || job.definition.kind !== "ai-routine") {
+    return undefined;
+  }
+  return /\b(factory|spawn|create(?:s|d|ing)?\s+assistant|assistant\s+factory)\b/i.test(job.definition.prompt) ? 40 : 20;
+}
+
+function isProjectRootGitRepository(projectRoot: string) {
+  return existsSync(path.join(projectRoot, ".git"));
+}
+
 export async function executeBackgroundJobRun(options: BackgroundJobExecutorOptions) {
   return options.job.kind === "shell" ? executeShellJob(options) : executeAiRoutineJob(options);
 }
@@ -99,11 +112,27 @@ async function executeAiRoutineJob(options: BackgroundJobExecutorOptions) {
   );
   const assistantOwned = Boolean(job.assistantId);
   const existingThreadMessages = repository.getThreadMessages(job.projectId, threadId);
-  const prompt = job.assistantId
+  const projectRootIsGitRepo = isProjectRootGitRepository(project.rootPath);
+  const basePrompt = job.assistantId
     ? buildAssistantRoutinePrompt(definition.prompt, repository, job.assistantId)
     : definition.prompt;
+  const prompt =
+    assistantOwned && !projectRootIsGitRepo
+      ? [
+          basePrompt,
+          "Workspace note: project root is not a git repository. Use direct file inspection and avoid git status, git diff, and other git-only assumptions for this background job."
+        ].join("\n\n")
+      : basePrompt;
   const plannerMessages = [
     ...existingThreadMessages,
+    ...(assistantOwned && !projectRootIsGitRepo
+      ? [
+          createChatMessage(
+            "system",
+            "Project root is not a git repository. Use direct file inspection and avoid git status, git diff, and other git-only assumptions for this background job."
+          )
+        ]
+      : []),
     createChatMessage("system", `Scheduled job ${job.name} started.`),
     createChatMessage("user", prompt)
   ];
@@ -137,7 +166,7 @@ async function executeAiRoutineJob(options: BackgroundJobExecutorOptions) {
     resumableRun && resumableRun.status === "ready" && resumableRun.plan
       ? resumableRun
       : (() => {
-        repository.createAgentRun(job.projectId, prompt, options.planningModelId, threadId);
+        repository.createAgentRun(job.projectId, prompt, options.planningModelId, threadId, resolveBackgroundRunMaxTurns(job));
         return repository.getLatestThreadRun(job.projectId, threadId);
       })();
   if (!activeRun) {
@@ -166,7 +195,7 @@ async function executeAiRoutineJob(options: BackgroundJobExecutorOptions) {
       activeRun.plan,
       assistantOwned,
       definition.reasoningStrength,
-      definition.fastMode
+      definition.fastMode ?? options.fastMode
     );
   }
 
@@ -312,7 +341,7 @@ async function executeAiRoutineJob(options: BackgroundJobExecutorOptions) {
     plannerTurn.executionPlan,
     assistantOwned,
     definition.reasoningStrength,
-    definition.fastMode
+    definition.fastMode ?? options.fastMode
   );
 }
 
@@ -689,7 +718,7 @@ function runBackgroundPlannerTurn(
     subagentWorktreeStrategy: job.definition.subagentWorktreeStrategy ?? repository.getSubagentWorktreeStrategyDefault(),
     planExecutionMode: job.definition.planExecutionMode ?? repository.getPlanExecutionModeDefault(),
     planExecutionDelaySeconds: repository.getPlanExecutionDelaySecondsDefault(),
-    correctnessIterationMode: repository.getCorrectnessIterationModeDefault(),
+    correctnessIterationMode: job.assistantId && input.mode.id === "implement" ? "auto-once" : repository.getCorrectnessIterationModeDefault(),
     mode: input.mode,
     ruleSources: input.ruleSources,
     memorySummaries: input.memorySummaries,
@@ -901,9 +930,21 @@ function buildAssistantRoutinePrompt(
 
   const answeredQuestions = selectAssistantPromptQuestions(repository.getAssistantQuestions(assistantId));
   const learnings = selectAssistantPromptLearnings(repository.getAssistantLearnings(assistantId));
+  const activeTodos = repository
+    .getAssistantTodos(assistantId)
+    .filter((todo) => ["pending", "in-progress", "blocked"].includes(todo.state));
 
   return [
     renderAssistantPromptContext(assistant, basePrompt),
+    activeTodos.length > 0
+      ? [
+          "Active assistant todos:",
+          ...activeTodos.map(
+            (todo) =>
+              `- (${todo.id}) state=${todo.state} workKind=${todo.workKind} target=${todo.workTarget ?? "none"} title=${todo.title}${todo.blockerReason ? ` blocker=${todo.blockerReason}` : ""}`
+          )
+        ].join("\n")
+      : "Active assistant todos: none",
     renderAssistantPromptMemoryBlock(answeredQuestions, learnings)
   ]
     .filter(Boolean)
@@ -920,7 +961,7 @@ async function consumeBoundedStream(
   const reader = stream.getReader();
   try {
     while (true) {
-      const next = await reader.read();
+      const next = await readStreamChunk(reader);
       if (next.done) {
         return buffer.snapshot();
       }
@@ -931,8 +972,33 @@ async function consumeBoundedStream(
       }
     }
   } finally {
-    reader.releaseLock();
+    releaseStreamReaderLock(reader);
   }
+}
+
+async function readStreamChunk(reader: ReadableStreamDefaultReader<Uint8Array>) {
+  try {
+    return await reader.read();
+  } catch (error) {
+    if (isStreamReaderCancelledError(error)) {
+      return { done: true, value: undefined } as ReadableStreamReadDoneResult<Uint8Array>;
+    }
+    throw error;
+  }
+}
+
+function releaseStreamReaderLock(reader: ReadableStreamDefaultReader<Uint8Array>) {
+  try {
+    reader.releaseLock();
+  } catch (error) {
+    if (!isStreamReaderCancelledError(error)) {
+      throw error;
+    }
+  }
+}
+
+function isStreamReaderCancelledError(error: unknown) {
+  return error instanceof Error && error.name === "AbortError" && error.message.includes("releaseLock");
 }
 
 function createPlanningQuestionNotification(

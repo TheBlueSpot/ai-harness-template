@@ -22,7 +22,7 @@ type SessionRecord = {
   process: InteractiveCliProcess;
   session: CliSession;
   attachedClientId?: string;
-  attachedSocket?: Bun.ServerWebSocket<{ clientId: string; kind: "control" | "pty"; sessionId?: string }>;
+  attachedSocket?: Bun.ServerWebSocket<{ clientId: string; kind: "control" | "pty" | "terminal"; sessionId?: string }>;
   ptyHeartbeatTimer?: ReturnType<typeof setInterval>;
   lastPtyPongAt?: number;
   terminalPumps?: Partial<Record<"stdout" | "stderr", StreamPump>>;
@@ -241,7 +241,7 @@ export class CliSessionManager {
   attachSocket(input: {
     sessionId: string;
     clientId: string;
-    socket: Bun.ServerWebSocket<{ clientId: string; kind: "control" | "pty"; sessionId?: string }>;
+    socket: Bun.ServerWebSocket<{ clientId: string; kind: "control" | "pty" | "terminal"; sessionId?: string }>;
   }) {
     const record = this.requireSession(input.sessionId);
     record.attachedClientId = input.clientId;

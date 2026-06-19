@@ -3,6 +3,7 @@ import { beforeEach, expect, it } from "bun:test";
 import { render } from "@solidjs/testing-library";
 import type {
   Assistant,
+  AssistantQuestionNotification,
   BackgroundJob,
   BackgroundJobRun,
   BackgroundRunStatusNotification,
@@ -17,6 +18,7 @@ import { getAssistantQuestionDefaultChoices } from "../assistant-question-defaul
 import {
   NotificationInbox,
   activateProjectThreadFromInbox,
+  createAssistantJobBootstrapCommandFromInbox,
   openAssistantJobNotificationFromInbox,
   openBackgroundRunNotificationFromInbox
 } from "./notification-inbox";
@@ -71,8 +73,23 @@ function backgroundRunStatusNotification(
   };
 }
 
+function assistantJobBootstrapNotification(
+  overrides: Partial<AssistantQuestionNotification> = {}
+): AssistantQuestionNotification {
+  return {
+    id: "assistant-question:assistant-1:assistant-job-bootstrap:assistant-1",
+    kind: "assistant-question",
+    interactive: true,
+    createdAt: isoNow(),
+    assistantId: "assistant-1",
+    questionId: "assistant-job-bootstrap:assistant-1",
+    prompt: "Bootstrap default research, todo maintenance, and implementation jobs for Release watcher?",
+    ...overrides
+  };
+}
+
 function seedInbox(
-  items: (PlanningQuestionNotification | BackgroundRunStatusNotification)[],
+  items: (PlanningQuestionNotification | BackgroundRunStatusNotification | AssistantQuestionNotification)[],
   unreadCount?: number
 ) {
   const interactiveUnread = items.filter((item) => item.interactive && !item.readAt).length;
@@ -146,6 +163,55 @@ createUiTest("NotificationInbox", () => {
     expect(choices.filter((choice) => choice.recommended)).toHaveLength(1);
     expect(choices.map((choice) => choice.label)).toEqual(["Use judgment", "Do other work", "Wait"]);
     expect(choices.every((choice) => choice.answerText.trim().length > 0)).toBe(true);
+  });
+
+  it("builds assistant job bootstrap command from the bootstrap question", () => {
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: "project-1",
+          projects: [createViewProjectFixture({ id: "project-1", activeThreadId: "thread-1" })]
+        },
+        assistants: {
+          ...createEmptyAssistantsState(),
+          assistants: [
+            {
+              id: "assistant-1",
+              name: "Release watcher",
+              scope: "project",
+              projectId: "project-1",
+              description: "Watch releases",
+              personalityPrompt: "Be concise.",
+              jobPrompt: "Scan releases.",
+              agentId: "pi",
+              runState: "active",
+              bootstrapState: "completed",
+              failureStreakCount: 0,
+              circuitBreakerState: "closed",
+              latestActivityAt: isoNow(),
+              unreadQuestionCount: 1,
+              createdAt: isoNow(),
+              updatedAt: isoNow()
+            } satisfies Assistant
+          ]
+        },
+        notifications: {
+          items: [assistantJobBootstrapNotification()],
+          unreadCount: 1,
+          interactiveUnreadCount: 1,
+          passiveUnreadCount: 0
+        }
+      })
+    );
+    const command = createAssistantJobBootstrapCommandFromInbox(harnessStore.state, assistantJobBootstrapNotification());
+
+    expect(command).toMatchObject({
+      type: "assistant.jobs.bootstrap",
+      payload: {
+        assistantId: "assistant-1",
+        projectId: "project-1"
+      }
+    });
   });
 });
 

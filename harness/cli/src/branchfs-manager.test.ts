@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { lstat, mkdir, readFile, rm } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
-import { BranchfsManager } from "./branchfs-manager";
+import { BranchfsManager, testExports } from "./branchfs-manager";
 import { useGitProjectFixture } from "./test-support/git-project-fixture";
 
 describe("branchfs manager", () => {
@@ -38,6 +39,37 @@ describe("branchfs manager", () => {
     expect(existsSync(lease.repoMountPath)).toBe(false);
   });
 
+  test("mount is an isolated git repository for agent diff commands", async () => {
+    const rootPath = await fixture.createRepoClone("branchfs-git-mount");
+
+    const manager = new BranchfsManager({ rootPath, runId: "run-git-mount" });
+    const lease = await manager.prepareExperimentLease();
+
+    const statusBefore = Bun.spawnSync({
+      cmd: ["git", "status", "--short"],
+      cwd: lease.projectMountPath,
+      stdout: "pipe",
+      stderr: "pipe"
+    });
+    expect(statusBefore.exitCode).toBe(0);
+    expect(statusBefore.stdout.toString()).toBe("");
+
+    writeFileSync(path.join(lease.projectMountPath, "tracked.txt"), "changed in mount\n");
+    const diff = Bun.spawnSync({
+      cmd: ["git", "diff", "--", "tracked.txt"],
+      cwd: lease.projectMountPath,
+      stdout: "pipe",
+      stderr: "pipe"
+    });
+    expect(diff.exitCode).toBe(0);
+    expect(diff.stdout.toString()).toContain("changed in mount");
+
+    const inspection = await manager.readInspection(lease);
+    expect(inspection.changedPaths).toEqual(["tracked.txt"]);
+
+    await manager.unmountExperiment(lease);
+  });
+
   test("does not copy ignored local data into experiment mount", async () => {
     const rootPath = await fixture.createRepoClone("branchfs-ignored");
     await mkdir(path.join(rootPath, ".tmp-test-data"), { recursive: true });
@@ -63,6 +95,22 @@ describe("branchfs manager", () => {
 
     for (const name of ["node_modules", "dist", ".bun"]) {
       expect((await lstat(path.join(lease.repoMountPath, name))).isSymbolicLink()).toBe(true);
+    }
+
+    await manager.unmountExperiment(lease);
+  });
+
+  test("skips missing passthrough directories instead of creating broken junctions", async () => {
+    const rootPath = await fixture.createRepoClone("branchfs-missing-passthrough");
+    for (const name of ["node_modules", "dist", ".bun"]) {
+      await rm(path.join(rootPath, name), { recursive: true, force: true });
+    }
+
+    const manager = new BranchfsManager({ rootPath, runId: "run-missing-passthrough" });
+    const lease = await manager.prepareExperimentLease();
+
+    for (const name of ["node_modules", "dist", ".bun"]) {
+      expect(await lstat(path.join(lease.repoMountPath, name)).catch(() => undefined)).toBeUndefined();
     }
 
     await manager.unmountExperiment(lease);
@@ -94,6 +142,66 @@ describe("branchfs manager", () => {
 
     await manager.unmountExperiment(lease);
     expect(existsSync(lease.repoMountPath)).toBe(false);
+  });
+
+  test("skips source files that vanish during robust copy", async () => {
+    const tempRoot = mkdtempSync(path.join(os.tmpdir(), "branchfs-vanished-copy-"));
+    const sourcePath = path.join(tempRoot, "missing.svg");
+    const targetPath = path.join(tempRoot, "target.svg");
+
+    await testExports.copyRecursiveRobust(sourcePath, targetPath);
+
+    expect(existsSync(targetPath)).toBe(false);
+    await rm(tempRoot, { recursive: true, force: true });
+  });
+
+  test("keeps copying siblings after a directory entry vanishes", async () => {
+    const tempRoot = mkdtempSync(path.join(os.tmpdir(), "branchfs-vanished-entry-"));
+    const sourceDirectory = path.join(tempRoot, "source");
+    const targetDirectory = path.join(tempRoot, "target");
+    const vanishedSourcePath = path.join(sourceDirectory, "gone.txt");
+    const keptTargetPath = path.join(targetDirectory, "keep.txt");
+    const vanishedTargetPath = path.join(targetDirectory, "gone.txt");
+
+    await mkdir(sourceDirectory, { recursive: true });
+    writeFileSync(vanishedSourcePath, "gone\n");
+    writeFileSync(path.join(sourceDirectory, "keep.txt"), "keep\n");
+
+    await testExports.copyRecursiveRobust(sourceDirectory, targetDirectory, {
+      async onDirectoryEntry(sourcePath) {
+        if (sourcePath === vanishedSourcePath) {
+          await rm(vanishedSourcePath, { force: true });
+        }
+      }
+    });
+
+    expect(await readText(keptTargetPath)).toBe("keep\n");
+    expect(existsSync(vanishedTargetPath)).toBe(false);
+    await rm(tempRoot, { recursive: true, force: true });
+  });
+
+  test("keeps copying when a target entry vanishes during robust copy", async () => {
+    const tempRoot = mkdtempSync(path.join(os.tmpdir(), "branchfs-vanished-target-entry-"));
+    const sourceDirectory = path.join(tempRoot, "source");
+    const targetDirectory = path.join(tempRoot, "target");
+    const replacedSourcePath = path.join(sourceDirectory, "replace.txt");
+    const replacedTargetPath = path.join(targetDirectory, "replace.txt");
+
+    await mkdir(sourceDirectory, { recursive: true });
+    await mkdir(targetDirectory, { recursive: true });
+    writeFileSync(replacedSourcePath, "fresh\n");
+    writeFileSync(replacedTargetPath, "stale\n");
+
+    await testExports.copyRecursiveRobust(sourceDirectory, targetDirectory, {
+      async onDirectoryEntry(sourcePath) {
+        if (sourcePath === replacedSourcePath) {
+          await rm(replacedTargetPath, { force: true });
+        }
+      }
+    });
+
+    expect(await readText(replacedTargetPath)).toBe("fresh\n");
+    await rm(tempRoot, { recursive: true, force: true });
   });
 
   test("rejects unsafe run ids before touching branchfs roots", async () => {

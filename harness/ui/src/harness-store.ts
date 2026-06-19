@@ -6,6 +6,7 @@ import {
   createRequestId,
   type Assistant,
   type AssistantAssetRef,
+  type AssistantDetail,
   type AssistantLearning,
   type AssistantLogEntry,
   type AssistantQuestion,
@@ -24,6 +25,7 @@ import {
   type BackgroundJobsState,
   type BackgroundJobSchedulePreview,
   type BranchfsCleanupSummary,
+  type CliSession,
   type ComposerReasoningStrength,
   type ExperimentInspection,
   type MemorySummary,
@@ -88,6 +90,7 @@ export const CHECK_CLI_UPDATES_DEFAULT_STORAGE_KEY = "check_cli_updates_default"
 export const COMPOSER_REASONING_STRENGTH_STORAGE_KEY = "composer_reasoning_strength";
 export const COMPOSER_FAST_MODE_STORAGE_KEY = "composer_fast_mode";
 export const APP_HOTKEY_PREFERENCES_STORAGE_KEY = "pi-harness:app-hotkeys:v1";
+export const PREFERENCES_ACTIVE_SECTION_STORAGE_KEY = "pi-harness:preferences-active-section:v1";
 export const THREAD_DRAFT_STORAGE_KEY_PREFIX = "pi-harness:thread-draft:v1";
 export const TUTORIAL_PROGRESS_STORAGE_KEY = "pi-harness:tutorial-progress:v1";
 export const BROWSER_UI_SESSION_STORAGE_KEY = "pi-harness:browser-ui-session:v1";
@@ -97,11 +100,11 @@ export const COMPOSER_REASONING_STRENGTHS: ComposerReasoningStrength[] = ["low",
 const MAX_STREAMING_MESSAGE_HEARTBEATS = 2;
 const MAX_LIVE_TRACE_HISTORY = 500;
 
-export type HarnessActiveSurface = "chat" | "background-jobs" | "assistants" | "preferences";
+export type HarnessActiveSurface = "chat" | "background-jobs" | "assistants" | "preferences" | "ide";
 export type HarnessLeftTab = "projects" | "assistants" | "jobs" | "runs" | "preferences";
 export type ChatPaneTab = "chat" | "plan" | "run" | "events" | "memory";
 export type AssistantDetailTab = "chat" | "todos" | "questions" | "jobs" | "log" | "config" | "learnings";
-export type AssistantScopeFilter = "global" | "project";
+export type AssistantScopeFilter = "all" | "global" | "project";
 export type ProjectSidebarProjectSort = "last-user-message" | "created-at" | "manual";
 export type ProjectSidebarThreadSort = "last-user-message" | "created-at";
 export type ProjectSidebarGrouping = "repository" | "repository-path" | "separate";
@@ -154,6 +157,7 @@ export type ProviderConnectionTestState = {
 export type PreferencesActiveSectionId =
   | "general-ui"
   | "keybinds"
+  | "ide-settings"
   | "ai-providers"
   | "safety-guardrails"
   | "workspace-memory"
@@ -387,6 +391,12 @@ export type HarnessViewState = {
   preferencesActiveSectionId: PreferencesActiveSectionId;
   preferencesSearchQuery: string;
   helpDialogOpen: boolean;
+  ideFileOpenRequest?: {
+    id: string;
+    path: string;
+    line?: number;
+    column?: number;
+  };
   setupChecklistOpen: boolean;
   activeTutorialId?: string;
   activeTutorialStepIndex: number;
@@ -477,6 +487,7 @@ export type LocalPreferencesState = {
   selectedReasoningStrength?: ComposerReasoningStrength;
   selectedFastMode?: boolean;
   appHotkeyPreferences?: AppHotkeyPreferences;
+  preferencesActiveSectionId?: PreferencesActiveSectionId;
 };
 
 export function createInitialWorkspaceState(): ViewWorkspaceState {
@@ -670,6 +681,7 @@ export function createInitialViewState(): HarnessViewState {
     preferencesActiveSectionId: "ai-providers",
     preferencesSearchQuery: "",
     helpDialogOpen: false,
+    ideFileOpenRequest: undefined,
     setupChecklistOpen: false,
     activeTutorialId: undefined,
     activeTutorialStepIndex: 0,
@@ -730,6 +742,10 @@ export function getActiveProject(state: HarnessViewState) {
 }
 
 export function getVisibleAssistants(state: HarnessViewState) {
+  if (state.assistants.scopeFilter === "all") {
+    return state.assistants.assistants;
+  }
+
   return state.assistants.assistants.filter((assistant) =>
     state.assistants.scopeFilter === "global"
       ? assistant.scope === "global"
@@ -1310,7 +1326,9 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
     case "cli-session.exited":
       return updateProjectState(state, event.payload.projectId, (project) => ({
         ...project,
-        activeCliSession: project.activeThreadId === event.payload.threadId ? event.payload.session : project.activeCliSession
+        activeCliSession:
+          project.activeThreadId === event.payload.threadId ? event.payload.session : project.activeCliSession,
+        cliSessions: upsertCliSession(project.cliSessions ?? [], event.payload.session)
       }));
     case "cli-session.attach-ready":
       return state;
@@ -1329,6 +1347,66 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
       return {
         ...state,
         assistants: hydrateAssistants(state.assistants, event.payload.assistants)
+      };
+    case "assistant.summary.listed":
+      return {
+        ...state,
+        assistants: hydrateAssistants(state.assistants, {
+          assistants: event.payload.assistants.items,
+          threads: [],
+          todos: [],
+          learnings: [],
+          questions: [],
+          logs: [],
+          assetRefs: []
+        })
+      };
+    case "assistant.detail.loaded":
+      return {
+        ...state,
+        assistants: mergeAssistantDetail(state.assistants, event.payload.detail)
+      };
+    case "assistant.thread.messages.listed":
+      return {
+        ...state,
+        assistants: mergeAssistantThreadMessages(
+          state.assistants,
+          event.payload.assistantId,
+          event.payload.threadId,
+          event.payload.messages.items
+        )
+      };
+    case "assistant.logs.listed":
+      return {
+        ...state,
+        assistants: {
+          ...state.assistants,
+          logs: mergeScopedItems(state.assistants.logs, event.payload.assistantId, event.payload.logs.items)
+        }
+      };
+    case "assistant.todos.listed":
+      return {
+        ...state,
+        assistants: {
+          ...state.assistants,
+          todos: mergeScopedItems(state.assistants.todos, event.payload.assistantId, event.payload.todos.items)
+        }
+      };
+    case "assistant.learnings.listed":
+      return {
+        ...state,
+        assistants: {
+          ...state.assistants,
+          learnings: mergeScopedItems(state.assistants.learnings, event.payload.assistantId, event.payload.learnings.items)
+        }
+      };
+    case "assistant.questions.listed":
+      return {
+        ...state,
+        assistants: {
+          ...state.assistants,
+          questions: mergeScopedItems(state.assistants.questions, event.payload.assistantId, event.payload.questions.items)
+        }
       };
     case "assistant.updated":
       return {
@@ -1700,6 +1778,22 @@ export function createHarnessStore() {
       } else {
         persistBrowserUiStateIfChanged(previousSnapshot, nextState);
       }
+    },
+    openIdeFile(path: string, line?: number, column?: number) {
+      const previousSnapshot = getBrowserUiSessionSnapshot(state);
+      const isIdePage = typeof window !== "undefined" && window.location.pathname === "/ide";
+      const nextState = finalizeHarnessViewState({
+        ...state,
+        activeSurface: isIdePage ? "ide" : state.activeSurface,
+        ideFileOpenRequest: {
+          id: createRequestId(),
+          path,
+          line,
+          column
+        }
+      });
+      setState(reconcile(nextState));
+      persistBrowserUiStateIfChanged(previousSnapshot, nextState);
     },
     setChatPaneTab(chatPaneTab: ChatPaneTab) {
       const currentState = unwrap(state) as HarnessViewState;
@@ -2140,7 +2234,7 @@ export function createHarnessStore() {
         activeLeftTab: "preferences",
         activeSurface: "preferences",
         preferencesModalOpen: false,
-        preferencesActiveSectionId: "ai-providers",
+        preferencesActiveSectionId: state.preferencesActiveSectionId,
         preferencesSearchQuery: ""
       });
       setState(reconcile(nextState));
@@ -2159,6 +2253,7 @@ export function createHarnessStore() {
     },
     setPreferencesActiveSectionId(preferencesActiveSectionId: PreferencesActiveSectionId) {
       setState({ preferencesActiveSectionId, preferencesSearchQuery: "" });
+      persistMergedLocalPreferences({ preferencesActiveSectionId });
     },
     setPreferencesSearchQuery(preferencesSearchQuery: string) {
       setState({ preferencesSearchQuery });
@@ -2307,6 +2402,8 @@ export function createHarnessStore() {
         ),
         backgroundJobNotificationsEnabled:
           localPreferences.backgroundJobNotificationsEnabled ?? state.backgroundJobNotificationsEnabled,
+        preferencesActiveSectionId:
+          localPreferences.preferencesActiveSectionId ?? state.preferencesActiveSectionId,
         projectSidebarPreferences: normalizeProjectSidebarPreferences(
           readProjectSidebarPreferences(),
           state.workspace.projects.map((project) => project.id)
@@ -2396,6 +2493,8 @@ export function createHarnessStore() {
         ),
         backgroundJobNotificationsEnabled:
           localPreferences.backgroundJobNotificationsEnabled ?? state.backgroundJobNotificationsEnabled,
+        preferencesActiveSectionId:
+          localPreferences.preferencesActiveSectionId ?? state.preferencesActiveSectionId,
         projectSidebarPreferences: normalizeProjectSidebarPreferences(
           readProjectSidebarPreferences(),
           state.workspace.projects.map((project) => project.id)
@@ -2555,16 +2654,32 @@ function cloneCommandWithRequestId(command: ClientCommand, requestId: string): C
 }
 
 function hydrateAssistants(existing: ViewAssistantsState, incoming: AssistantsState): ViewAssistantsState {
+  const activeAssistantIds = new Set(incoming.assistants.map((assistant) => assistant.id));
+  const keepActive = <T extends { assistantId: string }>(entries: T[]) =>
+    entries.filter((entry) => activeAssistantIds.has(entry.assistantId));
+  const nextThreads = incoming.threads.length > 0 ? incoming.threads : keepActive(existing.threads);
+  const nextTodos = incoming.todos.length > 0 ? incoming.todos : keepActive(existing.todos);
+  const nextLearnings = incoming.learnings.length > 0 ? incoming.learnings : keepActive(existing.learnings);
+  const nextQuestions = incoming.questions.length > 0 ? incoming.questions : keepActive(existing.questions);
+  const nextLogs = incoming.logs.length > 0 ? incoming.logs : keepActive(existing.logs);
+  const nextAssetRefs = incoming.assetRefs.length > 0 ? incoming.assetRefs : keepActive(existing.assetRefs);
   const nextVisibleId =
     existing.selectedAssistantId && incoming.assistants.some((assistant) => assistant.id === existing.selectedAssistantId)
       ? existing.selectedAssistantId
       : incoming.assistants[0]?.id;
   return {
-    ...incoming,
+    ...existing,
+    assistants: incoming.assistants,
+    threads: nextThreads,
+    todos: nextTodos,
+    learnings: nextLearnings,
+    questions: nextQuestions,
+    logs: nextLogs,
+    assetRefs: nextAssetRefs,
     selectedAssistantId: nextVisibleId,
     selectedTab: existing.selectedTab,
     selectedLogDetailsId:
-      existing.selectedLogDetailsId && incoming.logs.some((entry) => entry.id === existing.selectedLogDetailsId)
+      existing.selectedLogDetailsId && nextLogs.some((entry) => entry.id === existing.selectedLogDetailsId)
         ? existing.selectedLogDetailsId
         : undefined,
     scopeFilter: existing.scopeFilter,
@@ -2579,10 +2694,88 @@ function hydrateAssistants(existing: ViewAssistantsState, incoming: AssistantsSt
   };
 }
 
+function mergeAssistantDetail(existing: ViewAssistantsState, detail: AssistantDetail): ViewAssistantsState {
+  const selectedAssistantId =
+    existing.selectedAssistantId && existing.assistants.some((assistant) => assistant.id === existing.selectedAssistantId)
+      ? existing.selectedAssistantId
+      : detail.assistant.id;
+  const nextLogs = replaceScopedItems(existing.logs, detail.assistant.id, detail.logs.items);
+  return {
+    ...existing,
+    assistants: upsertById(existing.assistants, detail.assistant),
+    threads: detail.thread ? upsertById(existing.threads, detail.thread) : existing.threads,
+    todos: replaceScopedItems(existing.todos, detail.assistant.id, detail.todos.items),
+    learnings: replaceScopedItems(existing.learnings, detail.assistant.id, detail.learnings.items),
+    questions: replaceScopedItems(existing.questions, detail.assistant.id, detail.questions.items),
+    logs: nextLogs,
+    assetRefs: replaceScopedItems(existing.assetRefs, detail.assistant.id, detail.assetRefs),
+    selectedAssistantId,
+    selectedLogDetailsId:
+      existing.selectedLogDetailsId && nextLogs.some((entry) => entry.id === existing.selectedLogDetailsId)
+        ? existing.selectedLogDetailsId
+        : undefined
+  };
+}
+
+function mergeAssistantThreadMessages(
+  existing: ViewAssistantsState,
+  assistantId: string,
+  threadId: string,
+  messages: AssistantThread["messages"]
+): ViewAssistantsState {
+  const thread = existing.threads.find((entry) => entry.id === threadId && entry.assistantId === assistantId);
+  if (!thread) {
+    return existing;
+  }
+  return {
+    ...existing,
+    threads: existing.threads.map((entry) =>
+      entry.id === threadId
+        ? {
+          ...entry,
+          messages: mergeItemsById(messages, entry.messages).sort((left, right) => left.createdAt.localeCompare(right.createdAt)),
+          messageCount: Math.max(entry.messageCount, messages.length)
+        }
+        : entry
+    )
+  };
+}
+
 function upsertById<T extends { id: string }>(entries: T[], nextEntry: T) {
   return entries.some((entry) => entry.id === nextEntry.id)
     ? entries.map((entry) => (entry.id === nextEntry.id ? nextEntry : entry))
     : [nextEntry, ...entries];
+}
+
+function mergeItemsById<T extends { id: string }>(incoming: T[], existing: T[]) {
+  const seen = new Set<string>();
+  const merged: T[] = [];
+  for (const entry of [...incoming, ...existing]) {
+    if (seen.has(entry.id)) {
+      continue;
+    }
+    seen.add(entry.id);
+    merged.push(entry);
+  }
+  return merged;
+}
+
+function replaceScopedItems<T extends { assistantId: string }>(existing: T[], assistantId: string, incoming: T[]) {
+  return [...incoming, ...existing.filter((entry) => entry.assistantId !== assistantId)];
+}
+
+function mergeScopedItems<T extends { id: string; assistantId: string }>(existing: T[], assistantId: string, incoming: T[]) {
+  return mergeItemsById(incoming, existing.filter((entry) => entry.assistantId === assistantId)).concat(
+    existing.filter((entry) => entry.assistantId !== assistantId)
+  );
+}
+
+function upsertCliSession(sessions: CliSession[], session: CliSession) {
+  const next = sessions.filter((entry) => entry.id !== session.id);
+  if (session.status !== "exited" && session.status !== "failed" && session.status !== "stopped") {
+    next.push(session);
+  }
+  return next;
 }
 
 function updateProjectState(
@@ -3145,6 +3338,9 @@ export function readLocalPreferences(): LocalPreferencesState {
   );
   const selectedFastMode = parseBooleanStorageValue(window.localStorage.getItem(COMPOSER_FAST_MODE_STORAGE_KEY));
   const appHotkeyPreferences = readAppHotkeyPreferences();
+  const preferencesActiveSectionId = parsePreferencesActiveSectionStorageValue(
+    window.localStorage.getItem(PREFERENCES_ACTIVE_SECTION_STORAGE_KEY)
+  );
 
   return {
     openAiApiKey,
@@ -3172,7 +3368,8 @@ export function readLocalPreferences(): LocalPreferencesState {
     backgroundJobNotificationsEnabled,
     selectedReasoningStrength,
     selectedFastMode,
-    appHotkeyPreferences
+    appHotkeyPreferences,
+    preferencesActiveSectionId
   };
 }
 
@@ -3291,6 +3488,7 @@ export function persistLocalPreferences(input: LocalPreferencesState) {
   persistStorageValue(COMPOSER_REASONING_STRENGTH_STORAGE_KEY, input.selectedReasoningStrength);
   persistBooleanStorageValue(COMPOSER_FAST_MODE_STORAGE_KEY, input.selectedFastMode);
   persistAppHotkeyPreferences(input.appHotkeyPreferences);
+  persistStorageValue(PREFERENCES_ACTIVE_SECTION_STORAGE_KEY, input.preferencesActiveSectionId);
 }
 
 function persistAppHotkeyPreferences(input: AppHotkeyPreferences | undefined) {
@@ -3605,6 +3803,8 @@ function activeSurfaceToLeftTab(activeSurface: HarnessActiveSurface): HarnessLef
       return "runs";
     case "preferences":
       return "preferences";
+    case "ide":
+      return "projects";
     case "chat":
       return "projects";
   }
@@ -3653,7 +3853,7 @@ function normalizeAssistantDetailTab(input: unknown): AssistantDetailTab {
 }
 
 function normalizeAssistantScopeFilter(input: unknown): AssistantScopeFilter {
-  return input === "global" || input === "project" ? input : "project";
+  return input === "all" || input === "global" || input === "project" ? input : "project";
 }
 
 function normalizeSearchText(input: unknown) {
@@ -3796,7 +3996,9 @@ function upsertRunSummary(summaries: AgentRunSummary[], next: AgentRunSummary) {
 function normalizeAssistantsViewState(state: HarnessViewState): ViewAssistantsState {
   const scopeFilter = normalizeAssistantScopeFilter(state.assistants.scopeFilter);
   const visibleAssistants = state.assistants.assistants.filter((assistant) =>
-    scopeFilter === "global"
+    scopeFilter === "all"
+      ? true
+      : scopeFilter === "global"
       ? assistant.scope === "global"
       : assistant.scope === "project" && assistant.projectId === state.workspace.activeProjectId
   );
@@ -4051,6 +4253,19 @@ function parseRunModelPreferenceStorageValue(value: string | null) {
 
 function parseBackgroundJobApprovalPolicyStorageValue(value: string | null) {
   return value === "allow-all" || value === "allow-safe" || value === "ask-risky" || value === "always-ask"
+    ? value
+    : undefined;
+}
+
+function parsePreferencesActiveSectionStorageValue(value: string | null): PreferencesActiveSectionId | undefined {
+  return value === "general-ui" ||
+    value === "keybinds" ||
+    value === "ide-settings" ||
+    value === "ai-providers" ||
+    value === "safety-guardrails" ||
+    value === "workspace-memory" ||
+    value === "background-jobs" ||
+    value === "developer-advanced"
     ? value
     : undefined;
 }

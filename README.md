@@ -117,7 +117,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 
 ## Local Workflow
 
-- `bun run bootstrap` installs missing dependencies, builds the UI, starts the server, and opens the browser by default
+- `bun run bootstrap` installs missing dependencies, checks for a CDP-capable Chrome or Edge browser, builds the UI, starts the server, and opens the browser by default
 - `bun run dev` starts the Bun server with hot reload, opens the browser only on first ready boot, waits for a 30s quiet window before applying dev UI or backend reloads, auto-reloads the browser after successful debounced UI rebuilds, and keeps backend state best-effort across same-process hot reloads
 - `bun run dev:cli` starts the websocket server without the UI route through the same Bun hot-reload path
 - When `HARNESS_PORT` is unset, dev and bootstrap retry on a random open port if `8787` is already occupied
@@ -133,7 +133,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - Development DB recovery now logs the triggering startup error first and only auto-purges on concrete corruption or schema-drift signatures instead of generic SQLite failures
 - Background job run schema repair now also rebuilds dependent notification and event tables when an older migration left them pointing at legacy table names
 - If corrupted local SQLite artifacts stay locked during dev recovery, startup falls back to a fresh sibling DB path instead of failing on the busy file
-- `bun run screenshot` captures isolated Playwright chromium screenshots of the UI inside a BranchFS mount on a random free port and writes PNGs to `.local/screenshots/<runId>/` so agents can inspect visual bugs without touching the host `:8787` server
+- `bun run screenshot` captures CDP screenshots from an already-running UI at `http://localhost:8787` by default and writes PNGs to `.local/screenshots/<runId>/`; `--start-server` and `--start-server --branchfs` opt into managed server startup or isolation
 
 ## Testing
 

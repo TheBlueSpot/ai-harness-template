@@ -139,6 +139,7 @@ export class BranchfsManager {
 
       await this.snapshotProjectBaseline(projectMountPath, baseProjectPath);
       const baselineFiles = await hashTree(baseProjectPath);
+      await this.seedIsolatedGitRepository(repoMountPath, materializationPlan.passthroughDirectories);
       const virtualBranchName = `ai-experiment/${this.context.runId}`;
       const createdAt = new Date().toISOString();
       const experiment: ExperimentRun = {
@@ -250,7 +251,7 @@ export class BranchfsManager {
       }
 
       await mkdir(path.dirname(destinationPath), { recursive: true });
-      await copyRecursiveRobust(sourcePath, destinationPath);
+      await copyBranchfsPathRobust(sourcePath, destinationPath);
     }
 
     this.emitTrace({
@@ -285,7 +286,13 @@ export class BranchfsManager {
       .map((entry) => entry.replace(/\\/g, "/"))
       .filter((entry) => !isExcludedMaterializationPath(entry))
       .sort();
-    const passthroughDirectories = PASSTHROUGH_DIRECTORIES.filter((entry) => pathExists(path.join(repoRoot, entry)));
+    const passthroughDirectories: string[] = [];
+    for (const entry of PASSTHROUGH_DIRECTORIES) {
+      const entryStats = await statIfPresent(path.join(repoRoot, entry));
+      if (entryStats?.isDirectory()) {
+        passthroughDirectories.push(entry);
+      }
+    }
     let estimatedBytes = 0;
     let estimatedFiles = 0;
     for (const relativePath of includedPaths) {
@@ -317,8 +324,20 @@ export class BranchfsManager {
 
   private async materializeMount(plan: BranchfsMaterializationPlan, repoMountPath: string, runRoot: string) {
     for (const directory of plan.passthroughDirectories) {
-      await mkdir(path.dirname(path.join(repoMountPath, directory)), { recursive: true });
-      await symlink(path.join(plan.repoRoot, directory), path.join(repoMountPath, directory), "junction");
+      const sourcePath = path.join(plan.repoRoot, directory);
+      const sourceStats = await statIfPresent(sourcePath);
+      if (!sourceStats?.isDirectory()) {
+        continue;
+      }
+      const targetPath = path.join(repoMountPath, directory);
+      await mkdir(path.dirname(targetPath), { recursive: true });
+      await rm(targetPath, { recursive: true, force: true }).catch(() => undefined);
+      await withFsRetry(() => symlink(sourcePath, targetPath, "junction")).catch((error: unknown) => {
+        if (isMissingPathError(error) || isFileExistsError(error)) {
+          return;
+        }
+        throw error;
+      });
     }
 
     for (const relativePath of plan.includedPaths) {
@@ -329,14 +348,34 @@ export class BranchfsManager {
       if (!sourceStats) {
         continue;
       }
-      await copyRecursiveRobust(path.join(plan.repoRoot, relativePath), path.join(repoMountPath, relativePath));
+      await copyBranchfsPathRobust(path.join(plan.repoRoot, relativePath), path.join(repoMountPath, relativePath));
     }
 
     await mkdir(path.join(runRoot, "upper"), { recursive: true });
   }
 
   private async snapshotProjectBaseline(projectMountPath: string, baseProjectPath: string) {
-    await copyRecursiveRobust(projectMountPath, baseProjectPath);
+    await copyBranchfsPathRobust(projectMountPath, baseProjectPath);
+  }
+
+  private async seedIsolatedGitRepository(repoMountPath: string, passthroughDirectories: string[]) {
+    await this.runCommand([GIT_EXECUTABLE, "init"], repoMountPath);
+    await this.runCommand([GIT_EXECUTABLE, "config", "core.longpaths", "true"], repoMountPath);
+    await this.runCommand([GIT_EXECUTABLE, "config", "user.email", "branchfs@local.invalid"], repoMountPath);
+    await this.runCommand([GIT_EXECUTABLE, "config", "user.name", "BranchFS"], repoMountPath);
+    const excludePath = path.join(repoMountPath, ".git", "info", "exclude");
+    const excludeLines = [
+      ".local/",
+      ...passthroughDirectories.map((directory) => `${directory.replace(/\\/g, "/")}/`)
+    ];
+    await writeFile(excludePath, `${excludeLines.join("\n")}\n`, "utf8");
+    await this.runCommand([GIT_EXECUTABLE, "add", "-A"], repoMountPath);
+    await this.runCommand([GIT_EXECUTABLE, "commit", "--allow-empty", "-m", "branchfs baseline"], repoMountPath);
+    this.emitTrace({
+      stage: "branchfs-mounted",
+      message: "Initialized isolated git baseline for BranchFS mount",
+      detail: repoMountPath
+    });
   }
 
   private async captureDirtySeed(repoRoot: string, dirtySeedPath: string, entries: DirtyStatusEntry[]) {
@@ -348,7 +387,7 @@ export class BranchfsManager {
       }
 
       await mkdir(path.dirname(destinationPath), { recursive: true });
-      await copyRecursiveRobust(sourcePath, destinationPath);
+      await copyBranchfsPathRobust(sourcePath, destinationPath);
     }
   }
 
@@ -550,6 +589,10 @@ async function hashTree(rootPath: string, currentPath: string = rootPath, result
     throw error;
   });
   for (const entry of entries) {
+    const relativePath = path.relative(rootPath, path.join(currentPath, entry.name)).replace(/\\/g, "/");
+    if (isExcludedMaterializationPath(relativePath)) {
+      continue;
+    }
     await hashTree(rootPath, path.join(currentPath, entry.name), results);
   }
   return results;
@@ -648,7 +691,7 @@ async function statIfPresent(targetPath: string) {
 }
 
 async function lstatIfPresent(targetPath: string) {
-  return lstat(targetPath).catch((error: unknown) => {
+  return withFsRetry(() => lstat(targetPath)).catch((error: unknown) => {
     if (isMissingPathError(error)) {
       return undefined;
     }
@@ -665,18 +708,43 @@ async function readFileIfPresent(targetPath: string) {
   });
 }
 
-function isMissingPathError(error: unknown) {
-  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+function fsErrorCode(error: unknown) {
+  return typeof error === "object" && error !== null && "code" in error ? String(error.code) : undefined;
 }
 
-async function copyRecursiveRobust(sourcePath: string, targetPath: string) {
-  const sourceStats = await withFsRetry(() => lstat(sourcePath));
+function isMissingPathError(error: unknown) {
+  const code = fsErrorCode(error);
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
+type CopyRecursiveRobustOptions = {
+  onDirectoryEntry?: (sourcePath: string, targetPath: string) => void | Promise<void>;
+};
+
+export async function copyBranchfsPathRobust(sourcePath: string, targetPath: string, options: CopyRecursiveRobustOptions = {}) {
+  const sourceStats = await withFsRetry(() => lstat(sourcePath)).catch((error: unknown) => {
+    if (isMissingPathError(error)) {
+      return undefined;
+    }
+    throw error;
+  });
+  if (!sourceStats) {
+    return;
+  }
   const targetStats = await lstatIfPresent(targetPath);
   if (sourceStats.isSymbolicLink()) {
     if (targetStats) {
       await rm(targetPath, { recursive: true, force: true });
     }
-    const linkTarget = await withFsRetry(() => readlink(sourcePath));
+    const linkTarget = await withFsRetry(() => readlink(sourcePath)).catch((error: unknown) => {
+      if (isMissingPathError(error)) {
+        return undefined;
+      }
+      throw error;
+    });
+    if (!linkTarget) {
+      return;
+    }
     await mkdir(path.dirname(targetPath), { recursive: true });
     await withFsRetry(() => symlink(linkTarget, targetPath, "junction"));
     return;
@@ -687,9 +755,17 @@ async function copyRecursiveRobust(sourcePath: string, targetPath: string) {
       await rm(targetPath, { recursive: true, force: true });
     }
     await mkdir(targetPath, { recursive: true });
-    const entries = await withFsRetry(() => readdir(sourcePath, { withFileTypes: true }));
+    const entries = await withFsRetry(() => readdir(sourcePath, { withFileTypes: true })).catch((error: unknown) => {
+      if (isMissingPathError(error)) {
+        return [];
+      }
+      throw error;
+    });
     for (const entry of entries) {
-      await copyRecursiveRobust(path.join(sourcePath, entry.name), path.join(targetPath, entry.name));
+      const childSourcePath = path.join(sourcePath, entry.name);
+      const childTargetPath = path.join(targetPath, entry.name);
+      await options.onDirectoryEntry?.(childSourcePath, childTargetPath);
+      await copyBranchfsPathRobust(childSourcePath, childTargetPath, options);
     }
     return;
   }
@@ -701,6 +777,11 @@ async function copyRecursiveRobust(sourcePath: string, targetPath: string) {
   await withFsRetry(async () => {
     await mkdir(path.dirname(targetPath), { recursive: true });
     await copyFile(sourcePath, targetPath);
+  }).catch((error: unknown) => {
+    if (isMissingPathError(error)) {
+      return;
+    }
+    throw error;
   });
 }
 
@@ -761,5 +842,14 @@ async function withFsRetry<T>(operation: () => Promise<T>) {
 }
 
 function isRetryableFsError(error: unknown) {
-  return error instanceof Error && "code" in error && ["ENOENT", "EBUSY", "EPERM", "EACCES"].includes(String(error.code));
+  const code = fsErrorCode(error);
+  return code !== undefined && ["ENOENT", "ENOTDIR", "EBUSY", "EPERM", "EACCES"].includes(code);
 }
+
+function isFileExistsError(error: unknown) {
+  return fsErrorCode(error) === "EEXIST";
+}
+
+export const testExports = {
+  copyRecursiveRobust: copyBranchfsPathRobust
+};

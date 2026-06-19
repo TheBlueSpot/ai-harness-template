@@ -37,3 +37,19 @@ Flow:
 5. Keep clone project-scoped and report where it landed.
 
 Ask clarification if destination project is missing and no project is active.
+
+## Remove Project Assistants
+
+Use only when the user explicitly asks to remove assistants for a project. Dry-run first:
+
+```powershell
+bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action remove-project-assistants --project "Docs"
+```
+
+Then execute if the matched list is correct:
+
+```powershell
+bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action remove-project-assistants --project "Docs" --execute
+```
+
+This soft-deletes project-scoped assistants and removes their assistant-owned jobs. It does not remove global assistants.

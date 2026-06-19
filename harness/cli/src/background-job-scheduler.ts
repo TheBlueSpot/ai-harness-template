@@ -92,13 +92,16 @@ export class BackgroundJobScheduler {
       }
 
       const jobs = this.options.repository.loadBackgroundJobsState().jobs.filter((job) => job.status === "enabled");
-      const congestionByAssistant = this.resolveAssistantCongestion(jobs);
+      const congestionControlEnabled = this.options.repository.getAssistantCongestionControlEnabledDefault();
+      const congestionByAssistant = congestionControlEnabled ? this.resolveAssistantCongestion(jobs) : new Map<string, AssistantCongestion>();
       const activeRuns = this.options.repository.getActiveBackgroundJobRuns();
       debugLog("background.scheduler.tick", {
         isStartup,
         enabledJobs: jobs.length,
         activeRuns: activeRuns.length,
-        congestedAssistants: [...congestionByAssistant.values()].filter((entry) => entry.congested).length
+        congestedAssistants: congestionControlEnabled
+          ? [...congestionByAssistant.values()].filter((entry) => entry.congested).length
+          : 0
       });
 
       for (const loadedJob of jobs) {
@@ -108,9 +111,9 @@ export class BackgroundJobScheduler {
         }
         const advance = getDueScheduleAdvance(job.schedule, now);
         const activeRun = this.options.repository.getActiveBackgroundJobRuns(job.id)[0];
-        const congestion = job.assistantId ? congestionByAssistant.get(job.assistantId) : undefined;
-        const congested = Boolean(congestion?.congested);
-        const congestionRatio = congestion?.ratio;
+        const congestion = congestionControlEnabled && job.assistantId ? congestionByAssistant.get(job.assistantId) : undefined;
+        const congested = congestionControlEnabled ? Boolean(congestion?.congested) : false;
+        const congestionRatio = congestionControlEnabled ? congestion?.ratio : undefined;
         if (activeRun) {
           this.markActiveJob(job, activeRun, nowIso, congested, congestionRatio);
           continue;

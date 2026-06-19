@@ -173,3 +173,55 @@ Update this file when a scan finds a reusable failure pattern, missing probe, or
 - Proof-rich tool details can leak secrets or prompt-like data when raw args/results are persisted and made copyable.
 - Probe tool activity, browser replay, MCP payload, provider error, and shell output capture for field-level caps plus aggregate run-level budgets.
 - Add shared sanitization before persistence, not only before rendering.
+
+## 2026-06-01
+
+### Public lifecycle commands need state-machine authority
+
+- Treat client-visible lifecycle commands as risky when they can finalize, resume, refresh, retry, archive, or stop work without proving the current runtime owner and status.
+- Probe public completion commands, deferred refresh, batch answer, thread archive, retry, and destructive delete for stale-client or forged transitions.
+- Final assistant text, terminal status, run status, and notifications should commit atomically or have idempotency keys and recovery tests.
+
+### Optimistic UI sends need acknowledgement-backed draft cleanup
+
+- Clearing drafts or closing inbox rows immediately after dispatch is unsafe when websocket send can queue, fail, or be rejected by backend state.
+- Probe disconnected send, stale project/thread rejection, global pause, preflight rejection, quick-choice buttons, and side-surface submit paths.
+- Draft text, attachment refs, and expanded inbox state should clear only after an accepted acknowledgement, or restore on command rejection and dropped queues.
+
+### Lexical path guards are not filesystem trust
+
+- `../` checks and normalized strings do not stop symlink escapes, nested-root fingerprint drift, Windows case differences, or repo-relative paths joined under the wrong root.
+- Probe IDE file reads/writes, BranchFS materialization, promotion, dirty-state fingerprints, project search/open, and cleanup commands with symlinks and nested projects.
+- Prefer one realpath-aware trust helper that knows repo root, selected project root, symlink policy, and nested-project scope.
+
+### Semantic plan invariants need validation beyond schema shape
+
+- Zod shape checks do not prove planner contracts make sense together.
+- Probe contradictory `usesSubagents`, difficulty, subtasks, same-worktree paths, prerequisites, verification scope, and isolation strategy.
+- Normalize or reject inconsistent LLM plans before they persist as ready execution contracts.
+
+### Post-slice caps can hide unbounded hydration
+
+- UI row caps and protocol array limits do not protect startup when code loads, parses, or stringifies all rows before slicing.
+- Probe assistant logs/messages, tool activities, terminal scrollback, markdown streams, and expanded sidebar rows with large single-owner fixtures.
+- Move limits into SQL, selectors, virtualization boundaries, and lazy copy/export paths.
+
+### Provider caches need credential and namespace identity
+
+- Model ids and cached remote content are scoped by provider namespace, account, credential, and sometimes model.
+- Probe provider brand switches, stale persisted model ids, API key rotation, attachment cache reuse, and provider-specific fallback.
+- Cache keys should include account or credential identity when provider resources are not portable across keys.
+
+### Portable launchers need release-specific health contracts
+
+- Source repair commands can become false guidance inside packaged launchers.
+- Probe extracted release directories without source `node_modules`, lockfiles, or dev scripts.
+- Runtime health should either package native assets or explain launcher-specific reinstall/update repair, not silently run source checkout repair in the release folder.
+
+## 2026-06-15
+
+### Derived readiness snapshots must follow source mutations
+
+- Treat setup health, activation checklists, tutorial progress, and similar readiness sidecars as stale unless every source-state mutation refreshes or invalidates them.
+- Probe project add, activate, remove, preference save, runtime refresh, and repair actions for paired source event plus readiness event ordering.
+- Dismiss or completion UI should not imply progress when the underlying readiness predicate still fails.

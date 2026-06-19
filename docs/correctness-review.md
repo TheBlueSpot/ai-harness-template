@@ -14,12 +14,14 @@ Last merged targeted UI rendering, OS/CLI, websocket continuity, execution, and 
 Last merged targeted UI-magic affordance scan: 2026-04-25.
 Last merged targeted reliability diagnostics and background ownership closeout: 2026-05-01.
 Last merged working-tree branch scan: 2026-05-12.
+Last merged deep harness scan: 2026-06-01.
+Last merged targeted onboarding flow scan: 2026-06-15.
 
 Source of truth: [user-stories.md](user-stories.md), [coverage-matrix.md](coverage-matrix.md), [root README](../README.md), and harness implementation under [harness](../harness).
 
 This review focuses on correctness gaps outside the expected happy path. It does not replace `bun test`; it maps shipped stories to likely edge failures and extraction opportunities.
 
-Recent closeout note: the harness now exposes recent run health in-product, renews background-run ownership leases during execution, and routes reliability categorization through one shared path. That materially lowers the earlier risk of stale ownership or drift between scheduler, repair, and UI diagnostics, while keeping the remaining gaps below focused on broader assistant, overlay, and workflow concerns.
+Recent closeout note: assistant summary/detail loading now uses paged SQL-backed APIs, assistant bootstrap and reprioritize JSON is schema-validated with one repair attempt, background job deletion stops active runs before deleting durable rows, and the scheduler honors the assistant congestion-control preference. The remaining gaps below stay focused on broader assistant jobs paging, overlay behavior, lifecycle setup refresh, and non-assistant dense rendering.
 
 Virtualized transcript, trace, and sidebar lists now depend on responsive row measurement: dynamic-height rows must be allowed to grow and shrink after container reflow, while reverse lists must continue opening at the latest content and preserve browsing position when older rows load.
 
@@ -35,70 +37,50 @@ Virtualized transcript, trace, and sidebar lists now depend on responsive row me
 | ATTACHMENTS | [attachment prompt builder](../harness/cli/src/chat-attachment-prompt.ts), [document extractors](../harness/cli/src/document-extractors), [attachment UI](../harness/ui/src/components/chat-panel-attachments.test.tsx) | Attachments now bind to trusted upload metadata; remaining risk is remote object expiry and richer upload cleanup UX. |
 | ASSISTANTS, JOBS, NOTIFICATIONS | [assistant manager](../harness/cli/src/assistant-manager.ts), [background scheduler](../harness/cli/src/background-job-scheduler.ts), [background executor](../harness/cli/src/background-job-executor.ts), [assistant panel](../harness/ui/src/components/assistants-panel.tsx), [notification inbox](../harness/ui/src/components/notification-inbox.tsx) | Assistant pause, circuit-breaker, bootstrap, job routing, and linked assets cross several paths and can drift from the dedicated assistant surface contract. |
 | UI, MARKDOWN | [UI store](../harness/ui/src/harness-store.ts), [run status helpers](../harness/ui/src/lib/run-status.ts), [markdown content](../harness/ui/src/components/markdown-content.tsx), [primitives](../harness/ui/src/components/primitives), [app shell](../harness/ui/src/app.tsx) | Overlay dismissal, focus isolation, hotkey ownership, and live markdown workload can drift across dense surfaces. |
-| DEV, ACTIVATION | [launch harness](../harness/cli/src/launch-harness.ts), [CLI entry](../harness/cli/src/cli-entry.ts), [scripts](../scripts), [setup health](../harness/cli/src/setup-health.ts) | Top-level CLI parsing is covered; remaining activation risk is end-to-end first-run recovery. |
+| DEV, ACTIVATION | [launch harness](../harness/cli/src/launch-harness.ts), [CLI entry](../harness/cli/src/cli-entry.ts), [scripts](../scripts), [setup health](../harness/cli/src/setup-health.ts), [setup checklist](../harness/ui/src/components/setup-checklist-card.tsx), [tutorials](../harness/ui/src/components/tutorial-definitions.ts) | Top-level CLI parsing is covered; remaining activation risk is end-to-end first-run recovery plus keeping setup readiness paired with project lifecycle and local tutorial state. |
 | MAGIC UI AFFORDANCES | [project switcher](../harness/ui/src/components/project-switcher-dialog.tsx), [composer](../harness/ui/src/components/chat-panel.tsx), [setup checklist](../harness/ui/src/components/setup-checklist-card.tsx), [trace panel](../harness/ui/src/components/trace-panel.tsx), [notification inbox](../harness/ui/src/components/notification-inbox.tsx) | High-polish interactions need typed state, OS capability checks, reduced-motion paths, and stable test hooks before they can feel magical without lying. |
 
 ## Findings
 
-### CR-026: Assistant pause and circuit-breaker state is not a single launch gate
+### CR-026: Closed - assistant launch gate is shared
 
 Stories: `US-ASSISTANTS-001`, `US-ASSISTANTS-004`, `US-RUNS-013`, `US-JOBS-003`.
 
-Code map: [assistant commands](../harness/cli/src/server.ts), [assistant manager](../harness/cli/src/assistant-manager.ts), [background scheduler](../harness/cli/src/background-job-scheduler.ts), [background launch](../harness/cli/src/server.ts).
+Status: Closed. Assistant chat, bootstrap, reprioritize, scheduler launch, and manual background launch now use the shared assistant launch gate. Paused, deleted, and circuit-tripped assistants are rejected before runtime work starts.
 
-Impact: Assistant runtime starts are guarded in some paths but not all. Scheduled assistant jobs check `runState`, and reprioritize checks `runState`, but direct assistant chat does not reject paused or tripped assistants. Background launch also checks `runState` and deletion, not the circuit-breaker field directly. If persisted state ever has `circuitBreakerState = tripped` without `runState = paused`, new work can still launch.
+Remaining watch item: keep new assistant-owned runtime entry points behind the same gate instead of adding local pause checks.
 
-Edge case: A user pauses an assistant, or a circuit breaker trips, then a stale client sends `assistant.chat.send` or a stored queued run is released. The request can still start because no shared assistant launch predicate is used across chat, bootstrap, reprioritize, scheduled jobs, and manual retries.
-
-Fix direction: Create one assistant execution gate that validates existence, project ownership for project assistants, `runState`, `circuitBreakerState`, global execution pause, and deleted state. Use it before every assistant-owned runtime call and every background run launch.
-
-### CR-027: Assistant-owned background AI output still writes into project chat
+### CR-027: Closed - assistant-owned background output stays out of normal project chat
 
 Stories: `US-ASSISTANTS-002`, `US-ASSISTANTS-004`, `US-JOBS-002`, `US-JOBS-003`.
 
-Code map: [background executor](../harness/cli/src/background-job-executor.ts), [background launch](../harness/cli/src/server.ts), [assistant manager](../harness/cli/src/assistant-manager.ts), [assistant jobs tab](../harness/ui/src/components/assistants-panel.tsx).
+Status: Closed. Assistant-owned background work is routed through assistant/job state and the assistant Jobs surface instead of appending routine automation transcripts into normal project chat.
 
-Impact: Assistant-linked background AI jobs are inspectable from the assistant Jobs tab, but the executor also appends scheduled job system, user, and assistant messages into the automation project thread. That makes assistant job output part of project chat history, which contradicts the dedicated assistant/jobs surface and can pollute normal coding threads.
+Remaining watch item: any future "promote to chat" behavior should be explicit user action with a compact linked summary.
 
-Edge case: A proactive assistant job runs overnight. On next project open, the user sees automation prompt and result rows in project chat instead of only in the assistant's Jobs and Log tabs. If the project thread is later used for normal work, assistant job output becomes prompt context.
-
-Fix direction: Keep assistant-owned job transcript and result summaries in assistant/job persistence. Only project chat should receive a user-approved promotion or a short linked status row, and that promotion should be explicit.
-
-### CR-028: Bootstrap retry is not single-flight
+### CR-028: Closed - bootstrap retry is single-flight
 
 Stories: `US-ASSISTANTS-001`, `US-ASSISTANTS-003`, `US-PERSISTENCE-007`.
 
-Code map: [assistant create and retry commands](../harness/cli/src/server.ts), [assistant manager bootstrap](../harness/cli/src/assistant-manager.ts), [assistant persistence](../harness/cli/src/workspace-repository.ts).
+Status: Closed. Bootstrap attempts now join in-flight work unless force retry starts a newer attempt. Attempt ids prevent stale completions from winning.
 
-Impact: `assistant.create` and `assistant.bootstrap.retry` launch bootstrap work fire-and-forget. The manager persists `running`, but it does not keep a per-assistant bootstrap controller or promise registry. Repeated retry clicks, reconnect release of pending bootstrap, or a stale running state can start duplicate bootstrap prompts.
+Remaining watch item: keep stale persisted `running` recovery aligned with the same attempt-id model.
 
-Edge case: Retry is clicked while the first bootstrap is slow. Two bootstrap prompts save learnings and todos, then both set completed or failed. The UI cannot tell which result is authoritative.
+### CR-029: Closed - project and job deletion stop active background runs first
 
-Fix direction: Add single-flight bootstrap state with cancellation or join semantics. Retry should either cancel and mark the previous attempt stale, or reject until the current attempt finishes. Persist attempt id and latest bootstrap phase so refresh recovery can reconcile old work.
+Stories: `US-WORKSPACE-005`, `US-JOBS-001`, `US-JOBS-004`.
 
-### CR-029: Project deletion cascades assistant rows in SQLite but not live assistant UI state
+Status: Closed. Job deletion and project removal now cancel active background runs, stop linked agent runs, emit run/job/notification updates, and abort live controllers before durable rows are removed.
 
-Stories: `US-WORKSPACE-005`, `US-ASSISTANTS-001`, `US-ASSISTANTS-003`, `US-JOBS-004`.
+Remaining watch item: future destructive lifecycle commands should use the same stop-first helper.
 
-Code map: [project remove command](../harness/cli/src/server.ts), [workspace repository schema](../harness/cli/src/workspace-repository.ts), [UI assistant hydration](../harness/ui/src/harness-store.ts), [assistant panel](../harness/ui/src/components/assistants-panel.tsx).
-
-Impact: Project-scoped assistants have a project foreign key with cascade, so SQLite removes them when the project is deleted. The websocket command only emits `project.removed`; it does not emit refreshed assistant, job, or notification state. Connected clients can keep stale assistant rows in memory until a later full refresh.
-
-Edge case: A user deletes the active project while the Assistants surface is open. The project assistant is gone in SQLite, but the UI can still show it, keep its selected id, or try actions that then fail as unknown assistant.
-
-Fix direction: After project removal, emit refreshed assistants, background jobs, and notifications. Add a UI reducer test that deleting the active project removes project-scoped assistants from the visible assistant list without requiring reconnect.
-
-### CR-030: Assistant inbox answer ownership is only partially enforced
+### CR-030: Closed - assistant inbox answer ownership is enforced
 
 Stories: `US-ASSISTANTS-002`, `US-NOTIFICATIONS-001`, `US-RUNS-013`.
 
-Code map: [assistant question answer command](../harness/cli/src/server.ts), [assistant manager answers](../harness/cli/src/assistant-manager.ts), [assistant question persistence](../harness/cli/src/workspace-repository.ts), [notification inbox](../harness/ui/src/components/notification-inbox.tsx).
+Status: Closed. Assistant question answer updates now require matching assistant ownership and fail when no matching row transitions.
 
-Impact: The update query answers by `(assistantId, questionId)`, but the repository then reloads the question by `questionId` alone. A stale or forged command with the wrong assistant id can return another assistant's question object after updating zero rows, while the manager logs and reprioritizes the requested assistant.
-
-Edge case: Two clients hold old inbox state. One answers or archives a question, while another sends an answer with a stale assistant id and the same question id. The command can report success-like state while routing follow-up work to the wrong assistant.
-
-Fix direction: Make `answerAssistantQuestion` read back by both assistant id and question id and throw if no row changed. Only archive the matching notification after the answer transition succeeds.
+Remaining watch item: stale already-answered question transitions are tracked under CR-053.
 
 ### CR-031: Assistant prompt and asset refs are weakly structured runtime input
 
@@ -112,17 +94,17 @@ Edge case: A deleted skill path or deprecated model remains on an assistant. The
 
 Fix direction: Build assistant prompts from structured sections with explicit boundaries and validated resolved assets. Validate linked asset existence and scope at save and launch. Route assistant model selection through the runtime's supported-model fallback before dispatch.
 
-### CR-032: Assistant surface still needs workload boundaries for todos, jobs, and logs
+### CR-032: Assistant jobs tab still inherits broad background-job state
 
 Stories: `US-ASSISTANTS-001`, `US-ASSISTANTS-002`, `US-ASSISTANTS-003`, `US-UI-017`.
 
 Code map: [assistant panel](../harness/ui/src/components/assistants-panel.tsx), [assistant schemas](../harness/shared/protocol.ts), [assistant persistence](../harness/cli/src/workspace-repository.ts).
 
-Impact: Learnings now dedupe, compact, and render behind a bounded list. Todos, runs, and logs can still render as full lists. Logs can include raw JSON details and persisted error stacks, so a single assistant can still accumulate enough rows or large detail payloads to freeze the panel when the tab opens.
+Impact: Assistant summaries, selected assistant detail, chat messages, todos, learnings, questions, and logs now have paged backend APIs and SQL limits. The remaining assistant workload risk is the Jobs tab, which still derives assistant jobs and runs from the broader background-jobs snapshot rather than an assistant-scoped page.
 
-Edge case: A failing assistant loops through reprioritize and job failures, appending many log rows with serialized error details. Opening Log renders every row and stringifies the expanded details payload in the browser.
+Edge case: One assistant owns many historical background runs. Opening its Jobs tab still filters a shared background-jobs payload instead of requesting a small assistant-scoped run window.
 
-Fix direction: Add per-tab empty states for todos, logs, and recent runs, plus list windowing or "show more" caps. Keep raw log details bounded and paged.
+Fix direction: Add assistant-scoped background job and run pages, then hydrate the selected Jobs tab on demand like assistant detail.
 
 ### CR-033: Overlay dismissal and focus behavior has no stack owner
 
@@ -223,17 +205,17 @@ Edge case: A bounce or confetti animation ignores `prefers-reduced-motion`; ambi
 
 Fix direction: Create shared primitives for reduced-motion-aware attention animation, status tinting with non-color labels, skeleton surfaces, selection popovers, and shortcut overlays. Each should have `data-test-*` hooks, keyboard and focus rules, and tests for nested overlays, editable targets, reduced motion, fast thread switching, and no layout shift.
 
-### CR-040: Doctor cleanup deletes `dist` relative to launch cwd
+### CR-040: Portable launcher still assumes source-style dependency repair
 
 Stories: `US-DEV-007`, `US-DEV-002`, `US-ACTIVATION-001`.
 
-Code map: [CLI entry](../harness/cli/src/index-main.ts), [doctor cleanup](../harness/cli/src/doctor-cleanup.ts), [dependency health](../harness/cli/src/dependency-health.ts).
+Code map: [CLI entry](../harness/cli/src/index-main.ts), [doctor cleanup](../harness/cli/src/doctor-cleanup.ts), [dependency health](../harness/cli/src/dependency-health.ts), [launcher packaging](../scripts/package-launcher.ts), [launcher assets](../scripts/launcher-assets.ts), [runtime health](../harness/cli/src/setup-health.ts).
 
-Impact: `--doctor` now deletes `path.resolve(process.cwd(), "dist")` before health checks. That is safe only when the current working directory is the harness repo root. If a packaged launcher, shell alias, or user runs the CLI from another project folder, doctor can delete that project's `dist` directory.
+Impact: Doctor cleanup now resolves against a harness root sentinel instead of caller cwd, which closes the earlier arbitrary `dist` deletion risk. The remaining activation gap is that the packaged launcher copies `dist/ui`, `package.json`, agent rules, and skills, but not source `node_modules` or lockfile artifacts. Doctor then runs dependency repair from the launcher directory when `node_modules` is missing, and runtime health still reports `bun install` guidance for bundled Codex and ripgrep. That makes a portable launcher look source-checkout dependent instead of self-contained.
 
-Edge case: A user runs `pi-harness --doctor` from an app repo that has a production `dist/`. The command removes the app build output even though doctor is only expected to inspect and repair harness setup.
+Edge case: A release user runs `pi-harness --doctor` from the portable folder. The command reports missing dependencies or tries `bun i` in the release directory, but the release folder was not packaged with the same install inputs as the source repo. Codex/ripgrep health can degrade even though the launcher binary itself starts.
 
-Fix direction: Resolve cleanup against the harness install/root directory, not arbitrary cwd. Add a guard that verifies expected harness files before deletion, and keep destructive cleanup behind a clearly named repair path or temp/build cache path.
+Fix direction: Treat portable runtime assets as a separate contract. Either package the native runtime artifacts that health probes need, or make launcher health skip source dependency repair and show launcher-specific reinstall/update guidance. Cover doctor, Codex, ripgrep, and browser-tool checks from an extracted release directory.
 
 ### CR-041: Preferences panel contains hidden interactive test shims
 
@@ -247,11 +229,191 @@ Edge case: A screen reader user navigates the preferences panel and hears hidden
 
 Fix direction: Remove the hidden interactive shim. Give the real controls stable accessible names and `data-test-*` hooks, then update tests to target visible semantic controls or explicit test hooks.
 
+### CR-042: Run lifecycle transitions can be forged, partial, or no-op
+
+Stories: `US-RUNS-004`, `US-RUNS-009`, `US-RUNS-016`, `US-PLANNING-002`, `US-THREADS-010`, `US-PERSISTENCE-007`.
+
+Code map: [run commands](../harness/cli/src/server.ts), [managed execution](../harness/cli/src/managed-agent-execution.ts), [planning answer persistence](../harness/cli/src/workspace-repository.ts), [shared protocol](../harness/shared/protocol.ts).
+
+Impact: Several lifecycle commands validate shape but not enough state. Public `run.complete` can finalize a `planning`, `awaiting-user-input`, or `ready` run with arbitrary assistant text. Final assistant message append and run status update are not one transaction. Active `run.refresh` reports a deferred refresh, but the deferred path records completion without actually restarting or reconciling. Batch planning answers validate only supplied ids, so a stale client can answer one question and resume while sibling required questions remain pending. Thread archive persists before live CLI or run activity is stopped.
+
+Edge case: A ready plan waiting for approval receives stale `run.complete`; the run becomes completed and a final assistant answer is persisted without execution. Or a refresh during streaming shows "refresh after current stream" while no refresh happens after completion.
+
+Fix direction: Make run lifecycle transitions state-machine driven and transaction-backed. Restrict completion to execution-owned active states, commit final message plus status atomically, store and execute deferred refresh intent, require all required pending questions before resume, and stop live activity before archiving or expose a failed-archive state.
+
+### CR-043: Background `partial-complete` is terminal in one layer but not in command policy
+
+Stories: `US-JOBS-001`, `US-JOBS-002`, `US-JOBS-004`, `US-RUNS-003`.
+
+Code map: [background command guards](../harness/cli/src/background-job-command-guards.ts), [background executor](../harness/cli/src/background-job-executor.ts), [background job panel](../harness/ui/src/components/background-jobs-panel.tsx), [shared protocol](../harness/shared/protocol.ts).
+
+Impact: Repository and protocol treat `partial-complete` as terminal, but stop and retry guards do not share that policy. Stop can pass guard and then no-op in persistence, while retry rejects the exact partial run that should be recoverable.
+
+Edge case: A background AI run partially succeeds after subagent failure. The UI shows a recoverable-looking terminal run, but Retry is unavailable or rejected and Stop appears possible even though the row is already terminal.
+
+Fix direction: Move background run status predicates into one shared policy. Mark `partial-complete` terminal, decide whether it is retryable, and make UI affordances, command guards, and repository transitions use the same helper.
+
+### CR-044: Draft, attachment, and inbox submit paths clear or close before backend acceptance
+
+Stories: `US-PERSISTENCE-014`, `US-THREADS-007`, `US-PLANNING-002`, `US-ATTACHMENTS-002`, `US-RUNS-013`, `US-NOTIFICATIONS-001`.
+
+Code map: [websocket queue](../harness/ui/src/harness-websocket.ts), [UI store command dispatch](../harness/ui/src/harness-store.ts), [chat composer](../harness/ui/src/components/chat-panel.tsx), [notification inbox](../harness/ui/src/components/notification-inbox.tsx).
+
+Impact: Chat send clears text and attachment chips immediately after dispatch even when the websocket only queued the command while disconnected. `command.rejected` is a no-op in the store, so stale project, stale thread, preflight, or backend rejection does not restore the draft. Planner quick-choice buttons bypass the attachment-disabled send predicate, and notification inbox assistant answers can be submitted while global pause is active even though the backend rejects them.
+
+Edge case: A user sends during reconnect and closes the tab before queued commands flush; the text draft and unsent attachment chips are gone. Or they attach a file, click a planner quick option, and the answer sends without the attachment context the UI still appears to hold.
+
+Fix direction: Add a pending-send draft contract keyed by request id. Clear drafts only after accepted message or run-start acknowledgement, restore on reject or dropped queue, and make quick choices, inbox answers, Enter, and send buttons share one eligibility helper with pause and attachment reasons.
+
+### CR-045: BranchFS and IDE path trust still miss nested-root and symlink cases
+
+Stories: `US-WORKTREE-001`, `US-WORKTREE-002`, `US-WORKTREE-003`, `US-WORKTREE-007`, `US-WORKSPACE-003`, `US-UI-022`.
+
+Code map: [BranchFS manager](../harness/cli/src/branchfs-manager.ts), [BranchFS integration](../harness/cli/src/branchfs-subagent-integration.ts), [IDE project service](../harness/cli/src/ide-project-service.ts), [server experiment commands](../harness/cli/src/server.ts).
+
+Impact: BranchFS baseline dirty fingerprints are gathered from the repo root, but promotion can recompute hashes from the selected project root and join repo-relative paths under that nested root. Tracked symlinks are recreated in isolated mounts while hashing and diffing skip symlink targets, so writes through a symlink can pierce isolation or vanish from review. The IDE blocks lexical `../` paths, but file reads and writes follow symlinks inside the project. Isolated subagent integration also assumes root `package.json` exists before it can decide which verification steps to skip.
+
+Edge case: A nested project has an unchanged dirty file outside its selected subfolder. Promotion says "Base dirty state changed" even though the user changed nothing. A symlink inside the project points outside the root; IDE preview or BranchFS execution can touch the external target.
+
+Fix direction: Canonicalize project root, repo root, and real target paths through one filesystem trust helper. Include symlink metadata in BranchFS materialization and diff review, reject or sandbox writable symlinks, and let integration skip package-script verification when no package file exists.
+
+### CR-046: Planner plan schemas validate shape but not semantic invariants
+
+Stories: `US-PLANNING-003`, `US-PLANNING-010`, `US-WORKTREE-004`, `US-WORKTREE-005`.
+
+Code map: [planner schema](../harness/shared/protocol.ts), [orchestrator plan parser](../harness/cli/src/pi-orchestrator.ts), [planner](../harness/cli/src/pi-planner.ts).
+
+Impact: The planner prompt describes invariants such as difficulty thresholds for subagents, empty subtasks for non-subagent plans, prerequisite ordering, and non-overlapping same-worktree paths. The schema accepts contradictory plans, and the orchestrator can route from `difficultyScore` and contracts while ignoring `usesSubagents`.
+
+Edge case: Model output says `usesSubagents: false` but includes conflicting subagent contracts, or says same-worktree while owned paths overlap. The plan persists as valid and later execution chooses surprising fan-out or isolation behavior.
+
+Fix direction: Add semantic `superRefine` or normalization before persistence. Fail or repair contradictory `usesSubagents`, difficulty, contracts, prerequisites, and worktree strategy fields before any plan reaches the ready card.
+
+### CR-047: Browser approval commands do not validate the run and thread locator they carry
+
+Stories: `US-BROWSER-001`, `US-BROWSER-002`, `US-BROWSER-003`, `US-NOTIFICATIONS-001`.
+
+Code map: [browser approval command](../harness/shared/protocol.ts), [browser approval handler](../harness/cli/src/server.ts), [browser session state](../harness/cli/src/browser-session-state.ts), [notification sync](../harness/cli/src/server.ts).
+
+Impact: The protocol carries project, thread, session, and tool ids, but the handler searches only active or last runs and ignores thread ownership. Resolution looks up pending approval by session and tool, then records the owner as `main`. Background or older run approvals can be invisible, or a stale command can resolve the wrong pending approval.
+
+Edge case: An inbox notification points to a browser approval from a background thread. The user answers it after switching threads; the server says the run is unavailable, or resolves another approval with matching session/tool ids.
+
+Fix direction: Resolve approvals by a durable `(projectId, threadId, runId, sessionId, toolCallId, owner)` locator. Sync notifications from every pending approval run or explicitly archive stale notifications with a reason.
+
+### CR-048: Debug artifacts bypass the normal redaction and budget path
+
+Stories: `US-UI-020`, `US-DEV-020`, `US-RUNS-011`.
+
+Code map: [tool artifact writes](../harness/cli/src/server.ts), [tool activity redaction](../harness/cli/src/tool-activity-state.ts), [trace panel](../harness/ui/src/components/trace-panel.tsx).
+
+Impact: Normal tool activity persistence has redaction and bounded previews, but debug-mode artifact files write raw tool args and results with JSON serialization. Browser, shell, MCP, or provider payloads can persist secrets or prompt-like data under debug artifacts even when the UI trace is sanitized.
+
+Edge case: A browser tool result includes cookies, auth headers, or a page payload with an API token. The trace view hides sensitive fields, but `.local/debug/tool-artifacts` keeps the raw value on disk.
+
+Fix direction: Reuse the same sanitizer and aggregate budgets before debug artifact persistence. Store artifacts under a trusted harness or project debug root and add tests that raw secrets are redacted before disk write.
+
+### CR-049: Provider model namespace and cache identity can drift after user choice changes
+
+Stories: `US-PROVIDERS-001`, `US-PROVIDERS-002`, `US-PROVIDERS-006`, `US-RUNTIMES-006`, `US-RUNS-012`, `US-ATTACHMENTS-003`.
+
+Code map: [model resolver](../harness/cli/src/server.ts), [Claude defaults](../harness/cli/src/pi-planner.ts), [Gemini cache persistence](../harness/cli/src/workspace-repository.ts), [Gemini cache helper](../harness/cli/src/gemini-cached-contents.ts).
+
+Impact: Pi model availability accepts OpenAI ids by default and Google ids for Gemini, but Claude provider mode does not accept `anthropic/*` ids in the same path. A user-selected Claude model can be treated as unavailable and silently replaced by the default. Gemini cached content lookup is keyed by attachment/model/cache metadata but not by credential or account, so an API key rotation can reuse a cache name created under the old key.
+
+Edge case: User selects a specific Claude Opus model and execution falls back to Sonnet. Later they replace the Google key and the next run reuses an old `cachedContents/...` name that the new account cannot access.
+
+Fix direction: Centralize provider namespace mapping and fallback policy: `gpt` to `openai/*`, `gemini` to `google/*`, `claude` to `anthropic/*`. Include a credential/account fingerprint in Gemini cache identity or clear provider caches on key change.
+
+### CR-050: Terminal and CLI streaming state still has process-lifecycle and hot-output gaps
+
+Stories: `US-RUNTIMES-003`, `US-RUNTIMES-005`, `US-UI-023`.
+
+Code map: [terminal session manager](../harness/cli/src/terminal/terminal-session-manager.ts), [CLI session manager](../harness/cli/src/agent-runtimes/cli-session-manager.ts), [terminal store](../harness/ui/src/terminal/terminal-store.ts), [xterm renderer](../harness/ui/src/terminal/renderers/xterm-renderer.tsx), [stream pump](../harness/cli/src/stream-pump.ts).
+
+Impact: Terminal sessions are persisted as `starting` before process spawn succeeds, so a missing cwd or stale shell path can leave a zombie tab after reconnect. Stream pump batching reduces data-plane frames, but terminal and CLI managers can still persist metadata and broadcast updates per process chunk. On the UI side, once terminal scrollback trims, append detection can fail and force full xterm buffer rewrites on every new chunk.
+
+Edge case: A project folder is deleted, then a terminal is created. The spawn path fails after persistence and the session remains stuck. Or a noisy watch command emits tiny chunks and the server hammers SQLite/control events while the renderer repeatedly resets megabytes of scrollback.
+
+Fix direction: Wrap terminal spawn in a failure transition, mark or delete failed pre-start records, and throttle persistence/control updates separately from data frames. Track terminal output deltas or trim offsets instead of comparing whole strings after scrollback rollover.
+
+### CR-051: Dense UI and state loaders still do unbounded work before visual caps help
+
+Stories: `US-THREADS-001`, `US-THREADS-010`, `US-ASSISTANTS-002`, `US-ASSISTANTS-003`, `US-UI-010`, `US-UI-015`, `US-UI-020`, `US-UI-023`.
+
+Code map: [assistant state loading](../harness/cli/src/workspace-repository.ts), [project sidebar](../harness/ui/src/components/project-sidebar.tsx), [markdown renderer](../harness/ui/src/components/markdown-content.tsx), [streamed tool block](../harness/ui/src/components/streamed-tool-block.tsx), [terminal renderer](../harness/ui/src/terminal/renderers/xterm-renderer.tsx).
+
+Impact: Several surfaces cap what the user sees only after expensive work is already done. Assistant detail now uses SQL limits and on-demand paging, but sidebar virtualization still virtualizes project rows while one expanded project can render every thread inside one row. Live markdown keys the renderer by full content, remounting on each delta. Collapsed tool activity blocks still render every activity row and build a giant copy string.
+
+Edge case: A long-lived project has one thousand active threads or a chat with many collapsed tool rows. Opening the app renders far more than the visible UI suggests, even when rows are collapsed or outside the viewport.
+
+Fix direction: Continue moving limits into SQL and state selectors, flatten or page sidebar thread rows, keep live markdown mounted with a cheaper streaming renderer, and lazily build copy/export payloads only on user action.
+
+### CR-052: IDE and terminal controls bypass shared overlay and button primitives
+
+Stories: `US-UI-002`, `US-UI-022`, `US-UI-023`.
+
+Code map: [IDE workbench](../harness/ui/src/ide/ide-workbench.tsx), [terminal tabs](../harness/ui/src/terminal/terminal-tabs.tsx), [dialog primitive](../harness/ui/src/components/primitives/dialog.tsx), [button primitive](../harness/ui/src/components/primitives/button.tsx).
+
+Impact: The IDE command palette is a bespoke fixed overlay without dialog semantics, focus trap, or shared overlay-stack ownership. IDE editor tab close is a clickable icon inside a tab button rather than a named keyboard-reachable control. Terminal tabs put a `span role="button"` inside a `button`, which is invalid nested interaction and lacks normal Enter/Space handling.
+
+Edge case: Keyboard focus can leave the command palette into the background, or land on a terminal close span where keypress does not close the tab and may activate the parent tab instead.
+
+Fix direction: Route command palette through shared dialog or overlay-stack primitives. Split tabs into label and close sibling controls, use real button derivatives with tooltip and accessible labels, and add keyboard and focus tests for IDE and terminal tabs.
+
+### CR-053: Assistant question and retry paths still bypass shared launch and question-state gates
+
+Stories: `US-ASSISTANTS-002`, `US-ASSISTANTS-003`, `US-ASSISTANTS-004`, `US-JOBS-001`, `US-JOBS-003`, `US-NOTIFICATIONS-001`.
+
+Code map: [assistant manager](../harness/cli/src/assistant-manager.ts), [assistant question persistence](../harness/cli/src/workspace-repository.ts), [assistant commands](../harness/cli/src/server.ts), [background run launch](../harness/cli/src/server.ts), [notification inbox](../harness/ui/src/components/notification-inbox.tsx).
+
+Impact: The single assistant-question answer path can overwrite stale, resolved, or dismissed questions, while batch answer paths check pending or deferred state. Assistant-owned background retry creates a new run before checking pause or circuit-breaker state, so the launch gate later cancels a doomed run and leaves noisy history. The inbox also exposes answer actions under pause differently than the dedicated assistant panel.
+
+Edge case: A stale inbox command answers an already answered assistant question, appends durable learning again, and reprioritizes the assistant. Or a circuit-tripped assistant job retry creates a fresh cancelled run instead of rejecting before history changes.
+
+Fix direction: Make assistant question transitions require `(assistantId, questionId, status in pending/deferred)`. Run the shared assistant launch gate before retry-run creation, and feed the same pause and circuit-breaker reasons into assistant panel, jobs panel, and notification inbox affordances.
+
+### CR-054: Setup health can go stale across project lifecycle changes
+
+Stories: `US-WORKSPACE-005`, `US-ACTIVATION-003`, `US-ACTIVATION-006`.
+
+Code map: [project lifecycle commands](../harness/cli/src/server.ts), [setup health](../harness/cli/src/setup-health.ts), [setup checklist](../harness/ui/src/components/setup-checklist-card.tsx), [project lifecycle tests](../harness/cli/src/test-support/server-test-harness.ts).
+
+Impact: Setup state is meant to be server-derived per machine, but project lifecycle events do not all recompute and emit it. `project.add`, `project.create`, `project.browse`, and `project.activate` refresh setup after mutation; `project.remove` broadcasts `project.removed` and related surfaces without refreshing setup. After deleting the active or final project, clients can keep a stale `project-selected` ready check and ready-count summary.
+
+Edge case: A first-run user opens a project, then removes it. The workspace returns to empty, but the activation center or help dialog can still report that the project requirement is ready until a manual refresh or reconnect.
+
+Fix direction: Route project add, create, browse, activate, and remove through one lifecycle helper that updates repository/runtime state, emits the workspace/project event, recomputes setup, and broadcasts `setup.updated`. Add integration coverage that final-project removal emits `project-selected` as action-required.
+
+### CR-055: The setup checklist exposes a Hide action that can be a no-op
+
+Stories: `US-ACTIVATION-003`, `US-UI-017`.
+
+Code map: [setup checklist](../harness/ui/src/components/setup-checklist-card.tsx), [chat onboarding surface](../harness/ui/src/components/chat-panel.tsx), [setup visibility predicate](../harness/ui/src/harness-store.ts).
+
+Impact: The setup card always shows `Hide` when the parent passes `onDismiss`, but the visibility predicate forces the card to stay mounted whenever any required first-task check is not ready. During first-run blockers, clicking `Hide` sets local state false but the card remains visible, making the onboarding surface feel broken.
+
+Edge case: A user with no project or no usable agent clicks `Hide` to focus on the empty-state sample task. The card immediately remains visible because required checks still block first task readiness.
+
+Fix direction: Only show the hide control when it can actually hide the card, or add a dismissed-until-setup-version state with an explicit restore path. Cover the forced-blocker case in store and component tests.
+
+### CR-056: Tutorial completion is detached from actual onboarding progress
+
+Stories: `US-ACTIVATION-004`, `US-ACTIVATION-003`, `US-ACTIVATION-007`.
+
+Code map: [tutorial definitions](../harness/ui/src/components/tutorial-definitions.ts), [tutorial overlay](../harness/ui/src/components/tutorial-overlay.tsx), [tutorial progress store](../harness/ui/src/harness-store.ts), [tutorial tests](../harness/ui/src/components/tutorial-overlay.test.tsx).
+
+Impact: Guided tutorials are click-progressed overlays. `Finish` records local completion even when the target element is missing and no setup check changed. The help dialog can therefore show a walkthrough as completed while the actual activation checks still require project open, provider/runtime setup, or first task readiness.
+
+Edge case: A user starts `Connect provider or runtime` before opening a project. The agent selector target is missing, the fallback text appears, and the user can click through to completion without connecting any provider or CLI runtime.
+
+Fix direction: Give tutorial steps completion predicates tied to setup checks or concrete UI actions. Treat missing-target finish as skipped, not completed, and keep help status derived from current setup state where the tutorial maps to a readiness requirement. Add tests that missing-target tutorials do not become completed and provider/runtime completion requires an agent-ready state.
+
 ## Critical Duplicate Logic To Extract
 
-1. Project open response path.
+1. Project lifecycle and setup refresh path.
 
-Repeated in `project.add`, `project.create`, and `project.browse`. Extract one `openProjectAndEmit` helper that owns repository open, runtime activation, `project.opened`, and setup refresh. This reduces drift across `US-WORKSPACE-008`, `US-WORKSPACE-009`, and `US-SEARCH-003`.
+Repeated across `project.add`, `project.create`, `project.browse`, `project.activate`, and `project.remove`. Extract one helper that owns repository/runtime mutation, workspace or project event emission, active skill discovery, and setup refresh. This reduces drift across `US-WORKSPACE-005`, `US-WORKSPACE-008`, `US-WORKSPACE-009`, `US-SEARCH-003`, and activation setup state.
 
 2. Run lifecycle wrapper.
 
@@ -264,6 +426,26 @@ Working, blocking, refreshable, retryable, resumable, badge, and phase mappings 
 4. Local storage parsing and persistence.
 
 Composer, provider, trace, execution defaults, background notifications, tutorial progress, and browser UI state all live in one large UI store file. Extract a small typed browser preferences adapter so malformed values, bounds, and defaults stay testable outside the global store.
+
+5. Background run terminal and retry policy.
+
+`partial-complete`, timeout, cancelled, failed, succeeded, stale, and awaiting-input behavior is repeated across scheduler, command guards, repository updates, notifications, and UI actions. Extract one shared background-run transition helper so stop, retry, delete, and display state cannot drift.
+
+6. Filesystem trust and path canonicalization.
+
+BranchFS, IDE file service, project open, and promotion code each normalize paths differently. Extract one helper that owns repo root, project root, realpath, symlink, Windows case, and nested-project scope checks.
+
+7. Draft and command acknowledgement lifecycle.
+
+The UI currently mixes optimistic command dispatch, websocket queuing, local draft persistence, attachment chip state, and backend rejection handling. Add a request-id based pending-command adapter that owns when drafts clear, restore, or remain pending.
+
+8. Provider model namespace and cache identity.
+
+Provider brand, model ids, cached attachment content, and credential changes need one resolver. Keep namespace validation, fallback choice, and cache invalidation together instead of duplicating provider-specific checks.
+
+9. Stream and dense-render budgets.
+
+Terminal, CLI session, markdown, tool activity, assistant logs, and sidebar lists each enforce caps differently. Extract shared cadence, row-window, copy-export, and redaction budgets so large hidden data does not still load or render eagerly.
 
 ## Coverage Priorities
 
@@ -281,7 +463,7 @@ Use [coverage-matrix.md](coverage-matrix.md) as the baseline. Highest-value addi
 10. `US-ASSISTANTS-001` and `US-ASSISTANTS-004`: prove every assistant launch path rejects paused, deleted, or circuit-tripped assistants, including direct chat, retry bootstrap, reprioritize, manual job release, and scheduler catch-up.
 11. `US-ASSISTANTS-002` and `US-JOBS-003`: assert assistant-owned background AI output stays out of normal project chat unless explicitly promoted.
 12. `US-ASSISTANTS-003` and `US-PERSISTENCE-007`: cover bootstrap retry as single-flight with stale attempt cleanup after reconnect or duplicate retry.
-13. `US-WORKSPACE-005` and `US-ASSISTANTS-003`: verify project removal emits refreshed assistant, job, and notification state to connected clients.
+13. `US-WORKSPACE-005`, `US-JOBS-001`, and `US-JOBS-004`: prove project and job deletion reject or cancel active owned background runs before cascading durable rows.
 14. `US-NOTIFICATIONS-001` and `US-RUNS-013`: reject assistant question answers when `(assistantId, questionId)` ownership does not match, and archive only after a successful answer transition.
 15. `US-ASSISTANTS-002` and `US-UI-017`: add large assistant todo, learning, job, and log fixtures that prove empty states, caps, and raw log detail expansion stay bounded.
 16. `US-ATTACHMENTS-001` and `US-ATTACHMENTS-003`: reject untrusted attachment URLs and large `data:` payloads at the websocket boundary.
@@ -297,9 +479,25 @@ Use [coverage-matrix.md](coverage-matrix.md) as the baseline. Highest-value addi
 26. `US-MODES-001`, `US-RUNTIMES-006`, and `US-PROVIDERS-ROADMAP-012`: cover mode-specific placeholders and normalized model tradeoff metadata without hardcoded provider assumptions.
 27. `US-RUNS-007`, `US-WORKTREE-001`, and `US-RUNS-ROADMAP-001`: cover per-file BranchFS diff inspection, changed-path navigation, and promote disabled states while diff inspection is stale or failed.
 28. `US-UI-002`, `US-UI-016`, `US-RUNS-005`, and `US-MARKDOWN-ROADMAP-001`: cover reduced-motion behavior, status-tint non-color cues, skeleton teardown on fast thread switches, smooth-scroll affordance state, and quote-reply focus ownership.
-29. `US-DEV-007` and `US-ACTIVATION-001`: prove doctor cleanup cannot delete a caller project `dist/` when launched outside the harness root.
+29. `US-DEV-007` and `US-ACTIVATION-001`: run doctor and runtime health from an extracted portable launcher folder and prove it does not depend on source-checkout `node_modules`.
 30. `US-PREFERENCES-001` and `US-UI-017`: ensure preferences tests target visible, real controls and that no hidden interactive controls are exposed only for tests.
+31. `US-RUNS-004`, `US-RUNS-009`, and `US-RUNS-016`: reject `run.complete` outside executing states, make final message plus status atomic, and cover deferred `run.refresh` after active streaming.
+32. `US-PLANNING-002` and `US-RUNS-013`: reject partial planning-answer batches when other required questions remain pending.
+33. `US-THREADS-010` and `US-RUNTIMES-003`: archive threads only after live run and CLI activity stop succeeds, including stop-failure rollback tests.
+34. `US-JOBS-002` and `US-JOBS-004`: cover `partial-complete` as terminal and retryable or explicitly non-retryable across guards, repository, UI, and notifications.
+35. `US-PERSISTENCE-014`, `US-THREADS-007`, and `US-ATTACHMENTS-002`: preserve or restore chat drafts and unsent attachments when commands queue, reject, or fail to flush.
+36. `US-WORKTREE-001`, `US-WORKTREE-002`, `US-WORKTREE-007`, and `US-UI-022`: add nested-project dirty fingerprint, BranchFS symlink, IDE symlink escape, and missing `package.json` integration tests.
+37. `US-PLANNING-003`, `US-PLANNING-010`, and `US-WORKTREE-004`: validate semantic plan invariants beyond schema shape before ready plans persist.
+38. `US-BROWSER-001`, `US-BROWSER-002`, and `US-BROWSER-003`: resolve browser approvals by durable run/thread/session/tool owner, including background-run inbox notifications.
+39. `US-UI-020` and `US-DEV-020`: prove debug artifact files pass through the same redaction and budget path as persisted tool activity.
+40. `US-PROVIDERS-002`, `US-PROVIDERS-006`, `US-RUNTIMES-006`, and `US-RUNS-012`: cover Claude model namespace acceptance and Gemini cache invalidation on Google key rotation.
+41. `US-UI-023` and `US-RUNTIMES-003`: cover terminal spawn failure, high-output chunk cadence, scrollback rollover, and xterm append behavior.
+42. `US-UI-010`, `US-UI-015`, `US-UI-020`, and `US-ASSISTANTS-002`: add large fixtures proving assistant loads, markdown streaming, collapsed tool blocks, and sidebar thread lists stay bounded before render.
+43. `US-UI-002`, `US-UI-022`, and `US-UI-023`: test IDE command palette focus containment plus keyboard-accessible IDE and terminal tab close controls.
+44. `US-WORKSPACE-005`, `US-ACTIVATION-003`, and `US-ACTIVATION-006`: assert final-project removal emits fresh setup state with `project-selected` action-required, and that project add, activate, and remove keep setup and workspace state paired.
+45. `US-ACTIVATION-003` and `US-UI-017`: prove setup checklist hide behavior is either unavailable while blockers force display or persists until the next setup-version change.
+46. `US-ACTIVATION-004` and `US-ACTIVATION-007`: prove tutorial completion cannot be recorded while the target is missing or the mapped setup check remains unresolved.
 
 ## Bottom Line
 
-Happy-path flow is broad and mostly wired. The highest remaining correctness risk is now in lifecycle commands, synchronous search, debug instrumentation, attachment trust boundaries, overlay and hotkey ownership, unbounded process output, passive websocket liveness, streaming backpressure, payload growth, live markdown workload, assistant capability scope, and high-polish UI ideas that need typed capability contracts before they can become trustworthy "magic."
+Happy-path flow is broad and mostly wired. The highest remaining correctness risk is now in lifecycle command authority, active background ownership during destructive operations, onboarding readiness drift, BranchFS and IDE path trust, debug artifact redaction, provider/cache identity, draft acknowledgement, browser approval ownership, terminal stream pressure, dense UI load budgets, and overlay or button primitives in newer IDE/terminal surfaces.

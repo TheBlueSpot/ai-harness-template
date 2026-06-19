@@ -9,6 +9,9 @@ import {
 } from "./harness-store";
 import { openBackgroundRunInJobsPane } from "./background-run-navigation";
 import { recordUiTelemetry } from "./lib/ui-telemetry";
+import { terminalStore } from "./terminal/terminal-store";
+import { ideStore } from "./ide/ide-store";
+import { closeAllTerminalSockets, openTerminalSocket } from "./terminal/terminal-transport";
 import { pushToast, reportUiError } from "./toast-store";
 
 type HarnessSocket = {
@@ -22,13 +25,18 @@ const CONTROL_HEARTBEAT_INTERVAL_MS = 15_000;
 const CLI_UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const CONTROL_MISSED_PONG_LIMIT = 2;
 const PTY_HEARTBEAT = 0x00;
+const MAX_PENDING_CONTROL_COMMANDS = 100;
+const CONTROL_RECONNECT_DELAY_MS = 1_000;
 
 export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint()): HarnessSocket {
   harnessStore.setConnectionState("connecting");
-  const socket = new WebSocket(endpoint);
+  let socket: WebSocket | undefined;
   let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   let cliUpdateTimer: ReturnType<typeof setInterval> | undefined;
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   let missedPongs = 0;
+  let disposed = false;
+  const pendingCommands: ClientCommand[] = [];
 
   const stopHeartbeat = () => {
     if (heartbeatTimer) {
@@ -39,7 +47,7 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
   const startHeartbeat = () => {
     stopHeartbeat();
     heartbeatTimer = setInterval(() => {
-      if (socket.readyState !== WebSocket.OPEN) {
+      if (!socket || socket.readyState !== globalThis.WebSocket.OPEN) {
         return;
       }
       if (missedPongs === 1) {
@@ -68,15 +76,13 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
     }
   };
   const requestCliUpdateCheck = () => {
-    if (!harnessStore.state.checkCliUpdatesDefault || socket.readyState !== WebSocket.OPEN) {
+    if (!harnessStore.state.checkCliUpdatesDefault || !socket || socket.readyState !== globalThis.WebSocket.OPEN) {
       return;
     }
-    socket.send(
-      JSON.stringify({
-        type: "cli-updates.check",
-        requestId: createRequestId()
-      } satisfies ClientCommand)
-    );
+    sendRaw({
+      type: "cli-updates.check",
+      requestId: createRequestId()
+    } satisfies ClientCommand);
   };
   const startCliUpdateChecks = () => {
     stopCliUpdateChecks();
@@ -84,20 +90,75 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
     cliUpdateTimer = setInterval(requestCliUpdateCheck, CLI_UPDATE_CHECK_INTERVAL_MS);
   };
 
-  socket.addEventListener("open", () => {
-    harnessStore.setConnectionState("connected");
-    missedPongs = 0;
-    startHeartbeat();
-    socket.send(
-      JSON.stringify({
+  const stopReconnect = () => {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = undefined;
+    }
+  };
+
+  const scheduleReconnect = () => {
+    if (disposed || reconnectTimer) {
+      return;
+    }
+    harnessStore.setConnectionState("connecting", "Reconnecting to workspace");
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = undefined;
+      openControlSocket();
+    }, CONTROL_RECONNECT_DELAY_MS);
+  };
+
+  const sendRaw = (command: ClientCommand) => {
+    if (!socket || socket.readyState !== globalThis.WebSocket.OPEN) {
+      return false;
+    }
+    socket.send(JSON.stringify(command));
+    return true;
+  };
+
+  const flushPendingCommands = () => {
+    while (pendingCommands.length > 0 && socket?.readyState === globalThis.WebSocket.OPEN) {
+      const command = pendingCommands.shift();
+      if (command) {
+        sendRaw(command);
+      }
+    }
+  };
+
+  const queueCommand = (command: ClientCommand) => {
+    pendingCommands.push(command);
+    if (pendingCommands.length > MAX_PENDING_CONTROL_COMMANDS) {
+      pendingCommands.splice(0, pendingCommands.length - MAX_PENDING_CONTROL_COMMANDS);
+    }
+    if (!socket || socket.readyState === globalThis.WebSocket.CLOSED || socket.readyState === globalThis.WebSocket.CLOSING) {
+      scheduleReconnect();
+    }
+  };
+
+  const openControlSocket = () => {
+    stopHeartbeat();
+    stopCliUpdateChecks();
+    stopReconnect();
+    if (disposed) {
+      return;
+    }
+    harnessStore.setConnectionState("connecting");
+    socket = new globalThis.WebSocket(endpoint);
+
+    socket.addEventListener("open", () => {
+      stopReconnect();
+      harnessStore.setConnectionState("connected");
+      missedPongs = 0;
+      startHeartbeat();
+      sendRaw({
         type: "agent.list",
         requestId: createRequestId()
-      } satisfies ClientCommand)
-    );
-  });
+      } satisfies ClientCommand);
+      flushPendingCommands();
+    });
 
-  socket.addEventListener("message", (event) => {
-    try {
+    socket.addEventListener("message", (event) => {
+      try {
       const browserUiSession = readBrowserUiSession();
       const parsed = parseServerEvent(JSON.parse(event.data));
       recordUiTelemetry("websocket.event", {
@@ -119,6 +180,8 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
           ? harnessStore.state.workspace.projects.find((project) => project.id === parsed.payload.projectId)?.activeRun
           : undefined;
       harnessStore.applyServerEvent(parsed);
+      terminalStore.applyServerEvent(parsed);
+      ideStore.applyServerEvent(parsed);
 
       if (parsed.type === "connection.ready") {
         const localPreferences = readLocalPreferences();
@@ -129,8 +192,7 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
         const restoreCommands = getBrowserUiSessionRestoreCommands(harnessStore.state, browserUiSession);
 
         if (needsProviderSync) {
-          socket.send(
-            JSON.stringify({
+          sendRaw({
               type: "preferences.save",
               requestId: createRequestId(),
               payload: {
@@ -154,8 +216,7 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
                 memoryBankRecordRunsDefault: harnessStore.state.memoryBankRecordRunsDefault,
                 checkCliUpdatesDefault: harnessStore.state.checkCliUpdatesDefault
               }
-            } satisfies ClientCommand)
-          );
+            } satisfies ClientCommand);
         } else if (!canSelectProviderBrand(harnessStore.state, harnessStore.state.providerBrand)) {
           const fallbackProviderBrand = canSelectProviderBrand(harnessStore.state, "gpt")
             ? "gpt"
@@ -188,8 +249,9 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
         }
 
         for (const restoreCommand of restoreCommands) {
-          socket.send(JSON.stringify(restoreCommand));
+          sendRaw(restoreCommand);
         }
+        flushPendingCommands();
         startCliUpdateChecks();
       }
 
@@ -241,15 +303,13 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
             `${update.currentVersion} -> ${update.latestVersion}`,
             "info",
             () => {
-              socket.send(
-                JSON.stringify({
+              sendRaw({
                   type: "cli-updates.install",
                   requestId: createRequestId(),
                   payload: {
                     agentId: update.agentId
                   }
-                } satisfies ClientCommand)
-              );
+                } satisfies ClientCommand);
             }
           );
         }
@@ -271,6 +331,15 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
 
       if (parsed.type === "cli-session.attach-ready") {
         openCliSessionSocket(
+          endpoint,
+          parsed.payload.sessionId,
+          parsed.payload.attachToken.clientId,
+          parsed.payload.attachToken.token
+        );
+      }
+
+      if (parsed.type === "terminal.session.attach-ready") {
+        openTerminalSocket(
           endpoint,
           parsed.payload.sessionId,
           parsed.payload.attachToken.clientId,
@@ -332,44 +401,59 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
           pushToast("Run failed", "Completed work was saved. Resume failed agents when ready.", "error");
         }
       }
-    } catch (error) {
-      harnessStore.setConnectionState(
-        "error",
-        error instanceof Error ? error.message : "Invalid server event"
-      );
-      reportUiError(error, "Invalid server event", { rethrow: "never" });
-    }
-  });
+      } catch (error) {
+        harnessStore.setConnectionState(
+          "error",
+          error instanceof Error ? error.message : "Invalid server event"
+        );
+        reportUiError(error, "Invalid server event", { rethrow: "never" });
+      }
+    });
 
-  socket.addEventListener("close", () => {
-    stopHeartbeat();
-    stopCliUpdateChecks();
-    harnessStore.setConnectionState("disconnected");
-  });
+    socket.addEventListener("close", () => {
+      stopHeartbeat();
+      stopCliUpdateChecks();
+      if (disposed) {
+        harnessStore.setConnectionState("disconnected");
+        return;
+      }
+      scheduleReconnect();
+    });
 
-  socket.addEventListener("error", () => {
-    harnessStore.setConnectionState("error", "Websocket connection failed");
-    reportUiError("Websocket connection failed", "Connection error");
-  });
+    socket.addEventListener("error", () => {
+      harnessStore.setConnectionState("error", "Websocket connection failed");
+      reportUiError("Websocket connection failed", "Connection error");
+    });
+  };
+
+  openControlSocket();
 
   return {
     sendCommand(command) {
-      if (socket.readyState !== WebSocket.OPEN) {
+      if (!socket || socket.readyState !== globalThis.WebSocket.OPEN) {
+        if (!disposed) {
+          queueCommand(command);
+          return;
+        }
         const error = new Error("Websocket is not connected");
         reportUiError(error, "Command send failed", { rethrow: "dev-only" });
         throw error;
       }
 
-      socket.send(JSON.stringify(command));
+      sendRaw(command);
     },
     dispose() {
+      disposed = true;
       stopHeartbeat();
       stopCliUpdateChecks();
-      socket.close();
+      stopReconnect();
+      pendingCommands.length = 0;
+      socket?.close();
       for (const ptySocket of ptySockets.values()) {
         ptySocket.close();
       }
       ptySockets.clear();
+      closeAllTerminalSockets();
     }
   };
 }
@@ -395,8 +479,13 @@ export function sendCliSessionInput(sessionId: string, input: string | Uint8Arra
     return false;
   }
 
-  socket.send(typeof input === "string" ? new TextEncoder().encode(input) : input);
+  socket.send(toWebSocketBuffer(input));
   return true;
+}
+
+function toWebSocketBuffer(input: string | Uint8Array): ArrayBuffer {
+  const bytes = typeof input === "string" ? new TextEncoder().encode(input) : input;
+  return new Uint8Array(bytes).buffer;
 }
 
 export function closeCliSessionSocket(sessionId: string) {
@@ -472,7 +561,7 @@ function openCliSessionSocket(controlEndpoint: string, sessionId: string, client
   url.searchParams.set("clientId", clientId);
   url.searchParams.set("token", token);
 
-  const socket = new WebSocket(url);
+  const socket = new globalThis.WebSocket(url);
   socket.binaryType = "arraybuffer";
   socket.addEventListener("open", () => {
     harnessStore.setCliTerminalConnected(sessionId, true);

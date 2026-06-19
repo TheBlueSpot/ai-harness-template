@@ -12,6 +12,7 @@ type ChatComposerProps = {
   onInput: (value: string) => void;
   onSubmit: () => void;
   onKeyDown?: JSX.EventHandlerUnion<HTMLTextAreaElement, KeyboardEvent>;
+  onClick?: JSX.EventHandlerUnion<HTMLTextAreaElement, MouseEvent>;
   leftControls?: JSX.Element;
   rightActions?: JSX.Element;
   textareaRef?: (element: HTMLTextAreaElement) => void;
@@ -41,6 +42,7 @@ export function ChatComposer(props: ChatComposerProps) {
           submitOnEnter(props.onSubmit)(event);
         }}
         onInput={(event) => props.onInput(event.currentTarget.value)}
+        onClick={props.onClick}
       />
       <div class="pointer-events-none absolute bottom-2 right-2 flex items-center gap-1.5">{props.rightActions}</div>
       <div class="absolute bottom-2 left-2">{props.leftControls}</div>

@@ -8,6 +8,7 @@ import { toastStore } from "../toast-store";
 import { captureDispatchedCommands, clearBrowserStateForTests, seedHarnessStoreForTests } from "../utils/tests/store-test-utils";
 import { createHarnessStateFixture, createViewProjectFixture } from "../utils/tests/test-fixtures";
 import { clearCurrentTabItemSelectorsForTests, selectCurrentTabItem } from "../lib/current-tab-item-hotkeys";
+import type { BackgroundJob } from "../../../shared/protocol";
 
 createUiTest("PreferencesModal", () => {
   beforeEach(() => {
@@ -22,6 +23,35 @@ createUiTest("PreferencesModal", () => {
         <PreferencesModal />
       </>
     ));
+  }
+
+  function createBackgroundJobFixture(overrides: Partial<BackgroundJob> = {}): BackgroundJob {
+    const now = new Date().toISOString();
+    return {
+      id: overrides.id ?? `job-${crypto.randomUUID()}`,
+      projectId: overrides.projectId ?? "project-jobs",
+      ...(overrides.assistantId ? { assistantId: overrides.assistantId } : {}),
+      automationThreadId: overrides.automationThreadId ?? `thread-${crypto.randomUUID()}`,
+      kind: overrides.kind ?? "ai-routine",
+      name: overrides.name ?? "Assistant job",
+      ...(overrides.description ? { description: overrides.description } : {}),
+      lane: overrides.lane ?? "exclusive",
+      status: overrides.status ?? "enabled",
+      riskLevel: overrides.riskLevel ?? "safe",
+      definition: overrides.definition ?? {
+        kind: "ai-routine",
+        prompt: "Do background work."
+      },
+      schedule: overrides.schedule ?? {
+        type: "one-off",
+        runAt: now,
+        sourceText: "now"
+      },
+      scheduleInput: overrides.scheduleInput ?? "now",
+      nextRunAt: overrides.nextRunAt ?? now,
+      createdAt: overrides.createdAt ?? now,
+      updatedAt: overrides.updatedAt ?? now
+    };
   }
 
   it("renders as a panel and dismisses back to projects", async () => {
@@ -81,6 +111,7 @@ createUiTest("PreferencesModal", () => {
 
     expect(screen.getByRole("button", { name: /General & UI/i })).not.toBeNull();
     expect(screen.getByRole("button", { name: /Keybinds/i })).not.toBeNull();
+    expect(screen.getByRole("button", { name: /IDE Settings/i })).not.toBeNull();
     expect(screen.getByRole("button", { name: /AI & Providers/i })).not.toBeNull();
     expect(screen.getByRole("button", { name: /Safety & Guardrails/i })).not.toBeNull();
     expect(screen.getByRole("button", { name: /Workspace & Memory/i })).not.toBeNull();
@@ -102,9 +133,30 @@ createUiTest("PreferencesModal", () => {
     renderPreferencesWithSideNav();
 
     expect(selectCurrentTabItem("preferences", 2)).toBe(true);
-    expect(harnessStore.state.preferencesActiveSectionId).toBe("ai-providers");
+    expect(harnessStore.state.preferencesActiveSectionId).toBe("ide-settings");
     expect(harnessStore.state.preferencesSearchQuery).toBe("");
-    expect(await screen.findByText("Provider API keys")).not.toBeNull();
+    expect(await screen.findByText("IDE behavior")).not.toBeNull();
+  });
+
+  it("labels each IDE setting control", async () => {
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        preferencesModalOpen: true,
+        preferencesActiveSectionId: "ide-settings"
+      })
+    );
+
+    renderPreferencesWithSideNav();
+    fireEvent.click(screen.getByRole("button", { name: /IDE Settings/i }));
+
+    expect(await screen.findByText("Auto save")).not.toBeNull();
+    expect(screen.getByText("Choose when dirty IDE files save without pressing the save command.")).not.toBeNull();
+    expect(screen.getByText("Word wrap")).not.toBeNull();
+    expect(screen.getByText("Indent style")).not.toBeNull();
+    expect(screen.getByText("Tab size")).not.toBeNull();
+    expect(screen.getByText("Format on save")).not.toBeNull();
+    expect(screen.getByText("Breadcrumbs")).not.toBeNull();
+    expect(screen.getByText("Bracket pair colorization")).not.toBeNull();
   });
 
   it("search flattens results and opens the result section", async () => {
@@ -122,6 +174,35 @@ createUiTest("PreferencesModal", () => {
 
     expect((screen.getByLabelText("Search settings") as HTMLInputElement).value).toBe("");
     expect(await screen.findByText("Worktree and git safety")).not.toBeNull();
+  });
+
+  it("search opens keybind results and scrolls to the matching keybind", async () => {
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        preferencesModalOpen: true
+      })
+    );
+    const scrolledTargetIds: string[] = [];
+    const originalScrollIntoView = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function () {
+      scrolledTargetIds.push((this as HTMLElement).id);
+    };
+
+    try {
+      renderPreferencesWithSideNav();
+      fireEvent.input(screen.getByLabelText("Search settings"), { target: { value: "new assistant" } });
+
+      expect(await screen.findByText("Search results")).not.toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: /New assistant/i }));
+
+      expect(await screen.findByRole("heading", { name: "Keybinds" })).not.toBeNull();
+      await Promise.resolve();
+      expect((screen.getByLabelText("Search keybindings") as HTMLInputElement).value).toBe("new assistant");
+      expect(document.querySelector("[data-test-keybind-row='createAssistant']")).not.toBeNull();
+      expect(scrolledTargetIds).toContain("keybind-createAssistant");
+    } finally {
+      Element.prototype.scrollIntoView = originalScrollIntoView;
+    }
   });
 
   it("sends branchfs cleanup and renders compact result", async () => {
@@ -157,6 +238,50 @@ createUiTest("PreferencesModal", () => {
     expect((commands[0] as { payload: { mode: string } }).payload.mode).toBe("all");
     expect(screen.getByText(/3 roots deleted/)).not.toBeNull();
     expect(screen.getByText(/2 stale runs stopped/)).not.toBeNull();
+  });
+
+  it("sends pause-all assistant jobs from settings while global pause is active", async () => {
+    const commands: unknown[] = [];
+    const project = createViewProjectFixture({ id: "project-assistant-jobs" });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        preferencesModalOpen: true,
+        preferencesActiveSectionId: "background-jobs",
+        executionControl: {
+          isPaused: true,
+          deferredPlanningQuestionCount: 0,
+          deferredAssistantQuestionCount: 0,
+          deferredBrowserApprovalCount: 0
+        },
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        },
+        backgroundJobs: {
+          jobs: [
+            createBackgroundJobFixture({
+              id: "job-assistant-enabled",
+              projectId: project.id,
+              assistantId: "assistant-1",
+              status: "enabled"
+            })
+          ],
+          runs: [],
+          templates: []
+        }
+      })
+    );
+    captureDispatchedCommands(commands as never[]);
+
+    renderPreferencesWithSideNav();
+    fireEvent.click(screen.getByRole("button", { name: /Background Jobs/i }));
+    expect(await screen.findByText("Assistant job controls")).not.toBeNull();
+    const pauseButton = screen.getByRole("button", { name: "Pause assistant jobs" }) as HTMLButtonElement;
+    expect(pauseButton.disabled).toBe(false);
+    fireEvent.click(pauseButton);
+
+    expect(commands).toHaveLength(1);
+    expect((commands[0] as { type: string }).type).toBe("background-job.pause-assistant-jobs");
   });
 
   it("does not render a save preferences button", () => {

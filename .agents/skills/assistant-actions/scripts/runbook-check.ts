@@ -32,6 +32,7 @@ Checks:
   - master SKILL.md links all branch docs
   - every US-ASSISTANTS story has action-index coverage
   - assistant-state examples use the supported script invocation
+  - assistant-maintenance examples cover destructive assistant cleanup
 `;
 
 if (import.meta.main) {
@@ -78,12 +79,24 @@ export function validateRunbook(skillRoot = path.resolve(import.meta.dir, ".."))
   if (!existsSync(assistantStatePath)) {
     errors.push("Missing script: scripts/assistant-state.ts");
   }
+  const assistantMaintenancePath = path.join(skillRoot, "scripts", "assistant-maintenance.ts");
+  if (!existsSync(assistantMaintenancePath)) {
+    errors.push("Missing script: scripts/assistant-maintenance.ts");
+  }
 
   const docsWithExamples = ["SKILL.md", "references/jobs.md", "references/state-reporting.md", "references/operation-handoffs.md"];
   for (const relativePath of docsWithExamples) {
     const text = readRequiredFile(path.join(skillRoot, relativePath), errors);
     if (!text.includes("bun.cmd .agents/skills/assistant-actions/scripts/assistant-state.ts")) {
       errors.push(`${relativePath} missing assistant-state.ts example`);
+    }
+  }
+
+  const maintenanceDocs = ["references/jobs.md", "references/create-configure.md", "references/recovery.md", "references/operation-handoffs.md"];
+  for (const relativePath of maintenanceDocs) {
+    const text = readRequiredFile(path.join(skillRoot, relativePath), errors);
+    if (!text.includes("bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts")) {
+      errors.push(`${relativePath} missing assistant-maintenance.ts example`);
     }
   }
 

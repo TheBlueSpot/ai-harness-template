@@ -69,6 +69,11 @@ import {
   type ServerEvent,
   type SetupLaunchMode,
   type SetupState,
+  type TerminalAttachToken,
+  type TerminalPaneLayout,
+  type TerminalPreferences,
+  type TerminalSession,
+  type TerminalShell,
   type ThreadId,
   type WorkspaceRuleSource,
   type WorkspaceProjectState
@@ -99,6 +104,7 @@ import { createLegacyTruncatedId, createStableBoundedId } from "./notification-i
 import { checkCliUpdates, installCliUpdate, type CliUpdate } from "./cli-update-checker";
 import { PiSdkAgentAdapter, type PiAgentAdapter, type PiAgentExecutionEvent } from "./pi-agent-adapter";
 import { searchProjectFolders } from "./project-search-service";
+import { IdeProjectService } from "./ide-project-service";
 import type { AgentRuntime } from "./agent-runtimes/agent-runtime";
 import { CliSessionManager, STREAM_HEARTBEAT } from "./agent-runtimes/cli-session-manager";
 import { CopilotCliRuntime } from "./agent-runtimes/copilot-cli-runtime";
@@ -106,6 +112,7 @@ import { CodexCliRuntime } from "./agent-runtimes/codex-cli-runtime";
 import { PiRuntime } from "./agent-runtimes/pi-runtime";
 import { AgentRuntimeRegistry } from "./agent-runtimes/runtime-registry";
 import { applyHarnessToolchainToProcessEnv } from "./agent-runtimes/toolchain";
+import { TerminalSessionManager, TERMINAL_STREAM_HEARTBEAT } from "./terminal/terminal-session-manager";
 import {
   aggregateSubagentResults,
   buildExecutionPlan,
@@ -149,6 +156,11 @@ import {
 } from "./browser-session-state";
 import { detectAssistantChatIntent } from "./assistant-intent";
 import { resolveAssistantChatAction, type AssistantActionIntentDraft, type AssistantChatActionResolution } from "./assistant-chat-actions";
+import { createOrUpdateAssistantWithJobs, type AssistantFactoryEvents } from "./assistant-factory";
+import {
+  buildAssistantJobBootstrapJobs,
+  createAssistantJobBootstrapQuestionId
+} from "./assistant-job-bootstrap";
 import { assertAssistantRunnableForLaunch } from "./assistant-launch-gate";
 import { evaluateAssistantQuestionPolicy } from "./assistant-question-policy";
 import { type StartupPhaseId, type StartupTelemetrySink } from "./startup-telemetry";
@@ -168,7 +180,7 @@ import {
 
 type HarnessConnection = {
   clientId: string;
-  kind: "control" | "pty";
+  kind: "control" | "pty" | "terminal";
   sessionId?: string;
 };
 
@@ -256,6 +268,7 @@ type HarnessWebSocketOptions = NonNullable<BunServeOptions["websocket"]>;
 type HarnessWebSocketOpenHandler = NonNullable<HarnessWebSocketOptions["open"]>;
 type HarnessWebSocketCloseHandler = NonNullable<HarnessWebSocketOptions["close"]>;
 type HarnessWebSocketMessageHandler = NonNullable<HarnessWebSocketOptions["message"]>;
+const CONTROL_WEBSOCKET_MAX_QUEUED_BYTES = 64 * 1024 * 1024;
 
 type UiServingState =
   | {
@@ -280,12 +293,14 @@ type HarnessServerState = {
   pendingBrowserApprovals: Map<string, PendingBrowserApproval>;
   backgroundRunControllers: Map<string, BackgroundRunControl>;
   projectSearchControllers: Map<string, { requestId: string; abortController: AbortController }>;
+  ideSearchControllers: Map<string, { requestId: string; abortController: AbortController }>;
   connections: Set<Bun.ServerWebSocket<HarnessConnection>>;
   uploadthingHandler: ReturnType<typeof createRouteHandler>;
   ui: UiServingState;
   currentSetupState: SetupState;
   assistantManager: AssistantManager;
   cliSessionManager: CliSessionManager;
+  terminalSessionManager: TerminalSessionManager;
   scheduler: BackgroundJobScheduler;
   osAdapters: HarnessServerOsAdapters;
 };
@@ -603,6 +618,7 @@ async function initializeHarnessServerState(input: {
       pendingBrowserApprovals: input.existingState?.pendingBrowserApprovals ?? new Map<string, PendingBrowserApproval>(),
       backgroundRunControllers: input.existingState?.backgroundRunControllers ?? new Map<string, BackgroundRunControl>(),
       projectSearchControllers: input.existingState?.projectSearchControllers ?? new Map<string, { requestId: string; abortController: AbortController }>(),
+      ideSearchControllers: input.existingState?.ideSearchControllers ?? new Map<string, { requestId: string; abortController: AbortController }>(),
       connections: input.existingState?.connections ?? new Set<Bun.ServerWebSocket<HarnessConnection>>(),
       uploadthingHandler:
         input.existingState?.uploadthingHandler ??
@@ -673,6 +689,7 @@ async function initializeHarnessServerState(input: {
         syncAssistantQuestionNotifications(repository);
         syncBrowserApprovalNotifications(repository);
         input.existingState.assistantManager.recoverStaleBootstrapRuns();
+        input.existingState.assistantManager.recoverIdleJobBootstrapChecks();
         for (const run of repository.loadBackgroundJobsState().runs) {
           saveBackgroundRunStatusNotification(repository, run);
         }
@@ -689,6 +706,7 @@ async function initializeHarnessServerState(input: {
           currentSetupState,
           assistantManager,
           cliSessionManager: input.existingState.cliSessionManager,
+          terminalSessionManager: input.existingState.terminalSessionManager,
           scheduler
         };
       }
@@ -735,6 +753,7 @@ async function initializeHarnessServerState(input: {
       syncAssistantQuestionNotifications(repository);
       syncBrowserApprovalNotifications(repository);
       assistantManager.recoverStaleBootstrapRuns();
+      assistantManager.recoverIdleJobBootstrapChecks();
       for (const run of repository.loadBackgroundJobsState().runs) {
         saveBackgroundRunStatusNotification(repository, run);
       }
@@ -776,6 +795,31 @@ async function initializeHarnessServerState(input: {
         }
       });
 
+      const terminalSessionManager = new TerminalSessionManager({
+        repository,
+        onSessionsUpdated({ requestId, sessions, preferences, layout }) {
+          emitTerminalSessionsUpdatedToAll(baseServices.connections, { requestId, sessions, preferences, layout });
+        },
+        onShellsUpdated({ requestId, shells }) {
+          emitTerminalShellsUpdatedToAll(baseServices.connections, { requestId, shells });
+        },
+        onSessionCreated({ requestId, session }) {
+          emitTerminalSessionCreatedToAll(baseServices.connections, { requestId, session });
+        },
+        onSessionUpdated({ requestId, session }) {
+          emitTerminalSessionUpdatedToAll(baseServices.connections, { requestId, session });
+        },
+        onSessionExited({ requestId, session }) {
+          emitTerminalSessionExitedToAll(baseServices.connections, { requestId, session });
+        },
+        onAttachReady({ requestId, sessionId, attachToken, snapshot }) {
+          emitTerminalAttachReadyToAll(baseServices.connections, { requestId, sessionId, attachToken, snapshot });
+        },
+        onPreferencesSaved({ requestId, preferences, layout }) {
+          emitTerminalPreferencesSavedToAll(baseServices.connections, { requestId, preferences, layout });
+        }
+      });
+
       const scheduler = createBackgroundJobScheduler({
         repository,
         runtime,
@@ -789,6 +833,7 @@ async function initializeHarnessServerState(input: {
         currentSetupState,
         assistantManager,
         cliSessionManager,
+        terminalSessionManager,
         scheduler
       };
     }
@@ -807,6 +852,7 @@ async function initializeHarnessServerState(input: {
     pendingBrowserApprovals: baseServices.pendingBrowserApprovals,
     backgroundRunControllers: baseServices.backgroundRunControllers,
     projectSearchControllers: baseServices.projectSearchControllers,
+    ideSearchControllers: baseServices.ideSearchControllers,
     connections: baseServices.connections,
     uploadthingHandler: baseServices.uploadthingHandler,
     ui: baseServices.ui,
@@ -814,6 +860,7 @@ async function initializeHarnessServerState(input: {
     currentSetupState: setupResult.currentSetupState,
     assistantManager: setupResult.assistantManager,
     cliSessionManager: setupResult.cliSessionManager,
+    terminalSessionManager: setupResult.terminalSessionManager,
     scheduler: setupResult.scheduler
   } satisfies HarnessServerState;
 }
@@ -880,7 +927,7 @@ function createBackgroundJobScheduler(input: {
       void emitBackgroundJobRunUpdatedToAll(connections, run);
       emitNotificationsUpdatedToAll(connections, `bg:auto:${crypto.randomUUID()}`, repository.loadNotificationInboxState());
       if (run.status === "queued") {
-        return launchBackgroundJobRun(
+        return safeLaunchBackgroundJobRun(
           connections,
           repository,
           runtimeRegistry,
@@ -965,6 +1012,32 @@ function createHarnessHandlerRefs(
         return undefined;
       }
 
+      if (url.pathname === "/ws/terminal" && request.headers.get("upgrade")?.toLowerCase() === "websocket") {
+        const clientId = url.searchParams.get("clientId");
+        const token = url.searchParams.get("token");
+        if (!clientId || !token) {
+          return new Response("Missing terminal attach parameters", { status: 400 });
+        }
+
+        const attachRecord = state.terminalSessionManager.consumeAttachToken(token, clientId);
+        if (!attachRecord) {
+          return new Response("Invalid or expired terminal token", { status: 401 });
+        }
+
+        const upgraded = serverInstance.upgrade(request, {
+          data: {
+            clientId,
+            kind: "terminal" as const,
+            sessionId: attachRecord.sessionId
+          }
+        });
+        if (!upgraded) {
+          return new Response("Terminal websocket upgrade failed", { status: 400 });
+        }
+
+        return undefined;
+      }
+
       if (state.serverOnly) {
         return new Response("Harness CLI websocket endpoint", { status: 200 });
       }
@@ -998,6 +1071,14 @@ function createHarnessHandlerRefs(
           });
           return;
         }
+        if (ws.data.kind === "terminal" && ws.data.sessionId) {
+          state.terminalSessionManager.attachSocket({
+            sessionId: ws.data.sessionId,
+            clientId: ws.data.clientId,
+            socket: ws
+          });
+          return;
+        }
 
         sendEvent(ws, {
           type: "connection.ready",
@@ -1009,7 +1090,7 @@ function createHarnessHandlerRefs(
             preferences: getCurrentPreferencesState(),
             setup: state.currentSetupState,
             backgroundJobs: state.repository.loadBackgroundJobsState(),
-            assistants: state.repository.loadAssistantsState(),
+            assistants: state.repository.loadAssistantSummaryState(),
             notifications: state.repository.loadNotificationInboxState()
           }
         });
@@ -1019,10 +1100,16 @@ function createHarnessHandlerRefs(
         const searchController = state.projectSearchControllers.get(ws.data.clientId);
         searchController?.abortController.abort();
         state.projectSearchControllers.delete(ws.data.clientId);
+        const ideSearchController = state.ideSearchControllers.get(ws.data.clientId);
+        ideSearchController?.abortController.abort();
+        state.ideSearchControllers.delete(ws.data.clientId);
         if (ws.data.kind === "pty" && ws.data.sessionId) {
           state.cliSessionManager.detachSocket(ws.data.sessionId);
+        } else if (ws.data.kind === "terminal" && ws.data.sessionId) {
+          state.terminalSessionManager.detachSocket(ws.data.sessionId);
         } else {
           state.cliSessionManager.detachClient(ws.data.clientId);
+          state.terminalSessionManager.detachClient(ws.data.clientId);
         }
       },
       message(ws, message) {
@@ -1040,6 +1127,20 @@ function createHarnessHandlerRefs(
           void state.cliSessionManager.writeToSession(ws.data.sessionId, bytes).catch(() => {
             // CliSessionManager owns durable session state for failed writes.
           });
+          return;
+        }
+        if (ws.data.kind === "terminal") {
+          if (typeof message === "string" || !ws.data.sessionId) {
+            return;
+          }
+
+          const bytes = message instanceof Uint8Array ? message : new Uint8Array(message);
+          if (bytes[0] === TERMINAL_STREAM_HEARTBEAT) {
+            state.terminalSessionManager.recordPong(ws.data.sessionId, ws.data.clientId);
+            return;
+          }
+
+          void state.terminalSessionManager.writeToSession(ws.data.sessionId, bytes).catch(() => undefined);
           return;
         }
 
@@ -1066,6 +1167,7 @@ function createHarnessHandlerRefs(
           state.runtimeRegistry,
           state.assistantManager,
           state.cliSessionManager,
+          state.terminalSessionManager,
           state.pickFolder,
           getCurrentPreferencesState,
           async (requestId) => {
@@ -1083,6 +1185,7 @@ function createHarnessHandlerRefs(
           state.connections,
           state.backgroundRunControllers,
           state.projectSearchControllers,
+          state.ideSearchControllers,
           state.scheduler,
           state.osAdapters,
           options.derivedProgressHeartbeatMs
@@ -1575,6 +1678,7 @@ async function handleCommand(
   runtimeRegistry: AgentRuntimeRegistry,
   assistantManager: AssistantManager,
   cliSessionManager: CliSessionManager,
+  terminalSessionManager: TerminalSessionManager,
   pickFolder: typeof pickProjectFolder,
   getCurrentPreferencesState: () => PreferencesState,
   emitSetupRefresh: (requestId: string) => Promise<SetupState>,
@@ -1582,6 +1686,7 @@ async function handleCommand(
   connections: Set<Bun.ServerWebSocket<HarnessConnection>>,
   backgroundRunControllers: Map<string, BackgroundRunControl>,
   projectSearchControllers: Map<string, { requestId: string; abortController: AbortController }>,
+  ideSearchControllers: Map<string, { requestId: string; abortController: AbortController }>,
   scheduler: BackgroundJobScheduler,
   osAdapters: HarnessServerOsAdapters,
   derivedProgressHeartbeatMs: number
@@ -1687,6 +1792,72 @@ async function handleCommand(
     }
     case "setup.refresh": {
       await emitSetupRefresh(command.requestId);
+      return;
+    }
+    case "terminal.shells.list": {
+      await terminalSessionManager.refreshShells(command.requestId);
+      return;
+    }
+    case "terminal.session.create": {
+      const project = runtime.getProject(command.payload.projectId);
+      await terminalSessionManager.createSession({
+        requestId: command.requestId,
+        projectId: project.id,
+        projectRoot: project.rootPath,
+        clientId: ws.data.clientId,
+        name: command.payload.name,
+        shellId: command.payload.shellId,
+        cwd: command.payload.cwd,
+        cols: command.payload.cols,
+        rows: command.payload.rows,
+        env: command.payload.env
+      });
+      return;
+    }
+    case "terminal.session.rename": {
+      terminalSessionManager.renameSession({ requestId: command.requestId, ...command.payload });
+      return;
+    }
+    case "terminal.session.stop": {
+      await terminalSessionManager.stopSession({ requestId: command.requestId, ...command.payload });
+      return;
+    }
+    case "terminal.session.close": {
+      await terminalSessionManager.closeSession({ requestId: command.requestId, ...command.payload });
+      return;
+    }
+    case "terminal.session.restart": {
+      const project = runtime.getProject(command.payload.projectId);
+      await terminalSessionManager.restartSession({
+        requestId: command.requestId,
+        projectId: command.payload.projectId,
+        projectRoot: project.rootPath,
+        sessionId: command.payload.sessionId,
+        clientId: ws.data.clientId,
+        cols: command.payload.cols,
+        rows: command.payload.rows
+      });
+      return;
+    }
+    case "terminal.session.resize": {
+      terminalSessionManager.resizeSession({ requestId: command.requestId, ...command.payload });
+      return;
+    }
+    case "terminal.session.attach": {
+      terminalSessionManager.attachSession({
+        requestId: command.requestId,
+        projectId: command.payload.projectId,
+        sessionId: command.payload.sessionId,
+        clientId: ws.data.clientId
+      });
+      return;
+    }
+    case "terminal.preferences.save": {
+      terminalSessionManager.savePreferences({
+        requestId: command.requestId,
+        preferences: command.payload.preferences,
+        layout: command.payload.layout
+      });
       return;
     }
     case "cli-session.start": {
@@ -1822,6 +1993,27 @@ async function handleCommand(
         throw new Error("Project is streaming");
       }
 
+      const projectActiveJobIds = [
+        ...new Set(
+          repository
+            .getActiveBackgroundJobRuns()
+            .filter((run) => run.projectId === command.payload.projectId)
+            .map((run) => run.jobId)
+        )
+      ];
+      for (const jobId of projectActiveJobIds) {
+        await stopBackgroundRunsForJob({
+          ws,
+          requestId: command.requestId,
+          repository,
+          runtime,
+          connections,
+          backgroundRunControllers,
+          jobId,
+          reason: "Project removed"
+        });
+      }
+
       const { activeProjectId } = repository.removeProject(command.payload.projectId);
       runtime.removeProject(command.payload.projectId, activeProjectId);
       for (const connection of connections) {
@@ -1893,6 +2085,156 @@ async function handleCommand(
         if (latestSearch?.requestId === command.requestId) {
           projectSearchControllers.delete(ws.data.clientId);
         }
+      }
+      return;
+    }
+    case "ide.fileTree.list": {
+      const project = runtime.getProject(command.payload.projectId);
+      const service = new IdeProjectService();
+      try {
+        const result = await service.listFileTree({
+          projectRoot: project.rootPath,
+          rootPath: command.payload.rootPath,
+          maxEntries: command.payload.maxEntries,
+          includeIgnored: command.payload.includeIgnored
+        });
+        sendEvent(ws, {
+          type: "ide.fileTree.listed",
+          requestId: command.requestId,
+          payload: {
+            projectId: project.id,
+            requestedPath: command.payload.rootPath,
+            rootPath: result.rootPath,
+            entries: result.entries,
+            truncated: result.truncated
+          }
+        });
+      } catch (error) {
+        sendCommandRejected(ws, "IDE file tree failed", error instanceof Error ? error.message : "Unknown IDE file tree error");
+      }
+      return;
+    }
+    case "ide.file.read": {
+      const project = runtime.getProject(command.payload.projectId);
+      const service = new IdeProjectService();
+      try {
+        const file = await service.readFile({
+          projectId: project.id,
+          projectRoot: project.rootPath,
+          filePath: command.payload.path,
+          maxBytes: command.payload.maxBytes
+        });
+        sendEvent(ws, {
+          type: "ide.file.read",
+          requestId: command.requestId,
+          payload: file
+        });
+      } catch (error) {
+        sendCommandRejected(ws, "IDE file read failed", error instanceof Error ? error.message : "Unknown IDE file read error");
+      }
+      return;
+    }
+    case "ide.file.write": {
+      const project = runtime.getProject(command.payload.projectId);
+      const service = new IdeProjectService();
+      try {
+        const file = await service.writeFile({
+          projectId: project.id,
+          projectRoot: project.rootPath,
+          filePath: command.payload.path,
+          content: command.payload.content
+        });
+        sendEvent(ws, {
+          type: "ide.file.written",
+          requestId: command.requestId,
+          payload: file
+        });
+      } catch (error) {
+        sendCommandRejected(ws, "IDE file write failed", error instanceof Error ? error.message : "Unknown IDE file write error");
+      }
+      return;
+    }
+    case "ide.search.run": {
+      const project = runtime.getProject(command.payload.projectId);
+      ideSearchControllers.get(ws.data.clientId)?.abortController.abort();
+      const abortController = new AbortController();
+      ideSearchControllers.set(ws.data.clientId, {
+        requestId: command.requestId,
+        abortController
+      });
+      try {
+        const service = new IdeProjectService();
+        const result = await service.searchProject({
+          projectRoot: project.rootPath,
+          query: command.payload.query,
+          regex: command.payload.regex,
+          caseSensitive: command.payload.caseSensitive,
+          wholeWord: command.payload.wholeWord,
+          includeGlob: command.payload.includeGlob,
+          excludeGlob: command.payload.excludeGlob,
+          maxResults: command.payload.maxResults,
+          signal: abortController.signal
+        });
+        const latestSearch = ideSearchControllers.get(ws.data.clientId);
+        if (latestSearch?.requestId !== command.requestId || abortController.signal.aborted) {
+          return;
+        }
+        sendEvent(ws, {
+          type: "ide.search.results",
+          requestId: command.requestId,
+          payload: {
+            projectId: project.id,
+            query: command.payload.query,
+            results: result.results,
+            truncated: result.truncated
+          }
+        });
+      } catch (error) {
+        if (isAbortError(error)) {
+          return;
+        }
+        sendCommandRejected(ws, "IDE search failed", error instanceof Error ? error.message : "Unknown IDE search error");
+      } finally {
+        const latestSearch = ideSearchControllers.get(ws.data.clientId);
+        if (latestSearch?.requestId === command.requestId) {
+          ideSearchControllers.delete(ws.data.clientId);
+        }
+      }
+      return;
+    }
+    case "ide.search.cancel": {
+      const controller = ideSearchControllers.get(ws.data.clientId);
+      if (controller?.requestId === command.payload.searchRequestId) {
+        controller.abortController.abort();
+        ideSearchControllers.delete(ws.data.clientId);
+      }
+      sendEvent(ws, {
+        type: "ide.search.cancelled",
+        requestId: command.requestId,
+        payload: {
+          projectId: command.payload.projectId,
+          searchRequestId: command.payload.searchRequestId
+        }
+      });
+      return;
+    }
+    case "ide.git.status": {
+      const project = runtime.getProject(command.payload.projectId);
+      const service = new IdeProjectService();
+      try {
+        const result = await service.gitStatus(project.rootPath);
+        sendEvent(ws, {
+          type: "ide.git.status",
+          requestId: command.requestId,
+          payload: {
+            projectId: project.id,
+            branch: result.branch,
+            isRepository: result.isRepository,
+            changes: result.changes
+          }
+        });
+      } catch (error) {
+        sendCommandRejected(ws, "IDE git status failed", error instanceof Error ? error.message : "Unknown IDE git status error");
       }
       return;
     }
@@ -2146,15 +2488,16 @@ async function handleCommand(
           purpose: assistantIntent.purpose,
           agentId: agentRuntime.id,
           providerBrand,
+          planningModelId: agentRuntime.getDefaultPlanningModelId(providerBrand),
           modeId: effectiveModeId,
           executionModelId: effectiveExecutionModelId,
           reasoningStrength: command.payload.reasoningStrength,
-          fastMode: command.payload.fastMode
+          fastMode: command.payload.fastMode,
+          emit: createAssistantFactoryEvents(connections)
         });
-        emitAssistantsUpdatedToAll(connections, repository.loadAssistantsState());
-        emitAssistantCreatedCardToAll(connections, result.assistant);
         appendAssistantCreationMessage(ws, command.requestId, runtime, repository, projectId, command.payload.threadId, result);
         if (result.created && result.assistant.bootstrapState === "pending") {
+          assistantManager.scheduleJobBootstrapCheck(result.assistant.id, "assistant-create");
           void assistantManager.bootstrapAssistant(result.assistant.id);
         }
         return;
@@ -2614,6 +2957,7 @@ async function handleCommand(
           emitAssistantCreatedCardToAll(connections, result.assistant);
           appendAssistantCreationMessage(ws, command.requestId, runtime, repository, projectId, command.payload.threadId, result);
           if (result.created && result.assistant.bootstrapState === "pending") {
+            assistantManager.scheduleJobBootstrapCheck(result.assistant.id, "assistant-create-purpose");
             void assistantManager.bootstrapAssistant(result.assistant.id);
           }
           runtime.setProjectStreaming(projectId, false, command.payload.threadId);
@@ -3325,12 +3669,29 @@ async function handleCommand(
       return;
     }
     case "background-job.delete": {
+      const job = requireBackgroundJobForProject(repository, command.payload.projectId, command.payload.jobId);
+      await stopBackgroundRunsForJob({
+        ws,
+        requestId: command.requestId,
+        repository,
+        runtime,
+        connections,
+        backgroundRunControllers,
+        jobId: job.id,
+        reason: "Background job deleted"
+      });
       const savedState = repository.deleteBackgroundJob(command.payload.projectId, command.payload.jobId);
       emitBackgroundJobsUpdatedToAll(connections, savedState);
+      emitNotificationsUpdatedToAll(connections, command.requestId, repository.loadNotificationInboxState());
       return;
     }
     case "background-job.pause": {
       const savedState = repository.setBackgroundJobStatus(command.payload.projectId, command.payload.jobId, "paused");
+      emitBackgroundJobsUpdatedToAll(connections, savedState);
+      return;
+    }
+    case "background-job.pause-assistant-jobs": {
+      const savedState = repository.pauseAllAssistantBackgroundJobs();
       emitBackgroundJobsUpdatedToAll(connections, savedState);
       return;
     }
@@ -3372,7 +3733,7 @@ async function handleCommand(
       repository.appendBackgroundJobRunEvent(queuedRun.id, "queued", "Background run queued manually");
       emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
       await emitBackgroundJobRunUpdatedToAll(connections, queuedRun);
-      await launchBackgroundJobRun(
+      await safeLaunchBackgroundJobRun(
         connections,
         repository,
         runtimeRegistry,
@@ -3386,27 +3747,17 @@ async function handleCommand(
     case "background-job.stop-run": {
       const existingRun = requireBackgroundRunForProject(repository, command.payload.projectId, command.payload.runId);
       assertBackgroundRunTransition(existingRun, "stop");
-      const control = backgroundRunControllers.get(existingRun.id);
-      const updatedRun = repository.setBackgroundJobRunStatus(existingRun.id, "cancelled", {
-        failureMessage: "Stopped by user",
-        failureCategory: "manual-abort"
+      await stopBackgroundRunsForJob({
+        ws,
+        requestId: command.requestId,
+        repository,
+        runtime,
+        connections,
+        backgroundRunControllers,
+        jobId: existingRun.jobId,
+        runId: existingRun.id,
+        reason: "Stopped by user"
       });
-      if (existingRun.linkedAgentRunId) {
-        const stoppedProject = repository.setAgentRunStatus(
-          existingRun.projectId,
-          existingRun.linkedAgentRunId,
-          "stopped",
-          "Background run stopped by user"
-        );
-        runtime.upsertPersistedProject(stoppedProject);
-        emitRunUpdatedById(ws, command.requestId, repository, existingRun.projectId, existingRun.linkedAgentRunId, connections);
-        scheduleBranchfsRetentionPrune(runtime.getProject(existingRun.projectId).rootPath);
-      }
-      repository.appendBackgroundJobRunEvent(existingRun.id, "cancelled", "Background run cancelled", "Stopped by user");
-      saveBackgroundRunStatusNotification(repository, updatedRun);
-      abortBackgroundRunControl(control);
-      backgroundRunControllers.delete(existingRun.id);
-      await emitBackgroundJobRunUpdatedToAll(connections, updatedRun);
       emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
       emitNotificationsUpdatedToAll(connections, command.requestId, repository.loadNotificationInboxState());
       return;
@@ -3428,7 +3779,7 @@ async function handleCommand(
       repository.appendBackgroundJobRunEvent(queuedRun.id, "queued", "Background run queued by retry");
       await emitBackgroundJobRunUpdatedToAll(connections, queuedRun);
       if (queuedRun.status === "queued") {
-        await launchBackgroundJobRun(
+        await safeLaunchBackgroundJobRun(
           connections,
           repository,
           runtimeRegistry,
@@ -3451,7 +3802,7 @@ async function handleCommand(
       repository.appendBackgroundJobRunEvent(existingRun.id, "queued", "Background run approved");
       archiveNotificationWithLegacyId(repository, ["background-run-status", updatedRun.id]);
       await emitBackgroundJobRunUpdatedToAll(connections, updatedRun);
-      await launchBackgroundJobRun(
+      await safeLaunchBackgroundJobRun(
         connections,
         repository,
         runtimeRegistry,
@@ -3488,17 +3839,30 @@ async function handleCommand(
       return;
     }
     case "assistant.create": {
-      const savedAssistant = repository.saveAssistant(
-        {
-          ...command.payload.assistant,
-          providerBrand: command.payload.assistant.providerBrand ?? repository.getProviderBrand(),
-          fastMode: command.payload.assistant.fastMode ?? false
+      const project =
+        command.payload.assistant.projectId
+          ? runtime.getProject(command.payload.assistant.projectId)
+          : undefined;
+      const providerBrand = command.payload.assistant.providerBrand ?? repository.getProviderBrand();
+      const agentRuntime = runtimeRegistry.get(command.payload.assistant.agentId);
+      const result = createOrUpdateAssistantWithJobs({
+        repository,
+        assistant: command.payload.assistant,
+        assetRefs: command.payload.assetRefs ?? [],
+        launchDefaults: {
+          providerBrand,
+          planningModelId: agentRuntime.getDefaultPlanningModelId(providerBrand),
+          executionModelId: command.payload.assistant.executionModelId ?? project?.session.executionModelId,
+          reasoningStrength: command.payload.assistant.reasoningStrength,
+          fastMode: command.payload.assistant.fastMode,
+          modeId: command.payload.assistant.modeId ?? project?.selectedModeId
         },
-        command.payload.assetRefs ?? []
-      );
-      emitAssistantsUpdatedToAll(connections, repository.loadAssistantsState());
-      emitAssistantCreatedCardToAll(connections, savedAssistant);
-      void assistantManager.bootstrapAssistant(savedAssistant.id);
+        emit: createAssistantFactoryEvents(connections)
+      });
+      if (result.created) {
+        assistantManager.scheduleJobBootstrapCheck(result.assistant.id, "assistant-create-command");
+      }
+      void assistantManager.bootstrapAssistant(result.assistant.id);
       return;
     }
     case "assistant.create-from-thread": {
@@ -3514,14 +3878,15 @@ async function handleCommand(
         scope: command.payload.scope ?? "project",
         agentId: command.payload.agentId,
         providerBrand: repository.getProviderBrand(),
+        planningModelId: resolveProjectAgentRuntime(runtimeRegistry, project).getDefaultPlanningModelId(repository.getProviderBrand()),
         modeId: command.payload.modeId ?? project.selectedModeId,
         executionModelId: command.payload.executionModelId ?? project.session.executionModelId,
         reasoningStrength: command.payload.reasoningStrength,
-        fastMode: command.payload.fastMode
+        fastMode: command.payload.fastMode,
+        emit: createAssistantFactoryEvents(connections)
       });
-      emitAssistantsUpdatedToAll(connections, repository.loadAssistantsState());
-      emitAssistantCreatedCardToAll(connections, result.assistant);
       if (result.created && result.assistant.bootstrapState === "pending") {
+        assistantManager.scheduleJobBootstrapCheck(result.assistant.id, "assistant-create-from-thread");
         void assistantManager.bootstrapAssistant(result.assistant.id);
       }
       return;
@@ -3584,10 +3949,88 @@ async function handleCommand(
       const savedAssistant = repository.cloneAssistantToProject(source.id, command.payload.projectId, clonedAssistant, clonedAssetRefs);
       emitAssistantsUpdatedToAll(connections, repository.loadAssistantsState());
       emitAssistantCreatedCardToAll(connections, savedAssistant);
+      assistantManager.scheduleJobBootstrapCheck(savedAssistant.id, "assistant-clone");
       return;
     }
     case "assistant.inspect": {
       emitAssistantsUpdatedToAll(connections, repository.loadAssistantsState());
+      return;
+    }
+    case "assistant.summary.list": {
+      sendEvent(ws, {
+        type: "assistant.summary.listed",
+        requestId: command.requestId,
+        payload: {
+          assistants: repository.listAssistantSummaries(command.payload ?? {})
+        }
+      });
+      return;
+    }
+    case "assistant.detail.get": {
+      sendEvent(ws, {
+        type: "assistant.detail.loaded",
+        requestId: command.requestId,
+        payload: {
+          detail: repository.getAssistantDetail({ assistantId: command.payload.assistantId })
+        }
+      });
+      return;
+    }
+    case "assistant.thread.messages.list": {
+      const messages = repository.listAssistantThreadMessages(command.payload);
+      sendEvent(ws, {
+        type: "assistant.thread.messages.listed",
+        requestId: command.requestId,
+        payload: {
+          assistantId: command.payload.assistantId,
+          threadId: messages.threadId,
+          messages
+        }
+      });
+      return;
+    }
+    case "assistant.logs.list": {
+      sendEvent(ws, {
+        type: "assistant.logs.listed",
+        requestId: command.requestId,
+        payload: {
+          assistantId: command.payload.assistantId,
+          logs: repository.listAssistantLogs(command.payload)
+        }
+      });
+      return;
+    }
+    case "assistant.todos.list": {
+      sendEvent(ws, {
+        type: "assistant.todos.listed",
+        requestId: command.requestId,
+        payload: {
+          assistantId: command.payload.assistantId,
+          todos: repository.listAssistantTodos(command.payload)
+        }
+      });
+      return;
+    }
+    case "assistant.learnings.list": {
+      sendEvent(ws, {
+        type: "assistant.learnings.listed",
+        requestId: command.requestId,
+        payload: {
+          assistantId: command.payload.assistantId,
+          learnings: repository.listAssistantLearnings(command.payload)
+        }
+      });
+      return;
+    }
+    case "assistant.questions.list": {
+      sendEvent(ws, {
+        type: "assistant.questions.listed",
+        requestId: command.requestId,
+        payload: {
+          assistantId: command.payload.assistantId,
+          questions: repository.listAssistantQuestions(command.payload)
+        }
+      });
       return;
     }
     case "assistant.bootstrap.retry": {
@@ -3595,6 +4038,57 @@ async function handleCommand(
       assertAssistantRunnableForLaunch(repository, command.payload.assistantId);
       void assistantManager.retryBootstrap(command.payload.assistantId);
       emitAssistantsUpdatedToAll(connections, repository.loadAssistantsState());
+      return;
+    }
+    case "assistant.jobs.bootstrap": {
+      assertGlobalExecutionNotPaused(repository);
+      const assistant = assertAssistantRunnableForLaunch(repository, command.payload.assistantId);
+      const projectId = assistant.scope === "project" ? assistant.projectId : command.payload.projectId;
+      if (!projectId) {
+        throw new Error("Project is required to bootstrap jobs for a global assistant");
+      }
+      if (repository.loadBackgroundJobsState().jobs.some((job) => job.assistantId === assistant.id)) {
+        emitAssistantsUpdatedToAll(connections, repository.loadAssistantsState());
+        emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
+        emitNotificationsUpdatedToAll(connections, command.requestId, repository.loadNotificationInboxState());
+        return;
+      }
+      const project = runtime.getProject(projectId);
+      const providerBrand = assistant.providerBrand ?? repository.getProviderBrand();
+      const agentRuntime = runtimeRegistry.get(assistant.agentId);
+      const jobs = buildAssistantJobBootstrapJobs({
+        assistant,
+        projectId,
+        providerExecutionModelId: project.session.executionModelId,
+        projectModeId: project.selectedModeId
+      }).map((job) => ({
+        ...job,
+        riskLevel: computeBackgroundJobRiskLevel(job, project, runtime)
+      }));
+      createOrUpdateAssistantWithJobs({
+        repository,
+        assistant,
+        jobs,
+        launchDefaults: {
+          providerBrand,
+          planningModelId: agentRuntime.getDefaultPlanningModelId(providerBrand),
+          executionModelId: assistant.executionModelId ?? project.session.executionModelId,
+          reasoningStrength: assistant.reasoningStrength,
+          fastMode: assistant.fastMode,
+          modeId: assistant.modeId ?? project.selectedModeId
+        },
+        emit: createAssistantFactoryEvents(connections)
+      });
+      const questionId = createAssistantJobBootstrapQuestionId(assistant.id);
+      const question = repository.getAssistantQuestions(assistant.id).find((entry) => entry.id === questionId);
+      if (question && (question.status === "pending" || question.status === "deferred")) {
+        repository.answerAssistantQuestion(assistant.id, question.id, "Yes, create default assistant-owned jobs.");
+      }
+      archiveNotificationWithLegacyId(repository, ["assistant-question", assistant.id, questionId]);
+      syncAssistantQuestionNotifications(repository);
+      emitAssistantsUpdatedToAll(connections, repository.loadAssistantsState());
+      emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
+      emitNotificationsUpdatedToAll(connections, command.requestId, repository.loadNotificationInboxState());
       return;
     }
     case "assistant.circuit-breaker.retry": {
@@ -5352,6 +5846,7 @@ async function releaseDeferredExecutionState(
   }
 
   for (const assistant of repository.getAssistantsAwaitingBootstrap()) {
+    assistantManager.scheduleJobBootstrapCheck(assistant.id, "pending-bootstrap-release");
     void assistantManager.bootstrapAssistant(assistant.id);
   }
 
@@ -5359,7 +5854,7 @@ async function releaseDeferredExecutionState(
 
   await Promise.all(
     repository.getQueuedBackgroundJobRuns().map((queuedRun) =>
-      launchBackgroundJobRun(
+      safeLaunchBackgroundJobRun(
         connections,
         repository,
         runtimeRegistry,
@@ -7235,7 +7730,7 @@ function isTransientSubagentError(error: Error) {
 
 function sendEvent(ws: Bun.ServerWebSocket<HarnessConnection>, event: ServerEvent) {
   guardedWebsocketSend(ws, JSON.stringify(event), {
-    maxQueuedBytes: 256 * 1024,
+    maxQueuedBytes: CONTROL_WEBSOCKET_MAX_QUEUED_BYTES,
     slowCloseReason: "Control websocket client is too slow"
   });
 }
@@ -7295,6 +7790,102 @@ function emitSetupUpdatedToAll(
       }
     });
   }
+}
+
+function emitTerminalShellsUpdatedToAll(
+  connections: Set<Bun.ServerWebSocket<HarnessConnection>>,
+  input: { requestId: string; shells: TerminalShell[] }
+) {
+  emitControlEvent(connections, {
+    type: "terminal.shells.updated",
+    requestId: input.requestId,
+    payload: {
+      shells: input.shells
+    }
+  });
+}
+
+function emitTerminalSessionsUpdatedToAll(
+  connections: Set<Bun.ServerWebSocket<HarnessConnection>>,
+  input: { requestId: string; sessions: TerminalSession[]; preferences: TerminalPreferences; layout?: TerminalPaneLayout }
+) {
+  emitControlEvent(connections, {
+    type: "terminal.sessions.updated",
+    requestId: input.requestId,
+    payload: {
+      sessions: input.sessions,
+      preferences: input.preferences,
+      layout: input.layout
+    }
+  });
+}
+
+function emitTerminalSessionCreatedToAll(
+  connections: Set<Bun.ServerWebSocket<HarnessConnection>>,
+  input: { requestId: string; session: TerminalSession }
+) {
+  emitControlEvent(connections, {
+    type: "terminal.session.created",
+    requestId: input.requestId,
+    payload: {
+      session: input.session
+    }
+  });
+}
+
+function emitTerminalSessionUpdatedToAll(
+  connections: Set<Bun.ServerWebSocket<HarnessConnection>>,
+  input: { requestId: string; session: TerminalSession }
+) {
+  emitControlEvent(connections, {
+    type: "terminal.session.updated",
+    requestId: input.requestId,
+    payload: {
+      session: input.session
+    }
+  });
+}
+
+function emitTerminalSessionExitedToAll(
+  connections: Set<Bun.ServerWebSocket<HarnessConnection>>,
+  input: { requestId: string; session: TerminalSession }
+) {
+  emitControlEvent(connections, {
+    type: "terminal.session.exited",
+    requestId: input.requestId,
+    payload: {
+      session: input.session
+    }
+  });
+}
+
+function emitTerminalAttachReadyToAll(
+  connections: Set<Bun.ServerWebSocket<HarnessConnection>>,
+  input: { requestId: string; sessionId: string; attachToken: TerminalAttachToken; snapshot: string }
+) {
+  emitControlEvent(connections, {
+    type: "terminal.session.attach-ready",
+    requestId: input.requestId,
+    payload: {
+      sessionId: input.sessionId,
+      attachToken: input.attachToken,
+      snapshot: input.snapshot
+    }
+  });
+}
+
+function emitTerminalPreferencesSavedToAll(
+  connections: Set<Bun.ServerWebSocket<HarnessConnection>>,
+  input: { requestId: string; preferences: TerminalPreferences; layout?: TerminalPaneLayout }
+) {
+  emitControlEvent(connections, {
+    type: "terminal.preferences.saved",
+    requestId: input.requestId,
+    payload: {
+      preferences: input.preferences,
+      layout: input.layout
+    }
+  });
 }
 
 function emitCliSessionStartedToAll(
@@ -7672,10 +8263,12 @@ function createAssistantFromThreadIntent(input: {
   purpose?: string;
   agentId?: AgentId;
   providerBrand?: ProviderBrand;
+  planningModelId?: string;
   modeId?: string;
   executionModelId?: string;
   reasoningStrength?: ComposerReasoningStrength;
   fastMode?: boolean;
+  emit?: AssistantFactoryEvents;
 }): AssistantCreationResult {
   const project = input.runtime.getProject(input.projectId);
   if (project.activeThreadId !== input.threadId && !project.threads.some((thread) => thread.id === input.threadId)) {
@@ -7684,7 +8277,23 @@ function createAssistantFromThreadIntent(input: {
 
   const existing = findExistingAssistantForThreadIntent(input.repository, input.projectId, input.name, input.scope);
   if (existing) {
-    return { assistant: existing, created: false };
+    return {
+      assistant: createOrUpdateAssistantWithJobs({
+        repository: input.repository,
+        assistant: existing,
+        assetRefs: input.repository.getAssistantAssetRefs(existing.id),
+        launchDefaults: {
+          providerBrand: input.providerBrand ?? input.repository.getProviderBrand(),
+          planningModelId: input.planningModelId,
+          executionModelId: input.executionModelId,
+          reasoningStrength: input.reasoningStrength,
+          fastMode: input.fastMode,
+          modeId: input.modeId
+        },
+        emit: input.emit
+      }).assistant,
+      created: false
+    };
   }
 
   const now = new Date().toISOString();
@@ -7729,7 +8338,19 @@ function createAssistantFromThreadIntent(input: {
   };
 
   return {
-    assistant: input.repository.saveAssistant(assistant),
+    assistant: createOrUpdateAssistantWithJobs({
+      repository: input.repository,
+      assistant,
+      launchDefaults: {
+        providerBrand: input.providerBrand ?? input.repository.getProviderBrand(),
+        planningModelId: input.planningModelId,
+        executionModelId: input.executionModelId,
+        reasoningStrength: input.reasoningStrength,
+        fastMode: input.fastMode,
+        modeId: input.modeId
+      },
+      emit: input.emit
+    }).assistant,
     created: true
   };
 }
@@ -7832,6 +8453,8 @@ async function executeAssistantChatAction(input: {
       }
       const now = new Date().toISOString();
       const project = input.runtime.getProject(input.projectId);
+      const providerBrand = assistant.providerBrand ?? repository.getProviderBrand();
+      const agentRuntime = input.runtimeRegistry.get(assistant.agentId);
       const job: BackgroundJob = {
         id: createBackgroundJobId(),
         projectId: input.projectId,
@@ -7857,13 +8480,33 @@ async function executeAssistantChatAction(input: {
         createdAt: now,
         updatedAt: now
       };
-      repository.saveBackgroundJob({
-        ...job,
-        riskLevel: computeBackgroundJobRiskLevel(job, project, input.runtime)
+      const saved = createOrUpdateAssistantWithJobs({
+        repository,
+        assistant,
+        jobs: [
+          {
+            ...job,
+            riskLevel: computeBackgroundJobRiskLevel(job, project, input.runtime)
+          }
+        ],
+        launchDefaults: {
+          providerBrand,
+          planningModelId: agentRuntime.getDefaultPlanningModelId(providerBrand),
+          executionModelId: assistant.executionModelId ?? project.session.executionModelId,
+          reasoningStrength: assistant.reasoningStrength,
+          fastMode: assistant.fastMode,
+          modeId: assistant.modeId ?? project.selectedModeId
+        },
+        emit: createAssistantFactoryEvents(input.connections)
       });
-      emitBackgroundJobsUpdatedToAll(input.connections, repository.loadBackgroundJobsState());
       jobId = job.id;
-      rows.push({ label: "Job", value: job.name }, { label: "Schedule", value: scheduleText });
+      const savedJob = saved.jobs[0] ?? job;
+      const profile = savedJob.definition.kind === "ai-routine" ? savedJob.definition.launchProfile : undefined;
+      rows.push(
+        { label: "Job", value: savedJob.name },
+        { label: "Schedule", value: scheduleText },
+        { label: "Launch", value: formatLaunchProfileSummary(profile) }
+      );
       content = `Created assistant-owned job "${job.name}" for ${assistant.name}.`;
       break;
     }
@@ -7902,7 +8545,7 @@ async function executeAssistantChatAction(input: {
       repository.appendBackgroundJobRunEvent(queuedRun.id, "queued", "Assistant job queued from project chat");
       emitBackgroundJobsUpdatedToAll(input.connections, repository.loadBackgroundJobsState());
       await emitBackgroundJobRunUpdatedToAll(input.connections, queuedRun);
-      await launchBackgroundJobRun(
+      await safeLaunchBackgroundJobRun(
         input.connections,
         repository,
         input.runtimeRegistry,
@@ -8110,6 +8753,26 @@ function summarizeAssistantActionText(value: string, maxLength: number) {
   return normalized.length > maxLength ? `${normalized.slice(0, Math.max(0, maxLength - 3))}...` : normalized || "Assistant job";
 }
 
+function formatLaunchProfileSummary(profile: {
+  agentId?: string;
+  providerBrand?: string;
+  executionModelId?: string;
+  reasoningStrength?: string;
+  fastMode?: boolean;
+} | undefined) {
+  if (!profile) {
+    return "project defaults";
+  }
+  const parts = [
+    profile.agentId,
+    profile.providerBrand,
+    profile.executionModelId,
+    profile.reasoningStrength,
+    profile.fastMode ? "fast" : undefined
+  ].filter(Boolean);
+  return parts.join(" / ") || "project defaults";
+}
+
 function inferAssistantNameFromPrompt(sourcePrompt: string) {
   const intent = detectAssistantChatIntent(sourcePrompt);
   if (intent.kind === "create-ready" || intent.kind === "create-needs-purpose") {
@@ -8203,15 +8866,34 @@ function emitAssistantsUpdatedToAll(
   connections: Set<Bun.ServerWebSocket<HarnessConnection>>,
   assistants: ReturnType<WorkspaceRepository["loadAssistantsState"]>
 ) {
+  const summaryState = {
+    ...assistants,
+    threads: [],
+    todos: [],
+    learnings: [],
+    questions: [],
+    logs: [],
+    assetRefs: []
+  };
   for (const connection of connections) {
     sendEvent(connection, {
       type: "assistants.updated",
       requestId: `assistant:auto:${crypto.randomUUID()}`,
       payload: {
-        assistants
+        assistants: summaryState
       }
     });
   }
+}
+
+function createAssistantFactoryEvents(
+  connections: Set<Bun.ServerWebSocket<HarnessConnection>>
+): AssistantFactoryEvents {
+  return {
+    assistantsUpdated: (state) => emitAssistantsUpdatedToAll(connections, state),
+    assistantCreatedCard: (assistant) => emitAssistantCreatedCardToAll(connections, assistant),
+    backgroundJobsUpdated: (state) => emitBackgroundJobsUpdatedToAll(connections, state)
+  };
 }
 
 function emitAssistantChatDeltaToAll(
@@ -8322,6 +9004,10 @@ function emitBackgroundJobsUpdatedToAll(
   backgroundJobs: BackgroundJobsState
 ) {
   for (const connection of connections) {
+    if (connection.data?.kind && connection.data.kind !== "control") {
+      continue;
+    }
+
     sendEvent(connection, {
       type: "background-jobs.updated",
       requestId: `bg:auto:${crypto.randomUUID()}`,
@@ -8408,7 +9094,7 @@ async function resumeAndRepairBackgroundJobRuns(
       resumeAttemptCount: (run.resumeAttemptCount ?? 0) + 1
     });
     await emitBackgroundJobRunUpdatedToAll(connections, resumedRun);
-    await launchBackgroundJobRun(
+    await safeLaunchBackgroundJobRun(
       connections,
       repository,
       runtimeRegistry,
@@ -8533,6 +9219,55 @@ function formatActiveBackgroundRunError(run: BackgroundJobRun) {
       ? `; controller lease active until ${run.controllerLeaseExpiresAt}`
       : "";
   return `Background job already has active run ${run.id} in status ${run.status}${leaseDetail}${detail ? `: ${detail}` : ""}`;
+}
+
+async function stopBackgroundRunsForJob(input: {
+  ws: Bun.ServerWebSocket<HarnessConnection>;
+  requestId: string;
+  repository: WorkspaceRepository;
+  runtime: WorkspaceRuntimeStore;
+  connections: Set<Bun.ServerWebSocket<HarnessConnection>>;
+  backgroundRunControllers: Map<string, BackgroundRunControl>;
+  jobId: string;
+  runId?: string;
+  reason: string;
+}) {
+  const activeRuns = input.repository
+    .getActiveBackgroundJobRuns(input.jobId)
+    .filter((run) => input.runId === undefined || run.id === input.runId);
+  const stoppedRuns: BackgroundJobRun[] = [];
+  for (const existingRun of activeRuns) {
+    const control = input.backgroundRunControllers.get(existingRun.id);
+    const updatedRun = input.repository.setBackgroundJobRunStatus(existingRun.id, "cancelled", {
+      failureMessage: input.reason,
+      failureCategory: "manual-abort"
+    });
+    if (existingRun.linkedAgentRunId) {
+      const stoppedProject = input.repository.setAgentRunStatus(
+        existingRun.projectId,
+        existingRun.linkedAgentRunId,
+        "stopped",
+        input.reason
+      );
+      input.runtime.upsertPersistedProject(stoppedProject);
+      emitRunUpdatedById(
+        input.ws,
+        input.requestId,
+        input.repository,
+        existingRun.projectId,
+        existingRun.linkedAgentRunId,
+        input.connections
+      );
+      scheduleBranchfsRetentionPrune(input.runtime.getProject(existingRun.projectId).rootPath);
+    }
+    input.repository.appendBackgroundJobRunEvent(existingRun.id, "cancelled", "Background run cancelled", input.reason);
+    saveBackgroundRunStatusNotification(input.repository, updatedRun);
+    abortBackgroundRunControl(control);
+    input.backgroundRunControllers.delete(existingRun.id);
+    await emitBackgroundJobRunUpdatedToAll(input.connections, updatedRun);
+    stoppedRuns.push(updatedRun);
+  }
+  return stoppedRuns;
 }
 
 async function finalizeAutoResolvedAssistantQuestionRun(
@@ -8898,6 +9633,129 @@ function backgroundRunNotificationMeta(
   }
 }
 
+function resolveBackgroundRunLaunchProfile(input: {
+  repository: WorkspaceRepository;
+  runtimeRegistry: AgentRuntimeRegistry;
+  runtime: WorkspaceRuntimeStore;
+  job: BackgroundJob;
+  assistant?: Assistant;
+  project: WorkspaceProjectState;
+}) {
+  const snapshot = input.job.definition.kind === "ai-routine" ? input.job.definition.launchProfile : undefined;
+  const fallbacks: string[] = [];
+  const projectRuntime = resolveProjectAgentRuntime(input.runtimeRegistry, input.project);
+  let agentRuntime: AgentRuntime = projectRuntime;
+  const requestedAgentId = snapshot?.agentId ?? input.assistant?.agentId;
+  if (requestedAgentId) {
+    try {
+      agentRuntime = input.runtimeRegistry.get(requestedAgentId);
+    } catch {
+      fallbacks.push(`${requestedAgentId} unavailable; using ${projectRuntime.id}.`);
+    }
+  }
+
+  const providerBrand = snapshot?.providerBrand ?? input.assistant?.providerBrand ?? input.repository.getProviderBrand();
+  return {
+    runtime: agentRuntime,
+    providerBrand,
+    planningModelId: snapshot?.planningModelId,
+    executionModelId:
+      snapshot?.executionModelId ??
+      (input.job.definition.kind === "ai-routine" ? input.job.definition.executionModelId : undefined) ??
+      input.assistant?.executionModelId,
+    reasoningStrength:
+      snapshot?.reasoningStrength ??
+      (input.job.definition.kind === "ai-routine" ? input.job.definition.reasoningStrength : undefined) ??
+      input.assistant?.reasoningStrength,
+    fastMode:
+      snapshot?.fastMode ??
+      (input.job.definition.kind === "ai-routine" ? input.job.definition.fastMode : undefined) ??
+      input.assistant?.fastMode,
+    modeId: snapshot?.modeId ?? (input.job.definition.kind === "ai-routine" ? input.job.definition.modeId : undefined) ?? input.assistant?.modeId,
+    fallbacks
+  };
+}
+
+function formatBackgroundLaunchProfileDetail(run: BackgroundJobRun) {
+  return [
+    `agent=${run.agentId ?? "default"}`,
+    `provider=${run.providerBrand ?? "default"}`,
+    `planning=${run.planningModelId ?? "default"}`,
+    `execution=${run.executionModelId ?? "default"}`,
+    `reasoning=${run.reasoningStrength ?? "default"}`,
+    `fastMode=${run.fastMode === undefined ? "default" : String(run.fastMode)}`
+  ].join(" ");
+}
+
+async function safeLaunchBackgroundJobRun(...args: Parameters<typeof launchBackgroundJobRun>) {
+  const [connections, repository, , , backgroundRunControllers, assistantManager, backgroundRunId] = args;
+  try {
+    await launchBackgroundJobRun(...args);
+  } catch (error) {
+    const failureMessage = error instanceof Error ? error.message : "Unknown background job launch failure";
+    debugLog("background.run.launch.unhandled-failure", {
+      backgroundRunId,
+      failureMessage,
+      activeControllers: backgroundRunControllers.size
+    });
+
+    try {
+      const currentRun = repository.getBackgroundJobRun(backgroundRunId);
+      if (!currentRun || !isBackgroundLaunchFailureReportable(currentRun.status)) {
+        return;
+      }
+
+      const failureCategory = classifyRunFailure({ message: failureMessage });
+      const failedRun = repository.setBackgroundJobRunStatus(backgroundRunId, "failed", {
+        failureMessage,
+        failureCategory
+      });
+      repository.appendBackgroundJobRunEvent(backgroundRunId, "failed", "Background run failed", failureMessage);
+      syncBackgroundJobFailureTracking(repository, failedRun);
+      saveBackgroundRunStatusNotification(repository, failedRun);
+
+      const job = repository.getBackgroundJob(currentRun.jobId);
+      if (job) {
+        repository.updateBackgroundJobSchedulerState(job.id, {
+          schedulerStatus: "blocked",
+          schedulerDetail: failureMessage,
+          blockedReason: failureMessage,
+          consecutiveFailureCount: repository.getBackgroundJob(job.id)?.consecutiveFailureCount,
+          backoffUntil: repository.getBackgroundJob(job.id)?.backoffUntil,
+          lastFailureCategory: repository.getBackgroundJob(job.id)?.lastFailureCategory,
+          lastSchedulerCheckAt: new Date().toISOString()
+        });
+      }
+
+      if (job?.assistantId) {
+        await assistantManager.handleBackgroundJobRunOutcome({
+          assistantId: job.assistantId,
+          status: "failed",
+          failureMessage
+        }).catch((assistantError: unknown) => {
+          debugLog("background.run.launch.assistant-outcome-failed", {
+            backgroundRunId,
+            failureMessage: assistantError instanceof Error ? assistantError.message : String(assistantError)
+          });
+        });
+      }
+
+      emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
+      await emitBackgroundJobRunUpdatedToAll(connections, failedRun);
+      emitNotificationsUpdatedToAll(connections, `bg:auto:${crypto.randomUUID()}`, repository.loadNotificationInboxState());
+    } catch (reportError) {
+      debugLog("background.run.launch.failure-report-failed", {
+        backgroundRunId,
+        failureMessage: reportError instanceof Error ? reportError.message : String(reportError)
+      });
+    }
+  }
+}
+
+function isBackgroundLaunchFailureReportable(status: BackgroundJobRunStatus) {
+  return status === "queued" || status === "awaiting-approval" || status === "awaiting-user-input" || status === "running";
+}
+
 async function launchBackgroundJobRun(
   connections: Set<Bun.ServerWebSocket<HarnessConnection>>,
   repository: WorkspaceRepository,
@@ -9039,18 +9897,22 @@ async function launchBackgroundJobRun(
     await emitBackgroundJobRunUpdatedToAll(connections, startedRun);
     emitNotificationsUpdatedToAll(connections, `bg:auto:${crypto.randomUUID()}`, repository.loadNotificationInboxState());
     const assistant = job.assistantId ? repository.getAssistant(job.assistantId) : undefined;
-    const agentRuntime = assistant
-      ? runtimeRegistry.get(assistant.agentId)
-      : resolveProjectAgentRuntime(runtimeRegistry, repository.getProject(job.projectId));
+    const project = repository.getProject(job.projectId);
+    const launchProfile = resolveBackgroundRunLaunchProfile({
+      repository,
+      runtimeRegistry,
+      runtime,
+      job,
+      assistant,
+      project
+    });
+    const agentRuntime = launchProfile.runtime;
     const agentCapability = agentRuntime.getCapability() ?? (await agentRuntime.refreshCapability());
     assertRuntimeAvailable(agentRuntime, agentCapability);
-    const providerBrand = assistant?.providerBrand ?? repository.getProviderBrand();
-    const project = repository.getProject(job.projectId);
-    const requestedModelId =
-      job.definition.kind === "ai-routine" ? job.definition.executionModelId ?? assistant?.executionModelId : undefined;
-    const requestedReasoningStrength =
-      job.definition.kind === "ai-routine" ? job.definition.reasoningStrength ?? assistant?.reasoningStrength : undefined;
-    const resolvedExecutionModelId =
+    const providerBrand = launchProfile.providerBrand;
+    const requestedModelId = launchProfile.executionModelId;
+    const requestedReasoningStrength = launchProfile.reasoningStrength;
+    const modelResolution =
       job.definition.kind === "ai-routine"
         ? resolveExecutionModelIdForRuntime({
           runtime: agentRuntime,
@@ -9058,20 +9920,56 @@ async function launchBackgroundJobRun(
           providerBrand,
           requestedModelId,
           persistedModelId: project.session.executionModelId
-        }).modelId
-        : agentRuntime.getDefaultExecutionModelId(providerBrand);
+        })
+        : { modelId: agentRuntime.getDefaultExecutionModelId(providerBrand), requestedModelRejected: undefined };
+    const resolvedExecutionModelId = modelResolution.modelId;
+    if (modelResolution.requestedModelRejected) {
+      launchProfile.fallbacks.push(`${modelResolution.requestedModelRejected} unavailable for ${agentRuntime.label}; using ${resolvedExecutionModelId}.`);
+    }
+    const planningModelId = launchProfile.planningModelId ?? agentRuntime.getDefaultPlanningModelId(providerBrand);
+    const diagnosticRun = repository.setBackgroundJobRunLaunchDiagnostics(backgroundRunId, {
+      agentId: agentRuntime.id,
+      providerBrand,
+      planningModelId,
+      executionModelId: resolvedExecutionModelId,
+      reasoningStrength: requestedReasoningStrength,
+      fastMode: launchProfile.fastMode
+    });
+    repository.appendBackgroundJobRunEvent(
+      backgroundRunId,
+      "launch-profile",
+      "Resolved background launch profile",
+      formatBackgroundLaunchProfileDetail(diagnosticRun)
+    );
+    if (launchProfile.fallbacks.length > 0) {
+      repository.appendBackgroundJobRunEvent(backgroundRunId, "launch-profile-fallback", "Launch profile fallback", launchProfile.fallbacks.join("\n"));
+    }
+    const jobForRun =
+      job.definition.kind === "ai-routine"
+        ? {
+            ...job,
+            definition: {
+              ...job.definition,
+              modeId: job.definition.modeId ?? launchProfile.modeId,
+              executionModelId: job.definition.executionModelId ?? resolvedExecutionModelId,
+              reasoningStrength: job.definition.reasoningStrength ?? requestedReasoningStrength,
+              fastMode: job.definition.fastMode ?? launchProfile.fastMode
+            }
+          }
+        : job;
     const nextRun = await executeBackgroundJobRun({
       repository,
       adapter: agentRuntime.getAdapter(),
       agentId: agentRuntime.id,
-      job,
+      job: jobForRun,
       run,
       controllerInstanceId,
       controllerLeaseId,
       providerBrand,
-      planningModelId: agentRuntime.getDefaultPlanningModelId(providerBrand),
+      planningModelId,
       executionModelId: resolvedExecutionModelId,
       reasoningStrength: requestedReasoningStrength,
+      fastMode: launchProfile.fastMode,
       debugEnabled: repository.getDebugEnabledDefault(),
       abortSignal: abortController.signal,
       onRunUpdated(updatedRun) {
@@ -9118,6 +10016,35 @@ async function launchBackgroundJobRun(
     emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
     await emitBackgroundJobRunUpdatedToAll(connections, nextRun);
     emitNotificationsUpdatedToAll(connections, `bg:auto:${crypto.randomUUID()}`, repository.loadNotificationInboxState());
+    if (job.assistantId && nextRun.status === "partial-complete" && nextRun.triggerSource !== "retry") {
+      const retryRun = repository.createBackgroundJobRun({
+        jobId: job.id,
+        projectId: job.projectId,
+        assistantId: job.assistantId,
+        automationThreadId: job.automationThreadId,
+        triggerSource: "retry",
+        status: "queued",
+        riskLevel: job.riskLevel,
+        approvalStatus: nextRun.approvalStatus === "pending" ? "pending" : "approved"
+      });
+      repository.appendBackgroundJobRunEvent(
+        retryRun.id,
+        "queued",
+        "Queued one recovery retry after partial assistant job",
+        nextRun.failureMessage ?? nextRun.summary
+      );
+      emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
+      await emitBackgroundJobRunUpdatedToAll(connections, retryRun);
+      await safeLaunchBackgroundJobRun(
+        connections,
+        repository,
+        runtimeRegistry,
+        runtime,
+        backgroundRunControllers,
+        assistantManager,
+        retryRun.id
+      );
+    }
   } catch (error) {
     const currentRun = repository.getBackgroundJobRun(backgroundRunId);
     if (!currentRun || !["queued", "awaiting-approval", "awaiting-user-input", "running"].includes(currentRun.status)) {

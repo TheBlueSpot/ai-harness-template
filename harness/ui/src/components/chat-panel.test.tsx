@@ -16,7 +16,7 @@ import {
   createRunFixture,
   createViewProjectFixture
 } from "../utils/tests/test-fixtures";
-import { createChatMessage, createEmptySession } from "../../../shared/protocol";
+import { createChatMessage, createEmptySession, type BackgroundJob, type BackgroundJobRun } from "../../../shared/protocol";
 
 createUiTest("ChatPanel", () => {
   beforeEach(() => {
@@ -446,6 +446,34 @@ createUiTest("ChatPanel", () => {
 
     expect(commands.length).toBe(1);
     expect((commands[0] as { type: string }).type).toBe("chat.send");
+  });
+
+  it("keeps the draft when a top-level chat send fails", () => {
+    const project = createViewProjectFixture({
+      id: "project-send-failed",
+      draft: "simple task"
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        hasUsableApiKey: true,
+        hasUsableOpenAiApiKey: true,
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+    harnessStore.actions.setCommandDispatcher(() => {
+      throw new Error("Socket closed");
+    });
+
+    render(() => <ChatPanel />);
+    const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
+    fireEvent.click(screen.getByRole("button", { name: "Send task to Pi" }));
+
+    expect(textbox.value).toBe("simple task");
+    expect(harnessStore.state.workspace.projects[0]?.draft).toBe("simple task");
+    expect(toastStore.toasts.some((toast) => toast.title === "Command failed")).toBe(true);
   });
 
   it("switches Pi to an alternate usable provider key before sending", () => {
@@ -958,6 +986,34 @@ it("updates composer effort label and sends reasoning plus fast mode", () => {
 
     expect(commands.length).toBe(1);
     expect((commands[0] as { type: string }).type).toBe("chat.send");
+  });
+
+  it("opens composer file references in the IDE on control click", () => {
+    const draft = "inspect @harness/ui/src/app.tsx before run";
+    const project = createViewProjectFixture({
+      id: "project-composer-file-link",
+      draft,
+      filePaths: ["harness/ui/src/app.tsx"]
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ChatPanel />);
+    const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
+    const position = draft.indexOf("app.tsx");
+    textbox.setSelectionRange(position, position);
+    fireEvent.click(textbox, { ctrlKey: true });
+
+    expect(harnessStore.state.activeSurface).toBe("ide");
+    expect(harnessStore.state.ideFileOpenRequest).toMatchObject({
+      path: "harness/ui/src/app.tsx"
+    });
   });
 
   it("shows skill lookup after slash and inserts the selected skill", () => {
@@ -1736,6 +1792,34 @@ it("updates composer effort label and sends reasoning plus fast mode", () => {
     expect(screen.getByRole("link", { name: "docs" }).getAttribute("target")).toBe("_blank");
   });
 
+  it("opens transcript file references in the IDE on control click", () => {
+    const project = createViewProjectFixture({
+      id: "project-file-link",
+      filePaths: ["harness/ui/src/app.tsx"],
+      session: {
+        ...createEmptySession("thread-1"),
+        messages: [createChatMessage("assistant", "Changed harness/ui/src/app.tsx:12.")]
+      }
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ChatPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "harness/ui/src/app.tsx:12" }), { ctrlKey: true });
+
+    expect(harnessStore.state.activeSurface).toBe("ide");
+    expect(harnessStore.state.ideFileOpenRequest).toMatchObject({
+      path: "harness/ui/src/app.tsx",
+      line: 12
+    });
+  });
+
   it("virtualizes long transcript lists at the latest rows", () => {
     const project = createViewProjectFixture({
       id: "project-long-transcript",
@@ -2178,6 +2262,75 @@ it("updates composer effort label and sends reasoning plus fast mode", () => {
     expect(screen.getByText("Next: Run focused tests")).not.toBeNull();
     expect(screen.getByText("Proof bundle")).not.toBeNull();
     expect(screen.getByText("Evidence refs: 2")).not.toBeNull();
+  });
+
+  it("opens the linked background job from run details", () => {
+    const now = new Date().toISOString();
+    const project = createViewProjectFixture({
+      id: "project-run-job-link",
+      activeRun: createRunFixture({ id: "agent-run-linked" })
+    });
+    const job: BackgroundJob = {
+      id: "job-linked",
+      projectId: project.id,
+      automationThreadId: "thread-job",
+      kind: "ai-routine",
+      name: "Linked job",
+      status: "enabled",
+      riskLevel: "safe",
+      definition: {
+        kind: "ai-routine",
+        prompt: "Run linked work"
+      },
+      schedule: {
+        type: "one-off",
+        runAt: now,
+        sourceText: "manual"
+      },
+      scheduleInput: "Manual",
+      createdAt: now,
+      updatedAt: now
+    };
+    const run: BackgroundJobRun = {
+      id: "background-run-linked",
+      jobId: job.id,
+      projectId: project.id,
+      automationThreadId: "thread-job",
+      triggerSource: "manual",
+      status: "running",
+      riskLevel: "safe",
+      approvalStatus: "approved",
+      skippedOccurrenceCount: 0,
+      linkedAgentRunId: "agent-run-linked",
+      queuedAt: now,
+      createdAt: now,
+      updatedAt: now,
+      events: []
+    };
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        chatPaneTab: "run",
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        },
+        backgroundJobs: {
+          jobs: [job],
+          runs: [run],
+          templates: []
+        }
+      })
+    );
+
+    render(() => <ChatPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "Open background job for this run" }));
+
+    expect(harnessStore.state.activeSurface).toBe("background-jobs");
+    expect(harnessStore.state.jobsPanePreferences).toMatchObject({
+      segment: "inbox",
+      selectedJobId: "job-linked",
+      selectedRunId: "background-run-linked"
+    });
   });
 
   it("builds persisted ready plans from transcript run summaries", () => {

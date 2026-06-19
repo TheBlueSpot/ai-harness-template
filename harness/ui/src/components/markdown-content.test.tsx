@@ -129,4 +129,25 @@ Footnote here.[^1]
     expect(toastStore.toasts[0]?.title).toBe("Copy failed");
   });
 
+  it("opens detected file paths on control click", () => {
+    const opened: unknown[] = [];
+    render(() => (
+      <MarkdownContent
+        content={"Changed harness/ui/src/app.tsx:12:4."}
+        fileLinks={{
+          rootPath: "C:\\repo",
+          filePaths: ["harness/ui/src/app.tsx"],
+          onOpenFile: (target) => opened.push(target)
+        }}
+      />
+    ));
+
+    const fileLink = screen.getByRole("button", { name: "harness/ui/src/app.tsx:12:4" });
+    fireEvent.click(fileLink);
+    expect(opened).toEqual([]);
+
+    fireEvent.click(fileLink, { ctrlKey: true });
+    expect(opened).toEqual([{ path: "harness/ui/src/app.tsx", line: 12, column: 4 }]);
+  });
+
 });

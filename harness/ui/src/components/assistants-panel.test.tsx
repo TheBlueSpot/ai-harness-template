@@ -131,6 +131,87 @@ createUiTest("AssistantsPanel", () => {
     expect(screen.getByRole("button", { name: "Filter and sort assistants" }).textContent).toContain("2");
   });
 
+  it("shows global and project assistants with the All scope filter", () => {
+    const now = new Date().toISOString();
+    const activeProject = createViewProjectFixture({ id: "project-active-scope" });
+    const otherProject = createViewProjectFixture({ id: "project-other-scope" });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        activeLeftTab: "assistants",
+        activeSurface: "assistants",
+        workspace: {
+          activeProjectId: activeProject.id,
+          projects: [activeProject, otherProject]
+        },
+        assistants: {
+          ...createEmptyAssistantsState(),
+          scopeFilter: "all",
+          assistants: [
+            {
+              id: "assistant-global-scope",
+              name: "Global helper",
+              scope: "global",
+              description: "Shared tasks",
+              personalityPrompt: "Share context",
+              jobPrompt: "Work globally",
+              agentId: "pi",
+              runState: "active",
+              bootstrapState: "completed",
+              failureStreakCount: 0,
+              circuitBreakerState: "closed",
+              unreadQuestionCount: 0,
+              createdAt: now,
+              updatedAt: now
+            },
+            {
+              id: "assistant-active-project-scope",
+              name: "Active project helper",
+              scope: "project",
+              projectId: activeProject.id,
+              description: "Active repo tasks",
+              personalityPrompt: "Work here",
+              jobPrompt: "Handle active project",
+              agentId: "pi",
+              runState: "active",
+              bootstrapState: "completed",
+              failureStreakCount: 0,
+              circuitBreakerState: "closed",
+              unreadQuestionCount: 0,
+              createdAt: now,
+              updatedAt: now
+            },
+            {
+              id: "assistant-other-project-scope",
+              name: "Other project helper",
+              scope: "project",
+              projectId: otherProject.id,
+              description: "Other repo tasks",
+              personalityPrompt: "Work there",
+              jobPrompt: "Handle other project",
+              agentId: "pi",
+              runState: "paused",
+              bootstrapState: "completed",
+              failureStreakCount: 0,
+              circuitBreakerState: "closed",
+              unreadQuestionCount: 0,
+              createdAt: now,
+              updatedAt: now
+            }
+          ]
+        }
+      })
+    );
+
+    render(() => <AssistantsPanel variant="roster" />);
+
+    expect(screen.getByText("Global helper")).toBeTruthy();
+    expect(screen.getByText("Active project helper")).toBeTruthy();
+    expect(screen.getByText("Other project helper")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Create project assistant" })).toBeTruthy();
+    harnessStore.setAssistantScopeFilter("all");
+    expect(readBrowserUiSession().assistantPane?.scopeFilter).toBe("all");
+  });
+
   it("clears assistant bootstrap filter state", () => {
     const now = new Date().toISOString();
     const project = createViewProjectFixture({ id: "project-bootstrap-filter" });
@@ -413,6 +494,7 @@ createUiTest("AssistantsPanel", () => {
           title: "Clean up old task",
           state: "pending",
           sortOrder: 0,
+          workKind: "documentation",
           createdAt: now,
           updatedAt: now
         }
@@ -495,12 +577,56 @@ createUiTest("AssistantsPanel", () => {
         assistantId,
         patch: {
           title: "Write patch test",
-          state: "pending"
+          state: "pending",
+          workKind: "app-code"
         }
       }
     });
     expect((commands[0] as { payload: { todo?: unknown; todoId?: string } }).payload.todo).toBeUndefined();
     expect(typeof (commands[0] as { payload: { todoId?: string } }).payload.todoId).toBe("string");
+  });
+
+  it("renders and updates assistant todo work metadata", () => {
+    const commands: unknown[] = [];
+    const assistantId = "assistant-todo-metadata";
+    const now = new Date(2026, 3, 28, 10, 4).toISOString();
+    seedAssistantDetailState({
+      assistantId,
+      projectId: "project-todo-metadata",
+      selectedTab: "todos",
+      todos: [
+        {
+          id: "todo-metadata",
+          assistantId,
+          title: "Build app shell",
+          state: "pending",
+          sortOrder: 0,
+          source: "assistant",
+          workKind: "app-code",
+          workTarget: "src/app.tsx",
+          createdAt: now,
+          updatedAt: now
+        }
+      ]
+    });
+    captureDispatchedCommands(commands);
+
+    render(() => <AssistantsPanel variant="detail" />);
+
+    expect(screen.getAllByText("app-code").length).toBeGreaterThan(0);
+    expect(screen.getByText("Target: src/app.tsx")).not.toBeNull();
+    fireEvent.change(screen.getByDisplayValue("src/app.tsx"), { target: { value: "src/routes/home.tsx" } });
+
+    expect(commands.at(-1)).toMatchObject({
+      type: "assistant.todo.update",
+      payload: {
+        assistantId,
+        todoId: "todo-metadata",
+        patch: {
+          workTarget: "src/routes/home.tsx"
+        }
+      }
+    });
   });
 
   it("sends reorder commands for assistant todos and learnings", () => {
@@ -512,8 +638,8 @@ createUiTest("AssistantsPanel", () => {
       projectId: "project-reorder-memory",
       selectedTab: "todos",
       todos: [
-        { id: "todo-first", assistantId, title: "First task", state: "pending", sortOrder: 0, createdAt: now, updatedAt: now },
-        { id: "todo-second", assistantId, title: "Second task", state: "pending", sortOrder: 1, createdAt: now, updatedAt: now }
+        { id: "todo-first", assistantId, title: "First task", state: "pending", sortOrder: 0, workKind: "app-code", createdAt: now, updatedAt: now },
+        { id: "todo-second", assistantId, title: "Second task", state: "pending", sortOrder: 1, workKind: "app-code", createdAt: now, updatedAt: now }
       ]
     });
     captureDispatchedCommands(commands);
@@ -819,6 +945,69 @@ createUiTest("AssistantsPanel", () => {
       }
     });
     await waitFor(() => expect(textarea.value).toBe(""));
+  });
+
+  it("keeps assistant chat draft when send fails", () => {
+    const now = new Date(2026, 3, 28, 10, 4).toISOString();
+    const project = createViewProjectFixture({
+      id: "project-assistant-send-failed"
+    });
+    const assistantId = "assistant-send-failed";
+    const assistants = createEmptyAssistantsState();
+    const state: Partial<HarnessViewState> = createHarnessStateFixture({
+      workspace: {
+        activeProjectId: project.id,
+        projects: [project]
+      },
+      assistants: {
+        ...assistants,
+        assistants: [
+          {
+            id: assistantId,
+            name: "Repo helper",
+            scope: "project",
+            projectId: project.id,
+            description: "Handles repo tasks",
+            personalityPrompt: "Be helpful",
+            jobPrompt: "Do repo work",
+            agentId: "pi",
+            modeId: "implement",
+            executionModelId: "openai/gpt-5.4",
+            runState: "active",
+            bootstrapState: "completed",
+            failureStreakCount: 0,
+            circuitBreakerState: "closed",
+            unreadQuestionCount: 0,
+            createdAt: now,
+            updatedAt: now
+          }
+        ],
+        threads: [
+          {
+            id: "assistant-thread-send-failed",
+            assistantId,
+            sessionId: "assistant-session-send-failed",
+            messageCount: 0,
+            messages: [],
+            updatedAt: now
+          }
+        ],
+        selectedAssistantId: assistantId
+      }
+    });
+    seedHarnessStoreForTests(state);
+    harnessStore.actions.setCommandDispatcher(() => {
+      throw new Error("Socket closed");
+    });
+
+    render(() => <AssistantsPanel />);
+
+    const textarea = screen.getByPlaceholderText("Ask Repo helper something.") as HTMLTextAreaElement;
+    fireEvent.input(textarea, { target: { value: "Need status" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send message to assistant" }));
+
+    expect(textarea.value).toBe("Need status");
+    expect(toastStore.toasts.some((toast) => toast.title === "Command failed")).toBe(true);
   });
 
   it("opens circuit breaker dialog and retries without bootstrap command", async () => {

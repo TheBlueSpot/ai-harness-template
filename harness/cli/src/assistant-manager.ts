@@ -1,5 +1,7 @@
 import { modeUsesReadOnlyExecution, resolveModeById } from "../../shared/modes";
 import { z } from "zod";
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 import {
   createAssistantLearningId,
   createAssistantLogEntryId,
@@ -34,6 +36,17 @@ import {
   normalizeQuestionText,
   type AssistantQuestionDecision
 } from "./assistant-question-policy";
+import {
+  ASSISTANT_JOB_BOOTSTRAP_DELAY_MS,
+  buildAssistantJobBootstrapQuestion,
+  shouldAskAssistantJobBootstrap
+} from "./assistant-job-bootstrap";
+import {
+  applyAssistantTodoPolicy,
+  assistantGoalImpliesCoding,
+  isCodingTodoKind,
+  type AssistantTodoDraft
+} from "./assistant-todo-policy";
 
 type AssistantManagerCallbacks = {
   onAssistantsUpdated: () => void;
@@ -53,51 +66,12 @@ type AssistantManagerOptions = {
   reprioritizeDebounceMs?: number;
 };
 
-type ReprioritizeProposal = {
-  summary?: string;
-  todoOrder?: string[];
-  todoUpdates?: Array<{
-    id: string;
-    state?: AssistantTodo["state"];
-    blockerReason?: string;
-  }>;
-  newTodos?: Array<{
-    title: string;
-    description?: string;
-  }>;
-  newLearnings?: Array<{
-    summary: string;
-    source?: string;
-    confidence?: AssistantLearning["confidence"];
-  }>;
-  question?: {
-    prompt: string;
-    linkedTodoIds?: string[];
-  };
-  questions?: Array<{
-    prompt: string;
-    linkedTodoIds?: string[];
-  }>;
-};
-
-type BootstrapProposal = {
-  researchSummary?: string;
-  learnings?: Array<{
-    summary: string;
-    source?: string;
-    confidence?: AssistantLearning["confidence"];
-  }>;
-  initialTodos?: Array<{
-    title: string;
-    description?: string;
-  }>;
-  remainIdle?: boolean;
-};
-
 const ASSISTANT_LEARNING_COMPACTION_FACT_THRESHOLD = 40;
 const ASSISTANT_LEARNING_COMPACTION_CHAR_THRESHOLD = 24000;
 const MAX_PROMPT_ANSWERED_QUESTIONS = 3;
 const MAX_PROMPT_LEARNINGS = 6;
+const DEFAULT_CODING_STACK_QUESTION =
+  "Which stack should this coding project use? Recommended default: TypeScript, Bun runtime, bun test, SQLite via bun:sqlite when backend or persistence is needed, SolidJS + Tailwind when UI is needed, frontend tests using Bun + Happy DOM, with shared primitives first. Reply \"default\" to use that stack or describe another stack.";
 const ASSISTANT_ACTIONS_SKILL_PROMPT =
   "For every assistant-chat or project-chat request addressed to this assistant, invoke the assistant-actions skill before acting when the user's prompt does not already include it.";
 const OPERATIONAL_PROMPT_QUESTION_CATEGORIES = new Set([
@@ -106,6 +80,54 @@ const OPERATIONAL_PROMPT_QUESTION_CATEGORIES = new Set([
   "recovery-or-safety",
   "access-environment"
 ]);
+
+const assistantTodoDraftSchema = z.object({
+  title: boundedLlmString(512),
+  description: boundedLlmString(4000).optional(),
+  workKind: z.enum(["app-code", "automation-code", "documentation", "research", "blocked", "unspecified"]).optional(),
+  workTarget: boundedLlmString(512).optional()
+});
+
+const assistantLearningDraftSchema = z.object({
+  summary: boundedLlmString(4000),
+  source: boundedLlmString(256).optional(),
+  confidence: z.enum(["low", "medium", "high"]).optional()
+});
+
+const assistantQuestionDraftSchema = z.object({
+  prompt: boundedLlmString(8000),
+  linkedTodoIds: boundedLlmStringArray(32, 128).optional()
+});
+
+const bootstrapProposalSchema = z.object({
+  researchSummary: boundedLlmString(4000).optional(),
+  learnings: boundedLlmArray(assistantLearningDraftSchema, 12).optional(),
+  initialTodos: boundedLlmArray(assistantTodoDraftSchema, 12).optional(),
+  remainIdle: z.boolean().optional()
+});
+
+type BootstrapProposal = z.infer<typeof bootstrapProposalSchema>;
+
+const reprioritizeProposalSchema = z.object({
+  summary: boundedLlmString(4000).optional(),
+  todoOrder: boundedLlmStringArray(512, 128).optional(),
+  todoUpdates: boundedLlmArray(
+    z.object({
+      id: boundedLlmString(128),
+      state: z.enum(["pending", "in-progress", "blocked", "completed", "failed", "cancelled"]).optional(),
+      blockerReason: boundedLlmString(4000).optional(),
+      workKind: z.enum(["app-code", "automation-code", "documentation", "research", "blocked", "unspecified"]).optional(),
+      workTarget: boundedLlmString(512).optional()
+    }),
+    64
+  ).optional(),
+  newTodos: boundedLlmArray(assistantTodoDraftSchema, 12).optional(),
+  newLearnings: boundedLlmArray(assistantLearningDraftSchema, 12).optional(),
+  question: assistantQuestionDraftSchema.optional(),
+  questions: boundedLlmArray(assistantQuestionDraftSchema, 3).optional()
+});
+
+type ReprioritizeProposal = z.infer<typeof reprioritizeProposalSchema>;
 
 const assistantLearningCompactionSchema = z.object({
   summary: z
@@ -136,6 +158,7 @@ type ReprioritizeState = {
 export class AssistantManager {
   private readonly reprioritizeStates = new Map<string, ReprioritizeState>();
   private readonly bootstrapFlights = new Map<string, Promise<void>>();
+  private readonly jobBootstrapTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly reprioritizeDebounceMs: number;
 
   constructor(
@@ -200,6 +223,61 @@ export class AssistantManager {
     this.callbacks.onAssistantsUpdated();
   }
 
+  scheduleJobBootstrapCheck(assistantId: string, _reason: string) {
+    const assistant = this.repository.getAssistant(assistantId);
+    if (!assistant || assistant.deletedAt) {
+      return;
+    }
+    const existingTimer = this.jobBootstrapTimers.get(assistantId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+    }
+    const createdAtMs = Date.parse(assistant.createdAt);
+    const delayMs = Number.isFinite(createdAtMs)
+      ? Math.max(0, createdAtMs + ASSISTANT_JOB_BOOTSTRAP_DELAY_MS - Date.now())
+      : ASSISTANT_JOB_BOOTSTRAP_DELAY_MS;
+    const timer = setTimeout(() => {
+      this.jobBootstrapTimers.delete(assistantId);
+      this.maybeAskJobBootstrap(assistantId, "idle-timeout");
+    }, delayMs);
+    unrefTimer(timer);
+    this.jobBootstrapTimers.set(assistantId, timer);
+  }
+
+  recoverIdleJobBootstrapChecks(now: Date = new Date()) {
+    for (const assistant of this.repository.loadAssistantsState().assistants) {
+      if (shouldAskAssistantJobBootstrap(this.repository, assistant, now)) {
+        this.saveJobBootstrapQuestion(assistant);
+        continue;
+      }
+      if (!assistant.deletedAt && assistant.runState === "active" && assistant.circuitBreakerState !== "tripped") {
+        this.scheduleJobBootstrapCheck(assistant.id, "startup-recovery");
+      }
+    }
+  }
+
+  maybeAskJobBootstrap(assistantId: string, _reason: string, options: { immediate?: boolean } = {}) {
+    const assistant = this.repository.getAssistant(assistantId);
+    if (!assistant || !shouldAskAssistantJobBootstrap(this.repository, assistant, new Date(), options)) {
+      return undefined;
+    }
+    return this.saveJobBootstrapQuestion(assistant);
+  }
+
+  private saveJobBootstrapQuestion(assistant: Assistant) {
+    const question = this.repository.saveAssistantQuestion(
+      buildAssistantJobBootstrapQuestion(assistant, this.repository.getGlobalExecutionPaused() ? "deferred" : "pending")
+    );
+    this.appendLog({
+      assistantId: assistant.id,
+      level: "info",
+      summary: "Assistant job bootstrap offered",
+      detail: "Assistant has no background jobs after its initial idle window."
+    });
+    this.callbacks.onAssistantsUpdated();
+    return question;
+  }
+
   private async runBootstrapAssistant(assistantId: string, attemptId: string) {
     let assistant: Assistant;
     try {
@@ -226,10 +304,14 @@ export class AssistantManager {
 
     try {
       const runtime = await this.resolveRuntime(assistant);
-      const proposal = await this.runJsonPrompt<BootstrapProposal>(runtime.adapter, {
+      const proposal = await this.runProposalPrompt(runtime.adapter, {
         assistant,
         prompt: buildBootstrapPrompt(assistant),
-        readOnly: true
+        readOnly: true,
+        schema: bootstrapProposalSchema,
+        repairInstruction:
+          "Previous response failed schema validation. Return only valid JSON with researchSummary, learnings, initialTodos, and remainIdle.",
+        errorMessage: "Assistant bootstrap payload invalid"
       });
 
       if (this.repository.getAssistant(assistantId)?.bootstrapAttemptId !== attemptId) {
@@ -259,8 +341,13 @@ export class AssistantManager {
       }
       await this.maybeCompactAssistantLearnings(assistantId, "bootstrap");
 
-      const todos = (proposal?.initialTodos ?? []).filter((todo) => todo.title.trim().length > 0).slice(0, 8);
+      const todos = applyAssistantTodoPolicy({
+        assistant,
+        existingTodos: this.repository.getAssistantTodos(assistantId),
+        drafts: proposal?.initialTodos ?? []
+      }).slice(0, 8);
       todos.forEach((todo, index) => {
+        this.maybeAskDefaultStackPreference(assistantId, todo);
         this.repository.saveAssistantTodo({
           id: createAssistantTodoId(),
           assistantId,
@@ -269,6 +356,8 @@ export class AssistantManager {
           state: "pending",
           sortOrder: index,
           source: "bootstrap",
+          workKind: todo.workKind,
+          workTarget: todo.workTarget,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
         });
@@ -427,6 +516,16 @@ export class AssistantManager {
       confidence: "high",
       createdAt: new Date().toISOString()
     });
+    if (isDefaultCodingStackQuestion(question.prompt)) {
+      this.repository.saveAssistantLearning({
+        id: createAssistantLearningId(),
+        assistantId,
+        summary: `Coding stack preference: ${summarize(content.trim() || "default", 240)}.`,
+        source: "stack-preference",
+        confidence: "high",
+        createdAt: new Date().toISOString()
+      });
+    }
     await this.maybeCompactAssistantLearnings(assistantId, "question-answer");
     this.callbacks.onAssistantsUpdated();
     if (options.reprioritize !== false) {
@@ -438,6 +537,7 @@ export class AssistantManager {
   async retryBootstrap(assistantId: string) {
     const assistant = this.repository.getAssistant(assistantId);
     await this.bootstrapAssistant(assistantId, { force: assistant?.bootstrapState !== "running" });
+    this.maybeAskJobBootstrap(assistantId, "manual-bootstrap", { immediate: true });
   }
 
   async recoverAssistant(assistantId: string) {
@@ -481,6 +581,12 @@ export class AssistantManager {
         summary: "Assistant job succeeded",
         detail: input.summary
       });
+      this.appendLog({
+        assistantId: input.assistantId,
+        level: "warning",
+        summary: "Assistant job state unchanged",
+        detail: "No assistant todo, learning, or question delta was needed after this job."
+      });
       this.callbacks.onAssistantsUpdated();
       this.scheduleReprioritize(input.assistantId, "job-succeeded");
       return { blocked: false };
@@ -498,12 +604,29 @@ export class AssistantManager {
         summary: "Assistant job partially completed",
         detail: input.failureMessage ?? input.summary
       });
+      if (input.failureMessage) {
+        this.repository.saveAssistantTodo({
+          id: createAssistantTodoId(),
+          assistantId: input.assistantId,
+          title: "Recover partial assistant job",
+          description: input.failureMessage,
+          state: "pending",
+          sortOrder: this.repository.getAssistantTodos(input.assistantId).length,
+          source: "job",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        });
+      }
       this.callbacks.onAssistantsUpdated();
       this.scheduleReprioritize(input.assistantId, "job-partial-complete");
       return { blocked: false };
     }
 
-    const message = input.failureMessage ?? input.summary ?? "Assistant job failed";
+    const rawMessage = input.failureMessage ?? input.summary ?? "";
+    const message = rawMessage.trim() || "Unknown assistant job failure. What recovery step should this assistant try next?";
+    if (!rawMessage.trim() && input.status === "failed") {
+      this.saveBlockingQuestion(input.assistantId, message, { forceBlocking: true });
+    }
     const questionPrompt = extractQuestionPrompt(message);
     if (input.status === "awaiting-user-input" || questionPrompt) {
       const savedQuestion = this.saveBlockingQuestion(input.assistantId, questionPrompt ?? message);
@@ -640,10 +763,14 @@ export class AssistantManager {
       }
 
       const runtime = await this.resolveRuntime(assistant);
-      const proposal = await this.runJsonPrompt<ReprioritizeProposal>(runtime.adapter, {
+      const proposal = await this.runProposalPrompt(runtime.adapter, {
         assistant,
         prompt: await this.buildReprioritizePrompt(assistant, reason),
-        readOnly: runtime.readOnly
+        readOnly: runtime.readOnly,
+        schema: reprioritizeProposalSchema,
+        repairInstruction:
+          "Previous response failed schema validation. Return only valid JSON with summary, todoOrder, todoUpdates, newTodos, newLearnings, question, and questions.",
+        errorMessage: "Assistant reprioritize payload invalid"
       });
 
       const todos = this.repository.getAssistantTodos(assistantId);
@@ -656,6 +783,8 @@ export class AssistantManager {
           ...todo,
           state: update.state ?? todo.state,
           blockerReason: update.blockerReason ?? todo.blockerReason,
+          workKind: update.workKind ?? todo.workKind,
+          workTarget: update.workTarget ?? todo.workTarget,
           updatedAt: new Date().toISOString(),
           completedAt:
             (update.state ?? todo.state) === "completed" ? new Date().toISOString() : todo.completedAt,
@@ -664,10 +793,16 @@ export class AssistantManager {
         });
       }
 
-      for (const newTodo of proposal?.newTodos ?? []) {
+      const newTodos = applyAssistantTodoPolicy({
+        assistant,
+        existingTodos: todos,
+        drafts: proposal?.newTodos ?? []
+      });
+      for (const newTodo of newTodos) {
         if (!newTodo.title.trim()) {
           continue;
         }
+        this.maybeAskDefaultStackPreference(assistantId, newTodo);
         this.repository.saveAssistantTodo({
           id: createAssistantTodoId(),
           assistantId,
@@ -676,6 +811,8 @@ export class AssistantManager {
           state: "pending",
           sortOrder: todos.length + 100,
           source: "assistant",
+          workKind: newTodo.workKind,
+          workTarget: newTodo.workTarget,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
         });
@@ -820,6 +957,48 @@ export class AssistantManager {
     this.callbacks.onAssistantsUpdated();
   }
 
+  private maybeAskDefaultStackPreference(assistantId: string, todo: Pick<AssistantTodo, "workKind" | "workTarget" | "title" | "description">) {
+    if (!isCodingTodoKind(todo.workKind)) {
+      return;
+    }
+    const assistant = this.repository.getAssistant(assistantId);
+    if (!assistant || assistant.scope !== "project" || !assistantGoalImpliesCoding(assistant)) {
+      return;
+    }
+    if (this.repository.getAssistantTodos(assistantId).some((entry) => isCodingTodoKind(entry.workKind))) {
+      return;
+    }
+    if (this.hasStackPreferenceOrDetectedStack(assistant)) {
+      return;
+    }
+    if (this.repository.getAssistantQuestions(assistantId).some((question) => isDefaultCodingStackQuestion(question.prompt))) {
+      return;
+    }
+    this.repository.saveAssistantQuestion({
+      id: createAssistantQuestionId(),
+      assistantId,
+      prompt: DEFAULT_CODING_STACK_QUESTION,
+      status: this.repository.getGlobalExecutionPaused() ? "deferred" : "pending",
+      linkedTodoIds: [],
+      askedAt: new Date().toISOString()
+    });
+  }
+
+  private hasStackPreferenceOrDetectedStack(assistant: Assistant) {
+    if (
+      this.repository
+        .getAssistantLearnings(assistant.id)
+        .some((learning) => learning.source === "stack-preference" || /stack.+typescript|bun|solid|tailwind|sqlite/i.test(learning.summary))
+    ) {
+      return true;
+    }
+    if (assistant.scope !== "project") {
+      return false;
+    }
+    const project = this.repository.getProject(assistant.projectId!);
+    return projectHasDetectedStack(project);
+  }
+
   private async buildAssistantChatPrompt(assistant: Assistant, activeMission: string) {
     const state = this.getAssistantOperatingState(assistant.id);
     return assembleDeterministicPrompt([
@@ -840,7 +1019,7 @@ export class AssistantManager {
             ? `Linked assets:\n${state.assetRefs.map((asset) => `- [${asset.kind}] ${asset.label}: ${asset.canonicalValue ?? asset.value}`).join("\n")}`
             : undefined,
           state.activeTodos.length > 0
-            ? `Active todos:\n${state.activeTodos.map((todo) => `- (${todo.id}) ${todo.state}: ${todo.title}${todo.blockerReason ? ` | blocker: ${todo.blockerReason}` : ""}`).join("\n")}`
+            ? `Active todos:\n${state.activeTodos.map((todo) => `- (${todo.id}) ${todo.state} ${todo.workKind}${todo.workTarget ? ` target=${todo.workTarget}` : ""}: ${todo.title}${todo.blockerReason ? ` | blocker: ${todo.blockerReason}` : ""}`).join("\n")}`
             : "Active todos: none",
           state.pendingQuestions.length > 0
             ? `Pending questions:\n${state.pendingQuestions.map((question) => `- (${question.id}) ${question.prompt}`).join("\n")}`
@@ -868,13 +1047,15 @@ export class AssistantManager {
 {
   "summary": "short summary",
   "todoOrder": ["todo-id"],
-  "todoUpdates": [{"id":"todo-id","state":"pending|in-progress|blocked|completed|failed|cancelled","blockerReason":"optional"}],
-  "newTodos": [{"title":"todo title","description":"optional"}],
+  "todoUpdates": [{"id":"todo-id","state":"pending|in-progress|blocked|completed|failed|cancelled","blockerReason":"optional","workKind":"app-code|automation-code|documentation|research|blocked|unspecified","workTarget":"optional file/component/API/script target"}],
+  "newTodos": [{"title":"todo title","description":"optional","workKind":"app-code|automation-code|documentation|research|blocked|unspecified","workTarget":"optional file/component/API/script target"}],
   "newLearnings": [{"summary":"learning","source":"optional","confidence":"low|medium|high"}],
   "questions": [{"prompt":"optional blocking question","linkedTodoIds":["todo-id"]}]
 }`,
           "Ask questions only when missing information blocks useful progress. If multiple questions are necessary, batch them in questions. Prefer no questions when a reasonable default exists.",
-          "Do not include completed, failed, or cancelled todos unless you are explicitly changing a currently active todo into one of those states."
+          "Do not include completed, failed, or cancelled todos unless you are explicitly changing a currently active todo into one of those states.",
+          "After early discovery, build-oriented assistants should keep most active todos as app-code or automation-code. Docs-only todos should support a concrete code change.",
+          "For new coding projects, default to TypeScript, Bun runtime, bun test, bun:sqlite when persistence is needed, SolidJS + Tailwind when UI is needed, frontend tests using Bun + Happy DOM, and shared primitives first unless existing project files or user preference say otherwise."
         ]
       },
       {
@@ -882,7 +1063,7 @@ export class AssistantManager {
         content: [
           state.summary ? `Thread summary:\n${state.summary}` : undefined,
           state.activeTodos.length > 0
-            ? `Current active todos:\n${state.activeTodos.map((todo) => `- id=${todo.id} state=${todo.state} title=${todo.title}${todo.blockerReason ? ` blocker=${todo.blockerReason}` : ""}`).join("\n")}`
+            ? `Current active todos:\n${state.activeTodos.map((todo) => `- id=${todo.id} state=${todo.state} workKind=${todo.workKind} target=${todo.workTarget ?? "none"} title=${todo.title}${todo.blockerReason ? ` blocker=${todo.blockerReason}` : ""}`).join("\n")}`
             : "Current active todos: none",
           state.pendingQuestions.length > 0
             ? `Pending questions:\n${state.pendingQuestions.map((question) => `- id=${question.id} prompt=${question.prompt}`).join("\n")}`
@@ -1027,7 +1208,47 @@ export class AssistantManager {
     throw new Error("Assistant learning compaction payload invalid");
   }
 
+  private async runProposalPrompt<T>(
+    adapter: PiAgentAdapter,
+    input: {
+      assistant: Assistant;
+      prompt: string;
+      readOnly: boolean;
+      schema: z.ZodType<T>;
+      repairInstruction: string;
+      errorMessage: string;
+    }
+  ) {
+    const firstPayload = await this.runJsonProposalAttempt(adapter, input);
+    const first = input.schema.safeParse(firstPayload);
+    if (first.success) {
+      return first.data;
+    }
+
+    const repairedPayload = await this.runJsonProposalAttempt(adapter, {
+      assistant: input.assistant,
+      prompt: `${input.prompt}\n\n${input.repairInstruction}`,
+      readOnly: input.readOnly
+    });
+    const repaired = input.schema.safeParse(repairedPayload);
+    if (repaired.success) {
+      return repaired.data;
+    }
+    throw new Error(input.errorMessage);
+  }
+
   private async runCompactionAttempt(
+    adapter: PiAgentAdapter,
+    input: { assistant: Assistant; prompt: string; readOnly: boolean }
+  ) {
+    try {
+      return await this.runJsonPrompt<unknown>(adapter, input);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async runJsonProposalAttempt(
     adapter: PiAgentAdapter,
     input: { assistant: Assistant; prompt: string; readOnly: boolean }
   ) {
@@ -1361,11 +1582,13 @@ function buildBootstrapPrompt(assistant: Assistant) {
 {
   "researchSummary": "what role success looks like",
   "learnings": [{"summary":"learning","source":"optional","confidence":"low|medium|high"}],
-  "initialTodos": [{"title":"todo title","description":"optional"}],
+  "initialTodos": [{"title":"todo title","description":"optional","workKind":"app-code|automation-code|documentation|research|blocked|unspecified","workTarget":"optional file/component/API/script target"}],
   "remainIdle": true
 }`,
     "Only create initialTodos when the job prompt implies proactive work, backlog maintenance, implementation, or recurring execution.",
-    "Do not ask questions during bootstrap unless role setup cannot proceed without user input; prefer durable assumptions and learnings."
+    "Do not ask questions during bootstrap unless role setup cannot proceed without user input; prefer durable assumptions and learnings.",
+    "First discovery todos may be research or documentation. If the assistant is for building a coding project, later todos should mostly be app-code or automation-code.",
+    "For new coding projects, default to TypeScript, Bun runtime, bun test, bun:sqlite when persistence is needed, SolidJS + Tailwind when UI is needed, frontend tests using Bun + Happy DOM, and shared primitives first unless existing project files or user preference say otherwise."
   ].join("\n\n");
 }
 
@@ -1398,6 +1621,12 @@ function buildAssistantLearningCompactionPrompt(assistant: Assistant, reason: st
   "retainedFacts": [{"summary":"important fact","source":"source","confidence":"low|medium|high"}]
 }`
   ].join("\n\n");
+}
+
+function unrefTimer(timer: ReturnType<typeof setTimeout>) {
+  if (typeof timer === "object" && timer && "unref" in timer && typeof timer.unref === "function") {
+    timer.unref();
+  }
 }
 
 function buildThreadSummaryPrompt(assistant: Assistant, thread: AssistantThread) {
@@ -1490,12 +1719,41 @@ function isAssistantExecutionModelAvailable(
   return providerBrand === "gemini" ? modelId.startsWith("google/") : modelId.startsWith("openai/");
 }
 
+function isDefaultCodingStackQuestion(prompt: string) {
+  return prompt.includes("Recommended default: TypeScript, Bun runtime");
+}
+
+function projectHasDetectedStack(project: Pick<WorkspaceProjectState, "rootPath">) {
+  const packageJsonPath = path.join(project.rootPath, "package.json");
+  if (!existsSync(packageJsonPath)) {
+    return false;
+  }
+  try {
+    const text = readFileSync(packageJsonPath, "utf8");
+    return /\b(bun|solid-js|tailwindcss|@happy-dom|typescript|bun:sqlite)\b/i.test(text);
+  } catch {
+    return false;
+  }
+}
+
 function renderMessages(messages: ChatMessage[]) {
   if (messages.length === 0) {
     return "(no recent transcript)";
   }
 
   return messages.map((message) => `${message.role.toUpperCase()}: ${message.content}`).join("\n");
+}
+
+function boundedLlmString(maxLength: number) {
+  return z.string().transform((value) => value.trim().slice(0, maxLength)).pipe(z.string().min(1).max(maxLength));
+}
+
+function boundedLlmArray<T extends z.ZodTypeAny>(schema: T, maxItems: number) {
+  return z.array(schema).transform((items) => items.slice(0, maxItems));
+}
+
+function boundedLlmStringArray(maxItems: number, maxLength: number) {
+  return boundedLlmArray(boundedLlmString(maxLength), maxItems);
 }
 
 function extractJsonPayload<T>(text: string) {

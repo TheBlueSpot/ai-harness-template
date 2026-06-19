@@ -34,3 +34,19 @@ bun.cmd .agents/skills/assistant-actions/scripts/assistant-state.ts --assistant 
 ```
 
 Use `--json` when another script or agent needs machine-readable output.
+
+For bulk pause or assistant-job launch planning, use:
+
+```powershell
+bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action pause-assistants --project "<project-name-or-id>"
+bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action start-jobs --assistant "<name-or-id>" --project "<project-name-or-id>"
+```
+
+Dry-run first. Use `--execute` only after matched assistants/jobs are correct.
+
+## Companion Workflows
+
+- Use `db-data-harnessing` when the task is mainly SQLite/thread persistence investigation instead of a normal assistant action.
+- Use `update-harness` when the requested assistant action needs harness command, protocol, scheduler, or UI changes.
+- Use `screenshot-ui` only when validating the Assistants or Jobs surfaces visually.
+- Use `branchfs` only for isolated experiments; normal assistant action maintenance should operate on the real harness DB after dry-run confirmation.

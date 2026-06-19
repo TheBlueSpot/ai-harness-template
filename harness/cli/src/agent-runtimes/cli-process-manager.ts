@@ -239,7 +239,7 @@ async function consumeStream(
   const reader = stream.getReader();
   try {
     while (true) {
-      const next = await reader.read();
+      const next = await readStreamChunk(reader);
       if (next.done) {
         return;
       }
@@ -247,8 +247,33 @@ async function consumeStream(
       options.onChunk(next.value);
     }
   } finally {
-    reader.releaseLock();
+    releaseStreamReaderLock(reader);
   }
+}
+
+async function readStreamChunk(reader: ReadableStreamDefaultReader<Uint8Array>) {
+  try {
+    return await reader.read();
+  } catch (error) {
+    if (isStreamReaderCancelledError(error)) {
+      return { done: true, value: undefined } as ReadableStreamReadDoneResult<Uint8Array>;
+    }
+    throw error;
+  }
+}
+
+function releaseStreamReaderLock(reader: ReadableStreamDefaultReader<Uint8Array>) {
+  try {
+    reader.releaseLock();
+  } catch (error) {
+    if (!isStreamReaderCancelledError(error)) {
+      throw error;
+    }
+  }
+}
+
+function isStreamReaderCancelledError(error: unknown) {
+  return error instanceof Error && error.name === "AbortError" && error.message.includes("releaseLock");
 }
 
 export async function terminateProcessTree(proc: KillableProcess) {

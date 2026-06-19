@@ -53,14 +53,22 @@ import {
   type Assistant,
   type AssistantAssetRef,
   type AssistantLearning,
+  type AssistantLearningPage,
   type AssistantLogEntry,
+  type AssistantLogPage,
   type AssistantQuestion,
+  type AssistantQuestionPage,
   type AssistantQuestionStatus,
   type AssistantThread,
+  type AssistantThreadMessagePage,
   type AssistantTodo,
+  type AssistantTodoPage,
   type AssistantTodoPatch,
   type AssistantTodoState,
+  type AssistantTodoWorkKind,
   type AssistantsState,
+  type AssistantSummaryPage,
+  type AssistantDetail,
   type AgentId,
   type AgentRunState,
   type AgentRunStatus,
@@ -119,7 +127,13 @@ import {
   type RunDiagnosticsWindowDays,
   type WorkspaceRuleSource,
   type WorkspaceProjectState,
-  type WorkspaceState
+  type WorkspaceState,
+  terminalPaneLayoutSchema,
+  terminalPreferencesSchema,
+  terminalSessionSchema,
+  type TerminalPaneLayout,
+  type TerminalPreferences,
+  type TerminalSession
 } from "../../shared/protocol";
 import { defaultBackgroundJobTemplates } from "../../shared/background-job-templates";
 import { assertResolvedAssistantAssetRefs, resolveAssistantAssetRefs } from "./assistant-capabilities";
@@ -153,10 +167,42 @@ const MEMORY_BANK_RECORD_RUNS_DEFAULT_KEY = "memory_bank_record_runs_default";
 const CHECK_CLI_UPDATES_DEFAULT_KEY = "check_cli_updates_default";
 const GLOBAL_EXECUTION_PAUSED_KEY = "global_execution_paused";
 const ASSISTANT_LOG_DETAILS_JSON_MAX_CHARS = 12000;
+const ASSISTANT_SUMMARY_PAGE_LIMIT = 128;
+const ASSISTANT_DETAIL_ITEM_LIMIT = 256;
+const ASSISTANT_MAX_PAGE_LIMIT = 512;
 const WORKSPACE_RULES_CONTENT_KEY = "workspace_rules_content";
 const WORKSPACE_RULES_UPDATED_AT_KEY = "workspace_rules_updated_at";
 const WORKSPACE_MEMORY_CONTENT_KEY = "workspace_memory_content";
 const WORKSPACE_MEMORY_UPDATED_AT_KEY = "workspace_memory_updated_at";
+const TERMINAL_STATE_KEY = "terminal_state_v1";
+const ASSISTANT_SELECT_SQL = `SELECT
+  id, name, scope, project_id, description, personality_prompt, job_prompt, agent_id, mode_id,
+  provider_brand, execution_model_id, reasoning_strength, fast_mode, run_state, bootstrap_state,
+  bootstrap_attempt_id, bootstrap_started_at, bootstrap_finished_at, cloned_from_assistant_id, failure_streak_count,
+  circuit_breaker_state, circuit_breaker_reason, pending_reprioritize_reason, pending_reprioritize_requested_at,
+  deleted_at, latest_activity_at, created_at, updated_at
+ FROM assistants`;
+
+export type PersistedTerminalState = {
+  sessions: TerminalSession[];
+  scrollbackBySessionId: Record<string, string>;
+  preferences: TerminalPreferences;
+  layout?: TerminalPaneLayout;
+};
+
+type AssistantListInput = {
+  cursor?: string;
+  limit?: number;
+};
+
+type AssistantTimestampCursor = {
+  timestamp: string;
+  id: string;
+};
+
+type AssistantTodoCursor = AssistantTimestampCursor & {
+  sortOrder: number;
+};
 
 type ProjectRow = {
   id: string;
@@ -392,6 +438,12 @@ type BackgroundJobRunRow = {
   prompt_hash: string | null;
   transcript_chars: number | null;
   latest_task_chars: number | null;
+  agent_id: BackgroundJobRun["agentId"] | null;
+  provider_brand: BackgroundJobRun["providerBrand"] | null;
+  planning_model_id: string | null;
+  execution_model_id: string | null;
+  reasoning_strength: BackgroundJobRun["reasoningStrength"] | null;
+  fast_mode: number | null;
   controller_instance_id: string | null;
   controller_lease_id: string | null;
   controller_lease_expires_at: string | null;
@@ -524,11 +576,15 @@ type AssistantTodoRow = {
   sort_order: number;
   blocker_reason: string | null;
   source: string | null;
+  work_kind: string | null;
+  work_target: string | null;
   created_at: string;
   updated_at: string;
   completed_at: string | null;
   cancelled_at: string | null;
 };
+
+type AssistantTodoInput = Omit<AssistantTodo, "workKind" | "workTarget"> & Partial<Pick<AssistantTodo, "workKind" | "workTarget">>;
 
 type AssistantLearningRow = {
   id: string;
@@ -575,6 +631,14 @@ const ASSISTANT_LEARNING_STOP_WORDS = new Set([
   "with"
 ]);
 const ASSISTANT_TODO_SOURCES = new Set(["user", "assistant", "bootstrap", "job", "question"]);
+const ASSISTANT_TODO_WORK_KINDS = new Set([
+  "app-code",
+  "automation-code",
+  "documentation",
+  "research",
+  "blocked",
+  "unspecified"
+]);
 
 export function normalizeAssistantLearningSource(source: string) {
   return normalizeRequiredString(source, ASSISTANT_LEARNING_SOURCE_MAX_LENGTH, ASSISTANT_LEARNING_SOURCE_FALLBACK);
@@ -585,6 +649,13 @@ function normalizeAssistantTodoSource(source: string | null | undefined) {
     return undefined;
   }
   return ASSISTANT_TODO_SOURCES.has(source) ? (source as AssistantTodo["source"]) : "assistant";
+}
+
+function normalizeAssistantTodoWorkKind(workKind: string | null | undefined) {
+  if (!workKind) {
+    return "unspecified";
+  }
+  return ASSISTANT_TODO_WORK_KINDS.has(workKind) ? (workKind as AssistantTodoWorkKind) : "unspecified";
 }
 
 type PersistedSchema<T> = {
@@ -659,6 +730,10 @@ function normalizeBooleanNumber(value: unknown) {
   return value === true || value === 1;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function normalizeComposerReasoningStrength(value: unknown) {
   return value === "low" || value === "medium" || value === "high" || value === "extra-high" ? value : undefined;
 }
@@ -683,6 +758,61 @@ function normalizeThreadTitleSource(value: unknown): ThreadTitleSource {
 
 function normalizeArray<T>(value: T[], max: number) {
   return value.slice(0, max);
+}
+
+function normalizeAssistantPageLimit(limit: number | undefined, fallback: number) {
+  const resolved = typeof limit === "number" && Number.isFinite(limit) ? limit : fallback;
+  return Math.min(Math.max(Math.trunc(resolved), 1), ASSISTANT_MAX_PAGE_LIMIT);
+}
+
+function encodeAssistantTimestampCursor(timestamp: string, id: string) {
+  return JSON.stringify({ timestamp, id });
+}
+
+function encodeAssistantTodoCursor(sortOrder: number, timestamp: string, id: string) {
+  return JSON.stringify({ sortOrder, timestamp, id });
+}
+
+function parseAssistantTimestampCursor(cursor: string | undefined): AssistantTimestampCursor | undefined {
+  if (!cursor) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(cursor);
+    if (!isRecord(parsed) || typeof parsed.timestamp !== "string" || typeof parsed.id !== "string") {
+      return undefined;
+    }
+    return {
+      timestamp: parsed.timestamp,
+      id: parsed.id
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function parseAssistantTodoCursor(cursor: string | undefined): AssistantTodoCursor | undefined {
+  if (!cursor) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(cursor);
+    if (
+      !isRecord(parsed) ||
+      typeof parsed.timestamp !== "string" ||
+      typeof parsed.id !== "string" ||
+      typeof parsed.sortOrder !== "number"
+    ) {
+      return undefined;
+    }
+    return {
+      sortOrder: parsed.sortOrder,
+      timestamp: parsed.timestamp,
+      id: parsed.id
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 function parseJsonObjectOrUndefined(input: string | null): Record<string, unknown> | undefined {
@@ -2490,14 +2620,242 @@ export class WorkspaceRepository {
   loadAssistantsState(): AssistantsState {
     this.pruneCompletedAssistantTodos();
     return assistantsStateSchema.parse({
-      assistants: this.readAssistants().slice(0, 512),
-      threads: this.readAssistantThreads().slice(0, 512),
-      todos: this.readAssistantTodos().slice(0, 8192),
-      learnings: this.readAssistantLearnings().slice(0, 8192),
-      questions: this.readAssistantQuestions().slice(0, 4096),
-      logs: this.readAssistantLogEntries().slice(0, 16384),
-      assetRefs: this.readAssistantAssetRefs().slice(0, 4096)
+      assistants: this.readAssistants(512),
+      threads: this.readAssistantThreads(512),
+      todos: this.readAssistantTodos({ limit: 8192 }),
+      learnings: this.readAssistantLearnings({ limit: 8192 }),
+      questions: this.readAssistantQuestions({ limit: 4096 }),
+      logs: this.readAssistantLogEntries({ limit: 16384 }),
+      assetRefs: this.readAssistantAssetRefs({ limit: 4096 })
     });
+  }
+
+  loadAssistantSummaryState(): AssistantsState {
+    this.pruneCompletedAssistantTodos();
+    return assistantsStateSchema.parse({
+      assistants: this.listAssistantSummaries({ limit: 512 }).items,
+      threads: [],
+      todos: [],
+      learnings: [],
+      questions: [],
+      logs: [],
+      assetRefs: []
+    });
+  }
+
+  listAssistantSummaries(input: AssistantListInput = {}): AssistantSummaryPage {
+    const limit = normalizeAssistantPageLimit(input.limit, ASSISTANT_SUMMARY_PAGE_LIMIT);
+    const cursor = parseAssistantTimestampCursor(input.cursor);
+    const rows = cursor
+      ? this.db
+        .query<AssistantRow, [string, string, number]>(
+          `${ASSISTANT_SELECT_SQL}
+           WHERE deleted_at IS NULL
+             AND (updated_at < ?1 OR (updated_at = ?1 AND id < ?2))
+           ORDER BY updated_at DESC, id DESC
+           LIMIT ?3`
+        )
+        .all(cursor.timestamp, cursor.id, limit + 1)
+      : this.db
+        .query<AssistantRow, [number]>(
+          `${ASSISTANT_SELECT_SQL}
+           WHERE deleted_at IS NULL
+           ORDER BY updated_at DESC, id DESC
+           LIMIT ?1`
+        )
+        .all(limit + 1);
+    const items = rows
+      .slice(0, limit)
+      .map((row) => this.hydrateAssistant(row))
+      .filter((assistant): assistant is Assistant => assistant !== undefined);
+    const last = items.at(-1);
+    return {
+      items,
+      nextCursor: rows.length > limit && last ? encodeAssistantTimestampCursor(last.updatedAt, last.id) : undefined,
+      totalApprox: this.countActiveAssistants()
+    };
+  }
+
+  getAssistantDetail(input: { assistantId: string }): AssistantDetail {
+    this.assertAssistantExists(input.assistantId);
+    const assistant = this.getAssistant(input.assistantId);
+    if (!assistant) {
+      throw new Error(`Unknown assistant: ${input.assistantId}`);
+    }
+    const thread = this.getAssistantThread(input.assistantId, ASSISTANT_DETAIL_ITEM_LIMIT);
+    return {
+      assistant,
+      thread,
+      todos: this.listAssistantTodos({ assistantId: input.assistantId, limit: ASSISTANT_DETAIL_ITEM_LIMIT }),
+      learnings: this.listAssistantLearnings({ assistantId: input.assistantId, limit: ASSISTANT_DETAIL_ITEM_LIMIT }),
+      questions: this.listAssistantQuestions({ assistantId: input.assistantId, limit: ASSISTANT_DETAIL_ITEM_LIMIT }),
+      logs: this.listAssistantLogs({ assistantId: input.assistantId, limit: ASSISTANT_DETAIL_ITEM_LIMIT }),
+      assetRefs: this.readAssistantAssetRefs({ assistantId: input.assistantId, limit: ASSISTANT_DETAIL_ITEM_LIMIT })
+    };
+  }
+
+  listAssistantThreadMessages(input: { assistantId: string; cursor?: string; limit?: number }): AssistantThreadMessagePage & { threadId: string } {
+    this.assertAssistantExists(input.assistantId);
+    const thread = this.readAssistantThreadRowByAssistantId(input.assistantId);
+    const page = this.readAssistantMessagePage(thread.id, input);
+    return {
+      threadId: thread.id,
+      ...page
+    };
+  }
+
+  listAssistantLogs(input: { assistantId: string; cursor?: string; limit?: number }): AssistantLogPage {
+    this.assertAssistantExists(input.assistantId);
+    const limit = normalizeAssistantPageLimit(input.limit, ASSISTANT_DETAIL_ITEM_LIMIT);
+    const cursor = parseAssistantTimestampCursor(input.cursor);
+    const rows = cursor
+      ? this.db
+        .query<AssistantLogEntryRow, [string, string, string, number]>(
+          `SELECT id, assistant_id, level, summary, detail, details_json, created_at
+           FROM assistant_log_entries
+           WHERE assistant_id = ?1
+             AND (created_at < ?2 OR (created_at = ?2 AND id < ?3))
+           ORDER BY created_at DESC, id DESC
+           LIMIT ?4`
+        )
+        .all(input.assistantId, cursor.timestamp, cursor.id, limit + 1)
+      : this.db
+        .query<AssistantLogEntryRow, [string, number]>(
+          `SELECT id, assistant_id, level, summary, detail, details_json, created_at
+           FROM assistant_log_entries
+           WHERE assistant_id = ?1
+           ORDER BY created_at DESC, id DESC
+           LIMIT ?2`
+        )
+        .all(input.assistantId, limit + 1);
+    const items = rows
+      .slice(0, limit)
+      .map((row) => this.hydrateAssistantLogEntry(row))
+      .filter((entry): entry is AssistantLogEntry => entry !== undefined);
+    const last = items.at(-1);
+    return {
+      items,
+      nextCursor: rows.length > limit && last ? encodeAssistantTimestampCursor(last.createdAt, last.id) : undefined,
+      totalApprox: this.countAssistantRows("assistant_log_entries", input.assistantId)
+    };
+  }
+
+  listAssistantTodos(input: { assistantId: string; cursor?: string; limit?: number }): AssistantTodoPage {
+    this.assertAssistantExists(input.assistantId);
+    const limit = normalizeAssistantPageLimit(input.limit, ASSISTANT_DETAIL_ITEM_LIMIT);
+    const cursor = parseAssistantTodoCursor(input.cursor);
+    const rows = cursor
+      ? this.db
+        .query<AssistantTodoRow, [string, number, string, string, number]>(
+          `SELECT
+            id, assistant_id, title, description, state, sort_order, blocker_reason, source,
+            work_kind, work_target, created_at, updated_at, completed_at, cancelled_at
+           FROM assistant_todos
+           WHERE assistant_id = ?1
+             AND (
+               sort_order > ?2
+               OR (sort_order = ?2 AND updated_at < ?3)
+               OR (sort_order = ?2 AND updated_at = ?3 AND id > ?4)
+             )
+           ORDER BY sort_order ASC, updated_at DESC, id ASC
+           LIMIT ?5`
+        )
+        .all(input.assistantId, cursor.sortOrder, cursor.timestamp, cursor.id, limit + 1)
+      : this.db
+        .query<AssistantTodoRow, [string, number]>(
+          `SELECT
+            id, assistant_id, title, description, state, sort_order, blocker_reason, source,
+            work_kind, work_target, created_at, updated_at, completed_at, cancelled_at
+           FROM assistant_todos
+           WHERE assistant_id = ?1
+           ORDER BY sort_order ASC, updated_at DESC, id ASC
+           LIMIT ?2`
+        )
+        .all(input.assistantId, limit + 1);
+    const items = rows
+      .slice(0, limit)
+      .map((row) => this.hydrateAssistantTodo(row))
+      .filter((todo): todo is AssistantTodo => todo !== undefined);
+    const last = items.at(-1);
+    return {
+      items,
+      nextCursor: rows.length > limit && last ? encodeAssistantTodoCursor(last.sortOrder, last.updatedAt, last.id) : undefined,
+      totalApprox: this.countAssistantRows("assistant_todos", input.assistantId)
+    };
+  }
+
+  listAssistantLearnings(input: { assistantId: string; cursor?: string; limit?: number }): AssistantLearningPage {
+    this.assertAssistantExists(input.assistantId);
+    const limit = normalizeAssistantPageLimit(input.limit, ASSISTANT_DETAIL_ITEM_LIMIT);
+    const cursor = parseAssistantTimestampCursor(input.cursor);
+    const rows = cursor
+      ? this.db
+        .query<AssistantLearningRow, [string, string, string, number]>(
+          `SELECT id, assistant_id, summary, source, confidence, sort_order, created_at, kind, supersedes_learning_ids_json, compacted_at
+           FROM assistant_learnings
+           WHERE assistant_id = ?1
+             AND (compacted_at IS NULL OR kind = 'summary')
+             AND (created_at < ?2 OR (created_at = ?2 AND id < ?3))
+           ORDER BY created_at DESC, id DESC
+           LIMIT ?4`
+        )
+        .all(input.assistantId, cursor.timestamp, cursor.id, limit + 1)
+      : this.db
+        .query<AssistantLearningRow, [string, number]>(
+          `SELECT id, assistant_id, summary, source, confidence, sort_order, created_at, kind, supersedes_learning_ids_json, compacted_at
+           FROM assistant_learnings
+           WHERE assistant_id = ?1
+             AND (compacted_at IS NULL OR kind = 'summary')
+           ORDER BY created_at DESC, id DESC
+           LIMIT ?2`
+        )
+        .all(input.assistantId, limit + 1);
+    const items = rows
+      .slice(0, limit)
+      .map((row) => this.hydrateAssistantLearning(row))
+      .filter((learning): learning is AssistantLearning => learning !== undefined);
+    const last = items.at(-1);
+    return {
+      items,
+      nextCursor: rows.length > limit && last ? encodeAssistantTimestampCursor(last.createdAt, last.id) : undefined,
+      totalApprox: this.countAssistantRows("assistant_learnings", input.assistantId)
+    };
+  }
+
+  listAssistantQuestions(input: { assistantId: string; cursor?: string; limit?: number }): AssistantQuestionPage {
+    this.assertAssistantExists(input.assistantId);
+    const limit = normalizeAssistantPageLimit(input.limit, ASSISTANT_DETAIL_ITEM_LIMIT);
+    const cursor = parseAssistantTimestampCursor(input.cursor);
+    const rows = cursor
+      ? this.db
+        .query<AssistantQuestionRow, [string, string, string, number]>(
+          `SELECT id, assistant_id, prompt, status, answer_text, linked_todo_ids_json, asked_at, answered_at
+           FROM assistant_questions
+           WHERE assistant_id = ?1
+             AND (asked_at < ?2 OR (asked_at = ?2 AND id < ?3))
+           ORDER BY asked_at DESC, id DESC
+           LIMIT ?4`
+        )
+        .all(input.assistantId, cursor.timestamp, cursor.id, limit + 1)
+      : this.db
+        .query<AssistantQuestionRow, [string, number]>(
+          `SELECT id, assistant_id, prompt, status, answer_text, linked_todo_ids_json, asked_at, answered_at
+           FROM assistant_questions
+           WHERE assistant_id = ?1
+           ORDER BY asked_at DESC, id DESC
+           LIMIT ?2`
+        )
+        .all(input.assistantId, limit + 1);
+    const items = rows
+      .slice(0, limit)
+      .map((row) => this.hydrateAssistantQuestion(row))
+      .filter((question): question is AssistantQuestion => question !== undefined);
+    const last = items.at(-1);
+    return {
+      items,
+      nextCursor: rows.length > limit && last ? encodeAssistantTimestampCursor(last.askedAt, last.id) : undefined,
+      totalApprox: this.countAssistantRows("assistant_questions", input.assistantId)
+    };
   }
 
   getAssistant(assistantId: string, includeDeleted: boolean = false) {
@@ -2644,14 +3002,14 @@ export class WorkspaceRepository {
     return this.getAssistant(assistant.id)!;
   }
 
-  saveAssistantTodo(todo: AssistantTodo) {
+  saveAssistantTodo(todo: AssistantTodoInput) {
     this.assertAssistantExists(todo.assistantId);
     this.db
       .query(
         `INSERT INTO assistant_todos (
           id, assistant_id, title, description, state, sort_order, blocker_reason, source,
-          created_at, updated_at, completed_at, cancelled_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+          work_kind, work_target, created_at, updated_at, completed_at, cancelled_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
         ON CONFLICT(id) DO UPDATE SET
           title = excluded.title,
           description = excluded.description,
@@ -2659,6 +3017,8 @@ export class WorkspaceRepository {
           sort_order = excluded.sort_order,
           blocker_reason = excluded.blocker_reason,
           source = excluded.source,
+          work_kind = excluded.work_kind,
+          work_target = excluded.work_target,
           updated_at = excluded.updated_at,
           completed_at = excluded.completed_at,
           cancelled_at = excluded.cancelled_at`
@@ -2672,6 +3032,8 @@ export class WorkspaceRepository {
         todo.sortOrder,
         todo.blockerReason ?? null,
         normalizeAssistantTodoSource(todo.source) ?? null,
+        normalizeAssistantTodoWorkKind(todo.workKind),
+        todo.workTarget ?? null,
         todo.createdAt,
         todo.updatedAt,
         todo.completedAt ?? null,
@@ -2701,6 +3063,8 @@ export class WorkspaceRepository {
         sortOrder,
         blockerReason: parsedPatch.blockerReason ?? undefined,
         source: "user",
+        workKind: parsedPatch.workKind ?? "unspecified",
+        workTarget: parsedPatch.workTarget ?? undefined,
         createdAt: now,
         updatedAt: now,
         completedAt: parsedPatch.state === "completed" ? now : undefined,
@@ -2719,9 +3083,11 @@ export class WorkspaceRepository {
              description = ?4,
              state = ?5,
              blocker_reason = ?6,
-             updated_at = ?7,
-             completed_at = ?8,
-             cancelled_at = ?9
+             work_kind = ?7,
+             work_target = ?8,
+             updated_at = ?9,
+             completed_at = ?10,
+             cancelled_at = ?11
          WHERE id = ?1 AND assistant_id = ?2`
       )
       .run(
@@ -2731,6 +3097,8 @@ export class WorkspaceRepository {
         parsedPatch.description === null ? null : parsedPatch.description ?? existing.description ?? null,
         nextState,
         parsedPatch.blockerReason === null ? null : parsedPatch.blockerReason ?? existing.blockerReason ?? null,
+        normalizeAssistantTodoWorkKind(parsedPatch.workKind ?? existing.workKind),
+        parsedPatch.workTarget === null ? null : parsedPatch.workTarget ?? existing.workTarget ?? null,
         now,
         nextState === "completed" ? existing.completedAt ?? now : null,
         nextState === "cancelled" ? existing.cancelledAt ?? now : null
@@ -3040,10 +3408,10 @@ export class WorkspaceRepository {
     return this.getAssistantThread(assistantId)!;
   }
 
-  getAssistantThread(assistantId: string): AssistantThread {
+  getAssistantThread(assistantId: string, messageLimit: number = 4096): AssistantThread {
     this.assertAssistantExists(assistantId);
     const row = this.readAssistantThreadRowByAssistantId(assistantId);
-    const thread = this.hydrateAssistantThread(row);
+    const thread = this.hydrateAssistantThread(row, messageLimit);
     if (!thread) {
       throw new Error(`Assistant ${assistantId} has no loadable thread`);
     }
@@ -3052,7 +3420,7 @@ export class WorkspaceRepository {
 
   getAssistantTodos(assistantId: string) {
     this.assertAssistantExists(assistantId);
-    return this.readAssistantTodos().filter((todo) => todo.assistantId === assistantId);
+    return this.readAssistantTodos({ assistantId });
   }
 
   getAssistantTodoForAssistant(assistantId: string, todoId: string) {
@@ -3071,7 +3439,7 @@ export class WorkspaceRepository {
 
   getAssistantQuestions(assistantId: string) {
     this.assertAssistantExists(assistantId);
-    return this.readAssistantQuestions().filter((question) => question.assistantId === assistantId);
+    return this.readAssistantQuestions({ assistantId });
   }
 
   getAssistantsAwaitingBootstrap() {
@@ -3136,7 +3504,7 @@ export class WorkspaceRepository {
 
   getAssistantAssetRefs(assistantId: string) {
     this.assertAssistantExists(assistantId);
-    return this.readAssistantAssetRefs().filter((assetRef) => assetRef.assistantId === assistantId);
+    return this.readAssistantAssetRefs({ assistantId });
   }
 
   assertAssistantAssetRefsResolved(assistantId: string) {
@@ -3159,7 +3527,7 @@ export class WorkspaceRepository {
 
   getAssistantLogEntries(assistantId: string) {
     this.assertAssistantExists(assistantId);
-    return this.readAssistantLogEntries().filter((entry) => entry.assistantId === assistantId);
+    return this.readAssistantLogEntries({ assistantId });
   }
 
   setAssistantThreadMemorySummary(assistantId: string, content: string | undefined) {
@@ -3686,6 +4054,20 @@ export class WorkspaceRepository {
     return this.loadBackgroundJobsState();
   }
 
+  pauseAllAssistantBackgroundJobs() {
+    const now = new Date().toISOString();
+    this.db
+      .query(
+        `UPDATE background_jobs
+         SET status = 'paused',
+             updated_at = ?1
+         WHERE assistant_id IS NOT NULL
+           AND status = 'enabled'`
+      )
+      .run(now);
+    return this.loadBackgroundJobsState();
+  }
+
   clearBackgroundJobFailureTracking(jobId: string) {
     const now = new Date().toISOString();
     this.db
@@ -3897,6 +4279,7 @@ export class WorkspaceRepository {
           id, job_id, project_id, assistant_id, automation_thread_id, trigger_source, status, risk_level, approval_status,
           skipped_occurrence_count, linked_agent_run_id, summary, failure_message, failure_category,
           prompt_chars, prompt_hash, transcript_chars, latest_task_chars,
+          agent_id, provider_brand, planning_model_id, execution_model_id, reasoning_strength, fast_mode,
           controller_instance_id, controller_lease_id, controller_lease_expires_at, resume_attempt_count,
           last_heartbeat_at, heartbeat_stage, heartbeat_detail, timed_out_at, queued_at, started_at,
           completed_at, created_at, updated_at
@@ -3914,6 +4297,7 @@ export class WorkspaceRepository {
           id, job_id, project_id, assistant_id, automation_thread_id, trigger_source, status, risk_level, approval_status,
           skipped_occurrence_count, linked_agent_run_id, summary, failure_message, failure_category,
           prompt_chars, prompt_hash, transcript_chars, latest_task_chars,
+          agent_id, provider_brand, planning_model_id, execution_model_id, reasoning_strength, fast_mode,
           controller_instance_id, controller_lease_id, controller_lease_expires_at, resume_attempt_count,
           last_heartbeat_at, heartbeat_stage, heartbeat_detail, timed_out_at, queued_at, started_at,
           completed_at, created_at, updated_at
@@ -3947,6 +4331,7 @@ export class WorkspaceRepository {
             id, job_id, project_id, assistant_id, automation_thread_id, trigger_source, status, risk_level, approval_status,
             skipped_occurrence_count, linked_agent_run_id, summary, failure_message, failure_category,
             prompt_chars, prompt_hash, transcript_chars, latest_task_chars,
+            agent_id, provider_brand, planning_model_id, execution_model_id, reasoning_strength, fast_mode,
             controller_instance_id, controller_lease_id, controller_lease_expires_at, resume_attempt_count,
             last_heartbeat_at, heartbeat_stage, heartbeat_detail, timed_out_at, queued_at, started_at,
             completed_at, created_at, updated_at
@@ -3961,6 +4346,7 @@ export class WorkspaceRepository {
             id, job_id, project_id, assistant_id, automation_thread_id, trigger_source, status, risk_level, approval_status,
             skipped_occurrence_count, linked_agent_run_id, summary, failure_message, failure_category,
             prompt_chars, prompt_hash, transcript_chars, latest_task_chars,
+            agent_id, provider_brand, planning_model_id, execution_model_id, reasoning_strength, fast_mode,
             controller_instance_id, controller_lease_id, controller_lease_expires_at, resume_attempt_count,
             last_heartbeat_at, heartbeat_stage, heartbeat_detail, timed_out_at, queued_at, started_at,
             completed_at, created_at, updated_at
@@ -3979,6 +4365,7 @@ export class WorkspaceRepository {
           id, job_id, project_id, assistant_id, automation_thread_id, trigger_source, status, risk_level, approval_status,
           skipped_occurrence_count, linked_agent_run_id, summary, failure_message, failure_category,
           prompt_chars, prompt_hash, transcript_chars, latest_task_chars,
+          agent_id, provider_brand, planning_model_id, execution_model_id, reasoning_strength, fast_mode,
           controller_instance_id, controller_lease_id, controller_lease_expires_at, resume_attempt_count,
           last_heartbeat_at, heartbeat_stage, heartbeat_detail, timed_out_at, queued_at, started_at,
           completed_at, created_at, updated_at
@@ -4207,9 +4594,10 @@ export class WorkspaceRepository {
           id, job_id, project_id, assistant_id, automation_thread_id, trigger_source, status, risk_level, approval_status,
           skipped_occurrence_count, linked_agent_run_id, summary, failure_message, failure_category,
           prompt_chars, prompt_hash, transcript_chars, latest_task_chars,
+          agent_id, provider_brand, planning_model_id, execution_model_id, reasoning_strength, fast_mode,
           controller_instance_id, controller_lease_id, controller_lease_expires_at, resume_attempt_count,
           last_heartbeat_at, heartbeat_stage, heartbeat_detail, timed_out_at, queued_at, started_at, completed_at, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, ?11, 'queued', NULL, NULL, ?11, NULL, NULL, ?11, ?11)`
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, ?11, 'queued', NULL, NULL, ?11, NULL, NULL, ?11, ?11)`
       )
       .run(
         runId,
@@ -4388,6 +4776,39 @@ export class WorkspaceRepository {
       return undefined;
     }
     return this.setBackgroundJobRunStatus(runId, status, input);
+  }
+
+  setBackgroundJobRunLaunchDiagnostics(
+    runId: string,
+    input: Pick<
+      BackgroundJobRun,
+      "agentId" | "providerBrand" | "planningModelId" | "executionModelId" | "reasoningStrength" | "fastMode"
+    >
+  ) {
+    const now = new Date().toISOString();
+    this.db
+      .query(
+        `UPDATE background_job_runs
+         SET agent_id = ?2,
+             provider_brand = ?3,
+             planning_model_id = ?4,
+             execution_model_id = ?5,
+             reasoning_strength = ?6,
+             fast_mode = ?7,
+             updated_at = ?8
+         WHERE id = ?1`
+      )
+      .run(
+        runId,
+        input.agentId ?? null,
+        input.providerBrand ?? null,
+        input.planningModelId ?? null,
+        input.executionModelId ?? null,
+        input.reasoningStrength ?? null,
+        input.fastMode === undefined ? null : input.fastMode ? 1 : 0,
+        now
+      );
+    return this.getBackgroundJobRun(runId)!;
   }
 
   setBackgroundJobRunPromptStats(runId: string, promptStats: RunPromptStats) {
@@ -4737,6 +5158,57 @@ export class WorkspaceRepository {
 
   setCheckCliUpdatesDefault(value: boolean) {
     this.setWorkspaceMetaValue(CHECK_CLI_UPDATES_DEFAULT_KEY, String(value));
+  }
+
+  getTerminalState(): PersistedTerminalState {
+    const defaults: PersistedTerminalState = {
+      sessions: [],
+      scrollbackBySessionId: {},
+      preferences: terminalPreferencesSchema.parse({})
+    };
+    const raw = this.getWorkspaceMetaValue(TERMINAL_STATE_KEY);
+    if (!raw) {
+      return defaults;
+    }
+
+    try {
+      const parsed = JSON.parse(raw) as Partial<PersistedTerminalState>;
+      const layoutResult = parsed.layout ? terminalPaneLayoutSchema.safeParse(parsed.layout) : undefined;
+      return {
+        sessions: Array.isArray(parsed.sessions)
+          ? parsed.sessions
+              .map((session) => terminalSessionSchema.safeParse(session))
+              .filter((result) => result.success)
+              .map((result) => ({
+                ...result.data,
+                status: result.data.status === "running" || result.data.status === "starting" ? "stopped" : result.data.status,
+                serverRestarted: result.data.status === "running" || result.data.status === "starting" ? true : result.data.serverRestarted
+              }))
+              .slice(0, 64)
+          : [],
+        scrollbackBySessionId: isRecord(parsed.scrollbackBySessionId)
+          ? Object.fromEntries(
+              Object.entries(parsed.scrollbackBySessionId).filter(
+                (entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string"
+              )
+            )
+          : {},
+        preferences: terminalPreferencesSchema.catch(defaults.preferences).parse(parsed.preferences),
+        layout: layoutResult?.success ? layoutResult.data : undefined
+      };
+    } catch {
+      return defaults;
+    }
+  }
+
+  setTerminalState(state: PersistedTerminalState) {
+    const safeState: PersistedTerminalState = {
+      sessions: state.sessions.map((session) => terminalSessionSchema.parse(session)).slice(0, 64),
+      scrollbackBySessionId: state.scrollbackBySessionId,
+      preferences: terminalPreferencesSchema.parse(state.preferences),
+      layout: state.layout ? terminalPaneLayoutSchema.parse(state.layout) : undefined
+    };
+    this.setWorkspaceMetaValue(TERMINAL_STATE_KEY, JSON.stringify(safeState));
   }
 
   getGlobalExecutionPaused() {
@@ -5255,6 +5727,12 @@ export class WorkspaceRepository {
         prompt_hash TEXT NULL,
         transcript_chars INTEGER NULL,
         latest_task_chars INTEGER NULL,
+        agent_id TEXT NULL,
+        provider_brand TEXT NULL CHECK(provider_brand IN ('gpt', 'gemini', 'claude')),
+        planning_model_id TEXT NULL,
+        execution_model_id TEXT NULL,
+        reasoning_strength TEXT NULL CHECK(reasoning_strength IN ('low', 'medium', 'high', 'extra-high')),
+        fast_mode INTEGER NULL CHECK(fast_mode IN (0, 1)),
         controller_instance_id TEXT NULL,
         controller_lease_id TEXT NULL,
         controller_lease_expires_at TEXT NULL,
@@ -5399,6 +5877,8 @@ export class WorkspaceRepository {
         sort_order INTEGER NOT NULL,
         blocker_reason TEXT NULL,
         source TEXT NULL,
+        work_kind TEXT NOT NULL DEFAULT 'unspecified' CHECK(work_kind IN ('app-code', 'automation-code', 'documentation', 'research', 'blocked', 'unspecified')),
+        work_target TEXT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         completed_at TEXT NULL,
@@ -5549,6 +6029,16 @@ export class WorkspaceRepository {
     this.addColumnIfMissing("background_job_runs", "prompt_hash", "TEXT NULL");
     this.addColumnIfMissing("background_job_runs", "transcript_chars", "INTEGER NULL");
     this.addColumnIfMissing("background_job_runs", "latest_task_chars", "INTEGER NULL");
+    this.addColumnIfMissing("background_job_runs", "agent_id", "TEXT NULL");
+    this.addColumnIfMissing("background_job_runs", "provider_brand", "TEXT NULL CHECK(provider_brand IN ('gpt', 'gemini', 'claude'))");
+    this.addColumnIfMissing("background_job_runs", "planning_model_id", "TEXT NULL");
+    this.addColumnIfMissing("background_job_runs", "execution_model_id", "TEXT NULL");
+    this.addColumnIfMissing(
+      "background_job_runs",
+      "reasoning_strength",
+      "TEXT NULL CHECK(reasoning_strength IN ('low', 'medium', 'high', 'extra-high'))"
+    );
+    this.addColumnIfMissing("background_job_runs", "fast_mode", "INTEGER NULL CHECK(fast_mode IN (0, 1))");
     this.addColumnIfMissing("background_job_runs", "controller_instance_id", "TEXT NULL");
     this.addColumnIfMissing("background_job_runs", "controller_lease_id", "TEXT NULL");
     this.addColumnIfMissing("background_job_runs", "controller_lease_expires_at", "TEXT NULL");
@@ -5569,6 +6059,12 @@ export class WorkspaceRepository {
     this.addColumnIfMissing("assistants", "bootstrap_finished_at", "TEXT NULL");
     this.addColumnIfMissing("assistants", "pending_reprioritize_reason", "TEXT NULL");
     this.addColumnIfMissing("assistants", "pending_reprioritize_requested_at", "TEXT NULL");
+    this.addColumnIfMissing(
+      "assistant_todos",
+      "work_kind",
+      "TEXT NOT NULL DEFAULT 'unspecified' CHECK(work_kind IN ('app-code', 'automation-code', 'documentation', 'research', 'blocked', 'unspecified'))"
+    );
+    this.addColumnIfMissing("assistant_todos", "work_target", "TEXT NULL");
     this.addColumnIfMissing("assistant_learnings", "kind", "TEXT NOT NULL DEFAULT 'fact' CHECK(kind IN ('fact', 'summary'))");
     this.addColumnIfMissing("assistant_learnings", "supersedes_learning_ids_json", "TEXT NULL");
     this.addColumnIfMissing("assistant_learnings", "compacted_at", "TEXT NULL");
@@ -5601,6 +6097,7 @@ export class WorkspaceRepository {
     this.db.exec(`UPDATE project_threads SET title_source = 'custom' WHERE title_source = 'manual';`);
     this.db.exec(`UPDATE project_threads SET title_source = 'generated' WHERE title_source IS NULL OR title_source NOT IN ('generated', 'custom');`);
     this.normalizeLegacyAssistantTodoSources();
+    this.normalizeLegacyAssistantTodoWorkKinds();
 
     this.rebuildAgentRunQuestionsTableIfNeeded();
     this.rebuildThreadMessagesTableIfNeeded();
@@ -5862,20 +6359,15 @@ export class WorkspaceRepository {
     } satisfies MemorySummary;
   }
 
-  private readAssistants() {
+  private readAssistants(limit: number = 512) {
     return this.db
-      .query<AssistantRow, []>(
-        `SELECT
-          id, name, scope, project_id, description, personality_prompt, job_prompt, agent_id, mode_id,
-          provider_brand, execution_model_id, reasoning_strength, fast_mode, run_state, bootstrap_state,
-          bootstrap_attempt_id, bootstrap_started_at, bootstrap_finished_at, cloned_from_assistant_id, failure_streak_count,
-          circuit_breaker_state, circuit_breaker_reason, pending_reprioritize_reason, pending_reprioritize_requested_at,
-          deleted_at, latest_activity_at, created_at, updated_at
-         FROM assistants
+      .query<AssistantRow, [number]>(
+        `${ASSISTANT_SELECT_SQL}
          WHERE deleted_at IS NULL
-         ORDER BY updated_at DESC, created_at DESC`
+         ORDER BY updated_at DESC, id DESC
+         LIMIT ?1`
       )
-      .all()
+      .all(normalizeAssistantPageLimit(limit, 512))
       .map((row) => this.hydrateAssistant(row))
       .filter((assistant): assistant is Assistant => assistant !== undefined);
   }
@@ -5895,29 +6387,35 @@ export class WorkspaceRepository {
     return row;
   }
 
-  private readAssistantThreads() {
+  private readAssistantThreads(limit: number = 512, messageLimit: number = ASSISTANT_DETAIL_ITEM_LIMIT) {
     return this.db
-      .query<AssistantThreadRow, []>(
+      .query<AssistantThreadRow, [number]>(
         `SELECT
           id, assistant_id, session_id, memory_summary_content, memory_summary_updated_at, updated_at, created_at
          FROM assistant_threads
          WHERE assistant_id IN (SELECT id FROM assistants WHERE deleted_at IS NULL)
-         ORDER BY updated_at DESC`
+         ORDER BY updated_at DESC, id DESC
+         LIMIT ?1`
       )
-      .all()
-      .map((row) => this.hydrateAssistantThread(row))
+      .all(normalizeAssistantPageLimit(limit, 512))
+      .map((row) => this.hydrateAssistantThread(row, messageLimit))
       .filter((thread): thread is AssistantThread => thread !== undefined);
   }
 
-  private readAssistantMessages(threadId: string) {
+  private readAssistantMessages(threadId: string, limit: number = ASSISTANT_DETAIL_ITEM_LIMIT) {
     return this.db
-      .query<AssistantMessageRow, [string]>(
+      .query<AssistantMessageRow, [string, number]>(
         `SELECT id, assistant_thread_id, role, kind, content, metadata_json, created_at
-         FROM assistant_messages
-         WHERE assistant_thread_id = ?1
-         ORDER BY created_at ASC`
+         FROM (
+           SELECT id, assistant_thread_id, role, kind, content, metadata_json, created_at
+           FROM assistant_messages
+           WHERE assistant_thread_id = ?1
+           ORDER BY created_at DESC, id DESC
+           LIMIT ?2
+         )
+         ORDER BY created_at ASC, id ASC`
       )
-      .all(threadId)
+      .all(threadId, normalizeAssistantPageLimit(limit, ASSISTANT_DETAIL_ITEM_LIMIT))
       .map((message) =>
         safeParsePersisted(
           chatMessageSchema,
@@ -5935,47 +6433,66 @@ export class WorkspaceRepository {
       .filter((message): message is ChatMessage => message !== undefined);
   }
 
-  private readAssistantTodos() {
-    return this.db
-      .query<AssistantTodoRow, []>(
+  private readAssistantTodos(options: { assistantId?: string; limit?: number } = {}) {
+    const limit = normalizeAssistantPageLimit(options.limit, 8192);
+    const rows = options.assistantId
+      ? this.db
+        .query<AssistantTodoRow, [string, number]>(
+          `SELECT
+            id, assistant_id, title, description, state, sort_order, blocker_reason, source,
+            work_kind, work_target, created_at, updated_at, completed_at, cancelled_at
+           FROM assistant_todos
+           WHERE assistant_id = ?1
+           ORDER BY sort_order ASC, updated_at DESC, id ASC
+           LIMIT ?2`
+        )
+        .all(options.assistantId, limit)
+      : this.db
+        .query<AssistantTodoRow, [number]>(
         `SELECT
           id, assistant_id, title, description, state, sort_order, blocker_reason, source,
-          created_at, updated_at, completed_at, cancelled_at
+          work_kind, work_target, created_at, updated_at, completed_at, cancelled_at
          FROM assistant_todos
          WHERE assistant_id IN (SELECT id FROM assistants WHERE deleted_at IS NULL)
-         ORDER BY sort_order ASC, updated_at DESC`
+         ORDER BY sort_order ASC, updated_at DESC, id ASC
+         LIMIT ?1`
       )
-      .all()
+        .all(limit);
+    return rows
       .map((row) => this.hydrateAssistantTodo(row))
       .filter((todo): todo is AssistantTodo => todo !== undefined);
   }
 
-  private readAssistantLearnings() {
-    return this.db
-      .query<AssistantLearningRow, []>(
+  private readAssistantLearnings(options: { assistantId?: string; limit?: number } = {}) {
+    const limit = normalizeAssistantPageLimit(options.limit, 8192);
+    const rows = options.assistantId
+      ? this.db
+        .query<AssistantLearningRow, [string, number]>(
+          `SELECT id, assistant_id, summary, source, confidence, sort_order, created_at, kind, supersedes_learning_ids_json, compacted_at
+           FROM assistant_learnings
+           WHERE assistant_id = ?1
+             AND (compacted_at IS NULL OR kind = 'summary')
+           ORDER BY CASE WHEN sort_order IS NULL THEN 1 ELSE 0 END ASC, sort_order ASC, kind DESC, created_at DESC, id DESC
+           LIMIT ?2`
+        )
+        .all(options.assistantId, limit)
+      : this.db
+        .query<AssistantLearningRow, [number]>(
         `SELECT id, assistant_id, summary, source, confidence, sort_order, created_at, kind, supersedes_learning_ids_json, compacted_at
          FROM assistant_learnings
          WHERE assistant_id IN (SELECT id FROM assistants WHERE deleted_at IS NULL)
            AND (compacted_at IS NULL OR kind = 'summary')
-         ORDER BY CASE WHEN sort_order IS NULL THEN 1 ELSE 0 END ASC, sort_order ASC, kind DESC, created_at DESC`
+         ORDER BY CASE WHEN sort_order IS NULL THEN 1 ELSE 0 END ASC, sort_order ASC, kind DESC, created_at DESC, id DESC
+         LIMIT ?1`
       )
-      .all()
+        .all(limit);
+    return rows
       .map((row) => this.hydrateAssistantLearning(row))
       .filter((learning): learning is AssistantLearning => learning !== undefined);
   }
 
   private readAssistantLearningsByAssistantId(assistantId: string) {
-    return this.db
-      .query<AssistantLearningRow, [string]>(
-        `SELECT id, assistant_id, summary, source, confidence, sort_order, created_at, kind, supersedes_learning_ids_json, compacted_at
-         FROM assistant_learnings
-         WHERE assistant_id = ?1
-           AND (compacted_at IS NULL OR kind = 'summary')
-         ORDER BY CASE WHEN sort_order IS NULL THEN 1 ELSE 0 END ASC, sort_order ASC, kind DESC, created_at DESC`
-      )
-      .all(assistantId)
-      .map((row) => this.hydrateAssistantLearning(row))
-      .filter((learning): learning is AssistantLearning => learning !== undefined);
+    return this.readAssistantLearnings({ assistantId, limit: 8192 });
   }
 
   private deleteGarbageAssistantLearnings() {
@@ -6001,45 +6518,180 @@ export class WorkspaceRepository {
     );
   }
 
-  private readAssistantQuestions() {
-    return this.db
-      .query<AssistantQuestionRow, []>(
+  private normalizeLegacyAssistantTodoWorkKinds() {
+    this.db.exec(
+      `UPDATE assistant_todos
+       SET work_kind = 'unspecified'
+       WHERE work_kind IS NULL
+          OR work_kind NOT IN ('app-code', 'automation-code', 'documentation', 'research', 'blocked', 'unspecified')`
+    );
+  }
+
+  private readAssistantQuestions(options: { assistantId?: string; limit?: number } = {}) {
+    const limit = normalizeAssistantPageLimit(options.limit, 4096);
+    const rows = options.assistantId
+      ? this.db
+        .query<AssistantQuestionRow, [string, number]>(
+          `SELECT id, assistant_id, prompt, status, answer_text, linked_todo_ids_json, asked_at, answered_at
+           FROM assistant_questions
+           WHERE assistant_id = ?1
+           ORDER BY asked_at DESC, id DESC
+           LIMIT ?2`
+        )
+        .all(options.assistantId, limit)
+      : this.db
+        .query<AssistantQuestionRow, [number]>(
         `SELECT id, assistant_id, prompt, status, answer_text, linked_todo_ids_json, asked_at, answered_at
          FROM assistant_questions
          WHERE assistant_id IN (SELECT id FROM assistants WHERE deleted_at IS NULL)
-         ORDER BY asked_at DESC`
+         ORDER BY asked_at DESC, id DESC
+         LIMIT ?1`
       )
-      .all()
+        .all(limit);
+    return rows
       .map((row) => this.hydrateAssistantQuestion(row))
       .filter((question): question is AssistantQuestion => question !== undefined);
   }
 
-  private readAssistantLogEntries() {
-    return this.db
-      .query<AssistantLogEntryRow, []>(
+  private readAssistantLogEntries(options: { assistantId?: string; limit?: number } = {}) {
+    const limit = normalizeAssistantPageLimit(options.limit, 16384);
+    const rows = options.assistantId
+      ? this.db
+        .query<AssistantLogEntryRow, [string, number]>(
+          `SELECT id, assistant_id, level, summary, detail, details_json, created_at
+           FROM assistant_log_entries
+           WHERE assistant_id = ?1
+           ORDER BY created_at DESC, id DESC
+           LIMIT ?2`
+        )
+        .all(options.assistantId, limit)
+      : this.db
+        .query<AssistantLogEntryRow, [number]>(
         `SELECT id, assistant_id, level, summary, detail, details_json, created_at
          FROM assistant_log_entries
          WHERE assistant_id IN (SELECT id FROM assistants WHERE deleted_at IS NULL)
-         ORDER BY created_at DESC`
+         ORDER BY created_at DESC, id DESC
+         LIMIT ?1`
       )
-      .all()
+        .all(limit);
+    return rows
       .map((row) => this.hydrateAssistantLogEntry(row))
       .filter((entry): entry is AssistantLogEntry => entry !== undefined);
   }
 
-  private readAssistantAssetRefs() {
-    return this.db
-      .query<AssistantAssetRefRow, []>(
+  private readAssistantAssetRefs(options: { assistantId?: string; limit?: number } = {}) {
+    const limit = normalizeAssistantPageLimit(options.limit, 4096);
+    const rows = options.assistantId
+      ? this.db
+        .query<AssistantAssetRefRow, [string, number]>(
+          `SELECT
+            id, assistant_id, kind, label, value, canonical_value, scope, provenance,
+            resolution_status, resolution_error, created_at
+           FROM assistant_asset_refs
+           WHERE assistant_id = ?1
+           ORDER BY created_at ASC, id ASC
+           LIMIT ?2`
+        )
+        .all(options.assistantId, limit)
+      : this.db
+        .query<AssistantAssetRefRow, [number]>(
         `SELECT
           id, assistant_id, kind, label, value, canonical_value, scope, provenance,
           resolution_status, resolution_error, created_at
          FROM assistant_asset_refs
          WHERE assistant_id IN (SELECT id FROM assistants WHERE deleted_at IS NULL)
-         ORDER BY created_at ASC`
+         ORDER BY created_at ASC, id ASC
+         LIMIT ?1`
       )
-      .all()
+        .all(limit);
+    return rows
       .map((row) => this.hydrateAssistantAssetRef(row))
       .filter((assetRef): assetRef is AssistantAssetRef => assetRef !== undefined);
+  }
+
+  private readAssistantMessagePage(
+    threadId: string,
+    input: { cursor?: string; limit?: number }
+  ): AssistantThreadMessagePage {
+    const limit = normalizeAssistantPageLimit(input.limit, ASSISTANT_DETAIL_ITEM_LIMIT);
+    const cursor = parseAssistantTimestampCursor(input.cursor);
+    const rows = cursor
+      ? this.db
+        .query<AssistantMessageRow, [string, string, string, number]>(
+          `SELECT id, assistant_thread_id, role, kind, content, metadata_json, created_at
+           FROM assistant_messages
+           WHERE assistant_thread_id = ?1
+             AND (created_at < ?2 OR (created_at = ?2 AND id < ?3))
+           ORDER BY created_at DESC, id DESC
+           LIMIT ?4`
+        )
+        .all(threadId, cursor.timestamp, cursor.id, limit + 1)
+      : this.db
+        .query<AssistantMessageRow, [string, number]>(
+          `SELECT id, assistant_thread_id, role, kind, content, metadata_json, created_at
+           FROM assistant_messages
+           WHERE assistant_thread_id = ?1
+           ORDER BY created_at DESC, id DESC
+           LIMIT ?2`
+        )
+        .all(threadId, limit + 1);
+    const items = rows
+      .slice(0, limit)
+      .reverse()
+      .map((message) =>
+        safeParsePersisted(
+          chatMessageSchema,
+          {
+            id: message.id,
+            role: message.role,
+            kind: message.kind ?? "plain",
+            content: normalizeRequiredString(message.content, 1000000, "Recovered assistant message"),
+            metadata: parseChatMessageMetadata(message.metadata_json),
+            createdAt: normalizeRequiredString(message.created_at, 256, new Date().toISOString())
+          },
+          { table: "assistant_messages", rowId: message.id }
+        )
+      )
+      .filter((message): message is ChatMessage => message !== undefined);
+    const oldest = items[0];
+    return {
+      items,
+      nextCursor: rows.length > limit && oldest ? encodeAssistantTimestampCursor(oldest.createdAt, oldest.id) : undefined,
+      totalApprox:
+        this.db
+          .query<{ count: number }, [string]>(`SELECT COUNT(*) AS count FROM assistant_messages WHERE assistant_thread_id = ?1`)
+          .get(threadId)?.count ?? 0
+    };
+  }
+
+  private countActiveAssistants() {
+    return this.db.query<{ count: number }, []>(`SELECT COUNT(*) AS count FROM assistants WHERE deleted_at IS NULL`).get()?.count ?? 0;
+  }
+
+  private countAssistantRows(
+    tableName: "assistant_log_entries" | "assistant_todos" | "assistant_learnings" | "assistant_questions",
+    assistantId: string
+  ) {
+    switch (tableName) {
+      case "assistant_learnings":
+        return this.db
+          .query<{ count: number }, [string]>(
+            `SELECT COUNT(*) AS count FROM assistant_learnings WHERE assistant_id = ?1 AND (compacted_at IS NULL OR kind = 'summary')`
+          )
+          .get(assistantId)?.count ?? 0;
+      case "assistant_log_entries":
+        return this.db
+          .query<{ count: number }, [string]>(`SELECT COUNT(*) AS count FROM assistant_log_entries WHERE assistant_id = ?1`)
+          .get(assistantId)?.count ?? 0;
+      case "assistant_todos":
+        return this.db
+          .query<{ count: number }, [string]>(`SELECT COUNT(*) AS count FROM assistant_todos WHERE assistant_id = ?1`)
+          .get(assistantId)?.count ?? 0;
+      case "assistant_questions":
+        return this.db
+          .query<{ count: number }, [string]>(`SELECT COUNT(*) AS count FROM assistant_questions WHERE assistant_id = ?1`)
+          .get(assistantId)?.count ?? 0;
+    }
   }
 
   private getAssistantTodo(todoId: string) {
@@ -6047,7 +6699,7 @@ export class WorkspaceRepository {
       .query<AssistantTodoRow, [string]>(
         `SELECT
           id, assistant_id, title, description, state, sort_order, blocker_reason, source,
-          created_at, updated_at, completed_at, cancelled_at
+          work_kind, work_target, created_at, updated_at, completed_at, cancelled_at
          FROM assistant_todos
          WHERE id = ?1`
       )
@@ -6182,7 +6834,7 @@ export class WorkspaceRepository {
     );
   }
 
-  private hydrateAssistantThread(row: AssistantThreadRow) {
+  private hydrateAssistantThread(row: AssistantThreadRow, messageLimit: number = ASSISTANT_DETAIL_ITEM_LIMIT) {
     return safeParsePersisted(
       assistantThreadSchema,
       {
@@ -6208,7 +6860,7 @@ export class WorkspaceRepository {
             source: "generated"
           }
         : undefined,
-      messages: this.readAssistantMessages(row.id).slice(0, 4096),
+      messages: this.readAssistantMessages(row.id, messageLimit),
       updatedAt: normalizeRequiredString(row.updated_at, 256, new Date().toISOString())
       },
       { table: "assistant_threads", rowId: row.id }
@@ -6227,6 +6879,8 @@ export class WorkspaceRepository {
       sortOrder: normalizeInteger(row.sort_order, 0, 1000000, 0),
       blockerReason: normalizeOptionalString(row.blocker_reason, 4000),
       source: normalizeAssistantTodoSource(row.source),
+      workKind: normalizeAssistantTodoWorkKind(row.work_kind),
+      workTarget: normalizeOptionalString(row.work_target, 512),
       createdAt: normalizeRequiredString(row.created_at, 256, new Date().toISOString()),
       updatedAt: normalizeRequiredString(row.updated_at, 256, new Date().toISOString()),
       completedAt: normalizeOptionalString(row.completed_at, 256),
@@ -6973,6 +7627,12 @@ export class WorkspaceRepository {
         prompt_hash TEXT NULL,
         transcript_chars INTEGER NULL,
         latest_task_chars INTEGER NULL,
+        agent_id TEXT NULL,
+        provider_brand TEXT NULL CHECK(provider_brand IN ('gpt', 'gemini', 'claude')),
+        planning_model_id TEXT NULL,
+        execution_model_id TEXT NULL,
+        reasoning_strength TEXT NULL CHECK(reasoning_strength IN ('low', 'medium', 'high', 'extra-high')),
+        fast_mode INTEGER NULL CHECK(fast_mode IN (0, 1)),
         controller_instance_id TEXT NULL,
         controller_lease_id TEXT NULL,
         controller_lease_expires_at TEXT NULL,
@@ -6995,6 +7655,7 @@ export class WorkspaceRepository {
         id, job_id, project_id, assistant_id, automation_thread_id, trigger_source, status, risk_level, approval_status,
         skipped_occurrence_count, linked_agent_run_id, summary, failure_message, failure_category,
         prompt_chars, prompt_hash, transcript_chars, latest_task_chars,
+        agent_id, provider_brand, planning_model_id, execution_model_id, reasoning_strength, fast_mode,
         controller_instance_id, controller_lease_id, controller_lease_expires_at, resume_attempt_count,
         last_heartbeat_at, heartbeat_stage, heartbeat_detail, timed_out_at,
         queued_at, started_at, completed_at, created_at, updated_at
@@ -7003,6 +7664,7 @@ export class WorkspaceRepository {
         id, job_id, project_id, assistant_id, automation_thread_id, trigger_source, status, risk_level, approval_status,
         skipped_occurrence_count, linked_agent_run_id, summary, failure_message, failure_category,
         prompt_chars, prompt_hash, transcript_chars, latest_task_chars,
+        NULL, NULL, NULL, NULL, NULL, NULL,
         controller_instance_id, controller_lease_id, controller_lease_expires_at, COALESCE(resume_attempt_count, 0),
         last_heartbeat_at, heartbeat_stage, heartbeat_detail, timed_out_at,
         queued_at, started_at, completed_at, created_at, updated_at
@@ -7195,6 +7857,7 @@ export class WorkspaceRepository {
           id, job_id, project_id, assistant_id, automation_thread_id, trigger_source, status, risk_level, approval_status,
           skipped_occurrence_count, linked_agent_run_id, summary, failure_message, failure_category,
           prompt_chars, prompt_hash, transcript_chars, latest_task_chars,
+          agent_id, provider_brand, planning_model_id, execution_model_id, reasoning_strength, fast_mode,
           controller_instance_id, controller_lease_id, controller_lease_expires_at, resume_attempt_count,
           last_heartbeat_at, heartbeat_stage, heartbeat_detail, timed_out_at, queued_at, started_at,
           completed_at, created_at, updated_at
@@ -7336,6 +7999,12 @@ export class WorkspaceRepository {
         transcriptChars: row.transcript_chars,
         latestTaskChars: row.latest_task_chars
       }),
+      agentId: row.agent_id ?? undefined,
+      providerBrand: row.provider_brand ?? undefined,
+      planningModelId: normalizeOptionalString(row.planning_model_id, 256),
+      executionModelId: normalizeOptionalString(row.execution_model_id, 256),
+      reasoningStrength: row.reasoning_strength ?? undefined,
+      fastMode: row.fast_mode === null ? undefined : Boolean(row.fast_mode),
       controllerInstanceId: normalizeOptionalString(row.controller_instance_id, 128),
       controllerLeaseId: normalizeOptionalString(row.controller_lease_id, 128),
       controllerLeaseExpiresAt: normalizeOptionalString(row.controller_lease_expires_at, 256),

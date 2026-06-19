@@ -21,6 +21,7 @@ import { Button } from "./primitives/button";
 import { Dialog } from "./primitives/dialog";
 import { DropdownControl } from "./primitives/dropdown";
 import { getModeDropdownIcon } from "./primitives/dropdown-option-icons";
+import { DialogField, DialogFormSection, DialogInlineNote } from "./primitives/form-layout";
 import { Input } from "./primitives/input";
 import { Textarea } from "./primitives/textarea";
 
@@ -333,8 +334,8 @@ export function BackgroundJobEditorDialog() {
       title={activeDraft()?.source === "edit" ? "Edit scheduled task" : "Scheduled task"}
       eyebrow="Background jobs"
       description="Save self-contained AI routines or typed shell jobs."
-      class="max-w-3xl"
-      contentClass="max-h-[80vh] overflow-auto"
+      class="max-w-4xl"
+      contentClass="max-h-[80vh] gap-5 overflow-auto"
       footer={
         <>
           <Button tooltip="Close scheduled task editor without saving" variant="ghost" onClick={handleClose}>
@@ -344,9 +345,13 @@ export function BackgroundJobEditorDialog() {
         </>
       }
     >
-      <div class="grid gap-3 md:grid-cols-2">
-        <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Project</span>
+      <DialogFormSection title="Task" description="Pick where this job runs, who owns it, and what kind of work it performs.">
+        <DialogField label="Name">
+          <Input value={name()} onInput={(event) => setName(event.currentTarget.value)} placeholder="Nightly repo review" />
+        </DialogField>
+
+        <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          <DialogField label="Project" class="xl:col-span-2">
           <DropdownControl
             kind="select"
             ariaLabel="Select background job project"
@@ -357,10 +362,9 @@ export function BackgroundJobEditorDialog() {
             options={projectOptions()}
             onChange={(value) => setProjectId(value || undefined)}
           />
-        </label>
+          </DialogField>
 
-        <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Owner</span>
+          <DialogField label="Owner">
           <DropdownControl
             kind="select"
             ariaLabel="Select background job owner assistant"
@@ -371,24 +375,22 @@ export function BackgroundJobEditorDialog() {
             options={assistantOptions()}
             onChange={setAssistantId}
           />
-        </label>
+          </DialogField>
 
-        <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Template</span>
-          <DropdownControl
-            kind="select"
-            ariaLabel="Select background job template"
-            icon={<ClipboardList class="h-3.5 w-3.5" />}
-            size="md"
-            class="w-full"
-            value={templateId()}
-            options={templateOptions()}
-            onChange={applyTemplate}
-          />
-        </label>
+          <DialogField label="Template">
+            <DropdownControl
+              kind="select"
+              ariaLabel="Select background job template"
+              icon={<ClipboardList class="h-3.5 w-3.5" />}
+              size="md"
+              class="w-full"
+              value={templateId()}
+              options={templateOptions()}
+              onChange={applyTemplate}
+            />
+          </DialogField>
 
-        <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Kind</span>
+          <DialogField label="Kind">
           <DropdownControl
             kind="select"
             ariaLabel="Select background job kind"
@@ -399,10 +401,9 @@ export function BackgroundJobEditorDialog() {
             options={kindOptions()}
             onChange={(value) => setKind(value as BackgroundJob["kind"])}
           />
-        </label>
+          </DialogField>
 
-        <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Lane</span>
+          <DialogField label="Lane">
           <DropdownControl
             kind="select"
             ariaLabel="Select background job lane"
@@ -413,50 +414,35 @@ export function BackgroundJobEditorDialog() {
             options={laneOptions()}
             onChange={(value) => setLane(value === "concurrent" ? "concurrent" : "exclusive")}
           />
-        </label>
+          </DialogField>
+        </div>
 
-        <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Name</span>
-          <Input value={name()} onInput={(event) => setName(event.currentTarget.value)} placeholder="Nightly repo review" />
-        </label>
-      </div>
+        <DialogField label="Description">
+          <Textarea rows="2" value={description()} onInput={(event) => setDescription(event.currentTarget.value)} placeholder="Optional inbox summary." />
+        </DialogField>
+      </DialogFormSection>
 
-      <label class="space-y-2">
-        <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Description</span>
-        <Textarea rows="2" value={description()} onInput={(event) => setDescription(event.currentTarget.value)} placeholder="Optional inbox summary." />
-      </label>
-
-      <div class="grid gap-3 md:grid-cols-[minmax(0,1fr)_12rem]">
-        <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Schedule</span>
+      <DialogFormSection title="Schedule" description="Use an interval, one-off datetime, or cron expression.">
+        <div class="grid gap-3 md:grid-cols-[minmax(0,1fr)_14rem]">
+          <DialogField label="Schedule">
           <Input value={scheduleInput()} onInput={(event) => setScheduleInput(event.currentTarget.value)} placeholder="week | 3h | 2026-04-17 09:00 | */15 * * * *" />
-        </label>
+          </DialogField>
 
-        <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Timezone</span>
+          <DialogField label="Timezone">
           <Input value={timezone()} onInput={(event) => setTimezone(event.currentTarget.value)} placeholder="America/New_York" />
-        </label>
-      </div>
+          </DialogField>
+        </div>
 
-      <div
-        class="rounded-2xl border p-3 text-[0.675rem] leading-5"
-        classList={{
-          "border-rose-300": Boolean(schedulePreview()?.error),
-          "bg-rose-50/80": Boolean(schedulePreview()?.error),
-          "text-rose-900": Boolean(schedulePreview()?.error),
-          "border-(--border)": !schedulePreview()?.error,
-          "bg-white/55": !schedulePreview()?.error,
-          "text-(--muted)": !schedulePreview()?.error
-        }}
-      >
-        <Show when={schedulePreview()} fallback={<span>Schedule preview waits for valid input.</span>}>
-          {(preview) => (
-            <Show when={!preview().error} fallback={<span>{preview().error}</span>}>
-              <span>{describeSchedulePreview(preview().schedule)}</span>
-            </Show>
-          )}
-        </Show>
-      </div>
+        <DialogInlineNote tone={schedulePreview()?.error ? "danger" : schedulePreview()?.schedule ? "success" : "neutral"}>
+          <Show when={schedulePreview()} fallback={<span>Schedule preview waits for valid input.</span>}>
+            {(preview) => (
+              <Show when={!preview().error} fallback={<span>{preview().error}</span>}>
+                <span>{describeSchedulePreview(preview().schedule)}</span>
+              </Show>
+            )}
+          </Show>
+        </DialogInlineNote>
+      </DialogFormSection>
 
       <Show when={kind() === "ai-routine"} fallback={<ShellJobFields
         executable={shellExecutable()}
@@ -472,15 +458,13 @@ export function BackgroundJobEditorDialog() {
         onTimeoutInput={(value) => setShellTimeoutSeconds(Math.max(1, Number(value) || 1))}
         onNetworkAccessInput={setShellNetworkAccess}
       />}>
-        <div class="grid gap-3">
-          <label class="space-y-2">
-            <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Prompt</span>
+        <DialogFormSection title="AI routine" description="Prompt and execution defaults used each time the schedule fires.">
+          <DialogField label="Prompt">
             <Textarea rows="8" value={aiPrompt()} onInput={(event) => setAiPrompt(event.currentTarget.value)} placeholder="Inspect repo, propose fix, implement, verify, summarize." />
-          </label>
+          </DialogField>
 
-          <div class="grid gap-3 md:grid-cols-2">
-            <label class="space-y-2">
-              <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Mode</span>
+          <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            <DialogField label="Mode">
               <DropdownControl
                 kind="select"
                 ariaLabel="Select background job mode"
@@ -491,15 +475,13 @@ export function BackgroundJobEditorDialog() {
                 options={modeOptions()}
                 onChange={setAiModeId}
               />
-            </label>
+            </DialogField>
 
-            <label class="space-y-2">
-              <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Execution model</span>
+            <DialogField label="Execution model">
               <Input value={aiExecutionModelId()} onInput={(event) => setAiExecutionModelId(event.currentTarget.value)} placeholder="openai/gpt-5.4" />
-            </label>
+            </DialogField>
 
-            <label class="space-y-2">
-              <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Effort</span>
+            <DialogField label="Effort">
               <DropdownControl
                 kind="select"
                 ariaLabel="Select background job reasoning effort"
@@ -510,10 +492,9 @@ export function BackgroundJobEditorDialog() {
                 options={reasoningOptions()}
                 onChange={(value) => setAiReasoningStrength(value as ComposerReasoningStrength)}
               />
-            </label>
+            </DialogField>
 
-            <label class="space-y-2">
-              <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Fast mode</span>
+            <DialogField label="Fast mode">
               <DropdownControl
                 kind="select"
                 ariaLabel="Select background job fast mode"
@@ -524,10 +505,9 @@ export function BackgroundJobEditorDialog() {
                 options={fastModeOptions()}
                 onChange={(value) => setAiFastMode(value === "true")}
               />
-            </label>
+            </DialogField>
 
-            <label class="space-y-2">
-              <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Plan gate</span>
+            <DialogField label="Plan gate">
               <DropdownControl
                 kind="select"
                 ariaLabel="Select background job plan gate"
@@ -538,10 +518,9 @@ export function BackgroundJobEditorDialog() {
                 options={planGateOptions()}
                 onChange={(value) => setAiPlanExecutionMode(value as "countdown" | "approve" | "immediate")}
               />
-            </label>
+            </DialogField>
 
-            <label class="space-y-2">
-              <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Worktree</span>
+            <DialogField label="Worktree">
               <DropdownControl
                 kind="select"
                 ariaLabel="Select background job worktree strategy"
@@ -552,9 +531,9 @@ export function BackgroundJobEditorDialog() {
                 options={worktreeOptions()}
                 onChange={(value) => setAiSubagentWorktreeStrategy(value as "same-worktree" | "separate-worktrees")}
               />
-            </label>
+            </DialogField>
           </div>
-        </div>
+        </DialogFormSection>
       </Show>
     </Dialog>
   );
@@ -575,35 +554,32 @@ function ShellJobFields(props: {
   onNetworkAccessInput: (value: boolean) => void;
 }) {
   return (
-    <div class="grid gap-3 md:grid-cols-2">
-      <label class="space-y-2">
-        <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Executable</span>
+    <DialogFormSection title="Shell job" description="Command, arguments, environment, and runtime limits for typed background execution.">
+      <div class="grid gap-3 md:grid-cols-2">
+      <DialogField label="Executable">
         <Input value={props.executable} onInput={(event) => props.onExecutableInput(event.currentTarget.value)} placeholder="bun" />
-      </label>
-      <label class="space-y-2">
-        <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Working directory</span>
+      </DialogField>
+      <DialogField label="Working directory">
         <Input value={props.cwd} onInput={(event) => props.onCwdInput(event.currentTarget.value)} placeholder="Project root when empty" />
-      </label>
-      <label class="space-y-2">
-        <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Args, one per line</span>
+      </DialogField>
+      <DialogField label="Args, one per line">
         <Textarea rows="6" value={props.argsText} onInput={(event) => props.onArgsInput(event.currentTarget.value)} placeholder="run&#10;test" />
-      </label>
-      <label class="space-y-2">
-        <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Env refs, one per line</span>
+      </DialogField>
+      <DialogField label="Env refs, one per line">
         <Textarea rows="6" value={props.envRefsText} onInput={(event) => props.onEnvRefsInput(event.currentTarget.value)} placeholder="OPENAI_API_KEY" />
-      </label>
-      <label class="space-y-2">
-        <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Timeout seconds</span>
+      </DialogField>
+      <DialogField label="Timeout seconds">
         <Input type="number" min="1" max={String(24 * 60 * 60)} value={String(props.timeoutSeconds)} onInput={(event) => props.onTimeoutInput(event.currentTarget.value)} />
-      </label>
-      <label class="flex items-start gap-3 rounded-[1.25rem] border border-(--border) bg-white/55 px-4 py-3">
+      </DialogField>
+      <label class="flex items-start gap-3 rounded-xl border border-(--border) bg-white/55 px-4 py-3">
         <input class="mt-1" type="checkbox" checked={props.networkAccess} onInput={(event) => props.onNetworkAccessInput(event.currentTarget.checked)} />
         <div>
           <div class="text-[0.675rem] font-semibold text-(--foreground)">Allow network access</div>
           <div class="mt-1 text-[0.675rem] leading-5 text-(--muted)">Marks task unsafe. Leave off for repo-local commands.</div>
         </div>
       </label>
-    </div>
+      </div>
+    </DialogFormSection>
   );
 }
 

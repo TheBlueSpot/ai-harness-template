@@ -28,7 +28,7 @@ Roles: `user`, `developer`, `reviewer`.
 | NOTIFICATIONS | 3 |
 | BROWSER | 3 |
 | ACTIVATION | 7 |
-| UI | 19 |
+| UI | 23 |
 | PERSISTENCE | 15 |
 | PREFERENCES | 3 |
 | DEV | 26 |
@@ -181,7 +181,7 @@ US-RUNTIMES-001: As a user, I pick from multiple agent runtimes: pi, GitHub Copi
 
 US-RUNTIMES-002: As a user, I get Codex CLI noninteractive runs through the bundled official Codex SDK and CLI with live web search plus writable shell network access, keep review mode prompt-driven inside the harness instead of special native review routing, and on Windows writable runs auto-use full access because bundled Codex currently downgrades `workspace-write` to read-only there while read-only tasks stay sandboxed. (README L19)
 
-US-RUNTIMES-003: As a user, I use optional live CLI sessions for Copilot CLI and Codex CLI over Bun-managed piped transport with attach tokens, reconnect, and follow-up capture so that terminal-style agents stay inspectable. (README L39)
+US-RUNTIMES-003: As a user, I use optional live CLI sessions for Copilot CLI and Codex CLI over Bun-managed piped transport with attach tokens, reconnect, terminal-drawer visibility, close controls, and follow-up capture so that terminal-style agents stay inspectable. (README L39)
 
 US-RUNTIMES-004: As a developer, I see thread continuity stay harness-owned even for CLI runtimes so fresh CLI invocations rebuild context from persisted transcript and plan state. (README L151)
 
@@ -252,6 +252,10 @@ US-ASSISTANTS-003: As a developer, I see assistant state persist locally in SQLi
 US-ASSISTANTS-004: As a user, I see assistant-owned jobs share the same scheduler path while assistant circuit breakers can auto-pause failing assistants and surface blocking questions for user intervention. (README L179)
 
 US-ASSISTANTS-005: As a user, assistant operators make reasonable assumptions, suppress duplicate or already-answered questions, and keep working on useful async tasks unless a high-confidence blocker truly needs my input.
+
+US-ASSISTANTS-006: As a user, a newly idle assistant asks whether to bootstrap default research, todo maintenance, and implementation jobs, and those jobs push toward market research, reusable skills, TypeScript scripts, and concrete product implementation.
+
+US-ASSISTANTS-007: As a user, build-oriented assistants keep structured todo work categories and targets, bias generated todos toward coding after early discovery, ask once for a coding-project stack preference, and default to TypeScript, Bun, `bun test`, SQLite when persistence is needed, SolidJS plus Tailwind when UI is needed, and Happy DOM frontend tests when no existing stack or user preference overrides it.
 
 ### JOBS
 
@@ -339,6 +343,10 @@ US-UI-018: As a user, I see shared popovers render through portal-backed primiti
 
 US-UI-019: As a user, I see the live context usage meter sourced from pi session context stats. (README L51)
 
+US-UI-022: As a user, I open an IDE workbench with real project file navigation, read-only file previews, content search, Git status, editor tabs, command palette, resizable panes, terminal file-link handoff, status context, custom menus, themes, shortcut handling, notifications, and loading placeholders so that coding context can live beside harness execution.
+
+US-UI-023: As a user, I open a project-scoped terminal drawer with persistent integrated-terminal tabs, splits, scrollback, search, shell choice, and reconnectable live CLI sessions from chats and jobs so coding workflows stay in the harness. (integrated terminal)
+
 ### PERSISTENCE
 
 US-PERSISTENCE-001: As a developer, I use SQLite-backed persistence for projects, active selection, threads, and messages so that local state survives restart. (README L34)
@@ -385,7 +393,7 @@ US-PREFERENCES-003: As a user, I see the main project-chat composer restore mode
 
 US-DEV-001: As a developer, I run a same-origin web app and websocket server started through Bun. (README L7)
 
-US-DEV-002: As a developer, I run `bun run bootstrap` to install missing dependencies, build the UI, start the server, and open the browser by default. (README L115)
+US-DEV-002: As a developer, I run `bun run bootstrap` to install missing dependencies, check for a CDP-capable browser, build the UI, start the server, and open the browser by default. (README L115)
 
 US-DEV-003: As a developer, I run `bun run dev` to start the Bun server with hot reload, open the browser only on first ready boot, wait for a 30s quiet window before applying dev UI or backend reloads, auto-reload the browser after successful debounced UI rebuilds, and keep backend state best-effort across same-process hot reloads. (README L118)
 
@@ -431,7 +439,7 @@ US-DEV-025: As a developer, I see bundled ripgrep added to the agent toolchain p
 
 US-DEV-026: As a developer, I see Bun hot reload reuse one live harness server instance with stable websocket listeners, delaying handler swaps until the quiet window ends so active dev chats and runtime state are preserved best-effort instead of restarting on every save. (README L118)
 
-US-DEV-023: As a developer, I run `bun run screenshot` to capture isolated Playwright chromium PNGs of the UI inside a BranchFS mount on a random free port, with outputs written to `.local/screenshots/<runId>/` so agents can inspect visual bugs without touching the host `:8787` server. (README L129)
+US-DEV-023: As a developer, I run `bun run screenshot` to capture CDP PNGs from an already-running UI by default, with optional flags for managed server startup and BranchFS isolation, and outputs written to `.local/screenshots/<runId>/`. (README L129)
 
 US-DEV-024: As a developer, I see debug and dev startup telemetry stream current boot phase, weighted progress and ETA, slow-phase hints, and a temp startup log path so stalled boots stop looking dead. (README L119)
 

@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { copyFile, lstat, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { AgentTrace, ComposerReasoningStrength, PlannerSubtask } from "../../shared/protocol";
-import { BranchfsManager, type BranchfsExperimentLease } from "./branchfs-manager";
+import { BranchfsManager, copyBranchfsPathRobust, type BranchfsExperimentLease } from "./branchfs-manager";
 import type { PiAgentAdapter } from "./pi-agent-adapter";
 import type { BranchfsSubagentSnapshot } from "./pi-subagents";
 
@@ -308,33 +308,7 @@ async function copyChangedPath(sourcePath: string, destinationPath: string) {
     return;
   }
 
-  await copyRecursiveRobust(sourcePath, destinationPath);
-}
-
-async function copyRecursiveRobust(sourcePath: string, destinationPath: string) {
-  const sourceStats = await withFsRetry(() => lstat(sourcePath));
-  const destinationStats = await lstat(destinationPath).catch(() => undefined);
-
-  if (sourceStats.isDirectory()) {
-    if (destinationStats && !destinationStats.isDirectory()) {
-      await rm(destinationPath, { recursive: true, force: true });
-    }
-    await mkdir(destinationPath, { recursive: true });
-    const entries = await withFsRetry(() => readdir(sourcePath, { withFileTypes: true }));
-    for (const entry of entries) {
-      await copyRecursiveRobust(path.join(sourcePath, entry.name), path.join(destinationPath, entry.name));
-    }
-    return;
-  }
-
-  if (destinationStats && !destinationStats.isFile()) {
-    await rm(destinationPath, { recursive: true, force: true });
-  }
-  await mkdir(path.dirname(destinationPath), { recursive: true });
-  await withFsRetry(async () => {
-    await mkdir(path.dirname(destinationPath), { recursive: true });
-    await copyFile(sourcePath, destinationPath);
-  });
+  await copyBranchfsPathRobust(sourcePath, destinationPath);
 }
 
 async function hashPath(targetPath: string) {
@@ -350,7 +324,16 @@ async function hashPath(targetPath: string) {
   }
 
   const hash = createHash("sha256");
-  hash.update(await readFile(targetPath));
+  const content = await readFile(targetPath).catch((error: unknown) => {
+    if (isMissingPathError(error)) {
+      return undefined;
+    }
+    throw error;
+  });
+  if (!content) {
+    return "missing";
+  }
+  hash.update(content);
   return hash.digest("hex");
 }
 
@@ -367,18 +350,12 @@ function sanitizeTaskId(taskId: string) {
   return taskId.replace(/[^a-zA-Z0-9._-]/g, "-");
 }
 
-async function withFsRetry<T>(operation: () => Promise<T>) {
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    try {
-      return await operation();
-    } catch (error) {
-      if (!(error instanceof Error) || !("code" in error) || !["ENOENT", "EBUSY", "EPERM", "EACCES"].includes(String(error.code)) || attempt === 3) {
-        throw error;
-      }
-      await Bun.sleep(25 * (attempt + 1));
-    }
+function isMissingPathError(error: unknown) {
+  if (typeof error !== "object" || error === null || !("code" in error)) {
+    return false;
   }
-  throw new Error("unreachable");
+  const code = String(error.code);
+  return code === "ENOENT" || code === "ENOTDIR";
 }
 
 async function runCommand(command: string[], cwd: string) {

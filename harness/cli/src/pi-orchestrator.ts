@@ -1463,9 +1463,24 @@ function buildExecutionWorkspaceContext(
           ...executionPlan.memorySummaries.map((memory) => `[${memory.scope}] ${memory.label}: ${memory.content}`)
         ].join("\n")
       : "",
+    cwd ? buildExecutionSkillContext(cwd) : "",
     workspacePathGuidance ?? "",
     `Execution brief: ${normalizedFinalExecutionBrief}`
   ].filter(Boolean).join("\n");
+}
+
+function buildExecutionSkillContext(cwd: string) {
+  const repoRoot = resolveRepoRoot(cwd);
+  const availableSkillPaths = discoverRepoSkillPaths(repoRoot);
+  if (availableSkillPaths.length === 0) {
+    return "Available repository/global skill files: none discovered.";
+  }
+
+  return [
+    "Available repository/global skill files:",
+    ...availableSkillPaths.map((skillPath) => `- ${skillPath}`),
+    "If the user asks what skills are available, include these repository/global skills in the answer."
+  ].join("\n");
 }
 
 export function shouldUseReadOnlyExecutionTools(executionPlan?: Pick<ExecutionPlan, "mode">) {

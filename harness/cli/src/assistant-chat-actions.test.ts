@@ -133,6 +133,7 @@ ec32e89b-08a3-41a5-80bf-6823701343f0
       title: "check changelog",
       state: "pending",
       sortOrder: 0,
+      workKind: "documentation",
       createdAt: now,
       updatedAt: now
     };

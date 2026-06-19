@@ -3158,6 +3158,85 @@ ec32e89b-08a3-41a5-80bf-6823701343f0
         socket.close();
       }, 60000);
 
+      serverTest("background job delete cancels an active run before removing the job", async () => {
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot);
+        const projectId = opened.payload.project.id;
+        const now = new Date().toISOString();
+        const jobId = crypto.randomUUID();
+        repository.setBackgroundJobApprovalPolicyDefault("allow-all");
+        repository.saveBackgroundJob({
+          id: jobId,
+          projectId,
+          automationThreadId: crypto.randomUUID(),
+          kind: "ai-routine",
+          name: "Delete active run job",
+          status: "enabled",
+          riskLevel: "safe",
+          definition: {
+            kind: "ai-routine",
+            prompt: "slow request",
+            modeId: "implement"
+          },
+          schedule: {
+            type: "interval",
+            intervalSeconds: 600,
+            nextRunAt: now,
+            sourceText: "10m"
+          },
+          scheduleInput: "10m",
+          nextRunAt: now,
+          createdAt: now,
+          updatedAt: now
+        } satisfies BackgroundJob);
+
+        const runningRunPromise = waitForEvent(
+          socket,
+          "background-job-run.updated",
+          (event) => event.payload.run.jobId === jobId && event.payload.run.status === "running",
+          10000
+        );
+        socket.send(
+          JSON.stringify({
+            type: "background-job.run-now",
+            requestId: "req-delete-active-run-now",
+            payload: {
+              projectId,
+              jobId
+            }
+          })
+        );
+        const runningRun = await runningRunPromise;
+        const cancelledRunPromise = waitForEvent(
+          socket,
+          "background-job-run.updated",
+          (event) => event.payload.run.id === runningRun.payload.run.id && event.payload.run.status === "cancelled",
+          10000
+        );
+        socket.send(
+          JSON.stringify({
+            type: "background-job.delete",
+            requestId: "req-delete-active-job",
+            payload: {
+              projectId,
+              jobId
+            }
+          })
+        );
+
+        await cancelledRunPromise;
+        await waitForEvent(
+          socket,
+          "background-jobs.updated",
+          (event) => !event.payload.backgroundJobs.jobs.some((job: BackgroundJob) => job.id === jobId),
+          10000
+        );
+        expect(repository.getBackgroundJob(jobId)).toBeUndefined();
+        expect(repository.getBackgroundJobRun(runningRun.payload.run.id)).toBeUndefined();
+        socket.close();
+      }, 60000);
+
 
     
       serverTest("ask mode auto-runs immediately without appending a plan summary message", async () => {
@@ -3668,6 +3747,85 @@ export function registerServerExecutionMainTests(options: ServerTestShardOptions
         secondSocket.close();
         socket.close();
       });
+
+      serverTest("pauses assistant-owned jobs while global execution pause is active", async () => {
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot, "req-assistant-job-pause-open");
+        const projectId = opened.payload.project.id;
+        const now = new Date().toISOString();
+        const assistantId = crypto.randomUUID();
+        const assistant = repository.saveAssistant({
+          id: assistantId,
+          name: "Job pauser",
+          scope: "project",
+          projectId,
+          personalityPrompt: "Keep jobs orderly.",
+          jobPrompt: "Run assistant work.",
+          agentId: "pi",
+          providerBrand: "gpt",
+          modeId: "implement",
+          runState: "active",
+          bootstrapState: "completed",
+          failureStreakCount: 0,
+          circuitBreakerState: "closed",
+          unreadQuestionCount: 0,
+          createdAt: now,
+          updatedAt: now
+        } satisfies Assistant);
+        const assistantJobId = crypto.randomUUID();
+        const standaloneJobId = crypto.randomUUID();
+        const disabledAssistantJobId = crypto.randomUUID();
+        const createJob = (input: { id: string; assistantId?: string; status: BackgroundJob["status"]; name: string }) =>
+          repository.saveBackgroundJob({
+            id: input.id,
+            projectId,
+            ...(input.assistantId ? { assistantId: input.assistantId } : {}),
+            automationThreadId: crypto.randomUUID(),
+            kind: "ai-routine",
+            name: input.name,
+            status: input.status,
+            riskLevel: "safe",
+            definition: {
+              kind: "ai-routine",
+              prompt: "Check work."
+            },
+            schedule: {
+              type: "one-off",
+              runAt: now,
+              sourceText: "now"
+            },
+            scheduleInput: "now",
+            nextRunAt: now,
+            createdAt: now,
+            updatedAt: now
+          } satisfies BackgroundJob);
+
+        createJob({ id: assistantJobId, assistantId: assistant.id, status: "enabled", name: "Assistant enabled job" });
+        createJob({ id: standaloneJobId, status: "enabled", name: "Standalone enabled job" });
+        createJob({ id: disabledAssistantJobId, assistantId: assistant.id, status: "disabled", name: "Assistant disabled job" });
+        repository.setGlobalExecutionPaused(true);
+
+        const updatedPromise = waitForEvent(
+          socket,
+          "background-jobs.updated",
+          (event) => event.payload.backgroundJobs.jobs.some((job: BackgroundJob) => job.id === assistantJobId && job.status === "paused")
+        );
+        socket.send(
+          JSON.stringify({
+            type: "background-job.pause-assistant-jobs",
+            requestId: "req-pause-assistant-jobs"
+          })
+        );
+
+        const updated = await updatedPromise;
+        const statuses = new Map(updated.payload.backgroundJobs.jobs.map((job: BackgroundJob) => [job.id, job.status]));
+        expect(statuses.get(assistantJobId)).toBe("paused");
+        expect(statuses.get(standaloneJobId)).toBe("enabled");
+        expect(statuses.get(disabledAssistantJobId)).toBe("disabled");
+        expect(repository.getGlobalExecutionPaused()).toBe(true);
+        socket.close();
+      }, 15000);
 
 
     
@@ -5807,6 +5965,35 @@ export function registerServerProjectsAndHistoryTests(options: ServerTestShardOp
         expect(searchResults.payload.results.length).toBeGreaterThan(0);
         expect(searchResults.payload.results[0]?.repoKind).toBe("git-repo");
         expect(typeof searchResults.payload.results[0]?.rootPath).toBe("string");
+        socket.close();
+      }, 15000);
+
+      serverTest("serves IDE file tree, read, write, and git status through typed commands", async () => {
+        writeFileSync(path.join(projectRoot, "ide-target.ts"), "export const ideNeedle = true;\n");
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot, "req-ide-open");
+        const projectId = opened.payload.project.id;
+
+        const treePromise = waitForEvent(socket, "ide.fileTree.listed");
+        socket.send(JSON.stringify({ type: "ide.fileTree.list", requestId: "req-ide-tree", payload: { projectId } }));
+        const tree = await treePromise;
+        expect(tree.payload.entries.some((entry: { path: string }) => entry.path === "ide-target.ts")).toBe(true);
+
+        const readPromise = waitForEvent(socket, "ide.file.read");
+        socket.send(JSON.stringify({ type: "ide.file.read", requestId: "req-ide-read", payload: { projectId, path: "ide-target.ts" } }));
+        const read = await readPromise;
+        expect(read.payload.content).toContain("ideNeedle");
+
+        const writePromise = waitForEvent(socket, "ide.file.written");
+        socket.send(JSON.stringify({ type: "ide.file.write", requestId: "req-ide-write", payload: { projectId, path: "ide-target.ts", content: "export const ideNeedle = false;\n" } }));
+        const written = await writePromise;
+        expect(written.payload.content).toContain("false");
+
+        const gitPromise = waitForEvent(socket, "ide.git.status");
+        socket.send(JSON.stringify({ type: "ide.git.status", requestId: "req-ide-git", payload: { projectId } }));
+        const git = await gitPromise;
+        expect(git.payload.isRepository).toBe(true);
         socket.close();
       }, 15000);
 

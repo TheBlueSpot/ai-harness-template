@@ -3,7 +3,9 @@ import { createComponent } from "solid-js/web";
 import { SolidMarkdown } from "../../../../node_modules/solid-markdown/dist/index.js";
 import type { SolidMarkdownComponents } from "solid-markdown";
 import type { Element, Properties } from "hast";
-import { markdownLiveRehypePlugins, markdownRehypePlugins, markdownRemarkPlugins, classifyLinkHref, extractTextContent, findFirstChildElement, getCodeLanguage, getElementClassNames, normalizeAllowedHref } from "../lib/markdown";
+import type { ChatFileLinkContext, ChatFileTarget } from "../lib/chat-file-links";
+import { resolveChatFileTarget } from "../lib/chat-file-links";
+import { createMarkdownRehypePlugins, markdownRemarkPlugins, classifyLinkHref, extractTextContent, findFirstChildElement, getCodeLanguage, getElementClassNames, normalizeAllowedHref } from "../lib/markdown";
 import { cn } from "../lib/utils";
 import { CopyTextButton } from "./primitives/copy-text-button";
 
@@ -13,6 +15,9 @@ export type MarkdownContentProps = {
   size?: "body" | "compact";
   live?: boolean;
   class?: string;
+  fileLinks?: ChatFileLinkContext & {
+    onOpenFile: (target: ChatFileTarget) => void;
+  };
 };
 
 const toneClassNames: Record<NonNullable<MarkdownContentProps["tone"]>, string> = {
@@ -44,6 +49,20 @@ export function MarkdownContent(props: MarkdownContentProps) {
 
   const components: SolidMarkdownComponents = {
     a(anchorProps: AnchorProps) {
+      const fileTarget = resolveMarkdownFileTarget(anchorProps.node, anchorProps.href, props.fileLinks);
+      if (fileTarget) {
+        return (
+          <button
+            type="button"
+            data-test-chat-file-link=""
+            class="markdown-link markdown-file-link"
+            onClick={(event) => handleFileLinkClick(event, fileTarget, props.fileLinks)}
+          >
+            {anchorProps.children}
+          </button>
+        );
+      }
+
       const href = normalizeAllowedHref(anchorProps.href);
       const linkKind = classifyLinkHref(href);
 
@@ -129,7 +148,7 @@ export function MarkdownContent(props: MarkdownContentProps) {
     skipHtml: true,
     remarkPlugins: markdownRemarkPlugins,
     get rehypePlugins() {
-      return props.live ? markdownLiveRehypePlugins : markdownRehypePlugins;
+      return createMarkdownRehypePlugins({ live: props.live, fileLinks: props.fileLinks });
     },
     get renderingStrategy() {
       return props.live ? ("reconcile" as const) : ("memo" as const);
@@ -157,4 +176,48 @@ export function MarkdownContent(props: MarkdownContentProps) {
 function getClassAttr(properties: Properties | undefined) {
   const classNames = getElementClassNames(properties);
   return classNames.length > 0 ? classNames.join(" ") : undefined;
+}
+
+function resolveMarkdownFileTarget(
+  node: Element | undefined,
+  href: string | null | undefined,
+  fileLinks: MarkdownContentProps["fileLinks"]
+) {
+  if (!fileLinks) {
+    return undefined;
+  }
+
+  const path = getStringProperty(node?.properties, "dataHarnessFilePath");
+  if (path) {
+    return {
+      path,
+      line: getNumberProperty(node?.properties, "dataHarnessFileLine"),
+      column: getNumberProperty(node?.properties, "dataHarnessFileColumn")
+    };
+  }
+
+  return resolveChatFileTarget(href ?? undefined, fileLinks);
+}
+
+function handleFileLinkClick(event: MouseEvent, target: ChatFileTarget, fileLinks: MarkdownContentProps["fileLinks"]) {
+  if (!fileLinks || (!event.ctrlKey && !event.metaKey)) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  fileLinks.onOpenFile(target);
+}
+
+function getStringProperty(properties: Properties | undefined, key: string) {
+  const value = properties?.[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function getNumberProperty(properties: Properties | undefined, key: string) {
+  const value = getStringProperty(properties, key);
+  if (!value) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }

@@ -443,6 +443,65 @@ createUiTest("BackgroundJobsPanel", () => {
     expect(screen.getAllByText("Owner: Repo Assistant").length).toBeGreaterThan(0);
   });
 
+  it("opens the owning assistant from assistant-owned job details", () => {
+    const project = createViewProjectFixture({ id: "project-job-owner-link" });
+    const assistant = createAssistantFixture({ id: "assistant-job-owner-link", projectId: project.id });
+    const now = "2026-05-01T12:00:00.000Z";
+    const job: BackgroundJob = {
+      id: "job-owner-link",
+      projectId: project.id,
+      assistantId: assistant.id,
+      automationThreadId: "thread-automation",
+      kind: "ai-routine",
+      name: "Owned assistant job",
+      status: "enabled",
+      riskLevel: "safe",
+      definition: {
+        kind: "ai-routine",
+        prompt: "Review project."
+      },
+      schedule: {
+        type: "one-off",
+        runAt: now,
+        sourceText: "manual"
+      },
+      scheduleInput: "manual",
+      createdAt: now,
+      updatedAt: now
+    };
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        activeSurface: "background-jobs",
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        },
+        assistants: {
+          ...harnessStore.state.assistants,
+          assistants: [assistant]
+        },
+        backgroundJobs: {
+          jobs: [job],
+          runs: [],
+          templates: []
+        },
+        jobsPanePreferences: {
+          segment: "jobs",
+          search: "",
+          jobSort: "next-run",
+          selectedJobId: job.id
+        }
+      })
+    );
+
+    render(() => <BackgroundJobsPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "Open owning assistant" }));
+
+    expect(harnessStore.state.activeSurface).toBe("assistants");
+    expect(harnessStore.state.assistants.selectedAssistantId).toBe(assistant.id);
+    expect(harnessStore.state.assistants.scopeFilter).toBe("project");
+  });
+
   it("renders health report sections", () => {
     const project = createViewProjectFixture({ id: "project-health-report-ready" });
     seedHarnessStoreForTests(

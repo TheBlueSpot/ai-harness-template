@@ -57,6 +57,25 @@ describe("assistant chat intent detection", () => {
     });
   });
 
+  test("detects Omega factory wording from project chat", () => {
+    expect(detectAssistantChatIntent("use /assistant-actions to create omega")).toMatchObject({
+      kind: "create-needs-purpose",
+      name: "omega",
+      scope: "project"
+    });
+    expect(detectAssistantChatIntent("create omega")).toMatchObject({
+      kind: "create-needs-purpose",
+      name: "omega",
+      scope: "project"
+    });
+    expect(detectAssistantChatIntent("create Omega assistant that builds assistants")).toMatchObject({
+      kind: "create-ready",
+      name: "Omega",
+      scope: "project",
+      purpose: "builds assistants"
+    });
+  });
+
   test("ignores bare named operator ongoing work", () => {
     expect(detectAssistantChatIntent("Catalog builder start executing todos")).toEqual({ kind: "none" });
   });
@@ -79,6 +98,8 @@ ec32e89b-08a3-41a5-80bf-6823701343f0
   test("ignores normal imperatives", () => {
     expect(detectAssistantChatIntent("start executing todos")).toEqual({ kind: "none" });
     expect(detectAssistantChatIntent("create folder catalog-builder")).toEqual({ kind: "none" });
+    expect(detectAssistantChatIntent("create readme.md")).toEqual({ kind: "none" });
+    expect(detectAssistantChatIntent("create package.json")).toEqual({ kind: "none" });
     expect(detectAssistantChatIntent("suggest ideas on how we can tighten intent detection")).toEqual({ kind: "none" });
     expect(detectAssistantChatIntent("no fix need just investigate assistant intent detection")).toEqual({ kind: "none" });
   });

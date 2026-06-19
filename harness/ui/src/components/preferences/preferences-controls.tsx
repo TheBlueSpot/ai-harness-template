@@ -41,7 +41,7 @@ export function PreferenceRow(props: {
   );
 }
 
-export function SegmentedControl<T extends string>(props: {
+export function SegmentedControl<T extends string | number>(props: {
   ariaLabel: string;
   value: T;
   options: Array<{ value: T; label: string; disabled?: boolean }>;

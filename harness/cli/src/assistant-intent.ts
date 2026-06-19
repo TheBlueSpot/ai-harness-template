@@ -37,9 +37,19 @@ export function detectAssistantChatIntent(input: string): AssistantChatIntent {
 }
 
 function detectCreateIntent(sourcePrompt: string) {
+  const assistantActionsMatch = sourcePrompt.match(/^use\s+\/assistant-actions\s+to\s+create\s+(?<body>.+)$/i);
+  if (assistantActionsMatch?.groups?.body) {
+    return parseCreateBody(assistantActionsMatch.groups.body) ?? parseBareCreateName(assistantActionsMatch.groups.body);
+  }
+
+  const buildAssistantMatch = sourcePrompt.match(/^(?:please\s+)?build\s+(?<body>.+)$/i);
+  if (buildAssistantMatch?.groups?.body) {
+    return parseCreateBody(buildAssistantMatch.groups.body) ?? parseNameBeforeAssistant(buildAssistantMatch.groups.body);
+  }
+
   const createMatch = sourcePrompt.match(/^(?:please\s+)?create\s+(?<body>.+)$/i);
   if (createMatch?.groups?.body) {
-    return parseCreateBody(createMatch.groups.body);
+    return parseCreateBody(createMatch.groups.body) ?? parseBareCreateName(createMatch.groups.body);
   }
 
   const makeMatch = sourcePrompt.match(/^(?:please\s+)?make\s+(?<body>.+)$/i);
@@ -68,6 +78,18 @@ function parseCreateBody(input: string) {
     return undefined;
   }
 
+  const afterPurpose = assistantMatch.groups.after.trim().match(/^(?:to|for|that|who|which)\s+(?<purpose>.+)$/i);
+  if (afterPurpose?.groups?.purpose) {
+    const name = normalizeAssistantName(stripScopeWords(assistantMatch.groups.before));
+    if (name) {
+      return {
+        name,
+        scope: inferAssistantScope(assistantMatch.groups.before),
+        purpose: purpose ?? afterPurpose.groups.purpose.trim()
+      };
+    }
+  }
+
   const name = normalizeAssistantName(stripNamePrefix(assistantMatch.groups.after));
   if (!name) {
     return undefined;
@@ -76,6 +98,26 @@ function parseCreateBody(input: string) {
   return {
     name,
     scope: inferAssistantScope(assistantMatch.groups.before),
+    purpose
+  };
+}
+
+function parseBareCreateName(input: string) {
+  const { head, purpose } = splitPurpose(stripArticle(input));
+  const normalizedHead = head.replace(/\s+/g, " ").trim();
+  if (/\b(folder|file|branch|component|page|route|table|database|migration|test|todo|issue|ticket)\b/i.test(normalizedHead)) {
+    return undefined;
+  }
+  if (looksLikeFileTarget(normalizedHead)) {
+    return undefined;
+  }
+  const name = normalizeAssistantName(normalizedHead.replace(/\b(?:assistant|agent)\b$/i, ""));
+  if (!name) {
+    return undefined;
+  }
+  return {
+    name,
+    scope: inferAssistantScope("project"),
     purpose
   };
 }
@@ -113,6 +155,18 @@ function stripArticle(input: string) {
 
 function stripNamePrefix(input: string) {
   return input.trim().replace(/^(?:named|called)\s+/i, "");
+}
+
+function looksLikeFileTarget(input: string) {
+  return /(?:^|\s)[\w.-]+\.[a-z0-9]{1,12}(?:\s|$)/i.test(input);
+}
+
+function stripScopeWords(input: string) {
+  return input
+    .trim()
+    .replace(/\b(?:new|local|this\s+project|project-scoped|project|global|workspace)\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function inferAssistantScope(input: string): "project" | "global" {

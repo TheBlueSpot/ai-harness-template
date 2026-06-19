@@ -7,9 +7,13 @@ import { harnessStore, readBrowserUiSession } from "./harness-store";
 import { clearCurrentTabItemSelectorsForTests, registerCurrentTabItemSelector } from "./lib/current-tab-item-hotkeys";
 
 const createHotkeysMock = mock(() => undefined);
+const createHotkeySequenceMock = mock(() => undefined);
+const createHotkeySequencesMock = mock(() => undefined);
 
 mock.module("@tanstack/solid-hotkeys", () => ({
   createHotkeys: createHotkeysMock,
+  createHotkeySequence: createHotkeySequenceMock,
+  createHotkeySequences: createHotkeySequencesMock,
   formatForDisplay: (hotkey: string) => hotkey
 }));
 
@@ -21,6 +25,7 @@ mock.module("./harness-websocket", () => ({
 }));
 
 import { App, shouldCollapseTabStrip } from "./app";
+import { ideStore } from "./ide/ide-store";
 
 function getCreateHotkeysCall() {
   type HotkeyOptions = { enabled: boolean; ignoreInputs: boolean; preventDefault: boolean; stopPropagation: boolean };
@@ -46,12 +51,39 @@ function getCreateHotkeysCall() {
   ];
 }
 
+function getProjectSwitcherHotkeysCall() {
+  type HotkeyOptions = { enabled: boolean; ignoreInputs: boolean; preventDefault: boolean; stopPropagation: boolean };
+  const calls = createHotkeysMock.mock.calls as unknown as Array<
+    [
+      Array<{ hotkey: string; callback: () => void }> | (() => Array<{ hotkey: string; callback: () => void }>),
+      () => HotkeyOptions
+    ]
+  >;
+  const call = calls.find(([hotkeys]) => {
+    const definitions = typeof hotkeys === "function" ? hotkeys() : hotkeys;
+    return definitions.length === 2 && definitions.map((definition) => definition.hotkey).join(",") === "Mod+K,Mod+Space";
+  });
+  if (!call) {
+    throw new Error("Expected project switcher hotkeys to be called");
+  }
+
+  const [hotkeys, getOptions] = call;
+  const definitions = typeof hotkeys === "function" ? hotkeys() : hotkeys;
+  return [definitions, getOptions] as [
+    Array<{ hotkey: string; callback: () => void }>,
+    () => HotkeyOptions
+  ];
+}
+
 createUiTest("App shortcuts", () => {
   beforeEach(() => {
     clearBrowserStateForTests();
     clearCurrentTabItemSelectorsForTests();
     harnessStore.setActiveSurface("chat");
+    ideStore.resetForTests();
     createHotkeysMock.mockClear();
+    createHotkeySequenceMock.mockClear();
+    createHotkeySequencesMock.mockClear();
   });
 
   it("registers app shortcuts through TanStack Hotkeys", () => {
@@ -70,6 +102,8 @@ createUiTest("App shortcuts", () => {
       "Mod+4",
       "Mod+5",
       "Mod+,",
+      "Mod+I",
+      "Mod+`",
       "Mod+T",
       "Mod+N",
       "Mod+Shift+A",
@@ -174,6 +208,23 @@ createUiTest("App shortcuts", () => {
     input.focus();
 
     expect(getOptions().enabled).toBe(false);
+  });
+
+  it("keeps project switcher shortcuts enabled on the IDE surface", () => {
+    harnessStore.setActiveSurface("ide");
+    render(() => <App />);
+
+    const [definitions, getOptions] = getProjectSwitcherHotkeysCall();
+
+    expect(getOptions()).toEqual({
+      enabled: true,
+      ignoreInputs: false,
+      preventDefault: true,
+      stopPropagation: true
+    });
+
+    definitions.find((definition) => definition.hotkey === "Mod+Space")?.callback();
+    expect(harnessStore.state.projectSwitcherOpen).toBe(true);
   });
 
   it("registers configured app shortcuts from local preferences", async () => {
@@ -376,5 +427,123 @@ createUiTest("App shortcuts", () => {
 
     const label = document.querySelector("[data-test-mobile-surface-label]");
     expect(label?.textContent).toContain("Runs");
+  });
+
+  it("opens the IDE surface from the shortcut", async () => {
+    render(() => <App />);
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+    const [definitions] = getCreateHotkeysCall();
+    const ideShortcut = definitions.find((definition) => definition.hotkey === "Mod+I");
+    expect(ideShortcut).toBeDefined();
+    ideShortcut?.callback();
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+    expect(harnessStore.state.activeSurface).toBe("ide");
+  });
+
+  it("renders the IDE as a maximizable virtual app window", async () => {
+    harnessStore.setActiveSurface("ide");
+    render(() => <App />);
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+    const ideWindow = document.querySelector("[data-test-ide-virtual-window]");
+    const titlebar = document.querySelector("[data-test-ide-titlebar]");
+    expect(ideWindow).not.toBeNull();
+    expect(titlebar).not.toBeNull();
+
+    const maximizeButton = [...document.querySelectorAll<HTMLButtonElement>("button.ide-window-control")].find(
+      (button) => button.getAttribute("aria-label") === "Maximize IDE window"
+    );
+    expect(maximizeButton).not.toBeNull();
+    expect(document.querySelector("[data-test-ide-window-resize]")).not.toBeNull();
+  });
+
+  it("closes the IDE virtual window from Escape", async () => {
+    harnessStore.setActiveSurface("ide");
+    render(() => <App />);
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+    expect(document.querySelector("[data-test-ide-virtual-window]")).not.toBeNull();
+
+    const calls = createHotkeysMock.mock.calls as unknown as Array<
+      [
+        Array<{ hotkey: string; callback: () => void }> | (() => Array<{ hotkey: string; callback: () => void }>),
+        () => { enabled: boolean; ignoreInputs: boolean; preventDefault: boolean; stopPropagation: boolean }
+      ]
+    >;
+    const escapeCall = calls.find(([hotkeys]) => {
+      const definitions = typeof hotkeys === "function" ? hotkeys() : hotkeys;
+      return definitions.some((definition) => definition.hotkey === "Escape");
+    });
+    if (!escapeCall) {
+      throw new Error("Expected IDE escape hotkey registration");
+    }
+    expect(escapeCall[1]().enabled).toBe(true);
+    const escapeDefinitions = typeof escapeCall[0] === "function" ? escapeCall[0]() : escapeCall[0];
+    escapeDefinitions.find((definition) => definition.hotkey === "Escape")?.callback();
+
+    expect(harnessStore.state.activeSurface).toBe("chat");
+  });
+
+  it("closes only the project switcher when Escape is pressed over the IDE", async () => {
+    harnessStore.setActiveSurface("ide");
+    harnessStore.openProjectSwitcher();
+    render(() => <App />);
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+    const calls = createHotkeysMock.mock.calls as unknown as Array<
+      [
+        Array<{ hotkey: string; callback: () => void }> | (() => Array<{ hotkey: string; callback: () => void }>),
+        () => { enabled: boolean; ignoreInputs: boolean; preventDefault: boolean; stopPropagation: boolean }
+      ]
+    >;
+    const escapeCall = calls.find(([hotkeys]) => {
+      const definitions = typeof hotkeys === "function" ? hotkeys() : hotkeys;
+      return definitions.some((definition) => definition.hotkey === "Escape");
+    });
+    if (!escapeCall) {
+      throw new Error("Expected IDE escape hotkey registration");
+    }
+    const escapeDefinitions = typeof escapeCall[0] === "function" ? escapeCall[0]() : escapeCall[0];
+    escapeDefinitions.find((definition) => definition.hotkey === "Escape")?.callback();
+
+    expect(harnessStore.state.projectSwitcherOpen).toBe(false);
+    expect(harnessStore.state.activeSurface).toBe("ide");
+  });
+
+  it("closes IDE overlays before Escape closes the virtual window", async () => {
+    harnessStore.setActiveSurface("ide");
+    ideStore.setCommandPalette(true);
+    render(() => <App />);
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+    const calls = createHotkeysMock.mock.calls as unknown as Array<
+      [
+        Array<{ hotkey: string; callback: () => void }> | (() => Array<{ hotkey: string; callback: () => void }>),
+        () => { enabled: boolean; ignoreInputs: boolean; preventDefault: boolean; stopPropagation: boolean }
+      ]
+    >;
+    const escapeCall = calls.find(([hotkeys]) => {
+      const definitions = typeof hotkeys === "function" ? hotkeys() : hotkeys;
+      return definitions.some((definition) => definition.hotkey === "Escape");
+    });
+    if (!escapeCall) {
+      throw new Error("Expected IDE escape hotkey registration");
+    }
+    const escapeDefinitions = typeof escapeCall[0] === "function" ? escapeCall[0]() : escapeCall[0];
+    const escape = escapeDefinitions.find((definition) => definition.hotkey === "Escape")?.callback;
+
+    escape?.();
+    expect(ideStore.state.commandPaletteOpen).toBe(false);
+    expect(harnessStore.state.activeSurface).toBe("ide");
+
+    ideStore.setDocumentFindOpen(true);
+    escape?.();
+    expect(ideStore.state.documentFindOpen).toBe(false);
+    expect(harnessStore.state.activeSurface).toBe("ide");
+
+    escape?.();
+    expect(harnessStore.state.activeSurface).toBe("chat");
   });
 });

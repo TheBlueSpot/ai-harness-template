@@ -1,17 +1,16 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
-import os from "node:os";
 import { CliUsageError, parseCliOptions } from "../harness/cli/src/cli-options";
 
-const HELP = `Usage: bun run bootstrap [--server-only] [--open|--no-open] [--skip-playwright] [--help]`;
+const HELP = `Usage: bun run bootstrap [--server-only] [--open|--no-open] [--skip-browser-check] [--help]`;
 
 const repoRoot = path.resolve(import.meta.dir, "..");
 process.chdir(repoRoot);
 
-let parsedOptions: ReturnType<typeof parseCliOptions<"--server-only" | "--open" | "--no-open" | "--skip-playwright" | "--help">>;
+let parsedOptions: ReturnType<typeof parseCliOptions<"--server-only" | "--open" | "--no-open" | "--skip-browser-check" | "--skip-playwright" | "--help">>;
 try {
   parsedOptions = parseCliOptions(process.argv.slice(2), {
-    flags: ["--server-only", "--open", "--no-open", "--skip-playwright", "--help"],
+    flags: ["--server-only", "--open", "--no-open", "--skip-browser-check", "--skip-playwright", "--help"],
     conflicts: [["--open", "--no-open"]]
   });
 } catch (error) {
@@ -29,13 +28,13 @@ if (parsedOptions.flags.has("--help")) {
 const serverOnly = parsedOptions.flags.has("--server-only");
 const forceOpen = parsedOptions.flags.has("--open");
 const disableOpen = parsedOptions.flags.has("--no-open");
-const skipPlaywright = parsedOptions.flags.has("--skip-playwright");
+const skipBrowserCheck = parsedOptions.flags.has("--skip-browser-check") || parsedOptions.flags.has("--skip-playwright");
 const rawPort = Bun.env.HARNESS_PORT?.trim();
 const configuredPort = rawPort ? Number(rawPort) : Number.NaN;
 const port = Number.isFinite(configuredPort) ? configuredPort : 8787;
 
 await ensureDependenciesInstalled();
-await ensurePlaywrightChromium();
+ensureCdpBrowserAvailable();
 
 const [{ buildUiBundle }, { launchHarnessServerWithRecovery }] = await Promise.all([
   import("../harness/cli/src/ui-build"),
@@ -70,60 +69,48 @@ async function ensureDependenciesInstalled() {
   }
 }
 
-async function ensurePlaywrightChromium() {
-  if (skipPlaywright) {
+function ensureCdpBrowserAvailable() {
+  if (skipBrowserCheck) {
     return;
   }
 
-  if (await hasChromiumInstalled()) {
+  if (findCdpBrowser()) {
     return;
   }
 
-  console.log("[bootstrap] installing playwright chromium (one-time)");
-  const installProcess = Bun.spawn({
-    cmd: [process.execPath, "x", "playwright", "install", "chromium"],
-    cwd: repoRoot,
-    stdout: "inherit",
-    stderr: "inherit"
-  });
-  const exitCode = await installProcess.exited;
-  if (exitCode !== 0) {
-    console.warn(`[bootstrap] playwright chromium install exited ${exitCode}; \`bun run screenshot\` will fail until resolved`);
-  }
+  console.warn("[bootstrap] Chrome or Edge was not detected; `bun run screenshot` needs a CDP-capable browser. Set CHROME_PATH if it is installed in a custom location.");
 }
 
-async function hasChromiumInstalled() {
-  const cacheRoot = resolvePlaywrightCacheRoot();
-  if (!cacheRoot || !existsSync(cacheRoot)) {
-    return false;
-  }
-
-  try {
-    const { readdir } = await import("node:fs/promises");
-    const entries = await readdir(cacheRoot);
-    return entries.some((entry) => entry.startsWith("chromium"));
-  } catch {
-    return false;
-  }
-}
-
-function resolvePlaywrightCacheRoot() {
-  const explicit = Bun.env.PLAYWRIGHT_BROWSERS_PATH?.trim();
-  if (explicit && explicit !== "0") {
+function findCdpBrowser() {
+  const explicit = Bun.env.CHROME_PATH?.trim();
+  if (explicit && existsSync(explicit)) {
     return explicit;
   }
 
   if (process.platform === "win32") {
-    const localAppData = Bun.env.LOCALAPPDATA?.trim();
-    if (!localAppData) {
-      return undefined;
-    }
-    return path.join(localAppData, "ms-playwright");
+    return [
+      path.join(Bun.env.PROGRAMFILES ?? "", "Google/Chrome/Application/chrome.exe"),
+      path.join(Bun.env["PROGRAMFILES(X86)"] ?? "", "Google/Chrome/Application/chrome.exe"),
+      path.join(Bun.env.LOCALAPPDATA ?? "", "Google/Chrome/Application/chrome.exe"),
+      path.join(Bun.env.PROGRAMFILES ?? "", "Microsoft/Edge/Application/msedge.exe"),
+      path.join(Bun.env["PROGRAMFILES(X86)"] ?? "", "Microsoft/Edge/Application/msedge.exe")
+    ].find((candidate) => candidate && existsSync(candidate));
   }
 
   if (process.platform === "darwin") {
-    return path.join(os.homedir(), "Library", "Caches", "ms-playwright");
+    return [
+      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      "/Applications/Chromium.app/Contents/MacOS/Chromium",
+      "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
+    ].find((candidate) => existsSync(candidate));
   }
 
-  return path.join(os.homedir(), ".cache", "ms-playwright");
+  return ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "microsoft-edge"].find((candidate) => {
+    const probe = Bun.spawnSync({
+      cmd: ["which", candidate],
+      stdout: "ignore",
+      stderr: "ignore"
+    });
+    return probe.exitCode === 0;
+  });
 }

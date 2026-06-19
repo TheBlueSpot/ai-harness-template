@@ -16,6 +16,8 @@ Use deterministic resolution before invoking a model or making a mutation.
 - Project assistant: prefer current project unless user names another project.
 - Global assistant: allow state questions anywhere; require target project before project work or job creation.
 - Clone requests: source may be global or another project; destination must be explicit or current project.
+- Bulk project requests target project-scoped assistants only; global assistants must be named explicitly or the user must request workspace-wide all.
+- Bulk workspace requests require explicit `all assistants` wording before mutating every non-deleted assistant.
 
 ## Ambiguity Cases
 
@@ -26,6 +28,7 @@ Ask before acting when:
 - User asks a project mutation for a global assistant without destination project.
 - User asks job creation without schedule or one-shot intent.
 - User asks to recover a circuit-tripped assistant without saying whether to retry or only inspect.
+- User asks for a bulk mutation but scope could mean current project, all projects, or named assistants.
 
 ## Clarification Shape
 

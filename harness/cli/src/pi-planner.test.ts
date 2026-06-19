@@ -169,6 +169,44 @@ describe("pi planner payload parsing", () => {
     expect(result.plannerResult.contracts?.[0]?.verificationScope).toBe("worktree-full");
   });
 
+  test("planner prompt includes default TypeScript Bun stack and Happy DOM frontend test guidance", async () => {
+    let prompt = "";
+    const adapter: PiAgentAdapter = {
+      async runPrompt(request) {
+        prompt = request.prompt;
+        return {
+          text: JSON.stringify({
+            type: "ready",
+            difficultyScore: 20,
+            summary: "Create app",
+            executionModelId: "openai/gpt-5.4",
+            usesSubagents: false,
+            subtasks: [],
+            finalExecutionBrief: "Build app"
+          })
+        };
+      },
+      async startExecution(): Promise<PiAgentExecutionController> {
+        throw new Error("not used");
+      },
+      setApiKey() {},
+      hasApiKey() {
+        return false;
+      }
+    };
+
+    await planTask(adapter, {
+      cwd: "C:\\repo\\context",
+      messages: [],
+      latestUserPrompt: "Create a new web app",
+      providerBrand: "gpt"
+    });
+
+    expect(prompt).toContain("default to TypeScript, Bun runtime/package/test runner, bun test");
+    expect(prompt).toContain("Happy DOM for frontend/component tests");
+    expect(prompt).toContain("createUiTest-style setup from harness/ui/src/utils/tests/test-harness.ts");
+  });
+
   test("normalizes planner prerequisite owner aliases before schema validation", () => {
     const userOwner = testExports.parsePlannerTurnPayload(
       buildReadyPayload({

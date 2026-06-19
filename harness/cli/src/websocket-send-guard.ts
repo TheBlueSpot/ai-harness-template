@@ -37,6 +37,16 @@ export function guardedWebsocketSend(
           queuedBytes: state.queuedBytes,
           maxQueuedBytes: options.maxQueuedBytes
         });
+        console.warn(
+          JSON.stringify({
+            scope: "harness",
+            level: "warn",
+            event: "websocket.send.close-slow-client",
+            bytes,
+            queuedBytes: state.queuedBytes,
+            maxQueuedBytes: options.maxQueuedBytes
+          })
+        );
         ws.close(options.slowCloseCode ?? 1011, options.slowCloseReason ?? "Websocket client is too slow");
         states.delete(key);
       }

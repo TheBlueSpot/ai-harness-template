@@ -4,6 +4,8 @@ import { mkdirSync } from "node:fs";
 import {
   createAssistantId,
   createAssistantLearningId,
+  createBackgroundJobId,
+  createThreadId,
   createAssistantQuestionId,
   type AgentRuntimeCapability,
   type Assistant,
@@ -143,7 +145,8 @@ function bootstrapResult(title: string) {
   return {
     text: JSON.stringify({
       researchSummary: title,
-      initialTodos: [{ title }]
+      initialTodos: [{ title, workKind: "app-code", workTarget: "src/app.ts" }],
+      remainIdle: true
     })
   };
 }
@@ -184,6 +187,108 @@ describe("assistant manager bootstrap", () => {
 
     expect(repository.getAssistantTodos(assistant.id).map((todo) => todo.title)).toEqual(["Initial todo"]);
     expect(repository.getAssistant(assistant.id)?.bootstrapState).toBe("completed");
+  });
+
+  test("bootstrap saves todo work metadata and asks default stack once before first coding todo", async () => {
+    const repository = createRepository();
+    const assistant = createAssistant(repository, { jobPrompt: "Build a TypeScript app." });
+    const adapter = new DeferredAdapter();
+    const manager = createManager(repository, adapter);
+
+    const bootstrapped = manager.bootstrapAssistant(assistant.id);
+    await waitForCalls(adapter, 1);
+    adapter.resolvers[0]?.(bootstrapResult("Implement first screen"));
+    await bootstrapped;
+
+    const todos = repository.getAssistantTodos(assistant.id);
+    expect(todos[0]?.workKind).toBe("app-code");
+    expect(todos[0]?.workTarget).toBe("src/app.ts");
+    const stackQuestions = repository
+      .getAssistantQuestions(assistant.id)
+      .filter((question) => question.prompt.includes("Recommended default: TypeScript, Bun runtime"));
+    expect(stackQuestions).toHaveLength(1);
+
+    const retried = manager.retryBootstrap(assistant.id);
+    await waitForCalls(adapter, 2);
+    adapter.resolvers[1]?.(bootstrapResult("Implement second screen"));
+    await retried;
+    expect(
+      repository
+        .getAssistantQuestions(assistant.id)
+        .filter((question) => question.prompt.includes("Recommended default: TypeScript, Bun runtime"))
+    ).toHaveLength(1);
+  });
+
+  test("repairs invalid bootstrap proposal JSON once before persisting canonical output", async () => {
+    const repository = createRepository();
+    const assistant = createAssistant(repository);
+    const adapter = new DeferredAdapter();
+    const manager = createManager(repository, adapter);
+
+    const bootstrapped = manager.bootstrapAssistant(assistant.id);
+    await waitForCalls(adapter, 1);
+    adapter.resolvers[0]?.({
+      text: JSON.stringify({
+        initialTodos: [{ title: "x".repeat(800), workKind: "nonsense" }]
+      })
+    });
+    await waitForCalls(adapter, 2);
+    adapter.resolvers[1]?.({
+      text: JSON.stringify({
+        researchSummary: "Recovered plan",
+        initialTodos: [{ title: "Recovered todo", workKind: "documentation" }],
+        remainIdle: true
+      })
+    });
+    await bootstrapped;
+
+    expect(adapter.calls).toHaveLength(2);
+    expect(adapter.calls[1]?.prompt).toContain("Previous response failed schema validation");
+    expect(repository.getAssistantTodos(assistant.id).map((todo) => [todo.title, todo.workKind])).toEqual([
+      ["Recovered todo", "documentation"]
+    ]);
+    expect(repository.getAssistant(assistant.id)?.bootstrapState).toBe("completed");
+  });
+
+  test("fails bootstrap cleanly when proposal repair is still invalid", async () => {
+    const repository = createRepository();
+    const assistant = createAssistant(repository);
+    const adapter = new DeferredAdapter();
+    const manager = createManager(repository, adapter);
+
+    const bootstrapped = manager.bootstrapAssistant(assistant.id);
+    await waitForCalls(adapter, 1);
+    adapter.resolvers[0]?.({ text: JSON.stringify({ initialTodos: [{ title: "Invalid", workKind: "bad-kind" }] }) });
+    await waitForCalls(adapter, 2);
+    adapter.resolvers[1]?.({ text: JSON.stringify({ initialTodos: [{ title: "Still invalid", workKind: "bad-kind" }] }) });
+    await bootstrapped;
+
+    expect(adapter.calls).toHaveLength(2);
+    expect(repository.getAssistant(assistant.id)?.bootstrapState).toBe("failed");
+    expect(repository.getAssistantTodos(assistant.id)).toHaveLength(0);
+    expect(repository.getAssistantLogEntries(assistant.id).some((entry) => entry.summary === "Bootstrap failed")).toBe(true);
+  });
+
+  test("answering default stack question stores stack-preference learning", async () => {
+    const repository = createRepository();
+    const assistant = createAssistant(repository, { jobPrompt: "Build a TypeScript app." });
+    const adapter = new DeferredAdapter();
+    const manager = createManager(repository, adapter);
+
+    const bootstrapped = manager.bootstrapAssistant(assistant.id);
+    await waitForCalls(adapter, 1);
+    adapter.resolvers[0]?.(bootstrapResult("Implement first screen"));
+    await bootstrapped;
+    const question = repository
+      .getAssistantQuestions(assistant.id)
+      .find((entry) => entry.prompt.includes("Recommended default: TypeScript, Bun runtime"));
+    if (!question) {
+      throw new Error("Expected stack question");
+    }
+
+    await manager.answerQuestion(assistant.id, question.id, "default", { reprioritize: false });
+
+    expect(repository.getAssistantLearnings(assistant.id).some((learning) => learning.source === "stack-preference")).toBe(true);
   });
 
   test("falls back from stale assistant execution model", async () => {
@@ -241,6 +346,79 @@ describe("assistant manager bootstrap", () => {
 
     expect(repository.getAssistant(assistant.id)?.bootstrapState).toBe("failed");
     expect(repository.getAssistantQuestions(assistant.id)[0]?.prompt).toContain("interrupted or stalled");
+  });
+
+  test("asks to bootstrap jobs after idle assistant has no jobs", () => {
+    const repository = createRepository();
+    const assistant = createAssistant(repository, {
+      createdAt: new Date(Date.now() - 11 * 60 * 1000).toISOString(),
+      bootstrapState: "completed"
+    });
+    const manager = createManager(repository, new DeferredAdapter());
+
+    manager.recoverIdleJobBootstrapChecks();
+
+    const questions = repository.getAssistantQuestions(assistant.id);
+    expect(questions).toHaveLength(1);
+    expect(questions[0]?.id.startsWith("assistant-job-bootstrap:")).toBe(true);
+    expect(questions[0]?.prompt).toContain("Bootstrap default research");
+  });
+
+  test("does not ask to bootstrap jobs when assistant already owns a job", () => {
+    const repository = createRepository();
+    const assistant = createAssistant(repository, {
+      createdAt: new Date(Date.now() - 11 * 60 * 1000).toISOString(),
+      bootstrapState: "completed"
+    });
+    const now = new Date().toISOString();
+    repository.saveBackgroundJob({
+      id: createBackgroundJobId(),
+      projectId: assistant.projectId!,
+      assistantId: assistant.id,
+      automationThreadId: createThreadId(),
+      kind: "ai-routine",
+      name: "Existing job",
+      status: "enabled",
+      riskLevel: "safe",
+      definition: { kind: "ai-routine", prompt: "Existing job" },
+      schedule: { type: "one-off", runAt: now, sourceText: "now" },
+      scheduleInput: "now",
+      createdAt: now,
+      updatedAt: now
+    });
+    const manager = createManager(repository, new DeferredAdapter());
+
+    manager.recoverIdleJobBootstrapChecks();
+
+    expect(repository.getAssistantQuestions(assistant.id)).toHaveLength(0);
+  });
+
+  test("dedupes repeated idle job bootstrap checks", () => {
+    const repository = createRepository();
+    const assistant = createAssistant(repository, {
+      createdAt: new Date(Date.now() - 11 * 60 * 1000).toISOString(),
+      bootstrapState: "completed"
+    });
+    const manager = createManager(repository, new DeferredAdapter());
+
+    manager.recoverIdleJobBootstrapChecks();
+    manager.recoverIdleJobBootstrapChecks();
+
+    expect(repository.getAssistantQuestions(assistant.id)).toHaveLength(1);
+  });
+
+  test("manual bootstrap retry asks about jobs immediately", async () => {
+    const repository = createRepository();
+    const assistant = createAssistant(repository);
+    const adapter = new DeferredAdapter();
+    const manager = createManager(repository, adapter);
+
+    const bootstrapped = manager.retryBootstrap(assistant.id);
+    await waitForCalls(adapter, 1);
+    adapter.resolvers[0]?.(bootstrapResult("Initial todo"));
+    await bootstrapped;
+
+    expect(repository.getAssistantQuestions(assistant.id).some((question) => question.id.startsWith("assistant-job-bootstrap:"))).toBe(true);
   });
 });
 
@@ -348,6 +526,72 @@ describe("assistant manager background jobs", () => {
     adapter.resolvers[0]?.({ text: JSON.stringify({ summary: "Queue updated." }) });
   });
 
+  test("repairs invalid reprioritize proposal JSON once before applying updates", async () => {
+    const repository = createRepository();
+    const assistant = createAssistant(repository, {
+      bootstrapState: "completed"
+    });
+    const adapter = new DeferredAdapter();
+    const manager = createManager(repository, adapter);
+
+    const outcome = manager.handleBackgroundJobRunOutcome({
+      assistantId: assistant.id,
+      status: "succeeded",
+      summary: "Need queue update."
+    });
+    await waitForCalls(adapter, 1);
+    adapter.resolvers[0]?.({
+      text: JSON.stringify({
+        newTodos: [{ title: "x".repeat(900), workKind: "unknown" }]
+      })
+    });
+    await waitForCalls(adapter, 2);
+    adapter.resolvers[1]?.({
+      text: JSON.stringify({
+        summary: "Recovered queue",
+        newTodos: [{ title: "Recovered reprioritize todo", workKind: "research" }]
+      })
+    });
+    await outcome;
+    await waitForCondition(() =>
+      repository.getAssistantTodos(assistant.id).some((todo) => todo.title === "Recovered reprioritize todo")
+    );
+
+    expect(adapter.calls).toHaveLength(2);
+    expect(adapter.calls[1]?.prompt).toContain("Previous response failed schema validation");
+    expect(repository.getAssistantTodos(assistant.id).map((todo) => [todo.title, todo.workKind])).toEqual([
+      ["Recovered reprioritize todo", "research"]
+    ]);
+    expect(repository.getAssistantLogEntries(assistant.id).some((entry) => entry.summary === "Reprioritized assistant state")).toBe(true);
+  });
+
+  test("fails reprioritize cleanly when proposal repair is still invalid", async () => {
+    const repository = createRepository();
+    const assistant = createAssistant(repository, {
+      bootstrapState: "completed"
+    });
+    const adapter = new DeferredAdapter();
+    const manager = createManager(repository, adapter);
+
+    const outcome = manager.handleBackgroundJobRunOutcome({
+      assistantId: assistant.id,
+      status: "succeeded",
+      summary: "Need queue update."
+    });
+    await waitForCalls(adapter, 1);
+    adapter.resolvers[0]?.({ text: JSON.stringify({ newTodos: [{ title: "Invalid", workKind: "bad-kind" }] }) });
+    await waitForCalls(adapter, 2);
+    adapter.resolvers[1]?.({ text: JSON.stringify({ newTodos: [{ title: "Still invalid", workKind: "bad-kind" }] }) });
+    await outcome;
+    await waitForCondition(() =>
+      repository.getAssistantLogEntries(assistant.id).some((entry) => entry.summary === "Reprioritization failed")
+    );
+
+    expect(adapter.calls).toHaveLength(2);
+    expect(repository.getAssistantTodos(assistant.id)).toHaveLength(0);
+    expect(repository.getAssistantLogEntries(assistant.id).some((entry) => entry.summary === "Reprioritization failed")).toBe(true);
+  });
+
   test("keeps reprioritize read-only for read-only assistant modes", async () => {
     const repository = createRepository();
     const assistant = createAssistant(repository, {
@@ -366,6 +610,46 @@ describe("assistant manager background jobs", () => {
 
     expect(adapter.calls[0]?.readOnly).toBe(true);
     adapter.resolvers[0]?.({ text: JSON.stringify({ summary: "Queue inspected." }) });
+  });
+
+  test("succeeded job with no state delta records warning", async () => {
+    const repository = createRepository();
+    const assistant = createAssistant(repository, { bootstrapState: "completed" });
+    const adapter = new DeferredAdapter();
+    const logSummaries: string[] = [];
+    const manager = createManager(repository, adapter, {
+      onAssistantLogAppended(entry) {
+        logSummaries.push(entry.summary);
+      }
+    });
+
+    const outcome = manager.handleBackgroundJobRunOutcome({
+      assistantId: assistant.id,
+      status: "succeeded",
+      summary: "No durable state changed."
+    });
+    await waitForCalls(adapter, 1);
+    adapter.resolvers[0]?.({ text: JSON.stringify({ summary: "Queue checked." }) });
+    await outcome;
+
+    expect(logSummaries).toContain("Assistant job state unchanged");
+    expect(repository.loadAssistantsState().logs.some((entry) => entry.assistantId === assistant.id && entry.level === "warning")).toBe(true);
+  });
+
+  test("empty unknown job failure asks recovery question immediately", async () => {
+    const repository = createRepository();
+    const assistant = createAssistant(repository);
+    const manager = createManager(repository, new DeferredAdapter());
+
+    await manager.handleBackgroundJobRunOutcome({
+      assistantId: assistant.id,
+      status: "failed",
+      failureMessage: ""
+    });
+
+    const questions = repository.getAssistantQuestions(assistant.id);
+    expect(questions).toHaveLength(1);
+    expect(questions[0]?.prompt).toContain("Unknown assistant job failure");
   });
 
   test("records answered questions as durable learnings", async () => {

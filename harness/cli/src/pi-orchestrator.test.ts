@@ -223,6 +223,47 @@ describe("pi execution router", () => {
     expect(prompt).toContain("Execution brief: Create breakout/index.html");
   });
 
+  test("builds execution prompts with global skill files for projects without repo skills", () => {
+    const rootPath = mkdtempSync(path.join(tmpdir(), "harness-global-skill-context-"));
+    const previousHome = Bun.env.AI_HARNESS_TEMPLATE_HOME;
+    try {
+      const homeRoot = path.join(rootPath, "home");
+      const projectRoot = path.join(rootPath, "project");
+      mkdirSync(path.join(homeRoot, "skills", "assistant-actions"), { recursive: true });
+      mkdirSync(path.join(homeRoot, "skills", "grill-me"), { recursive: true });
+      mkdirSync(projectRoot, { recursive: true });
+      writeFileSync(path.join(homeRoot, "skills", "assistant-actions", "SKILL.md"), "# assistant-actions\n");
+      writeFileSync(path.join(homeRoot, "skills", "grill-me", "SKILL.md"), "# grill-me\n");
+      Bun.env.AI_HARNESS_TEMPLATE_HOME = homeRoot;
+
+      const prompt = buildExecutionPrompt(
+        [
+          {
+            id: "message-user",
+            role: "user",
+            content: "what skills do you have available",
+            createdAt: new Date().toISOString()
+          }
+        ],
+        "what skills do you have available",
+        undefined,
+        projectRoot
+      );
+
+      expect(prompt).toContain("Available repository/global skill files:");
+      expect(prompt).toContain("assistant-actions/SKILL.md");
+      expect(prompt).toContain("grill-me/SKILL.md");
+      expect(prompt).toContain("include these repository/global skills");
+    } finally {
+      if (previousHome === undefined) {
+        delete Bun.env.AI_HARNESS_TEMPLATE_HOME;
+      } else {
+        Bun.env.AI_HARNESS_TEMPLATE_HOME = previousHome;
+      }
+      rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
   test("same-worktree subagents receive implementation packets and report contract drift without failing", async () => {
     const rootPath = mkdtempSync(path.join(tmpdir(), "harness-subagent-drift-"));
     try {

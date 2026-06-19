@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, getOwner, onCleanup, onMount, runWithOwner, type JSX } from "solid-js";
 import {
   DragDropProvider,
   DragDropSensors,
@@ -20,12 +20,14 @@ import { normalizeAppHotkeyPreferences } from "../lib/app-hotkeys";
 import { tooltipWithPrimaryHotkey } from "../lib/hotkey-hints";
 import { registerCurrentTabItemSelector } from "../lib/current-tab-item-hotkeys";
 import { buildProjectChatSearchResults, type ProjectChatSearchResult } from "../lib/project-chat-search";
+import { openIdeWindow } from "../lib/ide-window";
 import { activateProjectThread } from "../project-thread-navigation";
 import { useHarnessStore } from "../store-providers";
 import { ActionButton } from "./action-button";
 import { Input } from "./primitives/input";
 import { Button } from "./primitives/button";
 import { ButtonGroup, type ButtonGroupItem } from "./primitives/button-group";
+import type { ContextMenuAction } from "./primitives/context-menu";
 import { LeftPaneEmptyState, LeftPaneFilterBlock, LeftPaneHeader, LeftPaneSearchInput, LeftPaneSearchMenu, LeftPaneShell } from "./primitives/left-pane";
 import { Tooltip } from "./primitives/tooltip";
 import { ThreadCleanupDialog } from "./thread-cleanup-dialog";
@@ -37,6 +39,7 @@ import {
   ChevronDown,
   ChevronRight,
   Clock3,
+  Code2,
   Edit3,
   Folder,
   GripVertical,
@@ -111,12 +114,66 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
   const [cleanupDialogOpen, setCleanupDialogOpen] = createSignal(false);
   const [projectChatSearch, setProjectChatSearch] = createSignal("");
   const [projectChatSearchIndex, setProjectChatSearchIndex] = createSignal(0);
+  const [contextMenu, setContextMenu] = createSignal<{
+    x: number;
+    y: number;
+    ariaLabel: string;
+    actions: ContextMenuAction[];
+  }>();
+  const owner = getOwner();
   const projectChatSearchResults = createMemo(() => buildProjectChatSearchResults(state.workspace.projects, projectChatSearch()));
   const selectableProjectThreads = createMemo(() =>
     projectCards().flatMap((project) => project.threads.map((thread) => ({ projectId: project.id, threadId: thread.id })))
   );
   let sidebarList: VirtualListHandle | undefined;
+  let sidebarShellElement: HTMLElement | undefined;
+  let contextMenuSurfaceElement: HTMLDivElement | undefined;
   let projectSearchInput: HTMLInputElement | undefined;
+
+  function showContextMenu(menu: { x: number; y: number; ariaLabel: string; actions: ContextMenuAction[] }) {
+    if (owner) {
+      runWithOwner(owner, () => setContextMenu(menu));
+    } else {
+      setContextMenu(menu);
+    }
+    renderContextMenuSurface(menu);
+  }
+
+  function hideContextMenu() {
+    setContextMenu(undefined);
+    if (contextMenuSurfaceElement) {
+      contextMenuSurfaceElement.hidden = true;
+      contextMenuSurfaceElement.replaceChildren();
+    }
+  }
+
+  function renderContextMenuSurface(menu: { x: number; y: number; ariaLabel: string; actions: ContextMenuAction[] }) {
+    if (!contextMenuSurfaceElement) {
+      return;
+    }
+    contextMenuSurfaceElement.hidden = false;
+    contextMenuSurfaceElement.setAttribute("aria-label", menu.ariaLabel);
+    contextMenuSurfaceElement.style.left = `${Math.max(8, Math.min(menu.x, window.innerWidth - 220))}px`;
+    contextMenuSurfaceElement.style.top = `${Math.max(8, Math.min(menu.y, window.innerHeight - 220))}px`;
+    contextMenuSurfaceElement.replaceChildren(
+      ...menu.actions.map((action) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.role = "menuitem";
+        button.disabled = Boolean(action.disabled);
+        button.textContent = action.label;
+        button.className = `inline-flex h-8 w-full cursor-pointer items-center justify-between rounded-lg px-2 text-left text-xs font-medium text-(--foreground) transition hover:bg-(--panel-strong) disabled:cursor-not-allowed disabled:opacity-50`;
+        button.addEventListener("click", () => {
+          if (action.disabled) {
+            return;
+          }
+          action.onSelect();
+          hideContextMenu();
+        });
+        return button;
+      })
+    );
+  }
 
   function handleActivateProject(projectId: string) {
     if (projectId === state.workspace.activeProjectId) {
@@ -161,6 +218,19 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
     });
   }
 
+  function handleOpenProjectInIde(projectId: string, threadId?: string) {
+    if (threadId) {
+      activateProjectThread(state, projectId, threadId, sendCommand);
+    } else if (state.workspace.activeProjectId !== projectId) {
+      sendCommand({
+        type: "project.activate",
+        requestId: createRequestId(),
+        payload: { projectId }
+      });
+    }
+    openIdeWindow({ projectId, threadId });
+  }
+
   function handleForkThread(projectId: string, sourceThreadId: string) {
     sendCommand({
       type: "thread.fork",
@@ -182,6 +252,14 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
       type: "project.remove",
       requestId: createRequestId(),
       payload: { projectId }
+    });
+  }
+
+  function handleArchiveThread(projectId: string, threadId: string) {
+    sendCommand({
+      type: "thread.archive",
+      requestId: createRequestId(),
+      payload: { projectId, threadId }
     });
   }
 
@@ -268,6 +346,117 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
     return row.key;
   }
 
+  function projectRemoveDisabledReason(project: ProjectCard) {
+    return project.hasWorkingThread ? "Project is streaming" : project.hasCliSession ? "Live CLI session attached" : undefined;
+  }
+
+  function projectContextActions(project: ProjectCard): ContextMenuAction[] {
+    const removeDisabledReason = projectRemoveDisabledReason(project);
+    const projectIndex = visibleProjectIds().indexOf(project.id);
+    return [
+      {
+        id: "new-thread",
+        label: "New thread",
+        onSelect: () => handleCreateThread(project.id)
+      },
+      {
+        id: "remove",
+        label: "Remove",
+        disabled: Boolean(removeDisabledReason),
+        disabledReason: removeDisabledReason,
+        onSelect: () => handleRemoveProject(project.id)
+      },
+      ...(manualSortActive()
+        ? [
+            {
+              id: "move-up",
+              label: "Move up",
+              disabled: projectIndex === 0,
+              disabledReason: "Already first project",
+              onSelect: () => moveProject(project.id, -1)
+            },
+            {
+              id: "move-down",
+              label: "Move down",
+              disabled: projectIndex === visibleProjectIds().length - 1,
+              disabledReason: "Already last project",
+              onSelect: () => moveProject(project.id, 1)
+            }
+          ]
+        : []),
+      {
+        id: "open-ide",
+        label: "Open in IDE",
+        onSelect: () => handleOpenProjectInIde(project.id)
+      }
+    ];
+  }
+
+  function threadContextActions(project: ProjectCard, thread: ProjectThreadCard): ContextMenuAction[] {
+    return [
+      {
+        id: "pin",
+        label: thread.pinned ? "Unpin" : "Pin",
+        onSelect: () => handlePinThread(project.id, thread.id, !thread.pinned)
+      },
+      {
+        id: "fork",
+        label: "Fork",
+        onSelect: () => handleForkThread(project.id, thread.id)
+      },
+      {
+        id: "rename",
+        label: "Rename",
+        onSelect: () => startRename(thread.id, thread.title)
+      },
+      {
+        id: "delete",
+        label: "Delete",
+        disabled: thread.pinned,
+        disabledReason: "Pinned threads cannot be archived.",
+        onSelect: () => handleArchiveThread(project.id, thread.id)
+      },
+      {
+        id: "open-ide",
+        label: "Open in IDE",
+        onSelect: () => handleOpenProjectInIde(project.id, thread.id)
+      }
+    ];
+  }
+
+  function openNodeContextMenu(event: MouseEvent) {
+    const target = event.target as HTMLElement | null;
+    const threadCard = target?.closest<HTMLElement>("[data-test-project-thread-card]");
+    if (threadCard?.dataset.projectId && threadCard.dataset.threadId) {
+      const project = projectCards().find((candidate) => candidate.id === threadCard.dataset.projectId);
+      const thread = project?.threads.find((candidate) => candidate.id === threadCard.dataset.threadId);
+      if (project && thread) {
+        event.preventDefault();
+        showContextMenu({
+          x: event.clientX,
+          y: event.clientY,
+          ariaLabel: `${thread.title} actions`,
+          actions: threadContextActions(project, thread)
+        });
+      }
+      return;
+    }
+
+    const projectCard = target?.closest<HTMLElement>("[data-test-project-card]");
+    if (projectCard?.dataset.projectId) {
+      const project = projectCards().find((candidate) => candidate.id === projectCard.dataset.projectId);
+      if (project) {
+        event.preventDefault();
+        showContextMenu({
+          x: event.clientX,
+          y: event.clientY,
+          ariaLabel: `${project.name} actions`,
+          actions: projectContextActions(project)
+        });
+      }
+    }
+  }
+
   createEffect(() => {
     const key = activeSidebarRowKey();
     sidebarRows().length;
@@ -305,10 +494,39 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
         projectSearchInput?.focus();
       }
     };
+    const handleNodeContextMenu = (event: MouseEvent) => openNodeContextMenu(event);
+    const handleNodeMouseDown = (event: MouseEvent) => {
+      if (event.button === 2) {
+        openNodeContextMenu(event);
+      }
+    };
+    const handleContextPointerDown = (event: PointerEvent) => {
+      if (!contextMenu() || contextMenuSurfaceElement?.contains(event.target as Node)) {
+        return;
+      }
+      hideContextMenu();
+    };
+    const handleContextEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        hideContextMenu();
+      }
+    };
     window.addEventListener("keydown", handleSearchShortcut);
+    window.addEventListener("pointerdown", handleContextPointerDown);
+    window.addEventListener("keydown", handleContextEscape);
+    document.addEventListener("contextmenu", handleNodeContextMenu);
+    document.addEventListener("mousedown", handleNodeMouseDown);
+    sidebarShellElement?.addEventListener("contextmenu", handleNodeContextMenu);
+    sidebarShellElement?.addEventListener("mousedown", handleNodeMouseDown);
     onCleanup(() => {
       unregisterItemSelector();
       window.removeEventListener("keydown", handleSearchShortcut);
+      window.removeEventListener("pointerdown", handleContextPointerDown);
+      window.removeEventListener("keydown", handleContextEscape);
+      document.removeEventListener("contextmenu", handleNodeContextMenu);
+      document.removeEventListener("mousedown", handleNodeMouseDown);
+      sidebarShellElement?.removeEventListener("contextmenu", handleNodeContextMenu);
+      sidebarShellElement?.removeEventListener("mousedown", handleNodeMouseDown);
     });
   });
 
@@ -318,8 +536,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
     const [isCollapsed, setCollapsed] = createSignal(project.isCollapsed);
     let collapseButtonElement: HTMLButtonElement | undefined;
     let threadListElement: HTMLDivElement | undefined;
-    const removeDisabledReason = () =>
-      project.hasWorkingThread ? "Project is streaming" : project.hasCliSession ? "Live CLI session attached" : undefined;
+    const removeDisabledReason = () => projectRemoveDisabledReason(project);
     const collapseLabel = (isCollapsed: boolean) => `${isCollapsed ? "Expand" : "Collapse"} threads in ${project.name}`;
     const applyCollapsedState = (nextCollapsed: boolean) => {
       setCollapsed(nextCollapsed);
@@ -329,9 +546,60 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
         threadListElement.hidden = nextCollapsed;
       }
     };
-
+    const actionItems = (): ButtonGroupItem[] => [
+      {
+        key: "new-thread",
+        label: "New thread",
+        tooltip: tooltipWithPrimaryHotkey(
+          "Create a new thread in this project",
+          normalizeAppHotkeyPreferences(harnessStore.state.appHotkeyPreferences).createProjectChat[0]
+        ),
+        icon: <Plus class="h-3 w-3" />,
+        onClick: () => handleCreateThread(project.id)
+      },
+      {
+        key: "remove",
+        label: "Remove",
+        tooltip: `Remove ${project.name}`,
+        disabledReason: removeDisabledReason(),
+        disabled: Boolean(removeDisabledReason()),
+        icon: <Trash2 class="h-3 w-3" />,
+        onClick: () => handleRemoveProject(project.id)
+      },
+      ...(manualSortActive()
+        ? [
+            {
+              key: "move-up",
+              label: "Move up",
+              tooltip: `Move ${project.name} up`,
+              disabledReason: "Already first project",
+              disabled: visibleProjectIds().indexOf(project.id) === 0,
+              icon: <ArrowUp class="h-3 w-3" />,
+              onClick: () => moveProject(project.id, -1)
+            },
+            {
+              key: "move-down",
+              label: "Move down",
+              tooltip: `Move ${project.name} down`,
+              disabledReason: "Already last project",
+              disabled: visibleProjectIds().indexOf(project.id) === visibleProjectIds().length - 1,
+              icon: <ArrowDown class="h-3 w-3" />,
+              onClick: () => moveProject(project.id, 1)
+            }
+          ]
+        : []),
+      {
+        key: "open-ide",
+        label: "Open in IDE",
+        tooltip: `Open ${project.name} in IDE`,
+        icon: <Code2 class="h-3 w-3" />,
+        onClick: () => handleOpenProjectInIde(project.id)
+      }
+    ];
     const renderCard = (sortable: ProjectCardSortableState) => (
       <section
+        data-test-project-card=""
+        data-project-id={project.id}
         class="group relative overflow-hidden rounded-lg border p-2.5 transition"
         classList={{
           "opacity-80": sortable.isDragging,
@@ -342,6 +610,16 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
         }}
         ref={sortable.ref}
         style={sortable.style}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          showContextMenu({
+            x: event.clientX,
+            y: event.clientY,
+            ariaLabel: `${project.name} actions`,
+            actions: projectContextActions(project)
+          });
+        }}
       >
         <Show when={isActiveProject()}>
           <div class="absolute inset-y-2 left-0 w-0.5 rounded-r-full bg-(--accent)" />
@@ -403,56 +681,21 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
           </ActionButton>
 
           <div class="flex shrink-0 items-center gap-0.5 opacity-70 transition group-focus-within:opacity-100 group-hover:opacity-100">
-            <ActionButton
-              tooltip={tooltipWithPrimaryHotkey(
-                "Create a new thread in this project",
-                normalizeAppHotkeyPreferences(harnessStore.state.appHotkeyPreferences).createProjectChat[0]
+            <For each={actionItems().filter((item) => item.key !== "open-ide")}>
+              {(item) => (
+                <ActionButton
+                  tooltip={item.tooltip}
+                  disabledReason={item.disabledReason}
+                  disabled={item.disabled}
+                  icon={item.icon}
+                  variant="ghost"
+                  size="icon"
+                  class="h-6 w-6 rounded-lg"
+                  ariaLabel={projectActionAriaLabel(project.name, item.key)}
+                  onClick={item.onClick}
+                />
               )}
-              icon={<Plus class="h-3 w-3" />}
-              variant="ghost"
-              size="icon"
-              class="h-6 w-6 rounded-lg"
-              ariaLabel={`Create a new thread in ${project.name}`}
-              onClick={() => {
-                handleCreateThread(project.id);
-              }}
-            />
-
-            <ActionButton
-              tooltip={`Remove ${project.name}`}
-              disabledReason={removeDisabledReason()}
-              disabled={Boolean(removeDisabledReason())}
-              icon={<Trash2 class="h-3 w-3" />}
-              variant="ghost"
-              size="icon"
-              class="h-6 w-6 rounded-lg"
-              ariaLabel={`Remove ${project.name}`}
-              onClick={() => handleRemoveProject(project.id)}
-            />
-            <Show when={manualSortActive()}>
-              <ActionButton
-                tooltip={`Move ${project.name} up`}
-                disabledReason="Already first project"
-                disabled={visibleProjectIds().indexOf(project.id) === 0}
-                icon={<ArrowUp class="h-3 w-3" />}
-                variant="ghost"
-                size="icon"
-                class="h-6 w-6 rounded-lg"
-                ariaLabel={`Move ${project.name} up`}
-                onClick={() => moveProject(project.id, -1)}
-              />
-              <ActionButton
-                tooltip={`Move ${project.name} down`}
-                disabledReason="Already last project"
-                disabled={visibleProjectIds().indexOf(project.id) === visibleProjectIds().length - 1}
-                icon={<ArrowDown class="h-3 w-3" />}
-                variant="ghost"
-                size="icon"
-                class="h-6 w-6 rounded-lg"
-                ariaLabel={`Move ${project.name} down`}
-                onClick={() => moveProject(project.id, 1)}
-              />
-            </Show>
+            </For>
           </div>
         </div>
         {project.threads.length > 0 ? (
@@ -498,11 +741,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
       }
       if (deleteArmed()) {
         clearDeleteArmed();
-        sendCommand({
-          type: "thread.archive",
-          requestId: createRequestId(),
-          payload: { projectId: project.id, threadId: thread.id }
-        });
+        handleArchiveThread(project.id, thread.id);
         return;
       }
 
@@ -550,16 +789,35 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
           "hover:bg-rose-50": deleteArmed()
         },
         onClick: handleDeleteClick
+      },
+      {
+        key: "open-ide",
+        label: "Open in IDE",
+        tooltip: `Open ${thread.title} in IDE`,
+        icon: <Code2 class="h-3 w-3" />,
+        onClick: () => handleOpenProjectInIde(project.id, thread.id)
       }
     ];
-
     return (
       <div
+        data-test-project-thread-card=""
+        data-project-id={project.id}
+        data-thread-id={thread.id}
         class="group/thread relative overflow-hidden rounded-lg border px-2.5 py-2 transition"
         classList={{
           "border-teal-500/45 bg-white/90 shadow-sm": isActiveThread(),
           "border-(--border)": !isActiveThread(),
           "bg-white/60 hover:bg-white/75": !isActiveThread()
+        }}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          showContextMenu({
+            x: event.clientX,
+            y: event.clientY,
+            ariaLabel: `${thread.title} actions`,
+            actions: threadContextActions(project, thread)
+          });
         }}
       >
         <Show when={isActiveThread()}>
@@ -616,7 +874,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
           </button>
 
           <ButtonGroup
-            items={actionItems}
+            items={() => actionItems().filter((item) => item.key !== "open-ide")}
             menuLabel="Thread actions"
             class="opacity-70 transition group-focus-within/thread:opacity-100 group-hover/thread:opacity-100"
             collapseBelowWidth="22rem"
@@ -636,7 +894,19 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
   }
 
   return (
-    <LeftPaneShell kind="projects" class="gap-4" data-test-project-sidebar="">
+    <div class="contents">
+      <LeftPaneShell
+        kind="projects"
+        class="gap-4"
+        data-test-project-sidebar=""
+        ref={sidebarShellElement}
+        onContextMenu={(event) => openNodeContextMenu(event)}
+        onMouseDown={(event) => {
+          if (event.button === 2) {
+            openNodeContextMenu(event);
+          }
+        }}
+      >
       <LeftPaneHeader
         title="Projects"
         help="Each project root keeps its own selectable threads, local chat history, and project-scoped execution context."
@@ -901,7 +1171,18 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
           }
         />
       </Show>
-    </LeftPaneShell>
+      </LeftPaneShell>
+      <div
+        ref={contextMenuSurfaceElement}
+        data-test-context-menu=""
+        role="menu"
+        aria-label="Project actions"
+        hidden
+        class="app-zoom-portal-content fixed z-[150] flex w-52 flex-col gap-1 rounded-xl border border-(--border) bg-(--panel-strong) p-1.5 text-xs text-(--foreground) shadow-2xl"
+        style={{ left: "8px", top: "8px" }}
+        onContextMenu={(event) => event.preventDefault()}
+      />
+    </div>
   );
 }
 
@@ -944,6 +1225,21 @@ type ProjectGroup = {
 type ProjectSidebarRow =
   | { kind: "group"; key: string; label: string }
   | { kind: "project"; key: string; project: ProjectCard };
+
+function projectActionAriaLabel(projectName: string, key: string) {
+  switch (key) {
+    case "new-thread":
+      return `Create a new thread in ${projectName}`;
+    case "remove":
+      return `Remove ${projectName}`;
+    case "move-up":
+      return `Move ${projectName} up`;
+    case "move-down":
+      return `Move ${projectName} down`;
+    default:
+      return `${projectName} action`;
+  }
+}
 
 function formatProjectSortLabel(sort: ProjectSidebarProjectSort) {
   return sort === "created-at" ? "Created" : sort === "manual" ? "Manual" : "Last message";

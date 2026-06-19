@@ -1,9 +1,10 @@
 import type { Component } from "solid-js";
-import { Bell, Bot, BriefcaseBusiness, Code2, Keyboard, Palette, ShieldCheck } from "lucide-solid";
+import { Bell, Bot, BriefcaseBusiness, Code2, Keyboard, MonitorCog, Palette, ShieldCheck } from "lucide-solid";
 
 export type PreferencesSectionId =
   | "general-ui"
   | "keybinds"
+  | "ide-settings"
   | "ai-providers"
   | "safety-guardrails"
   | "workspace-memory"
@@ -14,6 +15,7 @@ export type PreferencesSettingId =
   | "appearance-density"
   | "navigation-sidebar"
   | "keyboard-shortcuts"
+  | "ide-editor-settings"
   | "notifications"
   | "provider-keys"
   | "provider-brand"
@@ -25,6 +27,7 @@ export type PreferencesSettingId =
   | "memory-bank"
   | "auto-archive"
   | "job-defaults"
+  | "assistant-job-controls"
   | "jobs-view"
   | "logging-trace"
   | "portable-json"
@@ -55,8 +58,14 @@ export const preferencesSections: PreferencesSectionMeta[] = [
   {
     id: "keybinds",
     label: "Keybinds",
-    description: "App-level keyboard shortcuts.",
+    description: "App and IDE keyboard shortcuts.",
     icon: Keyboard
+  },
+  {
+    id: "ide-settings",
+    label: "IDE Settings",
+    description: "IDE behavior and formatting defaults.",
+    icon: MonitorCog
   },
   {
     id: "ai-providers",
@@ -109,8 +118,15 @@ export const preferencesSettings: PreferencesSettingMeta[] = [
     id: "keyboard-shortcuts",
     sectionId: "keybinds",
     title: "Keyboard shortcuts",
-    description: "Configure app-level hotkeys.",
-    keywords: ["hotkeys", "keyboard", "shortcuts", "command", "keys"]
+    description: "Configure app and IDE hotkeys.",
+    keywords: ["hotkeys", "keyboard", "shortcuts", "command", "keys", "ide"]
+  },
+  {
+    id: "ide-editor-settings",
+    sectionId: "ide-settings",
+    title: "IDE settings",
+    description: "Autosave, wrapping, indentation, formatting, breadcrumbs, and bracket pair colorization.",
+    keywords: ["ide", "editor", "autosave", "word wrap", "tabs", "spaces", "format", "breadcrumbs", "bracket"]
   },
   {
     id: "notifications",
@@ -188,6 +204,13 @@ export const preferencesSettings: PreferencesSettingMeta[] = [
     title: "Background job defaults",
     description: "Approval, notification, and congestion defaults.",
     keywords: ["jobs", "background", "approval", "notifications", "congestion", "capacity"]
+  },
+  {
+    id: "assistant-job-controls",
+    sectionId: "background-jobs",
+    title: "Assistant job controls",
+    description: "Pause enabled assistant-owned background jobs.",
+    keywords: ["jobs", "background", "assistant", "pause", "paused", "global pause"]
   },
   {
     id: "jobs-view",

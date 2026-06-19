@@ -45,7 +45,9 @@ import { getAssistantQuestionDefaultChoices } from "../assistant-question-defaul
 import { formatShortTimestamp, resolveBrowserTimezone } from "../lib/time-format";
 import { toProperCase } from "../lib/utils";
 import { normalizeAppHotkeyPreferences } from "../lib/app-hotkeys";
+import { findChatFileReferenceAtPosition, type ChatFileLinkContext, type ChatFileTarget } from "../lib/chat-file-links";
 import { registerCurrentTabItemSelector } from "../lib/current-tab-item-hotkeys";
+import { openIdeWindow } from "../lib/ide-window";
 import { submitOnEnter } from "../textarea-submit";
 import {
   type AssistantEditorDraft,
@@ -93,6 +95,15 @@ const assistantTodoStateOptions = [
   { value: "failed", label: "failed", description: "Attempt finished with failure." },
   { value: "cancelled", label: "cancelled", description: "Work was intentionally stopped." }
 ] satisfies Array<{ value: AssistantTodo["state"]; label: string; description: string }>;
+
+const assistantTodoWorkKindOptions = [
+  { value: "app-code", label: "app-code", description: "Product, UI, backend, API, database, or test implementation." },
+  { value: "automation-code", label: "automation-code", description: "Scripts, skills, checks, generators, or workflow automation." },
+  { value: "documentation", label: "documentation", description: "Docs-only update." },
+  { value: "research", label: "research", description: "Investigation before implementation." },
+  { value: "blocked", label: "blocked", description: "Known work that cannot start yet." },
+  { value: "unspecified", label: "unspecified", description: "No work category set." }
+] satisfies Array<{ value: AssistantTodo["workKind"]; label: string; description: string }>;
 
 function formatHotkeyHint(hotkey: string) {
   return formatForDisplay(hotkey)
@@ -223,6 +234,7 @@ type AssistantsPanelProps = {
 export function AssistantsPanel(props: AssistantsPanelProps = {}) {
   let assistantChatTextarea: HTMLTextAreaElement | undefined;
   let assistantMessageViewport: HTMLDivElement | undefined;
+  let lastRequestedDetailAssistantId: string | undefined;
   const state = harnessStore.state;
   const sendCommand = harnessStore.actions.sendCommand;
   const activeTab = createMemo(() => state.assistants.selectedTab);
@@ -247,6 +259,41 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
       .sort((left, right) => compareAssistants(left, right, state.assistants.rosterSort))
   );
   const selectedAssistant = createMemo(() => getSelectedAssistant(state));
+  createEffect(() => {
+    const assistantId = selectedAssistant()?.id;
+    if (!assistantId || lastRequestedDetailAssistantId === assistantId) {
+      return;
+    }
+    const hasDetail =
+      state.assistants.threads.some((thread) => thread.assistantId === assistantId) ||
+      state.assistants.todos.some((todo) => todo.assistantId === assistantId) ||
+      state.assistants.questions.some((question) => question.assistantId === assistantId) ||
+      state.assistants.learnings.some((learning) => learning.assistantId === assistantId) ||
+      state.assistants.logs.some((entry) => entry.assistantId === assistantId) ||
+      state.assistants.assetRefs.some((assetRef) => assetRef.assistantId === assistantId);
+    if (hasDetail) {
+      return;
+    }
+    lastRequestedDetailAssistantId = assistantId;
+    sendCommand({
+      type: "assistant.detail.get",
+      requestId: createRequestId(),
+      payload: { assistantId }
+    });
+  });
+  const assistantFileProject = createMemo(() =>
+    state.workspace.projects.find((project) => project.id === selectedAssistant()?.projectId) ??
+    state.workspace.projects.find((project) => project.id === state.workspace.activeProjectId) ??
+    state.workspace.projects[0]
+  );
+  const assistantChatFileLinkContext = (): ChatFileLinkContext => ({
+    rootPath: assistantFileProject()?.rootPath,
+    filePaths: assistantFileProject()?.filePaths ?? []
+  });
+  const assistantChatFileLinks = () => ({
+    ...assistantChatFileLinkContext(),
+    onOpenFile: handleOpenAssistantChatFile
+  });
   createEffect(() => {
     const assistant = selectedAssistant();
     if (!assistant) {
@@ -327,7 +374,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
       .filter((todo) => todo.assistantId === selectedAssistant()?.id)
       .sort((left, right) => left.sortOrder - right.sortOrder || right.updatedAt.localeCompare(left.updatedAt))
   );
-  const visibleTodos = createMemo(() => selectedTodos().filter((todo) => fuzzyMatches([todo.title, todo.description, todo.state, todo.blockerReason].filter(Boolean).join(" "), state.assistants.detailSearch)));
+  const visibleTodos = createMemo(() => selectedTodos().filter((todo) => fuzzyMatches([todo.title, todo.description, todo.state, todo.blockerReason, todo.workKind, todo.workTarget].filter(Boolean).join(" "), state.assistants.detailSearch)));
   const selectedQuestions = createMemo(() =>
     [...state.assistants.questions]
       .filter((question) => question.assistantId === selectedAssistant()?.id)
@@ -468,6 +515,8 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
   });
   const showRoster = () => variant() !== "detail";
   const showDetail = () => variant() !== "roster";
+  const createScope = () => (state.assistants.scopeFilter === "global" ? "global" : "project");
+  const createLabel = () => (state.assistants.scopeFilter === "global" ? "Create global assistant" : "Create project assistant");
 
   createEffect(() => {
     if (!showRoster()) {
@@ -552,7 +601,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
     if (!assistant || !trimmed) {
       return;
     }
-    sendCommand({
+    const sent = sendCommand({
       type: "assistant.chat.send",
       requestId: createRequestId(),
       payload: {
@@ -564,9 +613,11 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
         fastMode: assistantChatFastMode()
       }
     });
-    setChatDraft("");
-    if (assistantChatTextarea) {
-      assistantChatTextarea.value = "";
+    if (sent) {
+      setChatDraft("");
+      if (assistantChatTextarea) {
+        assistantChatTextarea.value = "";
+      }
     }
   }
 
@@ -584,7 +635,8 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
         todoId: createAssistantTodoId(),
         patch: {
           title: trimmedTitle,
-          state: "pending"
+          state: "pending",
+          workKind: "app-code"
         }
       }
     });
@@ -602,7 +654,9 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
           title: patch.title,
           description: patch.description,
           state: patch.state,
-          blockerReason: patch.blockerReason
+          blockerReason: patch.blockerReason,
+          workKind: patch.workKind,
+          workTarget: patch.workTarget
         }
       }
     });
@@ -697,6 +751,28 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
     setQuestionAnswers((current) => ({ ...current, [question.id]: "" }));
   }
 
+  function handleAssistantComposerClick(event: MouseEvent & { currentTarget: HTMLTextAreaElement }) {
+    if (!event.ctrlKey && !event.metaKey) {
+      return;
+    }
+    const reference = findChatFileReferenceAtPosition(event.currentTarget.value, event.currentTarget.selectionStart, assistantChatFileLinkContext());
+    if (!reference) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    handleOpenAssistantChatFile(reference.target);
+  }
+
+  function handleOpenAssistantChatFile(target: ChatFileTarget) {
+    const project = assistantFileProject();
+    if (!project) {
+      return;
+    }
+    openIdeWindow({ projectId: project.id, threadId: project.activeThreadId });
+    harnessStore.openIdeFile(target.path, target.line, target.column);
+  }
+
   function openAssistantJobEditor() {
     const assistant = selectedAssistant();
     if (!assistant) {
@@ -732,6 +808,26 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
       shellNetworkAccess: false
     };
     harnessStore.openBackgroundJobEditor(draft);
+  }
+
+  function bootstrapAssistantJobs() {
+    const assistant = selectedAssistant();
+    if (!assistant) {
+      return;
+    }
+    const projectId = assistant.projectId ?? state.workspace.activeProjectId;
+    if (!projectId) {
+      pushToast("Project required", "Open a project before bootstrapping jobs for a global assistant.", "error");
+      return;
+    }
+    sendCommand({
+      type: "assistant.jobs.bootstrap",
+      requestId: createRequestId(),
+      payload: {
+        assistantId: assistant.id,
+        projectId
+      }
+    });
   }
 
   function handleDeleteAssistant(assistant: Assistant) {
@@ -893,14 +989,14 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
           actions={
             <ActionButton
               tooltip={tooltipWithPrimaryHotkey(
-                state.assistants.scopeFilter === "project" ? "Create project assistant" : "Create global assistant",
+                createLabel(),
                 normalizeAppHotkeyPreferences(state.appHotkeyPreferences).createAssistant[0]
               )}
               icon={<Plus class="h-4 w-4" />}
               size="icon"
               variant="ghost"
-              ariaLabel={state.assistants.scopeFilter === "project" ? "Create project assistant" : "Create global assistant"}
-              onClick={() => openCreateAssistant(state.assistants.scopeFilter === "project" ? "project" : "global")}
+              ariaLabel={createLabel()}
+              onClick={() => openCreateAssistant(createScope())}
             />
           }
         />
@@ -947,7 +1043,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                       ariaLabel="New assistant"
                       size="sm"
                       icon={<Plus class="h-3.5 w-3.5" />}
-                      onClick={() => openCreateAssistant(state.assistants.scopeFilter === "project" ? "project" : "global")}
+                      onClick={() => openCreateAssistant(createScope())}
                     >
                       New assistant
                     </ActionButton>
@@ -1164,7 +1260,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                               }}
                             >
                               <div class="mb-2 text-[0.575rem] font-semibold uppercase tracking-[0.16em] text-(--muted)">{row.message.role}</div>
-                              <MarkdownContent content={row.message.content} />
+                              <MarkdownContent content={row.message.content} fileLinks={assistantChatFileLinks()} />
                               {renderMessageActionRow(
                                 row.message.createdAt,
                                 <CopyTextButton value={row.message.content} tooltip="Copy message" copiedTitle="Message copied" copiedDescription="Message copied to clipboard." size="sm" variant="ghost" ariaLabel={`Copy ${row.message.role} message`}>
@@ -1175,7 +1271,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                           ) : (
                             <article class="rounded-2xl border border-teal-200 bg-teal-50/65 p-3">
                               <div class="mb-2 text-[0.575rem] font-semibold uppercase tracking-[0.16em] text-(--muted)">assistant</div>
-                              <MarkdownContent content={row.content} />
+                              <MarkdownContent content={row.content} fileLinks={assistantChatFileLinks()} />
                               {renderMessageActionRow(
                                 row.createdAt,
                                 <CopyTextButton value={row.content} tooltip="Copy streaming assistant message" copiedTitle="Message copied" copiedDescription="Message copied to clipboard." size="sm" variant="ghost" ariaLabel="Copy streaming assistant message">
@@ -1208,6 +1304,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                         disabledReason={executionPauseReason}
                         onInput={setChatDraft}
                         onSubmit={handleSendChat}
+                        onClick={handleAssistantComposerClick}
                         leftControls={
                           <div class="pointer-events-auto flex flex-wrap items-center gap-1">
                             <DropdownControl
@@ -1280,10 +1377,11 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                       {(todo) => (
                         <article class={`border-l-2 py-3 pl-4 pr-2 ${todoStateBorderClass(todo.state)}`}>
                           <div class="flex flex-wrap items-start justify-between gap-3">
-                            <div>
+                            <div class="min-w-0 flex-1">
                               <div class="text-[0.75rem] font-semibold text-(--foreground)">{todo.title}</div>
                               <Show when={todo.description}><div class="mt-1 text-[0.675rem] leading-5 text-(--muted)">{todo.description}</div></Show>
                               <Show when={todo.blockerReason}><div class="mt-1 text-[0.625rem] text-amber-900">Blocker: {todo.blockerReason}</div></Show>
+                              <Show when={todo.workTarget}><div class="mt-1 text-[0.625rem] text-(--muted)">Target: {todo.workTarget}</div></Show>
                             </div>
                             <div class="flex shrink-0 items-center gap-2">
                               <ActionButton tooltip="Move assistant todo up" ariaLabel={`Move ${todo.title} up`} icon={<ArrowUp class="h-4 w-4" />} size="icon" variant="ghost" class="h-8 w-8" disabled={selectedTodos()[0]?.id === todo.id} disabledReason="Todo is already first" onClick={() => reorderTodo(todo, -1)} />
@@ -1292,8 +1390,13 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                               <ActionButton tooltip="Delete assistant todo" ariaLabel={`Delete ${todo.title}`} icon={<Trash2 class="h-4 w-4" />} size="icon" variant="ghost" class="h-8 w-8 text-rose-700 hover:bg-rose-50" onClick={() => deleteTodo(todo)} />
                             </div>
                           </div>
+                          <div class="mt-2 grid gap-2 md:grid-cols-[12rem_1fr]">
+                            <DropdownControl kind="select" ariaLabel={`Select ${todo.title} work kind`} icon={<ClipboardList class="h-3.5 w-3.5" />} size="md" value={todo.workKind} options={assistantTodoWorkKindOptions} onChange={(value) => updateTodo(todo, { workKind: value as AssistantTodo["workKind"] })} />
+                            <Input value={todo.workTarget ?? ""} placeholder="Work target" onChange={(event) => updateTodo(todo, { workTarget: event.currentTarget.value.trim() || undefined })} />
+                          </div>
                           <div class="mt-2 flex flex-wrap items-center gap-2 text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">
                             <span class={`rounded-full px-2 py-0.5 ${todoStateBadgeClass(todo.state)}`}>{todo.state}</span>
+                            <span class={`rounded-full px-2 py-0.5 ${todoWorkKindBadgeClass(todo.workKind)}`}>{todo.workKind}</span>
                             <span>{todo.source ?? "assistant"} | sort {todo.sortOrder}</span>
                           </div>
                         </article>
@@ -1340,7 +1443,12 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                         getKey={(job) => job.id}
                         estimateSize={120}
                         pagination={{ kind: "forward", initialCount: 60, batchSize: 60 }}
-                        empty={<div class="border-l-2 border-dashed border-(--border) py-3 pl-4 text-[0.675rem] text-(--muted)">No assistant-owned background jobs.</div>}
+                        empty={
+                          <div class="border-l-2 border-dashed border-(--border) py-3 pl-4">
+                            <div class="text-[0.675rem] text-(--muted)">No assistant-owned background jobs.</div>
+                            <ActionButton tooltip="Create default research, todo maintenance, and implementation jobs" icon={<Plus class="h-3.5 w-3.5" />} size="sm" variant="secondary" class="mt-3" onClick={bootstrapAssistantJobs}>Bootstrap jobs</ActionButton>
+                          </div>
+                        }
                       >
                         {(job) => (
                           <article class={`overflow-hidden border-l-2 py-3 pl-4 pr-2 ${backgroundJobStatusBorderClass(job.status)}`}>
@@ -1537,6 +1645,23 @@ function todoStateBorderClass(state: AssistantTodo["state"]) {
       return "border-sky-400";
     case "pending":
       return "border-(--border)";
+  }
+}
+
+function todoWorkKindBadgeClass(workKind: AssistantTodo["workKind"]) {
+  switch (workKind) {
+    case "app-code":
+      return "bg-emerald-100 text-emerald-800";
+    case "automation-code":
+      return "bg-sky-100 text-sky-800";
+    case "documentation":
+      return "bg-violet-100 text-violet-800";
+    case "research":
+      return "bg-indigo-100 text-indigo-800";
+    case "blocked":
+      return "bg-amber-100 text-amber-900";
+    case "unspecified":
+      return "bg-slate-200 text-slate-700";
   }
 }
 
@@ -1741,9 +1866,16 @@ function assistantRosterMenuItems(state: typeof harnessStore.state): LeftPaneSea
     {
       kind: "submenu",
       label: "Scope",
-      value: state.assistants.scopeFilter === "project" ? "Current" : "Global",
-      icon: <Folder class="h-3.5 w-3.5" />,
+      value: formatAssistantScopeFilterLabel(state.assistants.scopeFilter),
+      icon: state.assistants.scopeFilter === "global" ? <Globe class="h-3.5 w-3.5" /> : <Folder class="h-3.5 w-3.5" />,
       items: [
+        {
+          kind: "option",
+          label: "All",
+          icon: <ListFilter class="h-3.5 w-3.5" />,
+          selected: state.assistants.scopeFilter === "all",
+          onSelect: () => harnessStore.setAssistantScopeFilter("all")
+        },
         {
           kind: "option",
           label: "Current project",
@@ -1901,6 +2033,16 @@ function activeAssistantRosterFilterCount(state: typeof harnessStore.state) {
     state.assistants.providerBrandFilter,
     state.assistants.projectIdFilter
   ].filter(Boolean).length;
+}
+
+function formatAssistantScopeFilterLabel(scopeFilter: typeof harnessStore.state.assistants.scopeFilter) {
+  if (scopeFilter === "all") {
+    return "All";
+  }
+  if (scopeFilter === "global") {
+    return "Global";
+  }
+  return "Current";
 }
 
 function formatAssistantRosterSortLabel(sort: AssistantRosterSort) {

@@ -13,9 +13,11 @@ export type ScreenshotOptions = {
   routes: string[];
   viewports: Viewport[];
   runId: string;
-  baseUrlOverride?: string;
+  baseUrl: string;
   outDir: string;
   waitUntil: ScreenshotWaitUntil;
+  startServer: boolean;
+  useBranchfs: boolean;
 };
 
 export type ScreenshotArtifact = {
@@ -54,6 +56,7 @@ const VIEWPORT_PRESETS: Record<string, Viewport> = {
   tablet: { name: "tablet", width: 834, height: 1194 }
 };
 
+const DEFAULT_BASE_URL = "http://localhost:8787";
 const DEFAULT_VIEWPORT_NAMES = ["desktop", "mobile"];
 const DEFAULT_WAIT_UNTIL: ScreenshotWaitUntil = "domcontentloaded";
 const LISTENING_REGEX = /Harness server listening on (http:\/\/localhost:\d+)/;
@@ -94,8 +97,10 @@ export function slugifyRoute(route: string) {
 export function parseScreenshotArgs(argv: string[], nowFactory: () => number = Date.now) {
   const routes: string[] = [];
   const viewportNames: string[] = [];
-  let baseUrlOverride: string | undefined;
+  let baseUrl = DEFAULT_BASE_URL;
   let waitUntil = DEFAULT_WAIT_UNTIL;
+  let startServer = false;
+  let useBranchfs = false;
 
   for (let cursor = 0; cursor < argv.length; cursor += 1) {
     const token = argv[cursor];
@@ -122,7 +127,17 @@ export function parseScreenshotArgs(argv: string[], nowFactory: () => number = D
       if (!value) {
         throw new Error("--base-url requires a value");
       }
-      baseUrlOverride = value;
+      baseUrl = value;
+      continue;
+    }
+
+    if (token === "--start-server") {
+      startServer = true;
+      continue;
+    }
+
+    if (token === "--branchfs") {
+      useBranchfs = true;
       continue;
     }
 
@@ -147,13 +162,19 @@ export function parseScreenshotArgs(argv: string[], nowFactory: () => number = D
   const runId = `screenshot-${nowFactory()}`;
   const outDir = path.join(process.cwd(), ".local", "screenshots", runId);
 
+  if (useBranchfs && !startServer) {
+    throw new Error("--branchfs requires --start-server");
+  }
+
   const options: ScreenshotOptions = {
     routes: effectiveRoutes,
     viewports: effectiveViewports,
     runId,
-    baseUrlOverride,
+    baseUrl,
     outDir,
-    waitUntil
+    waitUntil,
+    startServer,
+    useBranchfs
   };
   return options;
 }
@@ -165,10 +186,25 @@ function isScreenshotWaitUntil(value: string): value is ScreenshotWaitUntil {
 export async function runScreenshotCapture(opts: ScreenshotOptions, deps: CaptureDeps) {
   await mkdir(opts.outDir, { recursive: true });
 
-  if (opts.baseUrlOverride) {
-    const screenshots = await deps.capturePages(opts.baseUrlOverride, opts);
+  if (!opts.startServer) {
+    const screenshots = await deps.capturePages(opts.baseUrl, opts);
     const result: ScreenshotResult = { runId: opts.runId, screenshots };
     return result;
+  }
+
+  if (!opts.useBranchfs) {
+    let stop: (() => Promise<void>) | undefined;
+    try {
+      const server = await deps.startDevServer(process.cwd());
+      stop = server.stop;
+      const screenshots = await deps.capturePages(server.baseUrl, opts);
+      const result: ScreenshotResult = { runId: opts.runId, screenshots };
+      return result;
+    } finally {
+      if (stop) {
+        await stop().catch(() => undefined);
+      }
+    }
   }
 
   const manager = deps.createManager(process.cwd(), opts.runId);
@@ -260,8 +296,8 @@ async function startDevServerInMount(mountPath: string): Promise<DevServerHandle
   return { baseUrl, stop };
 }
 
-async function capturePagesWithPlaywright(baseUrl: string, opts: ScreenshotOptions) {
-  const runnerPath = path.join(import.meta.dir, "screenshot-playwright-runner.mjs");
+async function capturePagesWithCdp(baseUrl: string, opts: ScreenshotOptions) {
+  const runnerPath = path.join(import.meta.dir, "screenshot-cdp-runner.mjs");
   const proc = Bun.spawn({
     cmd: ["node", runnerPath],
     cwd: process.cwd(),
@@ -286,14 +322,14 @@ async function capturePagesWithPlaywright(baseUrl: string, opts: ScreenshotOptio
     proc.exited
   ]);
   if (exitCode !== 0) {
-    throw new Error(`playwright screenshot runner failed with exit ${exitCode}.\n${stderr || stdout}`);
+    throw new Error(`cdp screenshot runner failed with exit ${exitCode}.\n${stderr || stdout}`);
   }
   try {
     const parsed = JSON.parse(stdout.trim()) as { artifacts: ScreenshotArtifact[] };
     return parsed.artifacts;
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`playwright screenshot runner returned invalid JSON: ${detail}\n${stdout}\n${stderr}`);
+    throw new Error(`cdp screenshot runner returned invalid JSON: ${detail}\n${stdout}\n${stderr}`);
   }
 }
 
@@ -319,7 +355,7 @@ if (import.meta.main) {
     const result = await runScreenshotCapture(opts, {
       createManager: createRealManager,
       startDevServer: startDevServerInMount,
-      capturePages: capturePagesWithPlaywright
+      capturePages: capturePagesWithCdp
     });
 
     const payload = { runId: result.runId, screenshots: result.screenshots };

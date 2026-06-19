@@ -15,6 +15,7 @@ import {
   BROWSER_UI_SESSION_STORAGE_KEY,
   COMPOSER_FAST_MODE_STORAGE_KEY,
   COMPOSER_REASONING_STRENGTH_STORAGE_KEY,
+  PREFERENCES_ACTIVE_SECTION_STORAGE_KEY,
   PROJECT_SIDEBAR_PREFERENCES_STORAGE_KEY,
   createEmptyAssistantsState,
   createEmptyBackgroundJobsState,
@@ -103,6 +104,7 @@ function clearBrowserUiSessionStorage() {
   globalThis.localStorage?.removeItem(BROWSER_UI_SESSION_STORAGE_KEY);
   globalThis.localStorage?.removeItem(COMPOSER_REASONING_STRENGTH_STORAGE_KEY);
   globalThis.localStorage?.removeItem(COMPOSER_FAST_MODE_STORAGE_KEY);
+  globalThis.localStorage?.removeItem(PREFERENCES_ACTIVE_SECTION_STORAGE_KEY);
   globalThis.localStorage?.removeItem(PROJECT_SIDEBAR_PREFERENCES_STORAGE_KEY);
 }
 
@@ -517,6 +519,20 @@ describe("harness store reducer", () => {
     expect(nextStore.state.selectedFastMode).toBe(true);
     expect(nextStore.state.hasGlobalSelectedReasoningStrength).toBe(true);
     expect(nextStore.state.hasGlobalSelectedFastMode).toBe(true);
+  });
+
+  test("persists and hydrates the last selected preferences section", () => {
+    clearBrowserUiSessionStorage();
+    const store = createHarnessStore();
+
+    store.setPreferencesActiveSectionId("ide-settings");
+    expect(readLocalPreferences().preferencesActiveSectionId).toBe("ide-settings");
+
+    const nextStore = createHarnessStore();
+    nextStore.hydrateLocalPreferences();
+    nextStore.openPreferencesModal();
+
+    expect(nextStore.state.preferencesActiveSectionId).toBe("ide-settings");
   });
 
   test("merges partial local preference saves without dropping composer controls", () => {
@@ -1076,6 +1092,34 @@ describe("harness store reducer", () => {
         }
       }
     });
+    const withDetail = reduceServerEvent(withQuestion, {
+      type: "assistant.detail.loaded",
+      requestId: "assistant-detail",
+      payload: {
+        detail: {
+          assistant: hydratedState.assistants.assistants[0]!,
+          thread: withAppendedMessage.assistants.threads[0],
+          todos: {
+            items: [
+              {
+                id: "todo-1",
+                assistantId,
+                title: "Practice stance",
+                state: "pending",
+                sortOrder: 0,
+                workKind: "unspecified",
+                createdAt: messageCreatedAt,
+                updatedAt: messageCreatedAt
+              }
+            ]
+          },
+          learnings: { items: [] },
+          questions: { items: withQuestion.assistants.questions },
+          logs: { items: [] },
+          assetRefs: []
+        }
+      }
+    });
 
     expect(withCreatedCard.activeSurface).toBe(hydratedState.activeSurface);
     expect(withCreatedCard.assistants.selectedAssistantId).toBe(assistantId);
@@ -1085,6 +1129,7 @@ describe("harness store reducer", () => {
     expect(withAppendedMessage.assistants.threads[0]?.messages[0]?.content).toBe("Need balance help");
     expect(withAppendedMessage.assistants.streamingByAssistantId[assistantId]).toBe("wax on");
     expect(withQuestion.assistants.questions[0]?.prompt).toContain("Kata");
+    expect(withDetail.assistants.todos[0]?.title).toBe("Practice stance");
   });
 
   test("assistant created card switches to created assistant scope", () => {
@@ -2816,12 +2861,14 @@ describe("harness store reducer", () => {
       payload: {
         project,
         activeProjectId: project.id,
+        availableSkillPaths: [".agents/skills/grill-me/SKILL.md"],
         resolution: "created-project"
       }
     });
 
     expect(nextState.workspace.activeProjectId).toBe(project.id);
     expect(nextState.workspace.projects.some((entry) => entry.id === project.id)).toBe(true);
+    expect(nextState.availableSkillPaths).toEqual([".agents/skills/grill-me/SKILL.md"]);
   });
 
   test("stores fresh project search results and ignores stale ones", () => {

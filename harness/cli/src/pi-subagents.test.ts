@@ -410,6 +410,81 @@ describe("subagent scheduler", () => {
     expect(discardCount).toBe(1);
     expect(traces).toContainEqual({ stage: "branchfs-inherit-dirty", subagentId: "task-a" });
   });
+
+  test("branchfs lease preparation failures become failed subagent results", async () => {
+    const errors: string[] = [];
+    const adapter = createSuccessfulAdapter("subagent output");
+
+    const { results, retainedSnapshots } = await executeSubagents(adapter, {
+      cwd: process.cwd(),
+      runId: "run-branchfs-prepare-failure",
+      providerBrand: "gpt",
+      brief: "Do work",
+      tasks: [{ id: "task-a", title: "Task A", instruction: "Prepare worktree" }],
+      debugEnabled: false,
+      executionModelId: "openai/gpt-5.4",
+      branchfsManagerFactory() {
+        return {
+          async prepareExperimentLease() {
+            throw new Error("BranchFS prepare failed");
+          },
+          async discardExperiment() {
+            throw new Error("discard should not run without a lease");
+          },
+          async readInspection() {
+            throw new Error("inspection should not run");
+          }
+        };
+      },
+      callbacks: {
+        onError(_task, error) {
+          errors.push(error.message);
+        }
+      }
+    });
+
+    expect(results).toMatchObject([{ id: "task-a", status: "failed", errorMessage: "BranchFS prepare failed" }]);
+    expect(retainedSnapshots).toHaveLength(0);
+    expect(errors).toEqual(["BranchFS prepare failed"]);
+  });
+
+  test("sanitizes task ids before using them in branchfs run ids", async () => {
+    const runIds: string[] = [];
+    const adapter = createSuccessfulAdapter("subagent output");
+
+    await executeSubagents(adapter, {
+      cwd: process.cwd(),
+      runId: "run-branchfs-safe-id",
+      providerBrand: "gpt",
+      brief: "Do work",
+      tasks: [{ id: "ui/sidebar", title: "UI Sidebar", instruction: "Patch sidebar" }],
+      debugEnabled: false,
+      executionModelId: "openai/gpt-5.4",
+      branchfsManagerFactory(context) {
+        runIds.push(context.runId);
+        return {
+          async prepareExperimentLease() {
+            return createLease(context.runId);
+          },
+          async discardExperiment() {},
+          async readInspection() {
+            return {
+              experiment: createLease(context.runId).experiment,
+              diffText: "",
+              files: [],
+              inspectedAt: new Date().toISOString(),
+              filesChanged: 0,
+              insertions: 0,
+              deletions: 0,
+              changedPaths: []
+            };
+          }
+        };
+      }
+    });
+
+    expect(runIds).toEqual(["run-branchfs-safe-id-ui-sidebar-attempt-1"]);
+  });
 });
 
 function createScopedTask(id: string, ownedPaths: string[], exclusive: boolean = false): ScopedTask {

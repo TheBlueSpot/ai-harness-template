@@ -20,6 +20,8 @@ import { ActionButton } from "./action-button";
 import { Popover } from "./primitives/popover";
 import { Textarea } from "./primitives/textarea";
 
+const ASSISTANT_JOB_BOOTSTRAP_QUESTION_PREFIX = "assistant-job-bootstrap:";
+
 /**
  * Pure helper that activates a (project, thread) pair from the notification
  * inbox. Exported for unit testing because the inbox's popover is not
@@ -59,6 +61,25 @@ export function openAssistantJobNotificationFromInbox(
   harnessStore.setSelectedAssistantId(assistantId);
   harnessStore.setAssistantDetailTab("log");
   return true;
+}
+
+export function createAssistantJobBootstrapCommandFromInbox(
+  state: HarnessViewState,
+  notification: Extract<NotificationInboxItem, { kind: "assistant-question" }>
+): ClientCommand | undefined {
+  const assistant = state.assistants.assistants.find((entry) => entry.id === notification.assistantId);
+  const projectId = assistant?.projectId ?? state.workspace.activeProjectId;
+  if (!projectId) {
+    return undefined;
+  }
+  return {
+    type: "assistant.jobs.bootstrap",
+    requestId: createRequestId(),
+    payload: {
+      assistantId: notification.assistantId,
+      projectId
+    }
+  };
 }
 
 export function openBackgroundRunNotificationFromInbox(
@@ -195,6 +216,20 @@ export function NotificationInbox() {
         content
       }
     });
+    setExpandedId(undefined);
+    setOpen(false);
+  }
+
+  function handleAssistantJobBootstrap(notification: Extract<NotificationInboxItem, { kind: "assistant-question" }>, accepted: boolean) {
+    if (!accepted) {
+      handleAssistantAnswer(notification, "Not now.");
+      return;
+    }
+    const command = createAssistantJobBootstrapCommandFromInbox(harnessStore.state, notification);
+    if (!command) {
+      return;
+    }
+    sendCommand(command);
     setExpandedId(undefined);
     setOpen(false);
   }
@@ -384,26 +419,53 @@ export function NotificationInbox() {
                           </Match>
                           <Match when={notification.kind === "assistant-question"}>
                             <div class="flex flex-col gap-3">
-                              <div class="grid gap-2">
-                                <For each={getAssistantQuestionDefaultChoices()}>
-                                  {(choice) => (
-                                    <ActionButton
-                                      tooltip={choice.description}
-                                      icon={choice.recommended ? <Check class="h-3.5 w-3.5" /> : undefined}
-                                      variant={choice.recommended ? "default" : "secondary"}
-                                      class="justify-start"
-                                      onClick={() =>
-                                        handleAssistantAnswer(
-                                          notification as Extract<NotificationInboxItem, { kind: "assistant-question" }>,
-                                          choice.answerText
-                                        )
-                                      }
-                                    >
-                                      {choice.label}
-                                    </ActionButton>
-                                  )}
-                                </For>
-                              </div>
+                              <Show
+                                when={(notification as Extract<NotificationInboxItem, { kind: "assistant-question" }>).questionId.startsWith(ASSISTANT_JOB_BOOTSTRAP_QUESTION_PREFIX)}
+                                fallback={
+                                  <div class="grid gap-2">
+                                    <For each={getAssistantQuestionDefaultChoices()}>
+                                      {(choice) => (
+                                        <ActionButton
+                                          tooltip={choice.description}
+                                          icon={choice.recommended ? <Check class="h-3.5 w-3.5" /> : undefined}
+                                          variant={choice.recommended ? "default" : "secondary"}
+                                          class="justify-start"
+                                          onClick={() =>
+                                            handleAssistantAnswer(
+                                              notification as Extract<NotificationInboxItem, { kind: "assistant-question" }>,
+                                              choice.answerText
+                                            )
+                                          }
+                                        >
+                                          {choice.label}
+                                        </ActionButton>
+                                      )}
+                                    </For>
+                                  </div>
+                                }
+                              >
+                                <div class="grid gap-2">
+                                  <ActionButton
+                                    tooltip="Create research, todo maintenance, and implementation jobs"
+                                    icon={<Check class="h-3.5 w-3.5" />}
+                                    class="justify-start"
+                                    disabled={!harnessStore.state.assistants.assistants.find((entry) => entry.id === (notification as Extract<NotificationInboxItem, { kind: "assistant-question" }>).assistantId)?.projectId && !harnessStore.state.workspace.activeProjectId}
+                                    disabledReason="Open a project first"
+                                    onClick={() => handleAssistantJobBootstrap(notification as Extract<NotificationInboxItem, { kind: "assistant-question" }>, true)}
+                                  >
+                                    Yes, create jobs
+                                  </ActionButton>
+                                  <ActionButton
+                                    tooltip="Do not create default assistant jobs now"
+                                    icon={<CircleX class="h-3.5 w-3.5" />}
+                                    variant="secondary"
+                                    class="justify-start"
+                                    onClick={() => handleAssistantJobBootstrap(notification as Extract<NotificationInboxItem, { kind: "assistant-question" }>, false)}
+                                  >
+                                    Not now
+                                  </ActionButton>
+                                </div>
+                              </Show>
                               <Textarea
                                 rows="3"
                                 value={draftById()[notification.id] ?? ""}

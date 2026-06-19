@@ -83,7 +83,7 @@ When you spawn a child process and want it to see the mount, not the host:
 - Always register a `stop()` that calls `proc.kill()` + `await proc.exited`, and call it from the same `finally` block that discards the lease. On Windows, kill-before-discard is important because junction handles can hold directory locks.
 - The mounted server will typically need to create a fresh `.local/` inside the mount (since `.local` is excluded from the materialized copy). This is expected; the mount's DB, logs, and build caches are ephemeral and die with the lease.
 
-For a working reference, see `scripts/screenshot.ts` — it spawns the harness dev server inside a mount, parses the `Harness server listening on ...` readiness line, drives Playwright at the reported port, and tears down in one `finally`.
+For a working reference, see `scripts/screenshot.ts` when run with `--start-server --branchfs` — it spawns the harness dev server inside a mount, parses the `Harness server listening on ...` readiness line, drives CDP screenshot capture at the reported port, and tears down in one `finally`. The screenshot script default path does not use BranchFS.
 
 ## Passthrough and exclusion rules
 

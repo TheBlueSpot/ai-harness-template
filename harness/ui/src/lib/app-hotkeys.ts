@@ -21,11 +21,25 @@ export type AppHotkeyId =
   | "openJobs"
   | "openRuns"
   | "openPreferences"
+  | "openIde"
+  | "toggleTerminalDrawer"
   | "toggleTracePanel"
   | "createProjectChat"
   | "createAssistant"
   | "createBackgroundJob"
   | "focusCurrentSearch"
+  | "ideCommandPalette"
+  | "ideQuickOpen"
+  | "ideFindInFile"
+  | "ideFindInFiles"
+  | "ideToggleTerminal"
+  | "ideExplorer"
+  | "ideSourceControl"
+  | "ideSave"
+  | "ideCloseEditor"
+  | "ideToggleSidebar"
+  | "ideCloseAllEditors"
+  | "ideToggleWordWrap"
   | CurrentTabItemHotkeyId;
 
 export type AppHotkeyPreferences = Record<AppHotkeyId, string[]>;
@@ -37,11 +51,25 @@ export const DEFAULT_APP_HOTKEY_PREFERENCES: AppHotkeyPreferences = {
   openJobs: ["Mod+3"],
   openRuns: ["Mod+4"],
   openPreferences: ["Mod+5", "Mod+,"],
+  openIde: ["Mod+I"],
+  toggleTerminalDrawer: ["Mod+`"],
   toggleTracePanel: ["Mod+T"],
   createProjectChat: ["Mod+N"],
   createAssistant: ["Mod+Shift+A"],
   createBackgroundJob: ["Mod+Shift+J"],
   focusCurrentSearch: ["Mod+F"],
+  ideCommandPalette: ["Mod+Shift+P"],
+  ideQuickOpen: ["Mod+P"],
+  ideFindInFile: ["Mod+F"],
+  ideFindInFiles: ["Mod+Shift+F"],
+  ideToggleTerminal: ["Mod+`"],
+  ideExplorer: ["Mod+Shift+E"],
+  ideSourceControl: ["Mod+Shift+G"],
+  ideSave: ["Mod+S"],
+  ideCloseEditor: ["Mod+W", "Alt+W"],
+  ideToggleSidebar: ["Mod+B"],
+  ideCloseAllEditors: ["Mod+Shift+W", "Alt+Shift+W"],
+  ideToggleWordWrap: ["Alt+Z"],
   selectCurrentItem1: ["Mod+Shift+1"],
   selectCurrentItem2: ["Mod+Shift+2"],
   selectCurrentItem3: ["Mod+Shift+3"],
@@ -58,6 +86,7 @@ export const appHotkeySettings: Array<{
   label: string;
   description: string;
   tab?: HarnessLeftTab;
+  scope?: "app" | "ide";
 }> = [
   {
     id: "openProjectSwitcher",
@@ -95,6 +124,16 @@ export const appHotkeySettings: Array<{
     tab: "preferences"
   },
   {
+    id: "openIde",
+    label: "IDE",
+    description: "Open the IDE workbench."
+  },
+  {
+    id: "toggleTerminalDrawer",
+    label: "Integrated terminal",
+    description: "Toggle the bottom terminal drawer."
+  },
+  {
     id: "toggleTracePanel",
     label: "Trace panel",
     description: "Cycle the trace panel closed, peek, and open."
@@ -118,6 +157,78 @@ export const appHotkeySettings: Array<{
     id: "focusCurrentSearch",
     label: "Focus search",
     description: "Focus search for the current sidepanel."
+  },
+  {
+    id: "ideCommandPalette",
+    label: "Command palette",
+    description: "Open editor commands.",
+    scope: "ide"
+  },
+  {
+    id: "ideQuickOpen",
+    label: "Quick open",
+    description: "Open quick commands.",
+    scope: "ide"
+  },
+  {
+    id: "ideFindInFile",
+    label: "Find in file",
+    description: "Search the current editor.",
+    scope: "ide"
+  },
+  {
+    id: "ideFindInFiles",
+    label: "Find in files",
+    description: "Open the global search panel.",
+    scope: "ide"
+  },
+  {
+    id: "ideToggleTerminal",
+    label: "Terminal",
+    description: "Toggle the integrated terminal from the editor.",
+    scope: "ide"
+  },
+  {
+    id: "ideExplorer",
+    label: "Explorer",
+    description: "Open the file explorer.",
+    scope: "ide"
+  },
+  {
+    id: "ideSourceControl",
+    label: "Source control",
+    description: "Open source control.",
+    scope: "ide"
+  },
+  {
+    id: "ideSave",
+    label: "Save",
+    description: "Save the current editor.",
+    scope: "ide"
+  },
+  {
+    id: "ideCloseEditor",
+    label: "Close tab",
+    description: "Close the current editor tab.",
+    scope: "ide"
+  },
+  {
+    id: "ideToggleSidebar",
+    label: "Toggle sidebar",
+    description: "Collapse or restore the sidebar.",
+    scope: "ide"
+  },
+  {
+    id: "ideCloseAllEditors",
+    label: "Close all tabs",
+    description: "Close every open editor tab.",
+    scope: "ide"
+  },
+  {
+    id: "ideToggleWordWrap",
+    label: "Word wrap",
+    description: "Toggle editor word wrap.",
+    scope: "ide"
   },
   ...currentTabItemHotkeyIds.map((id, index) => ({
     id,
@@ -196,11 +307,25 @@ export function normalizeAppHotkeyPreferences(input: unknown): AppHotkeyPreferen
     openJobs: normalizeAppHotkeys(parsed.openJobs, DEFAULT_APP_HOTKEY_PREFERENCES.openJobs),
     openRuns: normalizeAppHotkeys(parsed.openRuns, DEFAULT_APP_HOTKEY_PREFERENCES.openRuns),
     openPreferences: normalizeAppHotkeys(parsed.openPreferences, DEFAULT_APP_HOTKEY_PREFERENCES.openPreferences),
+    openIde: normalizeAppHotkeys(parsed.openIde, DEFAULT_APP_HOTKEY_PREFERENCES.openIde),
+    toggleTerminalDrawer: normalizeAppHotkeys(parsed.toggleTerminalDrawer, DEFAULT_APP_HOTKEY_PREFERENCES.toggleTerminalDrawer),
     toggleTracePanel: normalizeAppHotkeys(parsed.toggleTracePanel, DEFAULT_APP_HOTKEY_PREFERENCES.toggleTracePanel),
     createProjectChat: normalizeAppHotkeys(parsed.createProjectChat, DEFAULT_APP_HOTKEY_PREFERENCES.createProjectChat),
     createAssistant: normalizeAppHotkeys(parsed.createAssistant, DEFAULT_APP_HOTKEY_PREFERENCES.createAssistant),
     createBackgroundJob: normalizeAppHotkeys(parsed.createBackgroundJob, DEFAULT_APP_HOTKEY_PREFERENCES.createBackgroundJob),
     focusCurrentSearch: normalizeAppHotkeys(parsed.focusCurrentSearch, DEFAULT_APP_HOTKEY_PREFERENCES.focusCurrentSearch),
+    ideCommandPalette: normalizeAppHotkeys(parsed.ideCommandPalette, DEFAULT_APP_HOTKEY_PREFERENCES.ideCommandPalette),
+    ideQuickOpen: normalizeAppHotkeys(parsed.ideQuickOpen, DEFAULT_APP_HOTKEY_PREFERENCES.ideQuickOpen),
+    ideFindInFile: normalizeAppHotkeys(parsed.ideFindInFile, DEFAULT_APP_HOTKEY_PREFERENCES.ideFindInFile),
+    ideFindInFiles: normalizeAppHotkeys(parsed.ideFindInFiles, DEFAULT_APP_HOTKEY_PREFERENCES.ideFindInFiles),
+    ideToggleTerminal: normalizeAppHotkeys(parsed.ideToggleTerminal, DEFAULT_APP_HOTKEY_PREFERENCES.ideToggleTerminal),
+    ideExplorer: normalizeAppHotkeys(parsed.ideExplorer, DEFAULT_APP_HOTKEY_PREFERENCES.ideExplorer),
+    ideSourceControl: normalizeAppHotkeys(parsed.ideSourceControl, DEFAULT_APP_HOTKEY_PREFERENCES.ideSourceControl),
+    ideSave: normalizeAppHotkeys(parsed.ideSave, DEFAULT_APP_HOTKEY_PREFERENCES.ideSave),
+    ideCloseEditor: normalizeAppHotkeys(parsed.ideCloseEditor, DEFAULT_APP_HOTKEY_PREFERENCES.ideCloseEditor),
+    ideToggleSidebar: normalizeAppHotkeys(parsed.ideToggleSidebar, DEFAULT_APP_HOTKEY_PREFERENCES.ideToggleSidebar),
+    ideCloseAllEditors: normalizeAppHotkeys(parsed.ideCloseAllEditors, DEFAULT_APP_HOTKEY_PREFERENCES.ideCloseAllEditors),
+    ideToggleWordWrap: normalizeAppHotkeys(parsed.ideToggleWordWrap, DEFAULT_APP_HOTKEY_PREFERENCES.ideToggleWordWrap),
     selectCurrentItem1: normalizeAppHotkeys(parsed.selectCurrentItem1, DEFAULT_APP_HOTKEY_PREFERENCES.selectCurrentItem1),
     selectCurrentItem2: normalizeAppHotkeys(parsed.selectCurrentItem2, DEFAULT_APP_HOTKEY_PREFERENCES.selectCurrentItem2),
     selectCurrentItem3: normalizeAppHotkeys(parsed.selectCurrentItem3, DEFAULT_APP_HOTKEY_PREFERENCES.selectCurrentItem3),

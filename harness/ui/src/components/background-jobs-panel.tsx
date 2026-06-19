@@ -413,6 +413,15 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
     harnessStore.setJobsPanePreferences({ segment: "inbox", selectedRunId: run.id, selectedJobId: run.jobId, selectedNotificationId: undefined });
   }
 
+  function openAssistantDetails(assistantId: string) {
+    const assistant = state.assistants.assistants.find((entry) => entry.id === assistantId);
+    if (assistant) {
+      harnessStore.setAssistantScopeFilter(assistant.scope === "global" ? "global" : "project");
+    }
+    harnessStore.setSelectedAssistantId(assistantId);
+    harnessStore.setActiveSurface("assistants");
+  }
+
   function openProjectChatRun(projectId: string, threadId: string) {
     if (state.workspace.activeProjectId !== projectId) {
       sendCommand({
@@ -633,6 +642,21 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                         </span>
                       </div>
                       <div class="flex gap-0.25">
+                        <Show when={job.assistantId}>
+                          {(assistantId) => (
+                            <ActionButton
+                              tooltip="Open owning assistant"
+                              icon={<Bot class="h-3 w-3" />}
+                              size="icon"
+                              variant="ghost"
+                              ariaLabel={`Open assistant for ${job.name}`}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                openAssistantDetails(assistantId());
+                              }}
+                            />
+                          )}
+                        </Show>
                         <ActionButton tooltip="Run task now" disabled={executionPaused()} disabledReason={executionPauseReason} icon={<Play class="h-3 w-3" />} size="icon" variant="ghost" ariaLabel={`Run ${job.name} now`} onClick={(event) => { event.stopPropagation(); sendCommand({ type: "background-job.run-now", requestId: createRequestId(), payload: { projectId: job.projectId, jobId: job.id } }); }} />
                         <ActionButton tooltip={job.status === "enabled" ? "Pause task" : "Resume task"} icon={job.status === "enabled" ? <Pause class="h-3 w-3" /> : <Play class="h-3 w-3" />} size="icon" variant="ghost" ariaLabel={job.status === "enabled" ? `Pause ${job.name}` : `Resume ${job.name}`} onClick={(event) => { event.stopPropagation(); sendCommand({ type: job.status === "enabled" ? "background-job.pause" : "background-job.resume", requestId: createRequestId(), payload: { projectId: job.projectId, jobId: job.id } }); }} />
                         <ActionButton tooltip="Edit task" icon={<RefreshCcw class="h-3 w-3" />} size="icon" variant="ghost" ariaLabel={`Edit ${job.name}`} onClick={(event) => { event.stopPropagation(); handleEditJob(job); }} />
@@ -683,6 +707,7 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                 onRunNow={(job) => sendCommand({ type: "background-job.run-now", requestId: createRequestId(), payload: { projectId: job.projectId, jobId: job.id } })}
                 onStopRun={(run) => sendCommand({ type: "background-job.stop-run", requestId: createRequestId(), payload: { projectId: run.projectId, runId: run.id } })}
                 onEdit={handleEditJob}
+                onOpenAssistant={openAssistantDetails}
                 schedulerHeartbeatAt={state.backgroundJobs.schedulerHeartbeatAt}
               />
             </Show>
@@ -1975,6 +2000,7 @@ function JobDetail(props: {
   onRunNow: (job: BackgroundJob) => void;
   onStopRun: (run: BackgroundJobRun) => void;
   onEdit: (job: BackgroundJob) => void;
+  onOpenAssistant: (assistantId: string) => void;
   schedulerHeartbeatAt?: string;
 }) {
   const latestRun = createMemo(() => props.runs[0]);
@@ -2035,6 +2061,13 @@ function JobDetail(props: {
                 </div>
               </div>
               <div class="flex flex-wrap gap-2">
+                <Show when={job().assistantId}>
+                  {(assistantId) => (
+                    <ActionButton tooltip="Open owning assistant" variant="secondary" icon={<Bot class="h-4 w-4" />} onClick={() => props.onOpenAssistant(assistantId())}>
+                      Assistant
+                    </ActionButton>
+                  )}
+                </Show>
                 <ActionButton
                   tooltip="Run task now"
                   disabled={props.executionPaused || Boolean(activeRun())}

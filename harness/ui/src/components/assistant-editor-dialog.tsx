@@ -23,6 +23,7 @@ import { Button } from "./primitives/button";
 import { Dialog } from "./primitives/dialog";
 import { DropdownControl } from "./primitives/dropdown";
 import { getAgentDropdownIcon, getModeDropdownIcon } from "./primitives/dropdown-option-icons";
+import { DialogField, DialogFormSection, DialogInlineNote } from "./primitives/form-layout";
 import { Input } from "./primitives/input";
 import { Textarea } from "./primitives/textarea";
 
@@ -231,7 +232,8 @@ export function AssistantEditorDialog() {
       title={activeDraft()?.source === "edit" ? "Edit assistant" : "Create assistant"}
       eyebrow="Assistants"
       description="Define role, prompts, scope, and linked skills/scripts."
-      class="max-w-4xl"
+      class="max-w-5xl"
+      contentClass="gap-5"
       footer={
         <>
           <Button tooltip="Close assistant editor without saving" variant="ghost" onClick={handleClose}>
@@ -241,14 +243,13 @@ export function AssistantEditorDialog() {
         </>
       }
     >
-      <div class="grid gap-3 md:grid-cols-2">
-        <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Name</span>
+      <DialogFormSection title="Identity" description="Name, ownership scope, runtime, and default execution posture.">
+        <div class="grid gap-3 lg:grid-cols-[minmax(0,1.45fr)_minmax(12rem,0.55fr)]">
+          <DialogField label="Name">
           <Input value={name()} onInput={(event) => setName(event.currentTarget.value)} placeholder="Mr Miyagi" />
-        </label>
+          </DialogField>
 
-        <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Agent runtime</span>
+          <DialogField label="Agent runtime">
           <DropdownControl
             kind="select"
             ariaLabel="Select assistant runtime"
@@ -259,10 +260,11 @@ export function AssistantEditorDialog() {
             options={agentOptions()}
             onChange={(value) => setAgentId(value as Assistant["agentId"])}
           />
-        </label>
+          </DialogField>
+        </div>
 
-        <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Scope</span>
+        <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <DialogField label="Scope">
           <DropdownControl
             kind="select"
             ariaLabel="Select assistant scope"
@@ -273,11 +275,10 @@ export function AssistantEditorDialog() {
             options={scopeOptions()}
             onChange={(value) => setScope(value as Assistant["scope"])}
           />
-        </label>
+          </DialogField>
 
-        <Show when={scope() === "project"}>
-          <label class="space-y-2">
-            <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Project</span>
+          <Show when={scope() === "project"}>
+            <DialogField label="Project">
             <DropdownControl
               kind="select"
               ariaLabel="Select project"
@@ -288,11 +289,10 @@ export function AssistantEditorDialog() {
               options={projectOptions()}
               onChange={(value) => setProjectId(value || undefined)}
             />
-          </label>
-        </Show>
+            </DialogField>
+          </Show>
 
-        <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Provider</span>
+          <DialogField label="Provider">
           <DropdownControl
             kind="select"
             ariaLabel="Select assistant provider"
@@ -303,10 +303,9 @@ export function AssistantEditorDialog() {
             options={providerOptions()}
             onChange={(value) => setProviderBrand(value as ProviderBrand)}
           />
-        </label>
+          </DialogField>
 
-        <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Mode</span>
+          <DialogField label="Mode">
           <DropdownControl
             kind="select"
             ariaLabel="Select assistant mode"
@@ -317,10 +316,9 @@ export function AssistantEditorDialog() {
             options={modeOptions()}
             onChange={setModeId}
           />
-        </label>
+          </DialogField>
 
-        <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Execution model</span>
+          <DialogField label="Execution model">
           <DropdownControl
             kind="select"
             ariaLabel="Select assistant execution model"
@@ -331,10 +329,9 @@ export function AssistantEditorDialog() {
             options={executionModelOptions()}
             onChange={setExecutionModelId}
           />
-        </label>
+          </DialogField>
 
-        <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Effort</span>
+          <DialogField label="Effort">
           <DropdownControl
             kind="select"
             ariaLabel="Select assistant reasoning effort"
@@ -345,10 +342,9 @@ export function AssistantEditorDialog() {
             options={reasoningOptions()}
             onChange={(value) => setReasoningStrength(value as ComposerReasoningStrength)}
           />
-        </label>
+          </DialogField>
 
-        <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Fast mode</span>
+          <DialogField label="Fast mode">
           <DropdownControl
             kind="select"
             ariaLabel="Select assistant fast mode"
@@ -359,48 +355,49 @@ export function AssistantEditorDialog() {
             options={fastModeOptions()}
             onChange={(value) => setFastMode(value === "true")}
           />
-        </label>
-      </div>
+          </DialogField>
+        </div>
 
-      <label class="space-y-2">
-        <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Description</span>
-        <Textarea rows="2" value={description()} onInput={(event) => setDescription(event.currentTarget.value)} placeholder="Short purpose summary." />
-      </label>
+        <DialogField label="Description">
+          <Textarea rows="2" value={description()} onInput={(event) => setDescription(event.currentTarget.value)} placeholder="Short purpose summary." />
+        </DialogField>
+      </DialogFormSection>
 
-      <div class="grid gap-3 lg:grid-cols-2">
-        <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Personality prompt</span>
+      <DialogFormSection title="Prompts" description="Separate communication style from recurring work instructions.">
+        <div class="grid gap-3 lg:grid-cols-2">
+          <DialogField label="Personality prompt">
           <Textarea
-            rows="10"
+            rows="9"
             value={personalityPrompt()}
             onInput={(event) => setPersonalityPrompt(event.currentTarget.value)}
             placeholder="Voice, temperament, communication style."
           />
-        </label>
+          </DialogField>
 
-        <label class="space-y-2">
-          <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Job prompt</span>
+          <DialogField label="Job prompt">
           <Textarea
-            rows="10"
+            rows="9"
             value={jobPrompt()}
             onInput={(event) => setJobPrompt(event.currentTarget.value)}
             placeholder="Role, success criteria, research mandate, proactive work rules."
           />
-        </label>
-      </div>
+          </DialogField>
+        </div>
+      </DialogFormSection>
 
-      <label class="space-y-2">
-        <span class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Asset refs</span>
+      <DialogFormSection title="Linked assets" description="Attach reusable skills, scripts, modes, or background templates.">
+        <DialogField label="Asset refs">
         <Textarea
           rows="5"
           value={assetRefsText()}
           onInput={(event) => setAssetRefsText(event.currentTarget.value)}
           placeholder={"skill | grill-me | .agents/skills/grill-me/SKILL.md\nscript | bootstrap | scripts/bootstrap.ts"}
         />
-      </label>
-      <div class="rounded-2xl border border-(--border) bg-white/55 p-3 text-[0.675rem] leading-5 text-(--muted)">
-        One ref per line. Format: <code>kind | label | value</code>. Kinds: {assistantAssetKinds.join(", ")}.
-      </div>
+        </DialogField>
+        <DialogInlineNote>
+          One ref per line. Format: <code>kind | label | value</code>. Kinds: {assistantAssetKinds.join(", ")}.
+        </DialogInlineNote>
+      </DialogFormSection>
     </Dialog>
   );
 }

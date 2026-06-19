@@ -7,6 +7,7 @@ import type {
   ProviderBrand,
   RunModelPreference
 } from "../../shared/protocol";
+import { createHash } from "node:crypto";
 import type { ManagedExecutionState } from "./execution-runtime";
 import { BranchfsManager, type BranchfsExperimentLease } from "./branchfs-manager";
 import { debugLog } from "./logging";
@@ -327,7 +328,7 @@ async function executeSubagentWithRetry(
     const manager = (options.branchfsManagerFactory ?? ((context, callbacks) => new BranchfsManager(context, callbacks)))(
       {
         rootPath: options.rootPath,
-        runId: `${options.runId}-${task.id}-attempt-${attempt}`
+        runId: `${options.runId}-${toSafeBranchfsSegment(task.id)}-attempt-${attempt}`
       },
       {
         onTrace(trace) {
@@ -338,10 +339,12 @@ async function executeSubagentWithRetry(
         }
       }
     );
-    const lease = await manager.prepareExperimentLease();
-    const worktreeReadyAt = Date.now();
+    let lease: BranchfsExperimentLease | undefined;
+    let worktreeReadyAt = Date.now();
     let settledExecutionState: ManagedExecutionState | undefined;
     try {
+      lease = await manager.prepareExperimentLease();
+      worktreeReadyAt = Date.now();
       const subagentModelId = resolveSubagentModelId({
         agentId: options.agentId,
         providerBrand,
@@ -509,14 +512,14 @@ async function executeSubagentWithRetry(
     } catch (error) {
       const typedError = error instanceof Error ? error : new Error("Unknown subagent failure");
       if (isAbortError(typedError, options.abortSignal)) {
-        if (!options.debugEnabled) {
+        if (!options.debugEnabled && lease) {
           await manager.discardExperiment(lease).catch(() => undefined);
         }
         throw typedError;
       }
 
       if (!isTransientError(typedError) || attempt > 1) {
-        if (!options.debugEnabled) {
+        if (!options.debugEnabled && lease) {
           await manager.discardExperiment(lease).catch(() => undefined);
         }
         emitSpawnTiming(options.callbacks, task, {
@@ -538,16 +541,26 @@ async function executeSubagentWithRetry(
             errorMessage: typedError.message,
             attemptCount: effectiveAttempt,
             durationMs: Date.now() - startedAt,
-            mountPath: options.debugEnabled ? lease.projectMountPath : undefined,
-            worktreePath: options.debugEnabled ? lease.projectMountPath : undefined
+            mountPath: options.debugEnabled ? lease?.projectMountPath : undefined,
+            worktreePath: options.debugEnabled ? lease?.projectMountPath : undefined
           }
         };
       }
 
       options.callbacks?.onRetry?.(task, effectiveAttempt + 1, typedError);
-      await manager.discardExperiment(lease).catch(() => undefined);
+      if (lease) {
+        await manager.discardExperiment(lease).catch(() => undefined);
+      }
     }
   }
+}
+
+function toSafeBranchfsSegment(value: string) {
+  const normalized = value.trim().replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+  if (normalized && normalized !== "." && normalized !== "..") {
+    return normalized.slice(0, 80);
+  }
+  return createHash("sha256").update(value).digest("hex").slice(0, 16);
 }
 
 function isTransientError(error: Error) {

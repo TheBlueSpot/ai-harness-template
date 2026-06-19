@@ -1,5 +1,5 @@
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { buildUiBundle, createUiAssetManager, enrichUiBuildFileSystemError } from "./ui-build";
 
@@ -56,6 +56,7 @@ describe("ui build", () => {
     await buildUiBundle();
 
     expect(existsSync(path.join(uiOutDir, "index.html"))).toBe(true);
+    expect(createUiAssetManager().resolveAsset("/ide")).toBe(path.join(uiOutDir, "index.html"));
   });
 
   test("emits external source maps in development build", async () => {
@@ -238,6 +239,36 @@ describe("ui build", () => {
     await flushMicrotasks();
     expect(buildCalls).toEqual(["build-1"]);
     manager.dispose();
+  });
+
+  test("rebuilds for untracked UI source files", async () => {
+    const buildCalls: string[] = [];
+    let watcherListener: ((changedPath?: string) => void) | undefined;
+    const untrackedSourcePath = path.resolve(process.cwd(), "harness/ui/src/.tmp-live-reload-untracked-source.ts");
+    writeFileSync(untrackedSourcePath, "export const liveReloadProbe = true;\n");
+
+    try {
+      const manager = createUiAssetManager({
+        async buildUiBundle() {
+          buildCalls.push(`build-${buildCalls.length + 1}`);
+        },
+        watchSourceDir(_sourceDir, listener) {
+          watcherListener = listener;
+          return {
+            close() {}
+          };
+        }
+      });
+
+      manager.startWatching();
+      watcherListener?.(untrackedSourcePath);
+      await flushMicrotasks();
+
+      expect(buildCalls).toEqual(["build-1"]);
+      manager.dispose();
+    } finally {
+      rmSync(untrackedSourcePath, { force: true });
+    }
   });
 
   test("watches shared source as ui dependency and ignores untracked output", async () => {

@@ -83,6 +83,14 @@ export const assistantRunStateSchema = z.enum(["active", "paused"]);
 export const assistantBootstrapStateSchema = z.enum(["pending", "running", "completed", "failed"]);
 export const assistantCircuitBreakerStateSchema = z.enum(["closed", "tripped"]);
 export const assistantTodoStateSchema = z.enum(["pending", "in-progress", "blocked", "completed", "failed", "cancelled"]);
+export const assistantTodoWorkKindSchema = z.enum([
+  "app-code",
+  "automation-code",
+  "documentation",
+  "research",
+  "blocked",
+  "unspecified"
+]);
 export const assistantQuestionStatusSchema = z.enum(["pending", "deferred", "answered", "dismissed"]);
 export const assistantLearningConfidenceSchema = z.enum(["low", "medium", "high"]);
 export const assistantLogLevelSchema = z.enum(["info", "warning", "error", "critical"]);
@@ -532,7 +540,18 @@ export const backgroundJobAiRoutineDefinitionSchema = z.object({
   reasoningStrength: composerReasoningStrengthSchema.optional(),
   fastMode: z.boolean().optional(),
   planExecutionMode: planExecutionModeSchema.optional(),
-  subagentWorktreeStrategy: subagentWorktreeStrategySchema.optional()
+  subagentWorktreeStrategy: subagentWorktreeStrategySchema.optional(),
+  launchProfile: z
+    .object({
+      agentId: agentIdSchema.optional(),
+      providerBrand: providerBrandSchema.optional(),
+      planningModelId: providerModelIdSchema.optional(),
+      executionModelId: executionModelIdSchema.optional(),
+      reasoningStrength: composerReasoningStrengthSchema.optional(),
+      fastMode: z.boolean().optional(),
+      modeId: modeIdSchema.optional()
+    })
+    .optional()
 });
 
 export const backgroundJobShellDefinitionSchema = z.object({
@@ -565,6 +584,7 @@ export const runFailureCategorySchema = z.enum([
   "runtime-contract-mismatch",
   "partial-subagent-failure",
   "planner-question",
+  "workspace-context",
   "unknown"
 ]);
 
@@ -719,6 +739,12 @@ export const backgroundJobRunSchema = z.object({
   failureMessage: z.string().min(1).max(4000).optional(),
   failureCategory: runFailureCategorySchema.optional(),
   promptStats: runPromptStatsSchema.optional(),
+  agentId: agentIdSchema.optional(),
+  providerBrand: providerBrandSchema.optional(),
+  planningModelId: providerModelIdSchema.optional(),
+  executionModelId: executionModelIdSchema.optional(),
+  reasoningStrength: composerReasoningStrengthSchema.optional(),
+  fastMode: z.boolean().optional(),
   controllerInstanceId: z.string().min(1).max(128).optional(),
   controllerLeaseId: z.string().min(1).max(128).optional(),
   controllerLeaseExpiresAt: z.string().datetime().or(z.string().min(1)).optional(),
@@ -925,6 +951,8 @@ export const assistantTodoSchema = z.object({
   sortOrder: z.number().int().min(0).max(1000000),
   blockerReason: z.string().min(1).max(4000).optional(),
   source: z.enum(["user", "assistant", "bootstrap", "job", "question"]).optional(),
+  workKind: assistantTodoWorkKindSchema.default("unspecified"),
+  workTarget: z.string().min(1).max(512).optional(),
   createdAt: z.string().datetime().or(z.string().min(1)),
   updatedAt: z.string().datetime().or(z.string().min(1)),
   completedAt: z.string().datetime().or(z.string().min(1)).optional(),
@@ -935,7 +963,9 @@ export const assistantTodoPatchSchema = z.object({
   title: z.string().trim().min(1).max(512).optional(),
   description: z.string().min(1).max(4000).optional().nullable(),
   state: assistantTodoStateSchema.optional(),
-  blockerReason: z.string().min(1).max(4000).optional().nullable()
+  blockerReason: z.string().min(1).max(4000).optional().nullable(),
+  workKind: assistantTodoWorkKindSchema.optional(),
+  workTarget: z.string().min(1).max(512).optional().nullable()
 });
 
 export const assistantLearningSchema = z.object({
@@ -995,6 +1025,55 @@ export const assistantsStateSchema = z.object({
   questions: z.array(assistantQuestionSchema).max(4096),
   logs: z.array(assistantLogEntrySchema).max(16384),
   assetRefs: z.array(assistantAssetRefSchema).max(4096)
+});
+
+export const assistantPageCursorSchema = z.string().min(1).max(512);
+export const assistantPageLimitSchema = z.number().int().min(1).max(512);
+
+export const assistantSummaryPageSchema = z.object({
+  items: z.array(assistantSchema).max(512),
+  nextCursor: assistantPageCursorSchema.optional(),
+  totalApprox: z.number().int().min(0).max(1_000_000).optional()
+});
+
+export const assistantThreadMessagePageSchema = z.object({
+  items: z.array(chatMessageSchema).max(512),
+  nextCursor: assistantPageCursorSchema.optional(),
+  totalApprox: z.number().int().min(0).max(1_000_000).optional()
+});
+
+export const assistantTodoPageSchema = z.object({
+  items: z.array(assistantTodoSchema).max(512),
+  nextCursor: assistantPageCursorSchema.optional(),
+  totalApprox: z.number().int().min(0).max(1_000_000).optional()
+});
+
+export const assistantLearningPageSchema = z.object({
+  items: z.array(assistantLearningSchema).max(512),
+  nextCursor: assistantPageCursorSchema.optional(),
+  totalApprox: z.number().int().min(0).max(1_000_000).optional()
+});
+
+export const assistantQuestionPageSchema = z.object({
+  items: z.array(assistantQuestionSchema).max(512),
+  nextCursor: assistantPageCursorSchema.optional(),
+  totalApprox: z.number().int().min(0).max(1_000_000).optional()
+});
+
+export const assistantLogPageSchema = z.object({
+  items: z.array(assistantLogEntrySchema).max(512),
+  nextCursor: assistantPageCursorSchema.optional(),
+  totalApprox: z.number().int().min(0).max(1_000_000).optional()
+});
+
+export const assistantDetailSchema = z.object({
+  assistant: assistantSchema,
+  thread: assistantThreadSchema.optional(),
+  todos: assistantTodoPageSchema,
+  learnings: assistantLearningPageSchema,
+  questions: assistantQuestionPageSchema,
+  logs: assistantLogPageSchema,
+  assetRefs: z.array(assistantAssetRefSchema).max(512)
 });
 
 export const executionControlStateSchema = z.object({
@@ -1472,6 +1551,90 @@ export const cliAttachTokenSchema = z.object({
   usedAt: z.string().datetime().or(z.string().min(1)).optional()
 });
 
+export const terminalShellKindSchema = z.enum(["powershell", "cmd", "bash", "zsh", "sh", "custom"]);
+export const terminalSessionStatusSchema = z.enum(["starting", "running", "stopped", "exited", "failed"]);
+export const terminalCtrlCModeSchema = z.enum(["auto", "copy", "sigint"]);
+export const terminalRendererModeSchema = z.enum(["xterm-webgl", "xterm-dom", "solid-prototype"]);
+
+export const terminalShellSchema = z.object({
+  id: z.string().min(1).max(128),
+  label: z.string().min(1).max(128),
+  executableLabel: z.string().min(1).max(512),
+  kind: terminalShellKindSchema,
+  available: z.boolean(),
+  default: z.boolean()
+});
+
+export const terminalEnvVarSchema = z.object({
+  name: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+  value: z.string().max(4096).optional(),
+  secret: z.boolean().default(false)
+});
+
+export const terminalSessionSchema = z.object({
+  id: z.string().min(1).max(128),
+  projectId: projectIdSchema,
+  name: z.string().min(1).max(128),
+  shellId: z.string().min(1).max(128),
+  cwd: z.string().min(1).max(4096),
+  status: terminalSessionStatusSchema,
+  cols: z.number().int().min(1).max(1000),
+  rows: z.number().int().min(1).max(1000),
+  pid: z.number().int().min(0).optional(),
+  exitCode: z.number().int().min(-1).max(65535).optional(),
+  startedAt: z.string().datetime().or(z.string().min(1)),
+  updatedAt: z.string().datetime().or(z.string().min(1)),
+  exitedAt: z.string().datetime().or(z.string().min(1)).optional(),
+  serverRestarted: z.boolean().optional()
+});
+
+export type TerminalPaneLayoutInput =
+  | {
+      type: "leaf";
+      id: string;
+      sessionId?: string;
+    }
+  | {
+      type: "split";
+      id: string;
+      direction: "horizontal" | "vertical";
+      sizes: number[];
+      children: TerminalPaneLayoutInput[];
+    };
+
+export const terminalPaneLayoutSchema: z.ZodType<TerminalPaneLayoutInput> = z.lazy(() =>
+  z.discriminatedUnion("type", [
+    z.object({
+      type: z.literal("leaf"),
+      id: z.string().min(1).max(128),
+      sessionId: z.string().min(1).max(128).optional()
+    }),
+    z.object({
+      type: z.literal("split"),
+      id: z.string().min(1).max(128),
+      direction: z.enum(["horizontal", "vertical"]),
+      sizes: z.array(z.number().min(5).max(95)).min(2).max(4),
+      children: z.array(terminalPaneLayoutSchema).min(2).max(4)
+    })
+  ])
+);
+
+export const terminalPreferencesSchema = z.object({
+  defaultShellId: z.string().min(1).max(128).optional(),
+  scrollbackLimit: z.number().int().min(1000).max(200000).default(10000),
+  copyOnSelect: z.boolean().default(false),
+  ctrlCMode: terminalCtrlCModeSchema.default("auto"),
+  rendererMode: terminalRendererModeSchema.default("xterm-webgl")
+});
+
+export const terminalAttachTokenSchema = z.object({
+  token: z.string().min(16).max(512),
+  sessionId: z.string().min(1).max(128),
+  clientId: z.string().min(1).max(128),
+  expiresAt: z.string().datetime().or(z.string().min(1)),
+  usedAt: z.string().datetime().or(z.string().min(1)).optional()
+});
+
 export const chatSessionStateSchema = z.object({
   sessionId: sessionIdSchema,
   selectedAgentId: agentIdSchema.optional(),
@@ -1510,6 +1673,44 @@ export const projectSearchResultSchema = z.object({
   failedJobCount: z.number().int().min(0).optional(),
   lastThreadPreview: z.string().max(240).optional(),
   detectedFrameworks: z.array(z.string().min(1).max(48)).max(8).optional()
+});
+
+export const ideFilePathSchema = z.string().min(1).max(4096);
+export const ideFileTreeEntrySchema = z.object({
+  path: ideFilePathSchema,
+  name: z.string().min(1).max(512),
+  kind: z.enum(["file", "directory"]),
+  depth: z.number().int().min(0).max(256),
+  parentPath: ideFilePathSchema.optional(),
+  hasChildren: z.boolean().optional()
+});
+export const ideFileReadSchema = z.object({
+  projectId: projectIdSchema,
+  path: ideFilePathSchema,
+  name: z.string().min(1).max(512),
+  language: z.string().min(1).max(64),
+  encoding: z.string().min(1).max(32),
+  sizeBytes: z.number().int().min(0),
+  lineCount: z.number().int().min(0),
+  isBinary: z.boolean(),
+  tooLarge: z.boolean(),
+  content: z.string().max(2_000_000).optional()
+});
+export const ideSearchMatchSchema = z.object({
+  line: z.number().int().min(1),
+  column: z.number().int().min(1),
+  preview: z.string().max(500)
+});
+export const ideSearchResultSchema = z.object({
+  path: ideFilePathSchema,
+  name: z.string().min(1).max(512),
+  matches: z.array(ideSearchMatchSchema).max(64)
+});
+export const ideGitChangeSchema = z.object({
+  path: ideFilePathSchema,
+  originalPath: ideFilePathSchema.optional(),
+  status: z.enum(["modified", "added", "deleted", "renamed", "untracked", "copied", "conflicted"]),
+  shortStatus: z.string().min(1).max(4)
 });
 
 export const workspaceProjectStateSchema = z.object({
@@ -1641,6 +1842,63 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     requestId: requestIdSchema,
     payload: z.object({
       query: z.string().trim().min(1).max(4096)
+    })
+  }),
+  z.object({
+    type: z.literal("ide.fileTree.list"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      rootPath: ideFilePathSchema.optional(),
+      maxEntries: z.number().int().min(1).max(20000).optional(),
+      includeIgnored: z.boolean().optional()
+    })
+  }),
+  z.object({
+    type: z.literal("ide.file.read"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      path: ideFilePathSchema,
+      maxBytes: z.number().int().min(1).max(5_000_000).optional()
+    })
+  }),
+  z.object({
+    type: z.literal("ide.file.write"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      path: ideFilePathSchema,
+      content: z.string().max(2_000_000)
+    })
+  }),
+  z.object({
+    type: z.literal("ide.search.run"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      query: z.string().min(1).max(4096),
+      regex: z.boolean(),
+      caseSensitive: z.boolean(),
+      wholeWord: z.boolean().optional(),
+      includeGlob: z.string().min(1).max(512).optional(),
+      excludeGlob: z.string().min(1).max(512).optional(),
+      maxResults: z.number().int().min(1).max(1000).optional()
+    })
+  }),
+  z.object({
+    type: z.literal("ide.search.cancel"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      searchRequestId: requestIdSchema
+    })
+  }),
+  z.object({
+    type: z.literal("ide.git.status"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema
     })
   }),
   z.object({
@@ -1974,6 +2232,10 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     })
   }),
   z.object({
+    type: z.literal("background-job.pause-assistant-jobs"),
+    requestId: requestIdSchema
+  }),
+  z.object({
     type: z.literal("background-job.resume"),
     requestId: requestIdSchema,
     payload: z.object({
@@ -2098,10 +2360,78 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     })
   }),
   z.object({
+    type: z.literal("assistant.summary.list"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      cursor: assistantPageCursorSchema.optional(),
+      limit: assistantPageLimitSchema.optional()
+    }).optional()
+  }),
+  z.object({
+    type: z.literal("assistant.detail.get"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      assistantId: assistantIdSchema
+    })
+  }),
+  z.object({
+    type: z.literal("assistant.thread.messages.list"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      assistantId: assistantIdSchema,
+      cursor: assistantPageCursorSchema.optional(),
+      limit: assistantPageLimitSchema.optional()
+    })
+  }),
+  z.object({
+    type: z.literal("assistant.logs.list"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      assistantId: assistantIdSchema,
+      cursor: assistantPageCursorSchema.optional(),
+      limit: assistantPageLimitSchema.optional()
+    })
+  }),
+  z.object({
+    type: z.literal("assistant.todos.list"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      assistantId: assistantIdSchema,
+      cursor: assistantPageCursorSchema.optional(),
+      limit: assistantPageLimitSchema.optional()
+    })
+  }),
+  z.object({
+    type: z.literal("assistant.learnings.list"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      assistantId: assistantIdSchema,
+      cursor: assistantPageCursorSchema.optional(),
+      limit: assistantPageLimitSchema.optional()
+    })
+  }),
+  z.object({
+    type: z.literal("assistant.questions.list"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      assistantId: assistantIdSchema,
+      cursor: assistantPageCursorSchema.optional(),
+      limit: assistantPageLimitSchema.optional()
+    })
+  }),
+  z.object({
     type: z.literal("assistant.bootstrap.retry"),
     requestId: requestIdSchema,
     payload: z.object({
       assistantId: assistantIdSchema
+    })
+  }),
+  z.object({
+    type: z.literal("assistant.jobs.bootstrap"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      assistantId: assistantIdSchema,
+      projectId: projectIdSchema.optional()
     })
   }),
   z.object({
@@ -2199,6 +2529,84 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("agent.runtime.refresh"),
     requestId: requestIdSchema
+  }),
+  z.object({
+    type: z.literal("terminal.shells.list"),
+    requestId: requestIdSchema
+  }),
+  z.object({
+    type: z.literal("terminal.session.create"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      name: z.string().min(1).max(128).optional(),
+      shellId: z.string().min(1).max(128).optional(),
+      cwd: z.string().min(1).max(4096).optional(),
+      cols: z.number().int().min(1).max(1000),
+      rows: z.number().int().min(1).max(1000),
+      env: z.array(terminalEnvVarSchema).max(64).optional()
+    })
+  }),
+  z.object({
+    type: z.literal("terminal.session.rename"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      sessionId: z.string().min(1).max(128),
+      name: z.string().min(1).max(128)
+    })
+  }),
+  z.object({
+    type: z.literal("terminal.session.stop"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      sessionId: z.string().min(1).max(128)
+    })
+  }),
+  z.object({
+    type: z.literal("terminal.session.close"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      sessionId: z.string().min(1).max(128)
+    })
+  }),
+  z.object({
+    type: z.literal("terminal.session.restart"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      sessionId: z.string().min(1).max(128),
+      cols: z.number().int().min(1).max(1000),
+      rows: z.number().int().min(1).max(1000)
+    })
+  }),
+  z.object({
+    type: z.literal("terminal.session.resize"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      sessionId: z.string().min(1).max(128),
+      cols: z.number().int().min(1).max(1000),
+      rows: z.number().int().min(1).max(1000)
+    })
+  }),
+  z.object({
+    type: z.literal("terminal.session.attach"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      sessionId: z.string().min(1).max(128)
+    })
+  }),
+  z.object({
+    type: z.literal("terminal.preferences.save"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      preferences: terminalPreferencesSchema,
+      layout: terminalPaneLayoutSchema.optional()
+    })
   }),
   z.object({
     type: z.literal("cli-session.start"),
@@ -2459,6 +2867,55 @@ export const serverEventSchema = z.discriminatedUnion("type", [
     })
   }),
   z.object({
+    type: z.literal("ide.fileTree.listed"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      requestedPath: ideFilePathSchema.optional(),
+      rootPath: projectRootPathSchema,
+      entries: z.array(ideFileTreeEntrySchema).max(20000),
+      truncated: z.boolean()
+    })
+  }),
+  z.object({
+    type: z.literal("ide.file.read"),
+    requestId: requestIdSchema,
+    payload: ideFileReadSchema
+  }),
+  z.object({
+    type: z.literal("ide.file.written"),
+    requestId: requestIdSchema,
+    payload: ideFileReadSchema
+  }),
+  z.object({
+    type: z.literal("ide.search.results"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      query: z.string().min(1).max(4096),
+      results: z.array(ideSearchResultSchema).max(1000),
+      truncated: z.boolean()
+    })
+  }),
+  z.object({
+    type: z.literal("ide.search.cancelled"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      searchRequestId: requestIdSchema
+    })
+  }),
+  z.object({
+    type: z.literal("ide.git.status"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      branch: z.string().min(1).max(512).optional(),
+      isRepository: z.boolean(),
+      changes: z.array(ideGitChangeSchema).max(5000)
+    })
+  }),
+  z.object({
     type: z.literal("workspace.updated"),
     requestId: requestIdSchema,
     payload: z.object({
@@ -2713,6 +3170,61 @@ export const serverEventSchema = z.discriminatedUnion("type", [
     })
   }),
   z.object({
+    type: z.literal("assistant.summary.listed"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      assistants: assistantSummaryPageSchema
+    })
+  }),
+  z.object({
+    type: z.literal("assistant.detail.loaded"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      detail: assistantDetailSchema
+    })
+  }),
+  z.object({
+    type: z.literal("assistant.thread.messages.listed"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      assistantId: assistantIdSchema,
+      threadId: assistantThreadIdSchema,
+      messages: assistantThreadMessagePageSchema
+    })
+  }),
+  z.object({
+    type: z.literal("assistant.logs.listed"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      assistantId: assistantIdSchema,
+      logs: assistantLogPageSchema
+    })
+  }),
+  z.object({
+    type: z.literal("assistant.todos.listed"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      assistantId: assistantIdSchema,
+      todos: assistantTodoPageSchema
+    })
+  }),
+  z.object({
+    type: z.literal("assistant.learnings.listed"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      assistantId: assistantIdSchema,
+      learnings: assistantLearningPageSchema
+    })
+  }),
+  z.object({
+    type: z.literal("assistant.questions.listed"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      assistantId: assistantIdSchema,
+      questions: assistantQuestionPageSchema
+    })
+  }),
+  z.object({
     type: z.literal("assistant.updated"),
     requestId: requestIdSchema,
     payload: z.object({
@@ -2904,6 +3416,60 @@ export const serverEventSchema = z.discriminatedUnion("type", [
     })
   }),
   z.object({
+    type: z.literal("terminal.shells.updated"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      shells: z.array(terminalShellSchema).max(16)
+    })
+  }),
+  z.object({
+    type: z.literal("terminal.sessions.updated"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      sessions: z.array(terminalSessionSchema).max(64),
+      preferences: terminalPreferencesSchema,
+      layout: terminalPaneLayoutSchema.optional()
+    })
+  }),
+  z.object({
+    type: z.literal("terminal.session.created"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      session: terminalSessionSchema
+    })
+  }),
+  z.object({
+    type: z.literal("terminal.session.updated"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      session: terminalSessionSchema
+    })
+  }),
+  z.object({
+    type: z.literal("terminal.session.exited"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      session: terminalSessionSchema
+    })
+  }),
+  z.object({
+    type: z.literal("terminal.session.attach-ready"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      sessionId: z.string().min(1).max(128),
+      attachToken: terminalAttachTokenSchema,
+      snapshot: z.string().max(2_000_000)
+    })
+  }),
+  z.object({
+    type: z.literal("terminal.preferences.saved"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      preferences: terminalPreferencesSchema,
+      layout: terminalPaneLayoutSchema.optional()
+    })
+  }),
+  z.object({
     type: z.literal("cli-session.started"),
     requestId: requestIdSchema,
     payload: z.object({
@@ -3053,6 +3619,7 @@ export type AssistantRunState = z.infer<typeof assistantRunStateSchema>;
 export type AssistantBootstrapState = z.infer<typeof assistantBootstrapStateSchema>;
 export type AssistantCircuitBreakerState = z.infer<typeof assistantCircuitBreakerStateSchema>;
 export type AssistantTodoState = z.infer<typeof assistantTodoStateSchema>;
+export type AssistantTodoWorkKind = z.infer<typeof assistantTodoWorkKindSchema>;
 export type AssistantQuestionStatus = z.infer<typeof assistantQuestionStatusSchema>;
 export type AssistantLearningConfidence = z.infer<typeof assistantLearningConfidenceSchema>;
 export type AssistantLogLevel = z.infer<typeof assistantLogLevelSchema>;
@@ -3072,6 +3639,13 @@ export type AssistantQuestion = z.infer<typeof assistantQuestionSchema>;
 export type AssistantLogEntry = z.infer<typeof assistantLogEntrySchema>;
 export type AssistantAssetRef = z.infer<typeof assistantAssetRefSchema>;
 export type AssistantsState = z.infer<typeof assistantsStateSchema>;
+export type AssistantSummaryPage = z.infer<typeof assistantSummaryPageSchema>;
+export type AssistantDetail = z.infer<typeof assistantDetailSchema>;
+export type AssistantThreadMessagePage = z.infer<typeof assistantThreadMessagePageSchema>;
+export type AssistantTodoPage = z.infer<typeof assistantTodoPageSchema>;
+export type AssistantLearningPage = z.infer<typeof assistantLearningPageSchema>;
+export type AssistantQuestionPage = z.infer<typeof assistantQuestionPageSchema>;
+export type AssistantLogPage = z.infer<typeof assistantLogPageSchema>;
 export type ExecutionControlState = z.infer<typeof executionControlStateSchema>;
 export type SetupAction = z.infer<typeof setupActionSchema>;
 export type SetupCheck = z.infer<typeof setupCheckSchema>;
@@ -3123,9 +3697,21 @@ export type CliSessionStatus = z.infer<typeof cliSessionStatusSchema>;
 export type CliSessionAttachState = z.infer<typeof cliSessionAttachStateSchema>;
 export type CliSession = z.infer<typeof cliSessionSchema>;
 export type CliAttachToken = z.infer<typeof cliAttachTokenSchema>;
+export type TerminalShell = z.infer<typeof terminalShellSchema>;
+export type TerminalShellKind = z.infer<typeof terminalShellKindSchema>;
+export type TerminalSessionStatus = z.infer<typeof terminalSessionStatusSchema>;
+export type TerminalSession = z.infer<typeof terminalSessionSchema>;
+export type TerminalEnvVar = z.infer<typeof terminalEnvVarSchema>;
+export type TerminalPaneLayout = z.infer<typeof terminalPaneLayoutSchema>;
+export type TerminalPreferences = z.infer<typeof terminalPreferencesSchema>;
+export type TerminalAttachToken = z.infer<typeof terminalAttachTokenSchema>;
 export type ChatSessionState = z.infer<typeof chatSessionStateSchema>;
 export type ProjectThreadSummary = z.infer<typeof projectThreadSummarySchema>;
 export type ProjectSearchResult = z.infer<typeof projectSearchResultSchema>;
+export type IdeFileTreeEntry = z.infer<typeof ideFileTreeEntrySchema>;
+export type IdeFileRead = z.infer<typeof ideFileReadSchema>;
+export type IdeSearchResult = z.infer<typeof ideSearchResultSchema>;
+export type IdeGitChange = z.infer<typeof ideGitChangeSchema>;
 export type WorkspaceProjectState = z.infer<typeof workspaceProjectStateSchema>;
 export type WorkspaceState = z.infer<typeof workspaceStateSchema>;
 export type ClientCommand = z.infer<typeof clientCommandSchema>;

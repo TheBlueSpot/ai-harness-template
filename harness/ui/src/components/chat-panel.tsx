@@ -35,12 +35,15 @@ import {
   type ViewProjectState
 } from "../harness-store";
 import { normalizeAppHotkeyPreferences } from "../lib/app-hotkeys";
+import { findChatFileReferenceAtPosition, type ChatFileLinkContext, type ChatFileTarget } from "../lib/chat-file-links";
 import { tooltipWithPrimaryHotkey } from "../lib/hotkey-hints";
+import { openIdeWindow } from "../lib/ide-window";
 import { uploadFiles } from "../lib/uploadthing";
 import { buildChatTimelineRows, type ChatTimelineRow, type TimelineLiveMessage } from "../lib/chat-timeline-model";
 import { formatShortTimestamp, resolveBrowserTimezone } from "../lib/time-format";
 import { formatProviderModelName } from "../lib/utils";
 import { pushToast } from "../toast-store";
+import { openBackgroundRunInJobsPane } from "../background-run-navigation";
 import { ActionButton } from "./action-button";
 import { CliSessionPanel } from "./cli-session-panel";
 import { MarkdownContent } from "./markdown-content";
@@ -193,6 +196,14 @@ export function ChatPanel() {
     return index >= 0 ? state.workspace.projects[index] : undefined;
   };
   const project = () => activeProject()!;
+  const chatFileLinkContext = (): ChatFileLinkContext => ({
+    rootPath: activeProject()?.rootPath,
+    filePaths: activeProject()?.filePaths ?? []
+  });
+  const chatFileLinks = () => ({
+    ...chatFileLinkContext(),
+    onOpenFile: handleOpenChatFile
+  });
   const [stickToBottom, setStickToBottom] = createSignal(true);
   const [editingThreadTitle, setEditingThreadTitle] = createSignal(false);
   const [threadTitleDraft, setThreadTitleDraft] = createSignal("");
@@ -365,6 +376,10 @@ export function ChatPanel() {
   });
   const liveHarnessMessageTimestamp = () => activeProject()?.activeRun?.updatedAt ?? activeProject()?.activeRun?.createdAt;
   const runSubtasks = createMemo(() => reactiveArraySnapshot(activeProject()?.activeRun?.subtasks ?? activeProject()?.lastRun?.subtasks));
+  const currentBackgroundRun = createMemo(() => {
+    const run = activeProject()?.activeRun ?? activeProject()?.lastRun;
+    return run ? state.backgroundJobs.runs.find((entry) => entry.linkedAgentRunId === run.id) : undefined;
+  });
   const liveHarnessMessageKey = () =>
     liveHarnessMessages()
       .map((message) => `${message.id}:${message.locked ? "locked" : "live"}:${message.content}`)
@@ -848,7 +863,7 @@ export function ChatPanel() {
       return;
     }
 
-    sendCommand({
+    const sent = sendCommand({
       type: "planning.answer",
       requestId: createRequestId(),
       payload: {
@@ -861,7 +876,9 @@ export function ChatPanel() {
       }
     });
 
-    harnessStore.setProjectDraft(project.id, "");
+    if (sent) {
+      harnessStore.setProjectDraft(project.id, "");
+    }
   }
 
   let lastAttachmentDraftKey: string | undefined;
@@ -1023,6 +1040,28 @@ export function ChatPanel() {
     }
   }
 
+  function handleComposerClick(event: MouseEvent & { currentTarget: HTMLTextAreaElement }) {
+    if (!event.ctrlKey && !event.metaKey) {
+      return;
+    }
+    const reference = findChatFileReferenceAtPosition(event.currentTarget.value, event.currentTarget.selectionStart, chatFileLinkContext());
+    if (!reference) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    handleOpenChatFile(reference.target);
+  }
+
+  function handleOpenChatFile(target: ChatFileTarget) {
+    const currentProject = activeProject();
+    if (!currentProject) {
+      return;
+    }
+    openIdeWindow({ projectId: currentProject.id, threadId: currentProject.activeThreadId });
+    harnessStore.openIdeFile(target.path, target.line, target.column);
+  }
+
   function handleAttachmentDragOver(event: DragEvent) {
     if (!event.dataTransfer?.types.includes("Files")) {
       return;
@@ -1087,7 +1126,7 @@ export function ChatPanel() {
 
     const question = pendingQuestion();
     if (question && project.activeRun) {
-      sendCommand({
+      const sent = sendCommand({
         type: "planning.answer",
         requestId: createRequestId(),
         payload: {
@@ -1101,13 +1140,15 @@ export function ChatPanel() {
         }
       });
 
-      harnessStore.setProjectDraft(project.id, "");
-      setDraftAttachments([]);
+      if (sent) {
+        harnessStore.setProjectDraft(project.id, "");
+        setDraftAttachments([]);
+      }
       return;
     }
 
     if (project.activeRun?.status === "ready") {
-      sendCommand({
+      const sent = sendCommand({
         type: "planning.refine",
         requestId: createRequestId(),
         payload: {
@@ -1120,9 +1161,11 @@ export function ChatPanel() {
         }
       });
 
-      harnessStore.setProjectDraft(project.id, "");
-      setDraftAttachments([]);
-      clearCountdown();
+      if (sent) {
+        harnessStore.setProjectDraft(project.id, "");
+        setDraftAttachments([]);
+        clearCountdown();
+      }
       return;
     }
 
@@ -1162,7 +1205,7 @@ export function ChatPanel() {
     const executionModelId = getEffectiveExecutionModelId();
     const selectedModeId = isAutoModeSelected() ? "auto" : activeMode()?.id;
 
-    sendCommand({
+    const sent = sendCommand({
       type: "chat.send",
       requestId: createRequestId(),
       payload: {
@@ -1179,8 +1222,10 @@ export function ChatPanel() {
       }
     });
 
-    harnessStore.setProjectDraft(project.id, "");
-    setDraftAttachments([]);
+    if (sent) {
+      harnessStore.setProjectDraft(project.id, "");
+      setDraftAttachments([]);
+    }
   }
 
   function handleSelectAgent(agentId: "pi" | "copilot-cli" | "codex-cli") {
@@ -1284,7 +1329,7 @@ export function ChatPanel() {
       return;
     }
 
-    sendCommand({
+    const sent = sendCommand({
       type: "run.resume",
       requestId: createRequestId(),
       payload: {
@@ -1296,7 +1341,9 @@ export function ChatPanel() {
       }
     });
 
-    harnessStore.setProjectDraft(project.id, "");
+    if (sent) {
+      harnessStore.setProjectDraft(project.id, "");
+    }
   }
 
   function handleRetryRun(runId: string) {
@@ -1455,7 +1502,7 @@ export function ChatPanel() {
           classList={{ "bg-white/70": row.message.kind === "status", "bg-teal-950/5": row.message.kind !== "status" }}
         >
           <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--accent-strong)">harness</div>
-          <MarkdownContent content={() => row.message.content} size="compact" live={!row.message.locked && row.liveIndex === liveHarnessMessages().length - 1} />
+          <MarkdownContent content={() => row.message.content} size="compact" live={!row.message.locked && row.liveIndex === liveHarnessMessages().length - 1} fileLinks={chatFileLinks()} />
           {renderMessageActionRow(
             liveHarnessMessageTimestamp(),
             <CopyTextButton
@@ -1507,7 +1554,7 @@ export function ChatPanel() {
                   </span>
                 </Show>
               </div>
-              <MarkdownContent content={() => message.content} size="compact" />
+              <MarkdownContent content={() => message.content} size="compact" fileLinks={chatFileLinks()} />
               <Show when={message.metadata?.type === "assistant-action"}>
                 {renderAssistantActionCard(message.metadata as AssistantActionMessageMetadata)}
               </Show>
@@ -1550,7 +1597,7 @@ export function ChatPanel() {
             <Clipboard class="h-3.5 w-3.5" />
             Plan summary
           </div>
-          <MarkdownContent content={() => getPlanFromMessage(message)?.summary ?? ""} />
+          <MarkdownContent content={() => getPlanFromMessage(message)?.summary ?? ""} fileLinks={chatFileLinks()} />
           <div class="grid gap-2 text-[0.675rem] text-(--muted) md:grid-cols-2">
             <div>Route: {getPlanFromMessage(message)?.route}</div>
             <div>Difficulty: {getPlanFromMessage(message)?.difficultyScore}%</div>
@@ -1778,7 +1825,7 @@ export function ChatPanel() {
       return;
     }
 
-    sendCommand({
+    const sent = sendCommand({
       type: "run.resume",
       requestId: createRequestId(),
       payload: {
@@ -1790,7 +1837,9 @@ export function ChatPanel() {
       }
     });
 
-    harnessStore.setProjectDraft(project.id, "");
+    if (sent) {
+      harnessStore.setProjectDraft(project.id, "");
+    }
   }
 
   function handleReset() {
@@ -2209,6 +2258,15 @@ export function ChatPanel() {
       shellTimeoutSeconds: 600,
       shellNetworkAccess: false
     });
+  }
+
+  function handleOpenCurrentRunJob() {
+    const backgroundRun = currentBackgroundRun();
+    if (!backgroundRun) {
+      return;
+    }
+
+    openBackgroundRunInJobsPane(state, backgroundRun.id, backgroundRun.jobId);
   }
 
   function handleAssistantActionCardAction(metadata: AssistantActionMessageMetadata, actionKind: AssistantActionMessageMetadata["actions"][number]["kind"]) {
@@ -2723,7 +2781,7 @@ export function ChatPanel() {
                               Open plan
                             </ActionButton>
                           </div>
-                          <MarkdownContent content={() => plan().summary} size="compact" />
+                          <MarkdownContent content={() => plan().summary} size="compact" fileLinks={chatFileLinks()} />
                         </div>
                       )}
                     </Show>
@@ -2738,6 +2796,17 @@ export function ChatPanel() {
                       <div class="flex items-center justify-between gap-3">
                         <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Run summary</div>
                         <div class="flex flex-wrap items-center gap-2">
+                          <Show when={currentBackgroundRun()}>
+                            <ActionButton
+                              tooltip="Open background job for this run"
+                              icon={<Briefcase class="h-3.5 w-3.5" />}
+                              size="sm"
+                              variant="secondary"
+                              onClick={handleOpenCurrentRunJob}
+                            >
+                              Job
+                            </ActionButton>
+                          </Show>
                           <ActionButton
                             tooltip="Promote latest run into scheduled task"
                             icon={<CalendarClock class="h-3.5 w-3.5" />}
@@ -2804,12 +2873,12 @@ export function ChatPanel() {
                           <div class="text-(--muted)">Status: {task.status} | Attempts: {task.attemptCount}</div>
                           <Show when={task.output}>
                             <div class="pt-2">
-                              <MarkdownContent content={() => task.output ?? ""} size="compact" />
+                              <MarkdownContent content={() => task.output ?? ""} size="compact" fileLinks={chatFileLinks()} />
                             </div>
                           </Show>
                           <Show when={task.errorMessage}>
                             <div class="pt-2">
-                              <MarkdownContent content={() => task.errorMessage ?? ""} size="compact" tone="danger" />
+                              <MarkdownContent content={() => task.errorMessage ?? ""} size="compact" tone="danger" fileLinks={chatFileLinks()} />
                             </div>
                           </Show>
                         </div>
@@ -2839,10 +2908,10 @@ export function ChatPanel() {
                         <span>{trace.stage}</span>
                         <span>{trace.modelId ?? "n/a"}</span>
                       </div>
-                      <MarkdownContent content={() => trace.message} size="compact" />
+                      <MarkdownContent content={() => trace.message} size="compact" fileLinks={chatFileLinks()} />
                       <Show when={trace.detail}>
                         <div class="pt-2">
-                          <MarkdownContent content={() => trace.detail ?? ""} size="compact" tone="muted" />
+                          <MarkdownContent content={() => trace.detail ?? ""} size="compact" tone="muted" fileLinks={chatFileLinks()} />
                         </div>
                       </Show>
                     </article>
@@ -2910,11 +2979,11 @@ export function ChatPanel() {
                       </div>
                       <div class="pt-2 text-(--muted)">priority {entry.priority} | {entry.confidence} | {entry.freshness} | hits {entry.hitCount}</div>
                       <div class="pt-2">
-                        <MarkdownContent content={() => entry.summary} size="compact" />
+                        <MarkdownContent content={() => entry.summary} size="compact" fileLinks={chatFileLinks()} />
                       </div>
                       <Show when={entry.evidence}>
                         <div class="pt-2">
-                          <MarkdownContent content={() => entry.evidence ?? ""} size="compact" tone="muted" />
+                          <MarkdownContent content={() => entry.evidence ?? ""} size="compact" tone="muted" fileLinks={chatFileLinks()} />
                         </div>
                       </Show>
                     </article>
@@ -3083,6 +3152,7 @@ export function ChatPanel() {
                 disabledReason={executionPauseReason()}
                 onSubmit={() => composerTextarea?.form?.requestSubmit()}
                 onKeyDown={handleComposerKeyDown}
+                onClick={handleComposerClick}
                 onInput={(value) => {
                   harnessStore.setProjectDraft(project().id, value);
                   setComposerLookupIndex(0);

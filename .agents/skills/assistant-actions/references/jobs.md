@@ -50,6 +50,66 @@ Flow:
 
 Ask clarification if multiple jobs match.
 
+## Start All Jobs For Assistant Or Scope
+
+Use for explicit bulk launch such as:
+
+```text
+start all jobs for Release watcher
+start all assistant jobs for this project
+```
+
+Flow:
+
+1. Resolve assistant subset: named assistants, current project assistants, or explicit workspace all.
+2. Dry-run first:
+
+```powershell
+bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action start-jobs --assistant "Release watcher" --project "Docs"
+```
+
+For a whole project:
+
+```powershell
+bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action start-jobs --project "Docs"
+```
+
+3. Confirm matched assistants and `jobs to start`. Active queued/running/waiting jobs are skipped.
+4. Execute through the live harness command path so launch gates, notifications, and in-memory controllers stay correct:
+
+```powershell
+bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action start-jobs --assistant "Release watcher" --project "Docs" --execute --url http://localhost:8787
+```
+
+5. Verify with `assistant-state.ts`; new rows should appear under `backgroundJobRuns`.
+
+Do not create `background_job_runs` directly in SQLite for this action. Manual starts must use the live `background-job.run-now` path.
+
 ## Recovery Link
 
 If a job failed repeatedly or tripped the assistant circuit breaker, load [recovery.md](recovery.md).
+
+## Remove All Jobs For Assistant
+
+Use for explicit cleanup such as:
+
+```text
+remove all jobs for Release watcher
+```
+
+Flow:
+
+1. Resolve the assistant and project scope.
+2. Dry-run first:
+
+```powershell
+bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action remove-jobs --assistant "Release watcher" --project "Docs"
+```
+
+3. If the target is correct, execute:
+
+```powershell
+bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action remove-jobs --assistant "Release watcher" --project "Docs" --execute
+```
+
+4. Verify with `assistant-state.ts`; `backgroundJobs` should be empty for that assistant.

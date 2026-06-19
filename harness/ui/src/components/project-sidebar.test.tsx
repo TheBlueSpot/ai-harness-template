@@ -759,4 +759,60 @@ createUiTest("ProjectSidebar", () => {
     });
     expect(readProjectSidebarPreferences().collapsedProjectIds).toEqual([]);
   });
+
+  it("shows node-specific context menus with open in IDE last", async () => {
+    const originalOpen = window.open;
+    const open = mock((url?: string | URL) => ({ focus: () => undefined, url }));
+    window.open = open as unknown as typeof window.open;
+    try {
+      const project = createViewProjectFixture({
+        id: "project-context-menu",
+        name: "context-repo",
+        activeThreadId: "thread-context",
+        threads: [
+          createProjectThreadSummary({
+            id: "thread-context",
+            title: "Context thread",
+            titleSource: "generated",
+            updatedAt: new Date().toISOString()
+          })
+        ]
+      });
+      seedHarnessStoreForTests(
+        createHarnessStateFixture({
+          workspace: {
+            activeProjectId: project.id,
+            projects: [project]
+          }
+        })
+      );
+
+      render(() => <ProjectSidebar />);
+      await Promise.resolve();
+
+      const projectCard = document.querySelector("[data-test-project-card][data-project-id='project-context-menu']") as HTMLElement | null;
+      expect(projectCard).not.toBeNull();
+      dispatchMouseDown(projectCard!);
+      await waitFor(() => expect(screen.getAllByRole("menuitem").length).toBeGreaterThan(0));
+      const projectItems = screen.getAllByRole("menuitem").map((item) => item.textContent?.trim());
+      expect(projectItems).toEqual(["New thread", "Remove", "Open in IDE"]);
+
+      fireEvent.click(screen.getByRole("menuitem", { name: /Open in IDE/ }));
+      expect(String(open.mock.calls[0]?.[0])).toContain("/ide");
+      expect(String(open.mock.calls[0]?.[0])).toContain("projectId=project-context-menu");
+
+      const threadCard = document.querySelector("[data-test-project-thread-card][data-thread-id='thread-context']") as HTMLElement | null;
+      expect(threadCard).not.toBeNull();
+      dispatchMouseDown(threadCard!);
+      await waitFor(() => expect(screen.getAllByRole("menuitem").length).toBeGreaterThan(0));
+      const threadItems = screen.getAllByRole("menuitem").map((item) => item.textContent?.trim());
+      expect(threadItems).toEqual(["Pin", "Fork", "Rename", "Delete", "Open in IDE"]);
+    } finally {
+      window.open = originalOpen;
+    }
+  });
 });
+
+function dispatchMouseDown(element: HTMLElement) {
+  fireEvent.contextMenu(element, { clientX: 20, clientY: 30 });
+}

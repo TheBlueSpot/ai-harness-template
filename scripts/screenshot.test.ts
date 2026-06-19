@@ -23,7 +23,10 @@ describe("parseScreenshotArgs", () => {
     const opts = parseScreenshotArgs([], fixedNow);
     expect(opts.routes).toEqual(["/"]);
     expect(opts.viewports.map((viewport) => viewport.name)).toEqual(["desktop", "mobile"]);
+    expect(opts.baseUrl).toBe("http://localhost:8787");
     expect(opts.waitUntil).toBe("domcontentloaded");
+    expect(opts.startServer).toBe(false);
+    expect(opts.useBranchfs).toBe(false);
     expect(opts.runId).toBe("screenshot-42");
     expect(opts.outDir.endsWith(`${opts.runId}`)).toBe(true);
   });
@@ -44,7 +47,13 @@ describe("parseScreenshotArgs", () => {
 
   test("captures --base-url override", () => {
     const opts = parseScreenshotArgs(["--base-url", "http://localhost:8787"], fixedNow);
-    expect(opts.baseUrlOverride).toBe("http://localhost:8787");
+    expect(opts.baseUrl).toBe("http://localhost:8787");
+  });
+
+  test("captures opt-in server flags", () => {
+    const opts = parseScreenshotArgs(["--start-server", "--branchfs"], fixedNow);
+    expect(opts.startServer).toBe(true);
+    expect(opts.useBranchfs).toBe(true);
   });
 
   test("accepts explicit navigation wait mode", () => {
@@ -66,6 +75,10 @@ describe("parseScreenshotArgs", () => {
 
   test("throws on unknown viewport preset", () => {
     expect(() => resolveViewport("potato")).toThrow(/Unknown viewport/);
+  });
+
+  test("throws when BranchFS is requested without starting a server", () => {
+    expect(() => parseScreenshotArgs(["--branchfs"], fixedNow)).toThrow(/--branchfs requires --start-server/);
   });
 });
 
@@ -106,15 +119,47 @@ function createFakeManager(calls: string[], mountPath = "/tmp/mount"): FakeManag
 }
 
 describe("runScreenshotCapture", () => {
-  test("runs prepare, startServer, capture, stop, discard in order", async () => {
+  test("defaults to capturing an already-running server without starting BranchFS or dev server", async () => {
     const calls: string[] = [];
-    const { manager } = createFakeManager(calls);
     const opts = parseScreenshotArgs(["--route", "/", "--viewport", "desktop"], fixedNow);
 
     const deps: CaptureDeps = {
-      createManager: () => manager,
+      createManager: () => {
+        throw new Error("createManager should not be called by default");
+      },
+      startDevServer: async () => {
+        throw new Error("startDevServer should not be called by default");
+      },
+      capturePages: async (baseUrl, capOpts) => {
+        calls.push(`capture:${baseUrl}:${capOpts.routes.join(",")}`);
+        const artifact: ScreenshotArtifact = {
+          route: "/",
+          viewport: "desktop",
+          width: 1440,
+          height: 900,
+          path: `${capOpts.outDir}/home-desktop.png`
+        };
+        return [artifact];
+      }
+    };
+
+    const result = await runScreenshotCapture(opts, deps);
+
+    expect(calls).toEqual(["capture:http://localhost:8787:/"]);
+    expect(result.runId).toBe(opts.runId);
+    expect(result.screenshots).toHaveLength(1);
+  });
+
+  test("starts dev server in current workspace when --start-server is provided", async () => {
+    const calls: string[] = [];
+    const opts = parseScreenshotArgs(["--start-server", "--route", "/", "--viewport", "desktop"], fixedNow);
+
+    const deps: CaptureDeps = {
+      createManager: () => {
+        throw new Error("createManager should not be called without --branchfs");
+      },
       startDevServer: async (mountPath) => {
-        calls.push(`startServer:${mountPath}`);
+        calls.push(`startServer:${mountPath === process.cwd()}`);
         return {
           baseUrl: "http://localhost:1234",
           stop: async () => {
@@ -137,6 +182,43 @@ describe("runScreenshotCapture", () => {
 
     const result = await runScreenshotCapture(opts, deps);
 
+    expect(calls).toEqual(["startServer:true", "capture:http://localhost:1234:/", "stop"]);
+    expect(result.runId).toBe(opts.runId);
+    expect(result.screenshots).toHaveLength(1);
+  });
+
+  test("runs prepare, startServer, capture, stop, discard when BranchFS is requested", async () => {
+    const calls: string[] = [];
+    const { manager } = createFakeManager(calls);
+    const opts = parseScreenshotArgs(["--start-server", "--branchfs", "--route", "/", "--viewport", "desktop"], fixedNow);
+
+    const deps: CaptureDeps = {
+      createManager: () => manager,
+      startDevServer: async (mountPath) => {
+        calls.push(`startServer:${mountPath}`);
+        return {
+          baseUrl: "http://localhost:1234",
+          stop: async () => {
+            calls.push("stop");
+          }
+        };
+      },
+      capturePages: async (baseUrl, capOpts) => {
+        calls.push(`capture:${baseUrl}:${capOpts.routes.join(",")}`);
+        return [
+          {
+            route: "/",
+            viewport: "desktop",
+            width: 1440,
+            height: 900,
+            path: `${capOpts.outDir}/home-desktop.png`
+          }
+        ];
+      }
+    };
+
+    await runScreenshotCapture(opts, deps);
+
     expect(calls).toEqual([
       "prepare",
       "startServer:/tmp/mount",
@@ -144,14 +226,12 @@ describe("runScreenshotCapture", () => {
       "stop",
       "discard"
     ]);
-    expect(result.runId).toBe(opts.runId);
-    expect(result.screenshots).toHaveLength(1);
   });
 
-  test("still stops server and discards lease when capture throws", async () => {
+  test("still stops server and discards lease when BranchFS capture throws", async () => {
     const calls: string[] = [];
     const { manager } = createFakeManager(calls);
-    const opts = parseScreenshotArgs([], fixedNow);
+    const opts = parseScreenshotArgs(["--start-server", "--branchfs"], fixedNow);
 
     const deps: CaptureDeps = {
       createManager: () => manager,
@@ -170,7 +250,7 @@ describe("runScreenshotCapture", () => {
     expect(calls).toEqual(["prepare", "stop", "discard"]);
   });
 
-  test("skips BranchFS when --base-url provided", async () => {
+  test("uses --base-url without BranchFS or dev server", async () => {
     const calls: string[] = [];
     const opts = parseScreenshotArgs(["--base-url", "http://localhost:8787", "--route", "/"], fixedNow);
 

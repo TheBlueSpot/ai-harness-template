@@ -1,7 +1,8 @@
-import { cp, mkdir, rm } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { buildUiBundle } from "../harness/cli/src/ui-build";
 import { CliUsageError, parseCliOptions } from "../harness/cli/src/cli-options";
+import { copyLauncherRuntimeAssets } from "./launcher-assets";
 
 const HELP = `Usage: bun run package:launcher [--all|--target <target>] [--help]`;
 
@@ -86,9 +87,7 @@ async function packageLauncherTarget(target: LauncherTarget) {
     );
   }
 
-  await cp(path.join(repoRoot, "dist/ui"), path.join(targetDir, "dist/ui"), { recursive: true });
-  await cp(path.join(repoRoot, "package.json"), path.join(targetDir, "package.json"));
-  await cp(path.join(repoRoot, "agents.md"), path.join(targetDir, "agents.md"));
+  await copyLauncherRuntimeAssets(repoRoot, targetDir);
   console.log(`[package:launcher] ${target} -> ${path.relative(repoRoot, binaryPath)}`);
 }
 

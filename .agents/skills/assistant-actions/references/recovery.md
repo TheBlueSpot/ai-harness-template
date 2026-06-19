@@ -12,6 +12,47 @@ Flow:
 4. On resume, release pending reprioritize work unless global execution remains paused.
 5. Verify run state and report pending questions or failed jobs that still need attention.
 
+## Pause All Or Subset
+
+Use for explicit bulk pause such as:
+
+```text
+pause all assistants for this project
+pause Release watcher and Docs watcher
+pause all assistants
+```
+
+Flow:
+
+1. Resolve target scope before mutation.
+2. Dry-run first:
+
+```powershell
+bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action pause-assistants --project "Docs"
+```
+
+For named subsets, repeat `--assistant`:
+
+```powershell
+bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action pause-assistants --assistant "Release watcher" --assistant "Docs watcher" --project "Docs"
+```
+
+For workspace-wide pause:
+
+```powershell
+bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action pause-assistants --all
+```
+
+3. Execute only after the matched assistant list is correct:
+
+```powershell
+bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action pause-assistants --project "Docs" --execute
+```
+
+4. Verify with `assistant-state.ts` or the Assistants surface; each matched assistant should have run state `paused`.
+
+Project-scoped bulk pause does not pause global assistants unless they are named explicitly or `--all` is used without `--project`.
+
 ## Bootstrap Retry
 
 Flow:
@@ -22,6 +63,28 @@ Flow:
 4. Use `assistant.bootstrap.retry`.
 5. Retry bootstrap as a single-flight operation.
 6. Verify bootstrap state, latest bootstrap log, and created initial todos.
+
+## Rebootstrap From Script
+
+Use when the user asks to reset bootstrap state outside the UI. Dry-run first:
+
+```powershell
+bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action rebootstrap --assistant "Release watcher" --project "Docs"
+```
+
+Then execute only after the matched assistant list is correct:
+
+```powershell
+bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action rebootstrap --assistant "Release watcher" --project "Docs" --execute
+```
+
+For all project assistants:
+
+```powershell
+bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action rebootstrap --project "Docs" --execute
+```
+
+The script marks matched assistants active, clears breaker/failure state, and sets bootstrap to pending. Use the live harness retry action when immediate runtime execution is required.
 
 ## Circuit Breaker
 

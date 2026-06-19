@@ -156,7 +156,7 @@ export function createUiAssetManager(options: CreateUiAssetManagerOptions = {}) 
     clearTimeout: globalThis.clearTimeout
   };
   const buildUi = options.buildUiBundle ?? buildUiBundle;
-  const isTrackedFile = options.isTrackedFile ?? createGitTrackedFilePredicate();
+  const shouldRebuildForPath = options.isTrackedFile ?? createLiveReloadSourcePredicate();
   const watchedSourceDirs = options.watchedSourceDirs ?? [uiSourceDir, sharedSourceDir];
   const watchSourceDir =
     options.watchSourceDir ??
@@ -239,7 +239,7 @@ export function createUiAssetManager(options: CreateUiAssetManagerOptions = {}) 
       }
 
       watchers = watchedSourceDirs.map((sourceDir) => watchSourceDir(sourceDir, (changedPath) => {
-        if (isIgnoredLiveReloadWatchPath(changedPath) || !isTrackedFile(changedPath)) {
+        if (isIgnoredLiveReloadWatchPath(changedPath) || !shouldRebuildForPath(changedPath)) {
           return;
         }
 
@@ -247,7 +247,7 @@ export function createUiAssetManager(options: CreateUiAssetManagerOptions = {}) 
       }) as FSWatcher);
     },
     resolveAsset(pathname: string) {
-      const relativePath = pathname === "/" ? "index.html" : pathname.slice(1);
+      const relativePath = pathname === "/" || pathname === "/ide" ? "index.html" : pathname.slice(1);
       const assetPath = path.resolve(uiOutDir, relativePath);
 
       if (!assetPath.startsWith(uiOutDir)) {
@@ -338,14 +338,23 @@ function isHarnessTestSourcePath(resolvedPath: string) {
   );
 }
 
-function createGitTrackedFilePredicate() {
+function createLiveReloadSourcePredicate() {
   return (changedPath: string | undefined) => {
     if (!changedPath) {
       return false;
     }
 
-    const relativePath = normalizeRepoRelativePath(path.resolve(changedPath));
-    return relativePath !== undefined && isGitTrackedFile(relativePath);
+    const resolvedPath = path.resolve(changedPath);
+    const relativePath = normalizeRepoRelativePath(resolvedPath);
+    if (!relativePath) {
+      return false;
+    }
+
+    if (isPathWithin(uiSourceDir, resolvedPath) || isPathWithin(sharedSourceDir, resolvedPath)) {
+      return existsSync(resolvedPath) || isGitTrackedFile(relativePath);
+    }
+
+    return isGitTrackedFile(relativePath);
   };
 }
 

@@ -79,6 +79,40 @@ describe("client command validation", () => {
     ).toBe("project.search");
   });
 
+  test("accepts IDE file and search payloads", () => {
+    expect(
+      parseClientCommand({
+        type: "ide.fileTree.list",
+        requestId: "req-ide-tree",
+        payload: {
+          projectId: "project-1"
+        }
+      }).type
+    ).toBe("ide.fileTree.list");
+    expect(
+      parseClientCommand({
+        type: "ide.file.read",
+        requestId: "req-ide-read",
+        payload: {
+          projectId: "project-1",
+          path: "src/app.ts"
+        }
+      }).type
+    ).toBe("ide.file.read");
+    expect(
+      parseClientCommand({
+        type: "ide.search.run",
+        requestId: "req-ide-search",
+        payload: {
+          projectId: "project-1",
+          query: "needle",
+          regex: false,
+          caseSensitive: true
+        }
+      }).type
+    ).toBe("ide.search.run");
+  });
+
   test("accepts branchfs cleanup payloads", () => {
     expect(
       parseClientCommand({
@@ -378,6 +412,19 @@ describe("client command validation", () => {
     ).toBe("assistant.circuit-breaker.retry");
   });
 
+  test("accepts assistant job bootstrap payloads", () => {
+    expect(
+      parseClientCommand({
+        type: "assistant.jobs.bootstrap",
+        requestId: "req-assistant-jobs-bootstrap",
+        payload: {
+          assistantId: "assistant-1",
+          projectId: "project-1"
+        }
+      }).type
+    ).toBe("assistant.jobs.bootstrap");
+  });
+
   test("accepts assistant.question.answer-batch payloads", () => {
     expect(
       parseClientCommand({
@@ -582,6 +629,62 @@ describe("client command validation", () => {
         }
       }).type
     ).toBe("cli-session.start");
+  });
+
+  test("accepts terminal session and preference payloads", () => {
+    expect(
+      parseClientCommand({
+        type: "terminal.session.create",
+        requestId: "req-terminal-start",
+        payload: {
+          projectId: "project-1",
+          shellId: "bash",
+          cols: 120,
+          rows: 32,
+          env: [{ name: "FEATURE_FLAG", value: "1", secret: false }]
+        }
+      }).type
+    ).toBe("terminal.session.create");
+
+    expect(
+      parseClientCommand({
+        type: "terminal.preferences.save",
+        requestId: "req-terminal-prefs",
+        payload: {
+          preferences: {
+            scrollbackLimit: 10000,
+            copyOnSelect: false,
+            ctrlCMode: "auto",
+            rendererMode: "xterm-webgl"
+          },
+          layout: {
+            type: "split",
+            id: "root",
+            direction: "vertical",
+            sizes: [50, 50],
+            children: [
+              { type: "leaf", id: "left", sessionId: "terminal-1" },
+              { type: "leaf", id: "right", sessionId: "terminal-2" }
+            ]
+          }
+        }
+      }).type
+    ).toBe("terminal.preferences.save");
+  });
+
+  test("rejects malformed terminal env vars", () => {
+    expect(() =>
+      parseClientCommand({
+        type: "terminal.session.create",
+        requestId: "req-terminal-invalid",
+        payload: {
+          projectId: "project-1",
+          cols: 80,
+          rows: 24,
+          env: [{ name: "1INVALID", value: "bad", secret: false }]
+        }
+      })
+    ).toThrow();
   });
 
   test("accepts run.execute payloads", () => {
@@ -1223,6 +1326,63 @@ describe("planner result validation", () => {
         }
       }).type
     ).toBe("project.search.results");
+  });
+
+  test("accepts IDE server event payloads", () => {
+    expect(
+      parseServerEvent({
+        type: "ide.fileTree.listed",
+        requestId: "req-ide-tree",
+        payload: {
+          projectId: "project-1",
+          rootPath: "C:\\repo",
+          truncated: false,
+          entries: [{ path: "src/app.ts", name: "app.ts", kind: "file", depth: 1, parentPath: "src" }]
+        }
+      }).type
+    ).toBe("ide.fileTree.listed");
+    expect(
+      parseServerEvent({
+        type: "ide.file.read",
+        requestId: "req-ide-read",
+        payload: {
+          projectId: "project-1",
+          path: "src/app.ts",
+          name: "app.ts",
+          language: "TypeScript",
+          encoding: "UTF-8",
+          sizeBytes: 12,
+          lineCount: 1,
+          isBinary: false,
+          tooLarge: false,
+          content: "const x = 1;"
+        }
+      }).type
+    ).toBe("ide.file.read");
+    expect(
+      parseServerEvent({
+        type: "ide.search.results",
+        requestId: "req-ide-search",
+        payload: {
+          projectId: "project-1",
+          query: "x",
+          truncated: false,
+          results: [{ path: "src/app.ts", name: "app.ts", matches: [{ line: 1, column: 7, preview: "const x = 1;" }] }]
+        }
+      }).type
+    ).toBe("ide.search.results");
+    expect(
+      parseServerEvent({
+        type: "ide.git.status",
+        requestId: "req-ide-git",
+        payload: {
+          projectId: "project-1",
+          branch: "main",
+          isRepository: true,
+          changes: [{ path: "src/app.ts", status: "modified", shortStatus: "M" }]
+        }
+      }).type
+    ).toBe("ide.git.status");
   });
 
   test("accepts project create and git init contracts", () => {

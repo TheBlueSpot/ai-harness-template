@@ -4,6 +4,7 @@ import rehypeSanitize from "rehype-sanitize";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import type { Element, ElementContent, Properties, Root, RootContent, Text } from "hast";
+import { findChatFileReferences, type ChatFileLinkContext } from "./chat-file-links";
 
 const allowedLinkProtocols = new Set(["http:", "https:", "mailto:"]);
 
@@ -39,6 +40,17 @@ export function normalizeAllowedHref(href: string | null | undefined) {
   const value = href?.trim();
   const linkKind = classifyLinkHref(value);
   return linkKind === "invalid" ? undefined : value;
+}
+
+export function createMarkdownRehypePlugins(input: { live?: boolean; fileLinks?: ChatFileLinkContext } = {}): PluggableList {
+  const plugins: PluggableList = [rehypeSanitize];
+  if (input.fileLinks) {
+    plugins.push(createChatFileLinkRehypePlugin(input.fileLinks));
+  }
+  if (!input.live) {
+    plugins.push([rehypeHighlight, { detect: false }]);
+  }
+  return plugins;
 }
 
 export function extractTextContent(node: Root | Element | ElementContent | RootContent | Array<ElementContent | RootContent> | Text | undefined): string {
@@ -93,4 +105,67 @@ export function findFirstChildElement(node: Element | undefined, tagName: string
   return node.children.find(
     (child): child is Element => child.type === "element" && child.tagName === tagName
   );
+}
+
+function createChatFileLinkRehypePlugin(context: ChatFileLinkContext) {
+  return function chatFileLinkRehypePlugin() {
+    return function transformChatFileLinks(tree: Root) {
+      transformMarkdownFileLinks(tree.children, context);
+    };
+  };
+}
+
+function transformMarkdownFileLinks(children: RootContent[] | ElementContent[], context: ChatFileLinkContext) {
+  for (let index = 0; index < children.length; index += 1) {
+    const child = children[index];
+    if (!child) {
+      continue;
+    }
+    if (child.type === "text") {
+      const replacements = splitTextIntoFileLinks(child, context);
+      if (replacements) {
+        children.splice(index, 1, ...replacements);
+        index += replacements.length - 1;
+      }
+      continue;
+    }
+    if (child.type === "element" && !isFileLinkTransformBoundary(child)) {
+      transformMarkdownFileLinks(child.children, context);
+    }
+  }
+}
+
+function splitTextIntoFileLinks(node: Text, context: ChatFileLinkContext): ElementContent[] | undefined {
+  const references = findChatFileReferences(node.value, context);
+  if (references.length === 0) {
+    return undefined;
+  }
+
+  const output: ElementContent[] = [];
+  let cursor = 0;
+  for (const reference of references) {
+    if (reference.index > cursor) {
+      output.push({ type: "text", value: node.value.slice(cursor, reference.index) });
+    }
+    output.push({
+      type: "element",
+      tagName: "a",
+      properties: {
+        href: reference.text,
+        dataHarnessFilePath: reference.target.path,
+        dataHarnessFileLine: reference.target.line ? String(reference.target.line) : undefined,
+        dataHarnessFileColumn: reference.target.column ? String(reference.target.column) : undefined
+      },
+      children: [{ type: "text", value: reference.text }]
+    });
+    cursor = reference.index + reference.length;
+  }
+  if (cursor < node.value.length) {
+    output.push({ type: "text", value: node.value.slice(cursor) });
+  }
+  return output;
+}
+
+function isFileLinkTransformBoundary(element: Element) {
+  return element.tagName === "a" || element.tagName === "code" || element.tagName === "pre";
 }

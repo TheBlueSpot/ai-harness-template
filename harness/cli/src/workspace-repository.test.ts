@@ -14,6 +14,7 @@ import {
   createExperimentId,
   createMemoryEntryId,
   createMemoryRetrievalId,
+  type BackgroundJob,
   type ExecutionPlan
 } from "../../shared/protocol";
 import { normalizeWindowsEscapedPath, WorkspaceRepository } from "./workspace-repository";
@@ -266,6 +267,63 @@ describe("workspace repository", () => {
     repository.setAgentRunStatus(project.id, run.id, "completed");
 
     expect(repository.getRun(project.id, run.id)?.completedAt).toBe(completedAt);
+  });
+
+  test("pauses enabled assistant background jobs only", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    const now = new Date().toISOString();
+    const assistant = repository.saveAssistant({
+      id: createAssistantId(),
+      name: "Job owner",
+      scope: "project",
+      projectId: project.id,
+      personalityPrompt: "Own jobs.",
+      jobPrompt: "Run background work.",
+      agentId: "pi",
+      runState: "active",
+      bootstrapState: "completed",
+      failureStreakCount: 0,
+      circuitBreakerState: "closed",
+      unreadQuestionCount: 0,
+      createdAt: now,
+      updatedAt: now
+    });
+    const saveJob = (input: { id: string; assistantId?: string; status: BackgroundJob["status"]; name: string }) =>
+      repository.saveBackgroundJob({
+        id: input.id,
+        projectId: project.id,
+        ...(input.assistantId ? { assistantId: input.assistantId } : {}),
+        automationThreadId: createThreadId(),
+        kind: "ai-routine",
+        name: input.name,
+        status: input.status,
+        riskLevel: "safe",
+        definition: {
+          kind: "ai-routine",
+          prompt: "Run job."
+        },
+        schedule: {
+          type: "one-off",
+          runAt: now,
+          sourceText: "now"
+        },
+        scheduleInput: "now",
+        nextRunAt: now,
+        createdAt: now,
+        updatedAt: now
+      } satisfies BackgroundJob);
+
+    saveJob({ id: "job-assistant-enabled", assistantId: assistant.id, status: "enabled", name: "Assistant enabled" });
+    saveJob({ id: "job-assistant-disabled", assistantId: assistant.id, status: "disabled", name: "Assistant disabled" });
+    saveJob({ id: "job-standalone-enabled", status: "enabled", name: "Standalone enabled" });
+
+    const state = repository.pauseAllAssistantBackgroundJobs();
+    const statuses = new Map(state.jobs.map((job) => [job.id, job.status]));
+
+    expect(statuses.get("job-assistant-enabled")).toBe("paused");
+    expect(statuses.get("job-assistant-disabled")).toBe("disabled");
+    expect(statuses.get("job-standalone-enabled")).toBe("enabled");
   });
 
   test("persists background run heartbeats and scheduler queue metadata", () => {
@@ -897,6 +955,81 @@ describe("workspace repository", () => {
     expect(learnings.every((learning) => learning.kind === "fact")).toBe(true);
   });
 
+  test("pages assistant summaries and selected assistant detail with stable cursors", () => {
+    const repository = createRepository();
+    const assistant = addLearningAssistant(repository);
+    const now = Date.now();
+    for (let index = 0; index < 5; index += 1) {
+      const createdAt = new Date(now + index * 1000).toISOString();
+      repository.appendAssistantMessage(assistant.id, "user", `Message ${index}`, { createdAt });
+      repository.saveAssistantTodo({
+        id: createAssistantTodoId(),
+        assistantId: assistant.id,
+        title: `Todo ${index}`,
+        state: "pending",
+        sortOrder: index,
+        source: "assistant",
+        workKind: "unspecified",
+        createdAt,
+        updatedAt: createdAt
+      });
+      repository.saveAssistantLearning({
+        id: createAssistantLearningId(),
+        assistantId: assistant.id,
+        summary: `Learning ${index}`,
+        source: "test",
+        confidence: "medium",
+        createdAt
+      });
+      repository.saveAssistantQuestion({
+        id: createAssistantQuestionId(),
+        assistantId: assistant.id,
+        prompt: `Question ${index}?`,
+        status: "pending",
+        linkedTodoIds: [],
+        askedAt: createdAt
+      });
+      repository.appendAssistantLogEntry({
+        id: createAssistantLogEntryId(),
+        assistantId: assistant.id,
+        level: "info",
+        summary: `Log ${index}`,
+        createdAt
+      });
+    }
+
+    const summary = repository.listAssistantSummaries({ limit: 1 });
+    expect(summary.items).toHaveLength(1);
+    expect(summary.totalApprox).toBe(1);
+    expect(repository.loadAssistantSummaryState().todos).toHaveLength(0);
+
+    const firstTodos = repository.listAssistantTodos({ assistantId: assistant.id, limit: 2 });
+    const secondTodos = repository.listAssistantTodos({ assistantId: assistant.id, cursor: firstTodos.nextCursor, limit: 2 });
+    expect(firstTodos.items.map((todo) => todo.title)).toEqual(["Todo 0", "Todo 1"]);
+    expect(secondTodos.items.map((todo) => todo.title)).toEqual(["Todo 2", "Todo 3"]);
+
+    const firstLogs = repository.listAssistantLogs({ assistantId: assistant.id, limit: 2 });
+    const secondLogs = repository.listAssistantLogs({ assistantId: assistant.id, cursor: firstLogs.nextCursor, limit: 2 });
+    expect(firstLogs.items.map((entry) => entry.summary)).toEqual(["Log 4", "Log 3"]);
+    expect(secondLogs.items.map((entry) => entry.summary)).toEqual(["Log 2", "Log 1"]);
+
+    const firstMessages = repository.listAssistantThreadMessages({ assistantId: assistant.id, limit: 2 });
+    const secondMessages = repository.listAssistantThreadMessages({
+      assistantId: assistant.id,
+      cursor: firstMessages.nextCursor,
+      limit: 2
+    });
+    expect(firstMessages.items.map((message) => message.content)).toEqual(["Message 3", "Message 4"]);
+    expect(secondMessages.items.map((message) => message.content)).toEqual(["Message 1", "Message 2"]);
+
+    const detail = repository.getAssistantDetail({ assistantId: assistant.id });
+    expect(detail.thread?.messages.at(-1)?.content).toBe("Message 4");
+    expect(detail.todos.items).toHaveLength(5);
+    expect(detail.learnings.items).toHaveLength(5);
+    expect(detail.questions.items).toHaveLength(5);
+    expect(detail.logs.items).toHaveLength(5);
+  });
+
   test("rejects garbage assistant learning summaries", () => {
     const repository = createRepository();
     const assistant = addLearningAssistant(repository);
@@ -1176,10 +1309,42 @@ describe("workspace repository", () => {
       "Unknown assistant todo for assistant"
     );
 
-    const updated = repository.updateAssistantTodo(assistant.id, todo.id, { title: "Updated todo", state: "completed" });
+    const updated = repository.updateAssistantTodo(assistant.id, todo.id, {
+      title: "Updated todo",
+      state: "completed",
+      workKind: "app-code",
+      workTarget: "src/app.ts"
+    });
     expect(updated.title).toBe("Updated todo");
     expect(updated.state).toBe("completed");
+    expect(updated.workKind).toBe("app-code");
+    expect(updated.workTarget).toBe("src/app.ts");
     expect(updated.completedAt).toBeDefined();
+  });
+
+  test("adds assistant todo work metadata columns during migration", () => {
+    const tempRoot = createTempDir();
+    const dbPath = path.join(tempRoot, `workspace-${crypto.randomUUID()}.sqlite`);
+    const repository = new WorkspaceRepository(dbPath, process.cwd(), { durability: "test-fast" });
+    const assistant = addLearningAssistant(repository);
+    const now = new Date().toISOString();
+    const todo = repository.saveAssistantTodo({
+      id: createAssistantTodoId(),
+      assistantId: assistant.id,
+      title: "Build UI primitive",
+      state: "pending",
+      sortOrder: 0,
+      workKind: "app-code",
+      workTarget: "harness/ui/src/components/primitives/button.tsx",
+      createdAt: now,
+      updatedAt: now
+    });
+
+    const reloadedRepository = new WorkspaceRepository(dbPath, process.cwd(), { durability: "test-fast" });
+    const reloaded = reloadedRepository.getAssistantTodoForAssistant(assistant.id, todo.id);
+
+    expect(reloaded.workKind).toBe("app-code");
+    expect(reloaded.workTarget).toBe("harness/ui/src/components/primitives/button.tsx");
   });
 
   test("normalizes legacy custom assistant todo sources during migration", () => {

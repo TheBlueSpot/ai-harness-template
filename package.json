@@ -14,21 +14,30 @@
     "package:launcher": "bun run scripts/package-launcher.ts",
     "screenshot": "bun run scripts/screenshot.ts",
     "test": "bun run scripts/run-tests.ts",
+    "test:ide-positioning": "bun run scripts/ide-positioning-smoke.ts",
     "test:profile": "bun run scripts/profile-tests.ts",
-    "typecheck": "bunx tsc --noEmit",
-    "kill-all": "tasklist -FI 'IMAGENAME eq bun*' | grep '^bun.exe' | awk '{print $2}' | xargs -n 1 taskkill -F -T -PID"
+    "typecheck": "bunx tsgo --noEmit",
+    "kill-all": "tasklist -FI 'IMAGENAME eq bun*' | grep '^bun.exe' | awk '{print $2}' | xargs -n 1 taskkill -F -T -PID",
+    "kill-chromes": "tasklist -FI 'IMAGENAME eq chrome.exe*' | grep '^chrome.exe' | awk '{print $2}' | xargs -n 1 taskkill -F -T -PID"
   },
   "dependencies": {
     "@kobalte/core": "^0.13.11",
     "@mariozechner/pi-coding-agent": "^0.73.1",
-    "@openai/codex": "^0.133.0",
-    "@openai/codex-sdk": "^0.133.0",
+    "@openai/codex": "^0.141.0",
+    "@openai/codex-sdk": "^0.141.0",
     "@tanstack/solid-hotkeys": "^0.9.1",
     "@tanstack/solid-virtual": "^3.13.24",
     "@thisbeyond/solid-dnd": "^0.7.5",
     "@vscode/ripgrep": "^1.17.1",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-search": "^0.16.0",
+    "@xterm/addon-serialize": "^0.14.0",
+    "@xterm/addon-web-links": "^0.12.0",
+    "@xterm/addon-webgl": "^0.19.0",
+    "@xterm/xterm": "^6.0.0",
     "bun": "^1.3.14",
     "bun-plugin-tailwind": "^0.1.2",
+    "chrome-remote-interface": "^0.34.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-solid": "^1.8.0",
@@ -54,11 +63,12 @@
     "@types/node": "^24.3.0",
     "@types/yauzl": "^2.10.3",
     "@typescript-eslint/parser": "^8.58.2",
+    "@typescript/native-preview": "^7.0.0-dev.20260526.1",
     "babel-preset-solid": "^1.9.12",
     "bun-types": "^1.2.21",
     "eslint": "^10.2.0",
     "eslint-plugin-tailwind-canonical-classes": "^1.3.2",
     "playwright": "^1.59.1",
-    "typescript": "^5.9.2"
+    "typescript": "^6.0.3"
   }
 }

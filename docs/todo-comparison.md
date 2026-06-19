@@ -48,6 +48,13 @@ This dossier compares the pending roadmap items in [todo.md](todo.md) using the 
 - Treat memory, skills, and reusable playbooks as governed assets with source, freshness, hit history, and clear update controls; Hermes-style learning loops are sticky, but opaque or over-broad memory would conflict with this harness's local-first trust model: high leverage once foundation surfaces are stable.
 - Source caveat: YouTube signals were gathered from public pages, search snippets, transcripts, and mirrors only; direct comment coverage is incomplete, so GitHub, docs, forums, and Reddit carry more weight: evidence qualifier, not a queue item.
 
+### Hermes Agent Sequencing Note
+
+- Treat Hermes-style gateways, cron suggestions, MCP bridges, governed memory, skills, and searchable sessions as useful direction, but keep them behind local trust gates: assistant state bounds, proof bundles, run ledgers, launch gates, and clear stop/retry behavior come first.
+- Remote and phone surfaces should start as review inboxes with summaries, approvals, screenshots, branch/run links, and stop controls before any broad remote-control path: high trust leverage, lower immediate risk.
+- MCP and connector expansion should follow first-class readiness and health checks so missing auth, degraded tools, or remote incompatibility fail before a run starts.
+- Avoid a full personal-assistant stack in the near-term roadmap; the higher-leverage path is making coding assistants inspectable, bounded, and recoverable.
+
 ### Activation And Onboarding
 
 - Add signed installers, update channels, and polish around portable launcher distribution without pulling the product into a full desktop-shell rewrite: useful distribution work, but lower immediate leverage than activation and recovery.
@@ -177,4 +184,3 @@ This dossier compares the pending roadmap items in [todo.md](todo.md) using the 
 - Lowest scope with quick payoff: archive/restore hygiene, quota copy, attachment lifecycle visibility, markdown stability, and explicit capability copy.
 - Best near-term catalog impact: items that remove friction from the active daily loop before adding new surfaces, especially activation, run inspection, and safe recovery.
 - Best deferred bets: broader assistant surfaces, remote-by-default behavior, full sync, and large expansion of persona or IDE-like scope.
-

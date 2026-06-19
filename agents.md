@@ -14,4 +14,5 @@ These rules are hard requirements for this repository.
 - Stop when completion criteria are met. Do not spend final turns on optional polish.
 - Prefer concrete subagent contracts with non-overlapping owned paths. If paths overlap or are unknown, use isolated worktrees.
 - Use BranchFS isolation for ephemeral experiments or overlapping/unknown subagent edit ownership. Do not flush isolated edits without explicit promote/flush flow.
+- Browser smokes should prefer fast CDP or app-state setup scripts that jump directly to the state under test, then use CDP input/evaluation to exercise it; avoid waiting through long natural progression when deterministic state setup is possible.
 - MD files should contain as little references to code and more high level concepts and links to other MD files.

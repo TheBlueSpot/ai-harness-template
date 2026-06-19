@@ -847,6 +847,60 @@ describe("background job scheduler", () => {
     expect(repository.getActiveBackgroundJobRuns(job.id)).toHaveLength(0);
   });
 
+  test("queues due assistant work without congestion metadata when congestion control is disabled", async () => {
+    const { repository, dbPath } = createRepositoryWithPath();
+    const project = addProject(repository);
+    const assistant = saveAssistant(repository, project.id);
+    repository.setBackgroundJobApprovalPolicyDefault("allow-all");
+    repository.setAssistantCongestionControlEnabledDefault(false);
+    const job = saveDueJob(repository, project.id, {
+      assistantId: assistant.id,
+      schedule: {
+        type: "interval",
+        intervalSeconds: 300,
+        nextRunAt: new Date(Date.now() - 60_000).toISOString(),
+        sourceText: "5m"
+      },
+      scheduleInput: "5m",
+      lastRunAt: new Date(Date.now() - 60_000).toISOString()
+    });
+    const db = new Database(dbPath);
+    for (let index = 0; index < 5; index += 1) {
+      const completedAt = new Date(Date.now() - (5 + index) * 60 * 1000).toISOString();
+      const startedAt = new Date(Date.now() - (11 + index) * 60 * 1000).toISOString();
+      db.query(
+        `UPDATE background_job_runs
+         SET started_at = ?2, completed_at = ?3, status = 'succeeded'
+         WHERE id = ?1`
+      ).run(repository.createBackgroundJobRun({
+        jobId: job.id,
+        projectId: job.projectId,
+        assistantId: assistant.id,
+        automationThreadId: job.automationThreadId,
+        triggerSource: "manual",
+        status: "succeeded",
+        riskLevel: job.riskLevel,
+        approvalStatus: "approved"
+      }).id, startedAt, completedAt);
+    }
+    db.close();
+
+    const queuedRunIds: string[] = [];
+    const scheduler = new BackgroundJobScheduler({
+      repository,
+      onRunQueued(run) {
+        queuedRunIds.push(run.id);
+      }
+    });
+    await scheduler.tick(false);
+
+    const refreshedJob = repository.getBackgroundJob(job.id);
+    expect(queuedRunIds).toHaveLength(1);
+    expect(refreshedJob?.schedulerCongested).toBe(false);
+    expect(refreshedJob?.schedulerCongestionRatio).toBeUndefined();
+    expect(repository.getActiveBackgroundJobRuns(job.id)[0]?.status).toBe("queued");
+  });
+
   test("blocks exclusive assistant jobs when another exclusive assistant job is active", async () => {
     const { repository, dbPath } = createRepositoryWithPath();
     const project = addProject(repository);

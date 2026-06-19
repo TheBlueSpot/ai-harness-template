@@ -14,12 +14,10 @@ export const SUBAGENT_MILESTONE_INSTRUCTION =
   "Emit standalone `MILESTONE: <brief update>` lines only for stable meaning: concrete findings, decisions, implementation progress, blockers, retries, completion, or handoff. Do not include tool names, shell commands, raw paths, or generic checking/inspecting chatter unless it reports a concrete result.";
 
 export function resolveRepoRoot(projectRoot: string) {
-  const result = Bun.spawnSync({
-    cmd: ["git", "rev-parse", "--show-toplevel"],
-    cwd: projectRoot,
-    stdout: "pipe",
-    stderr: "pipe"
-  });
+  const result = tryResolveGitRepoRoot(projectRoot);
+  if (!result) {
+    return projectRoot;
+  }
 
   if (result.exitCode !== 0) {
     return projectRoot;
@@ -27,6 +25,19 @@ export function resolveRepoRoot(projectRoot: string) {
 
   const root = new TextDecoder().decode(result.stdout).trim();
   return root || projectRoot;
+}
+
+function tryResolveGitRepoRoot(projectRoot: string) {
+  try {
+    return Bun.spawnSync({
+      cmd: ["git", "rev-parse", "--show-toplevel"],
+      cwd: projectRoot,
+      stdout: "pipe",
+      stderr: "pipe"
+    });
+  } catch {
+    return undefined;
+  }
 }
 
 export function discoverRepoSkillPaths(repoRoot: string) {

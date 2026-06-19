@@ -41,6 +41,9 @@ export function classifyRunFailure(input: ClassifyRunFailureInput): RunFailureCa
   if (normalized.includes("not runnable") || normalized.includes("definition no longer exists")) {
     return "launch-failure";
   }
+  if (normalized.includes("not a git repository") || normalized.includes("not a git repo") || normalized.includes("fatal: not a git")) {
+    return "workspace-context";
+  }
   if (
     normalized.includes("runtime contract mismatch") ||
     normalized.includes("setbackgroundjobrunstatusifowned is not a function") ||
