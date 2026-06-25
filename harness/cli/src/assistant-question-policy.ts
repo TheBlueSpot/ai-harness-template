@@ -42,6 +42,7 @@ type EvaluateAssistantQuestionInput = {
   learnings?: AssistantLearning[];
   runtimeReadOnly?: boolean;
   forceBlocking?: boolean;
+  autoApproveNonBlocking?: boolean;
 };
 
 const durableAnswerPatterns = [
@@ -162,6 +163,14 @@ export function evaluateAssistantQuestionPolicy(input: EvaluateAssistantQuestion
       kind: "ask",
       category,
       reason: "Question involves irreversible or high-risk work."
+    };
+  }
+
+  if (input.autoApproveNonBlocking === false) {
+    return {
+      kind: "ask",
+      category,
+      reason: "Auto-approval for non-blocking assistant questions is disabled."
     };
   }
 

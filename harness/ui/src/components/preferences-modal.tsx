@@ -16,11 +16,16 @@ import {
   Import,
   Keyboard,
   LayoutPanelLeft,
+  Monitor,
+  Moon,
+  Palette,
   Plus,
   RotateCcw,
   Save,
   Search,
+  Sun,
   Trash2,
+  Type,
   X
 } from "lucide-solid";
 import {
@@ -38,6 +43,29 @@ import {
   type AppHotkeyId
 } from "../lib/app-hotkeys";
 import { registerCurrentTabItemSelector } from "../lib/current-tab-item-hotkeys";
+import { formatShortTimestamp } from "../lib/time-format";
+import {
+  BUILT_IN_THEMES,
+  CUSTOM_THEME_COLOR_VARIABLES,
+  CUSTOM_THEME_FONT_VARIABLES,
+  DEFAULT_CUSTOM_BASE_THEME_ID,
+  THEME_OPTIONS,
+  createDefaultCustomTheme,
+  getCustomThemeFontOptions,
+  isBuiltInThemeId,
+  normalizeHexColor,
+  normalizeThemeColorInput,
+  normalizeThemeFontInput,
+  normalizeThemePreference,
+  resolveThemeMode,
+  resolveThemeTokens,
+  validateThemeContrast,
+  withCustomThemeToken,
+  type CustomThemeDefinition,
+  type ThemeCssVariable,
+  type ThemeId,
+  type ThemeModePreference
+} from "../theme/theme-model";
 import { DEFAULT_IDE_EDITOR_SETTINGS, ideStore, type IdeAutoSaveMode, type IdeEditorSettings, type IdeIndentStyle, type IdeTabSize, type IdeWordWrapMode } from "../ide/ide-store";
 import { pushToast } from "../toast-store";
 import { ActionButton } from "./action-button";
@@ -78,6 +106,11 @@ function formatBytes(bytes: number) {
     return `${(bytes / 1024).toFixed(1)} KB`;
   }
   return `${bytes} bytes`;
+}
+
+function formatTokenCount(value: number) {
+  const normalized = Math.max(0, Math.round(value));
+  return normalized.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
 const PREFERENCES_SECTION_EVENT = "preferences-section-change";
@@ -340,6 +373,7 @@ export function PreferencesPanel() {
       subagentModelPreferenceDefault: state.subagentModelPreferenceDefault,
       correctnessIterationModeDefault: state.correctnessIterationModeDefault,
       backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
+      assistantAutoApproveNonBlockingQuestionsDefault: state.assistantAutoApproveNonBlockingQuestionsDefault,
       assistantCongestionControlEnabledDefault: state.assistantCongestionControlEnabledDefault,
       assistantMaxCongestionDefault: state.assistantMaxCongestionDefault,
       autoArchiveCompletedThreadsDefault: state.autoArchiveCompletedThreadsDefault,
@@ -349,7 +383,8 @@ export function PreferencesPanel() {
       checkCliUpdatesDefault: state.checkCliUpdatesDefault,
       selectedReasoningStrength: state.selectedReasoningStrength,
       selectedFastMode: state.selectedFastMode,
-      appHotkeyPreferences: state.appHotkeyPreferences
+      appHotkeyPreferences: state.appHotkeyPreferences,
+      themePreference: state.themePreference
     };
 
     persistMergedLocalPreferences(localPreferences);
@@ -375,6 +410,7 @@ export function PreferencesPanel() {
         subagentModelPreferenceDefault: state.subagentModelPreferenceDefault,
         correctnessIterationModeDefault: state.correctnessIterationModeDefault,
         backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
+        assistantAutoApproveNonBlockingQuestionsDefault: state.assistantAutoApproveNonBlockingQuestionsDefault,
         assistantCongestionControlEnabledDefault: state.assistantCongestionControlEnabledDefault,
         assistantMaxCongestionDefault: state.assistantMaxCongestionDefault,
         autoArchiveCompletedThreadsDefault: state.autoArchiveCompletedThreadsDefault,
@@ -432,6 +468,7 @@ export function PreferencesPanel() {
       subagentModelPreferenceDefault: state.subagentModelPreferenceDefault,
       correctnessIterationModeDefault: state.correctnessIterationModeDefault,
       backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
+      assistantAutoApproveNonBlockingQuestionsDefault: state.assistantAutoApproveNonBlockingQuestionsDefault,
       assistantCongestionControlEnabledDefault: state.assistantCongestionControlEnabledDefault,
       assistantMaxCongestionDefault: state.assistantMaxCongestionDefault,
       autoArchiveCompletedThreadsDefault: state.autoArchiveCompletedThreadsDefault,
@@ -441,7 +478,8 @@ export function PreferencesPanel() {
       checkCliUpdatesDefault: state.checkCliUpdatesDefault,
       selectedReasoningStrength: state.selectedReasoningStrength,
       selectedFastMode: state.selectedFastMode,
-      appHotkeyPreferences: state.appHotkeyPreferences
+      appHotkeyPreferences: state.appHotkeyPreferences,
+      themePreference: state.themePreference
     });
     store.commitLocalPreferences({
       openAiApiKey: undefined,
@@ -460,6 +498,7 @@ export function PreferencesPanel() {
       subagentModelPreferenceDefault: state.subagentModelPreferenceDefault,
       correctnessIterationModeDefault: state.correctnessIterationModeDefault,
       backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
+      assistantAutoApproveNonBlockingQuestionsDefault: state.assistantAutoApproveNonBlockingQuestionsDefault,
       assistantCongestionControlEnabledDefault: state.assistantCongestionControlEnabledDefault,
       assistantMaxCongestionDefault: state.assistantMaxCongestionDefault,
       autoArchiveCompletedThreadsDefault: state.autoArchiveCompletedThreadsDefault,
@@ -468,7 +507,8 @@ export function PreferencesPanel() {
       checkCliUpdatesDefault: state.checkCliUpdatesDefault,
       selectedReasoningStrength: state.selectedReasoningStrength,
       selectedFastMode: state.selectedFastMode,
-      appHotkeyPreferences: state.appHotkeyPreferences
+      appHotkeyPreferences: state.appHotkeyPreferences,
+      themePreference: state.themePreference
     });
 
     sendCommand({
@@ -492,6 +532,7 @@ export function PreferencesPanel() {
       subagentModelPreferenceDefault: state.subagentModelPreferenceDefault,
       correctnessIterationModeDefault: state.correctnessIterationModeDefault,
       backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
+      assistantAutoApproveNonBlockingQuestionsDefault: state.assistantAutoApproveNonBlockingQuestionsDefault,
       assistantCongestionControlEnabledDefault: state.assistantCongestionControlEnabledDefault,
       assistantMaxCongestionDefault: state.assistantMaxCongestionDefault,
       autoArchiveCompletedThreadsDefault: state.autoArchiveCompletedThreadsDefault,
@@ -501,7 +542,8 @@ export function PreferencesPanel() {
       checkCliUpdatesDefault: state.checkCliUpdatesDefault,
       selectedReasoningStrength: state.selectedReasoningStrength,
       selectedFastMode: state.selectedFastMode,
-      appHotkeyPreferences: state.appHotkeyPreferences
+      appHotkeyPreferences: state.appHotkeyPreferences,
+      themePreference: state.themePreference
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -534,6 +576,7 @@ export function PreferencesPanel() {
         subagentModelPreferenceDefault: RunModelPreference;
         correctnessIterationModeDefault: "ask-before-iterate" | "auto-once" | "auto-until-clean";
         backgroundJobApprovalPolicyDefault: "allow-all" | "allow-safe" | "ask-risky" | "always-ask";
+        assistantAutoApproveNonBlockingQuestionsDefault: boolean;
         assistantCongestionControlEnabledDefault: boolean;
         assistantMaxCongestionDefault: number;
         autoArchiveCompletedThreadsDefault: boolean;
@@ -544,7 +587,11 @@ export function PreferencesPanel() {
         selectedReasoningStrength: ComposerReasoningStrength;
         selectedFastMode: boolean;
         appHotkeyPreferences: unknown;
+        themePreference: unknown;
       }>;
+      const importedThemePreference = parsed.themePreference === undefined
+        ? state.themePreference
+        : normalizeThemePreference(parsed.themePreference);
 
       store.commitLocalPreferences({
         providerBrand: parsed.providerBrand,
@@ -560,6 +607,7 @@ export function PreferencesPanel() {
         subagentModelPreferenceDefault: parsed.subagentModelPreferenceDefault,
         correctnessIterationModeDefault: parsed.correctnessIterationModeDefault,
         backgroundJobApprovalPolicyDefault: parsed.backgroundJobApprovalPolicyDefault,
+        assistantAutoApproveNonBlockingQuestionsDefault: parsed.assistantAutoApproveNonBlockingQuestionsDefault,
         assistantCongestionControlEnabledDefault: parsed.assistantCongestionControlEnabledDefault,
         assistantMaxCongestionDefault: parsed.assistantMaxCongestionDefault,
         autoArchiveCompletedThreadsDefault: parsed.autoArchiveCompletedThreadsDefault,
@@ -569,7 +617,8 @@ export function PreferencesPanel() {
         checkCliUpdatesDefault: parsed.checkCliUpdatesDefault,
         selectedReasoningStrength: parsed.selectedReasoningStrength,
         selectedFastMode: parsed.selectedFastMode,
-        appHotkeyPreferences: normalizeAppHotkeyPreferences(parsed.appHotkeyPreferences)
+        appHotkeyPreferences: normalizeAppHotkeyPreferences(parsed.appHotkeyPreferences),
+        themePreference: importedThemePreference
       });
       persistMergedLocalPreferences({
         openAiApiKey: state.openAiApiKeyDraft.trim() || undefined,
@@ -591,6 +640,9 @@ export function PreferencesPanel() {
         correctnessIterationModeDefault: parsed.correctnessIterationModeDefault ?? state.correctnessIterationModeDefault,
         backgroundJobApprovalPolicyDefault:
           parsed.backgroundJobApprovalPolicyDefault ?? state.backgroundJobApprovalPolicyDefault,
+        assistantAutoApproveNonBlockingQuestionsDefault:
+          parsed.assistantAutoApproveNonBlockingQuestionsDefault ??
+          state.assistantAutoApproveNonBlockingQuestionsDefault,
         assistantCongestionControlEnabledDefault:
           parsed.assistantCongestionControlEnabledDefault ?? state.assistantCongestionControlEnabledDefault,
         assistantMaxCongestionDefault:
@@ -603,9 +655,10 @@ export function PreferencesPanel() {
         checkCliUpdatesDefault: parsed.checkCliUpdatesDefault ?? state.checkCliUpdatesDefault,
         selectedReasoningStrength: parsed.selectedReasoningStrength ?? state.selectedReasoningStrength,
         selectedFastMode: parsed.selectedFastMode ?? state.selectedFastMode,
-        appHotkeyPreferences: normalizeAppHotkeyPreferences(parsed.appHotkeyPreferences ?? state.appHotkeyPreferences)
+        appHotkeyPreferences: normalizeAppHotkeyPreferences(parsed.appHotkeyPreferences ?? state.appHotkeyPreferences),
+        themePreference: importedThemePreference
       });
-      pushToast("Preferences imported", "Local defaults updated. Save to sync machine-level defaults.");
+      pushToast("Preferences imported", "Local defaults updated.");
     } catch (error) {
       pushToast("Import failed", error instanceof Error ? error.message : "Invalid JSON file.", "error");
     } finally {
@@ -1052,13 +1105,272 @@ export function PreferencesPanel() {
     );
   }
 
+  function systemPrefersDark() {
+    return typeof window !== "undefined" &&
+      "matchMedia" in window &&
+      window.matchMedia("(prefers-color-scheme: dark)").matches;
+  }
+
+  function resolvedThemeMode() {
+    return resolveThemeMode(state.themePreference, systemPrefersDark());
+  }
+
+  function resolvedThemeTokens() {
+    return resolveThemeTokens(state.themePreference, systemPrefersDark());
+  }
+
+  function customThemeDefinition(): CustomThemeDefinition {
+    return state.themePreference.custom ?? createDefaultCustomTheme();
+  }
+
+  function themeOptions() {
+    return THEME_OPTIONS.map((option) => ({
+      value: option.value,
+      label: option.label,
+      description: option.description
+    }));
+  }
+
+  function customBaseThemeOptions() {
+    return BUILT_IN_THEMES.map((theme) => ({
+      value: theme.id,
+      label: theme.label,
+      description: theme.description
+    }));
+  }
+
+  function updateCustomThemeBase(value: string) {
+    if (!isBuiltInThemeId(value)) {
+      return;
+    }
+    store.setCustomTheme({
+      ...customThemeDefinition(),
+      baseThemeId: value
+    });
+  }
+
+  function updateCustomThemeVariable(variable: ThemeCssVariable, value: string) {
+    const currentTokens = resolvedThemeTokens();
+    const fontVariable = CUSTOM_THEME_FONT_VARIABLES.some((entry) => entry.variable === variable);
+    if (!fontVariable && !normalizeHexColor(value)) {
+      pushToast("Invalid theme color", "Use a 3- or 6-digit hex color.", "error");
+      return;
+    }
+    const normalizedValue = fontVariable
+      ? normalizeThemeFontInput(variable, value, currentTokens[variable])
+      : normalizeThemeColorInput(value, currentTokens[variable]);
+    const nextPreference = withCustomThemeToken(
+      state.themePreference,
+      resolvedThemeMode(),
+      variable,
+      normalizedValue
+    );
+    const contrastFailures = validateThemeContrast(resolveThemeTokens(nextPreference, systemPrefersDark()));
+    if (contrastFailures.length > 0) {
+      const firstFailure = contrastFailures[0];
+      pushToast(
+        "Theme contrast too low",
+        `${firstFailure.label} must stay at least ${firstFailure.minimum}:1.`,
+        "error"
+      );
+      return;
+    }
+    store.setCustomTheme(nextPreference.custom ?? createDefaultCustomTheme());
+  }
+
+  function colorInputValue(variable: ThemeCssVariable) {
+    return normalizeThemeColorInput(resolvedThemeTokens()[variable], "#000000");
+  }
+
+  const themeModeCycle: ThemeModePreference[] = ["system", "light", "dark"];
+
+  function themeModeLabel(mode: ThemeModePreference) {
+    switch (mode) {
+      case "system":
+        return "System";
+      case "light":
+        return "Light";
+      case "dark":
+        return "Dark";
+    }
+  }
+
+  function nextThemeMode(mode: ThemeModePreference = state.themePreference.mode) {
+    const currentIndex = themeModeCycle.indexOf(mode);
+    return themeModeCycle[(currentIndex + 1) % themeModeCycle.length] ?? "system";
+  }
+
+  function themeModeIcon() {
+    switch (state.themePreference.mode) {
+      case "system":
+        return <Monitor class="h-4 w-4" />;
+      case "light":
+        return <Sun class="h-4 w-4" />;
+      case "dark":
+        return <Moon class="h-4 w-4" />;
+    }
+  }
+
+  function themeModeTooltip() {
+    return `Theme mode: ${themeModeLabel(state.themePreference.mode)}. Click for ${themeModeLabel(nextThemeMode()).toLowerCase()} mode.`;
+  }
+
+  function cycleThemeMode() {
+    store.setThemeMode(nextThemeMode());
+    renderDetailRoot();
+  }
+
+  function renderThemePreview() {
+    const tokens = () => resolvedThemeTokens();
+    const swatches = () => [
+      { label: "Accent", value: tokens()["--accent"] },
+      { label: "Info", value: tokens()["--info"] },
+      { label: "Success", value: tokens()["--success"] },
+      { label: "Warning", value: tokens()["--warning"] },
+      { label: "Danger", value: tokens()["--danger"] }
+    ];
+    return (
+      <div class="grid gap-2 rounded-xl border border-(--border) bg-(--panel-strong) p-3 text-xs">
+        <div class="grid min-w-0 gap-2 sm:flex sm:items-center sm:justify-between sm:gap-3">
+          <div class="min-w-0">
+            <div class="font-semibold text-(--foreground)">Preview</div>
+            <div class="text-[0.675rem] leading-4 text-(--muted)">Resolved {resolvedThemeMode()} tokens and theme fonts.</div>
+          </div>
+          <div class="flex shrink-0 items-center gap-1.5">
+            <For each={swatches()}>
+              {(swatch) => (
+                <Tooltip content={swatch.label}>
+                  <span
+                    class="h-5 w-5 rounded-md border border-(--border)"
+                    style={{ background: swatch.value }}
+                  />
+                </Tooltip>
+              )}
+            </For>
+          </div>
+        </div>
+        <div class="grid gap-2 rounded-lg border border-(--border) bg-(--panel) p-3">
+          <div class="font-display text-sm font-semibold text-(--foreground)">Workspace typography</div>
+          <div class="text-[0.7rem] leading-4 text-(--muted)">Panel text, muted metadata, and accent controls stay readable.</div>
+          <div class="flex flex-wrap gap-2">
+            <span class="rounded-lg bg-(--accent) px-2 py-1 text-[0.675rem] font-semibold text-(--accent-foreground)">Build</span>
+            <span class="rounded-lg border border-(--border) bg-(--row) px-2 py-1 text-[0.675rem] text-(--foreground)">Row surface</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function renderCustomThemeEditor() {
+    const custom = () => customThemeDefinition();
+    const baseThemeId = () => custom().baseThemeId ?? DEFAULT_CUSTOM_BASE_THEME_ID;
+    return (
+      <div class="grid gap-3 rounded-xl border border-(--border) bg-(--panel) p-3" data-test-custom-theme-editor="">
+        <div class="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+          <DropdownControl
+            kind="select"
+            ariaLabel="Custom theme base"
+            icon={<Palette class="h-3.5 w-3.5" />}
+            size="md"
+            class="w-full"
+            value={baseThemeId()}
+            options={customBaseThemeOptions()}
+            onChange={updateCustomThemeBase}
+          />
+          <ActionButton
+            tooltip="Reset custom theme"
+            ariaLabel="Reset custom theme"
+            variant="secondary"
+            icon={<RotateCcw class="h-4 w-4" />}
+            onClick={() => store.resetCustomTheme()}
+          >
+            Reset
+          </ActionButton>
+        </div>
+        <div class="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+          <For each={CUSTOM_THEME_COLOR_VARIABLES}>
+            {(entry) => (
+              <label class="grid min-w-0 gap-1 rounded-lg border border-(--border) bg-(--panel-strong) p-2">
+                <span class="truncate text-[0.585rem] font-semibold tracking-[0.16em] text-(--muted)">{entry.label}</span>
+                <div class="flex min-w-0 items-center gap-2">
+                  <input
+                    aria-label={`${entry.label} color`}
+                    class="h-8 w-10 shrink-0 cursor-pointer rounded-lg border border-(--border) bg-transparent p-0.5"
+                    type="color"
+                    value={colorInputValue(entry.variable)}
+                    onInput={(event) => updateCustomThemeVariable(entry.variable, event.currentTarget.value)}
+                  />
+                  <Input
+                    aria-label={`${entry.label} hex`}
+                    class="h-8 min-w-0 font-mono text-[0.675rem]"
+                    value={colorInputValue(entry.variable).toUpperCase()}
+                    onChange={(event) => updateCustomThemeVariable(entry.variable, event.currentTarget.value)}
+                  />
+                </div>
+              </label>
+            )}
+          </For>
+        </div>
+        <div class="grid gap-2">
+          <For each={CUSTOM_THEME_FONT_VARIABLES}>
+            {(entry) => (
+              <div class="grid gap-1 rounded-lg border border-(--border) bg-(--panel-strong) p-2">
+                <span class="flex items-center gap-1.5 text-[0.585rem] font-semibold tracking-[0.16em] text-(--muted)">
+                  <Type class="h-3.5 w-3.5" />
+                  {entry.label}
+                </span>
+                <DropdownControl
+                  kind="select"
+                  ariaLabel={entry.label}
+                  icon={<Type class="h-3.5 w-3.5" />}
+                  size="md"
+                  class="w-full"
+                  value={normalizeThemeFontInput(entry.variable, resolvedThemeTokens()[entry.variable], resolvedThemeTokens()[entry.variable])}
+                  options={getCustomThemeFontOptions(entry.variable)}
+                  onChange={(value) => updateCustomThemeVariable(entry.variable, value)}
+                />
+              </div>
+            )}
+          </For>
+        </div>
+      </div>
+    );
+  }
+
   function renderGeneralUi() {
     return (
-      <PreferenceSection title="General & UI" description="Compact workspace defaults using the existing warm cream palette.">
-        <PreferenceRow id="appearance-density" title="Appearance and density" description="Theme is fixed to the existing light cream palette for this harness.">
-          <div class="grid gap-2 text-xs text-(--muted)">
-            <div class="rounded-xl border border-(--border) bg-(--panel-strong) p-3 text-(--foreground)">Light cream theme active</div>
-            <div>Density follows current compact harness layout.</div>
+      <PreferenceSection title="General & UI" description="Compact workspace defaults with theme and density controls.">
+        <PreferenceRow id="appearance-density" title="Appearance and density" description="Pick a theme, mode, fonts, and optional custom colors.">
+          <div class="grid gap-3">
+            <div class="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+              <DropdownControl
+                kind="select"
+                ariaLabel="Theme"
+                icon={<Palette class="h-3.5 w-3.5" />}
+                size="md"
+                class="w-full"
+                value={state.themePreference.themeId}
+                options={themeOptions()}
+                onChange={(value) => {
+                  store.setThemeId(value as ThemeId);
+                  renderDetailRoot();
+                }}
+              />
+              <ActionButton
+                tooltip={themeModeTooltip()}
+                ariaLabel={`Theme mode: ${themeModeLabel(state.themePreference.mode)}`}
+                variant="secondary"
+                class="h-9 justify-start rounded-lg px-3"
+                icon={themeModeIcon()}
+                onClick={cycleThemeMode}
+              >
+                <span class="min-w-11 text-left">{themeModeLabel(state.themePreference.mode)}</span>
+              </ActionButton>
+            </div>
+            {renderThemePreview()}
+            <Show when={state.themePreference.themeId === "custom"}>
+              {renderCustomThemeEditor()}
+            </Show>
           </div>
         </PreferenceRow>
         <PreferenceRow id="navigation-sidebar" title="Sidebar and layout" description="Restore main panel sizes and choose project sidebar sorting/grouping.">
@@ -1407,6 +1719,11 @@ export function PreferencesPanel() {
               ]}
               onChange={(value) => updateSavedPreference(() => store.setBackgroundJobApprovalPolicyDefault(value))}
             />
+            {renderToggle(
+              state.assistantAutoApproveNonBlockingQuestionsDefault,
+              store.setAssistantAutoApproveNonBlockingQuestionsDefault,
+              "Auto-approve non-blocking questions"
+            )}
             {renderToggle(state.backgroundJobNotificationsEnabled, store.setBackgroundJobNotificationsEnabled, "Desktop notifications")}
             <RangeControl
               label="Assistant max congestion"
@@ -1448,6 +1765,110 @@ export function PreferencesPanel() {
         </PreferenceRow>
       </PreferenceSection>
     );
+  }
+
+  function renderTokenUsageTotal(label: string, value: number, description: string) {
+    return (
+      <div class="grid min-w-0 gap-1 rounded-lg bg-white/55 px-3 py-2">
+        <div class="truncate text-[0.585rem] font-semibold tracking-[0.16em] text-(--muted)">{label}</div>
+        <div class="truncate text-base font-semibold text-(--foreground)">{formatTokenCount(value)}</div>
+        <div class="truncate text-[0.65rem] text-(--muted)">{description}</div>
+      </div>
+    );
+  }
+
+  function renderTokenUsageScope(label: string, description: string, totals: typeof state.tokenUsage.session) {
+    return (
+      <section class="grid gap-2">
+        <div class="flex min-w-0 items-center justify-between gap-3">
+          <div class="min-w-0">
+            <div class="truncate text-xs font-semibold text-(--foreground)">{label}</div>
+            <div class="truncate text-[0.675rem] leading-5 text-(--muted)">{description}</div>
+          </div>
+          <div class="shrink-0 rounded-lg bg-white/55 px-2 py-1 text-[0.65rem] font-medium text-(--muted)">
+            {formatTokenCount(totals.events)} updates
+          </div>
+        </div>
+        <div class="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+          {renderTokenUsageTotal("Total", totals.totalTokensIncludingCached, "processed + cached")}
+          {renderTokenUsageTotal("Input", totals.inputTokens, "prompt context")}
+          {renderTokenUsageTotal("Output", totals.outputTokens, "model response")}
+          {renderTokenUsageTotal("Cached", totals.cachedInputTokens, "cache read")}
+        </div>
+      </section>
+    );
+  }
+
+  function TokenUsageSection() {
+    return (
+      <>
+        <PreferenceSection title="Usage" description="Current session and lifetime token totals, including cached input.">
+          <PreferenceRow id="token-usage" title="Token usage" description="Counters update from observed model context events.">
+            <div class="grid gap-4">
+              {renderTokenUsageScope("Current session", "Since this browser session opened or usage was reset.", state.tokenUsage.session)}
+              {renderTokenUsageScope("Lifetime", "Persisted in this browser until reset.", state.tokenUsage.lifetime)}
+              <div class="flex flex-wrap items-center gap-2">
+                <ActionButton
+                  tooltip="Reset current session and lifetime token usage"
+                  variant="secondary"
+                  icon={<RotateCcw class="h-4 w-4" />}
+                  ariaLabel="Reset token usage"
+                  onClick={() => {
+                    store.openTokenUsageResetDialog();
+                    renderDetailRoot();
+                  }}
+                >
+                  Reset usage
+                </ActionButton>
+                <Show when={state.tokenUsage.resetAt}>
+                  {(resetAt) => <div class="text-[0.675rem] leading-5 text-(--muted)">Last reset: {formatShortTimestamp(resetAt())}</div>}
+                </Show>
+              </div>
+            </div>
+          </PreferenceRow>
+        </PreferenceSection>
+        <Dialog
+          open={state.tokenUsageResetDialogOpen}
+          title="Reset token usage"
+          description="This clears current session and lifetime token counters stored in this browser."
+          onClose={() => {
+            store.closeTokenUsageResetDialog();
+            renderDetailRoot();
+          }}
+          footer={
+            <>
+              <ActionButton
+                tooltip="Cancel token usage reset"
+                variant="ghost"
+                onClick={() => {
+                  store.closeTokenUsageResetDialog();
+                  renderDetailRoot();
+                }}
+              >
+                Cancel
+              </ActionButton>
+              <ActionButton
+                tooltip="Confirm token usage reset"
+                icon={<RotateCcw class="h-4 w-4" />}
+                onClick={() => {
+                  store.resetTokenUsage();
+                  pushToast("Token usage reset", "Session and lifetime counters cleared.");
+                  renderDetailRoot();
+                }}
+              >
+                Reset usage
+              </ActionButton>
+            </>
+          }
+        >
+          <p class="text-sm leading-6 text-(--muted)">Token counters will start again from the next observed model usage event.</p>
+        </Dialog>
+      </>
+    );
+  }
+
+  function renderUsage() {
+    return <TokenUsageSection />;
   }
 
   function renderDeveloperAdvanced() {
@@ -1535,6 +1956,8 @@ export function PreferencesPanel() {
         return renderSafetyGuardrails();
       case "workspace-memory":
         return renderWorkspaceMemory();
+      case "usage":
+        return renderUsage();
       case "background-jobs":
         return renderBackgroundJobs();
       case "developer-advanced":
@@ -1566,7 +1989,7 @@ export function PreferencesPanel() {
         </main>
       </div>
       <Dialog
-        open={Boolean(pendingDuplicateHotkey())}
+        open={() => Boolean(pendingDuplicateHotkey())}
         title="Duplicate keybind"
         description={`This keybind is already assigned to ${pendingDuplicateHotkey()?.conflictLabel ?? "another command"}.`}
         onClose={() => setPendingDuplicateHotkey(undefined)}

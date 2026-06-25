@@ -48,6 +48,29 @@ describe("IdeProjectService", () => {
     });
   });
 
+  test("reads trusted external skill files by absolute path", async () => {
+    await withTempProject(async (root) => {
+      const skillsRoot = await mkdtemp(path.join(os.tmpdir(), "harness-skills-"));
+      try {
+        const skillPath = path.join(skillsRoot, "caveman", "SKILL.md");
+        await mkdir(path.dirname(skillPath), { recursive: true });
+        await writeFile(skillPath, "# caveman\n");
+
+        const file = await new IdeProjectService({ externalFileRoots: [skillsRoot] }).readFile({
+          projectId: "project-1",
+          projectRoot: root,
+          filePath: skillPath
+        });
+
+        expect(file.path).toBe(skillPath.replace(/\\/g, "/"));
+        expect(file.name).toBe("SKILL.md");
+        expect(file.content).toBe("# caveman\n");
+      } finally {
+        await rm(skillsRoot, { recursive: true, force: true });
+      }
+    });
+  });
+
   test("reads text files with metadata", async () => {
     await withTempProject(async (root) => {
       await writeFile(path.join(root, "readme.md"), "# Hello\nBody\n");

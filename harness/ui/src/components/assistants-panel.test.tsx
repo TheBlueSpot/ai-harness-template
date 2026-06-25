@@ -614,7 +614,7 @@ createUiTest("AssistantsPanel", () => {
     render(() => <AssistantsPanel variant="detail" />);
 
     expect(screen.getAllByText("app-code").length).toBeGreaterThan(0);
-    expect(screen.getByText("Target: src/app.tsx")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "src/app.tsx" })).not.toBeNull();
     fireEvent.change(screen.getByDisplayValue("src/app.tsx"), { target: { value: "src/routes/home.tsx" } });
 
     expect(commands.at(-1)).toMatchObject({
@@ -1162,6 +1162,117 @@ createUiTest("AssistantsPanel", () => {
     expect(screen.getAllByText("Collected release notes.").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText(/CHANGELOG.md/)).not.toBeNull();
     expect(screen.getByText("Details JSON truncated to 12000 characters.")).not.toBeNull();
+  });
+
+  it("opens linked background run source from assistant log row clicks", () => {
+    const now = new Date().toISOString();
+    const project = createViewProjectFixture({
+      id: "project-assistant-log-source"
+    });
+    const assistantId = "assistant-log-source";
+    const job: BackgroundJob = {
+      id: "job-log-source",
+      projectId: project.id,
+      assistantId,
+      automationThreadId: "thread-auto-log-source",
+      kind: "ai-routine",
+      name: "Release notes job",
+      status: "enabled",
+      riskLevel: "safe",
+      definition: {
+        kind: "ai-routine",
+        prompt: "Collect release notes."
+      },
+      schedule: {
+        type: "one-off",
+        runAt: now,
+        sourceText: "manual"
+      },
+      scheduleInput: "manual",
+      createdAt: now,
+      updatedAt: now
+    };
+    const run: BackgroundJobRun = {
+      id: "run-log-source",
+      jobId: job.id,
+      projectId: project.id,
+      assistantId,
+      automationThreadId: "thread-auto-log-source",
+      triggerSource: "manual",
+      status: "succeeded",
+      riskLevel: "safe",
+      approvalStatus: "not-needed",
+      skippedOccurrenceCount: 0,
+      summary: "Collected release notes.",
+      queuedAt: now,
+      createdAt: now,
+      updatedAt: now,
+      events: []
+    };
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        activeSurface: "assistants",
+        activeLeftTab: "assistants",
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        },
+        assistants: {
+          ...createEmptyAssistantsState(),
+          selectedAssistantId: assistantId,
+          selectedTab: "log",
+          selectedLogDetailsId: undefined,
+          assistants: [
+            {
+              id: assistantId,
+              name: "Log helper",
+              scope: "project",
+              projectId: project.id,
+              personalityPrompt: "Log clearly",
+              jobPrompt: "Do logged work",
+              agentId: "pi",
+              runState: "active",
+              bootstrapState: "completed",
+              failureStreakCount: 0,
+              circuitBreakerState: "closed",
+              unreadQuestionCount: 0,
+              createdAt: now,
+              updatedAt: now
+            }
+          ],
+          logs: [
+            {
+              id: "log-source-1",
+              assistantId,
+              level: "info",
+              summary: "Job completed",
+              detail: "Collected release notes.",
+              detailsJson: { backgroundRunId: run.id, jobId: job.id },
+              createdAt: now
+            }
+          ]
+        },
+        backgroundJobs: {
+          jobs: [job],
+          runs: [run],
+          templates: []
+        }
+      })
+    );
+
+    render(() => <AssistantsPanel />);
+
+    fireEvent.click(screen.getByLabelText("Open source for Job completed"));
+
+    expect(harnessStore.state.activeSurface).toBe("background-jobs");
+    expect(harnessStore.state.activeLeftTab).toBe("runs");
+    expect(harnessStore.state.jobsRunFilter).toBe("done");
+    expect(harnessStore.state.jobsPanePreferences).toMatchObject({
+      segment: "inbox",
+      selectedRunId: run.id,
+      selectedJobId: job.id
+    });
+    expect(harnessStore.state.assistants.selectedLogDetailsId).toBeUndefined();
   });
 
   it("shows assistant job failure tracking and run diagnostics", () => {

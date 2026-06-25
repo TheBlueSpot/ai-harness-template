@@ -2,6 +2,9 @@ import { For, Show } from "solid-js";
 import { AlertTriangle } from "lucide-solid";
 import type { ExecutionPlan } from "../../../shared/protocol";
 import { harnessStore } from "../harness-store";
+import type { ChatFileTarget } from "../lib/chat-file-links";
+import { openIdeWindow } from "../lib/ide-window";
+import { FileLinkedText, type FileLinkConfig } from "./file-linked-text";
 import { MarkdownContent } from "./markdown-content";
 import { Dialog } from "./primitives/dialog";
 
@@ -11,10 +14,31 @@ type ExecutionPlanDialogProps = {
 
 export function ExecutionPlanDialog(props: ExecutionPlanDialogProps) {
   const state = harnessStore.state;
+  const activeProject = () =>
+    state.workspace.projects.find((project) => project.id === state.workspace.activeProjectId) ?? state.workspace.projects[0];
+  const fileLinks = (): FileLinkConfig | undefined => {
+    const project = activeProject();
+    return project
+      ? {
+          rootPath: project.rootPath,
+          filePaths: project.filePaths ?? [],
+          onOpenFile: handleOpenFile
+        }
+      : undefined;
+  };
   const hasBranchfsSizeWarning = () =>
     state.workspace.projects
       .find((project) => project.id === state.workspace.activeProjectId)
       ?.traces.some((trace) => trace.stage === "branchfs-size-warning") ?? false;
+
+  function handleOpenFile(target: ChatFileTarget) {
+    const project = activeProject();
+    if (!project) {
+      return;
+    }
+    openIdeWindow({ projectId: project.id, threadId: project.activeThreadId });
+    harnessStore.openIdeFile(target.path, target.line, target.column);
+  }
 
   return (
     <Dialog
@@ -56,14 +80,14 @@ export function ExecutionPlanDialog(props: ExecutionPlanDialogProps) {
               <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--muted)">
                 Summary
               </div>
-              <MarkdownContent content={() => executionPlan().summary} class="mt-2" />
+              <MarkdownContent content={() => executionPlan().summary} class="mt-2" fileLinks={fileLinks()} />
             </section>
 
             <section>
               <div class="text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--muted)">
                 Execution brief
               </div>
-              <MarkdownContent content={() => executionPlan().finalExecutionBrief} class="mt-2" />
+              <MarkdownContent content={() => executionPlan().finalExecutionBrief} class="mt-2" fileLinks={fileLinks()} />
             </section>
 
             <section>
@@ -79,9 +103,9 @@ export function ExecutionPlanDialog(props: ExecutionPlanDialogProps) {
                     {(prerequisite) => (
                       <div class="rounded-2xl border border-(--border) bg-white/60 p-3">
                         <div class="font-semibold">{prerequisite.title}</div>
-                        <MarkdownContent content={() => prerequisite.instruction} class="mt-1" tone="muted" size="compact" />
+                        <MarkdownContent content={() => prerequisite.instruction} class="mt-1" tone="muted" size="compact" fileLinks={fileLinks()} />
                         <div class="mt-1 text-(--muted)">Reason:</div>
-                        <MarkdownContent content={() => prerequisite.reason} tone="muted" size="compact" />
+                        <MarkdownContent content={() => prerequisite.reason} tone="muted" size="compact" fileLinks={fileLinks()} />
                         <div class="mt-1 text-(--muted)">Owner: {prerequisite.owner}</div>
                       </div>
                     )}
@@ -99,12 +123,22 @@ export function ExecutionPlanDialog(props: ExecutionPlanDialogProps) {
                   {(contract) => (
                     <div class="rounded-2xl border border-(--border) bg-white/60 p-3">
                       <div class="font-semibold">{contract.title}</div>
-                      <MarkdownContent content={() => contract.instruction} class="mt-1" tone="muted" size="compact" />
-                      <div class="mt-1 text-(--muted)">Owned paths: {contract.ownedPaths.join(", ")}</div>
-                      <div class="mt-1 text-(--muted)">Deliverables: {contract.deliverables.join(", ")}</div>
-                      <div class="mt-1 text-(--muted)">Integrates with: {contract.integrationPoints.join(", ") || "none"}</div>
-                      <div class="mt-1 text-(--muted)">Verify: {contract.verificationCommands.join(" && ")}</div>
-                      <div class="mt-1 text-(--muted)">Merge notes: {contract.mergeNotes}</div>
+                      <MarkdownContent content={() => contract.instruction} class="mt-1" tone="muted" size="compact" fileLinks={fileLinks()} />
+                      <div class="mt-1 text-(--muted)">
+                        <FileLinkedText text={`Owned paths: ${contract.ownedPaths.join(", ")}`} fileLinks={fileLinks()} />
+                      </div>
+                      <div class="mt-1 text-(--muted)">
+                        <FileLinkedText text={`Deliverables: ${contract.deliverables.join(", ")}`} fileLinks={fileLinks()} />
+                      </div>
+                      <div class="mt-1 text-(--muted)">
+                        <FileLinkedText text={`Integrates with: ${contract.integrationPoints.join(", ") || "none"}`} fileLinks={fileLinks()} />
+                      </div>
+                      <div class="mt-1 text-(--muted)">
+                        <FileLinkedText text={`Verify: ${contract.verificationCommands.join(" && ")}`} fileLinks={fileLinks()} />
+                      </div>
+                      <div class="mt-1 text-(--muted)">
+                        <FileLinkedText text={`Merge notes: ${contract.mergeNotes}`} fileLinks={fileLinks()} />
+                      </div>
                     </div>
                   )}
                 </For>

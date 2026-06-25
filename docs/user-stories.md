@@ -243,7 +243,7 @@ US-MODES-008: As a user, I use shared skills from a global harness skill root ac
 
 ### ASSISTANTS
 
-US-ASSISTANTS-001: As a user, I use local assistant operators with named personas, role prompts, project or global scope, synced routing defaults, action-runbook guidance, chat-addressable actions from project chat, assistant-owned background job creation, pause and resume controls, chat, todo lists, learnings, open questions, clone-to-project flow, and high-level plus deep-debug logs. (README L24)
+US-ASSISTANTS-001: As a user, I use local assistant operators with named personas, role prompts, project or global scope, synced routing defaults, action-runbook guidance, chat-addressable actions from project chat, assistant-owned background job creation, non-blocking question auto-approval preferences, pause and resume controls, chat, todo lists, learnings, open questions, clone-to-project flow, and high-level plus deep-debug logs. (README L24)
 
 US-ASSISTANTS-002: As a user, I get a dedicated Assistants surface with search and filters so assistant chat, todos, questions, bounded learnings, logs, and assistant-owned jobs stay inspectable outside normal project chat. (README L103)
 
@@ -255,11 +255,11 @@ US-ASSISTANTS-005: As a user, assistant operators make reasonable assumptions, s
 
 US-ASSISTANTS-006: As a user, a newly idle assistant asks whether to bootstrap default research, todo maintenance, and implementation jobs, and those jobs push toward market research, reusable skills, TypeScript scripts, and concrete product implementation.
 
-US-ASSISTANTS-007: As a user, build-oriented assistants keep structured todo work categories and targets, bias generated todos toward coding after early discovery, ask once for a coding-project stack preference, and default to TypeScript, Bun, `bun test`, SQLite when persistence is needed, SolidJS plus Tailwind when UI is needed, and Happy DOM frontend tests when no existing stack or user preference overrides it.
+US-ASSISTANTS-007: As a user, build-oriented assistants keep structured todo work categories and targets, bias generated todos toward coding after early discovery, ask once for a coding-project stack preference, and default to TypeScript, Bun, `bun test`, SQLite when persistence is needed, SolidJS plus Tailwind when UI is needed, Happy DOM frontend tests, and useful documentation comments for new functions and variables when no existing stack or user preference overrides it.
 
 ### JOBS
 
-US-JOBS-001: As a user, I use local scheduled tasks and background jobs with durable SQLite history, startup catch-up, approval policy defaults, hidden automation threads, renewable ownership leases, visible due, blocked, stale, concurrent launch, timeout, progress, congestion/capacity scheduler state, and a dedicated health view for recent reliability. (README L22)
+US-JOBS-001: As a user, I use local scheduled tasks and background jobs with durable SQLite history, startup catch-up, approval policy defaults, non-blocking assistant question auto-approval, hidden automation threads, renewable ownership leases, visible due, blocked, stale, concurrent launch, timeout, progress, congestion/capacity scheduler state, and a dedicated health view for recent reliability. (README L22)
 
 US-JOBS-002: As a user, I use searchable and filterable Jobs, Runs, and Health tabs to inspect scheduled work, approval-needed runs, failures, concise execution milestones, backoff-blocked jobs, dominant failure classes, and prompt repetition outside normal project chat threads. (README L102)
 
@@ -373,7 +373,7 @@ US-PERSISTENCE-011: As a developer, I see browser localStorage mirror API key pr
 
 US-PERSISTENCE-012: As a developer, I see browser localStorage mirror execution gate, isolation strategy, countdown, and correctness iteration defaults for the current browser profile. (README L149)
 
-US-PERSISTENCE-013: As a developer, I see browser localStorage mirror background-job approval defaults and local notification opt-in. (README L147)
+US-PERSISTENCE-013: As a developer, I see browser localStorage mirror background-job approval defaults, non-blocking assistant question auto-approval, and local notification opt-in. (README L147)
 
 US-PERSISTENCE-014: As a developer, I see browser localStorage store per-thread draft text keyed by project and thread id. (README L148)
 
@@ -383,7 +383,7 @@ US-PERSISTENCE-016: As a user, I keep workspace and assistant state in a cwd-ind
 
 ### PREFERENCES
 
-US-PREFERENCES-001: As a user, I set global execution preferences for dirty-git chat restriction, dirty change threshold, plan gate mode, countdown delay, subagent isolation strategy, and correctness iteration policy. (README L45)
+US-PREFERENCES-001: As a user, I set global execution preferences for dirty-git chat restriction, dirty change threshold, plan gate mode, countdown delay, subagent isolation strategy, correctness iteration policy, and non-blocking assistant question auto-approval. (README L45)
 
 US-PREFERENCES-002: As a user, I set a workspace preference for Pi auto-compaction threshold so long runs trim context earlier and continue with current intent intact. (README L46)
 

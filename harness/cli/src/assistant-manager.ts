@@ -71,7 +71,7 @@ const ASSISTANT_LEARNING_COMPACTION_CHAR_THRESHOLD = 24000;
 const MAX_PROMPT_ANSWERED_QUESTIONS = 3;
 const MAX_PROMPT_LEARNINGS = 6;
 const DEFAULT_CODING_STACK_QUESTION =
-  "Which stack should this coding project use? Recommended default: TypeScript, Bun runtime, bun test, SQLite via bun:sqlite when backend or persistence is needed, SolidJS + Tailwind when UI is needed, frontend tests using Bun + Happy DOM, with shared primitives first. Reply \"default\" to use that stack or describe another stack.";
+  "Which stack should this coding project use? Recommended default: TypeScript, Bun runtime, bun test, SQLite via bun:sqlite when backend or persistence is needed, SolidJS + Tailwind when UI is needed, frontend tests using Bun + Happy DOM, shared primitives first, and useful documentation comments for new functions and variables. Reply \"default\" to use that stack or describe another stack.";
 const ASSISTANT_ACTIONS_SKILL_PROMPT =
   "For every assistant-chat or project-chat request addressed to this assistant, invoke the assistant-actions skill before acting when the user's prompt does not already include it.";
 const OPERATIONAL_PROMPT_QUESTION_CATEGORIES = new Set([
@@ -722,7 +722,8 @@ export class AssistantManager {
           prompt: question.prompt,
           questions: this.repository.getAssistantQuestions(assistant.id).filter((entry) => entry.id !== question.id),
           learnings: this.repository.getAssistantLearnings(assistant.id),
-          runtimeReadOnly: undefined
+          runtimeReadOnly: undefined,
+          autoApproveNonBlocking: this.repository.getAssistantAutoApproveNonBlockingQuestionsDefault()
         });
         if (decision.kind === "ask") {
           continue;
@@ -863,7 +864,8 @@ export class AssistantManager {
               prompt: question.prompt,
               questions: this.repository.getAssistantQuestions(assistantId),
               learnings: this.repository.getAssistantLearnings(assistantId),
-              runtimeReadOnly: runtime.readOnly
+              runtimeReadOnly: runtime.readOnly,
+              autoApproveNonBlocking: this.repository.getAssistantAutoApproveNonBlockingQuestionsDefault()
             });
             if (decision.kind !== "ask") {
               this.applyQuestionPolicyDecision(assistantId, question.prompt, decision);
@@ -1055,7 +1057,7 @@ export class AssistantManager {
           "Ask questions only when missing information blocks useful progress. If multiple questions are necessary, batch them in questions. Prefer no questions when a reasonable default exists.",
           "Do not include completed, failed, or cancelled todos unless you are explicitly changing a currently active todo into one of those states.",
           "After early discovery, build-oriented assistants should keep most active todos as app-code or automation-code. Docs-only todos should support a concrete code change.",
-          "For new coding projects, default to TypeScript, Bun runtime, bun test, bun:sqlite when persistence is needed, SolidJS + Tailwind when UI is needed, frontend tests using Bun + Happy DOM, and shared primitives first unless existing project files or user preference say otherwise."
+          "For new coding projects, default to TypeScript, Bun runtime, bun test, bun:sqlite when persistence is needed, SolidJS + Tailwind when UI is needed, frontend tests using Bun + Happy DOM, shared primitives first, and useful documentation comments for new functions and variables unless existing project files or user preference say otherwise."
         ]
       },
       {
@@ -1401,7 +1403,8 @@ export class AssistantManager {
       questions: this.repository.getAssistantQuestions(assistantId),
       learnings: this.repository.getAssistantLearnings(assistantId),
       runtimeReadOnly: options.runtimeReadOnly,
-      forceBlocking: options.forceBlocking
+      forceBlocking: options.forceBlocking,
+      autoApproveNonBlocking: this.repository.getAssistantAutoApproveNonBlockingQuestionsDefault()
     });
     if (decision.kind !== "ask") {
       this.applyQuestionPolicyDecision(assistantId, prompt, decision);
@@ -1588,7 +1591,7 @@ function buildBootstrapPrompt(assistant: Assistant) {
     "Only create initialTodos when the job prompt implies proactive work, backlog maintenance, implementation, or recurring execution.",
     "Do not ask questions during bootstrap unless role setup cannot proceed without user input; prefer durable assumptions and learnings.",
     "First discovery todos may be research or documentation. If the assistant is for building a coding project, later todos should mostly be app-code or automation-code.",
-    "For new coding projects, default to TypeScript, Bun runtime, bun test, bun:sqlite when persistence is needed, SolidJS + Tailwind when UI is needed, frontend tests using Bun + Happy DOM, and shared primitives first unless existing project files or user preference say otherwise."
+    "For new coding projects, default to TypeScript, Bun runtime, bun test, bun:sqlite when persistence is needed, SolidJS + Tailwind when UI is needed, frontend tests using Bun + Happy DOM, shared primitives first, and useful documentation comments for new functions and variables unless existing project files or user preference say otherwise."
   ].join("\n\n");
 }
 

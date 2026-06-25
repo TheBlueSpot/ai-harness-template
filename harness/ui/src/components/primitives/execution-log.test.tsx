@@ -1,6 +1,7 @@
 /** @jsxImportSource solid-js */
 import { expect, it } from "bun:test";
-import { render, screen } from "@solidjs/testing-library";
+import { fireEvent, render, screen } from "@solidjs/testing-library";
+import { createSignal } from "solid-js";
 import { createUiTest } from "../../utils/tests/test-harness";
 import { ExecutionLog, truncateLogText } from "./execution-log";
 
@@ -45,6 +46,58 @@ createUiTest("ExecutionLog", () => {
     expect(screen.getByText(longMessage)).not.toBeNull();
     expect(screen.getByText("Full detail body")).not.toBeNull();
     expect(screen.getByText(/README.md/)).not.toBeNull();
+  });
+
+  it("routes row clicks to source without hijacking details button", () => {
+    const opened: string[] = [];
+    const [selectedEntryId, setSelectedEntryId] = createSignal<string>();
+
+    render(() => (
+      <ExecutionLog
+        entries={entries}
+        selectedEntryId={selectedEntryId()}
+        onSelectedEntryIdChange={setSelectedEntryId}
+        onEntrySourceClick={(entry) => opened.push(entry.id)}
+      />
+    ));
+
+    fireEvent.click(document.querySelector("article")!);
+    expect(opened).toEqual(["entry-1"]);
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /Show details/ }));
+    expect(opened).toEqual(["entry-1"]);
+    expect(selectedEntryId()).toBe("entry-1");
+  });
+
+  it("formats file references and opens them on modifier click", () => {
+    const opened: unknown[] = [];
+    render(() => (
+      <ExecutionLog
+        entries={[
+          {
+            id: "entry-file",
+            message: "Changed harness/ui/src/app.tsx:7",
+            level: "info",
+            createdAt
+          }
+        ]}
+        fileLinks={{
+          rootPath: "C:\\repo",
+          filePaths: ["harness/ui/src/app.tsx"],
+          onOpenFile: (target) => opened.push(target)
+        }}
+      />
+    ));
+
+    const fileLink = screen.getByRole("button", { name: "harness/ui/src/app.tsx:7" });
+    expect(fileLink.className).toContain("markdown-file-link");
+
+    fireEvent.click(fileLink);
+    expect(opened).toEqual([]);
+
+    fireEvent.click(fileLink, { ctrlKey: true });
+    expect(opened).toEqual([{ path: "harness/ui/src/app.tsx", line: 7, column: undefined }]);
   });
 
   it("formats selected entry details as markdown", () => {

@@ -38,6 +38,21 @@ describe("chat file links", () => {
     ]);
   });
 
+  test("finds known root-level filenames with line numbers", () => {
+    expect(findChatFileReferences("update README.md:3 before release", context)).toEqual([
+      {
+        index: 7,
+        length: 11,
+        text: "README.md:3",
+        target: { path: "README.md", line: 3, column: undefined }
+      }
+    ]);
+  });
+
+  test("rejects unknown bare dotted words", () => {
+    expect(findChatFileReferences("visit example.com for docs", context)).toEqual([]);
+  });
+
   test("finds the file under a textarea caret", () => {
     const text = "open @harness/ui/src/components/chat-panel.tsx please";
     expect(findChatFileReferenceAtPosition(text, text.indexOf("chat-panel"), context)?.target).toEqual({

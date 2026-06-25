@@ -83,3 +83,36 @@ Phase 8: settings. Keep left section navigation, but convert dense credentials a
 Phase 9: dialogs. Split assistant creation into Identity, Scope/Routing, Prompts, and Assets. Split job creation into Schedule, Ownership/Risk, Task Prompt, and Execution. Keep sticky footers and add live validation and previews.
 
 Phase 10: verification. Capture desktop, tablet, and mobile screenshots; assert no blank main surfaces, no horizontal overflow, mobile sheet fill, and trace closed/peek/open behavior. Run typecheck and targeted UI tests for sheet, dialogs, popovers, and trace state.
+
+## June 2026 Source Navigation Addendum
+
+External patterns:
+
+- Linear treats the inbox as a work queue where each notification opens the source issue in an inbox-aware detail view, then keeps actions close to that source.
+- GitHub's notification inbox emphasizes origin, reason, preview, grouping, filtering, and source preview so users can triage without losing context.
+- Datadog alert notifications are expected to carry actionable messages, troubleshooting context, workflow hooks, and links back to relevant product pages.
+
+Product principle:
+
+Every passive notice, toast, status row, log row, and source-linked object should answer three questions at a glance: what happened, where did it happen, and what is the next useful place to go. Clicking the body should go to the source. Secondary buttons can expose details, copy, approve, retry, or edit.
+
+Navigation contract:
+
+- Background run notices open the Runs surface, clear stale run search, set the matching status filter, and select the run.
+- Assistant questions open the owning assistant on Questions.
+- Assistant critical logs open the owning assistant on Log, with details available separately.
+- Assistant log rows open the linked background run or job when metadata can identify it.
+- Active project runs shown in Runs open the source project thread on the Run tab.
+- CLI update notices open the developer settings source before running update actions.
+
+Remaining audit targets:
+
+- Give browser approval notices a visible source summary in the project Run or Events tab, not only the inbox action buttons.
+- Add explicit source breadcrumbs to dialog headers so users can move from detail dialogs back to project, run, job, or assistant without using global nav.
+- Treat search/filter state as secondary during source navigation; a direct source click must never land on a hidden selected object.
+
+Sources:
+
+- https://linear.app/docs/inbox
+- https://docs.github.com/en/subscriptions-and-notifications/get-started/configuring-notifications
+- https://docs.datadoghq.com/monitors/notify/

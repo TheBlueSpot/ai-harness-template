@@ -1135,6 +1135,7 @@ export const preferencesStateSchema = z.object({
   subagentModelPreferenceDefault: runModelPreferenceSchema.default("inference"),
   correctnessIterationModeDefault: correctnessIterationModeSchema,
   backgroundJobApprovalPolicyDefault: backgroundJobApprovalPolicySchema,
+  assistantAutoApproveNonBlockingQuestionsDefault: z.boolean().default(true),
   assistantCongestionControlEnabledDefault: z.boolean().optional(),
   assistantMaxCongestionDefault: assistantMaxCongestionDefaultSchema.optional(),
   autoArchiveCompletedThreadsDefault: z.boolean().optional(),
@@ -1553,6 +1554,7 @@ export const cliAttachTokenSchema = z.object({
 
 export const terminalShellKindSchema = z.enum(["powershell", "cmd", "bash", "zsh", "sh", "custom"]);
 export const terminalSessionStatusSchema = z.enum(["starting", "running", "stopped", "exited", "failed"]);
+export const terminalTransportModeSchema = z.enum(["pty", "pipe"]);
 export const terminalCtrlCModeSchema = z.enum(["auto", "copy", "sigint"]);
 export const terminalRendererModeSchema = z.enum(["xterm-webgl", "xterm-dom", "solid-prototype"]);
 
@@ -1580,6 +1582,8 @@ export const terminalSessionSchema = z.object({
   status: terminalSessionStatusSchema,
   cols: z.number().int().min(1).max(1000),
   rows: z.number().int().min(1).max(1000),
+  transportMode: terminalTransportModeSchema.optional(),
+  transportWarning: z.string().min(1).max(512).optional(),
   pid: z.number().int().min(0).optional(),
   exitCode: z.number().int().min(-1).max(65535).optional(),
   startedAt: z.string().datetime().or(z.string().min(1)),
@@ -2746,6 +2750,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       subagentModelPreferenceDefault: runModelPreferenceSchema.optional(),
       correctnessIterationModeDefault: correctnessIterationModeSchema,
       backgroundJobApprovalPolicyDefault: backgroundJobApprovalPolicySchema,
+      assistantAutoApproveNonBlockingQuestionsDefault: z.boolean().optional(),
       assistantCongestionControlEnabledDefault: z.boolean().optional(),
       assistantMaxCongestionDefault: assistantMaxCongestionDefaultSchema.optional(),
       autoArchiveCompletedThreadsDefault: z.boolean().optional(),
@@ -3700,6 +3705,7 @@ export type CliAttachToken = z.infer<typeof cliAttachTokenSchema>;
 export type TerminalShell = z.infer<typeof terminalShellSchema>;
 export type TerminalShellKind = z.infer<typeof terminalShellKindSchema>;
 export type TerminalSessionStatus = z.infer<typeof terminalSessionStatusSchema>;
+export type TerminalTransportMode = z.infer<typeof terminalTransportModeSchema>;
 export type TerminalSession = z.infer<typeof terminalSessionSchema>;
 export type TerminalEnvVar = z.infer<typeof terminalEnvVarSchema>;
 export type TerminalPaneLayout = z.infer<typeof terminalPaneLayoutSchema>;

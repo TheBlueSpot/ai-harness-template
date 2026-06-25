@@ -23,7 +23,8 @@ export function createIdeWindowUrl(input: OpenIdeWindowInput = {}) {
     return "/ide";
   }
 
-  const url = new URL("/ide", window.location.origin);
+  const baseOrigin = window.location.origin && window.location.origin !== "null" ? window.location.origin : "http://localhost";
+  const url = new URL("/ide", baseOrigin);
   if (input.projectId) {
     url.searchParams.set("projectId", input.projectId);
   }

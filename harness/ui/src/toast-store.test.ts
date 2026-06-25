@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { createToastStoreForProvider, type ToastScheduler } from "./toast-store";
+import {
+  createToastStoreForProvider,
+  pushToast,
+  setActiveToastStore,
+  setDefaultToastSourceResolver,
+  type ToastScheduler
+} from "./toast-store";
 
 type PendingScheduled = {
   callback: () => void;
@@ -110,5 +116,26 @@ describe("toast store", () => {
     expect(store.toasts.length).toBe(0);
     expect(store.pendingTimerCount).toBe(0);
     expect(manual.activeCount()).toBe(0);
+  });
+
+  test("pushToast gives source-less toasts the current default destination", () => {
+    const manual = createManualScheduler();
+    const store = createToastStoreForProvider({ scheduler: manual.scheduler });
+    let opened = 0;
+    try {
+      setActiveToastStore(store);
+      setDefaultToastSourceResolver(() => () => {
+        opened += 1;
+      });
+
+      pushToast("Saved");
+      store.toasts[0]?.onClick?.();
+
+      expect(opened).toBe(1);
+    } finally {
+      setDefaultToastSourceResolver(undefined);
+      setActiveToastStore(undefined);
+      store.dispose();
+    }
   });
 });

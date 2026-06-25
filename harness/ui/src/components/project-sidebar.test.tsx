@@ -7,6 +7,7 @@ import { captureDispatchedCommands, clearBrowserStateForTests, seedHarnessStoreF
 import { createHarnessStateFixture, createViewProjectFixture } from "../utils/tests/test-fixtures";
 import { createChatMessage, createEmptySession, createProjectThreadSummary } from "../../../shared/protocol";
 import { harnessStore, readProjectSidebarPreferences } from "../harness-store";
+import { OPEN_IDE_WINDOW_EVENT, type OpenIdeWindowInput } from "../lib/ide-window";
 
 createUiTest("ProjectSidebar", () => {
   beforeEach(() => {
@@ -161,6 +162,37 @@ createUiTest("ProjectSidebar", () => {
     const doneBadge = screen.getByText("Done");
     expect(doneBadge.className).toContain("bg-emerald-600");
     expect((screen.getByRole("button", { name: `Remove ${project.name}` }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("uses theme-backed active project and thread surfaces", () => {
+    const project = createViewProjectFixture({
+      id: "project-themed-active",
+      activeThreadId: "thread-active",
+      threads: [
+        createProjectThreadSummary({
+          id: "thread-active",
+          title: "Active thread",
+          titleSource: "generated",
+          updatedAt: new Date().toISOString()
+        })
+      ]
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ProjectSidebar />);
+
+    const projectCard = document.querySelector("[data-test-project-card][data-project-id='project-themed-active']");
+    const threadCard = document.querySelector("[data-test-project-thread-card][data-thread-id='thread-active']");
+    expect(projectCard?.className).toContain("theme-selected-surface");
+    expect(projectCard?.className).not.toContain("rgba(255");
+    expect(threadCard?.className).toContain("bg-(--panel-strong)");
   });
 
   it("activates the project before activating a thread in another project", () => {
@@ -381,7 +413,7 @@ createUiTest("ProjectSidebar", () => {
     await Promise.resolve();
 
     expect(commands).toEqual([]);
-    expect(deleteButton.className).toContain("text-rose-600");
+    expect(deleteButton.className).toContain("text-(--danger)");
 
     fireEvent.click(deleteButton);
 
@@ -555,7 +587,7 @@ createUiTest("ProjectSidebar", () => {
       fireEvent.click(deleteButton);
 
       expect(commands).toEqual([]);
-      expect(deleteButton.className).toContain("text-rose-600");
+      expect(deleteButton.className).toContain("text-(--danger)");
     } finally {
       globalThis.setTimeout = originalSetTimeout;
       globalThis.clearTimeout = originalClearTimeout;
@@ -761,9 +793,13 @@ createUiTest("ProjectSidebar", () => {
   });
 
   it("shows node-specific context menus with open in IDE last", async () => {
-    const originalOpen = window.open;
-    const open = mock((url?: string | URL) => ({ focus: () => undefined, url }));
-    window.open = open as unknown as typeof window.open;
+    const openIdeEvents: OpenIdeWindowInput[] = [];
+    const collectOpenIdeEvent = (event: Event) => {
+      if (event instanceof CustomEvent) {
+        openIdeEvents.push(event.detail as OpenIdeWindowInput);
+      }
+    };
+    window.addEventListener(OPEN_IDE_WINDOW_EVENT, collectOpenIdeEvent);
     try {
       const project = createViewProjectFixture({
         id: "project-context-menu",
@@ -798,8 +834,8 @@ createUiTest("ProjectSidebar", () => {
       expect(projectItems).toEqual(["New thread", "Remove", "Open in IDE"]);
 
       fireEvent.click(screen.getByRole("menuitem", { name: /Open in IDE/ }));
-      expect(String(open.mock.calls[0]?.[0])).toContain("/ide");
-      expect(String(open.mock.calls[0]?.[0])).toContain("projectId=project-context-menu");
+      expect(openIdeEvents[0]).toEqual({ projectId: "project-context-menu", threadId: undefined });
+      expect(harnessStore.state.activeSurface).toBe("ide");
 
       const threadCard = document.querySelector("[data-test-project-thread-card][data-thread-id='thread-context']") as HTMLElement | null;
       expect(threadCard).not.toBeNull();
@@ -807,8 +843,10 @@ createUiTest("ProjectSidebar", () => {
       await waitFor(() => expect(screen.getAllByRole("menuitem").length).toBeGreaterThan(0));
       const threadItems = screen.getAllByRole("menuitem").map((item) => item.textContent?.trim());
       expect(threadItems).toEqual(["Pin", "Fork", "Rename", "Delete", "Open in IDE"]);
+      fireEvent.click(screen.getByRole("menuitem", { name: /Open in IDE/ }));
+      expect(openIdeEvents[1]).toEqual({ projectId: "project-context-menu", threadId: "thread-context" });
     } finally {
-      window.open = originalOpen;
+      window.removeEventListener(OPEN_IDE_WINDOW_EVENT, collectOpenIdeEvent);
     }
   });
 });

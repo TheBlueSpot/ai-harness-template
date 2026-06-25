@@ -2,6 +2,7 @@ import { readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { IdeFileRead, IdeFileTreeEntry, IdeGitChange, IdeSearchResult } from "../../shared/protocol";
 import { resolveBundledRipgrepPath } from "./agent-runtimes/toolchain";
+import { resolveGlobalSkillsRoot } from "./harness-paths";
 
 const DEFAULT_TREE_ENTRY_LIMIT = 5_000;
 const DEFAULT_FILE_READ_LIMIT = 1_000_000;
@@ -27,6 +28,7 @@ export type IdeProjectServiceOptions = {
   fs?: Partial<FileSystemAdapter>;
   process?: Partial<ProcessAdapter>;
   ripgrepPath?: string;
+  externalFileRoots?: string[];
 };
 
 export type ListFileTreeOptions = {
@@ -66,11 +68,13 @@ export class IdeProjectService {
   private readonly fs: FileSystemAdapter;
   private readonly process: ProcessAdapter;
   private readonly ripgrepPath?: string;
+  private readonly externalFileRoots: string[];
 
   constructor(options: IdeProjectServiceOptions = {}) {
     this.fs = { ...defaultFs, ...options.fs };
     this.process = { ...defaultProcess, ...options.process };
     this.ripgrepPath = options.ripgrepPath;
+    this.externalFileRoots = options.externalFileRoots ?? [resolveGlobalSkillsRoot()];
   }
 
   async listFileTree(options: ListFileTreeOptions): Promise<{ rootPath: string; entries: IdeFileTreeEntry[]; truncated: boolean }> {
@@ -117,7 +121,7 @@ export class IdeProjectService {
 
   async readFile(options: ReadIdeFileOptions): Promise<IdeFileRead> {
     const projectRoot = resolveProjectRoot(options.projectRoot);
-    const absolutePath = resolveProjectPath(projectRoot, options.filePath);
+    const absolutePath = resolveProjectPath(projectRoot, options.filePath, this.externalFileRoots);
     const stats = await this.fs.stat(absolutePath);
     if (!stats.isFile()) {
       throw new Error("IDE file read target is not a file");
@@ -128,7 +132,7 @@ export class IdeProjectService {
     const isBinary = isLikelyBinary(buffer);
     const tooLarge = buffer.byteLength > maxBytes;
     const content = isBinary || tooLarge ? undefined : buffer.toString("utf8");
-    const normalizedPath = toProtocolPath(path.relative(projectRoot, absolutePath));
+    const normalizedPath = toProtocolFilePath(projectRoot, absolutePath);
 
     return {
       projectId: options.projectId,
@@ -146,7 +150,7 @@ export class IdeProjectService {
 
   async writeFile(options: WriteIdeFileOptions): Promise<IdeFileRead> {
     const projectRoot = resolveProjectRoot(options.projectRoot);
-    const absolutePath = resolveProjectPath(projectRoot, options.filePath);
+    const absolutePath = resolveProjectPath(projectRoot, options.filePath, this.externalFileRoots);
     const stats = await this.fs.stat(absolutePath).catch(() => undefined);
     if (stats && !stats.isFile()) {
       throw new Error("IDE file write target is not a file");
@@ -235,17 +239,28 @@ export class IdeProjectService {
   }
 }
 
-export function resolveProjectPath(projectRootInput: string, inputPath: string) {
+export function resolveProjectPath(projectRootInput: string, inputPath: string, externalFileRoots: readonly string[] = []) {
   const projectRoot = resolveProjectRoot(projectRootInput);
   const normalizedInput = inputPath.replace(/\\/g, path.sep);
   const absolutePath = path.isAbsolute(normalizedInput)
     ? path.resolve(normalizedInput)
     : path.resolve(projectRoot, normalizedInput);
-  const relative = path.relative(projectRoot, absolutePath);
-  if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
+  if (isInsideResolvedPath(absolutePath, projectRoot)) {
+    return absolutePath;
+  }
+  if (path.isAbsolute(normalizedInput) && externalFileRoots.some((root) => isInsideResolvedPath(absolutePath, resolveProjectRoot(root)))) {
     return absolutePath;
   }
   throw new Error("IDE path is outside the active project");
+}
+
+function toProtocolFilePath(projectRoot: string, absolutePath: string) {
+  return toProtocolPath(isInsideResolvedPath(absolutePath, projectRoot) ? path.relative(projectRoot, absolutePath) : absolutePath);
+}
+
+function isInsideResolvedPath(candidatePath: string, rootPath: string) {
+  const relative = path.relative(rootPath, candidatePath);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 function resolveProjectRoot(projectRoot: string) {

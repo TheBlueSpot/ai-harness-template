@@ -117,6 +117,24 @@ describe("workspace repository", () => {
     expect(repository.getMemoryBankRecordRunsDefault()).toBe(false);
   });
 
+  test("defaults and persists background job approval policy", () => {
+    const repository = createRepository();
+
+    expect(repository.getBackgroundJobApprovalPolicyDefault()).toBe("ask-risky");
+    repository.setBackgroundJobApprovalPolicyDefault("allow-all");
+
+    expect(repository.getBackgroundJobApprovalPolicyDefault()).toBe("allow-all");
+  });
+
+  test("defaults and persists non-blocking assistant question auto-approval", () => {
+    const repository = createRepository();
+
+    expect(repository.getAssistantAutoApproveNonBlockingQuestionsDefault()).toBe(true);
+    repository.setAssistantAutoApproveNonBlockingQuestionsDefault(false);
+
+    expect(repository.getAssistantAutoApproveNonBlockingQuestionsDefault()).toBe(false);
+  });
+
   test("sorts and reorders memory entries by pinned state and priority", () => {
     const repository = createRepository();
     const project = addProject(repository);

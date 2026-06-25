@@ -44,6 +44,8 @@ test("adds coding todo when build-stage batch is docs-only", () => {
 
   expect(result[0]?.workKind).toBe("app-code");
   expect(result[0]?.description).toContain("Bun runtime");
+  expect(result[0]?.description).toContain("documentation comments for new functions and variables");
+  expect(result[0]?.workTarget).toContain("documentation comments for new functions and variables");
 });
 
 test("keeps coding todos before limited non-coding todos in build stage", () => {

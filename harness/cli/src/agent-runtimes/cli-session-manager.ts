@@ -16,6 +16,7 @@ const PTY_STALE_TIMEOUT_MS = 30_000;
 const PTY_STREAM_FLUSH_MS = 50;
 const PTY_STREAM_MAX_BUFFERED_BYTES = 8 * 1024;
 const PTY_SEND_QUEUE_CAP_BYTES = 256 * 1024;
+const CLI_SESSION_METADATA_THROTTLE_MS = 500;
 
 type SessionRecord = {
   runtime: AgentRuntime;
@@ -25,6 +26,8 @@ type SessionRecord = {
   attachedSocket?: Bun.ServerWebSocket<{ clientId: string; kind: "control" | "pty" | "terminal"; sessionId?: string }>;
   ptyHeartbeatTimer?: ReturnType<typeof setInterval>;
   lastPtyPongAt?: number;
+  metadataUpdateTimer?: ReturnType<typeof setTimeout>;
+  metadataUpdatePending?: boolean;
   terminalPumps?: Partial<Record<"stdout" | "stderr", StreamPump>>;
   stderrTail: string;
   visibleBuffer?: string;
@@ -163,6 +166,7 @@ export class CliSessionManager {
       return;
     }
 
+    this.cancelPendingSessionUpdate(record);
     record.session = {
       ...record.session,
       status: "stopped",
@@ -244,6 +248,7 @@ export class CliSessionManager {
     socket: Bun.ServerWebSocket<{ clientId: string; kind: "control" | "pty" | "terminal"; sessionId?: string }>;
   }) {
     const record = this.requireSession(input.sessionId);
+    this.cancelPendingSessionUpdate(record);
     record.attachedClientId = input.clientId;
     record.attachedSocket = input.socket;
     record.lastPtyPongAt = Date.now();
@@ -268,6 +273,7 @@ export class CliSessionManager {
       return;
     }
 
+    this.cancelPendingSessionUpdate(record);
     this.clearPtyTransport(record);
     record.session = {
       ...record.session,
@@ -357,13 +363,7 @@ export class CliSessionManager {
     if (stream === "stderr") {
       record.stderrTail = `${record.stderrTail}${new TextDecoder().decode(chunk)}`.slice(-32_000);
     }
-    this.options.runtimeStore.setProjectCliSession(record.session.projectId, record.session);
-    this.options.onSessionUpdated({
-      requestId: createRequestId(),
-      projectId: record.session.projectId,
-      threadId: record.session.threadId,
-      session: record.session
-    });
+    this.scheduleSessionUpdate(record);
 
     const socket = record.attachedSocket;
     if (!socket) {
@@ -380,6 +380,7 @@ export class CliSessionManager {
       return;
     }
 
+    this.cancelPendingSessionUpdate(record);
     const now = new Date().toISOString();
     record.session = {
       ...record.session,
@@ -403,6 +404,7 @@ export class CliSessionManager {
 
   private markWriteFailed(record: SessionRecord, error: unknown) {
     const now = new Date().toISOString();
+    this.cancelPendingSessionUpdate(record);
     this.clearPtyTransport(record);
     record.session = {
       ...record.session,
@@ -464,6 +466,39 @@ export class CliSessionManager {
       onFlush: (text) => this.sendTerminalFrame(record, stream, text)
     });
     return record.terminalPumps[stream];
+  }
+
+  private scheduleSessionUpdate(record: SessionRecord) {
+    record.metadataUpdatePending = true;
+    if (record.metadataUpdateTimer) {
+      return;
+    }
+    record.metadataUpdateTimer = setTimeout(() => {
+      record.metadataUpdateTimer = undefined;
+      if (!record.metadataUpdatePending) {
+        return;
+      }
+      record.metadataUpdatePending = false;
+      this.emitSessionUpdated(record);
+    }, CLI_SESSION_METADATA_THROTTLE_MS);
+  }
+
+  private cancelPendingSessionUpdate(record: SessionRecord) {
+    if (record.metadataUpdateTimer) {
+      clearTimeout(record.metadataUpdateTimer);
+      record.metadataUpdateTimer = undefined;
+    }
+    record.metadataUpdatePending = false;
+  }
+
+  private emitSessionUpdated(record: SessionRecord) {
+    this.options.runtimeStore.setProjectCliSession(record.session.projectId, record.session);
+    this.options.onSessionUpdated({
+      requestId: createRequestId(),
+      projectId: record.session.projectId,
+      threadId: record.session.threadId,
+      session: record.session
+    });
   }
 
   private sendTerminalFrame(record: SessionRecord, stream: "stdout" | "stderr", text: string) {

@@ -16,6 +16,9 @@ Last merged targeted reliability diagnostics and background ownership closeout: 
 Last merged working-tree branch scan: 2026-05-12.
 Last merged deep harness scan: 2026-06-01.
 Last merged targeted onboarding flow scan: 2026-06-15.
+Last merged targeted virtual-list first-paint scan: 2026-06-24.
+Last merged targeted chat file-link affordance scan: 2026-06-24.
+Last merged targeted assistant/background approval flow scan: 2026-06-25.
 
 Source of truth: [user-stories.md](user-stories.md), [coverage-matrix.md](coverage-matrix.md), [root README](../README.md), and harness implementation under [harness](../harness).
 
@@ -24,6 +27,10 @@ This review focuses on correctness gaps outside the expected happy path. It does
 Recent closeout note: assistant summary/detail loading now uses paged SQL-backed APIs, assistant bootstrap and reprioritize JSON is schema-validated with one repair attempt, background job deletion stops active runs before deleting durable rows, and the scheduler honors the assistant congestion-control preference. The remaining gaps below stay focused on broader assistant jobs paging, overlay behavior, lifecycle setup refresh, and non-assistant dense rendering.
 
 Virtualized transcript, trace, and sidebar lists now depend on responsive row measurement: dynamic-height rows must be allowed to grow and shrink after container reflow, while reverse lists must continue opening at the latest content and preserve browsing position when older rows load.
+
+Virtual-list first paint now has primitive-level browser coverage for real geometry, visibility, and scroll anchoring before and after tab switches. Keep extending it when app-specific tab surfaces add new virtualized panes.
+
+Project chat path linking now uses a shared modifier-click contract for rendered chat, tool, trace, assistant, and execution-log text. Future non-chat file path surfaces should reuse the same project-owned link adapter.
 
 ## Story To Code Map
 
@@ -409,6 +416,46 @@ Edge case: A user starts `Connect provider or runtime` before opening a project.
 
 Fix direction: Give tutorial steps completion predicates tied to setup checks or concrete UI actions. Treat missing-target finish as skipped, not completed, and keep help status derived from current setup state where the tutorial maps to a readiness requirement. Add tests that missing-target tutorials do not become completed and provider/runtime completion requires an agent-ready state.
 
+### CR-057: Virtualized lists can pass Happy DOM tests while first browser paint is blank or stale
+
+Stories: `US-THREADS-008`, `US-UI-015`, `US-UI-017`, `US-DEV-017`.
+
+Code map: [virtual list primitive](../harness/ui/src/components/primitives/virtual-list.tsx), [chat panel](../harness/ui/src/components/chat-panel.tsx), [assistant panel](../harness/ui/src/components/assistants-panel.tsx), [jobs panel](../harness/ui/src/components/background-jobs-panel.tsx), [trace panel](../harness/ui/src/components/trace-panel.tsx), [UI test harness](../harness/ui/src/utils/tests/test-harness.ts).
+
+Status: Closed at the primitive level. `VirtualList` now has a real-browser first-paint smoke that mounts reverse and forward lists, delays viewport height stabilization, asserts visible row geometry and anchoring before any tab remount, then repeats the checks after tab switches.
+
+Impact: Happy DOM tests prove that virtualized transcript, trace, assistant, jobs, and run-detail lists render expected rows in a stubbed DOM, but they do not prove real browser first paint. Happy DOM has no layout engine, and several tests stub scroll metrics or row rectangles. A list can therefore pass because fallback estimates produce DOM rows, while the real browser first mount can still render an empty, clipped, or stale scroll window until a tab switch remounts or remeasures it.
+
+Edge case: A user opens a tab whose active pane contains a virtual list. The pane mounts before its flex/grid height and row geometry are stable, so the virtualizer calculates the wrong visible window or scroll anchor. Switching away and back remounts the pane after layout has settled, making the content appear and hiding the first-load defect.
+
+Fix direction: Keep the primitive browser smoke as the required guard for virtualization behavior. Extend it to full chat transcript, memory/events, assistant detail, jobs/runs, and trace surfaces if a surface adds custom wrappers, scroll ownership, or anchoring rules that the primitive fixture no longer represents.
+
+### CR-058: Closed - project chat file paths share one modifier-click contract
+
+Stories: `US-UI-010`, `US-UI-022`, `US-THREADS-008`, `US-RUNS-009`.
+
+Code map: [chat file-link parser](../harness/ui/src/lib/chat-file-links.ts), [markdown renderer](../harness/ui/src/components/markdown-content.tsx), [project chat panel](../harness/ui/src/components/chat-panel.tsx), [assistant panel](../harness/ui/src/components/assistants-panel.tsx), [streamed tool block](../harness/ui/src/components/streamed-tool-block.tsx), [jobs panel](../harness/ui/src/components/background-jobs-panel.tsx), [trace panel](../harness/ui/src/components/trace-panel.tsx), [execution plan dialog](../harness/ui/src/components/execution-plan-dialog.tsx), [IDE store](../harness/ui/src/ide/ide-store.ts).
+
+Status: Closed for rendered project chat, assistant chat, assistant memory/todos/questions/learnings/logs, background job run events/details, streamed tool rows/details, trace summaries/peek/tool/browser rows, execution plan text, and execution-log rows/details. File references use primary-color underlined link styling with pointer cursor and open the IDE on Ctrl/Meta-click.
+
+Remaining watch item: keep future path-bearing surfaces, such as new inspector cards and experiment diff sidebars, on the same project-owned file-link adapter instead of adding local path parsing.
+
+Test coverage now includes known root-level files, log rows, tool rows, markdown content, assistant/background path surfaces, and IDE-open modifier-click behavior.
+
+### CR-059: Background approval, input, and browser gates collapse into one unclear stop
+
+Stories: `US-ASSISTANTS-001`, `US-ASSISTANTS-002`, `US-JOBS-001`, `US-JOBS-002`, `US-JOBS-003`, `US-RUNS-013`, `US-BROWSER-001`, `US-NOTIFICATIONS-001`.
+
+Code map: [scheduler](../harness/cli/src/background-job-scheduler.ts), [background executor](../harness/cli/src/background-job-executor.ts), [server lifecycle](../harness/cli/src/server.ts), [jobs panel](../harness/ui/src/components/background-jobs-panel.tsx), [notification inbox](../harness/ui/src/components/notification-inbox.tsx), [run navigation](../harness/ui/src/background-run-navigation.ts), [preferences](../harness/ui/src/components/preferences-modal.tsx).
+
+Impact: The background approval preference only controls scheduled and startup launch approval. Manual run-now already queues as approved, and background AI jobs execute after planning. Other stops still exist: assistant or planner input, browser per-tool approval, global pause, assistant pause, and circuit breaker. The UI then routes `awaiting-user-input` into the `approval` run filter, shows both launch approval and input with similar amber treatment, and makes launch approval notifications noninteractive while browser approval notifications are actionable inline.
+
+Edge case: A user sets background approval to allow all, an assistant-owned job runs, then the planner asks for missing input or a browser step needs approval. The Jobs pane or toast still feels like "approval required" without showing which gate stopped the run, why the auto-run setting did not apply, or the smallest next action.
+
+Fix direction: Replace the single approval bucket with a typed intervention model such as launch approval, user input, browser permission, pause, circuit breaker, and failure. Every stop should carry `why`, `scope`, `risk`, `affected job/run`, `blocking setting`, and `next action`. Make background-run launch approvals interactive in the inbox, split filters into Approval and Input, and add a local "why did this stop?" explanation surfaced from the same backend state used by guards.
+
+Partial closeout note: non-blocking assistant questions now have an explicit auto-approval preference. The broader typed intervention model remains open for launch approvals, input lanes, browser permissions, pause, circuit breaker, and failure readback.
+
 ## Critical Duplicate Logic To Extract
 
 1. Project lifecycle and setup refresh path.
@@ -446,6 +493,14 @@ Provider brand, model ids, cached attachment content, and credential changes nee
 9. Stream and dense-render budgets.
 
 Terminal, CLI session, markdown, tool activity, assistant logs, and sidebar lists each enforce caps differently. Extract shared cadence, row-window, copy-export, and redaction budgets so large hidden data does not still load or render eagerly.
+
+10. Project file-link ownership.
+
+Chat, assistant, trace, terminal, IDE, and experiment-review surfaces each resolve or display local paths differently. Extract one project-owned file-link adapter that covers detection, visible affordance, click behavior, and IDE open target so relative path links do not drift by surface.
+
+11. Intervention reason ownership.
+
+Launch approvals, planning questions, assistant questions, browser permissions, global pause, circuit breakers, and failed background runs each shape their own status text and UI bucket. Extract one shared intervention descriptor so notifications, filters, detail panes, toasts, and backend rejection messages all explain the same stop with the same action.
 
 ## Coverage Priorities
 
@@ -497,7 +552,10 @@ Use [coverage-matrix.md](coverage-matrix.md) as the baseline. Highest-value addi
 44. `US-WORKSPACE-005`, `US-ACTIVATION-003`, and `US-ACTIVATION-006`: assert final-project removal emits fresh setup state with `project-selected` action-required, and that project add, activate, and remove keep setup and workspace state paired.
 45. `US-ACTIVATION-003` and `US-UI-017`: prove setup checklist hide behavior is either unavailable while blockers force display or persists until the next setup-version change.
 46. `US-ACTIVATION-004` and `US-ACTIVATION-007`: prove tutorial completion cannot be recorded while the target is missing or the mapped setup check remains unresolved.
+47. `US-THREADS-008`, `US-UI-015`, `US-UI-017`, and `US-DEV-017`: keep browser-backed first-paint virtual-list coverage current when tab-mounted transcript, assistant, jobs, runs, memory, or trace wrappers diverge from the primitive fixture.
+48. `US-UI-010`, `US-UI-022`, `US-THREADS-008`, and `US-RUNS-009`: keep browser coverage for Ctrl/Meta-click IDE open from transcript, streamed tool, trace, log, and assistant-chat surfaces with pointer affordance and project-owned target scope.
+49. `US-ASSISTANTS-001`, `US-JOBS-002`, `US-RUNS-013`, and `US-BROWSER-001`: prove allow-all background launch policy does not suppress required planner, assistant, or browser interventions, and prove each intervention renders with a distinct reason, inline action, and matching backend rejection rule.
 
 ## Bottom Line
 
-Happy-path flow is broad and mostly wired. The highest remaining correctness risk is now in lifecycle command authority, active background ownership during destructive operations, onboarding readiness drift, BranchFS and IDE path trust, debug artifact redaction, provider/cache identity, draft acknowledgement, browser approval ownership, terminal stream pressure, dense UI load budgets, and overlay or button primitives in newer IDE/terminal surfaces.
+Happy-path flow is broad and mostly wired. The highest remaining correctness risk is now in lifecycle command authority, active background ownership during destructive operations, unclear intervention reasons for assistant/background work, onboarding readiness drift, BranchFS and IDE path trust, debug artifact redaction, provider/cache identity, draft acknowledgement, browser approval ownership, terminal stream pressure, dense UI load budgets, app-specific virtualized layout drift, and overlay or button primitives in newer IDE/terminal surfaces.

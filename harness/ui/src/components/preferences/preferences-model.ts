@@ -1,5 +1,5 @@
 import type { Component } from "solid-js";
-import { Bell, Bot, BriefcaseBusiness, Code2, Keyboard, MonitorCog, Palette, ShieldCheck } from "lucide-solid";
+import { Bell, Bot, BriefcaseBusiness, Code2, Gauge, Keyboard, MonitorCog, Palette, ShieldCheck } from "lucide-solid";
 
 export type PreferencesSectionId =
   | "general-ui"
@@ -8,6 +8,7 @@ export type PreferencesSectionId =
   | "ai-providers"
   | "safety-guardrails"
   | "workspace-memory"
+  | "usage"
   | "background-jobs"
   | "developer-advanced";
 
@@ -26,6 +27,7 @@ export type PreferencesSettingId =
   | "workspace-context"
   | "memory-bank"
   | "auto-archive"
+  | "token-usage"
   | "job-defaults"
   | "assistant-job-controls"
   | "jobs-view"
@@ -86,6 +88,12 @@ export const preferencesSections: PreferencesSectionMeta[] = [
     icon: BriefcaseBusiness
   },
   {
+    id: "usage",
+    label: "Usage",
+    description: "Session and lifetime token totals.",
+    icon: Gauge
+  },
+  {
     id: "background-jobs",
     label: "Background Jobs",
     description: "Job approvals, notifications, view defaults.",
@@ -104,8 +112,8 @@ export const preferencesSettings: PreferencesSettingMeta[] = [
     id: "appearance-density",
     sectionId: "general-ui",
     title: "Appearance and density",
-    description: "Warm cream palette and compact workspace density.",
-    keywords: ["theme", "cream", "density", "appearance"]
+    description: "Themes, light and dark mode, custom colors, fonts, and compact density.",
+    keywords: ["theme", "custom", "light", "dark", "system", "font", "color", "density", "appearance"]
   },
   {
     id: "navigation-sidebar",
@@ -197,6 +205,13 @@ export const preferencesSettings: PreferencesSettingMeta[] = [
     title: "Auto-archive",
     description: "Default archive behavior for completed threads.",
     keywords: ["archive", "completed", "threads"]
+  },
+  {
+    id: "token-usage",
+    sectionId: "usage",
+    title: "Token usage",
+    description: "Current session and lifetime token totals, including cached input.",
+    keywords: ["usage", "token", "tokens", "cached", "cache", "lifetime", "session", "cost"]
   },
   {
     id: "job-defaults",

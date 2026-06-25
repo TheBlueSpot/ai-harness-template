@@ -4,15 +4,35 @@ import { harnessStore, type HarnessViewState, type JobsRunFilter } from "./harne
 export function openBackgroundRunInJobsPane(state: HarnessViewState, runId: string, jobId?: string) {
   const run = state.backgroundJobs.runs.find((entry) => entry.id === runId);
   const runFilter = getBackgroundRunFilter(run);
-  harnessStore.setActiveSurface("background-jobs");
+  harnessStore.setActiveLeftTab("runs");
   harnessStore.closeBackgroundJobDetailsDialog();
   if (runFilter) {
     harnessStore.setJobsRunFilter(runFilter);
   }
   harnessStore.setJobsPanePreferences({
     segment: "inbox",
+    runSearch: "",
     selectedRunId: runId,
     selectedJobId: jobId ?? run?.jobId,
+    selectedNotificationId: undefined
+  });
+}
+
+export function openBackgroundJobInJobsPane(state: HarnessViewState, jobId: string) {
+  const job = state.backgroundJobs.jobs.find((entry) => entry.id === jobId);
+  harnessStore.setActiveLeftTab("jobs");
+  harnessStore.closeBackgroundJobDetailsDialog();
+  harnessStore.setJobsPanePreferences({
+    segment: "jobs",
+    jobSearch: "",
+    projectId: job?.projectId,
+    assistantId: job?.assistantId,
+    kind: undefined,
+    status: undefined,
+    jobState: "all",
+    risk: undefined,
+    selectedJobId: jobId,
+    selectedRunId: undefined,
     selectedNotificationId: undefined
   });
 }

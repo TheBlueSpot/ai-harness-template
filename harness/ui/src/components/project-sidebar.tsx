@@ -604,9 +604,9 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
         classList={{
           "opacity-80": sortable.isDragging,
           "shadow-lg": sortable.isDragging,
-          "border-teal-500/45 bg-[linear-gradient(135deg,rgba(15,118,110,0.12),rgba(255,255,255,0.86))] shadow-sm": isActiveProject(),
+          "border-(--accent) theme-selected-surface shadow-sm": isActiveProject(),
           "border-(--border)": !isActiveProject(),
-          "bg-white/60 hover:border-slate-400/30 hover:bg-white/75": !isActiveProject()
+          "bg-white/60 hover:border-(--accent) hover:bg-white/75": !isActiveProject()
         }}
         ref={sortable.ref}
         style={sortable.style}
@@ -672,7 +672,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
                 <span>{project.threadCount} threads</span>
                 {project.isStreaming ? <span>streaming</span> : null}
                 {isActiveProject() ? (
-                  <span class="rounded-full bg-teal-600 px-1.5 py-0.5 text-[0.48rem] font-semibold uppercase tracking-[0.1em] text-white">
+                  <span class="rounded-full bg-(--accent) px-1.5 py-0.5 text-[0.48rem] font-semibold uppercase tracking-[0.1em] text-(--accent-foreground)">
                     Active
                   </span>
                 ) : null}
@@ -726,7 +726,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
 
     function clearDeleteArmed() {
       setDeleteArmed(false);
-      deleteButton?.classList.remove("text-rose-600", "hover:bg-rose-50");
+      deleteButton?.classList.remove("text-(--danger)", "hover:bg-(--panel)");
       deleteButton?.classList.add("text-(--foreground)");
       if (deleteArmedTimeout) {
         clearTimeout(deleteArmedTimeout);
@@ -747,7 +747,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
 
       setDeleteArmed(true);
       deleteButton?.classList.remove("text-(--foreground)");
-      deleteButton?.classList.add("text-rose-600", "hover:bg-rose-50");
+      deleteButton?.classList.add("text-(--danger)", "hover:bg-(--panel)");
       deleteArmedTimeout = setTimeout(clearDeleteArmed, 2000);
     }
 
@@ -759,7 +759,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
         label: thread.pinned ? "Unpin" : "Pin",
         tooltip: thread.pinned ? "Unpins thread so it can be archived." : "Pins thread, making it immune to archiving.",
         icon: <Pin class="h-3 w-3" fill={thread.pinned ? "currentColor" : "none"} />,
-        classList: { "text-teal-700": thread.pinned },
+        classList: { "text-(--accent-strong)": thread.pinned },
         onClick: () => handlePinThread(project.id, thread.id, !thread.pinned)
       },
       {
@@ -785,8 +785,8 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
         icon: <Trash2 class="h-3 w-3" />,
         class: "text-(--foreground)",
         classList: {
-          "text-rose-600": deleteArmed(),
-          "hover:bg-rose-50": deleteArmed()
+          "text-(--danger)": deleteArmed(),
+          "hover:bg-(--panel)": deleteArmed()
         },
         onClick: handleDeleteClick
       },
@@ -805,7 +805,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
         data-thread-id={thread.id}
         class="group/thread relative overflow-hidden rounded-lg border px-2.5 py-2 transition"
         classList={{
-          "border-teal-500/45 bg-white/90 shadow-sm": isActiveThread(),
+          "border-(--accent) bg-(--panel-strong) shadow-sm": isActiveThread(),
           "border-(--border)": !isActiveThread(),
           "bg-white/60 hover:bg-white/75": !isActiveThread()
         }}
@@ -1074,7 +1074,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
                     type="button"
                     class="flex w-full flex-col gap-1 px-3 py-2 text-left text-[0.675rem]"
                     classList={{
-                      "bg-teal-50": projectChatSearchIndex() === index(),
+                      "bg-(--panel-strong) ring-1 ring-(--ring)": projectChatSearchIndex() === index(),
                       "text-(--foreground)": projectChatSearchIndex() === index(),
                       "text-(--muted)": projectChatSearchIndex() !== index()
                     }}

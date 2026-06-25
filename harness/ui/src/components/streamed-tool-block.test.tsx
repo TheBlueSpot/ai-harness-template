@@ -1,6 +1,6 @@
 /** @jsxImportSource solid-js */
 import { expect, it } from "bun:test";
-import { render, screen } from "@solidjs/testing-library";
+import { fireEvent, render, screen } from "@solidjs/testing-library";
 import type { ExecutionToolActivity } from "../../../shared/protocol";
 import type { TimelineToolBlock } from "../lib/chat-timeline-model";
 import { formatShortTimestamp } from "../lib/time-format";
@@ -51,6 +51,29 @@ createUiTest("StreamedToolBlock", () => {
 
     expect(screen.getByRole("button", { name: /echo long command/ })).not.toBeNull();
     expect(screen.getByRole("button", { name: "Copy tool calls" })).not.toBeNull();
+  });
+
+  it("formats file references and opens them on modifier click", () => {
+    const opened: unknown[] = [];
+    render(() => (
+      <StreamedToolBlock
+        block={block([activity("tool-1", "cat harness/ui/src/app.tsx:12")])}
+        fileLinks={{
+          rootPath: "C:\\repo",
+          filePaths: ["harness/ui/src/app.tsx"],
+          onOpenFile: (target) => opened.push(target)
+        }}
+      />
+    ));
+
+    const fileLink = screen.getByRole("button", { name: "harness/ui/src/app.tsx:12" });
+    expect(fileLink.className).toContain("markdown-file-link");
+
+    fireEvent.click(fileLink);
+    expect(opened).toEqual([]);
+
+    fireEvent.click(fileLink, { metaKey: true });
+    expect(opened).toEqual([{ path: "harness/ui/src/app.tsx", line: 12, column: undefined }]);
   });
 
   it("labels copied raw details as sanitized and redacted", () => {

@@ -15,6 +15,9 @@ export type TerminalUiState = {
   shells: TerminalShell[];
   sessions: TerminalSession[];
   outputBySessionId: Record<string, string>;
+  outputDeltaBySessionId: Record<string, string>;
+  outputVersionBySessionId: Record<string, number>;
+  outputResetVersionBySessionId: Record<string, number>;
   connectedBySessionId: Record<string, boolean>;
   preferences: TerminalPreferences;
   layout?: TerminalPaneLayout;
@@ -38,6 +41,9 @@ function createInitialTerminalState(): TerminalUiState {
     shells: [],
     sessions: [],
     outputBySessionId: {},
+    outputDeltaBySessionId: {},
+    outputVersionBySessionId: {},
+    outputResetVersionBySessionId: {},
     connectedBySessionId: {},
     preferences: defaultPreferences,
     focusedSessionId: undefined,
@@ -70,10 +76,17 @@ function createTerminalStore() {
     },
     appendOutput(sessionId: string, text: string) {
       const limit = Math.max(100_000, state.preferences.scrollbackLimit * 160);
-      setState("outputBySessionId", sessionId, `${state.outputBySessionId[sessionId] ?? ""}${text}`.slice(-limit));
+      const combined = `${state.outputBySessionId[sessionId] ?? ""}${text}`;
+      const nextOutput = combined.slice(-limit);
+      setState("outputBySessionId", sessionId, nextOutput);
+      setState("outputDeltaBySessionId", sessionId, text);
+      setState("outputVersionBySessionId", sessionId, (state.outputVersionBySessionId[sessionId] ?? 0) + 1);
     },
     replaceOutput(sessionId: string, text: string) {
       setState("outputBySessionId", sessionId, text);
+      setState("outputDeltaBySessionId", sessionId, "");
+      setState("outputVersionBySessionId", sessionId, (state.outputVersionBySessionId[sessionId] ?? 0) + 1);
+      setState("outputResetVersionBySessionId", sessionId, (state.outputResetVersionBySessionId[sessionId] ?? 0) + 1);
     },
     setConnected(sessionId: string, connected: boolean) {
       setState("connectedBySessionId", sessionId, connected);

@@ -102,6 +102,17 @@ describe("assistant question policy", () => {
     expect(decision.category).toBe("access-environment");
   });
 
+  test("asks default nonblocking questions when auto-approval is disabled", () => {
+    const decision = evaluateAssistantQuestionPolicy({
+      prompt: "Should I keep going with a reasonable default?",
+      questions: [],
+      autoApproveNonBlocking: false
+    });
+
+    expect(decision.kind).toBe("ask");
+    expect(decision.reason).toContain("Auto-approval");
+  });
+
   test("asks for schedules and multiple row selection", () => {
     expect(
       evaluateAssistantQuestionPolicy({

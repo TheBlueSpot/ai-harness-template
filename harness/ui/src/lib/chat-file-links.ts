@@ -16,7 +16,7 @@ export type ChatFileReference = {
   target: ChatFileTarget;
 };
 
-const pathReferencePattern = /@?(?:(?:[A-Za-z]:[\\/]|\.{1,2}[\\/]|\/|[A-Za-z0-9_.-]+[\\/])(?:[^\s"'<>`|{}[\]:]+[\\/]?)+)(?::\d+(?::\d+)?)?/g;
+const pathReferencePattern = /@?(?:(?:[A-Za-z]:[\\/]|\.{1,2}[\\/]|\/|[A-Za-z0-9_.-]+[\\/])(?:[^\s"'<>`|{}[\]:]+[\\/]?)+|[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,16})(?::\d+(?::\d+)?)?/g;
 
 export function resolveChatFileTarget(reference: string | undefined, context: ChatFileLinkContext = {}): ChatFileTarget | undefined {
   const parsed = parseChatFileReference(reference);
@@ -91,15 +91,14 @@ function parseChatFileReference(reference: string | undefined) {
     }
   }
 
-  if (/^[a-z][a-z0-9+.-]*:/i.test(value) && !/^[A-Za-z]:[\\/]/.test(value)) {
-    return undefined;
-  }
-
   const locationMatch = value.match(/:(\d+)(?::(\d+))?$/);
   const line = locationMatch ? Number(locationMatch[1]) : undefined;
   const column = locationMatch?.[2] ? Number(locationMatch[2]) : undefined;
   const path = locationMatch ? value.slice(0, locationMatch.index) : value;
   if (!path.trim()) {
+    return undefined;
+  }
+  if (/^[a-z][a-z0-9+.-]*:/i.test(path) && !/^[A-Za-z]:[\\/]/.test(path)) {
     return undefined;
   }
 

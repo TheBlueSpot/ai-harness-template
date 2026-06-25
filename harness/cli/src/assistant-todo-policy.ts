@@ -10,7 +10,8 @@ export type AssistantTodoDraft = {
 export type NormalizedAssistantTodoDraft = Required<Pick<AssistantTodoDraft, "title" | "workKind">> &
   Pick<AssistantTodoDraft, "description" | "workTarget">;
 
-const DEFAULT_STACK_TARGET = "TypeScript Bun app with bun test, bun:sqlite when persistence is needed, SolidJS + Tailwind UI when needed, and Happy DOM UI tests";
+const DEFAULT_STACK_TARGET =
+  "TypeScript Bun app with bun test, bun:sqlite when persistence is needed, SolidJS + Tailwind UI when needed, Happy DOM UI tests, and useful documentation comments for new functions and variables";
 
 export function inferAssistantTodoWorkKind(title: string, description?: string): AssistantTodo["workKind"] {
   const text = `${title} ${description ?? ""}`.toLowerCase();
@@ -82,7 +83,7 @@ export function buildDefaultCodingTodoDraft(
   return {
     title: "Build the smallest usable TypeScript project behavior",
     description:
-      "Create or update real project files before adding more docs. Default to Bun runtime, bun test, bun:sqlite when persistence is needed, SolidJS + Tailwind when UI is needed, and Happy DOM for frontend tests.",
+      "Create or update real project files before adding more docs. Default to Bun runtime, bun test, bun:sqlite when persistence is needed, SolidJS + Tailwind when UI is needed, Happy DOM for frontend tests, and useful documentation comments for new functions and variables.",
     workKind: "app-code",
     workTarget: target
   };

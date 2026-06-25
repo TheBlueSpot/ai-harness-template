@@ -187,12 +187,11 @@ export function PasswordKeyInput(props: {
         <span
           class="rounded-lg border px-2 py-1"
           classList={{
-            "border-teal-200": props.testStatus === "ready",
-            "bg-teal-50": props.testStatus === "ready",
-            "text-teal-900": props.testStatus === "ready",
-            "border-rose-200": props.testStatus === "failed",
-            "bg-rose-50": props.testStatus === "failed",
-            "text-rose-900": props.testStatus === "failed",
+            "border-(--success)": props.testStatus === "ready",
+            "text-(--success-strong)": props.testStatus === "ready",
+            "border-(--danger)": props.testStatus === "failed",
+            "text-(--danger-strong)": props.testStatus === "failed",
+            "bg-(--panel)": props.testStatus === "ready" || props.testStatus === "failed",
             "border-(--border)": props.testStatus !== "ready" && props.testStatus !== "failed",
             "bg-white/60": props.testStatus !== "ready" && props.testStatus !== "failed",
             "text-(--muted)": props.testStatus !== "ready" && props.testStatus !== "failed"

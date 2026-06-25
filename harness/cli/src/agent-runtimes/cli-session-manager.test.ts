@@ -166,4 +166,54 @@ describe("CLI session manager", () => {
       sessionId: session.id
     });
   });
+
+  test("coalesces hot-output metadata updates", async () => {
+    const { runtimeStore, project } = createRuntimeStore();
+    const updated: unknown[] = [];
+    const manager = new CliSessionManager({
+      runtimeStore,
+      onSessionStarted() {},
+      onSessionUpdated(input) {
+        updated.push(input);
+      },
+      onSessionExited() {},
+      onAttachReady() {}
+    });
+    const hotRuntime = {
+      ...runtime,
+      buildInteractiveLaunch() {
+        return {
+          cmd: [
+            process.execPath,
+            "-e",
+            "let i=0;const t=setInterval(()=>{process.stdout.write(String(i++));if(i===5)clearInterval(t);},20);setTimeout(()=>{},30000)"
+          ]
+        };
+      }
+    } satisfies AgentRuntime;
+
+    const session = await manager.startSession({
+      requestId: "req-hot-start",
+      projectId: project.id,
+      threadId: project.activeThreadId,
+      agentRuntime: hotRuntime,
+      cwd: project.rootPath,
+      cols: 80,
+      rows: 24,
+      clientId: "client-1"
+    });
+
+    await delay(800);
+    expect(updated).toHaveLength(1);
+
+    await manager.stopSession({
+      projectId: project.id,
+      threadId: project.activeThreadId,
+      sessionId: session.id
+    });
+  });
 });
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}

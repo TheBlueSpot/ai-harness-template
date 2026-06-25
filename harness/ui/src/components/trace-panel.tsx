@@ -1,6 +1,8 @@
 import { createMemo, createSignal, For, Show } from "solid-js";
 import { createRequestId, type AgentRunState, type BackgroundJob, type BackgroundJobRun, type ExecutionToolActivity } from "../../../shared/protocol";
 import { getActiveProject, harnessStore } from "../harness-store";
+import type { ChatFileTarget } from "../lib/chat-file-links";
+import { openIdeWindow } from "../lib/ide-window";
 import { getLatestTaskStatusText, getRunRefreshState, getVisibleProjectTraces, isRunWorking } from "../lib/run-status";
 import { formatShortTimestamp } from "../lib/time-format";
 import {
@@ -13,6 +15,7 @@ import {
   resolveTracePanelEntity
 } from "../lib/trace-panel-model";
 import { ActionButton } from "./action-button";
+import { FileLinkedText, type FileLinkConfig } from "./file-linked-text";
 import { CopyTextButton } from "./primitives/copy-text-button";
 import { ExecutionLog } from "./primitives/execution-log";
 import { MarkdownContent } from "./markdown-content";
@@ -57,6 +60,24 @@ export function TracePanel() {
   const runningCounts = createMemo(() => getTracePanelRunningCounts(state, traceEntity()));
   const activeProject = () => threadSnapshot()?.project ?? getActiveProject(state);
   const threadProject = () => threadSnapshot()?.project;
+  const fileLinkProject = createMemo(() => {
+    const project = threadProject();
+    if (project) {
+      return project;
+    }
+    const projectId = assistantSnapshot()?.assistant.projectId ?? jobSnapshot()?.job.projectId;
+    return projectId ? state.workspace.projects.find((entry) => entry.id === projectId) : undefined;
+  });
+  const traceFileLinks = (): FileLinkConfig | undefined => {
+    const project = fileLinkProject();
+    return project
+      ? {
+          rootPath: project.rootPath,
+          filePaths: project.filePaths ?? [],
+          onOpenFile: handleOpenTraceFile
+        }
+      : undefined;
+  };
   const executionPaused = () => state.executionControl.isPaused;
   const executionPauseReason = "Global execution pause is active";
   const runToShow = () => threadSnapshot()?.runToShow;
@@ -190,6 +211,15 @@ export function TracePanel() {
     });
   }
 
+  function handleOpenTraceFile(target: ChatFileTarget) {
+    const project = fileLinkProject();
+    if (!project) {
+      return;
+    }
+    openIdeWindow({ projectId: project.id, threadId: project.activeThreadId });
+    harnessStore.openIdeFile(target.path, target.line, target.column);
+  }
+
   function handleAssistantJobKeyDown(event: KeyboardEvent, jobId: string) {
     if (event.key !== "Enter" && event.key !== " ") {
       return;
@@ -221,6 +251,7 @@ export function TracePanel() {
         job={jobSnapshot()?.job}
         jobRun={jobSnapshot()?.run}
         jobRunCount={jobSnapshot()?.runs.length}
+        fileLinks={traceFileLinks()}
       />
 
       <Show
@@ -276,7 +307,7 @@ export function TracePanel() {
                   </div>
                   <section class="flex min-h-0 flex-1 flex-col rounded-3xl border border-(--border) bg-white/55 p-3">
                     <div class="mb-3 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Execution log</div>
-                    <ExecutionLog entries={executionLogEntries()} emptyMessage="No execution log yet." />
+                    <ExecutionLog entries={executionLogEntries()} emptyMessage="No execution log yet." fileLinks={traceFileLinks()} />
                   </section>
                 </div>
               )}
@@ -286,7 +317,7 @@ export function TracePanel() {
                 <div class="flex min-h-0 flex-1 flex-col gap-4">
                   <section class="flex min-h-0 flex-1 flex-col rounded-3xl border border-(--border) bg-white/55 p-3">
                     <div class="mb-3 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Execution log</div>
-                    <ExecutionLog entries={executionLogEntries()} emptyMessage="No execution log yet." />
+                    <ExecutionLog entries={executionLogEntries()} emptyMessage="No execution log yet." fileLinks={traceFileLinks()} />
                   </section>
                 </div>
               )}
@@ -376,10 +407,16 @@ export function TracePanel() {
                   <div>Retryable: {runToShow()?.retryable ? "yes" : "no"}</div>
                   <div>Resumable: {runToShow()?.resumable ? "yes" : "no"}</div>
                   <Tooltip content={runToShow()?.latestUserPrompt} triggerClass="block min-w-0">
-                    <div class="truncate">Prompt: {runToShow()?.latestUserPrompt}</div>
+                    <div class="truncate">
+                      <FileLinkedText text={() => `Prompt: ${runToShow()?.latestUserPrompt ?? ""}`} fileLinks={traceFileLinks()} />
+                    </div>
                   </Tooltip>
                   <Show when={runToShow()?.failureMessage}>
-                    <div class="wrap-anywhere">Failure: {runToShow()?.failureMessage}</div>
+                    {(failure) => (
+                      <div class="wrap-anywhere">
+                        <FileLinkedText text={`Failure: ${failure()}`} fileLinks={traceFileLinks()} />
+                      </div>
+                    )}
                   </Show>
                 </div>
 
@@ -405,13 +442,15 @@ export function TracePanel() {
                               <span class="flex min-w-0 flex-1 items-center gap-2 font-semibold">
                                 <TaskStatusIcon status={task.status} />
                                 <Tooltip content={task.title} triggerClass="min-w-0 flex-1">
-                                  <span class="block truncate">{task.title}</span>
+                                  <FileLinkedText class="block truncate" text={task.title} fileLinks={traceFileLinks()} />
                                 </Tooltip>
                               </span>
                               <span class="shrink-0 uppercase tracking-[0.14em] text-(--accent-strong)">{task.status}</span>
                             </div>
                             <div class="mt-1 text-(--muted)">Attempts: {task.attemptCount}</div>
-                            <div class="mt-1 text-(--muted)">Latest status: {getLatestTaskStatusText(project(), task)}</div>
+                            <div class="mt-1 text-(--muted)">
+                              <FileLinkedText text={() => `Latest status: ${getLatestTaskStatusText(project(), task)}`} fileLinks={traceFileLinks()} />
+                            </div>
                             <Show when={task.startedAt}>
                               <div class="mt-1 text-(--muted)">Started: {formatShortTimestamp(task.startedAt)}</div>
                             </Show>
@@ -449,7 +488,7 @@ export function TracePanel() {
                               </Show>
                             </div>
                             <Show when={task.errorMessage}>
-                              <MarkdownContent content={() => task.errorMessage ?? ""} class="mt-1" size="compact" tone="danger" />
+                              <MarkdownContent content={() => task.errorMessage ?? ""} class="mt-1" size="compact" tone="danger" fileLinks={traceFileLinks()} />
                             </Show>
                           </div>
                       )}
@@ -491,22 +530,22 @@ export function TracePanel() {
                         </div>
                         <Show when={activity.command}>
                           <div class="mt-2 truncate rounded-xl bg-slate-950/5 px-2 py-1 font-mono text-[0.62rem] text-(--foreground)">
-                            {activity.command}
+                            <FileLinkedText text={activity.command ?? ""} fileLinks={traceFileLinks()} />
                           </div>
                         </Show>
                         <Show when={activity.outputPreview}>
-                          <MarkdownContent content={() => activity.outputPreview ?? ""} class="mt-2" size="compact" tone={activity.status === "failed" ? "danger" : "muted"} />
+                          <MarkdownContent content={() => activity.outputPreview ?? ""} class="mt-2" size="compact" tone={activity.status === "failed" ? "danger" : "muted"} fileLinks={traceFileLinks()} />
                         </Show>
                         <Show when={expandedToolActivityId() === activity.id}>
                           <div class="mt-2 space-y-2 rounded-xl border border-(--border) bg-white/80 p-2">
                             <Show when={activity.argsSummary}>
-                              <MarkdownContent content={() => `Args: ${activity.argsSummary}`} size="compact" tone="muted" />
+                              <MarkdownContent content={() => `Args: ${activity.argsSummary}`} size="compact" tone="muted" fileLinks={traceFileLinks()} />
                             </Show>
                             <Show when={activity.stdoutPreview}>
-                              <MarkdownContent content={() => `Stdout: ${activity.stdoutPreview}`} size="compact" />
+                              <MarkdownContent content={() => `Stdout: ${activity.stdoutPreview}`} size="compact" fileLinks={traceFileLinks()} />
                             </Show>
                             <Show when={activity.stderrPreview}>
-                              <MarkdownContent content={() => `Stderr: ${activity.stderrPreview}`} size="compact" tone="danger" />
+                              <MarkdownContent content={() => `Stderr: ${activity.stderrPreview}`} size="compact" tone="danger" fileLinks={traceFileLinks()} />
                             </Show>
                           </div>
                         </Show>
@@ -569,9 +608,15 @@ export function TracePanel() {
                           {(approval) => (
                             <div class="mt-3 rounded-xl border border-amber-300/70 bg-amber-50/80 p-3">
                               <div class="font-semibold text-amber-900">Approval needed</div>
-                              <div class="mt-1 text-amber-900/80">{approval().label}</div>
+                              <div class="mt-1 text-amber-900/80">
+                                <FileLinkedText text={approval().label} fileLinks={traceFileLinks()} />
+                              </div>
                               <Show when={approval().inputSummary}>
-                                <div class="mt-1 whitespace-pre-wrap text-amber-900/70">{approval().inputSummary}</div>
+                                {(summary) => (
+                                  <div class="mt-1 whitespace-pre-wrap text-amber-900/70">
+                                    <FileLinkedText text={summary()} fileLinks={traceFileLinks()} />
+                                  </div>
+                                )}
                               </Show>
                               <div class="mt-3 flex flex-wrap gap-2">
                                 <ActionButton
@@ -605,19 +650,25 @@ export function TracePanel() {
                               <Show when={activity.approval?.status !== "deferred"}>
                                 <div class="rounded-xl border border-(--border) bg-white/80 p-3">
                                   <div class="flex items-center justify-between gap-3 text-(--foreground)">
-                                    <span class="font-semibold">{activity.label}</span>
+                                    <span class="font-semibold">
+                                      <FileLinkedText text={activity.label} fileLinks={traceFileLinks()} />
+                                    </span>
                                     <span class="uppercase tracking-[0.14em] text-(--muted)">{activity.status}</span>
                                   </div>
                                   <div class="mt-1 text-(--muted)">
                                     {activity.toolName} | {activity.kind}
                                   </div>
                                   <Show when={activity.outputSummary}>
-                                    <MarkdownContent content={() => activity.outputSummary ?? ""} class="mt-2" size="compact" />
+                                    <MarkdownContent content={() => activity.outputSummary ?? ""} class="mt-2" size="compact" fileLinks={traceFileLinks()} />
                                   </Show>
                                   <Show when={activity.replay.length > 0}>
                                     <div class="mt-2 space-y-1 text-(--muted)">
                                       <For each={activity.replay.slice(-3)}>
-                                        {(entry) => <div>{entry.summary}</div>}
+                                        {(entry) => (
+                                          <div>
+                                            <FileLinkedText text={entry.summary} fileLinks={traceFileLinks()} />
+                                          </div>
+                                        )}
                                       </For>
                                     </div>
                                   </Show>
@@ -639,7 +690,7 @@ export function TracePanel() {
 
             <section class="flex min-h-0 max-h-72 flex-col rounded-3xl border border-(--border) bg-white/55 p-3">
               <div class="mb-3 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Execution log</div>
-              <ExecutionLog entries={executionLogEntries()} emptyMessage="No execution log yet." />
+              <ExecutionLog entries={executionLogEntries()} emptyMessage="No execution log yet." fileLinks={traceFileLinks()} />
             </section>
 
             <VirtualList
@@ -663,9 +714,9 @@ export function TracePanel() {
                     </div>
                     <span>{trace.modelId ?? "n/a"}</span>
                   </div>
-                  <MarkdownContent content={() => trace.message} size="compact" />
+                  <MarkdownContent content={() => trace.message} size="compact" fileLinks={traceFileLinks()} />
                   <Show when={trace.detail}>
-                    <MarkdownContent content={() => trace.detail ?? ""} class="mt-2" size="compact" tone="muted" />
+                    <MarkdownContent content={() => trace.detail ?? ""} class="mt-2" size="compact" tone="muted" fileLinks={traceFileLinks()} />
                   </Show>
                 </article>
               )}
@@ -691,6 +742,7 @@ function TraceContextSummary(props: {
   job?: BackgroundJob;
   jobRun?: BackgroundJobRun;
   jobRunCount?: number;
+  fileLinks?: FileLinkConfig;
 }) {
   return (
     <section data-test-trace-context-summary="" class="trace-context-summary">
@@ -698,7 +750,9 @@ function TraceContextSummary(props: {
         <div class="min-w-0">
           <div class="trace-context-eyebrow">{props.title.eyebrow}</div>
           <div class="trace-context-title">{props.title.title}</div>
-          <div class="trace-context-source">Source: {props.title.source}</div>
+          <div class="trace-context-source">
+            <FileLinkedText text={`Source: ${props.title.source}`} fileLinks={props.fileLinks} />
+          </div>
         </div>
         <div
           class="trace-context-agent-pill"
@@ -745,17 +799,23 @@ function TraceContextSummary(props: {
       </div>
 
       <Show when={props.job}>
-        <TraceJobRunSummary run={props.jobRun} />
+        <TraceJobRunSummary run={props.jobRun} fileLinks={props.fileLinks} />
       </Show>
 
       <Show when={!props.job && props.run}>
         {(run) => (
           <div class="trace-context-runline">
             <Tooltip content={run().latestUserPrompt} triggerClass="block min-w-0">
-              <div class="truncate">Prompt: {run().latestUserPrompt}</div>
+              <div class="truncate">
+                <FileLinkedText text={`Prompt: ${run().latestUserPrompt}`} fileLinks={props.fileLinks} />
+              </div>
             </Tooltip>
             <Show when={run().failureMessage}>
-              <div class="wrap-anywhere text-rose-800">Failure: {run().failureMessage}</div>
+              {(failure) => (
+                <div class="wrap-anywhere text-rose-800">
+                  <FileLinkedText text={`Failure: ${failure()}`} fileLinks={props.fileLinks} />
+                </div>
+              )}
             </Show>
           </div>
         )}
@@ -781,7 +841,7 @@ function TraceContextMetric(props: { label: string; value: string; tone: "neutra
   );
 }
 
-function TraceJobRunSummary(props: { run?: BackgroundJobRun }) {
+function TraceJobRunSummary(props: { run?: BackgroundJobRun; fileLinks?: FileLinkConfig }) {
   return (
     <Show
       when={props.run}
@@ -804,9 +864,15 @@ function TraceJobRunSummary(props: { run?: BackgroundJobRun }) {
             <span>Trigger: {run().triggerSource}</span>
             <span>Approval: {run().approvalStatus}</span>
           </div>
-          <div class="trace-context-run-copy">Summary: {run().summary ?? "n/a"}</div>
+          <div class="trace-context-run-copy">
+            <FileLinkedText text={`Summary: ${run().summary ?? "n/a"}`} fileLinks={props.fileLinks} />
+          </div>
           <Show when={run().failureMessage}>
-            <div class="trace-context-run-copy text-rose-900">Failure: {run().failureMessage}</div>
+            {(failure) => (
+              <div class="trace-context-run-copy text-rose-900">
+                <FileLinkedText text={`Failure: ${failure()}`} fileLinks={props.fileLinks} />
+              </div>
+            )}
           </Show>
         </div>
       )}
@@ -862,10 +928,37 @@ export function TracePeekRail() {
   const runningCounts = createMemo(() => getTracePanelRunningCounts(state, traceEntity()));
   const runStatus = createMemo(() => threadSnapshot()?.runToShow?.status ?? jobSnapshot()?.run?.status);
   const failureText = createMemo(() => threadSnapshot()?.runToShow?.failureMessage ?? jobSnapshot()?.run?.failureMessage);
+  const fileLinkProject = createMemo(() => {
+    const threadProject = threadSnapshot()?.project;
+    if (threadProject) {
+      return threadProject;
+    }
+    const projectId = assistantSnapshot()?.assistant.projectId ?? jobSnapshot()?.job.projectId;
+    return projectId ? state.workspace.projects.find((project) => project.id === projectId) : undefined;
+  });
+  const traceFileLinks = (): FileLinkConfig | undefined => {
+    const project = fileLinkProject();
+    return project
+      ? {
+          rootPath: project.rootPath,
+          filePaths: project.filePaths ?? [],
+          onOpenFile: handleOpenTracePeekFile
+        }
+      : undefined;
+  };
   const assistantState = createMemo(() => {
     const assistant = assistantSnapshot()?.assistant;
     return assistant ? `${assistant.runState} / ${assistant.bootstrapState}` : undefined;
   });
+
+  function handleOpenTracePeekFile(target: ChatFileTarget) {
+    const project = fileLinkProject();
+    if (!project) {
+      return;
+    }
+    openIdeWindow({ projectId: project.id, threadId: project.activeThreadId });
+    harnessStore.openIdeFile(target.path, target.line, target.column);
+  }
 
   return (
     <aside data-test-trace-peek-rail="" class="trace-peek-rail panel-shell flex h-full min-h-0 flex-col gap-3 rounded-xl border-t-0 p-3">
@@ -897,7 +990,9 @@ export function TracePeekRail() {
       <div class="trace-summary-card">
         <div class="trace-summary-eyebrow">{traceTitle().eyebrow}</div>
         <div class="truncate text-[0.76rem] font-semibold text-(--foreground)">{traceTitle().title}</div>
-        <div class="mt-1 truncate text-[0.62rem] text-(--muted)">{traceTitle().source}</div>
+        <div class="mt-1 truncate text-[0.62rem] text-(--muted)">
+          <FileLinkedText text={traceTitle().source} fileLinks={traceFileLinks()} />
+        </div>
       </div>
 
       <div class="grid gap-2">
@@ -917,7 +1012,9 @@ export function TracePeekRail() {
         {(failure) => (
           <div class="trace-summary-card border-rose-300 bg-rose-50/85 text-[0.65rem] leading-5 text-rose-950">
             <div class="mb-1 font-semibold">Failure digest</div>
-            <div class="line-clamp-6 wrap-anywhere">{failure()}</div>
+            <div class="line-clamp-6 wrap-anywhere">
+              <FileLinkedText text={failure()} fileLinks={traceFileLinks()} />
+            </div>
           </div>
         )}
       </Show>

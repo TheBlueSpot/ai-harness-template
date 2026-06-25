@@ -12,9 +12,9 @@ import {
 } from "lucide-solid";
 import { createRequestId, type ClientCommand, type NotificationInboxItem } from "../../../shared/protocol";
 import { getAssistantQuestionDefaultChoices } from "../assistant-question-defaults";
-import { openBackgroundRunInJobsPane } from "../background-run-navigation";
 import { harnessStore, type HarnessViewState } from "../harness-store";
 import { activateProjectThread } from "../project-thread-navigation";
+import { openAssistantSource, openNotificationSource, openPreferencesSectionSource } from "../source-navigation";
 import { submitOnEnter } from "../textarea-submit";
 import { ActionButton } from "./action-button";
 import { Popover } from "./primitives/popover";
@@ -53,13 +53,7 @@ export function openAssistantJobNotificationFromInbox(
     return false;
   }
 
-  const assistant = state.assistants.assistants.find((entry) => entry.id === assistantId);
-  if (assistant) {
-    harnessStore.setAssistantScopeFilter(assistant.scope === "global" ? "global" : "project");
-  }
-  harnessStore.setActiveSurface("assistants");
-  harnessStore.setSelectedAssistantId(assistantId);
-  harnessStore.setAssistantDetailTab("log");
+  openAssistantSource(state, assistantId, "log");
   return true;
 }
 
@@ -86,7 +80,18 @@ export function openBackgroundRunNotificationFromInbox(
   state: HarnessViewState,
   notification: Extract<NotificationInboxItem, { kind: "background-run-status" }>
 ) {
-  openBackgroundRunInJobsPane(state, notification.backgroundRunId, notification.jobId);
+  openNotificationSource(state, notification);
+}
+
+export function openAssistantQuestionNotificationFromInbox(
+  state: HarnessViewState,
+  notification: Extract<NotificationInboxItem, { kind: "assistant-question" | "assistant-question-batch" }>
+) {
+  openAssistantSource(state, notification.assistantId, "questions");
+}
+
+export function openCliUpdateNotificationFromInbox() {
+  openPreferencesSectionSource("developer-advanced");
 }
 
 export function NotificationInbox() {
@@ -116,10 +121,10 @@ export function NotificationInbox() {
     switch (notification.kind) {
       case "background-run-status":
         openBackgroundRunNotificationFromInbox(state, notification);
-        activateProjectThread(notification.projectId, notification.threadId);
         setOpen(false);
         return;
       case "cli-update":
+        openCliUpdateNotificationFromInbox();
         sendCommand({
           type: "cli-updates.install",
           requestId: createRequestId(),
@@ -142,12 +147,10 @@ export function NotificationInbox() {
         activateProjectThread(notification.projectId, notification.threadId);
         break;
       case "assistant-question":
-        harnessStore.setActiveSurface("assistants");
-        harnessStore.setSelectedAssistantId(notification.assistantId);
+        openAssistantQuestionNotificationFromInbox(state, notification);
         break;
       case "assistant-question-batch":
-        harnessStore.setActiveSurface("assistants");
-        harnessStore.setSelectedAssistantId(notification.assistantId);
+        openAssistantQuestionNotificationFromInbox(state, notification);
         break;
     }
 

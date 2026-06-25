@@ -10,6 +10,7 @@ import {
   type TerminalPaneLayout,
   type TerminalPreferences,
   type TerminalSession,
+  type TerminalTransportMode,
   type TerminalShell
 } from "../../../shared/protocol";
 import { buildCliProcessEnv } from "../agent-runtimes/cli-process-manager";
@@ -26,10 +27,12 @@ const TERMINAL_STALE_TIMEOUT_MS = 30_000;
 const TERMINAL_STREAM_FLUSH_MS = 16;
 const TERMINAL_STREAM_MAX_BUFFERED_BYTES = 16 * 1024;
 const TERMINAL_SEND_QUEUE_CAP_BYTES = 512 * 1024;
+const TERMINAL_STATE_PERSIST_THROTTLE_MS = 500;
 const MAX_SCROLLBACK_CHARS = 2_000_000;
 
 type TerminalProcess = {
   pid?: number;
+  transportMode: TerminalTransportMode;
   write(data: string | Uint8Array): void | Promise<void>;
   resize(cols: number, rows: number): void;
   stop(): Promise<void>;
@@ -67,6 +70,8 @@ export class TerminalSessionManager {
   private preferences: TerminalPreferences;
   private layout: TerminalPaneLayout | undefined;
   private scrollbackBySessionId: Record<string, string>;
+  private persistTimer?: ReturnType<typeof setTimeout>;
+  private persistPending = false;
 
   constructor(private readonly options: TerminalSessionManagerOptions) {
     const persisted = options.repository.getTerminalState();
@@ -102,6 +107,7 @@ export class TerminalSessionManager {
     const shell = this.resolveShell(input.shellId);
     const cwd = resolveTerminalCwd(input.projectRoot, input.cwd);
     const env = normalizeTerminalEnv(input.env);
+    const transportInfo = getTerminalTransportInfo();
     const now = new Date().toISOString();
     const session: TerminalSession = {
       id: createSessionId(),
@@ -112,33 +118,50 @@ export class TerminalSessionManager {
       status: "starting",
       cols: input.cols,
       rows: input.rows,
+      transportMode: transportInfo.mode,
+      transportWarning: transportInfo.warning,
       startedAt: now,
       updatedAt: now
     };
 
     const record: SessionRecord = { session };
     this.sessions.set(session.id, record);
-    this.persist();
+    this.persistNow();
     this.options.onSessionCreated({ requestId: input.requestId, session });
 
-    record.process = await startTerminalProcess({
-      cmd: resolveShellCommand(shell),
-      cwd,
-      cols: input.cols,
-      rows: input.rows,
-      env,
-      onData: (chunk) => this.handleChunk(session.id, chunk),
-      onExit: (exitCode) => {
-        void this.handleExit(session.id, exitCode);
-      }
-    });
+    try {
+      record.process = await startTerminalProcess({
+        cmd: resolveShellCommand(shell),
+        cwd,
+        cols: input.cols,
+        rows: input.rows,
+        env,
+        onData: (chunk) => this.handleChunk(session.id, chunk),
+        onExit: (exitCode) => {
+          void this.handleExit(session.id, exitCode);
+        }
+      });
+    } catch (error) {
+      const failedAt = new Date().toISOString();
+      record.session = {
+        ...record.session,
+        status: "failed",
+        exitCode: -1,
+        exitedAt: failedAt,
+        updatedAt: failedAt
+      };
+      this.persistNow();
+      this.options.onSessionUpdated({ requestId: input.requestId, session: record.session });
+      throw error;
+    }
     record.session = {
       ...record.session,
       pid: record.process.pid,
+      transportMode: record.process.transportMode,
       status: "running",
       updatedAt: new Date().toISOString()
     };
-    this.persist();
+    this.persistNow();
     this.options.onSessionUpdated({ requestId: input.requestId, session: record.session });
     this.attachSession({ requestId: input.requestId, projectId: input.projectId, sessionId: session.id, clientId: input.clientId });
   }
@@ -146,7 +169,7 @@ export class TerminalSessionManager {
   renameSession(input: { requestId: string; projectId: ProjectId; sessionId: string; name: string }) {
     const record = this.requireOwnedSession(input.projectId, input.sessionId);
     record.session = { ...record.session, name: input.name.trim(), updatedAt: new Date().toISOString() };
-    this.persist();
+    this.persistNow();
     this.options.onSessionUpdated({ requestId: input.requestId, session: record.session });
   }
 
@@ -155,7 +178,7 @@ export class TerminalSessionManager {
     await record.process?.stop();
     if (!record.process) {
       record.session = { ...record.session, status: "stopped", updatedAt: new Date().toISOString() };
-      this.persist();
+      this.persistNow();
       this.options.onSessionUpdated({ requestId: input.requestId, session: record.session });
     }
   }
@@ -167,7 +190,7 @@ export class TerminalSessionManager {
     this.sessions.delete(input.sessionId);
     delete this.scrollbackBySessionId[input.sessionId];
     this.pruneLayoutSession(input.sessionId);
-    this.persist();
+    this.persistNow();
     this.emitSessionsUpdated(input.requestId);
   }
 
@@ -191,7 +214,7 @@ export class TerminalSessionManager {
     const record = this.requireOwnedSession(input.projectId, input.sessionId);
     record.process?.resize(input.cols, input.rows);
     record.session = { ...record.session, cols: input.cols, rows: input.rows, updatedAt: new Date().toISOString() };
-    this.persist();
+    this.persistNow();
     this.options.onSessionUpdated({ requestId: input.requestId, session: record.session });
   }
 
@@ -210,7 +233,7 @@ export class TerminalSessionManager {
     this.preferences = terminalPreferencesSchema.parse(input.preferences);
     this.layout = input.layout ? terminalPaneLayoutSchema.parse(input.layout) : this.layout;
     this.trimAllScrollback();
-    this.persist();
+    this.persistNow();
     this.options.onPreferencesSaved({ requestId: input.requestId, preferences: this.preferences, layout: this.layout });
   }
 
@@ -280,7 +303,7 @@ export class TerminalSessionManager {
     const text = new TextDecoder().decode(chunk);
     this.scrollbackBySessionId[sessionId] = trimScrollback(`${this.scrollbackBySessionId[sessionId] ?? ""}${text}`, this.preferences.scrollbackLimit);
     record.session = { ...record.session, updatedAt: new Date().toISOString() };
-    this.persist();
+    this.schedulePersist();
     record.pump ??= new StreamPump({
       flushIntervalMs: TERMINAL_STREAM_FLUSH_MS,
       maxBufferedBytes: TERMINAL_STREAM_MAX_BUFFERED_BYTES,
@@ -294,6 +317,7 @@ export class TerminalSessionManager {
     if (!record) {
       return;
     }
+    this.persistNow();
     this.clearTransport(record);
     const now = new Date().toISOString();
     record.process = undefined;
@@ -304,7 +328,7 @@ export class TerminalSessionManager {
       exitedAt: now,
       updatedAt: now
     };
-    this.persist();
+    this.persistNow();
     this.options.onSessionExited({ requestId: createRequestId(), session: record.session });
   }
 
@@ -352,6 +376,7 @@ export class TerminalSessionManager {
       clearInterval(record.heartbeatTimer);
       record.heartbeatTimer = undefined;
     }
+    void record.pump?.flush();
     record.pump?.close();
     record.pump = undefined;
     record.socket = undefined;
@@ -415,6 +440,30 @@ export class TerminalSessionManager {
     });
   }
 
+  private schedulePersist() {
+    this.persistPending = true;
+    if (this.persistTimer) {
+      return;
+    }
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = undefined;
+      if (!this.persistPending) {
+        return;
+      }
+      this.persistPending = false;
+      this.persist();
+    }, TERMINAL_STATE_PERSIST_THROTTLE_MS);
+  }
+
+  private persistNow() {
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = undefined;
+    }
+    this.persistPending = false;
+    this.persist();
+  }
+
   private persist() {
     this.options.repository.setTerminalState({
       sessions: [...this.sessions.values()].map((record) => record.session),
@@ -423,6 +472,16 @@ export class TerminalSessionManager {
       layout: this.layout
     } satisfies PersistedTerminalState);
   }
+}
+
+function getTerminalTransportInfo(): { mode: TerminalTransportMode; warning?: string } {
+  if (process.platform === "win32") {
+    return {
+      mode: "pipe",
+      warning: "Windows integrated terminal uses pipe transport; cursor-heavy full-screen CLIs and resize behavior may be degraded."
+    };
+  }
+  return { mode: "pty" };
 }
 
 async function discoverTerminalShells(): Promise<TerminalShell[]> {
@@ -517,6 +576,7 @@ async function startTerminalProcess(input: {
     }
     return {
       pid: proc.pid,
+      transportMode: "pty",
       write: (data) => {
         terminal.write(data);
       },
@@ -542,6 +602,7 @@ async function startTerminalProcess(input: {
   void proc.exited.then(input.onExit);
   return {
     pid: proc.pid,
+    transportMode: "pipe",
     write: async (data) => {
       await proc.stdin.write(data);
     },

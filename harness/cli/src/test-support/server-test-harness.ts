@@ -13,6 +13,7 @@ import type { AgentRuntime } from "../agent-runtimes/agent-runtime";
 import { buildCliCapability } from "../agent-runtimes/cli-health";
 import { PiRuntime } from "../agent-runtimes/pi-runtime";
 import { AgentRuntimeRegistry } from "../agent-runtimes/runtime-registry";
+import { buildExecutionPlan } from "../pi-orchestrator";
 import { useGitProjectFixture } from "./git-project-fixture";
 import { createFastHarnessServerOsAdapters } from "./fast-os-adapters";
 
@@ -1773,6 +1774,7 @@ export function registerServerPreferencesAndModesTests(options: ServerTestShardO
               planExecutionDelaySecondsDefault: 15,
               correctnessIterationModeDefault: "auto-once",
               backgroundJobApprovalPolicyDefault: "ask-risky",
+              assistantAutoApproveNonBlockingQuestionsDefault: false,
               memoryBankEnabledDefault: false,
               memoryBankRecordRunsDefault: false,
               checkCliUpdatesDefault: false
@@ -1797,6 +1799,7 @@ export function registerServerPreferencesAndModesTests(options: ServerTestShardO
         expect(saved.payload.planExecutionDelaySecondsDefault).toBe(15);
         expect(saved.payload.correctnessIterationModeDefault).toBe("auto-once");
         expect(saved.payload.backgroundJobApprovalPolicyDefault).toBe("ask-risky");
+        expect(saved.payload.assistantAutoApproveNonBlockingQuestionsDefault).toBe(false);
         expect(saved.payload.memoryBankEnabledDefault).toBe(false);
         expect(saved.payload.memoryBankRecordRunsDefault).toBe(false);
         expect(saved.payload.checkCliUpdatesDefault).toBe(false);
@@ -1831,6 +1834,7 @@ export function registerServerPreferencesAndModesTests(options: ServerTestShardO
               planExecutionDelaySecondsDefault: 8,
               correctnessIterationModeDefault: "ask-before-iterate",
               backgroundJobApprovalPolicyDefault: "ask-risky",
+              assistantAutoApproveNonBlockingQuestionsDefault: true,
               memoryBankEnabledDefault: true,
               memoryBankRecordRunsDefault: true,
               checkCliUpdatesDefault: true
@@ -5164,6 +5168,18 @@ export function registerServerProjectsAndHistoryTests(options: ServerTestShardOp
       await stopServerForTest(server);
     });
 
+    async function restartWithCustomOsAdapters(osAdapters: Partial<HarnessServerOsAdapters>) {
+      await stopServerForTest(server);
+      ({ server, port } = await startServerForTest({
+        port: 0,
+        adapter,
+        repository,
+        pickFolder: async () => extraProjectRoot,
+        serverOnly: true,
+        osAdapters
+      }));
+    }
+
     async function restartWithRealOsAdapters() {
       await stopServerForTest(server);
       ({ server, port } = await startServerForTest({
@@ -5337,6 +5353,123 @@ export function registerServerProjectsAndHistoryTests(options: ServerTestShardOp
         expect(repository.getThreadMessages(projectId, originalThreadId).at(-1)?.content).toBe("main execution result");
         socket.close();
       }, 10000);
+
+      serverTest("routes auto correctness follow-up stream to owning thread after focus changes", async () => {
+        let reviewCount = 0;
+        await restartWithCustomOsAdapters({
+          async runCorrectnessReview(_rootPath, executionPlan) {
+            reviewCount += 1;
+            if (reviewCount > 1) {
+              return {
+                status: "pass",
+                summary: "Correctness review passed after follow-up.",
+                gaps: []
+              };
+            }
+
+            return {
+              status: "needs-iteration",
+              summary: "Need one follow-up stream.",
+              gaps: [
+                {
+                  id: "follow-up-stream",
+                  category: "runnable-gap",
+                  severity: "high",
+                  description: "Initial output needs one streaming follow-up.",
+                  suggestedFix: "Run a follow-up on the same thread.",
+                  canParallelize: false,
+                  ownedPaths: []
+                }
+              ],
+              recommendedPlan: buildExecutionPlan({
+                runId: executionPlan.runId,
+                planningModelId: executionPlan.planningModelId,
+                plannerResult: {
+                  type: "ready",
+                  difficultyScore: 20,
+                  summary: "Follow-up stream",
+                  executionModelId: executionPlan.executionModelId,
+                  usesSubagents: false,
+                  subtasks: [],
+                  finalExecutionBrief: "streaming refresh"
+                },
+                subagentWorktreeStrategy: "same-worktree",
+                planExecutionMode: "immediate",
+                planExecutionDelaySeconds: 0,
+                correctnessIterationMode: "auto-once",
+                ruleSources: executionPlan.ruleSources,
+                memorySummaries: executionPlan.memorySummaries,
+                iteration: executionPlan.iteration + 1,
+                origin: "correctness-followup"
+              })
+            };
+          }
+        });
+        repository.setCorrectnessIterationModeDefault("auto-once");
+
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot);
+        const projectId = opened.payload.project.id;
+        const originalThreadId = opened.payload.project.activeThreadId;
+        const ready = await sendChatUntilReady(socket, {
+          requestId: "req-correctness-followup-route-send",
+          projectId,
+          threadId: originalThreadId,
+          content: "streaming refresh"
+        });
+        const firstDeltaPromise = waitForEvent(
+          socket,
+          "chat.delta",
+          (event) => event.payload.threadId === originalThreadId && event.payload.delta === "working",
+          10000
+        );
+        const completePromise = waitForEvent(
+          socket,
+          "chat.complete",
+          (event) => event.payload.projectId === projectId && event.payload.threadId === originalThreadId,
+          10000
+        );
+
+        socket.send(
+          JSON.stringify({
+            type: "run.execute",
+            requestId: "req-correctness-followup-route-execute",
+            payload: {
+              projectId,
+              threadId: originalThreadId,
+              runId: ready.payload.run.id
+            }
+          })
+        );
+
+        await firstDeltaPromise;
+        const createThreadPromise = waitForEvent(socket, "thread.created");
+        socket.send(
+          JSON.stringify({
+            type: "thread.create",
+            requestId: "req-correctness-followup-route-create",
+            payload: {
+              projectId
+            }
+          })
+        );
+        const created = await createThreadPromise;
+        const focusedThreadId = created.payload.project.activeThreadId;
+        expect(focusedThreadId).not.toBe(originalThreadId);
+
+        const followUpDelta = await waitForEvent(
+          socket,
+          "chat.delta",
+          (event) => event.payload.threadId === originalThreadId && event.payload.delta === "working",
+          10000
+        );
+
+        expect(followUpDelta.payload.sessionId).toBe(originalThreadId);
+        expect(repository.getProject(projectId).activeThreadId).toBe(focusedThreadId);
+        await completePromise;
+        socket.close();
+      }, 15000);
 
       serverTest("deleting a background streaming thread stops its active agents", async () => {
         const socket = createSocket(port);

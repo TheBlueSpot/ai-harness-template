@@ -266,7 +266,8 @@ describe("client command validation", () => {
           planExecutionModeDefault: "countdown",
           planExecutionDelaySecondsDefault: 10,
           correctnessIterationModeDefault: "ask-before-iterate",
-          backgroundJobApprovalPolicyDefault: "ask-risky"
+          backgroundJobApprovalPolicyDefault: "ask-risky",
+          assistantAutoApproveNonBlockingQuestionsDefault: false
         }
       }).type
     ).toBe("preferences.save");
@@ -846,6 +847,7 @@ describe("memory protocol", () => {
     });
 
     expect(parsed.memoryBankRecordRunsDefault).toBe(true);
+    expect(parsed.assistantAutoApproveNonBlockingQuestionsDefault).toBe(true);
   });
 
   test("accepts provider connection tested events", () => {
@@ -1003,6 +1005,7 @@ describe("planner result validation", () => {
             planExecutionDelaySecondsDefault: 10,
             correctnessIterationModeDefault: "ask-before-iterate",
             backgroundJobApprovalPolicyDefault: "ask-risky",
+            assistantAutoApproveNonBlockingQuestionsDefault: true,
             memoryBankEnabledDefault: true,
             memoryBankRecordRunsDefault: true,
             checkCliUpdatesDefault: true
@@ -1208,6 +1211,7 @@ describe("planner result validation", () => {
             planExecutionDelaySecondsDefault: 10,
             correctnessIterationModeDefault: "ask-before-iterate",
             backgroundJobApprovalPolicyDefault: "ask-risky",
+            assistantAutoApproveNonBlockingQuestionsDefault: true,
             memoryBankEnabledDefault: true,
             memoryBankRecordRunsDefault: true,
             checkCliUpdatesDefault: true

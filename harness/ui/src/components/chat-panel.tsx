@@ -1,4 +1,4 @@
-import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js";
+import { For, Match, Show, Switch, createEffect, createMemo, createSignal, getOwner, onCleanup, onMount, runWithOwner, type JSX } from "solid-js";
 import {
   createRequestId,
   type AssistantActionMessageMetadata,
@@ -35,7 +35,7 @@ import {
   type ViewProjectState
 } from "../harness-store";
 import { normalizeAppHotkeyPreferences } from "../lib/app-hotkeys";
-import { findChatFileReferenceAtPosition, type ChatFileLinkContext, type ChatFileTarget } from "../lib/chat-file-links";
+import { findChatFileReferenceAtPosition, findChatFileReferences, resolveChatFileTarget, type ChatFileLinkContext, type ChatFileTarget } from "../lib/chat-file-links";
 import { tooltipWithPrimaryHotkey } from "../lib/hotkey-hints";
 import { openIdeWindow } from "../lib/ide-window";
 import { uploadFiles } from "../lib/uploadthing";
@@ -61,7 +61,7 @@ import { ScrollArea } from "./primitives/scroll-area";
 import { Textarea } from "./primitives/textarea";
 import { Tooltip } from "./primitives/tooltip";
 import { VirtualList } from "./primitives/virtual-list";
-import { buttonVariants } from "./primitives/button";
+import { Button, buttonVariants } from "./primitives/button";
 import {
   Activity,
   AlertTriangle,
@@ -180,12 +180,23 @@ function reactiveArraySnapshot<T>(items: readonly T[] | undefined) {
   return snapshot;
 }
 
+const COMPOSER_LOOKUP_SELECTED_CLASSES = ["bg-white/70", "ring-1", "ring-(--ring)"] as const;
+
+type ComposerReferenceBadge = {
+  key: string;
+  kind: "skill" | "file";
+  label: string;
+  target: ChatFileTarget;
+};
+
 export function ChatPanel() {
   let messageViewport: HTMLDivElement | undefined;
   let attachmentInput: HTMLInputElement | undefined;
   let composerTextarea: HTMLTextAreaElement | undefined;
+  let composerLookupMenu: HTMLDivElement | undefined;
   let countdownTimer: number | undefined;
   let waitingTimer: number | undefined;
+  const owner = getOwner();
   const state = harnessStore.state;
   const sendCommand = harnessStore.actions.sendCommand;
   const activeProjectIndex = createMemo(() =>
@@ -227,7 +238,9 @@ export function ChatPanel() {
   const [desktopReasoningMenuOpen, setDesktopReasoningMenuOpen] = createSignal(false);
   const [mobileReasoningMenuOpen, setMobileReasoningMenuOpen] = createSignal(false);
   const [composerLookupIndex, setComposerLookupIndex] = createSignal(0);
-  const [selectedComposerFilePaths, setSelectedComposerFilePaths] = createSignal<string[]>([]);
+  const [composerLookupForcedClosed, setComposerLookupForcedClosed] = createSignal(false);
+  const [composerCaret, setComposerCaret] = createSignal<number | undefined>();
+  const [dismissedComposerLookupKey, setDismissedComposerLookupKey] = createSignal<string | undefined>();
   const pendingQuestion = () => activeProject()?.activeRun?.questions.find((question) => question.status === "pending");
   const resumableRun = () => (activeProject()?.activeRun?.resumable ? activeProject()?.activeRun : undefined);
   const retryableRun = () => (activeProject()?.lastRun?.retryable ? activeProject()?.lastRun : undefined);
@@ -396,13 +409,20 @@ export function ChatPanel() {
         : uploadingAttachments()
           ? "Attachment upload in progress"
           : undefined;
-  const composerLookup = createMemo(() => {
+  const composerLookup = () => {
     const currentProject = activeProject();
     if (!currentProject) {
       return undefined;
     }
-    return getComposerLookup(currentProject.draft, composerTextarea?.selectionStart ?? currentProject.draft.length);
-  });
+    const storedCaret = composerCaret();
+    const rawCaret = storedCaret ?? currentProject.draft.length;
+    const caret = Math.max(0, Math.min(rawCaret, currentProject.draft.length));
+    return getComposerLookup(currentProject.draft, caret);
+  };
+  const composerLookupKey = () => {
+    const lookup = composerLookup();
+    return lookup ? `${lookup.kind}:${lookup.start}:${lookup.end}:${lookup.query}` : undefined;
+  };
   const skillOptions = createMemo(() =>
     state.availableSkillPaths.map((skillPath) => ({
       label: getSkillName(skillPath),
@@ -417,7 +437,7 @@ export function ChatPanel() {
       insertText: `@${filePath} `
     }))
   );
-  const composerLookupOptions = createMemo(() => {
+  const composerLookupOptions = () => {
     const lookup = composerLookup();
     if (!lookup) {
       return [];
@@ -427,10 +447,24 @@ export function ChatPanel() {
     return source
       .filter((option) => `${option.label} ${option.detail}`.toLowerCase().includes(query))
       .slice(0, 10);
-  });
-  const composerFileBadges = () => [
-    ...new Set([...selectedComposerFilePaths(), ...getComposerFileBadges(activeProject()?.draft ?? "", activeProject()?.filePaths ?? [])])
-  ];
+  };
+  const composerLookupOpen = () => {
+    if (composerLookupForcedClosed()) {
+      return false;
+    }
+    const key = composerLookupKey();
+    return Boolean(key && dismissedComposerLookupKey() !== key && composerLookupOptions().length > 0);
+  };
+  const composerLookupRenderedOptions = () =>
+    composerLookupOptions().map((option, index) => ({
+      ...option,
+      index,
+      selected: index === composerLookupIndex()
+    }));
+  const composerLookupActiveOptionId = () =>
+    composerLookupOpen() ? getComposerLookupOptionId(composerLookupIndex()) : undefined;
+  const composerReferenceBadges = () =>
+    getComposerReferenceBadges(activeProject()?.draft ?? "", chatFileLinkContext(), state.availableSkillPaths);
   const dropState = () => {
     if (!state.attachmentsEnabled) {
       return { label: "Attachments unavailable", detail: "Set UPLOADTHING_TOKEN on the server to enable uploads." };
@@ -677,6 +711,82 @@ export function ChatPanel() {
     activeProject()?.draft;
     queueMicrotask(() => {
       resizeComposer();
+    });
+  });
+
+  createEffect(() => {
+    const optionCount = composerLookupOptions().length;
+    if (optionCount === 0) {
+      setComposerLookupActiveIndex(0);
+      return;
+    }
+    if (composerLookupIndex() >= optionCount) {
+      setComposerLookupActiveIndex(optionCount - 1);
+    }
+  });
+
+  createEffect(() => {
+    const open = composerLookupOpen();
+    queueMicrotask(() => {
+      if (open && composerLookupOpen()) {
+        syncComposerLookupDomVisibility({ focusMenu: true });
+      } else {
+        setComposerLookupMenuHidden(true);
+      }
+    });
+  });
+
+  onMount(() => {
+    const closeOnOutsidePointer = (event: MouseEvent | PointerEvent) => {
+      if (!composerLookupOpen()) {
+        return;
+      }
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return;
+      }
+      if (composerLookupMenu?.contains(target) || composerTextarea?.contains(target)) {
+        return;
+      }
+      dismissComposerLookup();
+    };
+    const handleLookupWindowKeyDown = (event: KeyboardEvent) => {
+      if (!composerLookupOpen()) {
+        return;
+      }
+      if (event.key === "Escape") {
+        runWithChatPanelOwner(() => handleComposerLookupKeyDown(event));
+        return;
+      }
+      const target = event.target;
+      if (target instanceof Node && (composerLookupMenu?.contains(target) || composerTextarea?.contains(target))) {
+        runWithChatPanelOwner(() => handleComposerLookupKeyDown(event));
+      }
+    };
+
+    window.addEventListener("pointerdown", closeOnOutsidePointer);
+    window.addEventListener("mousedown", closeOnOutsidePointer);
+    window.addEventListener("click", closeOnOutsidePointer);
+    window.addEventListener("keydown", handleLookupWindowKeyDown);
+    document.addEventListener("pointerdown", closeOnOutsidePointer, true);
+    document.addEventListener("mousedown", closeOnOutsidePointer, true);
+    document.addEventListener("click", closeOnOutsidePointer, true);
+    document.addEventListener("keydown", handleLookupWindowKeyDown, true);
+    document.body.addEventListener("pointerdown", closeOnOutsidePointer, true);
+    document.body.addEventListener("mousedown", closeOnOutsidePointer, true);
+    document.body.addEventListener("click", closeOnOutsidePointer, true);
+    onCleanup(() => {
+      window.removeEventListener("pointerdown", closeOnOutsidePointer);
+      window.removeEventListener("mousedown", closeOnOutsidePointer);
+      window.removeEventListener("click", closeOnOutsidePointer);
+      window.removeEventListener("keydown", handleLookupWindowKeyDown);
+      document.removeEventListener("pointerdown", closeOnOutsidePointer, true);
+      document.removeEventListener("mousedown", closeOnOutsidePointer, true);
+      document.removeEventListener("click", closeOnOutsidePointer, true);
+      document.removeEventListener("keydown", handleLookupWindowKeyDown, true);
+      document.body.removeEventListener("pointerdown", closeOnOutsidePointer, true);
+      document.body.removeEventListener("mousedown", closeOnOutsidePointer, true);
+      document.body.removeEventListener("click", closeOnOutsidePointer, true);
     });
   });
 
@@ -995,6 +1105,83 @@ export function ChatPanel() {
     setDraftAttachments((current) => current.filter((attachment) => attachment.id !== attachmentId));
   }
 
+  function syncComposerCaret() {
+    if (composerTextarea) {
+      setComposerCaret(composerTextarea.selectionStart);
+    }
+  }
+
+  function runWithChatPanelOwner(callback: () => void) {
+    if (owner) {
+      runWithOwner(owner, callback);
+      return;
+    }
+    callback();
+  }
+
+  function dismissComposerLookup(options: { focusComposer?: boolean } = {}) {
+    setDismissedComposerLookupKey(composerLookupKey());
+    setComposerLookupForcedClosed(true);
+    setComposerLookupActiveIndex(0);
+    setComposerLookupMenuHidden(true);
+    queueMicrotask(() => syncComposerLookupDomVisibility());
+    if (options.focusComposer) {
+      queueMicrotask(() => composerTextarea?.focus());
+    }
+  }
+
+  function updateComposerLookupDomSelection(activeIndex: number) {
+    composerLookupMenu?.querySelectorAll<HTMLElement>("[data-composer-lookup-option]").forEach((element) => {
+      const selected = element.dataset.composerLookupIndex === String(activeIndex);
+      element.setAttribute("aria-selected", selected ? "true" : "false");
+      for (const className of COMPOSER_LOOKUP_SELECTED_CLASSES) {
+        element.classList.toggle(className, selected);
+      }
+    });
+  }
+
+  function syncComposerLookupDomVisibility(options: { focusMenu?: boolean } = {}) {
+    if (!composerLookupMenu) {
+      return;
+    }
+    const open = composerLookupOpen();
+    setComposerLookupMenuHidden(!open);
+    if (open) {
+      updateComposerLookupDomSelection(composerLookupIndex());
+      if (options.focusMenu) {
+        composerLookupMenu.focus();
+      }
+    }
+  }
+
+  function setComposerLookupMenuHidden(hidden: boolean) {
+    if (!composerLookupMenu) {
+      return;
+    }
+    composerLookupMenu.hidden = hidden;
+    composerLookupMenu.setAttribute("aria-hidden", hidden ? "true" : "false");
+    if (hidden) {
+      composerLookupMenu.removeAttribute("role");
+      composerLookupMenu.removeAttribute("aria-label");
+    } else {
+      composerLookupMenu.setAttribute("role", "listbox");
+      composerLookupMenu.setAttribute("aria-label", "Composer lookup");
+    }
+    composerLookupMenu.querySelectorAll<HTMLElement>("[data-composer-lookup-option]").forEach((element) => {
+      if (hidden) {
+        element.removeAttribute("role");
+      } else {
+        element.setAttribute("role", "option");
+      }
+    });
+    composerLookupMenu.style.display = hidden ? "none" : "";
+  }
+
+  function setComposerLookupActiveIndex(index: number) {
+    setComposerLookupIndex(index);
+    updateComposerLookupDomSelection(index);
+  }
+
   function applyComposerLookupOption(index = composerLookupIndex()) {
     const lookup = composerLookup();
     const option = composerLookupOptions()[index];
@@ -1003,45 +1190,75 @@ export function ChatPanel() {
     }
     const draft = project().draft;
     const nextDraft = `${draft.slice(0, lookup.start)}${option.insertText}${draft.slice(lookup.end)}`;
+    const nextCaret = lookup.start + option.insertText.length;
+    setComposerCaret(nextCaret);
+    setDismissedComposerLookupKey(composerLookupKey());
+    setComposerLookupForcedClosed(true);
+    setComposerLookupActiveIndex(0);
+    setComposerLookupMenuHidden(true);
+    queueMicrotask(() => syncComposerLookupDomVisibility());
     harnessStore.setProjectDraft(project().id, nextDraft);
-    if (lookup.kind === "file") {
-      setSelectedComposerFilePaths((paths) => [...new Set([...paths, option.insertText.slice(1).trim()])]);
-    }
     queueMicrotask(() => {
-      const nextCaret = lookup.start + option.insertText.length;
-      composerTextarea?.focus();
       composerTextarea?.setSelectionRange(nextCaret, nextCaret);
+      composerTextarea?.focus();
+      setComposerCaret(nextCaret);
       resizeComposer();
     });
   }
 
-  function handleComposerKeyDown(event: KeyboardEvent) {
-    if (composerLookupOptions().length === 0) {
-      return;
-    }
+  function handleComposerLookupKeyDown(event: KeyboardEvent) {
     if (event.key === "ArrowDown") {
+      if (!composerLookupOpen()) {
+        return false;
+      }
       event.preventDefault();
-      setComposerLookupIndex((index) => (index + 1) % composerLookupOptions().length);
-      return;
+      event.stopPropagation();
+      setComposerLookupActiveIndex((composerLookupIndex() + 1) % composerLookupOptions().length);
+      return true;
     }
     if (event.key === "ArrowUp") {
+      if (!composerLookupOpen()) {
+        return false;
+      }
       event.preventDefault();
-      setComposerLookupIndex((index) => (index + composerLookupOptions().length - 1) % composerLookupOptions().length);
-      return;
+      event.stopPropagation();
+      setComposerLookupActiveIndex((composerLookupIndex() + composerLookupOptions().length - 1) % composerLookupOptions().length);
+      return true;
     }
     if (event.key === "Enter" || event.key === "Tab") {
+      if (!composerLookupOpen()) {
+        return false;
+      }
       event.preventDefault();
+      event.stopPropagation();
       applyComposerLookupOption();
-      return;
+      return true;
     }
     if (event.key === "Escape") {
       event.preventDefault();
-      setComposerLookupIndex(0);
+      event.stopPropagation();
+      dismissComposerLookup({ focusComposer: true });
+      return true;
     }
+    return false;
+  }
+
+  function handleComposerKeyDown(event: KeyboardEvent) {
+    if (handleComposerLookupKeyDown(event)) {
+      return;
+    }
+    queueMicrotask(syncComposerCaret);
   }
 
   function handleComposerClick(event: MouseEvent & { currentTarget: HTMLTextAreaElement }) {
+    syncComposerCaret();
     if (!event.ctrlKey && !event.metaKey) {
+      if (composerLookupOpen()) {
+        dismissComposerLookup({ focusComposer: true });
+      } else {
+        setComposerLookupForcedClosed(false);
+        setDismissedComposerLookupKey(undefined);
+      }
       return;
     }
     const reference = findChatFileReferenceAtPosition(event.currentTarget.value, event.currentTarget.selectionStart, chatFileLinkContext());
@@ -1060,6 +1277,15 @@ export function ChatPanel() {
     }
     openIdeWindow({ projectId: currentProject.id, threadId: currentProject.activeThreadId });
     harnessStore.openIdeFile(target.path, target.line, target.column);
+  }
+
+  function handleComposerBadgeClick(event: MouseEvent, badge: ComposerReferenceBadge) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!event.ctrlKey && !event.metaKey) {
+      return;
+    }
+    handleOpenChatFile(badge.target);
   }
 
   function handleAttachmentDragOver(event: DragEvent) {
@@ -1492,7 +1718,7 @@ export function ChatPanel() {
 
   function renderTranscriptRow(row: ChatTimelineRow, index: number, project: ViewProjectState) {
     if (row.kind === "tool-block") {
-      return <StreamedToolBlock block={row.block} />;
+      return <StreamedToolBlock block={row.block} fileLinks={chatFileLinks()} />;
     }
 
     if (row.kind === "live") {
@@ -1592,7 +1818,7 @@ export function ChatPanel() {
           </article>
         }
       >
-        <article class="flex flex-col gap-3 rounded-3xl border border-(--border) bg-[linear-gradient(135deg,rgba(15,118,110,0.12),rgba(255,255,255,0.92))] p-4 shadow-sm">
+        <article class="theme-selected-surface flex flex-col gap-3 rounded-3xl border border-(--border) p-4 shadow-sm">
           <div class="flex items-center gap-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-(--accent-strong)">
             <Clipboard class="h-3.5 w-3.5" />
             Plan summary
@@ -2044,6 +2270,7 @@ export function ChatPanel() {
       planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
       correctnessIterationModeDefault: state.correctnessIterationModeDefault,
       backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
+      assistantAutoApproveNonBlockingQuestionsDefault: state.assistantAutoApproveNonBlockingQuestionsDefault,
       backgroundJobNotificationsEnabled: state.backgroundJobNotificationsEnabled,
       memoryBankEnabledDefault: state.memoryBankEnabledDefault,
       memoryBankRecordRunsDefault: state.memoryBankRecordRunsDefault,
@@ -2068,6 +2295,7 @@ export function ChatPanel() {
         planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
         correctnessIterationModeDefault: state.correctnessIterationModeDefault,
         backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
+        assistantAutoApproveNonBlockingQuestionsDefault: state.assistantAutoApproveNonBlockingQuestionsDefault,
         memoryBankEnabledDefault: state.memoryBankEnabledDefault,
         memoryBankRecordRunsDefault: state.memoryBankRecordRunsDefault,
         checkCliUpdatesDefault: state.checkCliUpdatesDefault
@@ -3152,10 +3380,20 @@ export function ChatPanel() {
                 disabledReason={executionPauseReason()}
                 onSubmit={() => composerTextarea?.form?.requestSubmit()}
                 onKeyDown={handleComposerKeyDown}
+                onKeyUp={syncComposerCaret}
                 onClick={handleComposerClick}
+                onSelect={syncComposerCaret}
+                onFocus={() => queueMicrotask(syncComposerCaret)}
+                ariaControls={composerLookupOpen() ? "chat-composer-lookup" : undefined}
+                ariaExpanded={composerLookupOpen()}
+                ariaActiveDescendant={composerLookupActiveOptionId()}
                 onInput={(value) => {
+                  syncComposerCaret();
                   harnessStore.setProjectDraft(project().id, value);
-                  setComposerLookupIndex(0);
+                  setComposerLookupForcedClosed(false);
+                  setDismissedComposerLookupKey(undefined);
+                  setComposerLookupActiveIndex(0);
+                  queueMicrotask(() => syncComposerLookupDomVisibility({ focusMenu: composerLookupOpen() }));
                   resizeComposer();
                 }}
                 rightActions={
@@ -3244,33 +3482,60 @@ export function ChatPanel() {
                   </>
                 }
               />
-              <Show when={composerLookupOptions().length > 0}>
-                <div class="absolute bottom-[7.75rem] left-8 right-8 z-20 max-h-64 overflow-auto rounded-xl border border-(--border) bg-(--panel) p-1 shadow-xl">
-                  <For each={composerLookupOptions()}>
-                    {(option, index) => (
-                      <button
-                        type="button"
-                        class="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-[0.65625rem]"
-                        classList={{
-                          "bg-white/70": index() === composerLookupIndex()
-                        }}
-                        onMouseDown={(event) => {
-                          event.preventDefault();
-                          applyComposerLookupOption(index());
-                        }}
-                      >
-                        <Show when={composerLookup()?.kind === "skill"} fallback={getFileTypeIcon(option.insertText.slice(1).trim(), "h-3.5 w-3.5")}>
-                          <WandSparkles class="h-3.5 w-3.5 text-(--muted)" />
-                        </Show>
-                        <span class="min-w-0 flex-1">
-                          <span class="block truncate font-semibold text-(--foreground)">{option.label}</span>
-                          <span class="block truncate text-[0.5625rem] text-(--muted)">{option.detail}</span>
-                        </span>
-                      </button>
-                    )}
-                  </For>
-                </div>
-              </Show>
+              <div
+                ref={(element) => {
+                  composerLookupMenu = element;
+                  queueMicrotask(() => {
+                    if (composerLookupOpen() && composerLookupMenu === element) {
+                      syncComposerLookupDomVisibility({ focusMenu: true });
+                    } else {
+                      setComposerLookupMenuHidden(true);
+                    }
+                  });
+                }}
+                id="chat-composer-lookup"
+                data-test-composer-lookup=""
+                hidden={!composerLookupOpen()}
+                role={composerLookupOpen() ? "listbox" : undefined}
+                aria-label={composerLookupOpen() ? "Composer lookup" : undefined}
+                aria-hidden={composerLookupOpen() ? "false" : "true"}
+                tabIndex={-1}
+                class="absolute bottom-[7.75rem] left-8 right-8 z-20 max-h-64 overflow-auto rounded-xl border border-(--border) bg-(--panel) p-1 shadow-xl"
+                onKeyDown={(event) => runWithChatPanelOwner(() => handleComposerLookupKeyDown(event))}
+              >
+                <For each={composerLookupRenderedOptions()}>
+                  {(option) => (
+                    <button
+                      id={getComposerLookupOptionId(option.index)}
+                      data-composer-lookup-option=""
+                      data-composer-lookup-index={option.index}
+                      type="button"
+                      role={composerLookupOpen() ? "option" : undefined}
+                      aria-selected={option.selected}
+                      class={cn(
+                        "flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-[0.65625rem]",
+                        option.selected ? "bg-white/70 ring-1 ring-(--ring)" : ""
+                      )}
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => {
+                        setComposerLookupActiveIndex(option.index);
+                        applyComposerLookupOption(option.index);
+                      }}
+                      onMouseEnter={() => {
+                        setComposerLookupActiveIndex(option.index);
+                      }}
+                    >
+                      <Show when={composerLookup()?.kind === "skill"} fallback={getFileTypeIcon(option.insertText.slice(1).trim(), "h-3.5 w-3.5")}>
+                        <WandSparkles class="h-3.5 w-3.5 text-(--muted)" />
+                      </Show>
+                      <span class="min-w-0 flex-1">
+                        <span class="block truncate font-semibold text-(--foreground)">{option.label}</span>
+                        <span class="block truncate text-[0.5625rem] text-(--muted)">{option.detail}</span>
+                      </span>
+                    </button>
+                  )}
+                </For>
+              </div>
               <input
                 ref={attachmentInput}
                 class="hidden"
@@ -3306,14 +3571,24 @@ export function ChatPanel() {
                   </Show>
                 </div>
               </Show>
-              <Show when={composerFileBadges().length > 0}>
+              <Show when={composerReferenceBadges().length > 0}>
                 <div class="flex flex-wrap gap-2">
-                  <For each={composerFileBadges()}>
-                    {(filePath) => (
-                      <span class="inline-flex max-w-full items-center gap-2 rounded-full border border-(--border) bg-white/75 px-2.5 py-1 text-[0.50625rem] font-semibold text-(--foreground)">
-                        {getFileTypeIcon(filePath, "h-3 w-3")}
-                        <span class="truncate">{filePath}</span>
-                      </span>
+                  <For each={composerReferenceBadges()}>
+                    {(badge) => (
+                      <Button
+                        data-test-composer-reference-badge=""
+                        tooltip={`Ctrl/Meta-click to open ${badge.label} in the IDE`}
+                        aria-label={`Open ${badge.label} in IDE`}
+                        variant="secondary"
+                        size="sm"
+                        class="h-7 max-w-full rounded-full px-2.5 py-1 text-[0.5625rem] font-semibold"
+                        onClick={(event) => handleComposerBadgeClick(event, badge)}
+                      >
+                        <Show when={badge.kind === "skill"} fallback={getFileTypeIcon(badge.target.path, "h-3 w-3")}>
+                          <WandSparkles class="h-3 w-3 text-(--muted)" />
+                        </Show>
+                        <span class="min-w-0 truncate">{badge.label}</span>
+                      </Button>
                     )}
                   </For>
                 </div>
@@ -3678,6 +3953,10 @@ function isBlockingRunStatus(status: AgentRunState["status"]) {
   return status === "planning" || status === "running-main" || status === "running-subagents" || status === "aggregating";
 }
 
+function getComposerLookupOptionId(index: number) {
+  return `chat-composer-lookup-option-${index}`;
+}
+
 function getComposerLookup(draft: string, caret: number) {
   const tokenStart = Math.max(draft.lastIndexOf(" ", caret - 1), draft.lastIndexOf("\n", caret - 1), draft.lastIndexOf("\t", caret - 1)) + 1;
   const token = draft.slice(tokenStart, caret);
@@ -3709,16 +3988,84 @@ function getDirectoryName(filePath: string) {
   return index > 0 ? normalized.slice(0, index) : ".";
 }
 
-function getComposerFileBadges(draft: string, filePaths: string[]) {
-  const known = new Set(filePaths);
-  const badges = new Set<string>();
-  for (const match of draft.matchAll(/(?:^|\s)@([^\s]+)/g)) {
-    const filePath = match[1];
-    if (filePath && known.has(filePath)) {
-      badges.add(filePath);
+function getComposerReferenceBadges(
+  draft: string,
+  fileContext: ChatFileLinkContext,
+  skillPaths: readonly string[]
+): ComposerReferenceBadge[] {
+  const badges = new Map<string, ComposerReferenceBadge & { index: number }>();
+
+  for (const badge of getComposerSkillBadges(draft, fileContext, skillPaths)) {
+    badges.set(badge.key, badge);
+  }
+
+  for (const badge of getComposerFileBadges(draft, fileContext)) {
+    if (!badges.has(badge.key)) {
+      badges.set(badge.key, badge);
     }
   }
-  return [...badges];
+
+  return [...badges.values()]
+    .sort((left, right) => left.index - right.index)
+    .map((badge) => ({
+      key: badge.key,
+      kind: badge.kind,
+      label: badge.label,
+      target: badge.target
+    }));
+}
+
+function getComposerSkillBadges(
+  draft: string,
+  fileContext: ChatFileLinkContext,
+  skillPaths: readonly string[]
+): Array<ComposerReferenceBadge & { index: number }> {
+  const skillPathByName = new Map<string, string>();
+  for (const skillPath of skillPaths) {
+    skillPathByName.set(getSkillName(skillPath).toLowerCase(), skillPath);
+  }
+
+  const badges: Array<ComposerReferenceBadge & { index: number }> = [];
+  for (const match of draft.matchAll(/(?:^|\s)\/([A-Za-z0-9_.-]+)/g)) {
+    const skillName = match[1];
+    if (!skillName) {
+      continue;
+    }
+    const skillPath = skillPathByName.get(skillName.toLowerCase());
+    if (!skillPath) {
+      continue;
+    }
+    const target = resolveChatFileTarget(skillPath, fileContext) ?? { path: skillPath.replace(/\\/g, "/") };
+    badges.push({
+      key: `skill:${target.path}`,
+      kind: "skill",
+      label: `/${skillName}`,
+      target,
+      index: (match.index ?? 0) + match[0].indexOf("/")
+    });
+  }
+  return badges;
+}
+
+function getComposerFileBadges(
+  draft: string,
+  fileContext: ChatFileLinkContext
+): Array<ComposerReferenceBadge & { index: number }> {
+  return findChatFileReferences(draft, fileContext)
+    .filter((reference) => reference.text.startsWith("@"))
+    .map((reference) => ({
+      key: `file:${reference.target.path}:${reference.target.line ?? ""}:${reference.target.column ?? ""}`,
+      kind: "file" as const,
+      label: `@${formatChatFileTarget(reference.target)}`,
+      target: reference.target,
+      index: reference.index
+    }));
+}
+
+function formatChatFileTarget(target: ChatFileTarget) {
+  const line = target.line ? `:${target.line}` : "";
+  const column = target.column ? `:${target.column}` : "";
+  return `${target.path}${line}${column}`;
 }
 
 function getFileTypeIcon(filePath: string, className: string) {

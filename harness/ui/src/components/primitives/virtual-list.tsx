@@ -53,6 +53,11 @@ type EstimatedVirtualItem = {
   size: number;
 };
 
+type ViewportMeasurementOptions = {
+  forceScrollToEnd?: boolean;
+  scrollToEndIfStuck?: boolean;
+};
+
 type VirtualListScrollTargetProps<T> = {
   items: readonly T[];
   getKey: (item: T, absoluteIndex: number) => string;
@@ -159,6 +164,8 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
   let viewportObserver: ResizeObserver | undefined;
   let paginationThrottle: number | undefined;
   let pendingPaginationFrame: number | undefined;
+  let pendingViewportMeasurementFrame: number | undefined;
+  let pendingViewportMeasurementOptions: ViewportMeasurementOptions = {};
   let pendingObservedRowsMeasurementFrame: number | undefined;
   let paginationAbortController: AbortController | undefined;
   const rowObservers = new WeakMap<HTMLDivElement, ResizeObserver>();
@@ -229,6 +236,7 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
       count
     });
     virtualizer.measure();
+    queueMicrotask(measureObservedRows);
     queueObservedRowsMeasurement();
     setMeasurementVersion((version) => version + 1);
   });
@@ -266,6 +274,7 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
 
   onMount(() => {
     observeViewport();
+    queueViewportMeasurement({ forceScrollToEnd: local.stickToEnd || local.pagination.kind === "reverse" });
     if (local.stickToEnd || local.pagination.kind === "reverse") {
       queueMicrotask(scrollToEnd);
     }
@@ -277,6 +286,9 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
     }
     if (pendingPaginationFrame !== undefined) {
       window.cancelAnimationFrame(pendingPaginationFrame);
+    }
+    if (pendingViewportMeasurementFrame !== undefined) {
+      window.cancelAnimationFrame(pendingViewportMeasurementFrame);
     }
     if (pendingObservedRowsMeasurementFrame !== undefined) {
       window.cancelAnimationFrame(pendingObservedRowsMeasurementFrame);
@@ -345,7 +357,9 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
   createEffect(() => {
     itemSignature();
     virtualizer.measure();
+    queueMicrotask(measureObservedRows);
     queueObservedRowsMeasurement();
+    setMeasurementVersion((version) => version + 1);
   });
 
   createEffect(() => {
@@ -378,6 +392,7 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
     viewport = element;
     local.viewportRef?.(element);
     observeViewport();
+    queueViewportMeasurement({ forceScrollToEnd: local.stickToEnd || local.pagination.kind === "reverse" });
   }
 
   function observeViewport() {
@@ -391,16 +406,37 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
       viewportObserver = new ResizeObserverCtor((entries) => {
         entries[0]?.contentRect.width;
         entries[0]?.contentRect.height;
-        const wasStuck = stuckToEnd();
-        virtualizer.measure();
-        queueObservedRowsMeasurement();
-        setStuckToEnd(isNearEnd());
-        if (local.stickToEnd && wasStuck) {
-          queueMicrotask(scrollToEnd);
-        }
+        queueViewportMeasurement({ scrollToEndIfStuck: local.stickToEnd });
       });
       viewportObserver.observe(element);
     }
+  }
+
+  function queueViewportMeasurement(options: ViewportMeasurementOptions = {}) {
+    pendingViewportMeasurementOptions = {
+      forceScrollToEnd: pendingViewportMeasurementOptions.forceScrollToEnd || options.forceScrollToEnd,
+      scrollToEndIfStuck: pendingViewportMeasurementOptions.scrollToEndIfStuck || options.scrollToEndIfStuck
+    };
+    if (pendingViewportMeasurementFrame !== undefined) {
+      return;
+    }
+    pendingViewportMeasurementFrame = window.requestAnimationFrame(() => {
+      pendingViewportMeasurementFrame = undefined;
+      const currentOptions = pendingViewportMeasurementOptions;
+      pendingViewportMeasurementOptions = {};
+      if (!viewport) {
+        return;
+      }
+      const wasStuck = stuckToEnd();
+      virtualizer.measure();
+      measureObservedRows();
+      queueObservedRowsMeasurement();
+      setStuckToEnd(isNearEnd());
+      setMeasurementVersion((version) => version + 1);
+      if (currentOptions.forceScrollToEnd || (currentOptions.scrollToEndIfStuck && wasStuck)) {
+        queueMicrotask(scrollToEnd);
+      }
+    });
   }
 
   function isNearEnd() {
@@ -666,8 +702,12 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
     }
     pendingObservedRowsMeasurementFrame = window.requestAnimationFrame(() => {
       pendingObservedRowsMeasurementFrame = undefined;
-      observedRowElements.forEach((element) => measureRowElement(element, getRowElementIndex(element)));
+      measureObservedRows();
     });
+  }
+
+  function measureObservedRows() {
+    observedRowElements.forEach((element) => measureRowElement(element, getRowElementIndex(element)));
   }
 
   function disconnectRowObserver(element: HTMLDivElement) {

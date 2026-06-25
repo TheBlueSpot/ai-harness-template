@@ -96,7 +96,7 @@ export async function planTask(
         "- Every enum field must use one of the exact schema literals shown.",
         "- Same-worktree parallel work requires contracts with non-overlapping ownedPaths.",
         "- For greenfield apps, use prerequisites for shared scaffold/setup, then split subagents by concrete files or folders.",
-        "- For greenfield coding projects when the user did not specify a stack, default to TypeScript, Bun runtime/package/test runner, bun test, bunx tsc --noEmit, bun:sqlite when backend persistence is needed, SolidJS + Tailwind when frontend UI is needed, and Happy DOM for frontend/component tests.",
+        "- For greenfield coding projects when the user did not specify a stack, default to TypeScript, Bun runtime/package/test runner, bun test, bunx tsc --noEmit, bun:sqlite when backend persistence is needed, SolidJS + Tailwind when frontend UI is needed, Happy DOM for frontend/component tests, and useful documentation comments for new functions and variables.",
         "- Frontend/component test contracts should use Bun plus Happy DOM with the createUiTest-style setup from harness/ui/src/utils/tests/test-harness.ts.",
         "- Greenfield UI plans should create shared primitives before feature components, routes, screens, or workflows.",
         "- Recommended scripts for generated TypeScript Bun projects are dev=\"bun --hot src/server.ts\", start=\"bun src/server.ts\", test=\"bun test\", typecheck=\"bunx tsc --noEmit\", and build:ui=\"bun run scripts/build-ui.ts\" only when the matching backend/UI surface exists.",

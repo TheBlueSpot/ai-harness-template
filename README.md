@@ -20,7 +20,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - Codex CLI noninteractive runs use bundled official Codex SDK and CLI, enable Codex live web search plus writable shell network access, keep review mode prompt-driven inside the harness instead of special native review routing, and on Windows writable runs auto-use full access because bundled Codex currently downgrades `workspace-write` to read-only there while read-only tasks stay sandboxed
 - Typed browser session tracking with explicit per-step approval gates when browser-capable tools are active
 - Workspace-global pause and resume for execution starts, with deferred planner questions, assistant questions, and browser approvals released on resume
-- Local scheduled tasks and background jobs with durable SQLite history, startup catch-up, approval policy defaults, hidden automation threads, concurrent launch, timeout/progress visibility, overload warnings, and a dedicated inbox surface
+- Local scheduled tasks and background jobs with durable SQLite history, startup catch-up, approval policy defaults, non-blocking assistant question auto-approval, hidden automation threads, concurrent launch, timeout/progress visibility, overload warnings, and a dedicated inbox surface
 - Header-level notification inbox for deferred planner questions, assistant questions, browser approvals, and passive background-run status updates
 - Local assistant operators with named personas, role prompts, project or global scope, synced routing defaults, pause and resume controls, chat, todo lists, deduped and compacted learnings, open questions, clone-to-project flow, and high-level plus deep-debug logs
 - Shared skills synchronize into `~/.ai-harness-template/skills` for use across opened projects, while `.agents/skills` stays available for project-local workflows
@@ -44,7 +44,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - Formatted markdown rendering across chat, plan, and trace surfaces with safe links, GFM tables and task lists, footnotes, and copyable highlighted code blocks
 - Workspace and project instruction context with lightweight working-memory summaries that feed planning and execution
 - Transcript-level plan summary cards with shared plan modal access from chat and trace panel, plus durable Build now, In progress, Retry, Resume, and Completed action states from SQLite run status by run id
-- Global execution preferences for dirty-git chat restriction, dirty change threshold, plan gate mode, countdown delay, subagent isolation strategy, and correctness iteration policy
+- Global execution preferences for dirty-git chat restriction, dirty change threshold, plan gate mode, countdown delay, subagent isolation strategy, correctness iteration policy, and non-blocking assistant question auto-approval
 - Workspace preference for Pi auto-compaction threshold so long runs trim context earlier and continue with current intent intact
 - Resumable partial subagent runs that keep completed work after failure or stop
 - Persistent retry for full runs and individual subagents, including successful runs
@@ -154,7 +154,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - Assistant state persists locally in SQLite, including canonical thread memory summaries, active todo list, deduped learnings with AI-assisted compaction, pending questions, structured logs, and assistant-linked background jobs
 - Browser localStorage mirrors API key presence and global workspace defaults for the current browser profile
 - Browser localStorage also mirrors execution gate, isolation strategy, countdown, and correctness iteration defaults for the current browser profile
-- Browser localStorage also mirrors background-job approval defaults and local notification opt-in for the current browser profile
+- Browser localStorage also mirrors background-job approval defaults, non-blocking assistant question auto-approval, and local notification opt-in for the current browser profile
 - Browser localStorage also stores per-thread draft text keyed by project and thread id
 - Browser localStorage also stores chat-composer session state, including current trace panel open state as a session override separate from the saved default-open preference
 - Provider brand switching is gated by matching saved key presence

@@ -167,5 +167,5 @@ function splitTextIntoFileLinks(node: Text, context: ChatFileLinkContext): Eleme
 }
 
 function isFileLinkTransformBoundary(element: Element) {
-  return element.tagName === "a" || element.tagName === "code" || element.tagName === "pre";
+  return element.tagName === "a" || element.tagName === "pre";
 }

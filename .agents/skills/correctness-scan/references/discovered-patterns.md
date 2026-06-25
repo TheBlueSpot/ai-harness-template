@@ -225,3 +225,19 @@ Update this file when a scan finds a reusable failure pattern, missing probe, or
 - Treat setup health, activation checklists, tutorial progress, and similar readiness sidecars as stale unless every source-state mutation refreshes or invalidates them.
 - Probe project add, activate, remove, preference save, runtime refresh, and repair actions for paired source event plus readiness event ordering.
 - Dismiss or completion UI should not imply progress when the underlying readiness predicate still fails.
+
+## 2026-06-24
+
+### Browser-layout primitives can outgrow Happy DOM coverage
+
+- Treat virtualizers, resize-driven panes, sticky scroll regions, split panels, and tab-mounted dense lists as risky when tests only assert DOM rows under Happy DOM.
+- Probe first browser paint before any tab switch, then compare after tab switch or remount; remounts can hide zero-height, stale measurement, and scroll-anchor defects.
+- Browser coverage should assert visible row geometry, scroll canvas height, row non-overlap, and anchor position with deterministic seeded data. Happy DOM tests remain useful for pure helpers and dispatch behavior, but not for layout correctness.
+
+## 2026-06-25
+
+### Collapsed intervention labels
+
+- Treat "approval", "blocked", and "needs input" as risky labels when multiple gates can stop the same run.
+- Probe background jobs, assistants, browser tools, global pause, circuit breakers, and planner questions for distinct reason metadata, policy readback, inline actions, and matching filters.
+- Auto-run settings should name exactly which gates they bypass and which gates remain human- or reviewer-mediated.

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { assistantTodoPatchSchema, assistantTodoSchema, parseClientCommand, parseServerEvent } from "./protocol";
+import { assistantTodoPatchSchema, assistantTodoSchema, parseClientCommand, parseServerEvent, terminalSessionSchema } from "./protocol";
 
 test("assistant todo schema defaults work metadata", () => {
   const parsed = assistantTodoSchema.parse({
@@ -80,4 +80,32 @@ test("assistant pagination commands and events parse", () => {
       }
     }).type
   ).toBe("assistant.summary.listed");
+});
+
+test("terminal sessions carry transport degradation metadata", () => {
+  const now = new Date().toISOString();
+
+  const session = terminalSessionSchema.parse({
+    id: "terminal-1",
+    projectId: "project-1",
+    name: "PowerShell",
+    shellId: "powershell",
+    cwd: "C:\\repo",
+    status: "running",
+    cols: 120,
+    rows: 32,
+    transportMode: "pipe",
+    transportWarning: "Windows pipe transport",
+    startedAt: now,
+    updatedAt: now
+  });
+
+  expect(session.transportMode).toBe("pipe");
+  expect(
+    parseServerEvent({
+      type: "terminal.session.updated",
+      requestId: "req-terminal",
+      payload: { session }
+    }).type
+  ).toBe("terminal.session.updated");
 });

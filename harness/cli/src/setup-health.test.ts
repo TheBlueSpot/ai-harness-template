@@ -29,6 +29,7 @@ const basePreferences: PreferencesState = {
   subagentModelPreferenceDefault: "inference",
   correctnessIterationModeDefault: "ask-before-iterate",
   backgroundJobApprovalPolicyDefault: "ask-risky",
+  assistantAutoApproveNonBlockingQuestionsDefault: true,
   memoryBankEnabledDefault: true,
   memoryBankRecordRunsDefault: true,
   checkCliUpdatesDefault: true,

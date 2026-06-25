@@ -204,6 +204,7 @@ describe("pi planner payload parsing", () => {
 
     expect(prompt).toContain("default to TypeScript, Bun runtime/package/test runner, bun test");
     expect(prompt).toContain("Happy DOM for frontend/component tests");
+    expect(prompt).toContain("documentation comments for new functions and variables");
     expect(prompt).toContain("createUiTest-style setup from harness/ui/src/utils/tests/test-harness.ts");
   });
 

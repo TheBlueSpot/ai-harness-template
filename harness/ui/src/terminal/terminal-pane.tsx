@@ -41,6 +41,7 @@ export function TerminalPane(props: {
           <span class="truncate font-semibold text-(--foreground)">{props.session.name}</span>
           <span>{props.connected ? "attached" : "detached"}</span>
           <span>{props.session.cols}x{props.session.rows}</span>
+          {props.session.transportMode === "pipe" && <span class="text-amber-600">pipe mode</span>}
         </div>
         <div class="flex shrink-0 items-center gap-1">
           {terminalStore.state.searchOpen && (
@@ -79,6 +80,9 @@ export function TerminalPane(props: {
           <XtermRenderer
             sessionId={props.session.id}
             output={props.output}
+            outputDelta={terminalStore.state.outputDeltaBySessionId[props.session.id]}
+            outputVersion={terminalStore.state.outputVersionBySessionId[props.session.id]}
+            outputResetVersion={terminalStore.state.outputResetVersionBySessionId[props.session.id]}
             searchQuery={terminalStore.state.searchQuery}
             copyOnSelect={terminalStore.state.preferences.copyOnSelect}
             ctrlCMode={terminalStore.state.preferences.ctrlCMode}

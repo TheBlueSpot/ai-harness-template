@@ -7,6 +7,14 @@ description: Master runbook for chat-driven harness assistant actions. Use when 
 
 Use this skill as the entrypoint for assistant work that should be doable from project chat.
 
+## Scope Guard
+
+Assistant management must run through this skill's referenced workflow and bundled scripts. That includes assistant state lookup, creation/config changes, todos, questions, learnings, logs, assistant-owned jobs, pause/resume, recovery, and circuit-breaker work.
+
+Do not create ad hoc project-space scripts, DB clients, migrations, helpers, or app code to inspect or mutate assistant state. If the bundled scripts cannot perform a needed assistant-management action, extend the scripts under `.agents/skills/assistant-actions/scripts` or the matching runbook docs instead, then run `runbook-check.ts`.
+
+Project work may still add normal project scripts when the user asks for project automation or implementation, but those scripts must not manage assistants or mutate harness assistant state.
+
 ## Start
 
 1. Read [action-index.md](references/action-index.md).

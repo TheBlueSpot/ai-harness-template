@@ -4,25 +4,57 @@
   --bg: #eef2f4;
   --foreground: #17202a;
   --surface-foreground: #f8fafc;
-  --muted: #63717e;
-  --panel: rgba(248, 250, 252, 0.92);
-  --panel-strong: rgba(255, 255, 255, 0.98);
-  --row: rgba(255, 255, 255, 0.72);
-  --border: rgba(31, 41, 55, 0.13);
+  --muted: #6c757f;
+  --panel: #fbfcfd;
+  --panel-strong: #fefefe;
+  --row: #f8fafb;
+  --border: #ccd4d6;
   --accent: #0f766e;
   --accent-strong: #0b5f59;
   --accent-foreground: #f8fafc;
   --info: #2563eb;
   --info-strong: #1d4ed8;
-  --ring: rgba(37, 99, 235, 0.28);
-  --warning: #d97706;
-  --warning-strong: #b45309;
+  --ring: #69aaa4;
+  --warning: #a16207;
+  --warning-strong: #92400e;
   --danger: #dc2626;
   --danger-strong: #b91c1c;
-  --success: #059669;
-  --success-strong: #047857;
+  --success: #047857;
+  --success-strong: #166534;
+  --font-ui: "IBM Plex Sans", "Trebuchet MS", sans-serif;
+  --font-display: "Aptos Display", "Segoe UI", sans-serif;
+  --font-mono: "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --body-background: #f5f7f8;
+  --app-background-grid: none;
   color: var(--foreground);
-  font-family: "IBM Plex Sans", "Trebuchet MS", sans-serif;
+  font-family: var(--font-ui);
+}
+
+:root[data-theme-transition="active"],
+:root[data-theme-transition="active"] *,
+:root[data-theme-transition="active"] *::before,
+:root[data-theme-transition="active"] *::after {
+  transition-property:
+    background-color,
+    border-color,
+    box-shadow,
+    caret-color,
+    color,
+    fill,
+    outline-color,
+    stroke,
+    text-decoration-color;
+  transition-duration: 700ms;
+  transition-timing-function: ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-theme-transition="active"],
+  :root[data-theme-transition="active"] *,
+  :root[data-theme-transition="active"] *::before,
+  :root[data-theme-transition="active"] *::after {
+    transition-duration: 1ms;
+  }
 }
 
 html,
@@ -34,8 +66,218 @@ body,
 
 body {
   margin: 0;
-  background: linear-gradient(180deg, #f4f7f9 0%, #e8edf1 48%, #dfe6eb 100%);
+  background: var(--body-background);
   color: var(--foreground);
+}
+
+.bg-white {
+  background-color: var(--panel-strong) !important;
+}
+
+.bg-white\/10 {
+  background-color: color-mix(in srgb, var(--panel-strong) 10%, transparent) !important;
+}
+
+.bg-white\/38 {
+  background-color: color-mix(in srgb, var(--panel-strong) 38%, transparent) !important;
+}
+
+.bg-white\/40 {
+  background-color: color-mix(in srgb, var(--panel-strong) 40%, transparent) !important;
+}
+
+.bg-white\/45 {
+  background-color: color-mix(in srgb, var(--panel-strong) 45%, transparent) !important;
+}
+
+.bg-white\/55 {
+  background-color: color-mix(in srgb, var(--panel-strong) 55%, transparent) !important;
+}
+
+.bg-white\/60 {
+  background-color: color-mix(in srgb, var(--panel-strong) 60%, transparent) !important;
+}
+
+.bg-white\/65 {
+  background-color: color-mix(in srgb, var(--panel-strong) 65%, transparent) !important;
+}
+
+.bg-white\/70 {
+  background-color: color-mix(in srgb, var(--panel-strong) 70%, transparent) !important;
+}
+
+.bg-white\/72 {
+  background-color: color-mix(in srgb, var(--panel-strong) 72%, transparent) !important;
+}
+
+.bg-white\/75 {
+  background-color: color-mix(in srgb, var(--panel-strong) 75%, transparent) !important;
+}
+
+.bg-white\/80 {
+  background-color: color-mix(in srgb, var(--panel-strong) 80%, transparent) !important;
+}
+
+.bg-white\/85 {
+  background-color: color-mix(in srgb, var(--panel-strong) 85%, transparent) !important;
+}
+
+.bg-white\/90 {
+  background-color: color-mix(in srgb, var(--panel-strong) 90%, transparent) !important;
+}
+
+.hover\:bg-white\/60:hover {
+  background-color: color-mix(in srgb, var(--panel-strong) 60%, transparent) !important;
+}
+
+.hover\:bg-white\/70:hover {
+  background-color: color-mix(in srgb, var(--panel-strong) 70%, transparent) !important;
+}
+
+.hover\:bg-white\/75:hover {
+  background-color: color-mix(in srgb, var(--panel-strong) 75%, transparent) !important;
+}
+
+.hover\:bg-white\/80:hover {
+  background-color: color-mix(in srgb, var(--panel-strong) 80%, transparent) !important;
+}
+
+.hover\:bg-white\/85:hover {
+  background-color: color-mix(in srgb, var(--panel-strong) 85%, transparent) !important;
+}
+
+.theme-selected-surface {
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--accent) 18%, var(--panel) 82%),
+    color-mix(in srgb, var(--panel-strong) 90%, var(--accent) 10%)
+  );
+}
+
+.bg-teal-50,
+.bg-teal-50\/65,
+.bg-teal-950\/5,
+.bg-teal-950\/10 {
+  background-color: color-mix(in srgb, var(--accent) 10%, var(--panel) 90%) !important;
+}
+
+.border-teal-200,
+.border-teal-700\/20,
+.border-teal-700\/25 {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border) 72%) !important;
+}
+
+.text-teal-700 {
+  color: var(--accent-strong) !important;
+}
+
+.bg-amber-50,
+.bg-amber-50\/80,
+.bg-amber-50\/90,
+.bg-amber-50\/92,
+.bg-amber-100,
+.bg-amber-200,
+.hover\:bg-amber-50:hover {
+  background-color: color-mix(in srgb, var(--warning) 14%, var(--panel) 86%) !important;
+}
+
+.bg-amber-500 {
+  background-color: var(--warning) !important;
+}
+
+.border-amber-200,
+.border-amber-200\/80,
+.border-amber-300,
+.border-amber-300\/70,
+.border-amber-300\/80,
+.border-amber-400,
+.border-amber-500 {
+  border-color: color-mix(in srgb, var(--warning) 42%, var(--border) 58%) !important;
+}
+
+.text-amber-600,
+.text-amber-700,
+.text-amber-800,
+.text-amber-900,
+.text-amber-900\/70,
+.text-amber-900\/75,
+.text-amber-900\/80,
+.text-amber-950,
+.text-amber-950\/80 {
+  color: var(--warning-strong) !important;
+}
+
+.bg-rose-50,
+.bg-rose-50\/80,
+.bg-rose-50\/85,
+.bg-rose-100,
+.hover\:bg-rose-50:hover {
+  background-color: color-mix(in srgb, var(--danger) 13%, var(--panel) 87%) !important;
+}
+
+.bg-rose-500,
+.bg-rose-600 {
+  background-color: var(--danger) !important;
+}
+
+.border-rose-200,
+.border-rose-300,
+.border-rose-300\/70,
+.border-rose-400 {
+  border-color: color-mix(in srgb, var(--danger) 42%, var(--border) 58%) !important;
+}
+
+.text-rose-600,
+.text-rose-700,
+.text-rose-800,
+.text-rose-900,
+.text-rose-900\/75,
+.text-rose-900\/80,
+.text-rose-950 {
+  color: var(--danger-strong) !important;
+}
+
+.bg-emerald-50,
+.bg-emerald-100 {
+  background-color: color-mix(in srgb, var(--success) 13%, var(--panel) 87%) !important;
+}
+
+.bg-emerald-500,
+.bg-emerald-600 {
+  background-color: var(--success) !important;
+}
+
+.border-emerald-200,
+.border-emerald-300,
+.border-emerald-400,
+.border-emerald-500,
+.border-emerald-500\/30 {
+  border-color: color-mix(in srgb, var(--success) 42%, var(--border) 58%) !important;
+}
+
+.text-emerald-600,
+.text-emerald-700,
+.text-emerald-800,
+.text-emerald-800\/80,
+.text-emerald-900 {
+  color: var(--success-strong) !important;
+}
+
+.bg-sky-50,
+.bg-sky-50\/80,
+.bg-sky-100 {
+  background-color: color-mix(in srgb, var(--info) 13%, var(--panel) 87%) !important;
+}
+
+.border-sky-200,
+.border-sky-300,
+.border-sky-400 {
+  border-color: color-mix(in srgb, var(--info) 42%, var(--border) 58%) !important;
+}
+
+.text-sky-800,
+.text-sky-950 {
+  color: var(--info-strong) !important;
 }
 
 /* .app-zoom-shell {
@@ -72,16 +314,14 @@ textarea {
 } */
 
 .font-display {
-  font-family: "Aptos Display", "Segoe UI", sans-serif;
+  font-family: var(--font-display);
 }
 
 .app-background {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background:
-    linear-gradient(90deg, rgba(15, 118, 110, 0.07) 0 1px, transparent 1px 100%),
-    linear-gradient(180deg, rgba(37, 99, 235, 0.05) 0 1px, transparent 1px 100%);
+  background: var(--app-background-grid);
   background-size: 56px 56px;
   mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.55), transparent 70%);
 }
@@ -191,18 +431,18 @@ textarea {
 .execution-control-pill-running {
   background: linear-gradient(
     180deg,
-    rgba(217, 119, 6, 0.12),
-    rgba(217, 119, 6, 0.18)
+    color-mix(in srgb, var(--warning) 13%, var(--panel) 87%),
+    color-mix(in srgb, var(--warning) 20%, var(--panel) 80%)
   );
-  border-color: rgba(217, 119, 6, 0.28);
-  color: #7c3f00;
+  border-color: color-mix(in srgb, var(--warning) 36%, var(--border) 64%);
+  color: var(--warning-strong);
 }
 
 .execution-control-pill-running:hover {
   background: linear-gradient(
     180deg,
-    rgba(233, 180, 91, 0.22),
-    rgba(223, 161, 58, 0.28)
+    color-mix(in srgb, var(--warning) 24%, var(--panel) 76%),
+    color-mix(in srgb, var(--warning) 30%, var(--panel) 70%)
   );
 }
 
@@ -216,7 +456,7 @@ textarea {
   width: 0.3rem;
   height: 0.3rem;
   border-radius: 999px;
-  background: #444;
+  background: var(--muted);
   opacity: 0.72;
   transform: scale(1);
   animation: agent-waiting-breathe 3.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
@@ -233,14 +473,14 @@ textarea {
 @keyframes agent-waiting-breathe {
   0%,
   100% {
-    background: #444;
+    background: var(--muted);
     opacity: 0.72;
     transform: scale(1);
     filter: brightness(1);
   }
 
   50% {
-    background: #22c55e;
+    background: var(--success);
     opacity: 1;
     transform: scale(1.375);
     filter: brightness(1.15);
@@ -250,23 +490,27 @@ textarea {
 .execution-control-pill-paused {
   background: linear-gradient(
     180deg,
-    rgba(5, 150, 105, 0.12),
-    rgba(5, 150, 105, 0.18)
+    color-mix(in srgb, var(--success) 13%, var(--panel) 87%),
+    color-mix(in srgb, var(--success) 20%, var(--panel) 80%)
   );
-  border-color: rgba(5, 150, 105, 0.24);
+  border-color: color-mix(in srgb, var(--success) 34%, var(--border) 66%);
   color: var(--success-strong);
 }
 
 .trace-context-summary {
   position: relative;
   overflow: hidden;
-  border: 1px solid rgba(15, 23, 42, 0.12);
+  border: 1px solid var(--border);
   border-left: 3px solid var(--accent);
   border-radius: 0.5rem;
   background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.92), rgba(245, 248, 250, 0.7)),
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--panel-strong) 92%, transparent),
+      color-mix(in srgb, var(--row) 72%, transparent)
+    ),
     var(--row);
-  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.11);
+  box-shadow: 0 14px 34px color-mix(in srgb, var(--foreground) 11%, transparent);
   padding: 0.82rem;
 }
 
@@ -275,7 +519,12 @@ textarea {
   position: absolute;
   inset: 0 0 auto;
   height: 2px;
-  background: linear-gradient(90deg, rgba(15, 118, 110, 0.68), rgba(37, 99, 235, 0.48), rgba(217, 119, 6, 0.3));
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--accent) 72%, transparent),
+    color-mix(in srgb, var(--info) 54%, transparent),
+    color-mix(in srgb, var(--warning) 36%, transparent)
+  );
   opacity: 0.82;
 }
 
@@ -324,17 +573,17 @@ textarea {
   min-height: 1.45rem;
   border: 1px solid var(--border);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.74);
+  background: color-mix(in srgb, var(--panel-strong) 76%, transparent);
   padding: 0 0.52rem;
   color: var(--foreground);
   font-size: 0.62rem;
   font-weight: 750;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.68);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--panel-strong) 72%, transparent);
 }
 
 .trace-context-agent-pill-active {
-  border-color: rgba(37, 99, 235, 0.26);
-  background: rgba(219, 234, 254, 0.72);
+  border-color: color-mix(in srgb, var(--info) 32%, var(--border) 68%);
+  background: color-mix(in srgb, var(--info) 16%, var(--panel) 84%);
   color: var(--info-strong);
 }
 
@@ -347,7 +596,7 @@ textarea {
 
 .trace-context-agent-pill-active .trace-context-pill-dot {
   background: var(--info);
-  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--info) 16%, transparent);
 }
 
 .trace-context-metrics {
@@ -360,32 +609,32 @@ textarea {
 
 .trace-context-metric {
   min-width: 0;
-  border: 1px solid rgba(31, 41, 55, 0.1);
+  border: 1px solid var(--border);
   border-left: 3px solid var(--muted);
   border-radius: 0.5rem;
-  background: rgba(255, 255, 255, 0.7);
+  background: color-mix(in srgb, var(--panel-strong) 72%, transparent);
   padding: 0.52rem 0.56rem;
-  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.055);
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--foreground) 6%, transparent);
 }
 
 .trace-context-metric-success {
   border-left-color: var(--success);
-  background: rgba(236, 253, 245, 0.72);
+  background: color-mix(in srgb, var(--success) 13%, var(--panel) 87%);
 }
 
 .trace-context-metric-warning {
   border-left-color: var(--warning);
-  background: rgba(255, 251, 235, 0.76);
+  background: color-mix(in srgb, var(--warning) 13%, var(--panel) 87%);
 }
 
 .trace-context-metric-danger {
   border-left-color: var(--danger);
-  background: rgba(255, 241, 242, 0.76);
+  background: color-mix(in srgb, var(--danger) 13%, var(--panel) 87%);
 }
 
 .trace-context-metric-info {
   border-left-color: var(--info);
-  background: rgba(239, 246, 255, 0.72);
+  background: color-mix(in srgb, var(--info) 13%, var(--panel) 87%);
 }
 
 .trace-context-metric-label {
@@ -413,9 +662,9 @@ textarea {
 .trace-context-runline,
 .trace-context-run-summary {
   margin-top: 0.58rem;
-  border: 1px solid rgba(31, 41, 55, 0.1);
+  border: 1px solid var(--border);
   border-radius: 0.5rem;
-  background: rgba(255, 255, 255, 0.56);
+  background: color-mix(in srgb, var(--panel-strong) 58%, transparent);
   padding: 0.62rem;
   color: var(--muted);
   font-size: 0.66rem;
@@ -495,7 +744,7 @@ textarea {
   border: 1px solid var(--border);
   border-left: 3px solid var(--muted);
   border-radius: 0.5rem;
-  background: rgba(255, 255, 255, 0.74);
+  background: color-mix(in srgb, var(--panel-strong) 74%, transparent);
   padding: 0.62rem 0.7rem;
   color: var(--foreground);
 }
@@ -539,8 +788,8 @@ textarea {
 .execution-control-pill-paused:hover {
   background: linear-gradient(
     180deg,
-    rgba(15, 118, 110, 0.16),
-    rgba(15, 118, 110, 0.24)
+    color-mix(in srgb, var(--success) 20%, var(--panel) 80%),
+    color-mix(in srgb, var(--success) 28%, var(--panel) 72%)
   );
 }
 
@@ -653,14 +902,14 @@ textarea {
   border: 1px dashed var(--border);
   border-radius: 0.75rem;
   padding: 0.4rem 0.65rem;
-  background: rgba(255, 255, 255, 0.45);
+  background: color-mix(in srgb, var(--panel-strong) 45%, transparent);
 }
 
 .markdown-inline-code {
-  border: 1px solid rgba(15, 118, 110, 0.12);
+  border: 1px solid color-mix(in srgb, var(--accent) 16%, var(--border) 84%);
   border-radius: 0.45rem;
   padding: 0.08rem 0.35rem;
-  background: rgba(15, 118, 110, 0.08);
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel) 90%);
   font-family: "Cascadia Code", "Consolas", monospace;
   font-size: 0.92em;
 }
@@ -710,7 +959,7 @@ textarea {
   overflow-x: auto;
   border: 1px solid var(--border);
   border-radius: 1rem;
-  background: rgba(255, 255, 255, 0.58);
+  background: color-mix(in srgb, var(--panel-strong) 58%, transparent);
 }
 
 .markdown-table {
@@ -728,7 +977,7 @@ textarea {
 }
 
 .markdown-table thead th {
-  background: rgba(15, 118, 110, 0.09);
+  background: color-mix(in srgb, var(--accent) 11%, var(--panel) 89%);
   font-size: 0.62rem;
   font-weight: 700;
   letter-spacing: 0.14em;
@@ -736,7 +985,7 @@ textarea {
 }
 
 .markdown-table tbody tr:nth-child(even) td {
-  background: rgba(255, 255, 255, 0.36);
+  background: color-mix(in srgb, var(--panel-strong) 36%, transparent);
 }
 
 .markdown-content input[type="checkbox"] {
@@ -1315,7 +1564,7 @@ textarea {
   position: absolute;
   inset: 0;
   transform: translateX(-100%);
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.18), transparent);
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--panel-strong) 18%, transparent), transparent);
   animation: ide-skeleton-shimmer 1.15s infinite;
 }
 

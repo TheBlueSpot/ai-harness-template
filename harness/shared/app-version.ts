@@ -1,1 +1,1 @@
-export const HARNESS_APP_VERSION = "0.5.005.135-tsunade";
+export const HARNESS_APP_VERSION = "55.455-yoruchi";

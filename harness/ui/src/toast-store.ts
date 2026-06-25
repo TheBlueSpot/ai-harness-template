@@ -102,8 +102,10 @@ export function createToastStoreForProvider(options: CreateToastStoreOptions = {
 }
 
 export type ToastStoreApi = ReturnType<typeof createToastStoreForProvider>;
+export type ToastSourceResolver = () => (() => void) | undefined;
 
 let activeToastStore: ToastStoreApi | undefined;
+let defaultToastSourceResolver: ToastSourceResolver | undefined;
 
 export function setActiveToastStore(store: ToastStoreApi | undefined) {
   activeToastStore = store;
@@ -111,6 +113,10 @@ export function setActiveToastStore(store: ToastStoreApi | undefined) {
 
 export function getActiveToastStore() {
   return activeToastStore;
+}
+
+export function setDefaultToastSourceResolver(resolver: ToastSourceResolver | undefined) {
+  defaultToastSourceResolver = resolver;
 }
 
 export function requireToastStore() {
@@ -139,6 +145,7 @@ export const toastStore = new Proxy({} as ToastStoreApi, {
 type ReportUiErrorOptions = {
   projectId?: string;
   rethrow?: "never" | "dev-only";
+  onClick?: () => void;
 };
 
 export function pushToast(title: string, description?: string, tone: ToastEntry["tone"] = "info", onClick?: () => void) {
@@ -146,7 +153,7 @@ export function pushToast(title: string, description?: string, tone: ToastEntry[
     title,
     description,
     tone,
-    onClick
+    onClick: onClick ?? defaultToastSourceResolver?.()
   });
 }
 
@@ -174,7 +181,7 @@ export function reportUiError(error: unknown, source: string, options: ReportUiE
     rethrowMode
   });
   logUiErrorTelemetry(source, normalizedError);
-  pushToast(source, descriptionParts.join(" | "), "error");
+  pushToast(source, descriptionParts.join(" | "), "error", options.onClick);
 
   if (rethrowMode === "dev-only" && isDevelopmentUiRuntime()) {
     queueMicrotask(() => {

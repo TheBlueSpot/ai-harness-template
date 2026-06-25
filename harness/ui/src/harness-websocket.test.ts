@@ -1,9 +1,9 @@
 import { beforeEach, expect, it } from "bun:test";
 import type { BackgroundJob, BackgroundJobRun } from "../../shared/protocol";
 import { createEmptyBackgroundJobsState, harnessStore } from "./harness-store";
-import { notifyBackgroundRun } from "./harness-websocket";
+import { hasLocalServerPreferenceOverride, notifyBackgroundRun } from "./harness-websocket";
 import { toastStore } from "./toast-store";
-import { createHarnessStateFixture } from "./utils/tests/test-fixtures";
+import { createHarnessStateFixture, defaultPreferencesFixture } from "./utils/tests/test-fixtures";
 import { createUiTest } from "./utils/tests/test-harness";
 import { clearBrowserStateForTests, seedHarnessStoreForTests } from "./utils/tests/store-test-utils";
 
@@ -94,5 +94,37 @@ createUiTest("notifyBackgroundRun", () => {
       selectedRunId: run.id,
       selectedNotificationId: undefined
     });
+  });
+});
+
+createUiTest("hasLocalServerPreferenceOverride", () => {
+  it("syncs browser-local background approval defaults back to the server", () => {
+    expect(
+      hasLocalServerPreferenceOverride(
+        { backgroundJobApprovalPolicyDefault: "allow-all" },
+        { ...defaultPreferencesFixture, backgroundJobApprovalPolicyDefault: "ask-risky" }
+      )
+    ).toBe(true);
+
+    expect(
+      hasLocalServerPreferenceOverride(
+        { backgroundJobApprovalPolicyDefault: "allow-all" },
+        { ...defaultPreferencesFixture, backgroundJobApprovalPolicyDefault: "allow-all" }
+      )
+    ).toBe(false);
+
+    expect(
+      hasLocalServerPreferenceOverride(
+        { assistantAutoApproveNonBlockingQuestionsDefault: false },
+        { ...defaultPreferencesFixture, assistantAutoApproveNonBlockingQuestionsDefault: true }
+      )
+    ).toBe(true);
+
+    expect(
+      hasLocalServerPreferenceOverride(
+        { assistantAutoApproveNonBlockingQuestionsDefault: false },
+        { ...defaultPreferencesFixture, assistantAutoApproveNonBlockingQuestionsDefault: false }
+      )
+    ).toBe(false);
   });
 });

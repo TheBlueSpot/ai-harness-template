@@ -200,11 +200,11 @@ function resolveMarkdownFileTarget(
 }
 
 function handleFileLinkClick(event: MouseEvent, target: ChatFileTarget, fileLinks: MarkdownContentProps["fileLinks"]) {
+  event.preventDefault();
+  event.stopPropagation();
   if (!fileLinks || (!event.ctrlKey && !event.metaKey)) {
     return;
   }
-  event.preventDefault();
-  event.stopPropagation();
   fileLinks.onOpenFile(target);
 }
 

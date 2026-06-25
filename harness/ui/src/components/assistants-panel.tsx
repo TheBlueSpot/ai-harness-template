@@ -48,6 +48,8 @@ import { normalizeAppHotkeyPreferences } from "../lib/app-hotkeys";
 import { findChatFileReferenceAtPosition, type ChatFileLinkContext, type ChatFileTarget } from "../lib/chat-file-links";
 import { registerCurrentTabItemSelector } from "../lib/current-tab-item-hotkeys";
 import { openIdeWindow } from "../lib/ide-window";
+import { openBackgroundJobInJobsPane, openBackgroundRunInJobsPane } from "../background-run-navigation";
+import { openAssistantLogEntrySource } from "../source-navigation";
 import { submitOnEnter } from "../textarea-submit";
 import {
   type AssistantEditorDraft,
@@ -64,12 +66,13 @@ import {
 } from "../harness-store";
 import { pushToast } from "../toast-store";
 import { ActionButton } from "./action-button";
+import { FileLinkedText, type FileLinkConfig } from "./file-linked-text";
 import { MarkdownContent } from "./markdown-content";
 import { Button } from "./primitives/button";
 import { ChatComposer } from "./primitives/chat-composer";
 import { CopyTextButton } from "./primitives/copy-text-button";
 import { Dialog } from "./primitives/dialog";
-import { ExecutionLog } from "./primitives/execution-log";
+import { ExecutionLog, type ExecutionLogEntry } from "./primitives/execution-log";
 import {
   DetailEmptyState,
   LeftPaneEmptyState,
@@ -423,6 +426,10 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
   const circuitBreakerAssistant = createMemo(() =>
     state.assistants.assistants.find((assistant) => assistant.id === selectedCircuitBreakerAssistantId())
   );
+  const circuitBreakerFileProject = createMemo(() =>
+    state.workspace.projects.find((project) => project.id === circuitBreakerAssistant()?.projectId) ?? assistantFileProject()
+  );
+  const circuitBreakerFileLinks = () => getAssistantProjectFileLinks(circuitBreakerFileProject());
   const circuitBreakerLogs = createMemo(() =>
     [...state.assistants.logs]
       .filter((entry) => entry.assistantId === selectedCircuitBreakerAssistantId())
@@ -765,12 +772,36 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
   }
 
   function handleOpenAssistantChatFile(target: ChatFileTarget) {
-    const project = assistantFileProject();
+    handleOpenAssistantProjectFile(assistantFileProject(), target);
+  }
+
+  function handleOpenAssistantProjectFile(project: typeof state.workspace.projects[number] | undefined, target: ChatFileTarget) {
     if (!project) {
       return;
     }
     openIdeWindow({ projectId: project.id, threadId: project.activeThreadId });
     harnessStore.openIdeFile(target.path, target.line, target.column);
+  }
+
+  function getAssistantProjectFileLinks(project: typeof state.workspace.projects[number] | undefined): FileLinkConfig {
+    return {
+      rootPath: project?.rootPath,
+      filePaths: project?.filePaths ?? [],
+      onOpenFile: (target) => handleOpenAssistantProjectFile(project, target)
+    };
+  }
+
+  function getAssistantFileLinks(assistant: Assistant | undefined): FileLinkConfig {
+    const project = state.workspace.projects.find((entry) => entry.id === assistant?.projectId) ?? assistantFileProject();
+    return getAssistantProjectFileLinks(project);
+  }
+
+  function handleAssistantRosterKeyDown(event: KeyboardEvent, assistantId: string) {
+    if (event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+    event.preventDefault();
+    harnessStore.setSelectedAssistantId(assistantId);
   }
 
   function openAssistantJobEditor() {
@@ -865,6 +896,29 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
     harnessStore.setActiveSurface("background-jobs");
   }
 
+  function openAssistantBackgroundJob(jobId: string) {
+    openBackgroundJobInJobsPane(state, jobId);
+  }
+
+  function openAssistantBackgroundRun(run: BackgroundJobRun) {
+    openBackgroundRunInJobsPane(state, run.id, run.jobId);
+  }
+
+  function openAssistantLogSource(entry: ExecutionLogEntry) {
+    const log = visibleLogs().find((candidate) => candidate.id === entry.id);
+    if (log) {
+      openAssistantLogEntrySource(state, log);
+    }
+  }
+
+  function handleSourceCardKeyDown(event: KeyboardEvent, open: () => void) {
+    if (event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+    event.preventDefault();
+    open();
+  }
+
   return (
     <LeftPaneShell data-test-assistants-panel="" kind="assistants" padding="comfortable">
       <Show when={selectedCircuitBreakerAssistantId()}>
@@ -926,7 +980,9 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
               </div>
               <section class="rounded-2xl border border-(--border) bg-white/70 p-3">
                 <div class="mb-2 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Reason</div>
-                <div class="text-[0.75rem] leading-5 text-(--foreground)">{assistant().circuitBreakerReason ?? "No failure reason recorded."}</div>
+                <div class="text-[0.75rem] leading-5 text-(--foreground)">
+                  <FileLinkedText text={assistant().circuitBreakerReason ?? "No failure reason recorded."} fileLinks={circuitBreakerFileLinks()} />
+                </div>
               </section>
               <section class="rounded-2xl border border-(--border) bg-white/70 p-3">
                 <div class="mb-2 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Latest logs</div>
@@ -935,8 +991,12 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                     <For each={circuitBreakerLogs()}>
                       {(entry) => (
                         <div class="rounded-xl border border-(--border) bg-white/70 p-2 text-[0.675rem] leading-5">
-                          <div class="font-semibold text-(--foreground)">{entry.level} | {entry.summary}</div>
-                          <div class="text-(--muted)">{entry.detail ?? "No detail."}</div>
+                          <div class="font-semibold text-(--foreground)">
+                            <FileLinkedText text={`${entry.level} | ${entry.summary}`} fileLinks={circuitBreakerFileLinks()} />
+                          </div>
+                          <div class="text-(--muted)">
+                            <FileLinkedText text={entry.detail ?? "No detail."} fileLinks={circuitBreakerFileLinks()} />
+                          </div>
                           <div class="mt-1 text-[0.575rem] uppercase tracking-[0.12em] text-(--muted)">{formatShortTimestamp(entry.createdAt)}</div>
                         </div>
                       )}
@@ -952,7 +1012,9 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                       {(run) => (
                         <div class="rounded-xl border border-(--border) bg-white/70 p-2 text-[0.675rem] leading-5">
                           <div class="font-semibold text-(--foreground)">{run.status}</div>
-                          <div class="text-(--muted)">{run.failureMessage ?? run.summary ?? run.id}</div>
+                          <div class="text-(--muted)">
+                            <FileLinkedText text={run.failureMessage ?? run.summary ?? run.id} fileLinks={circuitBreakerFileLinks()} />
+                          </div>
                           <Show when={run.failureCategory}>
                             {(category) => <div class="text-(--muted)">Category: {formatFailureCategory(category())}</div>}
                           </Show>
@@ -970,7 +1032,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                     <For each={circuitBreakerQuestions()}>
                       {(question) => (
                         <div class="rounded-xl border border-(--border) bg-white/70 p-2 text-[0.675rem] leading-5 text-(--foreground)">
-                          {question.prompt}
+                          <FileLinkedText text={question.prompt} fileLinks={circuitBreakerFileLinks()} />
                         </div>
                       )}
                     </For>
@@ -1065,18 +1127,20 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
             }
           >
             {(assistant) => (
-              <button
-                class="w-full rounded-[0.8rem] border border-l-4 p-3 text-left shadow-sm transition hover:border-(--accent-strong)"
+              <div
+                class="w-full cursor-pointer rounded-[0.8rem] border border-l-4 p-3 text-left shadow-sm transition hover:border-(--accent-strong)"
                 classList={{
                   "border-(--accent)": selectedAssistant()?.id === assistant.id,
                   "border-l-(--accent-strong)": selectedAssistant()?.id === assistant.id,
-                  "bg-[linear-gradient(135deg,rgba(15,118,110,0.14),rgba(255,255,255,0.92))]": selectedAssistant()?.id === assistant.id,
+                  "theme-selected-surface": selectedAssistant()?.id === assistant.id,
                   "border-(--border)": selectedAssistant()?.id !== assistant.id,
                   [assistantRunStateBorderClass(assistant.runState)]: selectedAssistant()?.id !== assistant.id,
                   "bg-white/70": selectedAssistant()?.id !== assistant.id
                 }}
-                type="button"
+                role="button"
+                tabIndex={0}
                 onClick={() => harnessStore.setSelectedAssistantId(assistant.id)}
+                onKeyDown={(event) => handleAssistantRosterKeyDown(event, assistant.id)}
               >
                 <div class="flex items-start justify-between gap-3">
                   <div>
@@ -1091,10 +1155,12 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                   </Show>
                 </div>
                 <div class="mt-3 text-[0.675rem] leading-5 text-(--muted)">
-                  <div>{assistant.description ?? summarizePrompt(assistant.jobPrompt)}</div>
+                  <div>
+                    <FileLinkedText text={assistant.description ?? summarizePrompt(assistant.jobPrompt)} fileLinks={getAssistantFileLinks(assistant)} />
+                  </div>
                   <div class="mt-1">{assistant.circuitBreakerState === "tripped" ? "Circuit breaker tripped" : `Updated ${formatShortTimestamp(assistant.updatedAt)}`}</div>
                 </div>
-              </button>
+              </div>
             )}
           </VirtualList>
           </LeftPaneListSection>
@@ -1132,7 +1198,11 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                         <AssistantFact label="Questions">{String(assistant().unreadQuestionCount)}</AssistantFact>
                       </div>
                       <Show when={assistant().description}>
-                        <div class="mt-3 max-w-3xl border-l-2 border-(--border) pl-4 text-[0.675rem] leading-5 text-(--muted)">{assistant().description}</div>
+                        {(description) => (
+                          <div class="mt-3 max-w-3xl border-l-2 border-(--border) pl-4 text-[0.675rem] leading-5 text-(--muted)">
+                            <FileLinkedText text={description()} fileLinks={assistantChatFileLinks()} />
+                          </div>
+                        )}
                       </Show>
                     </div>
 
@@ -1200,7 +1270,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                           Clone to project
                         </ActionButton>
                       </Show>
-                      <ActionButton tooltip="Delete assistant" icon={<Trash2 class="h-4 w-4" />} variant="secondary" class="border-rose-200 text-rose-700 hover:bg-rose-50" onClick={() => handleDeleteAssistant(assistant())}>Delete</ActionButton>
+                      <ActionButton tooltip="Delete assistant" icon={<Trash2 class="h-4 w-4" />} variant="secondary" class="border-(--danger) text-(--danger) hover:bg-(--panel)" onClick={() => handleDeleteAssistant(assistant())}>Delete</ActionButton>
                     </div>
                   </div>
                 </div>
@@ -1255,8 +1325,8 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                               classList={{
                                 "border-(--border)": row.message.role === "user",
                                 "bg-white/75": row.message.role === "user",
-                                "border-teal-200": row.message.role !== "user",
-                                "bg-teal-50/65": row.message.role !== "user"
+                                "border-(--accent)": row.message.role !== "user",
+                                "bg-(--panel)": row.message.role !== "user"
                               }}
                             >
                               <div class="mb-2 text-[0.575rem] font-semibold uppercase tracking-[0.16em] text-(--muted)">{row.message.role}</div>
@@ -1269,7 +1339,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                               )}
                             </article>
                           ) : (
-                            <article class="rounded-2xl border border-teal-200 bg-teal-50/65 p-3">
+                            <article class="rounded-2xl border border-(--accent) bg-(--panel) p-3">
                               <div class="mb-2 text-[0.575rem] font-semibold uppercase tracking-[0.16em] text-(--muted)">assistant</div>
                               <MarkdownContent content={row.content} fileLinks={assistantChatFileLinks()} />
                               {renderMessageActionRow(
@@ -1352,13 +1422,15 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                       <div class="mt-3 grid max-h-32 gap-4 overflow-auto border-l-2 border-(--border) py-2 pl-4 text-[0.675rem] leading-5 text-(--muted) lg:grid-cols-[minmax(0,1fr)_minmax(16rem,24rem)]">
                         <div class="min-w-0">
                           <div class="font-semibold text-(--foreground)">Summary</div>
-                          <div class="mt-1 whitespace-pre-wrap">{selectedThread()?.memorySummary?.content ?? "No rolled summary yet."}</div>
+                          <div class="mt-1 whitespace-pre-wrap">
+                            <FileLinkedText text={selectedThread()?.memorySummary?.content ?? "No rolled summary yet."} fileLinks={assistantChatFileLinks()} />
+                          </div>
                         </div>
                         <div class="min-w-0">
                           <div class="font-semibold text-(--foreground)">Active todos</div>
                           <ul class="mt-1 space-y-1">
                             <For each={visibleTodos().filter((todo) => isActiveTodo(todo.state)).slice(0, 8)}>
-                              {(todo) => <li>{todo.state} | {todo.title}</li>}
+                              {(todo) => <li><FileLinkedText text={`${todo.state} | ${todo.title}`} fileLinks={assistantChatFileLinks()} /></li>}
                             </For>
                           </ul>
                         </div>
@@ -1378,16 +1450,36 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                         <article class={`border-l-2 py-3 pl-4 pr-2 ${todoStateBorderClass(todo.state)}`}>
                           <div class="flex flex-wrap items-start justify-between gap-3">
                             <div class="min-w-0 flex-1">
-                              <div class="text-[0.75rem] font-semibold text-(--foreground)">{todo.title}</div>
-                              <Show when={todo.description}><div class="mt-1 text-[0.675rem] leading-5 text-(--muted)">{todo.description}</div></Show>
-                              <Show when={todo.blockerReason}><div class="mt-1 text-[0.625rem] text-amber-900">Blocker: {todo.blockerReason}</div></Show>
-                              <Show when={todo.workTarget}><div class="mt-1 text-[0.625rem] text-(--muted)">Target: {todo.workTarget}</div></Show>
+                              <div class="text-[0.75rem] font-semibold text-(--foreground)">
+                                <FileLinkedText text={todo.title} fileLinks={assistantChatFileLinks()} />
+                              </div>
+                              <Show when={todo.description}>
+                                {(description) => (
+                                  <div class="mt-1 text-[0.675rem] leading-5 text-(--muted)">
+                                    <FileLinkedText text={description()} fileLinks={assistantChatFileLinks()} />
+                                  </div>
+                                )}
+                              </Show>
+                              <Show when={todo.blockerReason}>
+                                {(reason) => (
+                                  <div class="mt-1 text-[0.625rem] text-amber-900">
+                                    <FileLinkedText text={`Blocker: ${reason()}`} fileLinks={assistantChatFileLinks()} />
+                                  </div>
+                                )}
+                              </Show>
+                              <Show when={todo.workTarget}>
+                                {(target) => (
+                                  <div class="mt-1 text-[0.625rem] text-(--muted)">
+                                    <FileLinkedText text={`Target: ${target()}`} fileLinks={assistantChatFileLinks()} />
+                                  </div>
+                                )}
+                              </Show>
                             </div>
                             <div class="flex shrink-0 items-center gap-2">
                               <ActionButton tooltip="Move assistant todo up" ariaLabel={`Move ${todo.title} up`} icon={<ArrowUp class="h-4 w-4" />} size="icon" variant="ghost" class="h-8 w-8" disabled={selectedTodos()[0]?.id === todo.id} disabledReason="Todo is already first" onClick={() => reorderTodo(todo, -1)} />
                               <ActionButton tooltip="Move assistant todo down" ariaLabel={`Move ${todo.title} down`} icon={<ArrowDown class="h-4 w-4" />} size="icon" variant="ghost" class="h-8 w-8" disabled={selectedTodos()[selectedTodos().length - 1]?.id === todo.id} disabledReason="Todo is already last" onClick={() => reorderTodo(todo, 1)} />
                               <DropdownControl kind="select" ariaLabel={`Select ${todo.title} state`} icon={<ClipboardList class="h-3.5 w-3.5" />} size="md" class="w-40" value={todo.state} options={assistantTodoStateOptions} onChange={(value) => updateTodo(todo, { state: value as AssistantTodo["state"] })} />
-                              <ActionButton tooltip="Delete assistant todo" ariaLabel={`Delete ${todo.title}`} icon={<Trash2 class="h-4 w-4" />} size="icon" variant="ghost" class="h-8 w-8 text-rose-700 hover:bg-rose-50" onClick={() => deleteTodo(todo)} />
+                              <ActionButton tooltip="Delete assistant todo" ariaLabel={`Delete ${todo.title}`} icon={<Trash2 class="h-4 w-4" />} size="icon" variant="ghost" class="h-8 w-8 text-(--danger) hover:bg-(--panel)" onClick={() => deleteTodo(todo)} />
                             </div>
                           </div>
                           <div class="mt-2 grid gap-2 md:grid-cols-[12rem_1fr]">
@@ -1415,6 +1507,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                       questionAnswers={questionAnswers()}
                       onAnswerInput={(questionId, value) => setQuestionAnswers((current) => ({ ...current, [questionId]: value }))}
                       onAnswer={answerQuestion}
+                      fileLinks={assistantChatFileLinks()}
                     />
                     <QuestionColumn
                       title="Resolved questions"
@@ -1424,6 +1517,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                       questionAnswers={questionAnswers()}
                       onAnswerInput={() => undefined}
                       onAnswer={() => undefined}
+                      fileLinks={assistantChatFileLinks()}
                     />
                   </section>
                 </Show>
@@ -1451,15 +1545,25 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                         }
                       >
                         {(job) => (
-                          <article class={`overflow-hidden border-l-2 py-3 pl-4 pr-2 ${backgroundJobStatusBorderClass(job.status)}`}>
+                          <article
+                            class={`cursor-pointer overflow-hidden border-l-2 py-3 pl-4 pr-2 transition hover:border-(--accent-strong) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring) ${backgroundJobStatusBorderClass(job.status)}`}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => openAssistantBackgroundJob(job.id)}
+                            onKeyDown={(event) => handleSourceCardKeyDown(event, () => openAssistantBackgroundJob(job.id))}
+                          >
                             <div class="flex items-start justify-between gap-3">
                               <div class="break-words text-[0.75rem] font-semibold text-(--foreground)">{job.name}</div>
                               <span class={`shrink-0 rounded-full px-2 py-0.5 text-[0.55rem] font-semibold uppercase tracking-[0.12em] ${backgroundJobStatusBadgeClass(job.status)}`}>{job.status}</span>
                             </div>
                             <div class="mt-1 text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">{job.kind}</div>
                             <div class="mt-2 break-words text-[0.675rem] leading-5 text-(--muted) [overflow-wrap:anywhere]">
-                              <div>{job.description ?? job.scheduleInput}</div>
-                              <Show when={formatFailureTracking(job)}>{(line) => <div class="mt-1">{line()}</div>}</Show>
+                              <div>
+                                <FileLinkedText text={job.description ?? job.scheduleInput} fileLinks={assistantChatFileLinks()} />
+                              </div>
+                              <Show when={formatFailureTracking(job)}>
+                                {(line) => <div class="mt-1"><FileLinkedText text={line()} fileLinks={assistantChatFileLinks()} /></div>}
+                              </Show>
                             </div>
                           </article>
                         )}
@@ -1469,13 +1573,23 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                       <div class="mb-3 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Recent runs</div>
                       <VirtualList class="h-120 pr-2 lg:h-full" contentClass="w-full" itemClass="pb-3" items={visibleRuns()} getKey={(run) => run.id} estimateSize={145} pagination={{ kind: "forward", initialCount: 60, batchSize: 60 }}>
                         {(run) => (
-                          <article class={`overflow-hidden border-l-2 py-3 pl-4 pr-2 ${backgroundRunStatusBorderClass(run.status)}`}>
+                          <article
+                            class={`cursor-pointer overflow-hidden border-l-2 py-3 pl-4 pr-2 transition hover:border-(--accent-strong) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--ring) ${backgroundRunStatusBorderClass(run.status)}`}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => openAssistantBackgroundRun(run)}
+                            onKeyDown={(event) => handleSourceCardKeyDown(event, () => openAssistantBackgroundRun(run))}
+                          >
                             <div class="flex items-center justify-between gap-3">
-                              <div class="min-w-0 break-words text-[0.75rem] font-semibold text-(--foreground) [overflow-wrap:anywhere]">{run.summary ?? run.id}</div>
+                              <div class="min-w-0 break-words text-[0.75rem] font-semibold text-(--foreground) [overflow-wrap:anywhere]">
+                                <FileLinkedText text={run.summary ?? run.id} fileLinks={assistantChatFileLinks()} />
+                              </div>
                               <div class={`shrink-0 rounded-full px-2 py-0.5 text-[0.55rem] font-semibold uppercase tracking-[0.12em] ${backgroundRunStatusBadgeClass(run.status)}`}>{run.status}</div>
                             </div>
                             <div class="mt-2 break-words text-[0.675rem] leading-5 text-(--muted) [overflow-wrap:anywhere]">
-                              <div>{run.failureMessage ?? `Triggered by ${run.triggerSource}`}</div>
+                              <div>
+                                <FileLinkedText text={run.failureMessage ?? `Triggered by ${run.triggerSource}`} fileLinks={assistantChatFileLinks()} />
+                              </div>
                               <Show when={run.failureCategory}>{(category) => <div class="mt-1">Failure category: {formatFailureCategory(category())}</div>}</Show>
                               <Show when={formatPromptStats(run.promptStats)}>{(stats) => <div class="mt-1">Prompt: {stats()}</div>}</Show>
                               <div class="mt-1">Updated {formatShortTimestamp(run.updatedAt)}</div>
@@ -1497,13 +1611,15 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                       selectedEntryId={state.assistants.selectedLogDetailsId}
                       onSelectedEntryIdChange={harnessStore.setAssistantLogDetailsId}
                       rowVariant="flat"
+                      fileLinks={assistantChatFileLinks()}
+                      onEntrySourceClick={openAssistantLogSource}
                     />
                   </section>
                 </Show>
 
                 <Show when={activeTab() === "config"}>
                   <section class="grid min-h-0 flex-1 gap-4 lg:grid-cols-2">
-                    <ConfigCard title="Role">{assistant().description ?? "No description."}</ConfigCard>
+                    <ConfigCard title="Role"><FileLinkedText text={assistant().description ?? "No description."} fileLinks={assistantChatFileLinks()} /></ConfigCard>
                     <ConfigCard title="Routing">
                       <div>Agent: {assistant().agentId}</div>
                       <div>Provider: {assistant().providerBrand ?? "current"}</div>
@@ -1513,8 +1629,16 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                       <div>Fast mode: {assistant().fastMode ? "on" : "off"}</div>
                       <div>Scope: {assistant().scope}</div>
                     </ConfigCard>
-                    <ConfigCard title="Personality prompt"><div class="whitespace-pre-wrap">{assistant().personalityPrompt}</div></ConfigCard>
-                    <ConfigCard title="Job prompt"><div class="whitespace-pre-wrap">{assistant().jobPrompt}</div></ConfigCard>
+                    <ConfigCard title="Personality prompt">
+                      <div class="whitespace-pre-wrap">
+                        <FileLinkedText text={assistant().personalityPrompt} fileLinks={assistantChatFileLinks()} />
+                      </div>
+                    </ConfigCard>
+                    <ConfigCard title="Job prompt">
+                      <div class="whitespace-pre-wrap">
+                        <FileLinkedText text={assistant().jobPrompt} fileLinks={assistantChatFileLinks()} />
+                      </div>
+                    </ConfigCard>
                     <ConfigCard title="Linked assets">
                       <Show when={selectedAssetRefs().length > 0} fallback={<div>No asset refs.</div>}>
                         <div class="space-y-2">
@@ -1523,7 +1647,9 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                               <div class="border-l-2 border-(--border) py-2 pl-3">
                                 <div class="text-[0.625rem] uppercase tracking-[0.14em] text-(--muted)">{assetRef.kind}</div>
                                 <div class="font-semibold text-(--foreground)">{assetRef.label}</div>
-                                <div class="break-all text-[0.675rem] text-(--muted)">{assetRef.value}</div>
+                                <div class="break-all text-[0.675rem] text-(--muted)">
+                                  <FileLinkedText text={assetRef.value} fileLinks={assistantChatFileLinks()} />
+                                </div>
                               </div>
                             )}
                           </For>
@@ -1549,17 +1675,21 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                         <article class="border-l-2 border-(--border) py-3 pl-4 pr-2">
                           <div class="flex items-start justify-between gap-3">
                             <div class="min-w-0">
-                              <div class="text-[0.75rem] font-semibold leading-5 text-(--foreground)">{learning.summary}</div>
+                              <div class="text-[0.75rem] font-semibold leading-5 text-(--foreground)">
+                                <FileLinkedText text={learning.summary} fileLinks={assistantChatFileLinks()} />
+                              </div>
                             </div>
                             <div class="flex shrink-0 items-center gap-2">
                               <div class="text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">{learning.confidence}</div>
                               <ActionButton tooltip="Move assistant learning up" ariaLabel={`Move learning ${learning.summary} up`} icon={<ArrowUp class="h-4 w-4" />} size="icon" variant="ghost" class="h-8 w-8" disabled={selectedLearnings()[0]?.id === learning.id} disabledReason="Learning is already first" onClick={() => reorderLearning(learning, -1)} />
                               <ActionButton tooltip="Move assistant learning down" ariaLabel={`Move learning ${learning.summary} down`} icon={<ArrowDown class="h-4 w-4" />} size="icon" variant="ghost" class="h-8 w-8" disabled={selectedLearnings()[selectedLearnings().length - 1]?.id === learning.id} disabledReason="Learning is already last" onClick={() => reorderLearning(learning, 1)} />
-                              <ActionButton tooltip="Delete assistant learning" ariaLabel={`Delete learning ${learning.summary}`} icon={<Trash2 class="h-4 w-4" />} size="icon" variant="ghost" class="h-8 w-8 text-rose-700 hover:bg-rose-50" onClick={() => deleteLearning(learning)} />
+                              <ActionButton tooltip="Delete assistant learning" ariaLabel={`Delete learning ${learning.summary}`} icon={<Trash2 class="h-4 w-4" />} size="icon" variant="ghost" class="h-8 w-8 text-(--danger) hover:bg-(--panel)" onClick={() => deleteLearning(learning)} />
                             </div>
                           </div>
                           <div class="mt-2 text-[0.675rem] leading-5 text-(--muted)">
-                            <div>Source: {learning.source}</div>
+                            <div>
+                              <FileLinkedText text={`Source: ${learning.source}`} fileLinks={assistantChatFileLinks()} />
+                            </div>
                             <div>{formatShortTimestamp(learning.createdAt)}</div>
                           </div>
                         </article>
@@ -1763,6 +1893,7 @@ function QuestionColumn(props: {
   questionAnswers: Record<string, string>;
   onAnswerInput: (questionId: string, value: string) => void;
   onAnswer: (question: AssistantQuestion, answerText?: string) => void;
+  fileLinks?: FileLinkConfig;
 }) {
   return (
     <section class="flex min-h-0 flex-col">
@@ -1779,7 +1910,9 @@ function QuestionColumn(props: {
       >
         {(question) => (
           <article class={`border-l-2 py-3 pl-4 pr-2 ${questionStatusBorderClass(question.status)}`}>
-            <div class="text-[0.75rem] font-semibold text-(--foreground)">{question.prompt}</div>
+            <div class="text-[0.75rem] font-semibold text-(--foreground)">
+              <FileLinkedText text={question.prompt} fileLinks={props.fileLinks} />
+            </div>
             <div class="mt-1 flex flex-wrap items-center gap-2 text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">
               <span class={`rounded-full px-2 py-0.5 ${questionStatusBadgeClass(question.status)}`}>{question.status}</span>
               <span>{formatShortTimestamp(question.askedAt)}</span>
@@ -1799,7 +1932,13 @@ function QuestionColumn(props: {
                 <ActionButton tooltip="Send answer to assistant" disabled={props.disabled} disabledReason={props.disabledReason} icon={<Save class="h-4 w-4" />} onClick={() => props.onAnswer(question)}>Answer</ActionButton>
               </div>
             </Show>
-            <Show when={question.answerText}><div class="mt-3 text-[0.675rem] leading-5 text-(--muted)">{question.answerText}</div></Show>
+            <Show when={question.answerText}>
+              {(answer) => (
+                <div class="mt-3 text-[0.675rem] leading-5 text-(--muted)">
+                  <FileLinkedText text={answer()} fileLinks={props.fileLinks} />
+                </div>
+              )}
+            </Show>
           </article>
         )}
       </VirtualList>

@@ -158,6 +158,7 @@ const SINGLE_AGENT_MODEL_PREFERENCE_DEFAULT_KEY = "single_agent_model_preference
 const SUBAGENT_MODEL_PREFERENCE_DEFAULT_KEY = "subagent_model_preference_default";
 const CORRECTNESS_ITERATION_MODE_DEFAULT_KEY = "correctness_iteration_mode_default";
 const BACKGROUND_JOB_APPROVAL_POLICY_DEFAULT_KEY = "background_job_approval_policy_default";
+const ASSISTANT_AUTO_APPROVE_NON_BLOCKING_QUESTIONS_DEFAULT_KEY = "assistant_auto_approve_non_blocking_questions_default";
 const ASSISTANT_CONGESTION_CONTROL_ENABLED_DEFAULT_KEY = "assistant_congestion_control_enabled_default";
 const ASSISTANT_MAX_CONGESTION_DEFAULT_KEY = "assistant_max_congestion_default";
 const AUTO_ARCHIVE_COMPLETED_THREADS_DEFAULT_KEY = "auto_archive_completed_threads_default";
@@ -4580,6 +4581,7 @@ export class WorkspaceRepository {
       "jobId" | "projectId" | "assistantId" | "automationThreadId" | "triggerSource" | "status" | "riskLevel" | "approvalStatus"
     > & {
       skippedOccurrenceCount?: number;
+      summary?: string;
     }
   ) {
     const job = this.repairBackgroundJobReferences(input.jobId);
@@ -4597,7 +4599,7 @@ export class WorkspaceRepository {
           agent_id, provider_brand, planning_model_id, execution_model_id, reasoning_strength, fast_mode,
           controller_instance_id, controller_lease_id, controller_lease_expires_at, resume_attempt_count,
           last_heartbeat_at, heartbeat_stage, heartbeat_detail, timed_out_at, queued_at, started_at, completed_at, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, ?11, 'queued', NULL, NULL, ?11, NULL, NULL, ?11, ?11)`
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?11, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, ?12, 'queued', NULL, NULL, ?12, NULL, NULL, ?12, ?12)`
       )
       .run(
         runId,
@@ -4610,6 +4612,7 @@ export class WorkspaceRepository {
         input.riskLevel,
         input.approvalStatus,
         input.skippedOccurrenceCount ?? 0,
+        input.summary ?? null,
         now
       );
     this.db
@@ -5114,15 +5117,23 @@ export class WorkspaceRepository {
 
   getBackgroundJobApprovalPolicyDefault(): BackgroundJobApprovalPolicy {
     const value = this.getWorkspaceMetaValue(BACKGROUND_JOB_APPROVAL_POLICY_DEFAULT_KEY);
-    if (value === "allow-all" || value === "allow-safe" || value === "ask-risky") {
+    if (value === "allow-all" || value === "allow-safe" || value === "ask-risky" || value === "always-ask") {
       return value;
     }
 
-    return "always-ask";
+    return "ask-risky";
   }
 
   setBackgroundJobApprovalPolicyDefault(value: BackgroundJobApprovalPolicy) {
     this.setWorkspaceMetaValue(BACKGROUND_JOB_APPROVAL_POLICY_DEFAULT_KEY, value);
+  }
+
+  getAssistantAutoApproveNonBlockingQuestionsDefault() {
+    return this.getWorkspaceMetaValue(ASSISTANT_AUTO_APPROVE_NON_BLOCKING_QUESTIONS_DEFAULT_KEY) !== "false";
+  }
+
+  setAssistantAutoApproveNonBlockingQuestionsDefault(value: boolean) {
+    this.setWorkspaceMetaValue(ASSISTANT_AUTO_APPROVE_NON_BLOCKING_QUESTIONS_DEFAULT_KEY, String(value));
   }
 
   getAutoArchiveCompletedThreadsDefault() {

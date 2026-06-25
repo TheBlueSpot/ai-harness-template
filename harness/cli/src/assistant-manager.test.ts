@@ -197,6 +197,7 @@ describe("assistant manager bootstrap", () => {
 
     const bootstrapped = manager.bootstrapAssistant(assistant.id);
     await waitForCalls(adapter, 1);
+    expect(adapter.calls[0]?.prompt).toContain("documentation comments for new functions and variables");
     adapter.resolvers[0]?.(bootstrapResult("Implement first screen"));
     await bootstrapped;
 
@@ -207,6 +208,7 @@ describe("assistant manager bootstrap", () => {
       .getAssistantQuestions(assistant.id)
       .filter((question) => question.prompt.includes("Recommended default: TypeScript, Bun runtime"));
     expect(stackQuestions).toHaveLength(1);
+    expect(stackQuestions[0]?.prompt).toContain("documentation comments for new functions and variables");
 
     const retried = manager.retryBootstrap(assistant.id);
     await waitForCalls(adapter, 2);

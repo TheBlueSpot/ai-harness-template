@@ -5,7 +5,7 @@ import { PrimitivePortal } from "./primitive-portal";
 import { isTopOverlay, registerFocusReturn, registerOverlay, restoreOverlayFocus, trapFocusInOverlay } from "./overlay-stack";
 
 type DialogProps = {
-  open?: boolean;
+  open?: boolean | (() => boolean);
   onClose?: () => void;
   title: string;
   eyebrow?: string;
@@ -19,7 +19,7 @@ type DialogProps = {
 export function Dialog(props: DialogProps) {
   let surfaceRef: HTMLElement | undefined;
   const overlayId = `dialog-${Math.random().toString(36).slice(2)}`;
-  const isOpen = createMemo(() => Boolean(props.open));
+  const isOpen = createMemo(() => Boolean(typeof props.open === "function" ? props.open() : props.open));
   const renderChildren = () => (typeof props.children === "function" ? props.children() : props.children);
 
   createEffect(() => {

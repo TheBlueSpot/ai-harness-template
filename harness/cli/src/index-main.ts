@@ -148,6 +148,7 @@ async function runDoctor(options: { json?: boolean } = {}) {
       subagentModelPreferenceDefault: repository.getSubagentModelPreferenceDefault(),
       correctnessIterationModeDefault: repository.getCorrectnessIterationModeDefault(),
       backgroundJobApprovalPolicyDefault: repository.getBackgroundJobApprovalPolicyDefault(),
+      assistantAutoApproveNonBlockingQuestionsDefault: repository.getAssistantAutoApproveNonBlockingQuestionsDefault(),
       memoryBankEnabledDefault: repository.getMemoryBankEnabledDefault(),
       memoryBankRecordRunsDefault: repository.getMemoryBankRecordRunsDefault(),
       checkCliUpdatesDefault: repository.getCheckCliUpdatesDefault(),

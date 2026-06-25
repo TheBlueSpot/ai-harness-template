@@ -657,6 +657,7 @@ createUiTest("ChatPanel", () => {
           subagentModelPreferenceDefault: state.subagentModelPreferenceDefault,
           correctnessIterationModeDefault: state.correctnessIterationModeDefault,
           backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
+          assistantAutoApproveNonBlockingQuestionsDefault: state.assistantAutoApproveNonBlockingQuestionsDefault,
           memoryBankEnabledDefault: state.memoryBankEnabledDefault,
           memoryBankRecordRunsDefault: state.memoryBankRecordRunsDefault,
           checkCliUpdatesDefault: state.checkCliUpdatesDefault,
@@ -1016,6 +1017,42 @@ it("updates composer effort label and sends reasoning plus fast mode", () => {
     });
   });
 
+  it("opens composer skill and file badges in the IDE on modifier click", () => {
+    const project = createViewProjectFixture({
+      id: "project-composer-reference-badges",
+      draft: "/forgiveness-audit inspect @docs/forgiveness-audit.md:3",
+      filePaths: [".agents/skills/forgiveness-audit/SKILL.md", "docs/forgiveness-audit.md"]
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        availableSkillPaths: [".agents/skills/forgiveness-audit/SKILL.md"],
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ChatPanel />);
+
+    const skillBadge = screen.getByRole("button", { name: "Open /forgiveness-audit in IDE" });
+    fireEvent.click(skillBadge);
+    expect(harnessStore.state.ideFileOpenRequest).toBeUndefined();
+
+    fireEvent.click(skillBadge, { metaKey: true });
+    expect(harnessStore.state.activeSurface).toBe("ide");
+    expect(harnessStore.state.ideFileOpenRequest).toMatchObject({
+      path: ".agents/skills/forgiveness-audit/SKILL.md"
+    });
+
+    const fileBadge = screen.getByRole("button", { name: "Open @docs/forgiveness-audit.md:3 in IDE" });
+    fireEvent.click(fileBadge, { ctrlKey: true });
+    expect(harnessStore.state.ideFileOpenRequest).toMatchObject({
+      path: "docs/forgiveness-audit.md",
+      line: 3
+    });
+  });
+
   it("shows skill lookup after slash and inserts the selected skill", () => {
     const project = createViewProjectFixture({
       id: "project-skill-lookup",
@@ -1040,6 +1077,42 @@ it("updates composer effort label and sends reasoning plus fast mode", () => {
     fireEvent.keyDown(textbox, { key: "Enter" });
 
     expect(harnessStore.state.workspace.projects[0]?.draft).toBe("/forgiveness-audit ");
+  });
+
+  it("navigates composer lookup with arrow keys and enter while composer stays focused", async () => {
+    const project = createViewProjectFixture({
+      id: "project-lookup-keyboard",
+      draft: "/"
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        availableSkillPaths: [".agents/skills/alpha/SKILL.md", ".agents/skills/beta/SKILL.md"],
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ChatPanel />);
+    const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
+    textbox.focus();
+    textbox.setSelectionRange(1, 1);
+
+    await waitFor(() => expect(screen.getByRole("listbox", { name: "Composer lookup" })).not.toBeNull());
+    const listbox = screen.getByRole("listbox", { name: "Composer lookup" });
+    await Promise.resolve();
+    expect(document.activeElement).toBe(listbox);
+
+    fireEvent.keyDown(listbox, { key: "ArrowDown" });
+
+    await waitFor(() => expect(screen.getByRole("option", { name: /beta/ }).getAttribute("aria-selected")).toBe("true"));
+
+    fireEvent.keyDown(listbox, { key: "Enter" });
+
+    expect(harnessStore.state.workspace.projects[0]?.draft).toBe("/beta ");
+    await Promise.resolve();
+    expect(screen.queryByRole("listbox", { name: "Composer lookup" })).toBeNull();
   });
 
   it("shows file lookup after at sign and inserts selected file path", () => {
@@ -1067,6 +1140,75 @@ it("updates composer effort label and sends reasoning plus fast mode", () => {
     fireEvent.keyDown(textbox, { key: "Enter" });
 
     expect(harnessStore.state.workspace.projects[0]?.draft).toBe("@docs/forgiveness-audit.md ");
+  });
+
+  it("hides composer lookup after clicking an option", async () => {
+    const project = createViewProjectFixture({
+      id: "project-file-lookup-click",
+      draft: "@fo",
+      filePaths: ["docs/forgiveness-audit.md", "src/app.tsx"]
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ChatPanel />);
+    const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
+    textbox.focus();
+    textbox.setSelectionRange(3, 3);
+    fireEvent.input(textbox, { target: { value: "@fo" } });
+
+    const option = screen.getByRole("option", { name: /forgiveness-audit\.md/ });
+    fireEvent.mouseDown(option);
+    fireEvent.click(option);
+
+    expect(harnessStore.state.workspace.projects[0]?.draft).toBe("@docs/forgiveness-audit.md ");
+    await Promise.resolve();
+    expect(screen.queryByRole("listbox", { name: "Composer lookup" })).toBeNull();
+  });
+
+  it("dismisses composer lookup on escape and outside click", async () => {
+    const project = createViewProjectFixture({
+      id: "project-lookup-dismiss",
+      draft: "@fo",
+      filePaths: ["docs/forgiveness-audit.md"]
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+
+    render(() => <ChatPanel />);
+    const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
+    textbox.focus();
+    textbox.setSelectionRange(3, 3);
+    fireEvent.input(textbox, { target: { value: "@fo" } });
+
+    await waitFor(() => expect(screen.getByRole("listbox", { name: "Composer lookup" })).not.toBeNull());
+
+    fireEvent.keyDown(textbox, { key: "Escape" });
+
+    await Promise.resolve();
+    expect(screen.queryByRole("listbox", { name: "Composer lookup" })).toBeNull();
+
+    fireEvent.input(textbox, { target: { value: "@for" } });
+    textbox.setSelectionRange(4, 4);
+    fireEvent.keyUp(textbox, { key: "r" });
+    await waitFor(() => expect(screen.getByRole("listbox", { name: "Composer lookup" })).not.toBeNull());
+
+    fireEvent.click(textbox);
+
+    await Promise.resolve();
+    expect(screen.queryByRole("listbox", { name: "Composer lookup" })).toBeNull();
   });
 
   it("grows composer to a viewport-bound height before internal scroll", () => {

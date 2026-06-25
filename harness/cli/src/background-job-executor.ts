@@ -772,7 +772,8 @@ function tryAutoResolveAssistantPlanningQuestions(
     decision: evaluateAssistantQuestionPolicy({
       prompt: question.prompt,
       questions: assistantQuestions,
-      learnings
+      learnings,
+      autoApproveNonBlocking: options.repository.getAssistantAutoApproveNonBlockingQuestionsDefault()
     })
   }));
   if (decisions.some((entry) => entry.decision.kind === "ask")) {

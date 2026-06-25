@@ -1079,7 +1079,7 @@ createUiTest("BackgroundJobsPanel", () => {
     expect(screen.getAllByText(/Stale: scheduler has not checked since/).length).toBeGreaterThan(0);
   });
 
-  it("shows active project chat runs in the shared runs list and opens their chat", () => {
+  it("shows active project chat runs in the shared runs list and opens their chat source", () => {
     const commands: unknown[] = [];
     const activeRun = createRunFixture({
       id: "run-project-chat",
@@ -1123,7 +1123,7 @@ createUiTest("BackgroundJobsPanel", () => {
     expect(screen.getByText("1 total")).toBeTruthy();
     expect(screen.getByText("Harness / Active chat")).toBeTruthy();
     expect(screen.getByText("Implement active run visibility")).toBeTruthy();
-    expect(screen.getByText("Implement active run visibility").className).toContain("[-webkit-line-clamp:3]");
+    expect(screen.getByText("Implement active run visibility").parentElement?.className).toContain("[-webkit-line-clamp:3]");
 
     fireEvent.click(screen.getByRole("button", { name: /Harness \/ Active chat/ }));
 
@@ -1137,7 +1137,9 @@ createUiTest("BackgroundJobsPanel", () => {
         payload: { projectId: project.id, threadId: "thread-active" }
       }
     ]);
-    expect(harnessStore.state.activeLeftTab).toBe("runs");
+    expect(harnessStore.state.activeSurface).toBe("chat");
+    expect(harnessStore.state.activeLeftTab).toBe("projects");
+    expect(harnessStore.state.chatPaneTab).toBe("run");
   });
 
   it("filters and sorts project chat runs with background runs", () => {

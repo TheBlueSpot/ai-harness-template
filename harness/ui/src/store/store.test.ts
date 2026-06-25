@@ -17,6 +17,8 @@ import {
   COMPOSER_REASONING_STRENGTH_STORAGE_KEY,
   PREFERENCES_ACTIVE_SECTION_STORAGE_KEY,
   PROJECT_SIDEBAR_PREFERENCES_STORAGE_KEY,
+  THEME_PREFERENCE_STORAGE_KEY,
+  TOKEN_USAGE_LIFETIME_STORAGE_KEY,
   createEmptyAssistantsState,
   createEmptyBackgroundJobsState,
   createEmptyNotificationInboxState,
@@ -35,9 +37,11 @@ import {
   persistMergedLocalPreferences,
   readLocalPreferences,
   readBrowserUiSession,
+  readTokenUsageLifetime,
   readProjectSidebarPreferences,
   reduceServerEvent
 } from "../harness-store";
+import { DEFAULT_THEME_PREFERENCE } from "../theme/theme-model";
 
 const defaultPreferences: PreferencesState = {
   hasUsableApiKey: false,
@@ -61,6 +65,7 @@ const defaultPreferences: PreferencesState = {
   subagentModelPreferenceDefault: "inference",
   correctnessIterationModeDefault: "ask-before-iterate",
   backgroundJobApprovalPolicyDefault: "ask-risky",
+  assistantAutoApproveNonBlockingQuestionsDefault: true,
   memoryBankEnabledDefault: true,
   memoryBankRecordRunsDefault: true,
   checkCliUpdatesDefault: true,
@@ -106,6 +111,8 @@ function clearBrowserUiSessionStorage() {
   globalThis.localStorage?.removeItem(COMPOSER_FAST_MODE_STORAGE_KEY);
   globalThis.localStorage?.removeItem(PREFERENCES_ACTIVE_SECTION_STORAGE_KEY);
   globalThis.localStorage?.removeItem(PROJECT_SIDEBAR_PREFERENCES_STORAGE_KEY);
+  globalThis.localStorage?.removeItem(THEME_PREFERENCE_STORAGE_KEY);
+  globalThis.localStorage?.removeItem(TOKEN_USAGE_LIFETIME_STORAGE_KEY);
 }
 
 describe("harness store reducer", () => {
@@ -533,6 +540,34 @@ describe("harness store reducer", () => {
     nextStore.openPreferencesModal();
 
     expect(nextStore.state.preferencesActiveSectionId).toBe("ide-settings");
+  });
+
+  test("persists and hydrates theme preferences", () => {
+    clearBrowserUiSessionStorage();
+    const store = createHarnessStore();
+
+    store.setThemeId("github");
+    store.setThemeMode("dark");
+
+    expect(readLocalPreferences().themePreference).toMatchObject({
+      themeId: "github",
+      mode: "dark"
+    });
+
+    const nextStore = createHarnessStore();
+    nextStore.hydrateLocalPreferences();
+
+    expect(nextStore.state.themePreference).toMatchObject({
+      themeId: "github",
+      mode: "dark"
+    });
+  });
+
+  test("repairs invalid stored theme preferences", () => {
+    clearBrowserUiSessionStorage();
+    globalThis.localStorage?.setItem(THEME_PREFERENCE_STORAGE_KEY, JSON.stringify({ themeId: "missing", mode: "sepia" }));
+
+    expect(readLocalPreferences().themePreference).toEqual(DEFAULT_THEME_PREFERENCE);
   });
 
   test("merges partial local preference saves without dropping composer controls", () => {
@@ -2851,6 +2886,46 @@ describe("harness store reducer", () => {
     expect(nextState.workspace.projects[0]?.contextUsage?.sourceKind).toBe("planner");
   });
 
+  test("tracks session and lifetime token usage from context events", () => {
+    clearBrowserUiSessionStorage();
+    const store = createHarnessStore();
+    const initialProject = createProject();
+    store.replaceStateForTests(createConnectedState(initialProject));
+    const contextEvent: ServerEvent = {
+      type: "project.context",
+      requestId: "req-context-usage",
+      payload: {
+        projectId: initialProject.id,
+        threadId: initialProject.activeThreadId,
+        contextUsage: {
+          sourceKind: "main",
+          sourceLabel: "main",
+          modelId: "openai/gpt-5.4",
+          tokens: 1200,
+          contextWindow: 200000,
+          usagePercent: 0.6,
+          totalProcessedTokens: 1500,
+          cachedInputTokens: 500,
+          updatedAt: "2026-06-25T12:00:00.000Z"
+        }
+      }
+    };
+
+    store.applyServerEvent(contextEvent);
+    store.applyServerEvent(contextEvent);
+
+    expect(store.state.tokenUsage.session).toMatchObject({
+      inputTokens: 1200,
+      outputTokens: 300,
+      cachedInputTokens: 500,
+      totalProcessedTokens: 1500,
+      totalTokensIncludingCached: 2000,
+      events: 1
+    });
+    expect(store.state.tokenUsage.lifetime.totalTokensIncludingCached).toBe(2000);
+    expect(readTokenUsageLifetime().totalTokensIncludingCached).toBe(2000);
+  });
+
   test("opens project and activates it", () => {
     const initialState = createInitialViewState();
     const project = createProject();
@@ -2977,6 +3052,7 @@ describe("harness store reducer", () => {
           subagentModelPreferenceDefault: "inference",
           correctnessIterationModeDefault: "ask-before-iterate",
           backgroundJobApprovalPolicyDefault: "ask-risky",
+          assistantAutoApproveNonBlockingQuestionsDefault: true,
           memoryBankEnabledDefault: true,
           memoryBankRecordRunsDefault: true,
           checkCliUpdatesDefault: true,
@@ -3255,6 +3331,7 @@ describe("harness store reducer", () => {
         subagentModelPreferenceDefault: "inference",
         correctnessIterationModeDefault: "ask-before-iterate",
         backgroundJobApprovalPolicyDefault: "ask-risky",
+        assistantAutoApproveNonBlockingQuestionsDefault: true,
         memoryBankEnabledDefault: true,
         memoryBankRecordRunsDefault: true,
         checkCliUpdatesDefault: true,

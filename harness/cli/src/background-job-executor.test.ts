@@ -511,6 +511,39 @@ class ScheduleQuestionAdapter extends AutoQuestionThenReadyAdapter {
   }
 }
 
+class DefaultNonBlockingQuestionAdapter implements PiAgentAdapter {
+  readonly calls: PiAgentPromptRequest[] = [];
+
+  async runPrompt(request: PiAgentPromptRequest): Promise<PiAgentPromptResult> {
+    this.calls.push(request);
+    if (request.kind === "planner") {
+      return {
+        text: JSON.stringify({
+          type: "question",
+          summary: "Need default",
+          question: {
+            id: "question-1",
+            prompt: "Should I keep going with a reasonable default?",
+            choices: plannerChoices("Use your best judgment."),
+            required: true
+          }
+        })
+      };
+    }
+    return { text: "Routine done." };
+  }
+
+  async startExecution(): Promise<PiAgentExecutionController> {
+    throw new Error("not used");
+  }
+
+  setApiKey() {}
+
+  hasApiKey() {
+    return true;
+  }
+}
+
 describe("resolveShellTimeoutMs", () => {
   test("passes valid positive seconds through as milliseconds", () => {
     expect(resolveShellTimeoutMs(30)).toBe(30 * 1000);
@@ -741,6 +774,48 @@ describe("executeBackgroundJobRun", () => {
     expect(linkedRun?.runtimeBudget?.maxTurns).toBe(20);
     expect(adapter.calls[0]?.prompt).toContain("not a git repository");
     expect(result.events.some((event) => event.stage === "question-auto-resolved")).toBe(true);
+  });
+
+  test("keeps assistant-owned nonblocking planner questions awaiting input when auto-approval is disabled", async () => {
+    const repository = createRepository();
+    repository.setAssistantAutoApproveNonBlockingQuestionsDefault(false);
+    const projectRoot = path.join(createTempDir(), `repo-${crypto.randomUUID()}`);
+    mkdirSync(projectRoot, { recursive: true });
+    const project = repository.addProject(projectRoot);
+    const now = new Date().toISOString();
+    const assistantId = saveAssistant(repository, project.id);
+    const job = createAssistantRoutineJob(project.id, assistantId, createThreadId(), now);
+    repository.saveBackgroundJob(job);
+    const savedJob = repository.getBackgroundJob(job.id)!;
+    const run = repository.createBackgroundJobRun({
+      jobId: savedJob.id,
+      projectId: savedJob.projectId,
+      assistantId: savedJob.assistantId,
+      automationThreadId: savedJob.automationThreadId,
+      triggerSource: "schedule",
+      status: "queued",
+      riskLevel: savedJob.riskLevel,
+      approvalStatus: "approved"
+    });
+    const adapter = new DefaultNonBlockingQuestionAdapter();
+
+    const result = await executeBackgroundJobRun({
+      repository,
+      adapter,
+      agentId: "pi",
+      job: savedJob,
+      run,
+      providerBrand: "gpt",
+      planningModelId: "openai/gpt-5.4",
+      executionModelId: "openai/gpt-5.4",
+      debugEnabled: false
+    });
+
+    const linkedRun = repository.getRun(project.id, result.linkedAgentRunId!);
+    expect(result.status).toBe("awaiting-user-input");
+    expect(adapter.calls.filter((call) => call.kind === "planner")).toHaveLength(1);
+    expect(linkedRun?.questions[0]?.status).toBe("deferred");
+    expect(result.events.some((event) => event.stage === "question-auto-resolved")).toBe(false);
   });
 
   test("assistant routine planner prompt includes active todo metadata", async () => {

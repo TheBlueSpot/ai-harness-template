@@ -3,11 +3,12 @@ import { beforeEach, expect, it } from "bun:test";
 import { createUiTest } from "../utils/tests/test-harness";
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { PreferenceSectionNav, PreferencesModal } from "./preferences-modal";
-import { harnessStore, readBrowserUiSession, readLocalPreferences } from "../harness-store";
+import { harnessStore, readBrowserUiSession, readLocalPreferences, readTokenUsageLifetime } from "../harness-store";
 import { toastStore } from "../toast-store";
 import { captureDispatchedCommands, clearBrowserStateForTests, seedHarnessStoreForTests } from "../utils/tests/store-test-utils";
 import { createHarnessStateFixture, createViewProjectFixture } from "../utils/tests/test-fixtures";
 import { clearCurrentTabItemSelectorsForTests, selectCurrentTabItem } from "../lib/current-tab-item-hotkeys";
+import { CUSTOM_THEME_FONT_OPTIONS, createDefaultCustomTheme } from "../theme/theme-model";
 import type { BackgroundJob } from "../../../shared/protocol";
 
 createUiTest("PreferencesModal", () => {
@@ -115,6 +116,7 @@ createUiTest("PreferencesModal", () => {
     expect(screen.getByRole("button", { name: /AI & Providers/i })).not.toBeNull();
     expect(screen.getByRole("button", { name: /Safety & Guardrails/i })).not.toBeNull();
     expect(screen.getByRole("button", { name: /Workspace & Memory/i })).not.toBeNull();
+    expect(screen.getByRole("button", { name: /Usage/i })).not.toBeNull();
     expect(screen.getByRole("button", { name: /Background Jobs/i })).not.toBeNull();
     expect(screen.getByRole("button", { name: /Developer & Advanced/i })).not.toBeNull();
 
@@ -284,6 +286,78 @@ createUiTest("PreferencesModal", () => {
     expect((commands[0] as { type: string }).type).toBe("background-job.pause-assistant-jobs");
   });
 
+  it("shows token usage totals and resets them after confirmation", async () => {
+    const usageTotals = {
+      inputTokens: 1200,
+      outputTokens: 300,
+      cachedInputTokens: 500,
+      totalProcessedTokens: 1500,
+      totalTokensIncludingCached: 2000,
+      events: 2,
+      updatedAt: "2026-06-25T12:00:00.000Z"
+    };
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        preferencesModalOpen: true,
+        preferencesActiveSectionId: "usage",
+        tokenUsage: {
+          session: usageTotals,
+          lifetime: {
+            inputTokens: 5000,
+            outputTokens: 1500,
+            cachedInputTokens: 2500,
+            totalProcessedTokens: 6500,
+            totalTokensIncludingCached: 9000,
+            events: 6,
+            updatedAt: "2026-06-25T12:00:00.000Z"
+          }
+        }
+      })
+    );
+
+    renderPreferencesWithSideNav();
+    fireEvent.click(screen.getByRole("button", { name: /Usage/i }));
+
+    expect(await screen.findByText("Current session")).not.toBeNull();
+    expect(screen.getByText("Lifetime")).not.toBeNull();
+    expect(screen.getByText("2,000")).not.toBeNull();
+    expect(screen.getByText("9,000")).not.toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Reset token usage" }));
+    expect(harnessStore.state.tokenUsageResetDialogOpen).toBe(true);
+    expect(await screen.findByText("Token counters will start again from the next observed model usage event.")).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm token usage reset" }));
+
+    expect(harnessStore.state.tokenUsage.session.totalTokensIncludingCached).toBe(0);
+    expect(harnessStore.state.tokenUsage.lifetime.totalTokensIncludingCached).toBe(0);
+    expect(readTokenUsageLifetime().totalTokensIncludingCached).toBe(0);
+  });
+
+  it("autosaves non-blocking assistant question approval preference", async () => {
+    const commands: unknown[] = [];
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        preferencesModalOpen: true,
+        preferencesActiveSectionId: "background-jobs",
+        assistantAutoApproveNonBlockingQuestionsDefault: true
+      })
+    );
+    captureDispatchedCommands(commands as never[]);
+
+    renderPreferencesWithSideNav();
+    fireEvent.click(screen.getByRole("button", { name: /Background Jobs/i }));
+    const toggle = (await screen.findByLabelText("Auto-approve non-blocking questions")) as HTMLInputElement;
+    fireEvent.click(toggle);
+
+    expect(commands).toHaveLength(1);
+    expect((commands[0] as { type: string }).type).toBe("preferences.save");
+    expect(
+      (commands[0] as { payload: { assistantAutoApproveNonBlockingQuestionsDefault: boolean } }).payload
+        .assistantAutoApproveNonBlockingQuestionsDefault
+    ).toBe(false);
+    expect(readLocalPreferences().assistantAutoApproveNonBlockingQuestionsDefault).toBe(false);
+  });
+
   it("does not render a save preferences button", () => {
     seedHarnessStoreForTests(
       createHarnessStateFixture({
@@ -294,6 +368,89 @@ createUiTest("PreferencesModal", () => {
     renderPreferencesWithSideNav();
 
     expect(screen.queryByRole("button", { name: "Save preferences" })).toBeNull();
+  });
+
+  it("renders theme selector and cycles local-only mode from one button", async () => {
+    const commands: unknown[] = [];
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        preferencesModalOpen: true,
+        preferencesActiveSectionId: "general-ui"
+      })
+    );
+
+    captureDispatchedCommands(commands as never[]);
+    renderPreferencesWithSideNav();
+    fireEvent.click(screen.getByRole("button", { name: /General & UI/i }));
+
+    expect(await screen.findByLabelText("Theme")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Theme mode: System" })).not.toBeNull();
+    expect(screen.queryByRole("button", { name: "Use light mode" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Use dark mode" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Theme mode: System" }));
+    expect(readLocalPreferences().themePreference).toMatchObject({
+      themeId: "harness",
+      mode: "light"
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Theme mode: Light" }));
+    expect(readLocalPreferences().themePreference).toMatchObject({
+      themeId: "harness",
+      mode: "dark"
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Theme mode: Dark" }));
+
+    expect(readLocalPreferences().themePreference).toMatchObject({
+      themeId: "harness",
+      mode: "system"
+    });
+    expect(commands).toHaveLength(0);
+  });
+
+  it("shows custom theme color and font controls", async () => {
+    const commands: unknown[] = [];
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        preferencesModalOpen: true,
+        preferencesActiveSectionId: "general-ui",
+        themePreference: {
+          themeId: "custom",
+          mode: "light",
+          custom: createDefaultCustomTheme("graphite")
+        }
+      })
+    );
+
+    captureDispatchedCommands(commands as never[]);
+    renderPreferencesWithSideNav();
+    fireEvent.click(screen.getByRole("button", { name: /General & UI/i }));
+
+    const accentInput = await screen.findByLabelText("Accent color") as HTMLInputElement;
+    fireEvent.input(accentInput, { target: { value: "#286f6b" } });
+    fireEvent.change(screen.getByLabelText("Accent hex"), { target: { value: "nope" } });
+    const uiFontButton = screen.getByRole("button", { name: "UI font" });
+    expect((uiFontButton as HTMLButtonElement).disabled).toBe(false);
+    expect(document.querySelector('input[aria-label="UI font"]')).toBeNull();
+    const systemUiFont = CUSTOM_THEME_FONT_OPTIONS["--font-ui"].find((option) => option.label === "System UI")?.value;
+    expect(systemUiFont).toBeTruthy();
+    const selectedFont = systemUiFont ?? "";
+    harnessStore.setCustomTheme({
+      ...createDefaultCustomTheme("graphite"),
+      light: {
+        ...(readLocalPreferences().themePreference?.custom?.light ?? {}),
+        "--font-ui": selectedFont
+      }
+    });
+
+    expect(readLocalPreferences().themePreference?.custom?.light?.["--accent"]).toBe("#286f6b");
+    expect(readLocalPreferences().themePreference?.custom?.light?.["--font-ui"]).toBe(selectedFont);
+    expect(toastStore.toasts.at(-1)?.title).toBe("Invalid theme color");
+
+    fireEvent.click(screen.getByRole("button", { name: "Reset custom theme" }));
+    expect(readLocalPreferences().themePreference?.custom?.light).toBeUndefined();
+    expect(commands).toHaveLength(0);
   });
 
   it("autosaves preferences without API keys", () => {

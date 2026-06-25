@@ -31,9 +31,10 @@ import { resolveBrowserTimezone } from "./lib/time-format";
 import { appHotkeySettings, currentTabItemHotkeyIds, normalizeAppHotkeyPreferences, type AppHotkeyId } from "./lib/app-hotkeys";
 import { selectCurrentTabItem } from "./lib/current-tab-item-hotkeys";
 import { createIdeWindowUrl, IDE_POP_IN_EVENT, OPEN_IDE_WINDOW_EVENT, type OpenIdeWindowInput } from "./lib/ide-window";
+import { createCurrentToastSourceNavigation } from "./source-navigation";
 import { TerminalDrawer } from "./terminal/terminal-drawer";
 import { terminalStore } from "./terminal/terminal-store";
-import { reportUiError } from "./toast-store";
+import { reportUiError, setDefaultToastSourceResolver } from "./toast-store";
 
 type IdeWindowBounds = {
   x: number;
@@ -181,6 +182,7 @@ export function App() {
     harnessStore.hydrateLocalPreferences();
     harnessStore.actions.hydrateBrowserUiSession();
     harnessStore.hydrateTutorialProgress();
+    setDefaultToastSourceResolver(() => createCurrentToastSourceNavigation(harnessStore.state));
     connection = connectHarnessWebSocket();
     harnessStore.actions.setCommandDispatcher((command) => connection?.sendCommand(command));
     if (window.location.pathname === "/ide") {
@@ -214,6 +216,7 @@ export function App() {
     window.addEventListener(IDE_POP_IN_EVENT, onOpenIdeWindow);
 
     onCleanup(() => {
+      setDefaultToastSourceResolver(undefined);
       window.removeEventListener("error", onWindowError);
       window.removeEventListener("unhandledrejection", onUnhandledRejection);
       window.removeEventListener(OPEN_IDE_WINDOW_EVENT, onOpenIdeWindow);

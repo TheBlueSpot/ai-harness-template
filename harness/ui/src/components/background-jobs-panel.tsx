@@ -14,9 +14,13 @@ import {
 import { formatShortTimestamp, resolveBrowserTimezone } from "../lib/time-format";
 import { normalizeAppHotkeyPreferences } from "../lib/app-hotkeys";
 import { registerCurrentTabItemSelector } from "../lib/current-tab-item-hotkeys";
+import type { ChatFileTarget } from "../lib/chat-file-links";
+import { openIdeWindow } from "../lib/ide-window";
+import { openProjectThreadSource } from "../source-navigation";
 import { toProperCase } from "../lib/utils";
 import { pushToast } from "../toast-store";
 import { ActionButton } from "./action-button";
+import { FileLinkedText, type FileLinkConfig } from "./file-linked-text";
 import { CopyTextButton } from "./primitives/copy-text-button";
 import { ExecutionLog } from "./primitives/execution-log";
 import { Dialog } from "./primitives/dialog";
@@ -193,6 +197,11 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
       detail: event.detail
     }))
   );
+  const selectedRunFileLinks = () => getBackgroundRunFileLinks(selectedRun()?.projectId);
+  const detailsRunFileLinks = () => getBackgroundRunFileLinks(detailsRun()?.projectId);
+  const selectedJobFileLinks = () => getBackgroundRunFileLinks(selectedJob()?.projectId);
+  const runListItemFileLinks = (item: RunListItem) =>
+    item.kind === "project-chat" ? getProjectFileLinks(item.entry.project) : getBackgroundRunFileLinks(item.run.projectId);
 
   createEffect(() => {
     if (!showLeft()) {
@@ -231,6 +240,25 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
     if (runDetailViewport) {
       runDetailViewport.scrollTop = runDetailViewport.scrollHeight;
     }
+  }
+
+  function getBackgroundRunFileLinks(projectId: string | undefined): FileLinkConfig | undefined {
+    return getProjectFileLinks(projectId ? state.workspace.projects.find((project) => project.id === projectId) : undefined);
+  }
+
+  function getProjectFileLinks(project: typeof state.workspace.projects[number] | undefined): FileLinkConfig | undefined {
+    return project
+      ? {
+          rootPath: project.rootPath,
+          filePaths: project.filePaths ?? [],
+          onOpenFile: (target) => handleOpenBackgroundFile(project, target)
+        }
+      : undefined;
+  }
+
+  function handleOpenBackgroundFile(project: typeof state.workspace.projects[number], target: ChatFileTarget) {
+    openIdeWindow({ projectId: project.id, threadId: project.activeThreadId });
+    harnessStore.openIdeFile(target.path, target.line, target.column);
   }
 
   function requestDiagnostics(windowDays: RunDiagnosticsWindowDays = healthWindowDays()) {
@@ -423,23 +451,7 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
   }
 
   function openProjectChatRun(projectId: string, threadId: string) {
-    if (state.workspace.activeProjectId !== projectId) {
-      sendCommand({
-        type: "project.activate",
-        requestId: createRequestId(),
-        payload: { projectId }
-      });
-    }
-
-    const project = state.workspace.projects.find((entry) => entry.id === projectId);
-    if (state.workspace.activeProjectId !== projectId || project?.activeThreadId !== threadId) {
-      sendCommand({
-        type: "thread.activate",
-        requestId: createRequestId(),
-        payload: { projectId, threadId }
-      });
-    }
-
+    openProjectThreadSource(state, projectId, threadId, "run");
   }
 
   async function handleToggleNotifications() {
@@ -481,6 +493,7 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
       planExecutionDelaySecondsDefault: state.planExecutionDelaySecondsDefault,
       correctnessIterationModeDefault: state.correctnessIterationModeDefault,
       backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
+      assistantAutoApproveNonBlockingQuestionsDefault: state.assistantAutoApproveNonBlockingQuestionsDefault,
       assistantCongestionControlEnabledDefault: state.assistantCongestionControlEnabledDefault,
       assistantMaxCongestionDefault: state.assistantMaxCongestionDefault,
       backgroundJobNotificationsEnabled
@@ -625,7 +638,7 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                       classList={{
                         "border-(--accent)": selectedJob()?.id === job.id,
                         "border-l-(--accent-strong)": selectedJob()?.id === job.id,
-                        "bg-[linear-gradient(135deg,rgba(15,118,110,0.14),rgba(255,255,255,0.92))]": selectedJob()?.id === job.id,
+                        "theme-selected-surface": selectedJob()?.id === job.id,
                         "border-(--border)": selectedJob()?.id !== job.id,
                         "border-l-emerald-500": selectedJob()?.id !== job.id && job.status === "enabled",
                         "border-l-slate-300": selectedJob()?.id !== job.id && job.status !== "enabled",
@@ -664,10 +677,14 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                       </div>
                       <div class="mt-3 break-words text-[0.675rem] leading-5 text-(--muted) [overflow-wrap:anywhere]">
                         <div class="mt-1 text-[0.625rem] uppercase tracking-[0.14em] text-(--muted)">{job.kind} | {job.riskLevel} | {job.lane ?? "exclusive"}</div>
-                        <div>{job.description ?? job.scheduleInput}</div>
+                        <div>
+                          <FileLinkedText text={job.description ?? job.scheduleInput} fileLinks={getBackgroundRunFileLinks(job.projectId)} />
+                        </div>
                         <div class="mt-1">Next: {formatJobNextRun(job, state.backgroundJobs.runs, state.backgroundJobs.schedulerHeartbeatAt)}</div>
-                        <Show when={formatFailureTrackingLine(job)}>{(line) => <div>{line()}</div>}</Show>
-                        <For each={formatJobSchedulerLines(job, state.backgroundJobs.runs, state.backgroundJobs.schedulerHeartbeatAt)}>{(line) => <div>{line}</div>}</For>
+                        <Show when={formatFailureTrackingLine(job)}>{(line) => <div><FileLinkedText text={line()} fileLinks={getBackgroundRunFileLinks(job.projectId)} /></div>}</Show>
+                        <For each={formatJobSchedulerLines(job, state.backgroundJobs.runs, state.backgroundJobs.schedulerHeartbeatAt)}>
+                          {(line) => <div><FileLinkedText text={line} fileLinks={getBackgroundRunFileLinks(job.projectId)} /></div>}
+                        </For>
                         <div>Project: {state.workspace.projects.find((project) => project.id === job.projectId)?.name ?? job.projectId}</div>
                         <div>Owner: {formatJobOwner(job, state)}</div>
                       </div>
@@ -689,7 +706,7 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                   pagination={{ kind: "forward", initialCount: 60, batchSize: 60 }}
                   empty={<EmptyFilteredState message="Run history appears after first task. No runs match current search or filter." onClear={() => { harnessStore.setJobsPanePreferences({ runSearch: "" }); harnessStore.setJobsRunFilter("all"); }} />}
                 >
-                  {(item) => <RunListButton item={item} selectedRunId={selectedRun()?.id} onOpenRun={openRunDetails} onOpenProjectChatRun={openProjectChatRun} />}
+                  {(item) => <RunListButton item={item} selectedRunId={selectedRun()?.id} fileLinks={runListItemFileLinks(item)} onOpenRun={openRunDetails} onOpenProjectChatRun={openProjectChatRun} />}
                 </VirtualList>
               </LeftPaneListSection>
             </Show>
@@ -702,6 +719,7 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
               <JobDetail
                 job={selectedJob()}
                 runs={selectedJobRuns()}
+                fileLinks={selectedJobFileLinks()}
                 executionPaused={executionPaused()}
                 executionPauseReason={executionPauseReason}
                 onRunNow={(job) => sendCommand({ type: "background-job.run-now", requestId: createRequestId(), payload: { projectId: job.projectId, jobId: job.id } })}
@@ -741,18 +759,33 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                           <Show when={formatRunProgress(run())}>
                             {(progress) => <RunFact label="Progress">{progress()}</RunFact>}
                           </Show>
-                          <RunFact label="Summary">{run().summary ?? "n/a"}</RunFact>
+                          <RunFact label="Summary">
+                            <FileLinkedText text={run().summary ?? "n/a"} fileLinks={selectedRunFileLinks()} />
+                          </RunFact>
                           <Show when={run().failureCategory}>
                             {(category) => <RunFact label="Failure category">{formatFailureCategory(category())}</RunFact>}
                           </Show>
                           <Show when={formatPromptStats(run().promptStats)}>
                             {(stats) => <RunFact label="Prompt">{stats()}</RunFact>}
                           </Show>
-                          <Show when={run().failureMessage}><RunFact label="Failure">{run().failureMessage}</RunFact></Show>
+                          <Show when={run().failureMessage}>
+                            {(failure) => (
+                              <RunFact label="Failure">
+                                <FileLinkedText text={failure()} fileLinks={selectedRunFileLinks()} />
+                              </RunFact>
+                            )}
+                          </Show>
                         </div>
                       </div>
 
                       <div class="flex flex-wrap gap-2">
+                        <Show when={selectedJob()?.assistantId}>
+                          {(assistantId) => (
+                            <ActionButton tooltip="Open owning assistant" variant="secondary" icon={<Bot class="h-4 w-4" />} onClick={() => openAssistantDetails(assistantId())}>
+                              Assistant
+                            </ActionButton>
+                          )}
+                        </Show>
                         <Show when={run().status === "awaiting-approval"}>
                           <ActionButton tooltip="Approve this background run" disabled={executionPaused()} disabledReason={executionPauseReason} icon={<Play class="h-4 w-4" />} onClick={() => sendCommand({ type: "background-job.approve-run", requestId: createRequestId(), payload: { projectId: run().projectId, runId: run().id } })}>Approve</ActionButton>
                           <ActionButton tooltip="Reject this background run" variant="secondary" onClick={() => sendCommand({ type: "background-job.reject-run", requestId: createRequestId(), payload: { projectId: run().projectId, runId: run().id } })}>Reject</ActionButton>
@@ -785,8 +818,16 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                             <span>{event.stage}</span>
                             <span>{formatShortTimestamp(event.createdAt)}</span>
                           </div>
-                          <div class="mt-2 break-words text-[0.75rem] font-semibold text-(--foreground) [overflow-wrap:anywhere]">{event.message}</div>
-                          <Show when={event.detail}><div class="mt-2 whitespace-pre-wrap break-words text-[0.675rem] leading-5 text-(--muted) [overflow-wrap:anywhere]">{event.detail}</div></Show>
+                          <div class="mt-2 break-words text-[0.75rem] font-semibold text-(--foreground) [overflow-wrap:anywhere]">
+                            <FileLinkedText text={event.message} fileLinks={selectedRunFileLinks()} />
+                          </div>
+                          <Show when={event.detail}>
+                            {(detail) => (
+                              <div class="mt-2 whitespace-pre-wrap break-words text-[0.675rem] leading-5 text-(--muted) [overflow-wrap:anywhere]">
+                                <FileLinkedText text={detail()} fileLinks={selectedRunFileLinks()} />
+                              </div>
+                            )}
+                          </Show>
                         </article>
                       )}
                     </VirtualList>
@@ -826,16 +867,28 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                 </div>
                 <div>Trigger: {detailsRun()?.triggerSource}</div>
                 <div>Approval: {detailsRun()?.approvalStatus}</div>
-                <Show when={detailsRun()?.summary}><div>Summary: {detailsRun()?.summary}</div></Show>
+                <Show when={detailsRun()?.summary}>
+                  {(summary) => (
+                    <div>
+                      <FileLinkedText text={`Summary: ${summary()}`} fileLinks={detailsRunFileLinks()} />
+                    </div>
+                  )}
+                </Show>
                 <Show when={detailsRun()?.failureCategory}>
                   {(category) => <div>Failure category: {formatFailureCategory(category())}</div>}
                 </Show>
                 <Show when={formatPromptStats(detailsRun()?.promptStats)}>
                   {(stats) => <div>Prompt: {stats()}</div>}
                 </Show>
-                <Show when={detailsRun()?.failureMessage}><div>Failure: {detailsRun()?.failureMessage}</div></Show>
+                <Show when={detailsRun()?.failureMessage}>
+                  {(failure) => (
+                    <div>
+                      <FileLinkedText text={`Failure: ${failure()}`} fileLinks={detailsRunFileLinks()} />
+                    </div>
+                  )}
+                </Show>
               </div>
-              <ExecutionLog entries={detailsLogEntries()} emptyMessage="No execution log yet." />
+              <ExecutionLog entries={detailsLogEntries()} emptyMessage="No execution log yet." fileLinks={detailsRunFileLinks()} />
             </div>
           </Dialog>
       </Show>
@@ -855,27 +908,37 @@ function RunFact(props: { label: string; children: JSX.Element }) {
 function RunListButton(props: {
   item: RunListItem;
   selectedRunId?: string;
+  fileLinks?: FileLinkConfig;
   onOpenRun: (run: BackgroundJobRun) => void;
   onOpenProjectChatRun: (projectId: string, threadId: string) => void;
 }) {
   const selected = createMemo(() => props.item.kind === "background" && props.selectedRunId === props.item.run.id);
+  const openRunItem = () =>
+    props.item.kind === "project-chat"
+      ? props.onOpenProjectChatRun(props.item.entry.project.id, props.item.entry.run.threadId)
+      : props.onOpenRun(props.item.run);
+  const handleKeyDown = (event: KeyboardEvent) => {
+    if (event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+    event.preventDefault();
+    openRunItem();
+  };
   return (
-    <button
-      class="min-w-0 w-full rounded-[0.8rem] border border-l-4 p-3 text-left shadow-sm transition hover:border-(--accent-strong)"
+    <div
+      class="min-w-0 w-full cursor-pointer rounded-[0.8rem] border border-l-4 p-3 text-left shadow-sm transition hover:border-(--accent-strong)"
       classList={{
         "border-(--accent)": selected(),
         "border-l-(--accent-strong)": selected(),
-        "bg-[linear-gradient(135deg,rgba(15,118,110,0.14),rgba(255,255,255,0.92))]": selected(),
+        "theme-selected-surface": selected(),
         "border-(--border)": !selected(),
         [runListItemBorderClass(props.item)]: !selected(),
         "bg-white/70": !selected()
       }}
-      type="button"
-      onClick={() =>
-        props.item.kind === "project-chat"
-          ? props.onOpenProjectChatRun(props.item.entry.project.id, props.item.entry.run.threadId)
-          : props.onOpenRun(props.item.run)
-      }
+      role="button"
+      tabIndex={0}
+      onClick={openRunItem}
+      onKeyDown={handleKeyDown}
     >
       <div class="flex min-w-0 items-center justify-between gap-3">
         <div class="min-w-0 truncate text-[0.725rem] font-semibold text-(--foreground)">{formatRunListItemTitle(props.item)}</div>
@@ -884,13 +947,15 @@ function RunListButton(props: {
         </div>
       </div>
       <div class="mt-2 break-words text-[0.675rem] leading-5 text-(--muted) [overflow-wrap:anywhere]">
-        <div class="[display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:3] overflow-hidden">{formatRunListItemSummary(props.item)}</div>
+        <div class="[display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:3] overflow-hidden">
+          <FileLinkedText text={() => formatRunListItemSummary(props.item) ?? ""} fileLinks={props.fileLinks} />
+        </div>
         <Show when={props.item.kind === "background" && formatRunProgress((props.item as { kind: "background"; run: BackgroundJobRun }).run)}>
           {(progress) => <div class="truncate">{progress()}</div>}
         </Show>
         <div class="mt-1 truncate">{formatRunListItemTime(props.item)}</div>
       </div>
-    </button>
+    </div>
   );
 }
 
@@ -1995,6 +2060,7 @@ function latestRunEventDetail(run: BackgroundJobRun) {
 function JobDetail(props: {
   job?: BackgroundJob;
   runs: BackgroundJobRun[];
+  fileLinks?: FileLinkConfig;
   executionPaused: boolean;
   executionPauseReason: string;
   onRunNow: (job: BackgroundJob) => void;
@@ -2044,19 +2110,35 @@ function JobDetail(props: {
                   <RunFact label="Schedule">{job().scheduleInput}</RunFact>
                   <RunFact label="Next">{formatJobNextRun(job(), props.runs, props.schedulerHeartbeatAt)}</RunFact>
                   <Show when={job().schedulerStatus}>
-                    {(status) => <RunFact label="Scheduler">{status()}{job().schedulerDetail ? ` - ${job().schedulerDetail}` : ""}</RunFact>}
+                    {(status) => (
+                      <RunFact label="Scheduler">
+                        <FileLinkedText text={`${status()}${job().schedulerDetail ? ` - ${job().schedulerDetail}` : ""}`} fileLinks={props.fileLinks} />
+                      </RunFact>
+                    )}
                   </Show>
                   <Show when={formatFailureTrackingLine(job())}>
-                    {(line) => <RunFact label="Failure">{line()}</RunFact>}
+                    {(line) => (
+                      <RunFact label="Failure">
+                        <FileLinkedText text={line()} fileLinks={props.fileLinks} />
+                      </RunFact>
+                    )}
                   </Show>
                   <For each={formatJobSchedulerLines(job(), props.runs, props.schedulerHeartbeatAt)}>
-                    {(line) => <RunFact label="Scheduler">{line}</RunFact>}
+                    {(line) => (
+                      <RunFact label="Scheduler">
+                        <FileLinkedText text={line} fileLinks={props.fileLinks} />
+                      </RunFact>
+                    )}
                   </For>
                   <Show when={activeRun()}>
                     {(run) => <div class="min-w-0 break-words [overflow-wrap:anywhere]">Blocked by: {run().status} run {run().id}</div>}
                   </Show>
                   <Show when={job().description}>
-                    <RunFact label="Description">{job().description}</RunFact>
+                    {(description) => (
+                      <RunFact label="Description">
+                        <FileLinkedText text={description()} fileLinks={props.fileLinks} />
+                      </RunFact>
+                    )}
                   </Show>
                 </div>
               </div>
@@ -2101,7 +2183,7 @@ function JobDetail(props: {
               when={latestRun()?.events.length}
               fallback={<div class="border-l-2 border-dashed border-(--border) py-3 pl-4 text-[0.675rem] text-(--muted)">No execution log yet.</div>}
             >
-              <ExecutionLog entries={latestRunEvents()} emptyMessage="No execution log yet." rowVariant="flat" />
+              <ExecutionLog entries={latestRunEvents()} emptyMessage="No execution log yet." rowVariant="flat" fileLinks={props.fileLinks} />
             </Show>
           </section>
         </div>

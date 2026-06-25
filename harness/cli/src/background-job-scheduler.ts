@@ -1,4 +1,4 @@
-import type { BackgroundJob, BackgroundJobRun, BackgroundJobRunStatus } from "../../shared/protocol";
+import type { BackgroundJob, BackgroundJobApprovalPolicy, BackgroundJobRun, BackgroundJobRunStatus } from "../../shared/protocol";
 import { getDueScheduleAdvance } from "./background-job-schedule";
 import { assertAssistantRunnableForLaunch } from "./assistant-launch-gate";
 import { debugLog } from "./logging";
@@ -326,22 +326,32 @@ export class BackgroundJobScheduler {
       nextRunAt: advance.nextRunAt,
       lastRunAt: nowIso
     });
+    const approvalPolicy = this.options.repository.getBackgroundJobApprovalPolicyDefault();
+    const queuedStatus = resolveQueuedStatus(job, approvalPolicy);
+    const approvalSummary =
+      queuedStatus === "awaiting-approval"
+        ? formatBackgroundApprovalSummary(job, triggerSource, approvalPolicy)
+        : undefined;
     const queuedRun = this.options.repository.createBackgroundJobRun({
       jobId: job.id,
       projectId: job.projectId,
       assistantId: job.assistantId,
       automationThreadId: job.automationThreadId,
       triggerSource,
-      status: resolveQueuedStatus(job, this.options.repository.getBackgroundJobApprovalPolicyDefault()),
+      status: queuedStatus,
       riskLevel: job.riskLevel,
-      approvalStatus: resolveApprovalStatus(job, this.options.repository.getBackgroundJobApprovalPolicyDefault()),
-      skippedOccurrenceCount: advance.skippedOccurrenceCount
+      approvalStatus: resolveApprovalStatus(job, approvalPolicy),
+      skippedOccurrenceCount: advance.skippedOccurrenceCount,
+      summary: approvalSummary
     });
     this.options.repository.appendBackgroundJobRunEvent(
       queuedRun.id,
-      "queued",
-      `Queued ${job.name}`,
-      advance.skippedOccurrenceCount > 0 ? `Skipped ${advance.skippedOccurrenceCount} missed occurrence(s).` : undefined
+      queuedRun.status === "awaiting-approval" ? "awaiting-approval" : "queued",
+      queuedRun.status === "awaiting-approval" ? `Waiting for approval before launching ${job.name}` : `Queued ${job.name}`,
+      [approvalSummary, advance.skippedOccurrenceCount > 0 ? `Skipped ${advance.skippedOccurrenceCount} missed occurrence(s).` : undefined]
+        .filter(Boolean)
+        .join(" ")
+        || undefined
     );
     this.options.repository.updateBackgroundJobSchedulerState(job.id, {
       schedulerStatus: queuedRun.status === "queued" ? "queued" : "blocked",
@@ -479,7 +489,7 @@ function formatPercent(ratio: number | undefined) {
   return `${Math.round((ratio ?? 0) * 100)}%`;
 }
 
-function resolveQueuedStatus(job: BackgroundJob, policy: ReturnType<WorkspaceRepository["getBackgroundJobApprovalPolicyDefault"]>): BackgroundJobRunStatus {
+function resolveQueuedStatus(job: BackgroundJob, policy: BackgroundJobApprovalPolicy): BackgroundJobRunStatus {
   switch (policy) {
     case "allow-all":
       return "queued";
@@ -493,7 +503,7 @@ function resolveQueuedStatus(job: BackgroundJob, policy: ReturnType<WorkspaceRep
   }
 }
 
-function resolveApprovalStatus(job: BackgroundJob, policy: ReturnType<WorkspaceRepository["getBackgroundJobApprovalPolicyDefault"]>) {
+function resolveApprovalStatus(job: BackgroundJob, policy: BackgroundJobApprovalPolicy) {
   switch (policy) {
     case "allow-all":
       return "approved" as const;
@@ -504,5 +514,48 @@ function resolveApprovalStatus(job: BackgroundJob, policy: ReturnType<WorkspaceR
     case "always-ask":
     default:
       return "pending" as const;
+  }
+}
+
+function formatBackgroundApprovalSummary(
+  job: BackgroundJob,
+  triggerSource: BackgroundJobRun["triggerSource"],
+  approvalPolicy: BackgroundJobApprovalPolicy
+) {
+  return `${job.name} is waiting before launch. Reason: ${formatRiskLevel(job.riskLevel)} ${formatTriggerSource(triggerSource)} run requires approval under ${formatApprovalPolicy(approvalPolicy)}.`;
+}
+
+function formatRiskLevel(riskLevel: BackgroundJob["riskLevel"]) {
+  switch (riskLevel) {
+    case "safe":
+      return "safe";
+    case "slightly-unsafe":
+      return "slightly unsafe";
+    case "unsafe":
+      return "unsafe";
+  }
+}
+
+function formatTriggerSource(triggerSource: BackgroundJobRun["triggerSource"]) {
+  switch (triggerSource) {
+    case "startup-catchup":
+      return "startup catch-up";
+    case "approval-release":
+      return "approval release";
+    default:
+      return triggerSource;
+  }
+}
+
+function formatApprovalPolicy(policy: BackgroundJobApprovalPolicy) {
+  switch (policy) {
+    case "allow-all":
+      return "Allow all";
+    case "allow-safe":
+      return "Allow safe";
+    case "ask-risky":
+      return "Ask risky";
+    case "always-ask":
+      return "Always ask";
   }
 }

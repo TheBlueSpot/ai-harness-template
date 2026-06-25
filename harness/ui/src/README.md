@@ -15,6 +15,7 @@ Solid UI source for harness frontend.
 - Run notifications open the Runs tab on the matching status bucket so selected execution details stay visible.
 - Partial-complete background runs render as warning/completed outcomes instead of hard failures, keeping failed filters focused on true failures.
 - Assistant-owned job notifications route to the owning assistant log so scheduled work evidence stays near assistant history, with compact row summaries and full details in dialogs.
+- Source-navigation helpers keep notification, toast, job, run, assistant, and log clicks pointed at the owning surface instead of leaving users in a hidden filtered list or detached detail dialog.
 - Execution log detail dialogs share transcript markdown formatting so long prompts stay readable without changing compact list rows.
 - Assistant chat follows project chat scroll behavior, opening at latest messages and exposing a return-to-latest control when browsing history.
 - Assistant roster refreshes stay summary-only; selected assistant detail hydrates on demand through bounded pages.

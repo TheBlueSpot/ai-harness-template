@@ -54,7 +54,7 @@ test("creates warning inbox notification for background runs awaiting approval",
     projectId: "project-1",
     threadId: "thread-1",
     title: "Background task needs approval",
-    summary: "Risky review needs approval",
+    summary: "Risky review is waiting before launch. Reason: unsafe schedule run has pending approval.",
     severity: "warning"
   });
 });

@@ -48,7 +48,7 @@ New `US-*` stories start as `GAP-HIGH` here until at least one colocated or inte
 | US-THREADS-005 | harness/cli/src/workspace-repository.test.ts | integration | GAP-MED |
 | US-THREADS-006 | harness/ui/src/components/chat-panel.test.tsx, harness/cli/src/server.projects-and-history.test.ts | unit+integration | OK |
 | US-THREADS-007 | harness/cli/src/server.projects-and-history.test.ts, harness/ui/src/components/project-sidebar.test.tsx, harness/ui/src/store/store.test.ts, harness/cli/src/stream-pump.test.ts | unit+integration | OK |
-| US-THREADS-008 | harness/cli/src/protocol.test.ts, harness/cli/src/run-milestone-windows.test.ts, harness/cli/src/server.subagents.test.ts, harness/cli/src/stream-pump.test.ts, harness/ui/src/store/store.test.ts, harness/ui/src/components/chat-panel.test.tsx | unit+integration | OK |
+| US-THREADS-008 | harness/cli/src/protocol.test.ts, harness/cli/src/run-milestone-windows.test.ts, harness/cli/src/server.subagents.test.ts, harness/cli/src/stream-pump.test.ts, harness/ui/src/store/store.test.ts, harness/ui/src/components/chat-panel.test.tsx, harness/ui/src/components/primitives/virtual-list.browser.test.ts | unit+integration | OK |
 | US-THREADS-009 | harness/ui/src/components/project-sidebar.test.tsx | unit | OK |
 | US-THREADS-010 | harness/cli/src/workspace-repository.test.ts, harness/cli/src/server.projects-and-history.test.ts, harness/ui/src/components/project-sidebar.test.tsx, harness/ui/src/store/store.test.ts | unit+integration | OK |
 
@@ -153,7 +153,7 @@ New `US-*` stories start as `GAP-HIGH` here until at least one colocated or inte
 
 | Story ID | Covered by | Depth | Gap |
 |----------|-----------|-------|-----|
-| US-ASSISTANTS-001 | harness/shared/protocol.test.ts, harness/cli/src/assistant-capabilities.test.ts, harness/cli/src/assistant-intent.test.ts, harness/cli/src/assistant-chat-actions.test.ts, harness/cli/src/server.assistant-chat-actions.test.ts, harness/cli/src/server.preferences-and-modes.test.ts, harness/cli/src/workspace-repository.test.ts, harness/ui/src/components/chat-panel.test.tsx, harness/ui/src/components/assistants-panel.test.tsx, harness/ui/src/store/store.test.ts | unit+integration | OK |
+| US-ASSISTANTS-001 | harness/shared/protocol.test.ts, harness/cli/src/assistant-capabilities.test.ts, harness/cli/src/assistant-intent.test.ts, harness/cli/src/assistant-chat-actions.test.ts, harness/cli/src/assistant-question-policy.test.ts, harness/cli/src/background-job-executor.test.ts, harness/cli/src/server.assistant-chat-actions.test.ts, harness/cli/src/server.preferences-and-modes.test.ts, harness/cli/src/workspace-repository.test.ts, harness/ui/src/components/chat-panel.test.tsx, harness/ui/src/components/assistants-panel.test.tsx, harness/ui/src/components/preferences-modal.test.tsx, harness/ui/src/store/store.test.ts | unit+integration | OK |
 | US-ASSISTANTS-002 | harness/shared/protocol.test.ts, harness/cli/src/workspace-repository.test.ts, harness/cli/src/server.preferences-and-modes.test.ts, harness/ui/src/components/assistants-panel.test.tsx, harness/ui/src/store/store.test.ts | unit+integration | OK |
 | US-ASSISTANTS-003 | harness/shared/protocol.test.ts, harness/cli/src/workspace-repository.test.ts, harness/cli/src/assistant-manager.test.ts, harness/cli/src/background-job-executor.test.ts | unit+integration | OK |
 | US-ASSISTANTS-004 | harness/cli/src/workspace-repository.test.ts, harness/cli/src/server.assistant-chat-actions.test.ts, harness/ui/src/components/assistants-panel.test.tsx | unit+integration | GAP-MED |
@@ -165,7 +165,7 @@ New `US-*` stories start as `GAP-HIGH` here until at least one colocated or inte
 
 | Story ID | Covered by | Depth | Gap |
 |----------|-----------|-------|-----|
-| US-JOBS-001 | harness/cli/src/background-job-schedule.test.ts, harness/cli/src/background-job-scheduler.test.ts, harness/cli/src/background-job-executor.test.ts, harness/cli/src/workspace-repository.test.ts, harness/cli/src/background-job-command-guards.test.ts, harness/cli/src/run-diagnostics.test.ts, harness/cli/src/run-failure-classification.test.ts, harness/cli/src/server.preferences-and-modes.test.ts, harness/ui/src/components/background-jobs-panel.test.tsx | unit+integration | OK |
+| US-JOBS-001 | harness/cli/src/background-job-schedule.test.ts, harness/cli/src/background-job-scheduler.test.ts, harness/cli/src/background-job-executor.test.ts, harness/cli/src/assistant-question-policy.test.ts, harness/cli/src/workspace-repository.test.ts, harness/cli/src/background-job-command-guards.test.ts, harness/cli/src/run-diagnostics.test.ts, harness/cli/src/run-failure-classification.test.ts, harness/cli/src/server.preferences-and-modes.test.ts, harness/ui/src/components/background-jobs-panel.test.tsx, harness/ui/src/components/preferences-modal.test.tsx | unit+integration | OK |
 | US-JOBS-002 | harness/ui/src/app.test.tsx, harness/cli/src/background-job-executor.test.ts, harness/ui/src/components/background-jobs-panel.test.tsx | unit | GAP-MED |
 | US-JOBS-003 | harness/cli/src/background-job-scheduler.test.ts, harness/cli/src/background-job-command-guards.test.ts, harness/cli/src/server.projects-and-history.test.ts | integration | OK |
 | US-JOBS-004 | harness/cli/src/background-job-schedule.test.ts, harness/cli/src/background-job-scheduler.test.ts, harness/cli/src/background-job-command-guards.test.ts, harness/cli/src/background-job-executor.test.ts, harness/cli/src/bounded-output-buffer.test.ts, harness/cli/src/server.preferences-and-modes.test.ts | unit+integration | OK |
@@ -216,9 +216,9 @@ New `US-*` stories start as `GAP-HIGH` here until at least one colocated or inte
 | US-UI-012 | harness/ui/src/components/project-sidebar.test.tsx | unit | OK |
 | US-UI-013 | harness/ui/src/toast-store.test.ts, harness/ui/src/components/markdown-content.test.tsx | unit | OK |
 | US-UI-014 | harness/ui/src/app.test.tsx | unit | OK |
-| US-UI-015 | harness/cli/src/run-milestone-windows.test.ts, harness/cli/src/server.subagents.test.ts, harness/ui/src/components/chat-panel.test.tsx, harness/ui/src/components/trace-panel.test.tsx | unit+integration | OK |
+| US-UI-015 | harness/cli/src/run-milestone-windows.test.ts, harness/cli/src/server.subagents.test.ts, harness/ui/src/components/chat-panel.test.tsx, harness/ui/src/components/trace-panel.test.tsx, harness/ui/src/components/primitives/virtual-list.browser.test.ts | unit+integration | OK |
 | US-UI-016 | harness/cli/src/protocol.test.ts, harness/ui/src/store/store.test.ts, harness/ui/src/components/chat-panel.test.tsx | unit | OK |
-| US-UI-017 | harness/ui/src/components/chat-panel.test.tsx, harness/ui/src/components/trace-panel.test.tsx | unit | GAP-MED |
+| US-UI-017 | harness/ui/src/components/chat-panel.test.tsx, harness/ui/src/components/trace-panel.test.tsx, harness/ui/src/components/primitives/virtual-list.browser.test.ts | unit | GAP-MED |
 | US-UI-018 | harness/ui/src/components/notification-inbox.test.tsx | unit | GAP-MED |
 | US-UI-019 | harness/ui/src/store/store.test.ts | unit | OK |
 | US-UI-020 | harness/cli/src/tool-activity-state.test.ts, harness/ui/src/components/chat-panel.test.tsx, harness/ui/src/components/trace-panel.test.tsx | unit | GAP-MED |
@@ -251,7 +251,7 @@ New `US-*` stories start as `GAP-HIGH` here until at least one colocated or inte
 
 | Story ID | Covered by | Depth | Gap |
 |----------|-----------|-------|-----|
-| US-PREFERENCES-001 | harness/cli/src/server.test.ts, harness/ui/src/components/preferences-modal.test.tsx | unit+integration | OK |
+| US-PREFERENCES-001 | harness/cli/src/server.test.ts, harness/cli/src/protocol.test.ts, harness/cli/src/workspace-repository.test.ts, harness/ui/src/components/preferences-modal.test.tsx, harness/ui/src/harness-websocket.test.ts | unit+integration | OK |
 | US-PREFERENCES-002 | harness/cli/src/pi-agent-adapter.test.ts, harness/cli/src/workspace-repository.test.ts | integration | OK |
 | US-PREFERENCES-003 | harness/ui/src/store/store.test.ts | unit | OK |
 
@@ -275,7 +275,7 @@ New `US-*` stories start as `GAP-HIGH` here until at least one colocated or inte
 | US-DEV-014 | harness/cli/src/workspace-repository.test.ts | integration | OK |
 | US-DEV-015 | harness/cli/src/dev-db-recovery.test.ts, harness/cli/src/launch-harness.test.ts | integration | OK |
 | US-DEV-016 | harness/cli/src/workspace-repository.test.ts | integration | OK |
-| US-DEV-017 | harness/ui/src/utils/tests/test-harness.ts | integration | OK |
+| US-DEV-017 | harness/ui/src/utils/tests/test-harness.ts, harness/ui/src/components/primitives/virtual-list.browser.test.ts | integration | OK |
 | US-DEV-018 | harness/cli/src/protocol.test.ts, harness/cli/src/server.test.ts | unit+integration | OK |
 | US-DEV-019 | harness/cli/src/pi-agent-adapter.test.ts, harness/cli/src/pi-orchestrator.test.ts | unit | OK |
 | US-DEV-020 | harness/cli/src/pi-orchestrator.test.ts, harness/cli/src/trace-timestamps.test.ts, harness/ui/src/lib/trace-panel-model.test.ts, harness/ui/src/components/trace-panel.test.tsx | unit | GAP-MED |

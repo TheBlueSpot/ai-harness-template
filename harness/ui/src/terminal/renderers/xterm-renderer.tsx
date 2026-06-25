@@ -19,6 +19,9 @@ export type XtermRendererHandle = {
 export function XtermRenderer(props: {
   sessionId: string;
   output: string;
+  outputDelta?: string;
+  outputVersion?: number;
+  outputResetVersion?: number;
   searchQuery: string;
   copyOnSelect: boolean;
   ctrlCMode: "auto" | "copy" | "sigint";
@@ -35,6 +38,8 @@ export function XtermRenderer(props: {
   let search: SearchAddon | undefined;
   let serialize: SerializeAddon | undefined;
   let written = "";
+  let seenOutputVersion = -1;
+  let seenResetVersion = 0;
   let copyTimer: ReturnType<typeof setTimeout> | undefined;
 
   onMount(() => {
@@ -147,6 +152,27 @@ export function XtermRenderer(props: {
 
   createEffect(() => {
     if (!terminal) {
+      return;
+    }
+    if (typeof props.outputVersion === "number") {
+      const resetVersion = props.outputResetVersion ?? 0;
+      if (seenOutputVersion === -1 || resetVersion !== seenResetVersion) {
+        terminal.reset();
+        terminal.write(props.output);
+        written = props.output;
+        seenOutputVersion = props.outputVersion;
+        seenResetVersion = resetVersion;
+        return;
+      }
+      if (props.outputVersion === seenOutputVersion) {
+        return;
+      }
+      const next = props.output.startsWith(written) ? props.output.slice(written.length) : props.outputDelta ?? "";
+      if (next) {
+        terminal.write(next);
+      }
+      written = props.output;
+      seenOutputVersion = props.outputVersion;
       return;
     }
     const output = props.output;

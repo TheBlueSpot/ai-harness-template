@@ -62,6 +62,17 @@ import {
   type AppHotkeyId,
   type AppHotkeyPreferences
 } from "./lib/app-hotkeys";
+import { applyThemePreference } from "./theme/theme-apply";
+import {
+  createDefaultCustomTheme,
+  DEFAULT_THEME_PREFERENCE,
+  normalizeThemePreference,
+  withThemePreference,
+  type CustomThemeDefinition,
+  type ThemeId,
+  type ThemeModePreference,
+  type ThemePreference
+} from "./theme/theme-model";
 import { pushToast, reportUiError } from "./toast-store";
 
 export const OPENAI_API_KEY_STORAGE_KEY = "openai_api_key";
@@ -80,6 +91,8 @@ export const SINGLE_AGENT_MODEL_PREFERENCE_DEFAULT_STORAGE_KEY = "single_agent_m
 export const SUBAGENT_MODEL_PREFERENCE_DEFAULT_STORAGE_KEY = "subagent_model_preference_default";
 export const CORRECTNESS_ITERATION_MODE_DEFAULT_STORAGE_KEY = "correctness_iteration_mode_default";
 export const BACKGROUND_JOB_APPROVAL_POLICY_DEFAULT_STORAGE_KEY = "background_job_approval_policy_default";
+export const ASSISTANT_AUTO_APPROVE_NON_BLOCKING_QUESTIONS_DEFAULT_STORAGE_KEY =
+  "assistant_auto_approve_non_blocking_questions_default";
 export const ASSISTANT_CONGESTION_CONTROL_ENABLED_DEFAULT_STORAGE_KEY = "assistant_congestion_control_enabled_default";
 export const ASSISTANT_MAX_CONGESTION_DEFAULT_STORAGE_KEY = "assistant_max_congestion_default";
 const AUTO_ARCHIVE_COMPLETED_THREADS_DEFAULT_STORAGE_KEY = "pi-harness:auto-archive-completed-threads-default:v1";
@@ -90,7 +103,9 @@ export const CHECK_CLI_UPDATES_DEFAULT_STORAGE_KEY = "check_cli_updates_default"
 export const COMPOSER_REASONING_STRENGTH_STORAGE_KEY = "composer_reasoning_strength";
 export const COMPOSER_FAST_MODE_STORAGE_KEY = "composer_fast_mode";
 export const APP_HOTKEY_PREFERENCES_STORAGE_KEY = "pi-harness:app-hotkeys:v1";
+export const THEME_PREFERENCE_STORAGE_KEY = "pi-harness:theme-preference:v1";
 export const PREFERENCES_ACTIVE_SECTION_STORAGE_KEY = "pi-harness:preferences-active-section:v1";
+export const TOKEN_USAGE_LIFETIME_STORAGE_KEY = "pi-harness:token-usage-lifetime:v1";
 export const THREAD_DRAFT_STORAGE_KEY_PREFIX = "pi-harness:thread-draft:v1";
 export const TUTORIAL_PROGRESS_STORAGE_KEY = "pi-harness:tutorial-progress:v1";
 export const BROWSER_UI_SESSION_STORAGE_KEY = "pi-harness:browser-ui-session:v1";
@@ -161,8 +176,25 @@ export type PreferencesActiveSectionId =
   | "ai-providers"
   | "safety-guardrails"
   | "workspace-memory"
+  | "usage"
   | "background-jobs"
   | "developer-advanced";
+
+export type TokenUsageTotals = {
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  totalProcessedTokens: number;
+  totalTokensIncludingCached: number;
+  events: number;
+  updatedAt?: string;
+};
+
+export type TokenUsageState = {
+  session: TokenUsageTotals;
+  lifetime: TokenUsageTotals;
+  resetAt?: string;
+};
 
 export type MainPanelSizes = {
   left: number;
@@ -332,6 +364,8 @@ export type HarnessViewState = {
   backgroundJobs: BackgroundJobsState;
   runDiagnostics: RunDiagnosticsViewState;
   diagnosticsRefreshVersion: number;
+  tokenUsage: TokenUsageState;
+  tokenUsageResetDialogOpen: boolean;
   notifications: NotificationInboxState;
   executionControl: ExecutionControlState;
   backgroundJobSchedulePreview?: {
@@ -378,6 +412,7 @@ export type HarnessViewState = {
   subagentModelPreferenceDefault: RunModelPreference;
   correctnessIterationModeDefault: "ask-before-iterate" | "auto-once" | "auto-until-clean";
   backgroundJobApprovalPolicyDefault: BackgroundJobApprovalPolicy;
+  assistantAutoApproveNonBlockingQuestionsDefault: boolean;
   assistantCongestionControlEnabledDefault: boolean;
   assistantMaxCongestionDefault: number;
   autoArchiveCompletedThreadsDefault: boolean;
@@ -385,6 +420,7 @@ export type HarnessViewState = {
   memoryBankRecordRunsDefault: boolean;
   checkCliUpdatesDefault: boolean;
   appHotkeyPreferences: AppHotkeyPreferences;
+  themePreference: ThemePreference;
   attachmentsEnabled: boolean;
   capabilities: ProviderCapability[];
   preferencesModalOpen: boolean;
@@ -432,6 +468,7 @@ export type HarnessViewState = {
   hasLocalSubagentModelPreference: boolean;
   hasLocalCorrectnessIterationModePreference: boolean;
   hasLocalBackgroundJobApprovalPolicyPreference: boolean;
+  hasLocalAssistantAutoApproveNonBlockingQuestionsPreference: boolean;
   hasLocalAssistantCongestionControlPreference: boolean;
   hasLocalAutoArchiveCompletedThreadsPreference: boolean;
   hasLocalMemoryBankEnabledPreference: boolean;
@@ -477,6 +514,7 @@ export type LocalPreferencesState = {
   subagentModelPreferenceDefault?: RunModelPreference;
   correctnessIterationModeDefault?: "ask-before-iterate" | "auto-once" | "auto-until-clean";
   backgroundJobApprovalPolicyDefault?: BackgroundJobApprovalPolicy;
+  assistantAutoApproveNonBlockingQuestionsDefault?: boolean;
   assistantCongestionControlEnabledDefault?: boolean;
   assistantMaxCongestionDefault?: number;
   autoArchiveCompletedThreadsDefault?: boolean;
@@ -487,6 +525,7 @@ export type LocalPreferencesState = {
   selectedReasoningStrength?: ComposerReasoningStrength;
   selectedFastMode?: boolean;
   appHotkeyPreferences?: AppHotkeyPreferences;
+  themePreference?: ThemePreference;
   preferencesActiveSectionId?: PreferencesActiveSectionId;
 };
 
@@ -596,6 +635,33 @@ export function createEmptyNotificationInboxState(): NotificationInboxState {
   };
 }
 
+export function createEmptyTokenUsageTotals(overrides: Partial<TokenUsageTotals> = {}): TokenUsageTotals {
+  const inputTokens = Math.max(0, Math.round(overrides.inputTokens ?? 0));
+  const outputTokens = Math.max(0, Math.round(overrides.outputTokens ?? 0));
+  const totalProcessedTokens = Math.max(0, Math.round(overrides.totalProcessedTokens ?? inputTokens + outputTokens));
+  const cachedInputTokens = Math.max(0, Math.round(overrides.cachedInputTokens ?? 0));
+  return {
+    inputTokens,
+    outputTokens,
+    cachedInputTokens,
+    totalProcessedTokens,
+    totalTokensIncludingCached: Math.max(
+      0,
+      Math.round(overrides.totalTokensIncludingCached ?? totalProcessedTokens + cachedInputTokens)
+    ),
+    events: Math.max(0, Math.round(overrides.events ?? 0)),
+    updatedAt: typeof overrides.updatedAt === "string" && overrides.updatedAt.trim() ? overrides.updatedAt : undefined
+  };
+}
+
+export function createEmptyTokenUsageState(overrides: Partial<TokenUsageState> = {}): TokenUsageState {
+  return {
+    session: createEmptyTokenUsageTotals(overrides.session ?? {}),
+    lifetime: createEmptyTokenUsageTotals(overrides.lifetime ?? {}),
+    resetAt: typeof overrides.resetAt === "string" && overrides.resetAt.trim() ? overrides.resetAt : undefined
+  };
+}
+
 export function createInitialSetupState(): SetupState {
   return {
     launchMode: "source",
@@ -625,6 +691,8 @@ export function createInitialViewState(): HarnessViewState {
     backgroundJobs: createEmptyBackgroundJobsState(),
     runDiagnostics: createInitialRunDiagnosticsState(),
     diagnosticsRefreshVersion: 0,
+    tokenUsage: createEmptyTokenUsageState(),
+    tokenUsageResetDialogOpen: false,
     notifications: createEmptyNotificationInboxState(),
     executionControl: createInitialExecutionControlState(),
     backgroundJobSchedulePreview: undefined,
@@ -668,6 +736,7 @@ export function createInitialViewState(): HarnessViewState {
     subagentModelPreferenceDefault: "inference",
     correctnessIterationModeDefault: "ask-before-iterate",
     backgroundJobApprovalPolicyDefault: "ask-risky",
+    assistantAutoApproveNonBlockingQuestionsDefault: true,
     assistantCongestionControlEnabledDefault: true,
     assistantMaxCongestionDefault: 1,
     autoArchiveCompletedThreadsDefault: false,
@@ -675,6 +744,7 @@ export function createInitialViewState(): HarnessViewState {
     memoryBankRecordRunsDefault: true,
     checkCliUpdatesDefault: true,
     appHotkeyPreferences: { ...DEFAULT_APP_HOTKEY_PREFERENCES },
+    themePreference: DEFAULT_THEME_PREFERENCE,
     attachmentsEnabled: false,
     capabilities: [...defaultProviderCapabilities],
     preferencesModalOpen: false,
@@ -721,6 +791,7 @@ export function createInitialViewState(): HarnessViewState {
     hasLocalSubagentModelPreference: false,
     hasLocalCorrectnessIterationModePreference: false,
     hasLocalBackgroundJobApprovalPolicyPreference: false,
+    hasLocalAssistantAutoApproveNonBlockingQuestionsPreference: false,
     hasLocalAssistantCongestionControlPreference: false,
     hasLocalAutoArchiveCompletedThreadsPreference: false,
     hasLocalMemoryBankEnabledPreference: false,
@@ -1595,15 +1666,93 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
   }
 }
 
+function applyTokenUsageEvent(
+  state: HarnessViewState,
+  event: Extract<ServerEvent, { type: "project.context" }>,
+  recordedEventKeys: Set<string>
+) {
+  const eventKey = createTokenUsageEventKey(event);
+  if (recordedEventKeys.has(eventKey)) {
+    return state;
+  }
+
+  recordedEventKeys.add(eventKey);
+  const delta = createTokenUsageDelta(event.payload.contextUsage);
+  if (delta.totalTokensIncludingCached <= 0) {
+    return state;
+  }
+
+  const tokenUsage = {
+    ...state.tokenUsage,
+    session: addTokenUsageTotals(state.tokenUsage.session, delta),
+    lifetime: addTokenUsageTotals(state.tokenUsage.lifetime, delta)
+  };
+  persistTokenUsageLifetime(tokenUsage.lifetime);
+  return {
+    ...state,
+    tokenUsage
+  };
+}
+
+function createTokenUsageEventKey(event: Extract<ServerEvent, { type: "project.context" }>) {
+  const usage = event.payload.contextUsage;
+  return [
+    event.requestId,
+    event.payload.projectId,
+    event.payload.threadId,
+    usage.sourceKind,
+    usage.sourceLabel,
+    usage.modelId,
+    usage.updatedAt,
+    usage.tokens ?? "",
+    usage.totalProcessedTokens ?? "",
+    usage.cachedInputTokens ?? ""
+  ].join("|");
+}
+
+function createTokenUsageDelta(usage: ProjectContextUsage) {
+  const inputTokens = normalizeTokenCount(usage.tokens);
+  const totalProcessedTokens = Math.max(inputTokens, normalizeTokenCount(usage.totalProcessedTokens ?? inputTokens));
+  const cachedInputTokens = normalizeTokenCount(usage.cachedInputTokens);
+  return createEmptyTokenUsageTotals({
+    inputTokens,
+    outputTokens: Math.max(0, totalProcessedTokens - inputTokens),
+    cachedInputTokens,
+    totalProcessedTokens,
+    totalTokensIncludingCached: totalProcessedTokens + cachedInputTokens,
+    events: 1,
+    updatedAt: usage.updatedAt
+  });
+}
+
+function addTokenUsageTotals(left: TokenUsageTotals, right: TokenUsageTotals) {
+  return createEmptyTokenUsageTotals({
+    inputTokens: left.inputTokens + right.inputTokens,
+    outputTokens: left.outputTokens + right.outputTokens,
+    cachedInputTokens: left.cachedInputTokens + right.cachedInputTokens,
+    totalProcessedTokens: left.totalProcessedTokens + right.totalProcessedTokens,
+    totalTokensIncludingCached: left.totalTokensIncludingCached + right.totalTokensIncludingCached,
+    events: left.events + right.events,
+    updatedAt: [left.updatedAt, right.updatedAt].filter(Boolean).sort().at(-1)
+  });
+}
+
 export function createHarnessStore() {
   const [state, setState] = createStore(createInitialViewState());
   let commandDispatcher: ((command: ClientCommand) => void) | undefined;
+  const recordedTokenUsageEventKeys = new Set<string>();
 
   const persistBrowserUiStateIfChanged = (previousSnapshot: BrowserUiSessionState, nextState: HarnessViewState) => {
     const nextSnapshot = getBrowserUiSessionSnapshot(nextState);
     if (JSON.stringify(previousSnapshot) !== JSON.stringify(nextSnapshot)) {
       persistBrowserUiSession(nextSnapshot);
     }
+  };
+  const setThemePreferenceState = (themePreference: ThemePreference) => {
+    const normalized = normalizeThemePreference(themePreference);
+    setState({ themePreference: normalized });
+    persistMergedLocalPreferences({ themePreference: normalized });
+    applyThemePreference(normalized);
   };
 
   return {
@@ -2092,6 +2241,21 @@ export function createHarnessStore() {
     setDebugEnabled(debugEnabled: boolean) {
       setState({ debugEnabled });
     },
+    setThemeId(themeId: ThemeId) {
+      setThemePreferenceState(withThemePreference(state.themePreference, { themeId }));
+    },
+    setThemeMode(mode: ThemeModePreference) {
+      setThemePreferenceState(withThemePreference(state.themePreference, { mode }));
+    },
+    setCustomTheme(custom: CustomThemeDefinition) {
+      setThemePreferenceState(withThemePreference(state.themePreference, { themeId: "custom", custom }));
+    },
+    resetCustomTheme() {
+      setThemePreferenceState(withThemePreference(state.themePreference, {
+        themeId: "custom",
+        custom: createDefaultCustomTheme(state.themePreference.custom?.baseThemeId)
+      }));
+    },
     setTracePanelOpen(tracePanelOpen: boolean) {
       const previousSnapshot = getBrowserUiSessionSnapshot(state);
       const tracePanelMode: TracePanelMode = tracePanelOpen ? "open" : "closed";
@@ -2200,6 +2364,9 @@ export function createHarnessStore() {
     setBackgroundJobApprovalPolicyDefault(backgroundJobApprovalPolicyDefault: BackgroundJobApprovalPolicy) {
       setState({ backgroundJobApprovalPolicyDefault });
     },
+    setAssistantAutoApproveNonBlockingQuestionsDefault(assistantAutoApproveNonBlockingQuestionsDefault: boolean) {
+      setState({ assistantAutoApproveNonBlockingQuestionsDefault });
+    },
     setAssistantCongestionControlEnabledDefault(assistantCongestionControlEnabledDefault: boolean) {
       setState({ assistantCongestionControlEnabledDefault });
     },
@@ -2263,6 +2430,19 @@ export function createHarnessStore() {
     },
     closeHelpDialog() {
       setState({ helpDialogOpen: false });
+    },
+    openTokenUsageResetDialog() {
+      setState({ tokenUsageResetDialogOpen: true });
+    },
+    closeTokenUsageResetDialog() {
+      setState({ tokenUsageResetDialogOpen: false });
+    },
+    resetTokenUsage() {
+      const resetAt = new Date().toISOString();
+      const tokenUsage = createEmptyTokenUsageState({ resetAt });
+      recordedTokenUsageEventKeys.clear();
+      persistTokenUsageLifetime(tokenUsage.lifetime);
+      setState({ tokenUsage, tokenUsageResetDialogOpen: false });
     },
     openSetupChecklist() {
       setState({ setupChecklistOpen: true });
@@ -2357,6 +2537,7 @@ export function createHarnessStore() {
       })));
     },
     commitLocalPreferences(localPreferences: LocalPreferencesState) {
+      const themePreference = normalizeThemePreference(localPreferences.themePreference ?? state.themePreference);
       setState(reconcile(finalizeHarnessViewState({
         ...state,
         providerBrand: localPreferences.providerBrand ?? state.providerBrand,
@@ -2387,6 +2568,9 @@ export function createHarnessStore() {
           localPreferences.correctnessIterationModeDefault ?? state.correctnessIterationModeDefault,
         backgroundJobApprovalPolicyDefault:
           localPreferences.backgroundJobApprovalPolicyDefault ?? state.backgroundJobApprovalPolicyDefault,
+        assistantAutoApproveNonBlockingQuestionsDefault:
+          localPreferences.assistantAutoApproveNonBlockingQuestionsDefault ??
+          state.assistantAutoApproveNonBlockingQuestionsDefault,
         assistantCongestionControlEnabledDefault:
           localPreferences.assistantCongestionControlEnabledDefault ?? state.assistantCongestionControlEnabledDefault,
         assistantMaxCongestionDefault:
@@ -2400,6 +2584,7 @@ export function createHarnessStore() {
         appHotkeyPreferences: normalizeAppHotkeyPreferences(
           localPreferences.appHotkeyPreferences ?? state.appHotkeyPreferences
         ),
+        themePreference,
         backgroundJobNotificationsEnabled:
           localPreferences.backgroundJobNotificationsEnabled ?? state.backgroundJobNotificationsEnabled,
         preferencesActiveSectionId:
@@ -2434,6 +2619,8 @@ export function createHarnessStore() {
         hasLocalSubagentModelPreference: localPreferences.subagentModelPreferenceDefault !== undefined,
         hasLocalCorrectnessIterationModePreference: localPreferences.correctnessIterationModeDefault !== undefined,
         hasLocalBackgroundJobApprovalPolicyPreference: localPreferences.backgroundJobApprovalPolicyDefault !== undefined,
+        hasLocalAssistantAutoApproveNonBlockingQuestionsPreference:
+          localPreferences.assistantAutoApproveNonBlockingQuestionsDefault !== undefined,
         hasLocalAssistantCongestionControlPreference:
           localPreferences.assistantCongestionControlEnabledDefault !== undefined ||
           localPreferences.assistantMaxCongestionDefault !== undefined,
@@ -2442,12 +2629,19 @@ export function createHarnessStore() {
         hasLocalMemoryBankRecordRunsPreference: localPreferences.memoryBankRecordRunsDefault !== undefined,
         hasLocalCheckCliUpdatesPreference: localPreferences.checkCliUpdatesDefault !== undefined
       })));
+      applyThemePreference(themePreference);
     },
     setHasUsableApiKey(hasUsableApiKey: boolean) {
       setState({ hasUsableApiKey });
     },
     hydrateLocalPreferences() {
       const localPreferences = readLocalPreferences();
+      const themePreference = normalizeThemePreference(localPreferences.themePreference ?? state.themePreference);
+      const tokenUsage = createEmptyTokenUsageState({
+        session: state.tokenUsage.session,
+        lifetime: readTokenUsageLifetime(),
+        resetAt: state.tokenUsage.resetAt
+      });
       const nextState = finalizeHarnessViewState({
         ...state,
         providerBrand: localPreferences.providerBrand ?? state.providerBrand,
@@ -2478,6 +2672,9 @@ export function createHarnessStore() {
           localPreferences.correctnessIterationModeDefault ?? state.correctnessIterationModeDefault,
         backgroundJobApprovalPolicyDefault:
           localPreferences.backgroundJobApprovalPolicyDefault ?? state.backgroundJobApprovalPolicyDefault,
+        assistantAutoApproveNonBlockingQuestionsDefault:
+          localPreferences.assistantAutoApproveNonBlockingQuestionsDefault ??
+          state.assistantAutoApproveNonBlockingQuestionsDefault,
         assistantCongestionControlEnabledDefault:
           localPreferences.assistantCongestionControlEnabledDefault ?? state.assistantCongestionControlEnabledDefault,
         assistantMaxCongestionDefault:
@@ -2491,8 +2688,10 @@ export function createHarnessStore() {
         appHotkeyPreferences: normalizeAppHotkeyPreferences(
           localPreferences.appHotkeyPreferences ?? state.appHotkeyPreferences
         ),
+        themePreference,
         backgroundJobNotificationsEnabled:
           localPreferences.backgroundJobNotificationsEnabled ?? state.backgroundJobNotificationsEnabled,
+        tokenUsage,
         preferencesActiveSectionId:
           localPreferences.preferencesActiveSectionId ?? state.preferencesActiveSectionId,
         projectSidebarPreferences: normalizeProjectSidebarPreferences(
@@ -2525,6 +2724,8 @@ export function createHarnessStore() {
         hasLocalSubagentModelPreference: localPreferences.subagentModelPreferenceDefault !== undefined,
         hasLocalCorrectnessIterationModePreference: localPreferences.correctnessIterationModeDefault !== undefined,
         hasLocalBackgroundJobApprovalPolicyPreference: localPreferences.backgroundJobApprovalPolicyDefault !== undefined,
+        hasLocalAssistantAutoApproveNonBlockingQuestionsPreference:
+          localPreferences.assistantAutoApproveNonBlockingQuestionsDefault !== undefined,
         hasLocalAssistantCongestionControlPreference:
           localPreferences.assistantCongestionControlEnabledDefault !== undefined ||
           localPreferences.assistantMaxCongestionDefault !== undefined,
@@ -2534,6 +2735,7 @@ export function createHarnessStore() {
         hasLocalCheckCliUpdatesPreference: localPreferences.checkCliUpdatesDefault !== undefined
       });
       setState(reconcile(nextState));
+      applyThemePreference(themePreference);
       return localPreferences;
     },
     hydrateTutorialProgress() {
@@ -2547,7 +2749,11 @@ export function createHarnessStore() {
     applyServerEvent(event: ServerEvent) {
       const currentState = unwrap(state) as HarnessViewState;
       const previousSnapshot = getBrowserUiSessionSnapshot(currentState);
-      const nextState = finalizeHarnessViewState(reduceServerEvent(currentState, event));
+      let reducedState = reduceServerEvent(currentState, event);
+      if (event.type === "project.context") {
+        reducedState = applyTokenUsageEvent(reducedState, event, recordedTokenUsageEventKeys);
+      }
+      const nextState = finalizeHarnessViewState(reducedState);
       setState(reconcile(nextState));
       if (event.type === "preferences.providerConnectionTested") {
         if (typeof document !== "undefined") {
@@ -2577,6 +2783,7 @@ export function createHarnessStore() {
     },
     resetForTests(overrides: Partial<HarnessViewState> = {}) {
       commandDispatcher = undefined;
+      recordedTokenUsageEventKeys.clear();
       setState(reconcile({ ...createInitialViewState(), ...overrides }));
     }
   };
@@ -3236,6 +3443,9 @@ function applyReadyPreferencesState(state: HarnessViewState, preferences: Prefer
     backgroundJobApprovalPolicyDefault: state.hasLocalBackgroundJobApprovalPolicyPreference
       ? state.backgroundJobApprovalPolicyDefault
       : preferences.backgroundJobApprovalPolicyDefault,
+    assistantAutoApproveNonBlockingQuestionsDefault: state.hasLocalAssistantAutoApproveNonBlockingQuestionsPreference
+      ? state.assistantAutoApproveNonBlockingQuestionsDefault
+      : (preferences.assistantAutoApproveNonBlockingQuestionsDefault ?? true),
     assistantCongestionControlEnabledDefault: state.hasLocalAssistantCongestionControlPreference
       ? state.assistantCongestionControlEnabledDefault
       : (preferences.assistantCongestionControlEnabledDefault ?? true),
@@ -3309,6 +3519,9 @@ export function readLocalPreferences(): LocalPreferencesState {
   const backgroundJobApprovalPolicyDefault = parseBackgroundJobApprovalPolicyStorageValue(
     window.localStorage.getItem(BACKGROUND_JOB_APPROVAL_POLICY_DEFAULT_STORAGE_KEY)
   );
+  const assistantAutoApproveNonBlockingQuestionsDefault = parseBooleanStorageValue(
+    window.localStorage.getItem(ASSISTANT_AUTO_APPROVE_NON_BLOCKING_QUESTIONS_DEFAULT_STORAGE_KEY)
+  );
   const assistantCongestionControlEnabledDefault = parseBooleanStorageValue(
     window.localStorage.getItem(ASSISTANT_CONGESTION_CONTROL_ENABLED_DEFAULT_STORAGE_KEY)
   );
@@ -3338,6 +3551,7 @@ export function readLocalPreferences(): LocalPreferencesState {
   );
   const selectedFastMode = parseBooleanStorageValue(window.localStorage.getItem(COMPOSER_FAST_MODE_STORAGE_KEY));
   const appHotkeyPreferences = readAppHotkeyPreferences();
+  const themePreference = parseThemePreferenceStorageValue(window.localStorage.getItem(THEME_PREFERENCE_STORAGE_KEY));
   const preferencesActiveSectionId = parsePreferencesActiveSectionStorageValue(
     window.localStorage.getItem(PREFERENCES_ACTIVE_SECTION_STORAGE_KEY)
   );
@@ -3359,6 +3573,7 @@ export function readLocalPreferences(): LocalPreferencesState {
     subagentModelPreferenceDefault,
     correctnessIterationModeDefault,
     backgroundJobApprovalPolicyDefault,
+    assistantAutoApproveNonBlockingQuestionsDefault,
     assistantCongestionControlEnabledDefault,
     assistantMaxCongestionDefault,
     autoArchiveCompletedThreadsDefault,
@@ -3369,8 +3584,25 @@ export function readLocalPreferences(): LocalPreferencesState {
     selectedReasoningStrength,
     selectedFastMode,
     appHotkeyPreferences,
+    themePreference,
     preferencesActiveSectionId
   };
+}
+
+export function readTokenUsageLifetime(): TokenUsageTotals {
+  if (typeof window === "undefined") {
+    return createEmptyTokenUsageTotals();
+  }
+
+  try {
+    const raw = window.localStorage.getItem(TOKEN_USAGE_LIFETIME_STORAGE_KEY);
+    if (!raw) {
+      return createEmptyTokenUsageTotals();
+    }
+    return normalizeTokenUsageTotals(JSON.parse(raw));
+  } catch {
+    return createEmptyTokenUsageTotals();
+  }
 }
 
 export function readAppHotkeyPreferences(): AppHotkeyPreferences {
@@ -3476,6 +3708,10 @@ export function persistLocalPreferences(input: LocalPreferencesState) {
   persistStorageValue(CORRECTNESS_ITERATION_MODE_DEFAULT_STORAGE_KEY, input.correctnessIterationModeDefault);
   persistStorageValue(BACKGROUND_JOB_APPROVAL_POLICY_DEFAULT_STORAGE_KEY, input.backgroundJobApprovalPolicyDefault);
   persistBooleanStorageValue(
+    ASSISTANT_AUTO_APPROVE_NON_BLOCKING_QUESTIONS_DEFAULT_STORAGE_KEY,
+    input.assistantAutoApproveNonBlockingQuestionsDefault
+  );
+  persistBooleanStorageValue(
     ASSISTANT_CONGESTION_CONTROL_ENABLED_DEFAULT_STORAGE_KEY,
     input.assistantCongestionControlEnabledDefault
   );
@@ -3488,6 +3724,7 @@ export function persistLocalPreferences(input: LocalPreferencesState) {
   persistStorageValue(COMPOSER_REASONING_STRENGTH_STORAGE_KEY, input.selectedReasoningStrength);
   persistBooleanStorageValue(COMPOSER_FAST_MODE_STORAGE_KEY, input.selectedFastMode);
   persistAppHotkeyPreferences(input.appHotkeyPreferences);
+  persistThemePreference(input.themePreference);
   persistStorageValue(PREFERENCES_ACTIVE_SECTION_STORAGE_KEY, input.preferencesActiveSectionId);
 }
 
@@ -3498,6 +3735,23 @@ function persistAppHotkeyPreferences(input: AppHotkeyPreferences | undefined) {
   }
 
   window.localStorage.setItem(APP_HOTKEY_PREFERENCES_STORAGE_KEY, JSON.stringify(normalizeAppHotkeyPreferences(input)));
+}
+
+function persistThemePreference(input: ThemePreference | undefined) {
+  if (!input) {
+    window.localStorage.removeItem(THEME_PREFERENCE_STORAGE_KEY);
+    return;
+  }
+
+  window.localStorage.setItem(THEME_PREFERENCE_STORAGE_KEY, JSON.stringify(normalizeThemePreference(input)));
+}
+
+function persistTokenUsageLifetime(input: TokenUsageTotals) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(TOKEN_USAGE_LIFETIME_STORAGE_KEY, JSON.stringify(createEmptyTokenUsageTotals(input)));
 }
 
 export function persistMergedLocalPreferences(input: LocalPreferencesState) {
@@ -4175,6 +4429,42 @@ function parseBooleanStorageValue(value: string | null) {
   return undefined;
 }
 
+function normalizeTokenUsageTotals(input: unknown): TokenUsageTotals {
+  const source = isRecord(input) ? input : {};
+  const inputTokens = normalizeTokenCount(source.inputTokens);
+  const outputTokens = normalizeTokenCount(source.outputTokens);
+  const cachedInputTokens = normalizeTokenCount(source.cachedInputTokens);
+  const totalProcessedTokens = normalizeTokenCount(source.totalProcessedTokens ?? inputTokens + outputTokens);
+  return createEmptyTokenUsageTotals({
+    inputTokens,
+    outputTokens,
+    cachedInputTokens,
+    totalProcessedTokens,
+    totalTokensIncludingCached: normalizeTokenCount(source.totalTokensIncludingCached ?? totalProcessedTokens + cachedInputTokens),
+    events: normalizeTokenCount(source.events),
+    updatedAt: typeof source.updatedAt === "string" ? source.updatedAt : undefined
+  });
+}
+
+function normalizeTokenCount(input: unknown) {
+  if (typeof input !== "number" || !Number.isFinite(input)) {
+    return 0;
+  }
+  return Math.max(0, Math.round(input));
+}
+
+function parseThemePreferenceStorageValue(value: string | null): ThemePreference | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  try {
+    return normalizeThemePreference(JSON.parse(value));
+  } catch {
+    return undefined;
+  }
+}
+
 function parseProviderBrandStorageValue(value: string | null): ProviderBrand | undefined {
   return value === "gpt" || value === "gemini" || value === "claude" ? value : undefined;
 }
@@ -4264,6 +4554,7 @@ function parsePreferencesActiveSectionStorageValue(value: string | null): Prefer
     value === "ai-providers" ||
     value === "safety-guardrails" ||
     value === "workspace-memory" ||
+    value === "usage" ||
     value === "background-jobs" ||
     value === "developer-advanced"
     ? value

@@ -19,8 +19,10 @@ import {
   NotificationInbox,
   activateProjectThreadFromInbox,
   createAssistantJobBootstrapCommandFromInbox,
+  openAssistantQuestionNotificationFromInbox,
   openAssistantJobNotificationFromInbox,
-  openBackgroundRunNotificationFromInbox
+  openBackgroundRunNotificationFromInbox,
+  openCliUpdateNotificationFromInbox
 } from "./notification-inbox";
 
 function isoNow() {
@@ -430,6 +432,65 @@ createUiTest("openAssistantJobNotificationFromInbox", () => {
   });
 });
 
+createUiTest("openAssistantQuestionNotificationFromInbox", () => {
+  beforeEach(() => {
+    clearBrowserStateForTests();
+  });
+
+  it("opens the assistant questions tab for assistant question notifications", () => {
+    const now = isoNow();
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        assistants: {
+          ...createEmptyAssistantsState(),
+          assistants: [
+            {
+              id: "assistant-1",
+              name: "Release watcher",
+              scope: "project",
+              projectId: "project-1",
+              description: "Watch releases",
+              personalityPrompt: "Be concise.",
+              jobPrompt: "Scan releases.",
+              agentId: "pi",
+              runState: "active",
+              bootstrapState: "completed",
+              failureStreakCount: 0,
+              circuitBreakerState: "closed",
+              unreadQuestionCount: 1,
+              createdAt: now,
+              updatedAt: now
+            } satisfies Assistant
+          ]
+        }
+      })
+    );
+
+    openAssistantQuestionNotificationFromInbox(harnessStore.state, assistantJobBootstrapNotification());
+
+    expect(harnessStore.state.activeSurface).toBe("assistants");
+    expect(harnessStore.state.activeLeftTab).toBe("assistants");
+    expect(harnessStore.state.assistants.selectedAssistantId).toBe("assistant-1");
+    expect(harnessStore.state.assistants.selectedTab).toBe("questions");
+  });
+});
+
+createUiTest("openCliUpdateNotificationFromInbox", () => {
+  beforeEach(() => {
+    clearBrowserStateForTests();
+  });
+
+  it("opens the developer settings source for CLI update notifications", () => {
+    seedHarnessStoreForTests(createHarnessStateFixture({ activeSurface: "chat", activeLeftTab: "projects" }));
+
+    openCliUpdateNotificationFromInbox();
+
+    expect(harnessStore.state.activeSurface).toBe("preferences");
+    expect(harnessStore.state.activeLeftTab).toBe("preferences");
+    expect(harnessStore.state.preferencesActiveSectionId).toBe("developer-advanced");
+  });
+});
+
 createUiTest("openBackgroundRunNotificationFromInbox", () => {
   beforeEach(() => {
     clearBrowserStateForTests();
@@ -441,6 +502,10 @@ createUiTest("openBackgroundRunNotificationFromInbox", () => {
         backgroundJobs: {
           ...createEmptyBackgroundJobsState(),
           runs: [createBackgroundRun({ status: "running", summary: "Running" })]
+        },
+        jobsPanePreferences: {
+          ...harnessStore.state.jobsPanePreferences,
+          runSearch: "hidden"
         }
       })
     );
@@ -452,6 +517,7 @@ createUiTest("openBackgroundRunNotificationFromInbox", () => {
     expect(harnessStore.state.jobsRunFilter).toBe("running");
     expect(harnessStore.state.jobsPanePreferences).toMatchObject({
       segment: "inbox",
+      runSearch: "",
       selectedRunId: "bg-run-1",
       selectedJobId: "bg-job-1",
       selectedNotificationId: undefined

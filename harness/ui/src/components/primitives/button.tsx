@@ -16,7 +16,7 @@ const buttonVariants = cva(
         ghost: "text-(--foreground) hover:bg-(--panel-strong)",
         danger: "bg-(--danger) text-white hover:bg-(--danger-strong)",
         warning:
-          "bg-(--warning) text-(--foreground) shadow-sm hover:bg-(--warning-strong)"
+          "bg-(--warning) text-white shadow-sm hover:bg-(--warning-strong)"
       },
       size: {
         default: "h-9 px-3 py-2",

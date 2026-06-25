@@ -4,12 +4,14 @@ import type { ExecutionToolActivity } from "../../../shared/protocol";
 import type { TimelineToolBlock } from "../lib/chat-timeline-model";
 import { formatShortTimestamp } from "../lib/time-format";
 import { ActionButton } from "./action-button";
+import { FileLinkedText, type FileLinkConfig } from "./file-linked-text";
 import { CopyTextButton } from "./primitives/copy-text-button";
 import { Dialog } from "./primitives/dialog";
 import { Tooltip } from "./primitives/tooltip";
 
 type StreamedToolBlockProps = {
   block: TimelineToolBlock;
+  fileLinks?: FileLinkConfig;
 };
 
 export function StreamedToolBlock(props: StreamedToolBlockProps) {
@@ -40,6 +42,14 @@ export function StreamedToolBlock(props: StreamedToolBlockProps) {
       queueMicrotask(scrollToBottom);
     }
   });
+
+  function handleActivityRowKeyDown(event: KeyboardEvent, activity: ExecutionToolActivity) {
+    if (event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+    event.preventDefault();
+    setSelected(activity);
+  }
 
   return (
     <article class="rounded-2xl border border-(--border) bg-white/55 p-3" data-test-streamed-tool-block="">
@@ -72,21 +82,23 @@ export function StreamedToolBlock(props: StreamedToolBlockProps) {
         <For each={props.block.activities}>
           {(activity) => (
             <Tooltip content={formatToolActivityTooltip(activity)} triggerClass="block min-w-0">
-              <button
-                type="button"
+              <div
+                role="button"
+                tabIndex={0}
                 class="grid w-full cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[0.65rem] text-(--foreground) hover:bg-white/80"
                 onClick={() => setSelected(activity)}
+                onKeyDown={(event) => handleActivityRowKeyDown(event, activity)}
               >
                 <ToolActivityStatusIcon status={activity.status} />
                 <span class="min-w-0 truncate">
                   <span class="font-semibold">{formatToolOwner(activity)}</span>
                   <span class="text-(--muted)"> | {activity.toolName} | </span>
-                  <span class="font-mono">{activity.command ?? activity.argsSummary ?? activity.outputPreview ?? "tool call"}</span>
+                  <FileLinkedText class="font-mono" text={activity.command ?? activity.argsSummary ?? activity.outputPreview ?? "tool call"} fileLinks={props.fileLinks} />
                 </span>
                 <span class="shrink-0 uppercase tracking-[0.12em] text-(--accent-strong)">
                   {activity.exitCode === undefined ? activity.status : `${activity.status} ${activity.exitCode}`}
                 </span>
-              </button>
+              </div>
             </Tooltip>
           )}
         </For>
@@ -108,27 +120,27 @@ export function StreamedToolBlock(props: StreamedToolBlockProps) {
         <Show when={selected()}>
           {(activity) => (
             <div class="space-y-3 text-xs">
-              <DetailBlock title="Metadata" value={formatToolMetadata(activity())} />
+              <DetailBlock title="Metadata" value={formatToolMetadata(activity())} fileLinks={props.fileLinks} />
               <Show when={activity().command}>
-                <DetailBlock title="Command" value={activity().command ?? ""} mono />
+                <DetailBlock title="Command" value={activity().command ?? ""} mono fileLinks={props.fileLinks} />
               </Show>
               <Show when={activity().rawArgsJson ?? activity().argsSummary}>
-                <DetailBlock title={formatRawArgsTitle(activity())} value={activity().rawArgsJson ?? activity().argsSummary ?? ""} mono />
+                <DetailBlock title={formatRawArgsTitle(activity())} value={activity().rawArgsJson ?? activity().argsSummary ?? ""} mono fileLinks={props.fileLinks} />
               </Show>
               <Show when={activity().rawArgsOmittedReason}>
                 <DetailBlock title="Args omitted" value={formatRawOmission(activity().rawArgsOmittedReason)} />
               </Show>
               <Show when={activity().rawResultJson ?? activity().outputPreview}>
-                <DetailBlock title={formatRawResultTitle(activity())} value={activity().rawResultJson ?? activity().outputPreview ?? ""} mono />
+                <DetailBlock title={formatRawResultTitle(activity())} value={activity().rawResultJson ?? activity().outputPreview ?? ""} mono fileLinks={props.fileLinks} />
               </Show>
               <Show when={activity().rawResultOmittedReason}>
                 <DetailBlock title="Result omitted" value={formatRawOmission(activity().rawResultOmittedReason)} />
               </Show>
               <Show when={activity().stdoutPreview}>
-                <DetailBlock title="Stdout" value={activity().stdoutPreview ?? ""} mono />
+                <DetailBlock title="Stdout" value={activity().stdoutPreview ?? ""} mono fileLinks={props.fileLinks} />
               </Show>
               <Show when={activity().stderrPreview}>
-                <DetailBlock title="Stderr" value={activity().stderrPreview ?? ""} mono tone="danger" />
+                <DetailBlock title="Stderr" value={activity().stderrPreview ?? ""} mono tone="danger" fileLinks={props.fileLinks} />
               </Show>
             </div>
           )}
@@ -138,7 +150,7 @@ export function StreamedToolBlock(props: StreamedToolBlockProps) {
   );
 }
 
-function DetailBlock(props: { title: string; value: string; mono?: boolean; tone?: "danger" }) {
+function DetailBlock(props: { title: string; value: string; mono?: boolean; tone?: "danger"; fileLinks?: FileLinkConfig }) {
   return (
     <section class="rounded-xl border border-(--border) bg-white/70 p-3">
       <div class="mb-2 text-[0.58rem] font-semibold uppercase tracking-[0.16em] text-(--muted)">{props.title}</div>
@@ -150,7 +162,7 @@ function DetailBlock(props: { title: string; value: string; mono?: boolean; tone
           "text-(--foreground)": props.tone !== "danger"
         }}
       >
-        {props.value}
+        <FileLinkedText text={props.value} fileLinks={props.fileLinks} />
       </pre>
     </section>
   );

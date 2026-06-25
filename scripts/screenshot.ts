@@ -59,7 +59,7 @@ const VIEWPORT_PRESETS: Record<string, Viewport> = {
 const DEFAULT_BASE_URL = "http://localhost:8787";
 const DEFAULT_VIEWPORT_NAMES = ["desktop", "mobile"];
 const DEFAULT_WAIT_UNTIL: ScreenshotWaitUntil = "domcontentloaded";
-const LISTENING_REGEX = /Harness server listening on (http:\/\/localhost:\d+)/;
+const LISTENING_REGEX = /Harness(?:\s+\S+)? server listening on (http:\/\/localhost:\d+)/;
 const DEV_SERVER_READY_TIMEOUT_MS = 60_000;
 export const SCREENSHOT_SERVER_OUTPUT_CAP_BYTES = 256 * 1024;
 const PAGE_NAVIGATION_TIMEOUT_MS = 30_000;
@@ -226,7 +226,7 @@ export async function runScreenshotCapture(opts: ScreenshotOptions, deps: Captur
 
 async function startDevServerInMount(mountPath: string): Promise<DevServerHandle> {
   const proc = Bun.spawn({
-    cmd: [process.execPath, "harness/cli/src/index.ts", "--server-only", "--no-open"],
+    cmd: [process.execPath, "harness/cli/src/index.ts", "--no-open"],
     cwd: mountPath,
     env: { ...process.env, HARNESS_PORT: "0" },
     stdout: "pipe",
@@ -296,8 +296,8 @@ async function startDevServerInMount(mountPath: string): Promise<DevServerHandle
   return { baseUrl, stop };
 }
 
-async function capturePagesWithCdp(baseUrl: string, opts: ScreenshotOptions) {
-  const runnerPath = path.join(import.meta.dir, "screenshot-cdp-runner.mjs");
+async function runScreenshotRunner(runnerName: string, baseUrl: string, opts: ScreenshotOptions) {
+  const runnerPath = path.join(import.meta.dir, runnerName);
   const proc = Bun.spawn({
     cmd: ["node", runnerPath],
     cwd: process.cwd(),
@@ -322,14 +322,24 @@ async function capturePagesWithCdp(baseUrl: string, opts: ScreenshotOptions) {
     proc.exited
   ]);
   if (exitCode !== 0) {
-    throw new Error(`cdp screenshot runner failed with exit ${exitCode}.\n${stderr || stdout}`);
+    throw new Error(`${runnerName} failed with exit ${exitCode}.\n${stderr || stdout}`);
   }
   try {
     const parsed = JSON.parse(stdout.trim()) as { artifacts: ScreenshotArtifact[] };
     return parsed.artifacts;
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`cdp screenshot runner returned invalid JSON: ${detail}\n${stdout}\n${stderr}`);
+    throw new Error(`${runnerName} returned invalid JSON: ${detail}\n${stdout}\n${stderr}`);
+  }
+}
+
+async function capturePagesWithCdp(baseUrl: string, opts: ScreenshotOptions) {
+  try {
+    return await runScreenshotRunner("screenshot-cdp-runner.mjs", baseUrl, opts);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.warn(`[screenshot] CDP runner failed; retrying with Playwright.\n${detail}`);
+    return await runScreenshotRunner("screenshot-playwright-runner.mjs", baseUrl, opts);
   }
 }
 

@@ -35,6 +35,14 @@
 - Treat memory, skills, and reusable playbooks as governed assets with source, freshness, hit history, and clear update controls; Hermes-style learning loops are sticky, but opaque or over-broad memory would conflict with this harness's local-first trust model
 - Source caveat: YouTube signals were gathered from public pages, search snippets, transcripts, and mirrors only; direct comment coverage is incomplete, so GitHub, docs, forums, and Reddit carry more weight
 
+## June 2026 Approval And Autonomy Signals
+
+- Treat "why did this stop?" as the core background-work affordance: every stop needs a typed reason, risk summary, evidence, next action, and the setting that did or did not apply
+- Split autonomy policy by gate instead of one broad approval knob: launch approval, plan questions, assistant questions, browser permissions, network or filesystem boundary crossing, and merge/release review need distinct defaults
+- First gate split shipped: non-blocking assistant questions have their own auto-approval preference while higher-risk questions still stop
+- Make safe auto-run feel magic through proof, not silence: run in isolated work, gather diffs/logs/screenshots/tests, then ask only for the smallest human decision when needed
+- Prefer reviewer or classifier handoff for routine safe approvals, but keep exact denial reasons and manual override paths visible so users do not learn to ignore prompts
+
 ## Engine Package Priorities
 
 - P1: Keep root and browser exports restrained until every public primitive has clear consumer proof, strong naming, and a defensible reason to live outside a game-local helper
@@ -91,6 +99,8 @@
 - Support Windows Task Scheduler, macOS LaunchAgent, and Linux systemd user service or cron bridges behind explicit opt-in
 - Add away-from-desk approval and review inbox flows so another device can inspect evidence, answer approvals, search the relevant branch or run, or resume stopped work without taking over full local control
 - Make those away-from-desk review flows artifact-first and phone-friendly so users can approve from summary cards, screenshots, short demos, and diff highlights instead of raw traces
+- Replace the single approvals bucket with typed intervention lanes for launch approval, input needed, browser permission, pause, circuit breaker, and failure
+- Add inline approve/reject/answer actions to background-run inbox cards, with a visible reason and policy readback before navigating to deep details
 - Add pattern-based output watches so users can get notified when long-running jobs hit errors, readiness signals, or other important milestones
 - Deepen risk summaries around branch, environment, network, and filesystem scope before launch or approval
 - Keep safeguards around long-running tasks and external side effects

@@ -231,6 +231,13 @@ describe("background job scheduler", () => {
     let state = repository.loadBackgroundJobsState();
     expect(state.runs[0]?.status).toBe("awaiting-approval");
     expect(state.runs[0]?.approvalStatus).toBe("pending");
+    expect(state.runs[0]?.summary).toBe(
+      "Due review is waiting before launch. Reason: unsafe schedule run requires approval under Always ask."
+    );
+    expect(state.runs[0]?.events[0]).toMatchObject({
+      stage: "awaiting-approval",
+      message: "Waiting for approval before launching Due review"
+    });
 
     repository.setBackgroundJobApprovalPolicyDefault("allow-all");
     saveDueJob(repository, project.id, { name: "Allowed due review" });

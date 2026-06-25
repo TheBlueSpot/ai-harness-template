@@ -4328,6 +4328,10 @@ async function handleCommand(
       );
       repository.setCorrectnessIterationModeDefault(command.payload.correctnessIterationModeDefault);
       repository.setBackgroundJobApprovalPolicyDefault(command.payload.backgroundJobApprovalPolicyDefault);
+      repository.setAssistantAutoApproveNonBlockingQuestionsDefault(
+        command.payload.assistantAutoApproveNonBlockingQuestionsDefault ??
+          repository.getAssistantAutoApproveNonBlockingQuestionsDefault()
+      );
       repository.setAssistantCongestionControlEnabledDefault(
         command.payload.assistantCongestionControlEnabledDefault ?? repository.getAssistantCongestionControlEnabledDefault()
       );
@@ -4654,6 +4658,7 @@ async function continueQuickTaskLifecycle(
 ) {
   const project = runtime.getProject(projectId);
   const activeRun = requireActiveRun(project, options.runId);
+  const threadSession = getThreadSessionState(runtime, repository, projectId, activeRun.threadId);
   appendComposerControlStatus(ws, requestId, runtime, repository, projectId, activeRun.threadId, options.fastMode);
   const planExecutionMode = options.mode?.planExecutionModeDefault ?? repository.getPlanExecutionModeDefault();
   const subagentWorktreeStrategy =
@@ -4716,7 +4721,7 @@ async function continueQuickTaskLifecycle(
   runtime.setProjectStreaming(projectId, false, activeRun.threadId);
   runtime.clearStreaming(projectId, activeRun.threadId);
   emitProjectTrace(ws, requestId, runtime, projectId, activeRun.threadId, {
-    sessionId: project.session.sessionId,
+    sessionId: threadSession.sessionId,
     stage: "plan-presented",
     message: "Skipped planner for low-complexity direct task",
     detail: normalizedLatestUserPrompt,
@@ -4837,6 +4842,7 @@ async function executeRunLifecycle(
 ) {
   const project = runtime.getProject(options.projectId);
   const activeRun = options.sourceRun;
+  const threadSession = getThreadSessionState(runtime, repository, options.projectId, activeRun.threadId);
   appendComposerControlStatus(
     ws,
     requestId,
@@ -4847,13 +4853,12 @@ async function executeRunLifecycle(
     options.fastMode
   );
   const executionTarget = options.executionTarget ?? activeRun.executionTarget ?? "current-project";
-  let effectiveProject = project;
   let experimentLease: BranchfsExperimentLease | undefined;
   if (executionTarget === "ephemeral-experiment") {
     const manager = osAdapters.branchfsManagerFactory({ rootPath: project.rootPath, runId: options.runId }, {
       onTrace(trace) {
-        emitProjectTrace(ws, requestId, runtime, options.projectId, project.activeThreadId, {
-          sessionId: project.session.sessionId,
+        emitProjectTrace(ws, requestId, runtime, options.projectId, activeRun.threadId, {
+          sessionId: threadSession.sessionId,
           ...trace
         });
       }
@@ -4868,7 +4873,6 @@ async function executeRunLifecycle(
     });
     runtime.upsertPersistedProject(preparedProject);
     emitRunUpdated(ws, requestId, preparedProject);
-    effectiveProject = runtime.getProject(options.projectId);
   }
 
   const currentRun = repository.getAgentRun(options.projectId, activeRun.threadId, options.runId) ?? activeRun;
@@ -4910,7 +4914,7 @@ async function executeRunLifecycle(
     repository,
     options.projectId,
     activeRun.threadId,
-    effectiveProject.session.sessionId,
+    threadSession.sessionId,
     options.runId,
     pendingBrowserApprovals,
     options.abortSignal,
@@ -4924,8 +4928,8 @@ async function executeRunLifecycle(
       executionPlan = await executePlanPrerequisites(adapter, {
         cwd: experimentLease?.projectMountPath ?? project.rootPath,
         runId: options.runId,
-        sessionId: effectiveProject.session.sessionId,
-        messages: effectiveProject.session.messages,
+        sessionId: threadSession.sessionId,
+        messages: threadSession.messages,
         agentId: options.agentId,
         executionPlan,
         executionModelId: options.readyPlan.executionModelId,
@@ -4969,7 +4973,7 @@ async function executeRunLifecycle(
     repository,
     projectId: options.projectId,
     modelId: options.readyPlan.executionModelId,
-    messages: effectiveProject.session.messages,
+    messages: threadSession.messages,
     enabled: false
   });
   executionCallbacks.onRunMilestone(
@@ -4983,8 +4987,8 @@ async function executeRunLifecycle(
     outcome = await executeReadyRun(adapter, {
       cwd: experimentLease?.projectMountPath ?? project.rootPath,
       runId: options.runId,
-      sessionId: effectiveProject.session.sessionId,
-      messages: effectiveProject.session.messages,
+      sessionId: threadSession.sessionId,
+      messages: threadSession.messages,
       agentId: options.agentId,
       providerBrand: options.providerBrand,
       readyPlan: options.readyPlan,
@@ -5032,7 +5036,7 @@ async function executeRunLifecycle(
     }
 
     emitProjectTrace(ws, requestId, runtime, options.projectId, activeRun.threadId, {
-      sessionId: effectiveProject.session.sessionId,
+      sessionId: threadSession.sessionId,
       stage: "correctness-gap",
       message: correctnessReview.summary,
       detail: correctnessReview.gaps.map((gap) => gap.description).join("\n")
@@ -5042,7 +5046,7 @@ async function executeRunLifecycle(
     runtime.setProjectStreaming(options.projectId, false, activeRun.threadId);
     runtime.setProjectError(options.projectId, undefined, activeRun.threadId);
     await presentCorrectivePlan(ws, requestId, runtime, repository, options.projectId, {
-      sessionId: effectiveProject.session.sessionId,
+      sessionId: threadSession.sessionId,
       agentId: options.agentId,
       planningModelId: (repository.getRun(options.projectId, options.runId)?.planningModelId ?? activeRun.planningModelId) ?? getDefaultPlanningModelId(options.providerBrand),
       executionPlan: correctnessReview.recommendedPlan
@@ -5142,7 +5146,8 @@ async function executeInlineSubagentRetryLifecycle(
   const startedProject = repository.setAgentRunStatus(options.projectId, options.runId, "running-subagents");
   runtime.upsertPersistedProject(startedProject);
   emitRunUpdatedById(ws, requestId, repository, options.projectId, options.runId);
-  const sessionId = project.session.sessionId;
+  const threadSession = getThreadSessionState(runtime, repository, options.projectId, options.sourceRun.threadId);
+  const sessionId = threadSession.sessionId;
 
   const callbacks = createExecutionCallbacks(
     ws,
@@ -5227,7 +5232,7 @@ async function executeInlineSubagentRetryLifecycle(
       cwd: project.rootPath,
       runId: options.runId,
       sessionId,
-      messages: project.session.messages,
+      messages: threadSession.messages,
       reasoningStrength: options.reasoningStrength,
       fastMode: options.fastMode,
       abortSignal: options.abortSignal,
@@ -8031,6 +8036,7 @@ function getPreferencesState(
     subagentModelPreferenceDefault: repository.getSubagentModelPreferenceDefault(),
     correctnessIterationModeDefault: repository.getCorrectnessIterationModeDefault(),
     backgroundJobApprovalPolicyDefault: repository.getBackgroundJobApprovalPolicyDefault(),
+    assistantAutoApproveNonBlockingQuestionsDefault: repository.getAssistantAutoApproveNonBlockingQuestionsDefault(),
     assistantCongestionControlEnabledDefault: repository.getAssistantCongestionControlEnabledDefault(),
     assistantMaxCongestionDefault: repository.getAssistantMaxCongestionDefault(),
     autoArchiveCompletedThreadsDefault: getRepositoryAutoArchiveCompletedThreadsDefault(repository),
@@ -9144,7 +9150,8 @@ function reconcileBackgroundJobRunBlockers(
       decision: evaluateAssistantQuestionPolicy({
         prompt: question.prompt,
         questions: assistantQuestions,
-        learnings
+        learnings,
+        autoApproveNonBlocking: repository.getAssistantAutoApproveNonBlockingQuestionsDefault()
       })
     }));
     if (decisions.some((entry) => entry.decision.kind === "ask")) {
@@ -9578,6 +9585,7 @@ export function createBackgroundRunStatusNotification(job: BackgroundJob, run: B
   const summary =
     sanitizeBackgroundNotificationSummary(run.summary) ??
     sanitizeBackgroundNotificationSummary(run.failureMessage) ??
+    formatBackgroundApprovalNotificationSummary(job, run) ??
     `${job.name} ${statusMeta.fallbackVerb}`;
 
   return {
@@ -9608,6 +9616,13 @@ function sanitizeBackgroundNotificationSummary(value: string | undefined) {
   }
   const sanitized = value.replace(/\/caveman\s+ultra/gi, "").replace(/\s+/g, " ").trim();
   return sanitized || undefined;
+}
+
+function formatBackgroundApprovalNotificationSummary(job: BackgroundJob, run: BackgroundJobRun) {
+  if (run.status !== "awaiting-approval" && run.approvalStatus !== "pending") {
+    return undefined;
+  }
+  return `${job.name} is waiting before launch. Reason: ${run.riskLevel} ${run.triggerSource} run has pending approval.`;
 }
 
 function backgroundRunNotificationMeta(

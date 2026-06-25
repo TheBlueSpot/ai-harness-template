@@ -1,7 +1,7 @@
 /** @jsxImportSource solid-js */
 import { beforeEach, expect, it } from "bun:test";
 import { fireEvent, render, screen } from "@solidjs/testing-library";
-import { createRequestId, createProjectThreadSummary, type CliSession } from "../../../shared/protocol";
+import { createRequestId, createProjectThreadSummary, type CliSession, type TerminalSession } from "../../../shared/protocol";
 import { harnessStore } from "../harness-store";
 import { clearBrowserStateForTests, captureDispatchedCommands, seedHarnessStoreForTests } from "../utils/tests/store-test-utils";
 import { createHarnessStateFixture, createViewProjectFixture } from "../utils/tests/test-fixtures";
@@ -168,6 +168,40 @@ createUiTest("TerminalDrawer", () => {
 
     expect(harnessStore.state.workspace.projects[0]?.cliSessions).toEqual([]);
   });
+
+  it("labels pipe-transport terminal sessions", () => {
+    const project = createViewProjectFixture({ id: "project-pipe-terminal" });
+    const session = createTerminalSession({
+      id: "terminal-pipe",
+      projectId: project.id,
+      transportMode: "pipe",
+      transportWarning: "Windows pipe transport"
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+    terminalStore.resetForTests({
+      open: true,
+      height: 320,
+      sessions: [session],
+      focusedSessionId: session.id,
+      preferences: {
+        scrollbackLimit: 10000,
+        copyOnSelect: false,
+        ctrlCMode: "auto",
+        rendererMode: "solid-prototype"
+      }
+    });
+
+    render(() => <TerminalDrawer />);
+
+    expect(screen.getByText("pipe mode")).not.toBeNull();
+  });
 });
 
 function createCliSession(overrides: Partial<CliSession> = {}): CliSession {
@@ -191,5 +225,23 @@ function createCliSession(overrides: Partial<CliSession> = {}): CliSession {
     updatedAt: overrides.updatedAt ?? now,
     exitedAt: overrides.exitedAt,
     exitCode: overrides.exitCode
+  };
+}
+
+function createTerminalSession(overrides: Partial<TerminalSession> = {}): TerminalSession {
+  const now = new Date(2026, 0, 1, 8, 0).toISOString();
+  return {
+    id: overrides.id ?? "terminal-1",
+    projectId: overrides.projectId ?? "project-1",
+    name: overrides.name ?? "PowerShell",
+    shellId: overrides.shellId ?? "powershell",
+    cwd: overrides.cwd ?? "C:\\repo-one",
+    status: overrides.status ?? "running",
+    cols: overrides.cols ?? 120,
+    rows: overrides.rows ?? 32,
+    transportMode: overrides.transportMode,
+    transportWarning: overrides.transportWarning,
+    startedAt: overrides.startedAt ?? now,
+    updatedAt: overrides.updatedAt ?? now
   };
 }

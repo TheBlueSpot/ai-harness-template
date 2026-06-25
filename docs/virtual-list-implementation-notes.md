@@ -34,10 +34,12 @@ Stabilize virtualized chat and sidebar rows across streaming content, window-wid
 - The row measurement decision now compares the last DOM measurement with the current virtual row size.
 - If TanStack has reverted to an estimate, the same DOM measurement is sent again instead of being suppressed.
 - Mounted rows are remeasured after virtualizer cache resets caused by viewport changes and item signature changes.
+- Viewport mount and resize now queue a browser-frame measurement pass, then immediately remeasure mounted rows and restore reverse/sticky anchoring before first paint can stay blank.
 
 ## Manual Validation
 
 - Static browser geometry at 1920, 3840, and 1280 widths showed no visible chat/sidebar row overlap after the fix.
+- A browser-backed smoke mounts delayed-height reverse and forward virtual lists, checks visible row geometry before any tab remount, then switches tabs and checks the same anchors again.
 - Desktop and mobile screenshots showed row outlines aligned with visible row bounds.
 - Synthetic streaming growth appended 12 chunks into an already-mounted chat row; the row's virtual size increased from 137 to 713 and following rows kept non-overlapping offsets.
 - A real UI send was attempted, but the run failed before model streaming with an unrelated `paths[0]` error. The failure row itself did not overlap.

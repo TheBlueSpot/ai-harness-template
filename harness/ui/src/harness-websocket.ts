@@ -1,14 +1,16 @@
-import { createRequestId, parseServerEvent, type ClientCommand } from "../../shared/protocol";
+import { createRequestId, parseServerEvent, type ClientCommand, type PreferencesState } from "../../shared/protocol";
 import {
   canSelectProviderBrand,
   getBrowserUiSessionRestoreCommands,
   harnessStore,
+  type LocalPreferencesState,
   persistMergedLocalPreferences,
   readBrowserUiSession,
   readLocalPreferences
 } from "./harness-store";
 import { openBackgroundRunInJobsPane } from "./background-run-navigation";
 import { recordUiTelemetry } from "./lib/ui-telemetry";
+import { openAssistantSource, openPreferencesSectionSource, openProjectThreadSource } from "./source-navigation";
 import { terminalStore } from "./terminal/terminal-store";
 import { ideStore } from "./ide/ide-store";
 import { closeAllTerminalSockets, openTerminalSocket } from "./terminal/terminal-transport";
@@ -18,6 +20,8 @@ type HarnessSocket = {
   sendCommand: (command: ClientCommand) => void;
   dispose: () => void;
 };
+
+type PreferencesSaveCommand = Extract<ClientCommand, { type: "preferences.save" }>;
 
 const ptySockets = new Map<string, WebSocket>();
 const notifiedBackgroundRunStatuses = new Map<string, string>();
@@ -189,35 +193,11 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
           (localPreferences.openAiApiKey && !parsed.payload.preferences.hasStoredOpenAiApiKey) ||
           (localPreferences.googleApiKey && !parsed.payload.preferences.hasStoredGoogleApiKey) ||
           (localPreferences.anthropicApiKey && !parsed.payload.preferences.hasStoredAnthropicApiKey);
+        const needsPreferenceSync = hasLocalServerPreferenceOverride(localPreferences, parsed.payload.preferences);
         const restoreCommands = getBrowserUiSessionRestoreCommands(harnessStore.state, browserUiSession);
+        let providerFallbackApplied = false;
 
-        if (needsProviderSync) {
-          sendRaw({
-              type: "preferences.save",
-              requestId: createRequestId(),
-              payload: {
-                openAiApiKey: localPreferences.openAiApiKey,
-                googleApiKey: localPreferences.googleApiKey,
-                anthropicApiKey: localPreferences.anthropicApiKey,
-                providerBrand: harnessStore.state.providerBrand,
-                debugEnabled: harnessStore.state.debugEnabled,
-                tracePanelDefaultOpen: harnessStore.state.tracePanelDefaultOpen,
-                subagentWorktreeStrategyDefault: harnessStore.state.subagentWorktreeStrategyDefault,
-                blockChatOnDirtyGitDefault: harnessStore.state.blockChatOnDirtyGitDefault,
-                dirtyGitChangeLimitDefault: harnessStore.state.dirtyGitChangeLimitDefault,
-                autoCompactContextThresholdPercentDefault: harnessStore.state.autoCompactContextThresholdPercentDefault,
-                planExecutionModeDefault: harnessStore.state.planExecutionModeDefault,
-                planExecutionDelaySecondsDefault: harnessStore.state.planExecutionDelaySecondsDefault,
-                correctnessIterationModeDefault: harnessStore.state.correctnessIterationModeDefault,
-                backgroundJobApprovalPolicyDefault: harnessStore.state.backgroundJobApprovalPolicyDefault,
-                assistantCongestionControlEnabledDefault: harnessStore.state.assistantCongestionControlEnabledDefault,
-                assistantMaxCongestionDefault: harnessStore.state.assistantMaxCongestionDefault,
-                memoryBankEnabledDefault: harnessStore.state.memoryBankEnabledDefault,
-                memoryBankRecordRunsDefault: harnessStore.state.memoryBankRecordRunsDefault,
-                checkCliUpdatesDefault: harnessStore.state.checkCliUpdatesDefault
-              }
-            } satisfies ClientCommand);
-        } else if (!canSelectProviderBrand(harnessStore.state, harnessStore.state.providerBrand)) {
+        if (!needsProviderSync && !canSelectProviderBrand(harnessStore.state, harnessStore.state.providerBrand)) {
           const fallbackProviderBrand = canSelectProviderBrand(harnessStore.state, "gpt")
             ? "gpt"
             : canSelectProviderBrand(harnessStore.state, "gemini")
@@ -237,15 +217,25 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
             autoCompactContextThresholdPercentDefault: harnessStore.state.autoCompactContextThresholdPercentDefault,
             planExecutionModeDefault: harnessStore.state.planExecutionModeDefault,
             planExecutionDelaySecondsDefault: harnessStore.state.planExecutionDelaySecondsDefault,
+            singleAgentModelPreferenceDefault: harnessStore.state.singleAgentModelPreferenceDefault,
+            subagentModelPreferenceDefault: harnessStore.state.subagentModelPreferenceDefault,
             correctnessIterationModeDefault: harnessStore.state.correctnessIterationModeDefault,
             backgroundJobApprovalPolicyDefault: harnessStore.state.backgroundJobApprovalPolicyDefault,
+            assistantAutoApproveNonBlockingQuestionsDefault:
+              harnessStore.state.assistantAutoApproveNonBlockingQuestionsDefault,
             assistantCongestionControlEnabledDefault: harnessStore.state.assistantCongestionControlEnabledDefault,
             assistantMaxCongestionDefault: harnessStore.state.assistantMaxCongestionDefault,
+            autoArchiveCompletedThreadsDefault: harnessStore.state.autoArchiveCompletedThreadsDefault,
             memoryBankEnabledDefault: harnessStore.state.memoryBankEnabledDefault,
             memoryBankRecordRunsDefault: harnessStore.state.memoryBankRecordRunsDefault,
             checkCliUpdatesDefault: harnessStore.state.checkCliUpdatesDefault,
             backgroundJobNotificationsEnabled: harnessStore.state.backgroundJobNotificationsEnabled
           });
+          providerFallbackApplied = true;
+        }
+
+        if (needsProviderSync || needsPreferenceSync || providerFallbackApplied) {
+          sendRaw(createPreferencesSaveCommand(createRequestId(), localPreferences, Boolean(needsProviderSync)));
         }
 
         for (const restoreCommand of restoreCommands) {
@@ -272,10 +262,15 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
           autoCompactContextThresholdPercentDefault: harnessStore.state.autoCompactContextThresholdPercentDefault,
           planExecutionModeDefault: harnessStore.state.planExecutionModeDefault,
           planExecutionDelaySecondsDefault: harnessStore.state.planExecutionDelaySecondsDefault,
+          singleAgentModelPreferenceDefault: harnessStore.state.singleAgentModelPreferenceDefault,
+          subagentModelPreferenceDefault: harnessStore.state.subagentModelPreferenceDefault,
           correctnessIterationModeDefault: harnessStore.state.correctnessIterationModeDefault,
           backgroundJobApprovalPolicyDefault: harnessStore.state.backgroundJobApprovalPolicyDefault,
+          assistantAutoApproveNonBlockingQuestionsDefault:
+            harnessStore.state.assistantAutoApproveNonBlockingQuestionsDefault,
           assistantCongestionControlEnabledDefault: harnessStore.state.assistantCongestionControlEnabledDefault,
           assistantMaxCongestionDefault: harnessStore.state.assistantMaxCongestionDefault,
+          autoArchiveCompletedThreadsDefault: harnessStore.state.autoArchiveCompletedThreadsDefault,
           memoryBankEnabledDefault: harnessStore.state.memoryBankEnabledDefault,
           memoryBankRecordRunsDefault: harnessStore.state.memoryBankRecordRunsDefault,
           checkCliUpdatesDefault: harnessStore.state.checkCliUpdatesDefault,
@@ -287,13 +282,21 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
       }
 
       if (parsed.type === "chat.error") {
+        const errorProjectId = parsed.payload.projectId;
+        const errorThreadId = parsed.payload.threadId;
         reportUiError(parsed.payload.detail ?? parsed.payload.message, parsed.payload.message, {
-          projectId: parsed.payload.projectId
+          projectId: errorProjectId,
+          onClick:
+            errorProjectId && errorThreadId
+              ? () => openProjectThreadSource(harnessStore.state, errorProjectId, errorThreadId, "chat")
+              : undefined
         });
       }
 
       if (parsed.type === "run.preflight") {
-        pushToast("Git dirty warning", parsed.payload.preflight.message);
+        pushToast("Git dirty warning", parsed.payload.preflight.message, "info", () =>
+          openProjectThreadSource(harnessStore.state, parsed.payload.projectId, parsed.payload.threadId, "chat")
+        );
       }
 
       if (parsed.type === "cli-updates.checked") {
@@ -303,6 +306,7 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
             `${update.currentVersion} -> ${update.latestVersion}`,
             "info",
             () => {
+              openPreferencesSectionSource("developer-advanced");
               sendRaw({
                   type: "cli-updates.install",
                   requestId: createRequestId(),
@@ -316,7 +320,9 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
       }
 
       if (parsed.type === "cli-updates.installed") {
-        pushToast(`${parsed.payload.label} updated`, parsed.payload.output || "Update complete.");
+        pushToast(`${parsed.payload.label} updated`, parsed.payload.output || "Update complete.", "info", () =>
+          openPreferencesSectionSource("developer-advanced")
+        );
       }
 
       if (parsed.type === "command.rejected") {
@@ -361,7 +367,9 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
         !harnessStore.state.executionControl.isPaused
       ) {
         const assistant = harnessStore.state.assistants.assistants.find((entry) => entry.id === parsed.payload.question.assistantId);
-        pushToast("Assistant needs input", `${assistant?.name ?? "Assistant"} | ${parsed.payload.question.prompt}`);
+        pushToast("Assistant needs input", `${assistant?.name ?? "Assistant"} | ${parsed.payload.question.prompt}`, "info", () =>
+          openAssistantSource(harnessStore.state, parsed.payload.question.assistantId, "questions")
+        );
       }
 
       if (parsed.type === "assistant.log.appended" && parsed.payload.entry.level === "critical") {
@@ -369,12 +377,18 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
         pushToast(
           "Assistant paused",
           `${assistant?.name ?? "Assistant"} | ${parsed.payload.entry.detail ?? parsed.payload.entry.summary}`,
-          "error"
+          "error",
+          () => {
+            openAssistantSource(harnessStore.state, parsed.payload.entry.assistantId, "log");
+            harnessStore.setAssistantLogDetailsId(parsed.payload.entry.id);
+          }
         );
       }
 
       if (parsed.type === "assistant.created-card") {
-        pushToast("Assistant ready", `${parsed.payload.assistant.name} opened in assistants surface.`);
+        pushToast("Assistant ready", `${parsed.payload.assistant.name} opened in assistants surface.`, "info", () =>
+          openAssistantSource(harnessStore.state, parsed.payload.assistant.id, "chat")
+        );
       }
 
       if (parsed.type === "execution-control.updated" && wasExecutionPaused !== parsed.payload.executionControl.isPaused) {
@@ -382,7 +396,9 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
           parsed.payload.executionControl.isPaused ? "Executions paused" : "Executions resumed",
           parsed.payload.executionControl.isPaused
             ? "Running work continues. New follow-up prompts wait for resume."
-            : "Queued prompts and approvals are available again."
+            : "Queued prompts and approvals are available again.",
+          "info",
+          () => openPreferencesSectionSource("safety-guardrails")
         );
       }
 
@@ -390,15 +406,21 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
         const nextProject = harnessStore.state.workspace.projects.find((project) => project.id === parsed.payload.projectId);
         const hasPendingPlanningQuestion = nextProject?.activeRun?.questions.some((question) => question.status === "pending");
         if (parsed.payload.run.status === "awaiting-user-input" && hasPendingPlanningQuestion && !harnessStore.state.executionControl.isPaused) {
-          pushToast("Planner needs input", "Answer the planning question in the chat composer.");
+          pushToast("Planner needs input", "Answer the planning question in the chat composer.", "info", () =>
+            openProjectThreadSource(harnessStore.state, parsed.payload.projectId, parsed.payload.threadId, "chat")
+          );
         }
 
         if (parsed.payload.run.status === "partial-complete") {
-          pushToast("Partial result ready", "Some subagents failed. Review output, then resume failed agents.", "error");
+          pushToast("Partial result ready", "Some subagents failed. Review output, then resume failed agents.", "error", () =>
+            openProjectThreadSource(harnessStore.state, parsed.payload.projectId, parsed.payload.threadId, "run")
+          );
         }
 
         if (parsed.payload.run.status === "failed" && parsed.payload.run.resumable) {
-          pushToast("Run failed", "Completed work was saved. Resume failed agents when ready.", "error");
+          pushToast("Run failed", "Completed work was saved. Resume failed agents when ready.", "error", () =>
+            openProjectThreadSource(harnessStore.state, parsed.payload.projectId, parsed.payload.threadId, "run")
+          );
         }
       }
       } catch (error) {
@@ -546,6 +568,78 @@ export function notifyBackgroundRun(runId: string) {
     window.focus();
     openRun();
     notification.close();
+  };
+}
+
+export function hasLocalServerPreferenceOverride(
+  localPreferences: LocalPreferencesState,
+  serverPreferences: PreferencesState
+) {
+  return [
+    differs(localPreferences.providerBrand, serverPreferences.providerBrand),
+    differs(localPreferences.debugEnabled, serverPreferences.debugEnabledDefault),
+    differs(localPreferences.tracePanelDefaultOpen, serverPreferences.tracePanelDefaultOpen),
+    differs(localPreferences.subagentWorktreeStrategyDefault, serverPreferences.subagentWorktreeStrategyDefault),
+    differs(localPreferences.blockChatOnDirtyGitDefault, serverPreferences.blockChatOnDirtyGitDefault),
+    differs(localPreferences.dirtyGitChangeLimitDefault, serverPreferences.dirtyGitChangeLimitDefault),
+    differs(localPreferences.autoCompactContextThresholdPercentDefault, serverPreferences.autoCompactContextThresholdPercentDefault),
+    differs(localPreferences.planExecutionModeDefault, serverPreferences.planExecutionModeDefault),
+    differs(localPreferences.planExecutionDelaySecondsDefault, serverPreferences.planExecutionDelaySecondsDefault),
+    differs(localPreferences.singleAgentModelPreferenceDefault, serverPreferences.singleAgentModelPreferenceDefault),
+    differs(localPreferences.subagentModelPreferenceDefault, serverPreferences.subagentModelPreferenceDefault),
+    differs(localPreferences.correctnessIterationModeDefault, serverPreferences.correctnessIterationModeDefault),
+    differs(localPreferences.backgroundJobApprovalPolicyDefault, serverPreferences.backgroundJobApprovalPolicyDefault),
+    differs(
+      localPreferences.assistantAutoApproveNonBlockingQuestionsDefault,
+      serverPreferences.assistantAutoApproveNonBlockingQuestionsDefault
+    ),
+    differs(localPreferences.assistantCongestionControlEnabledDefault, serverPreferences.assistantCongestionControlEnabledDefault),
+    differs(localPreferences.assistantMaxCongestionDefault, serverPreferences.assistantMaxCongestionDefault),
+    differs(localPreferences.autoArchiveCompletedThreadsDefault, serverPreferences.autoArchiveCompletedThreadsDefault),
+    differs(localPreferences.memoryBankEnabledDefault, serverPreferences.memoryBankEnabledDefault),
+    differs(localPreferences.memoryBankRecordRunsDefault, serverPreferences.memoryBankRecordRunsDefault),
+    differs(localPreferences.checkCliUpdatesDefault, serverPreferences.checkCliUpdatesDefault)
+  ].some(Boolean);
+}
+
+function differs<T>(localValue: T | undefined, serverValue: T | undefined) {
+  return localValue !== undefined && localValue !== serverValue;
+}
+
+function createPreferencesSaveCommand(
+  requestId: string,
+  localPreferences: LocalPreferencesState,
+  includeApiKeys: boolean
+): PreferencesSaveCommand {
+  return {
+    type: "preferences.save",
+    requestId,
+    payload: {
+      openAiApiKey: includeApiKeys ? localPreferences.openAiApiKey : undefined,
+      googleApiKey: includeApiKeys ? localPreferences.googleApiKey : undefined,
+      anthropicApiKey: includeApiKeys ? localPreferences.anthropicApiKey : undefined,
+      providerBrand: harnessStore.state.providerBrand,
+      debugEnabled: harnessStore.state.debugEnabled,
+      tracePanelDefaultOpen: harnessStore.state.tracePanelDefaultOpen,
+      subagentWorktreeStrategyDefault: harnessStore.state.subagentWorktreeStrategyDefault,
+      blockChatOnDirtyGitDefault: harnessStore.state.blockChatOnDirtyGitDefault,
+      dirtyGitChangeLimitDefault: harnessStore.state.dirtyGitChangeLimitDefault,
+      autoCompactContextThresholdPercentDefault: harnessStore.state.autoCompactContextThresholdPercentDefault,
+      planExecutionModeDefault: harnessStore.state.planExecutionModeDefault,
+      planExecutionDelaySecondsDefault: harnessStore.state.planExecutionDelaySecondsDefault,
+      singleAgentModelPreferenceDefault: harnessStore.state.singleAgentModelPreferenceDefault,
+      subagentModelPreferenceDefault: harnessStore.state.subagentModelPreferenceDefault,
+      correctnessIterationModeDefault: harnessStore.state.correctnessIterationModeDefault,
+      backgroundJobApprovalPolicyDefault: harnessStore.state.backgroundJobApprovalPolicyDefault,
+      assistantAutoApproveNonBlockingQuestionsDefault:
+        harnessStore.state.assistantAutoApproveNonBlockingQuestionsDefault,
+      assistantCongestionControlEnabledDefault: harnessStore.state.assistantCongestionControlEnabledDefault,
+      assistantMaxCongestionDefault: harnessStore.state.assistantMaxCongestionDefault,
+      autoArchiveCompletedThreadsDefault: harnessStore.state.autoArchiveCompletedThreadsDefault,
+      memoryBankEnabledDefault: harnessStore.state.memoryBankEnabledDefault,
+      memoryBankRecordRunsDefault: harnessStore.state.memoryBankRecordRunsDefault,
+      checkCliUpdatesDefault: harnessStore.state.checkCliUpdatesDefault
+    }
   };
 }
 
