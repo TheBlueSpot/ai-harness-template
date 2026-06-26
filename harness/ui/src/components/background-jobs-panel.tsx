@@ -16,7 +16,6 @@ import { normalizeAppHotkeyPreferences } from "../lib/app-hotkeys";
 import { registerCurrentTabItemSelector } from "../lib/current-tab-item-hotkeys";
 import type { ChatFileTarget } from "../lib/chat-file-links";
 import { openIdeWindow } from "../lib/ide-window";
-import { openProjectThreadSource } from "../source-navigation";
 import { toProperCase } from "../lib/utils";
 import { pushToast } from "../toast-store";
 import { ActionButton } from "./action-button";
@@ -49,6 +48,7 @@ import {
   CircleX,
   ListFilter,
   LoaderCircle,
+  MessageSquareText,
   Pause,
   Play,
   Plus,
@@ -155,24 +155,27 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
       ...filteredRuns().map((run) => ({ kind: "background" as const, run }))
     ].sort((left, right) => compareRunListItems(left, right, jobsPane().runSort ?? "urgency"))
   );
-  const selectedRun = createMemo(() => {
+  const selectedRunItem = createMemo(() => {
     const explicitRunId = selectedRunId();
     if (explicitRunId) {
-      return filteredRuns().find((run) => run.id === explicitRunId);
+      return runListItems().find((item) => runListItemRun(item).id === explicitRunId);
     }
-    return activeSegment() === "inbox" ? filteredRuns()[0] : undefined;
+    return activeSegment() === "inbox" ? runListItems()[0] : undefined;
+  });
+  const selectedRun = createMemo(() => {
+    const item = selectedRunItem();
+    return item ? runListItemRun(item) : undefined;
   });
   const selectedRunScrollKey = createMemo(() => {
-    const run = selectedRun();
-    const lastEventId = run?.events.at(-1)?.id ?? "";
-    return `${run?.id ?? ""}:${run?.events.length ?? 0}:${lastEventId}`;
+    const item = selectedRunItem();
+    const events = item?.kind === "background" ? item.run.events : [];
+    const lastEventId = events.at(-1)?.id ?? "";
+    return `${item ? runListItemRun(item).id : ""}:${events.length}:${lastEventId}`;
   });
-  const selectedJob = createMemo(
-    () =>
-      jobs().find((job) => job.id === selectedRun()?.jobId) ??
-      jobs().find((job) => job.id === selectedJobId()) ??
-      jobs()[0]
-  );
+  const selectedJob = createMemo(() => {
+    const item = selectedRunItem();
+    return jobs().find((job) => item?.kind === "background" && job.id === item.run.jobId) ?? jobs().find((job) => job.id === selectedJobId()) ?? jobs()[0];
+  });
   const selectedJobRuns = createMemo(() => {
     const jobId = selectedJob()?.id;
     if (!jobId) {
@@ -197,7 +200,14 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
       detail: event.detail
     }))
   );
-  const selectedRunFileLinks = () => getBackgroundRunFileLinks(selectedRun()?.projectId);
+  const selectedRunFileLinks = () => {
+    const item = selectedRunItem();
+    return item?.kind === "background" ? getBackgroundRunFileLinks(item.run.projectId) : undefined;
+  };
+  const selectedRunItemFileLinks = () => {
+    const item = selectedRunItem();
+    return item ? runListItemFileLinks(item) : selectedRunFileLinks();
+  };
   const detailsRunFileLinks = () => getBackgroundRunFileLinks(detailsRun()?.projectId);
   const selectedJobFileLinks = () => getBackgroundRunFileLinks(selectedJob()?.projectId);
   const runListItemFileLinks = (item: RunListItem) =>
@@ -226,7 +236,7 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
           return false;
         }
         if (item.kind === "project-chat") {
-          openProjectChatRun(item.entry.project.id, item.entry.run.threadId);
+          openProjectChatRun(item.entry.run.id);
         } else {
           openRunDetails(item.run);
         }
@@ -297,7 +307,11 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
     }
 
     if (selectedRunId() !== currentRun.id) {
-      harnessStore.setJobsPanePreferences({ selectedRunId: currentRun.id });
+      const item = selectedRunItem();
+      harnessStore.setJobsPanePreferences({
+        selectedRunId: currentRun.id,
+        selectedJobId: item?.kind === "background" ? item.run.jobId : undefined
+      });
     }
   });
 
@@ -450,8 +464,9 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
     harnessStore.setActiveSurface("assistants");
   }
 
-  function openProjectChatRun(projectId: string, threadId: string) {
-    openProjectThreadSource(state, projectId, threadId, "run");
+  function openProjectChatRun(runId: string) {
+    harnessStore.closeBackgroundJobDetailsDialog();
+    harnessStore.setJobsPanePreferences({ segment: "inbox", selectedRunId: runId, selectedJobId: undefined, selectedNotificationId: undefined });
   }
 
   async function handleToggleNotifications() {
@@ -741,7 +756,7 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                             {run().status}
                           </span>
                         </div>
-                        <h2 class="mt-1 break-words text-[1.2rem] font-semibold text-(--foreground) [overflow-wrap:anywhere]">{selectedJob()?.name}</h2>
+                        <h2 class="mt-1 break-words text-[1.2rem] font-semibold text-(--foreground) [overflow-wrap:anywhere]">{selectedRunItem() ? formatRunListItemTitle(selectedRunItem()!) : selectedJob()?.name}</h2>
                         <div class="mt-3 grid gap-x-5 gap-y-1 border-l-2 border-(--border) pl-4 text-[0.675rem] leading-5 text-(--muted) sm:grid-cols-2 xl:grid-cols-3">
                           <RunFact label="Run">
                             <span class="min-w-0 break-all">{run().id}</span>
@@ -754,13 +769,13 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                               variant="ghost"
                             />
                           </RunFact>
-                          <RunFact label="Trigger">{run().triggerSource}</RunFact>
-                          <RunFact label="Approval">{run().approvalStatus}</RunFact>
-                          <Show when={formatRunProgress(run())}>
+                          <RunFact label="Trigger">{selectedRunItem()?.kind === "background" ? (run() as BackgroundJobRun).triggerSource : "project chat"}</RunFact>
+                          <RunFact label="Approval">{selectedRunItem()?.kind === "background" ? (run() as BackgroundJobRun).approvalStatus : "approved"}</RunFact>
+                          <Show when={formatRunListItemProgress(selectedRunItem())}>
                             {(progress) => <RunFact label="Progress">{progress()}</RunFact>}
                           </Show>
                           <RunFact label="Summary">
-                            <FileLinkedText text={run().summary ?? "n/a"} fileLinks={selectedRunFileLinks()} />
+                            <FileLinkedText text={run().summary ?? "n/a"} fileLinks={selectedRunItemFileLinks()} />
                           </RunFact>
                           <Show when={run().failureCategory}>
                             {(category) => <RunFact label="Failure category">{formatFailureCategory(category())}</RunFact>}
@@ -771,7 +786,7 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                           <Show when={run().failureMessage}>
                             {(failure) => (
                               <RunFact label="Failure">
-                                <FileLinkedText text={failure()} fileLinks={selectedRunFileLinks()} />
+                                <FileLinkedText text={failure()} fileLinks={selectedRunItemFileLinks()} />
                               </RunFact>
                             )}
                           </Show>
@@ -786,15 +801,15 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                             </ActionButton>
                           )}
                         </Show>
-                        <Show when={run().status === "awaiting-approval"}>
-                          <ActionButton tooltip="Approve this background run" disabled={executionPaused()} disabledReason={executionPauseReason} icon={<Play class="h-4 w-4" />} onClick={() => sendCommand({ type: "background-job.approve-run", requestId: createRequestId(), payload: { projectId: run().projectId, runId: run().id } })}>Approve</ActionButton>
-                          <ActionButton tooltip="Reject this background run" variant="secondary" onClick={() => sendCommand({ type: "background-job.reject-run", requestId: createRequestId(), payload: { projectId: run().projectId, runId: run().id } })}>Reject</ActionButton>
+                        <Show when={selectedRunItem()?.kind === "background" && run().status === "awaiting-approval"}>
+                          <ActionButton tooltip="Approve this background run" disabled={executionPaused()} disabledReason={executionPauseReason} icon={<Play class="h-4 w-4" />} onClick={() => sendCommand({ type: "background-job.approve-run", requestId: createRequestId(), payload: { projectId: (run() as BackgroundJobRun).projectId, runId: run().id } })}>Approve</ActionButton>
+                          <ActionButton tooltip="Reject this background run" variant="secondary" onClick={() => sendCommand({ type: "background-job.reject-run", requestId: createRequestId(), payload: { projectId: (run() as BackgroundJobRun).projectId, runId: run().id } })}>Reject</ActionButton>
                         </Show>
-                        <Show when={run().status === "running"}>
-                          <ActionButton tooltip="Stop this background run" variant="secondary" icon={<Pause class="h-4 w-4" />} onClick={() => sendCommand({ type: "background-job.stop-run", requestId: createRequestId(), payload: { projectId: run().projectId, runId: run().id } })}>Stop</ActionButton>
+                        <Show when={selectedRunItem()?.kind === "background" && run().status === "running"}>
+                          <ActionButton tooltip="Stop this background run" variant="secondary" icon={<Pause class="h-4 w-4" />} onClick={() => sendCommand({ type: "background-job.stop-run", requestId: createRequestId(), payload: { projectId: (run() as BackgroundJobRun).projectId, runId: run().id } })}>Stop</ActionButton>
                         </Show>
-                        <Show when={run().status === "failed" || run().status === "cancelled"}>
-                          <ActionButton tooltip="Retry this background run" disabled={executionPaused()} disabledReason={executionPauseReason} icon={<RefreshCcw class="h-4 w-4" />} onClick={() => sendCommand({ type: "background-job.retry-run", requestId: createRequestId(), payload: { projectId: run().projectId, runId: run().id } })}>Retry</ActionButton>
+                        <Show when={selectedRunItem()?.kind === "background" && (run().status === "failed" || run().status === "cancelled")}>
+                          <ActionButton tooltip="Retry this background run" disabled={executionPaused()} disabledReason={executionPauseReason} icon={<RefreshCcw class="h-4 w-4" />} onClick={() => sendCommand({ type: "background-job.retry-run", requestId: createRequestId(), payload: { projectId: (run() as BackgroundJobRun).projectId, runId: run().id } })}>Retry</ActionButton>
                         </Show>
                       </div>
                     </div>
@@ -806,7 +821,7 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                       class="flex-1 min-h-0 pr-2"
                       contentClass="w-full"
                       itemClass="pb-3"
-                      items={run().events}
+                      items={selectedRunItem()?.kind === "background" ? (run() as BackgroundJobRun).events : []}
                       getKey={(event) => event.id}
                       estimateSize={135}
                       pagination={{ kind: "reverse", initialCount: 80, batchSize: 80 }}
@@ -819,12 +834,12 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                             <span>{formatShortTimestamp(event.createdAt)}</span>
                           </div>
                           <div class="mt-2 break-words text-[0.75rem] font-semibold text-(--foreground) [overflow-wrap:anywhere]">
-                            <FileLinkedText text={event.message} fileLinks={selectedRunFileLinks()} />
+                            <FileLinkedText text={event.message} fileLinks={selectedRunItemFileLinks()} />
                           </div>
                           <Show when={event.detail}>
                             {(detail) => (
                               <div class="mt-2 whitespace-pre-wrap break-words text-[0.675rem] leading-5 text-(--muted) [overflow-wrap:anywhere]">
-                                <FileLinkedText text={detail()} fileLinks={selectedRunFileLinks()} />
+                                <FileLinkedText text={detail()} fileLinks={selectedRunItemFileLinks()} />
                               </div>
                             )}
                           </Show>
@@ -910,12 +925,12 @@ function RunListButton(props: {
   selectedRunId?: string;
   fileLinks?: FileLinkConfig;
   onOpenRun: (run: BackgroundJobRun) => void;
-  onOpenProjectChatRun: (projectId: string, threadId: string) => void;
+  onOpenProjectChatRun: (runId: string) => void;
 }) {
-  const selected = createMemo(() => props.item.kind === "background" && props.selectedRunId === props.item.run.id);
+  const selected = createMemo(() => props.selectedRunId === runListItemRun(props.item).id);
   const openRunItem = () =>
     props.item.kind === "project-chat"
-      ? props.onOpenProjectChatRun(props.item.entry.project.id, props.item.entry.run.threadId)
+      ? props.onOpenProjectChatRun(props.item.entry.run.id)
       : props.onOpenRun(props.item.run);
   const handleKeyDown = (event: KeyboardEvent) => {
     if (event.key !== "Enter" && event.key !== " ") {
@@ -1333,7 +1348,7 @@ function jobsPaneMenuItems(
       value: runFilterLabel(state.jobsRunFilter),
       icon: <ShieldCheck class="h-3.5 w-3.5" />,
       active: state.jobsRunFilter !== "all",
-      items: (["all", "approval", "queued", "running", "failed", "done"] satisfies JobsRunFilter[]).map((filter) => ({
+      items: (["all", "approval", "input", "queued", "running", "failed", "done"] satisfies JobsRunFilter[]).map((filter) => ({
         kind: "option" as const,
         label: runFilterLabel(filter),
         icon: runFilterIcon(filter),
@@ -1453,7 +1468,9 @@ function matchesRunFilter(run: BackgroundJobRun, filter: JobsRunFilter) {
     case "all":
       return true;
     case "approval":
-      return run.status === "awaiting-approval" || run.status === "awaiting-user-input" || run.approvalStatus === "pending";
+      return run.status === "awaiting-approval" || run.approvalStatus === "pending";
+    case "input":
+      return run.status === "awaiting-user-input";
     case "queued":
       return run.status === "queued";
     case "running":
@@ -1470,6 +1487,8 @@ function matchesProjectChatRunFilter(run: AgentRunState, filter: JobsRunFilter) 
     case "all":
       return true;
     case "approval":
+      return false;
+    case "input":
       return run.status === "awaiting-user-input";
     case "queued":
       return run.status === "planning" || run.status === "ready";
@@ -1896,6 +1915,20 @@ function formatRunListItemTime(item: RunListItem) {
   return `Queued: ${formatShortTimestamp(item.run.queuedAt)}`;
 }
 
+function runListItemRun(item: RunListItem) {
+  return item.kind === "project-chat" ? item.entry.run : item.run;
+}
+
+function formatRunListItemProgress(item: RunListItem | undefined) {
+  if (!item) {
+    return undefined;
+  }
+  if (item.kind === "project-chat") {
+    return `Last progress: ${formatShortTimestamp(item.entry.run.updatedAt)}`;
+  }
+  return formatRunProgress(item.run);
+}
+
 function formatRunSummary(run: BackgroundJobRun) {
   return run.failureMessage ?? run.summary ?? latestRunEventDetail(run) ?? `${run.triggerSource} run`;
 }
@@ -1921,20 +1954,27 @@ function jobStatusBadgeClass(status: BackgroundJob["status"]) {
   return "bg-slate-200 text-slate-700";
 }
 
-function runStatusBadgeClass(status: BackgroundJobRun["status"]) {
+function runStatusBadgeClass(status: BackgroundJobRun["status"] | AgentRunState["status"]) {
   switch (status) {
+    case "completed":
     case "succeeded":
       return "bg-emerald-100 text-emerald-800";
     case "partial-complete":
       return "bg-amber-100 text-amber-900";
     case "failed":
+    case "stopped":
     case "cancelled":
       return "bg-rose-100 text-rose-800";
     case "awaiting-approval":
     case "awaiting-user-input":
+    case "planning":
+    case "aggregating":
       return "bg-amber-100 text-amber-900";
+    case "running-main":
+    case "running-subagents":
     case "running":
       return "bg-sky-100 text-sky-800";
+    case "ready":
     case "queued":
       return "bg-slate-200 text-slate-700";
     case "skipped":
@@ -2198,6 +2238,8 @@ function runFilterLabel(filter: JobsRunFilter) {
       return "All";
     case "approval":
       return "Approval";
+    case "input":
+      return "Input";
     case "queued":
       return "Queued";
     case "running":
@@ -2245,6 +2287,8 @@ function runFilterIcon(filter: JobsRunFilter) {
       return <ListFilter class="h-3.5 w-3.5" />;
     case "approval":
       return <ShieldCheck class="h-3.5 w-3.5" />;
+    case "input":
+      return <MessageSquareText class="h-3.5 w-3.5" />;
     case "queued":
       return <Plus class="h-3.5 w-3.5" />;
     case "running":

@@ -23,7 +23,7 @@ Backend websocket handlers and runtime orchestration for harness.
 - Assistant-owned job launches persist their resolved agent, provider, model, reasoning, and fast-mode choices for diagnostics and recovery cards.
 - Assistant summary and selected-detail state use bounded SQL-backed pages so reconnects and roster refreshes do not load every assistant row.
 - Assistant-owned implement jobs use one bounded correctness iteration by default, leave durable todo/learning/question/log state after runs, and retry one partial completion before stabilizing.
-- Non-git project roots are treated as valid workspaces for assistant jobs; planners get direct-inspection guidance and git-only failures classify as workspace context.
+- Non-git project roots are treated as valid workspaces; planner, execution, Codex, and subagent prompts get direct-inspection guidance while git-only failures classify as workspace context.
 - Assistant reprioritization includes recent assistant logs, keeping state summaries grounded in the job that just finished.
 - First assistant chat and assistant-owned job outputs are prompted to introduce the assistant role, prompts, and current learnings before work begins.
 - Assistant prompts share a consistent identity, operational logic, and active mission shape while passive background notifications redact prompt scaffolding.

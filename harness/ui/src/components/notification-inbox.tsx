@@ -135,16 +135,13 @@ export function NotificationInbox() {
         setOpen(false);
         return;
       case "planning-question":
-        harnessStore.setActiveSurface("chat");
-        activateProjectThread(notification.projectId, notification.threadId);
+        openNotificationSource(state, notification);
         break;
       case "planning-question-batch":
-        harnessStore.setActiveSurface("chat");
-        activateProjectThread(notification.projectId, notification.threadId);
+        openNotificationSource(state, notification);
         break;
       case "browser-approval":
-        harnessStore.setActiveSurface("chat");
-        activateProjectThread(notification.projectId, notification.threadId);
+        openNotificationSource(state, notification);
         break;
       case "assistant-question":
         openAssistantQuestionNotificationFromInbox(state, notification);

@@ -352,6 +352,23 @@ export class WorkspaceRuntimeStore {
     this.getProjectRecord(projectId).executions.delete(getExecutionKey(input));
   }
 
+  abortRun(projectId: ProjectId, runId: string) {
+    const record = this.getProjectRecord(projectId);
+    record.abortControllers.get(runId)?.abort();
+    record.abortControllers.delete(runId);
+    for (const [key, state] of record.executions.entries()) {
+      if (state.runId !== runId) {
+        continue;
+      }
+
+      const abortPromise = state.controller?.abort();
+      if (abortPromise) {
+        void abortPromise.catch(() => undefined);
+      }
+      record.executions.delete(key);
+    }
+  }
+
   private updateProject(projectId: ProjectId, updater: (project: RuntimeProjectState) => RuntimeProjectState) {
     const record = this.getProjectRecord(projectId);
     const previousThreadState = record.threadStates.get(record.project.activeThreadId);

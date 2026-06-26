@@ -598,7 +598,7 @@ describe("assistant manager background jobs", () => {
     const repository = createRepository();
     const assistant = createAssistant(repository, {
       bootstrapState: "completed",
-      modeId: "plan"
+      modeId: "review"
     });
     const adapter = new DeferredAdapter();
     const manager = createManager(repository, adapter);

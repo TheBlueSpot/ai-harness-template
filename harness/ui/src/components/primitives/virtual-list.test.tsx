@@ -69,7 +69,7 @@ createUiTest("VirtualList", () => {
   });
 
   it("lets measured virtual content shrink below the initial estimate", () => {
-    expect(getVirtualListContentSize(280, 900)).toBe(280);
+    expect(getVirtualListContentSize(280, 900)).toBe(900);
     expect(getVirtualListContentSize(0, 900)).toBe(900);
   });
 

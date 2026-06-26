@@ -11,6 +11,7 @@
     "build:ui": "bun run scripts/build-ui.ts",
     "doctor": "bun harness/cli/src/index.ts --doctor",
     "lint:tailwind": "eslint \"harness/ui/src/**/*.{ts,tsx}\"",
+    "bench:websocket-batch": "bun run scripts/websocket-batch-benchmark.ts",
     "package:launcher": "bun run scripts/package-launcher.ts",
     "screenshot": "bun run scripts/screenshot.ts",
     "test": "bun run scripts/run-tests.ts",
@@ -23,8 +24,8 @@
   "dependencies": {
     "@kobalte/core": "^0.13.11",
     "@mariozechner/pi-coding-agent": "^0.73.1",
-    "@openai/codex": "^0.142.2",
-    "@openai/codex-sdk": "^0.142.2",
+    "@openai/codex": "^0.142.3",
+    "@openai/codex-sdk": "^0.142.3",
     "@tanstack/solid-hotkeys": "^0.9.1",
     "@tanstack/solid-virtual": "^3.13.24",
     "@thisbeyond/solid-dnd": "^0.7.5",

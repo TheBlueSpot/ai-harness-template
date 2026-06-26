@@ -3,6 +3,7 @@ import {
   createEmptySession,
   createProjectId,
   createProjectThreadSummary,
+  type ClientCommand,
   type ProjectSearchResult,
   createWorkspaceProjectState,
   type ExecutionPlan,
@@ -18,10 +19,10 @@ import {
   PREFERENCES_ACTIVE_SECTION_STORAGE_KEY,
   PROJECT_SIDEBAR_PREFERENCES_STORAGE_KEY,
   THEME_PREFERENCE_STORAGE_KEY,
-  TOKEN_USAGE_LIFETIME_STORAGE_KEY,
   createEmptyAssistantsState,
   createEmptyBackgroundJobsState,
   createEmptyNotificationInboxState,
+  createEmptyTokenUsageState,
   createHarnessStore,
   createInitialExecutionControlState,
   createInitialSetupState,
@@ -37,7 +38,6 @@ import {
   persistMergedLocalPreferences,
   readLocalPreferences,
   readBrowserUiSession,
-  readTokenUsageLifetime,
   readProjectSidebarPreferences,
   reduceServerEvent
 } from "../harness-store";
@@ -77,6 +77,7 @@ const defaultPreferences: PreferencesState = {
 const defaultExecutionControl = createInitialExecutionControlState();
 const defaultSetup = createInitialSetupState();
 const defaultNotifications = createEmptyNotificationInboxState();
+const defaultTokenUsage = createEmptyTokenUsageState();
 
 function createConnectedState(project?: WorkspaceProjectState) {
   return reduceServerEvent(createInitialViewState(), {
@@ -88,6 +89,7 @@ function createConnectedState(project?: WorkspaceProjectState) {
         activeProjectId: project?.id
       },
       preferences: defaultPreferences,
+      tokenUsage: defaultTokenUsage,
       setup: defaultSetup,
       backgroundJobs: createEmptyBackgroundJobsState(),
       assistants: createEmptyAssistantsState(),
@@ -112,7 +114,6 @@ function clearBrowserUiSessionStorage() {
   globalThis.localStorage?.removeItem(PREFERENCES_ACTIVE_SECTION_STORAGE_KEY);
   globalThis.localStorage?.removeItem(PROJECT_SIDEBAR_PREFERENCES_STORAGE_KEY);
   globalThis.localStorage?.removeItem(THEME_PREFERENCE_STORAGE_KEY);
-  globalThis.localStorage?.removeItem(TOKEN_USAGE_LIFETIME_STORAGE_KEY);
 }
 
 describe("harness store reducer", () => {
@@ -134,6 +135,7 @@ describe("harness store reducer", () => {
           ...defaultPreferences,
           tracePanelDefaultOpen: true
         },
+        tokenUsage: defaultTokenUsage,
         setup: defaultSetup,
         backgroundJobs: createEmptyBackgroundJobsState(),
         assistants: createEmptyAssistantsState(),
@@ -298,6 +300,7 @@ describe("harness store reducer", () => {
           activeProjectId: undefined
         },
         preferences: defaultPreferences,
+        tokenUsage: defaultTokenUsage,
         setup: defaultSetup,
         backgroundJobs: createEmptyBackgroundJobsState(),
         assistants: createEmptyAssistantsState(),
@@ -362,6 +365,7 @@ describe("harness store reducer", () => {
           activeProjectId: firstProject.id
         },
         preferences: defaultPreferences,
+        tokenUsage: defaultTokenUsage,
         setup: defaultSetup,
         backgroundJobs: createEmptyBackgroundJobsState(),
         assistants: createEmptyAssistantsState(),
@@ -411,6 +415,7 @@ describe("harness store reducer", () => {
           activeProjectId: project.id
         },
         preferences: defaultPreferences,
+        tokenUsage: defaultTokenUsage,
         setup: defaultSetup,
         backgroundJobs: createEmptyBackgroundJobsState(),
         assistants: createEmptyAssistantsState(),
@@ -475,6 +480,7 @@ describe("harness store reducer", () => {
             }
           ]
         },
+        tokenUsage: defaultTokenUsage,
         setup: defaultSetup,
         backgroundJobs: createEmptyBackgroundJobsState(),
         assistants: createEmptyAssistantsState(),
@@ -623,6 +629,7 @@ describe("harness store reducer", () => {
             }
           ]
         },
+        tokenUsage: defaultTokenUsage,
         setup: defaultSetup,
         backgroundJobs: createEmptyBackgroundJobsState(),
         assistants: createEmptyAssistantsState(),
@@ -680,6 +687,7 @@ describe("harness store reducer", () => {
             }
           ]
         },
+        tokenUsage: defaultTokenUsage,
         setup: defaultSetup,
         backgroundJobs: createEmptyBackgroundJobsState(),
         assistants: createEmptyAssistantsState(),
@@ -744,6 +752,7 @@ describe("harness store reducer", () => {
           activeProjectId: project.id
         },
         preferences: defaultPreferences,
+        tokenUsage: defaultTokenUsage,
         setup: defaultSetup,
         backgroundJobs: createEmptyBackgroundJobsState(),
         assistants: createEmptyAssistantsState(),
@@ -914,6 +923,7 @@ describe("harness store reducer", () => {
           activeProjectId: projectA.id
         },
         preferences: defaultPreferences,
+        tokenUsage: defaultTokenUsage,
         setup: defaultSetup,
         backgroundJobs: createEmptyBackgroundJobsState(),
         assistants: createEmptyAssistantsState(),
@@ -941,6 +951,113 @@ describe("harness store reducer", () => {
     expect(commands[1].payload).toEqual({
       projectId: projectB.id,
       threadId: "thread-b-2"
+    });
+  });
+
+  test("restores remembered user chat when returning from a background run view", () => {
+    const project = createWorkspaceProjectState({
+      id: "project-restore-chat",
+      name: "repo-restore-chat",
+      rootPath: "C:\\repo-restore-chat",
+      activeThreadId: "thread-auto",
+      threads: [
+        createProjectThreadSummary({
+          id: "thread-user",
+          title: "User thread",
+          titleSource: "generated",
+          updatedAt: new Date().toISOString()
+        }),
+        createProjectThreadSummary({
+          id: "thread-auto",
+          kind: "automation",
+          title: "Background job",
+          titleSource: "custom",
+          updatedAt: new Date().toISOString()
+        })
+      ]
+    });
+    const store = createHarnessStore();
+    const commands: ClientCommand[] = [];
+    const viewProject = createConnectedState(project).workspace.projects[0]!;
+
+    store.resetForTests({
+      activeSurface: "background-jobs",
+      activeLeftTab: "runs",
+      workspace: {
+        activeProjectId: project.id,
+        projects: [viewProject],
+        workspaceModes: [],
+        workspaceRuleSource: undefined,
+        workspaceMemorySummary: undefined
+      },
+      lastActiveProjectId: project.id,
+      lastActiveThreadByProjectId: {
+        [project.id]: "thread-user"
+      }
+    });
+    store.actions.setCommandDispatcher((command) => commands.push(command));
+
+    store.setActiveLeftTab("projects");
+
+    expect(store.state.activeSurface).toBe("chat");
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      type: "thread.activate",
+      payload: {
+        projectId: project.id,
+        threadId: "thread-user"
+      }
+    });
+  });
+
+  test("does not persist automation threads as last project chat", () => {
+    clearBrowserUiSessionStorage();
+    const project = createWorkspaceProjectState({
+      id: "project-automation-memory",
+      name: "repo-automation-memory",
+      rootPath: "C:\\repo-automation-memory",
+      activeThreadId: "thread-auto",
+      threads: [
+        createProjectThreadSummary({
+          id: "thread-user",
+          title: "User thread",
+          titleSource: "generated",
+          updatedAt: new Date().toISOString()
+        }),
+        createProjectThreadSummary({
+          id: "thread-auto",
+          kind: "automation",
+          title: "Background job",
+          titleSource: "custom",
+          updatedAt: new Date().toISOString()
+        })
+      ]
+    });
+    const store = createHarnessStore();
+    const viewProject = createConnectedState(project).workspace.projects[0]!;
+
+    store.resetForTests({
+      activeSurface: "chat",
+      activeLeftTab: "projects",
+      workspace: {
+        activeProjectId: project.id,
+        projects: [viewProject],
+        workspaceModes: [],
+        workspaceRuleSource: undefined,
+        workspaceMemorySummary: undefined
+      },
+      lastActiveProjectId: project.id,
+      lastActiveThreadByProjectId: {
+        [project.id]: "thread-user"
+      }
+    });
+    store.setChatPaneTab("run");
+
+    expect(readBrowserUiSession()).toMatchObject({
+      lastActiveProjectId: project.id,
+      lastActiveThreadByProjectId: {
+        [project.id]: "thread-user"
+      }
     });
   });
 
@@ -2886,7 +3003,7 @@ describe("harness store reducer", () => {
     expect(nextState.workspace.projects[0]?.contextUsage?.sourceKind).toBe("planner");
   });
 
-  test("tracks session and lifetime token usage from context events", () => {
+  test("uses server token usage totals from context events", () => {
     clearBrowserUiSessionStorage();
     const store = createHarnessStore();
     const initialProject = createProject();
@@ -2907,6 +3024,27 @@ describe("harness store reducer", () => {
           totalProcessedTokens: 1500,
           cachedInputTokens: 500,
           updatedAt: "2026-06-25T12:00:00.000Z"
+        },
+        tokenUsage: {
+          session: {
+            inputTokens: 1200,
+            outputTokens: 300,
+            cachedInputTokens: 500,
+            totalProcessedTokens: 1500,
+            totalTokensIncludingCached: 2000,
+            events: 1,
+            updatedAt: "2026-06-25T12:00:00.000Z"
+          },
+          lifetime: {
+            inputTokens: 2200,
+            outputTokens: 400,
+            cachedInputTokens: 600,
+            totalProcessedTokens: 2600,
+            totalTokensIncludingCached: 3200,
+            events: 3,
+            updatedAt: "2026-06-25T12:00:00.000Z"
+          },
+          resetAt: "2026-06-25T11:00:00.000Z"
         }
       }
     };
@@ -2914,16 +3052,9 @@ describe("harness store reducer", () => {
     store.applyServerEvent(contextEvent);
     store.applyServerEvent(contextEvent);
 
-    expect(store.state.tokenUsage.session).toMatchObject({
-      inputTokens: 1200,
-      outputTokens: 300,
-      cachedInputTokens: 500,
-      totalProcessedTokens: 1500,
-      totalTokensIncludingCached: 2000,
-      events: 1
-    });
-    expect(store.state.tokenUsage.lifetime.totalTokensIncludingCached).toBe(2000);
-    expect(readTokenUsageLifetime().totalTokensIncludingCached).toBe(2000);
+    expect(store.state.tokenUsage.session.totalTokensIncludingCached).toBe(2000);
+    expect(store.state.tokenUsage.lifetime.totalTokensIncludingCached).toBe(3200);
+    expect(store.state.tokenUsage.resetAt).toBe("2026-06-25T11:00:00.000Z");
   });
 
   test("opens project and activates it", () => {
@@ -3060,6 +3191,7 @@ describe("harness store reducer", () => {
           capabilities: [...defaultProviderCapabilities],
           agentRuntimes: []
         },
+        tokenUsage: defaultTokenUsage,
         setup: defaultSetup,
         backgroundJobs: createEmptyBackgroundJobsState(),
         assistants: createEmptyAssistantsState(),
@@ -3223,6 +3355,7 @@ describe("harness store reducer", () => {
             }
           ]
         },
+        tokenUsage: defaultTokenUsage,
         setup: defaultSetup,
         backgroundJobs: createEmptyBackgroundJobsState(),
         assistants: createEmptyAssistantsState(),

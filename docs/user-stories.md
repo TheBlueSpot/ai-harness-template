@@ -149,7 +149,7 @@ US-RUNS-010: As a user, I see workspace-global execution pause and resume propag
 
 US-RUNS-011: As a user, I get a post-merge correctness review that checks the delivered workspace against the frozen plan, catches obvious runnable or quality gaps, and can queue a corrective plan-first follow-up iteration. (README L180)
 
-US-RUNS-012: As a user, I see a live context usage meter sourced from runtime stats, including cached input tokens when providers expose them, so that I know how close I am to compaction and when repeated context is being reused. (README L51)
+US-RUNS-012: As a user, I see a live context usage meter sourced from runtime stats, including cached input tokens, current app-session totals, and durable lifetime totals when providers expose them, so that I know how close I am to compaction and when repeated context is being reused. (README L51)
 
 US-RUNS-013: As a user, I get deferred planner questions, assistant questions, and browser approvals queued during global pause and released on resume so that nothing gets dropped. (README L21)
 
@@ -341,7 +341,7 @@ US-UI-021: As a user, I see the trace panel follow the selected project thread, 
 
 US-UI-018: As a user, I see shared popovers render through portal-backed primitives so that compact overlays (inbox, quick replies, interaction panels) stay well-positioned. (README L93)
 
-US-UI-019: As a user, I see the live context usage meter sourced from pi session context stats. (README L51)
+US-UI-019: As a user, I see the live context usage meter sourced from server runtime stats with app-session and lifetime totals. (README L51)
 
 US-UI-022: As a user, I open an IDE workbench with real project file navigation, read-only file previews, content search, Git status, editor tabs, command palette, resizable panes, terminal file-link handoff, status context, custom menus, themes, shortcut handling, notifications, and loading placeholders so that coding context can live beside harness execution.
 

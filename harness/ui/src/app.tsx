@@ -92,6 +92,7 @@ export function App() {
       hotkey: hotkey as CreateHotkeyDefinition["hotkey"],
       callback: () => handleAppHotkey("openProjectSwitcher"),
       options: {
+        conflictBehavior: "allow",
         meta: {
           name: "Project switcher",
           description: "Open projects and active threads."

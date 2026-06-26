@@ -3,7 +3,7 @@ import { beforeEach, expect, it } from "bun:test";
 import { createUiTest } from "../utils/tests/test-harness";
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { PreferenceSectionNav, PreferencesModal } from "./preferences-modal";
-import { harnessStore, readBrowserUiSession, readLocalPreferences, readTokenUsageLifetime } from "../harness-store";
+import { harnessStore, readBrowserUiSession, readLocalPreferences } from "../harness-store";
 import { toastStore } from "../toast-store";
 import { captureDispatchedCommands, clearBrowserStateForTests, seedHarnessStoreForTests } from "../utils/tests/store-test-utils";
 import { createHarnessStateFixture, createViewProjectFixture } from "../utils/tests/test-fixtures";
@@ -71,6 +71,8 @@ createUiTest("PreferencesModal", () => {
   });
 
   it("keeps preferences body and footer in responsive scroll flow", () => {
+    const commands: unknown[] = [];
+    captureDispatchedCommands(commands);
     seedHarnessStoreForTests(
       createHarnessStateFixture({
         preferencesModalOpen: true
@@ -287,6 +289,7 @@ createUiTest("PreferencesModal", () => {
   });
 
   it("shows token usage totals and resets them after confirmation", async () => {
+    const commands: unknown[] = [];
     const usageTotals = {
       inputTokens: 1200,
       outputTokens: 300,
@@ -314,6 +317,7 @@ createUiTest("PreferencesModal", () => {
         }
       })
     );
+    captureDispatchedCommands(commands);
 
     renderPreferencesWithSideNav();
     fireEvent.click(screen.getByRole("button", { name: /Usage/i }));
@@ -328,9 +332,8 @@ createUiTest("PreferencesModal", () => {
     expect(await screen.findByText("Token counters will start again from the next observed model usage event.")).not.toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Confirm token usage reset" }));
 
-    expect(harnessStore.state.tokenUsage.session.totalTokensIncludingCached).toBe(0);
-    expect(harnessStore.state.tokenUsage.lifetime.totalTokensIncludingCached).toBe(0);
-    expect(readTokenUsageLifetime().totalTokensIncludingCached).toBe(0);
+    expect(commands).toContainEqual({ type: "usage.reset", requestId: expect.any(String) });
+    expect(harnessStore.state.tokenUsageResetDialogOpen).toBe(false);
   });
 
   it("autosaves non-blocking assistant question approval preference", async () => {

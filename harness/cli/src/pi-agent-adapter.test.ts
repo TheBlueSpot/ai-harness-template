@@ -5,7 +5,9 @@ import {
   clampAutoCompactContextThresholdPercent,
   mapReasoningStrengthToThinkingLevel,
   PiSdkAgentAdapter,
-  testExports
+  testExports,
+  type PiSdkPromptWorkerRequest,
+  type PiSdkPromptWorkerResponse
 } from "./pi-agent-adapter";
 
 describe("pi sdk adapter", () => {
@@ -30,6 +32,74 @@ describe("pi sdk adapter", () => {
     expect(adapter.hasApiKey("anthropic")).toBe(true);
     adapter.setApiKey("anthropic", undefined);
     expect(adapter.hasApiKey("anthropic")).toBe(false);
+  });
+
+  test("offloads cloneable runPrompt requests to a worker", async () => {
+    let posted: PiSdkPromptWorkerRequest | undefined;
+    let terminated = false;
+    const worker: {
+      onmessage: ((event: MessageEvent<PiSdkPromptWorkerResponse>) => void) | null;
+      onerror: null;
+      onmessageerror: null;
+      postMessage(payload: PiSdkPromptWorkerRequest): void;
+      terminate(): void;
+    } = {
+      onmessage: null as ((event: MessageEvent<PiSdkPromptWorkerResponse>) => void) | null,
+      onerror: null,
+      onmessageerror: null,
+      postMessage(payload: PiSdkPromptWorkerRequest) {
+        posted = payload;
+        queueMicrotask(() => {
+          worker.onmessage?.({
+            data: {
+              id: payload.id,
+              ok: true,
+              result: {
+                text: "worker result"
+              }
+            }
+          } as MessageEvent<PiSdkPromptWorkerResponse>);
+        });
+      },
+      terminate() {
+        terminated = true;
+      }
+    };
+    const adapter = new PiSdkAgentAdapter({ createPromptWorker: () => worker as unknown as Worker });
+    adapter.setApiKey("openai", "sk-worker-test");
+
+    const result = await adapter.runPrompt({
+      kind: "planner",
+      cwd: process.cwd(),
+      modelId: "openai/gpt-5.5",
+      prompt: "test"
+    });
+
+    expect(result.text).toBe("worker result");
+    expect(posted?.apiKeys.openai).toBe("sk-worker-test");
+    expect(posted?.request.prompt).toBe("test");
+    expect(terminated).toBe(true);
+  });
+
+  test("keeps callback-based runPrompt requests in process", async () => {
+    let workerCreated = false;
+    const adapter = new PiSdkAgentAdapter({
+      createPromptWorker: () => {
+        workerCreated = true;
+        throw new Error("worker should not start");
+      }
+    });
+
+    await expect(
+      adapter.runPrompt({
+        kind: "planner",
+        cwd: process.cwd(),
+        modelId: "mistral/codestral",
+        prompt: "test",
+        onTextDelta() {}
+      })
+    ).rejects.toThrow("Unsupported provider");
+    expect(workerCreated).toBe(false);
   });
 
   test("clamps threshold and derives compaction settings from context window", () => {

@@ -117,6 +117,35 @@ describe("workspace repository", () => {
     expect(repository.getMemoryBankRecordRunsDefault()).toBe(false);
   });
 
+  test("persists lifetime token usage in workspace metadata", () => {
+    const repository = createRepository();
+    const session = {
+      inputTokens: 10,
+      outputTokens: 5,
+      cachedInputTokens: 2,
+      totalProcessedTokens: 15,
+      totalTokensIncludingCached: 17,
+      events: 1,
+      updatedAt: "2026-06-25T12:00:00.000Z"
+    };
+
+    repository.addTokenUsageLifetime(session);
+
+    expect(repository.getTokenUsageState(session).lifetime).toMatchObject({
+      inputTokens: 10,
+      outputTokens: 5,
+      cachedInputTokens: 2,
+      totalTokensIncludingCached: 17,
+      events: 1
+    });
+
+    const resetAt = "2026-06-25T13:00:00.000Z";
+    repository.resetTokenUsageLifetime(resetAt);
+
+    expect(repository.getTokenUsageState(session).lifetime.totalTokensIncludingCached).toBe(0);
+    expect(repository.getTokenUsageState(session).resetAt).toBe(resetAt);
+  });
+
   test("defaults and persists background job approval policy", () => {
     const repository = createRepository();
 
@@ -2037,6 +2066,94 @@ describe("workspace repository", () => {
     expect(restoredProject.activeRun?.resumable).toBe(true);
   });
 
+  test("reactivates resumable terminal agent runs", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+
+    repository.appendMessage(project.id, "user", "resume me");
+    const withRun = repository.createAgentRun(project.id, "resume me", "openai/gpt-5.4");
+    const runId = withRun.activeRun?.id;
+    expect(runId).toBeDefined();
+    repository.setAgentRunReady(project.id, runId!, {
+      type: "ready",
+      difficultyScore: 20,
+      summary: "Resume one task",
+      executionModelId: "openai/gpt-5.4",
+      usesSubagents: false,
+      subtasks: [],
+      finalExecutionBrief: "Run again"
+    });
+    repository.setAgentRunStatus(project.id, runId!, "partial-complete", "Previous partial result");
+
+    const terminalRun = repository.getRun(project.id, runId!);
+    expect(terminalRun?.status).toBe("partial-complete");
+    expect(terminalRun?.completedAt).toBeDefined();
+    expect(terminalRun?.failureMessage).toBe("Previous partial result");
+
+    const resumedProject = repository.resumeAgentRun(project.id, runId!, "running-main");
+
+    expect(resumedProject.activeRun?.id).toBe(runId);
+    expect(resumedProject.activeRun?.status).toBe("running-main");
+    expect(resumedProject.activeRun?.completedAt).toBeUndefined();
+    expect(resumedProject.activeRun?.failureMessage).toBeUndefined();
+    expect(resumedProject.activeRun?.resumable).toBe(false);
+  });
+
+  test("detects active foreground runs without counting active background-linked runs", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    const now = new Date().toISOString();
+    const job = repository.saveBackgroundJob({
+      id: createBackgroundJobId(),
+      projectId: project.id,
+      automationThreadId: createThreadId(),
+      kind: "ai-routine",
+      name: "Background work",
+      status: "enabled",
+      riskLevel: "safe",
+      definition: {
+        kind: "ai-routine",
+        prompt: "Run background work."
+      },
+      schedule: {
+        type: "interval",
+        intervalSeconds: 600,
+        nextRunAt: now,
+        sourceText: "10m"
+      },
+      scheduleInput: "10m",
+      nextRunAt: now,
+      createdAt: now,
+      updatedAt: now
+    }).jobs[0]!;
+    repository.createAgentRun(project.id, "background", "openai/gpt-5.4", job.automationThreadId);
+    const backgroundAgentRunId = repository.getLatestThreadRun(project.id, job.automationThreadId)?.id;
+    expect(backgroundAgentRunId).toBeDefined();
+    const backgroundRun = repository.createBackgroundJobRun({
+      jobId: job.id,
+      projectId: project.id,
+      automationThreadId: job.automationThreadId,
+      triggerSource: "manual",
+      status: "running",
+      riskLevel: "safe",
+      approvalStatus: "approved"
+    });
+    const linkedBackgroundRun = repository.setBackgroundJobRunStatus(backgroundRun.id, "running", {
+      linkedAgentRunId: backgroundAgentRunId
+    });
+    repository.setAgentRunStatus(project.id, backgroundAgentRunId!, "running-main");
+
+    expect(linkedBackgroundRun.linkedAgentRunId).toBe(backgroundAgentRunId);
+    expect(repository.hasActiveForegroundAgentRun()).toBe(false);
+
+    const foregroundProject = repository.createAgentRun(project.id, "foreground", "openai/gpt-5.4", project.activeThreadId);
+    const foregroundRunId = foregroundProject.activeRun?.id;
+    expect(foregroundRunId).toBeDefined();
+    repository.setAgentRunStatus(project.id, foregroundRunId!, "running-main");
+
+    expect(repository.hasActiveForegroundAgentRun()).toBe(true);
+  });
+
   test("persists freeform planning questions without choices", () => {
     const repository = createRepository();
     const project = addProject(repository);
@@ -2240,6 +2357,95 @@ describe("workspace repository", () => {
     const runningRunId = createRun("running run");
     repository.setAgentRunStatus(project.id, runningRunId, "running-main");
     expect(repository.getRun(project.id, runningRunId)?.completedAt).toBeUndefined();
+  });
+
+  test("does not resurrect terminal runs from stale planning questions", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    const withRun = repository.createAgentRun(project.id, "needs answer", "openai/gpt-5.4");
+    const runId = withRun.activeRun?.id;
+    expect(runId).toBeDefined();
+    const withQuestion = repository.appendPlanningQuestion(project.id, runId!, {
+      id: "question-1",
+      prompt: "Which route?",
+      placeholder: "api/users",
+      choices: [
+        { id: "choice-1", label: "API", description: "Use API.", answerText: "api/users", recommended: true },
+        { id: "choice-2", label: "Page", description: "Use page.", answerText: "users", recommended: false },
+        { id: "choice-3", label: "Custom", description: "Use custom.", answerText: "custom", recommended: false }
+      ],
+      required: true
+    });
+    const questionId = withQuestion.activeRun?.questions[0]?.id;
+    expect(questionId).toBeDefined();
+    repository.setAgentRunStatus(project.id, runId!, "completed");
+    const completedAt = repository.getRun(project.id, runId!)?.completedAt;
+
+    expect(() => repository.answerPlanningQuestion(project.id, runId!, questionId!, "api/users")).toThrow(/Unknown pending planning question/);
+    const run = repository.getRun(project.id, runId!);
+    expect(run?.status).toBe("completed");
+    expect(run?.completedAt).toBe(completedAt);
+  });
+
+  test("does not append planning questions to terminal runs", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    const withRun = repository.createAgentRun(project.id, "terminal question", "openai/gpt-5.4");
+    const runId = withRun.activeRun?.id;
+    expect(runId).toBeDefined();
+    repository.setAgentRunStatus(project.id, runId!, "completed");
+    const completedAt = repository.getRun(project.id, runId!)?.completedAt;
+
+    repository.appendPlanningQuestion(project.id, runId!, {
+      id: "question-1",
+      prompt: "Late question?",
+      choices: [],
+      required: true
+    });
+
+    const run = repository.getRun(project.id, runId!);
+    expect(run?.status).toBe("completed");
+    expect(run?.completedAt).toBe(completedAt);
+    expect(run?.questions).toHaveLength(0);
+  });
+
+  test("does not promote deferred planning questions on terminal runs", () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    const withRun = repository.createAgentRun(project.id, "deferred terminal question", "openai/gpt-5.4");
+    const runId = withRun.activeRun?.id;
+    expect(runId).toBeDefined();
+    repository.appendPlanningQuestion(
+      project.id,
+      runId!,
+      {
+        id: "question-1",
+        prompt: "Deferred question?",
+        choices: [],
+        required: true
+      },
+      "deferred"
+    );
+    repository.setAgentRunStatus(project.id, runId!, "completed");
+    const completedAt = repository.getRun(project.id, runId!)?.completedAt;
+
+    expect(repository.promoteDeferredPlanningQuestions()).toEqual([]);
+    const run = repository.getRun(project.id, runId!);
+    expect(run?.status).toBe("completed");
+    expect(run?.completedAt).toBe(completedAt);
+    expect(run?.questions[0]?.status).toBe("deferred");
+  });
+
+  test("tracks explicit plan execution mode preference separately from fallback default", () => {
+    const repository = createRepository();
+
+    expect(repository.getPlanExecutionModeDefault()).toBe("countdown");
+    expect(repository.getConfiguredPlanExecutionModeDefault()).toBeUndefined();
+
+    repository.setPlanExecutionModeDefault("immediate");
+
+    expect(repository.getPlanExecutionModeDefault()).toBe("immediate");
+    expect(repository.getConfiguredPlanExecutionModeDefault()).toBe("immediate");
   });
 
   test("persists run summaries and high-effort execution plan contracts across reload", () => {

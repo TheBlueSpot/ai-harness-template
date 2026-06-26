@@ -48,12 +48,12 @@ export function SegmentedControl<T extends string | number>(props: {
   onChange: (value: T) => void;
 }) {
   return (
-    <div role="group" aria-label={props.ariaLabel} class="grid rounded-xl border border-(--border) bg-white/55 p-1" style={{ "grid-template-columns": `repeat(${props.options.length}, minmax(0, 1fr))` }}>
+    <div role="group" aria-label={props.ariaLabel} class="grid rounded-xl border border-(--border) bg-(--panel-strong) p-1" style={{ "grid-template-columns": `repeat(${props.options.length}, minmax(0, 1fr))` }}>
       <For each={props.options}>
         {(option) => (
           <button
             type="button"
-            class="min-h-8 min-w-0 truncate rounded-lg px-2 text-xs font-medium text-(--muted) transition hover:bg-white/75 hover:text-(--foreground) disabled:cursor-not-allowed disabled:opacity-45"
+            class="min-h-8 min-w-0 truncate rounded-lg px-2 text-xs font-medium text-(--muted) transition hover:bg-[color-mix(in_srgb,var(--accent)_8%,var(--panel)_92%)] hover:text-(--foreground) disabled:cursor-not-allowed disabled:opacity-45"
             classList={{
               "bg-(--accent)": props.value === option.value,
               "text-white": props.value === option.value,

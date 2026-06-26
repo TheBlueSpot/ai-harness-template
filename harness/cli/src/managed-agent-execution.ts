@@ -90,7 +90,7 @@ export async function runManagedAgentExecution(
     } catch (error) {
       const latestState = options.store.getState();
       const refreshAction = latestState?.pendingRefreshAction;
-      if (!isAbortLike(error) || !refreshAction) {
+      if (options.abortSignal?.aborted || !isAbortLike(error) || !refreshAction) {
         if (latestState) {
           options.store.setState({
             ...latestState,

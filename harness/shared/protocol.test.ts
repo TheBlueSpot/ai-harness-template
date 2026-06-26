@@ -1,5 +1,12 @@
 import { expect, test } from "bun:test";
-import { assistantTodoPatchSchema, assistantTodoSchema, parseClientCommand, parseServerEvent, terminalSessionSchema } from "./protocol";
+import {
+  assistantTodoPatchSchema,
+  assistantTodoSchema,
+  parseClientCommand,
+  parseServerEvent,
+  parseServerEventFrame,
+  terminalSessionSchema
+} from "./protocol";
 
 test("assistant todo schema defaults work metadata", () => {
   const parsed = assistantTodoSchema.parse({
@@ -108,4 +115,32 @@ test("terminal sessions carry transport degradation metadata", () => {
       payload: { session }
     }).type
   ).toBe("terminal.session.updated");
+});
+
+test("server event batch frames parse to ordered events", () => {
+  const events = parseServerEventFrame({
+    type: "server.events-batch",
+    payload: {
+      events: [
+        {
+          type: "connection.pong",
+          requestId: "req-pong",
+          payload: {
+            timestamp: 1
+          }
+        },
+        {
+          type: "assistant.chat.delta",
+          requestId: "req-delta",
+          payload: {
+            assistantId: "assistant-1",
+            sessionId: "session-1",
+            delta: "hello"
+          }
+        }
+      ]
+    }
+  });
+
+  expect(events.map((event) => event.type)).toEqual(["connection.pong", "assistant.chat.delta"]);
 });

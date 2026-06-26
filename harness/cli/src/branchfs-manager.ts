@@ -1,4 +1,4 @@
-import { copyFile, lstat, mkdir, readFile, readdir, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, lstat, mkdir, readFile, readdir, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import type { AgentTrace, ExperimentInspection, ExperimentRun } from "../../shared/protocol";
@@ -240,13 +240,14 @@ export class BranchfsManager {
     const inspection = await this.readInspection(lease);
     const relativeDeleted = await collectDeletedPaths(lease.baseProjectPath, lease.projectMountPath);
     for (const relativePath of relativeDeleted) {
-      await rm(path.join(lease.repoRoot, lease.projectRelativePath, relativePath), { recursive: true, force: true }).catch(() => undefined);
+      await removeBranchfsPath(path.join(lease.repoRoot, lease.projectRelativePath, relativePath));
     }
 
     for (const relativePath of inspection.changedPaths) {
       const sourcePath = path.join(lease.projectMountPath, relativePath);
       const destinationPath = path.join(lease.repoRoot, lease.projectRelativePath, relativePath);
       if (!(await pathExists(sourcePath))) {
+        await removeBranchfsPath(destinationPath);
         continue;
       }
 
@@ -360,9 +361,11 @@ export class BranchfsManager {
 
   private async seedIsolatedGitRepository(repoMountPath: string, passthroughDirectories: string[]) {
     await this.runCommand([GIT_EXECUTABLE, "init"], repoMountPath);
-    await this.runCommand([GIT_EXECUTABLE, "config", "core.longpaths", "true"], repoMountPath);
-    await this.runCommand([GIT_EXECUTABLE, "config", "user.email", "branchfs@local.invalid"], repoMountPath);
-    await this.runCommand([GIT_EXECUTABLE, "config", "user.name", "BranchFS"], repoMountPath);
+    await appendFile(
+      path.join(repoMountPath, ".git", "config"),
+      "\n[core]\n\tlongpaths = true\n[user]\n\temail = branchfs@local.invalid\n\tname = BranchFS\n",
+      "utf8"
+    );
     const excludePath = path.join(repoMountPath, ".git", "info", "exclude");
     const excludeLines = [
       ".local/",
@@ -449,15 +452,8 @@ export class BranchfsManager {
   }
 
   private async diffDirectories(baseDir: string, nextDir: string, changedPaths: string[] = []) {
-    const result = await this.tryRunCommand(
-      [GIT_EXECUTABLE, "diff", "--no-index", "--binary", "--", baseDir, nextDir],
-      this.context.rootPath
-    );
-    if (result.exitCode !== 0 && result.exitCode !== 1) {
-      throw new Error(result.detail);
-    }
-    if (result.stdout.trim().length > 0 || changedPaths.length === 0) {
-      return result.stdout;
+    if (changedPaths.length === 0) {
+      return "";
     }
     return createSimpleDiffText(baseDir, nextDir, changedPaths);
   }
@@ -532,8 +528,8 @@ async function createSimpleDiffText(baseDir: string, nextDir: string, changedPat
     ]);
     const lines = [
       `diff --git a/${relativePath} b/${relativePath}`,
-      baseContent ? `--- a/${relativePath}` : "--- /dev/null",
-      nextContent ? `+++ b/${relativePath}` : "+++ /dev/null",
+      baseContent === undefined ? "--- /dev/null" : `--- a/${relativePath}`,
+      nextContent === undefined ? "+++ /dev/null" : `+++ b/${relativePath}`,
       "@@"
     ];
     for (const line of splitDiffLines(baseContent)) {
@@ -573,7 +569,7 @@ async function hashTree(rootPath: string, currentPath: string = rootPath, result
   if (entryStats.isFile()) {
     const relativePath = path.relative(rootPath, currentPath).replace(/\\/g, "/");
     const content = await readFileIfPresent(currentPath);
-    if (!content) {
+    if (content === undefined) {
       return results;
     }
     const hash = createHash("sha256");
@@ -678,7 +674,7 @@ function extractDiffPath(line: string) {
 }
 
 async function pathExists(targetPath: string) {
-  return (await stat(targetPath).catch(() => undefined)) !== undefined;
+  return (await statIfPresent(targetPath)) !== undefined;
 }
 
 async function statIfPresent(targetPath: string) {
@@ -729,6 +725,7 @@ export async function copyBranchfsPathRobust(sourcePath: string, targetPath: str
     throw error;
   });
   if (!sourceStats) {
+    await removeBranchfsPath(targetPath);
     return;
   }
   const targetStats = await lstatIfPresent(targetPath);
@@ -778,6 +775,15 @@ export async function copyBranchfsPathRobust(sourcePath: string, targetPath: str
     await mkdir(path.dirname(targetPath), { recursive: true });
     await copyFile(sourcePath, targetPath);
   }).catch((error: unknown) => {
+    if (isMissingPathError(error)) {
+      return removeBranchfsPath(targetPath);
+    }
+    throw error;
+  });
+}
+
+async function removeBranchfsPath(targetPath: string) {
+  await withFsRetry(() => rm(targetPath, { recursive: true, force: true })).catch((error: unknown) => {
     if (isMissingPathError(error)) {
       return;
     }

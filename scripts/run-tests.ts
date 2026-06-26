@@ -1,6 +1,6 @@
 import path from "node:path";
-import { buildBunTestPlan } from "./test-runner";
-import { buildDefaultTestSegments, shouldUseDefaultTestSegments } from "./test-segments";
+import { buildBunTestPlan, stripFlag } from "./test-runner";
+import { buildDefaultTestSegments, shouldUseDefaultTestSegments, type TestSegment } from "./test-segments";
 
 const repoRoot = path.resolve(import.meta.dir, "..");
 const forwardedArgs = process.argv.slice(2);
@@ -13,7 +13,7 @@ if (shouldUseDefaultTestSegments(forwardedArgs)) {
     console.log(`[test] ${segment.name}`);
     const segmentStart = performance.now();
     const testProcess = Bun.spawn({
-      cmd: [process.execPath, ...plan.bunArgs, ...segment.targets],
+      cmd: [process.execPath, ...buildSegmentBunArgs(plan.bunArgs, segment), ...segment.targets],
       cwd: repoRoot,
       env: { ...process.env, ...segment.env },
       stdin: "inherit",
@@ -38,3 +38,10 @@ if (shouldUseDefaultTestSegments(forwardedArgs)) {
 }
 
 process.exit(exitCode);
+
+function buildSegmentBunArgs(bunArgs: string[], segment: TestSegment) {
+  if (!segment.serial) {
+    return bunArgs;
+  }
+  return stripFlag(stripFlag(bunArgs, "--parallel"), "--parallel-delay");
+}

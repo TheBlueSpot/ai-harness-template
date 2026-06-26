@@ -1,7 +1,7 @@
 import { Show, type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 
-export type PrimitivePortalLayer = "dialog" | "popover" | "tooltip" | "tutorial";
+export type PrimitivePortalLayer = "dialog" | "popover" | "sheet" | "tooltip" | "tutorial";
 
 type PrimitivePortalProps = {
   active?: boolean;

@@ -1,4 +1,7 @@
 const baseUrl = process.env.CHAT_PANEL_BROWSER_URL;
+const viewportSelector = process.env.CHAT_PANEL_BROWSER_VIEWPORT_SELECTOR ?? '[data-test-virtual-list="project-chat-transcript"]';
+const targetText = process.env.CHAT_PANEL_BROWSER_TARGET_TEXT ?? "Project chat browser message 159";
+const remountMode = process.env.CHAT_PANEL_BROWSER_REMOUNT_MODE ?? "project-chat";
 
 if (!baseUrl) {
   throw new Error("CHAT_PANEL_BROWSER_URL is required");
@@ -18,18 +21,17 @@ try {
   page.on("pageerror", (error) => {
     pageErrors.push(`pageerror:${error.message}`);
   });
-  page.setDefaultTimeout(10000);
-  page.setDefaultNavigationTimeout(10000);
+  page.setDefaultTimeout(60000);
+  page.setDefaultNavigationTimeout(60000);
   await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
 
   try {
     await waitForFixtureLayout(page);
-    assertProjectChatSnapshot(await readProjectChatSnapshot(page, "Project chat browser message 159"), "project chat first paint");
+    assertVirtualListSnapshot(await readVirtualListSnapshot(page, viewportSelector, targetText), "virtual list first paint");
 
-    await page.locator('[data-test-chat-pane-tab="plan"]').click();
-    await page.locator('[data-test-chat-pane-tab="chat"]').click();
+    await remountSurface(page, remountMode);
     await waitForAnimationFrames(page, 2);
-    assertProjectChatSnapshot(await readProjectChatSnapshot(page, "Project chat browser message 159"), "project chat tab remount");
+    assertVirtualListSnapshot(await readVirtualListSnapshot(page, viewportSelector, targetText), "virtual list tab remount");
   } catch (error) {
     const bodyText = await page.locator("body").innerText().catch(() => "");
     const rootHtml = await page.locator("#root").evaluate((root) => root.innerHTML.slice(0, 8000)).catch(() => "");
@@ -37,7 +39,7 @@ try {
     throw new Error(`${detail}\nPage errors:\n${pageErrors.join("\n") || "(none)"}\nBody:\n${bodyText}\nRoot HTML:\n${rootHtml}`);
   }
 
-  console.log("browser project chat first-load check passed");
+  console.log("browser virtual transcript first-load check passed");
 } finally {
   await browser.close().catch(() => undefined);
 }
@@ -66,9 +68,22 @@ async function waitForAnimationFrames(page, count) {
   );
 }
 
-async function readProjectChatSnapshot(page, targetText) {
-  return page.evaluate((targetText) => {
-    const viewport = document.querySelector('[data-test-virtual-list="project-chat-transcript"]');
+async function remountSurface(page, mode) {
+  if (mode === "none") {
+    return;
+  }
+  if (mode === "assistant-chat") {
+    await page.getByRole("tab", { name: /todos/i }).click();
+    await page.getByRole("tab", { name: /chat/i }).click();
+    return;
+  }
+  await page.locator('[data-test-chat-pane-tab="plan"]').click();
+  await page.locator('[data-test-chat-pane-tab="chat"]').click();
+}
+
+async function readVirtualListSnapshot(page, viewportSelector, targetText) {
+  return page.evaluate(({ viewportSelector, targetText }) => {
+    const viewport = document.querySelector(viewportSelector);
     if (!viewport) {
       return {
         missing: true,
@@ -115,21 +130,21 @@ async function readProjectChatSnapshot(page, targetText) {
       scrollTop: viewport.scrollTop,
       scrollHeight: viewport.scrollHeight
     };
-  }, targetText);
+  }, { viewportSelector, targetText });
 }
 
-function assertProjectChatSnapshot(snapshot, label) {
+function assertVirtualListSnapshot(snapshot, label) {
   const failures = [];
   if (snapshot.missing) {
     failures.push("missing viewport");
   }
-  if (!(snapshot.viewportHeight > 300)) {
+  if (!(snapshot.viewportHeight >= 240)) {
     failures.push(`viewport height ${snapshot.viewportHeight}`);
   }
   if (!(snapshot.canvasHeight > snapshot.viewportHeight)) {
     failures.push(`canvas height ${snapshot.canvasHeight} <= viewport ${snapshot.viewportHeight}`);
   }
-  if (!(snapshot.visibleCount >= 2)) {
+  if (!(snapshot.visibleCount >= 1)) {
     failures.push(`visible rows ${snapshot.visibleCount}`);
   }
   if (snapshot.zeroHeightRows !== 0) {

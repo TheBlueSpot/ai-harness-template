@@ -148,6 +148,62 @@ describe("background job scheduler", () => {
     expect(new Date(state.jobs[0]?.nextRunAt ?? 0).getTime()).toBeGreaterThan(now);
   });
 
+  test("caps scheduled launches during startup catch-up", async () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    repository.setBackgroundJobApprovalPolicyDefault("allow-all");
+    for (let index = 0; index < 6; index += 1) {
+      saveDueJob(repository, project.id, {
+        id: createBackgroundJobId(),
+        name: `Due review ${index + 1}`
+      });
+    }
+
+    const queuedRunIds: string[] = [];
+    const scheduler = new BackgroundJobScheduler({
+      repository,
+      maxScheduledActiveRuns: 3,
+      onRunQueued(run) {
+        queuedRunIds.push(run.id);
+      }
+    });
+
+    await scheduler.tick(true);
+
+    const state = repository.loadBackgroundJobsState();
+    expect(queuedRunIds).toHaveLength(3);
+    expect(state.runs).toHaveLength(3);
+    expect(state.runs.every((run) => run.triggerSource === "startup-catchup")).toBe(true);
+    const blockedJobs = state.jobs.filter((job) => job.schedulerStatus === "blocked");
+    expect(blockedJobs).toHaveLength(3);
+    expect(blockedJobs.every((job) => job.schedulerDetail?.includes("Waiting for background capacity"))).toBe(true);
+  });
+
+  test("does not queue due jobs while a foreground run is active", async () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    repository.setBackgroundJobApprovalPolicyDefault("allow-all");
+    const job = saveDueJob(repository, project.id);
+    const queuedRunIds: string[] = [];
+    const scheduler = new BackgroundJobScheduler({
+      repository,
+      isForegroundRunActive: () => true,
+      onRunQueued(run) {
+        queuedRunIds.push(run.id);
+      }
+    });
+
+    await scheduler.tick(false);
+
+    const state = repository.loadBackgroundJobsState();
+    expect(queuedRunIds).toHaveLength(0);
+    expect(state.runs).toHaveLength(0);
+    expect(state.jobs[0]?.id).toBe(job.id);
+    expect(state.jobs[0]?.schedulerStatus).toBe("blocked");
+    expect(state.jobs[0]?.schedulerDetail).toBe("Foreground run active; background work waits");
+    expect(state.jobs[0]?.nextRunAt).toBe(job.nextRunAt);
+  });
+
   test("queues a due one-off job only once across repeated ticks and restart", async () => {
     const repository = createRepository();
     const project = addProject(repository);

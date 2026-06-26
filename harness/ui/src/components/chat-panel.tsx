@@ -729,7 +729,7 @@ export function ChatPanel() {
     const open = composerLookupOpen();
     queueMicrotask(() => {
       if (open && composerLookupOpen()) {
-        syncComposerLookupDomVisibility({ focusMenu: true });
+        syncComposerLookupDomVisibility();
       } else {
         setComposerLookupMenuHidden(true);
       }
@@ -3286,53 +3286,66 @@ export function ChatPanel() {
               </Show>
               <Show when={pendingQuestion()}>
                 {(question) => (
-                  <div class="flex flex-col gap-3 rounded-3xl border border-amber-300/70 bg-amber-50/80 p-4 shadow-sm">
-                    <div class="flex items-center gap-2 text-[0.585rem] font-semibold uppercase tracking-[0.2em] text-amber-800">
-                      <MessageSquareMore class="h-3.5 w-3.5" />
-                      {question().intent?.type === "assistant-create-intent" && question().responseKind === "freeform" ? "Assistant setup" : "Planner question"}
+                  <div class="relative flex flex-col gap-3 overflow-hidden rounded-xl border border-(--border) bg-(--panel-strong) p-3 shadow-sm">
+                    <div class="absolute inset-y-0 left-0 w-1 bg-(--warning)" />
+                    <div class="flex min-w-0 items-center gap-2 pl-2 text-[0.625rem] font-semibold uppercase tracking-[0.14em] text-(--warning-strong)">
+                      <MessageSquareMore class="h-3.5 w-3.5 shrink-0" />
+                      <span class="truncate">
+                        {question().intent?.type === "assistant-create-intent" && question().responseKind === "freeform" ? "Assistant setup" : "Planner question"}
+                      </span>
                     </div>
-                    <div class="text-[0.7875rem] leading-6 text-amber-950">{question().prompt}</div>
+                    <div class="pl-2 text-sm font-medium leading-6 text-(--foreground)">{question().prompt}</div>
                     <Show when={question().placeholder}>
-                      <div class="text-[0.675rem] text-amber-900/70">Example reply: {question().placeholder}</div>
+                      <div class="pl-2 text-[0.7rem] leading-5 text-(--muted)">Example: {question().placeholder}</div>
                     </Show>
                     <Show when={question().responseKind !== "freeform"}>
-                      <div class="grid gap-2 md:grid-cols-3">
+                      <div class="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                         <For each={question().choices ?? []}>
                           {(choice) => (
-                            <Tooltip content={executionPaused() ? executionPauseReason() : choice.description}>
-                              <span class="inline-flex">
-                                <button
-                                  class="cursor-pointer rounded-[1.1rem] border px-3 py-2 text-left text-[0.675rem] transition disabled:cursor-not-allowed"
-                                  classList={{
-                                    "border-amber-500": choice.recommended,
-                                    "bg-white": choice.recommended,
-                                    "text-amber-950": choice.recommended,
-                                    "border-amber-200/80": !choice.recommended,
-                                    "bg-white/70": !choice.recommended,
-                                    "text-amber-900": !choice.recommended
-                                  }}
-                                  type="button"
-                                  disabled={executionPaused()}
-                                  onClick={() => handleQuestionChoice(choice.answerText)}
-                                >
-                                  <div class="flex items-center justify-between gap-2 font-semibold">
-                                    <span>{choice.label}</span>
-                                    <Show when={choice.recommended}>
-                                      <span class="rounded-full bg-amber-200 px-2 py-0.5 text-[0.55rem] uppercase tracking-[0.14em]">
-                                        Recommended
-                                      </span>
-                                    </Show>
-                                  </div>
-                                  <div class="text-[0.625rem] leading-5">{choice.description}</div>
-                                </button>
+                            <Button
+                              tooltip={executionPaused() ? executionPauseReason() : choice.description}
+                              type="button"
+                              variant="secondary"
+                              disabled={executionPaused()}
+                              tooltipTriggerClass="flex min-w-0"
+                              class="h-auto min-h-18 w-full items-start justify-start whitespace-normal rounded-lg px-3 py-2 text-left transition hover:border-(--accent)"
+                              classList={{
+                                "border-(--warning) bg-[color-mix(in_srgb,var(--warning)_10%,var(--panel-strong)_90%)] text-(--foreground)":
+                                  choice.recommended,
+                                "border-(--border) bg-(--panel) text-(--foreground)": !choice.recommended
+                              }}
+                              aria-label={`Choose planner answer: ${choice.label}`}
+                              onClick={() => handleQuestionChoice(choice.answerText)}
+                            >
+                              <span
+                                class="flex h-5 w-5 shrink-0 items-center justify-center rounded-md border text-[0.6rem]"
+                                classList={{
+                                  "border-(--warning) bg-(--warning) text-(--accent-foreground)": choice.recommended,
+                                  "border-(--border) text-(--muted)": !choice.recommended
+                                }}
+                              >
+                                <Show when={choice.recommended} fallback={String((question().choices ?? []).findIndex((entry) => entry.id === choice.id) + 1)}>
+                                  <Check class="h-3.5 w-3.5" />
+                                </Show>
                               </span>
-                            </Tooltip>
+                              <span class="flex min-w-0 flex-1 flex-col gap-1">
+                                <span class="flex min-w-0 items-center gap-2">
+                                  <span class="truncate text-xs font-semibold">{choice.label}</span>
+                                  <Show when={choice.recommended}>
+                                    <span class="rounded border border-(--warning) px-1.5 py-0.5 text-[0.52rem] font-semibold uppercase tracking-[0.1em] text-(--warning-strong)">
+                                      Rec
+                                    </span>
+                                  </Show>
+                                </span>
+                                <span class="line-clamp-3 text-[0.675rem] font-normal leading-5 text-(--muted)">{choice.description}</span>
+                              </span>
+                            </Button>
                           )}
                         </For>
                       </div>
                     </Show>
                     <Show when={executionPaused()}>
-                      <div class="text-[0.625rem] text-amber-900/75">
+                      <div class="pl-2 text-[0.675rem] text-(--warning-strong)">
                         Global pause active. Send answer after resume.
                       </div>
                     </Show>
@@ -3393,7 +3406,7 @@ export function ChatPanel() {
                   setComposerLookupForcedClosed(false);
                   setDismissedComposerLookupKey(undefined);
                   setComposerLookupActiveIndex(0);
-                  queueMicrotask(() => syncComposerLookupDomVisibility({ focusMenu: composerLookupOpen() }));
+                  queueMicrotask(() => syncComposerLookupDomVisibility());
                   resizeComposer();
                 }}
                 rightActions={
@@ -3487,7 +3500,7 @@ export function ChatPanel() {
                   composerLookupMenu = element;
                   queueMicrotask(() => {
                     if (composerLookupOpen() && composerLookupMenu === element) {
-                      syncComposerLookupDomVisibility({ focusMenu: true });
+                      syncComposerLookupDomVisibility();
                     } else {
                       setComposerLookupMenuHidden(true);
                     }

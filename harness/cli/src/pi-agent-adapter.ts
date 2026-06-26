@@ -70,6 +70,39 @@ export interface PiAgentAdapter {
   hasApiKey(provider: PiApiKeyProvider): boolean;
 }
 
+export type SerializablePiAgentPromptRequest = Omit<
+  PiAgentPromptRequest,
+  "abortSignal" | "onTextDelta" | "onExecutionEvent" | "requestBrowserApproval"
+>;
+
+export type PiSdkPromptWorkerRequest = {
+  id: string;
+  request: SerializablePiAgentPromptRequest;
+  apiKeys: Partial<Record<PiApiKeyProvider, string>>;
+  autoCompactContextThresholdPercent: number;
+};
+
+export type PiSdkPromptWorkerResponse =
+  | { id: string; ok: true; result: PiAgentPromptResult }
+  | { id: string; ok: false; error: { message: string; stack?: string } };
+
+export function toSerializablePromptRequest(request: PiAgentPromptRequest): SerializablePiAgentPromptRequest {
+  const {
+    abortSignal: _abortSignal,
+    onTextDelta: _onTextDelta,
+    onExecutionEvent: _onExecutionEvent,
+    requestBrowserApproval: _requestBrowserApproval,
+    ...serializable
+  } = request;
+  return serializable;
+}
+
+function createAbortError() {
+  const error = new Error("Execution aborted");
+  error.name = "AbortError";
+  return error;
+}
+
 const DEFAULT_AUTO_COMPACT_CONTEXT_THRESHOLD_PERCENT = 40;
 const MIN_AUTO_COMPACT_CONTEXT_THRESHOLD_PERCENT = 10;
 const MAX_AUTO_COMPACT_CONTEXT_THRESHOLD_PERCENT = 95;
@@ -125,9 +158,15 @@ export function mapReasoningStrengthToThinkingLevel(reasoningStrength: ComposerR
 export class PiSdkAgentAdapter implements PiAgentAdapter {
   private readonly authStorage: AuthStorage;
   private readonly modelRegistry: ModelRegistry;
+  private readonly runtimeApiKeys: Partial<Record<PiApiKeyProvider, string>> = {};
   private autoCompactContextThresholdPercent = DEFAULT_AUTO_COMPACT_CONTEXT_THRESHOLD_PERCENT;
 
-  constructor() {
+  constructor(
+    private readonly options: {
+      offloadRunPrompt?: boolean;
+      createPromptWorker?: () => Worker;
+    } = {}
+  ) {
     this.authStorage = AuthStorage.create();
     this.modelRegistry = ModelRegistry.create(this.authStorage);
   }
@@ -135,10 +174,12 @@ export class PiSdkAgentAdapter implements PiAgentAdapter {
   setApiKey(provider: PiApiKeyProvider, apiKey: string | undefined) {
     const normalizedKey = apiKey?.trim() || undefined;
     if (normalizedKey) {
+      this.runtimeApiKeys[provider] = normalizedKey;
       this.authStorage.setRuntimeApiKey(provider, normalizedKey);
       return;
     }
 
+    delete this.runtimeApiKeys[provider];
     this.authStorage.removeRuntimeApiKey(provider);
   }
 
@@ -151,12 +192,129 @@ export class PiSdkAgentAdapter implements PiAgentAdapter {
   }
 
   async runPrompt(request: PiAgentPromptRequest): Promise<PiAgentPromptResult> {
+    if (this.shouldOffloadRunPrompt(request)) {
+      return this.runPromptInWorker(request);
+    }
+
     const controller = await this.startExecution(request);
     try {
       return await controller.result;
     } finally {
       controller.dispose();
     }
+  }
+
+  private shouldOffloadRunPrompt(request: PiAgentPromptRequest) {
+    return Boolean(
+      this.options.offloadRunPrompt !== false &&
+        !request.onTextDelta &&
+        !request.onExecutionEvent &&
+        !request.requestBrowserApproval
+    );
+  }
+
+  private runPromptInWorker(request: PiAgentPromptRequest) {
+    const worker = this.createPromptWorker();
+    const id = crypto.randomUUID();
+    const payload: PiSdkPromptWorkerRequest = {
+      id,
+      request: toSerializablePromptRequest(request),
+      apiKeys: { ...this.runtimeApiKeys },
+      autoCompactContextThresholdPercent: this.autoCompactContextThresholdPercent
+    };
+
+    debugLog("agent.prompt.worker.start", {
+      id,
+      kind: request.kind,
+      modelId: request.modelId
+    });
+
+    return new Promise<PiAgentPromptResult>((resolve, reject) => {
+      let settled = false;
+      const cleanup = () => {
+        request.abortSignal?.removeEventListener("abort", abortHandler);
+        worker.onmessage = null;
+        worker.onerror = null;
+        worker.onmessageerror = null;
+      };
+      const settle = (callback: () => void) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        worker.terminate();
+        callback();
+      };
+      const abortHandler = () => {
+        debugLog("agent.prompt.worker.abort", {
+          id,
+          kind: request.kind,
+          modelId: request.modelId
+        });
+        settle(() => reject(createAbortError()));
+      };
+
+      worker.onmessage = (event: MessageEvent<PiSdkPromptWorkerResponse>) => {
+        const response = event.data;
+        if (!response || response.id !== id) {
+          return;
+        }
+
+        if (response.ok) {
+          debugLog("agent.prompt.worker.complete", {
+            id,
+            kind: request.kind,
+            modelId: request.modelId
+          });
+          settle(() => resolve(response.result));
+          return;
+        }
+
+        debugLog("agent.prompt.worker.failed", {
+          id,
+          kind: request.kind,
+          modelId: request.modelId,
+          error: response.error.message
+        });
+        settle(() => reject(Object.assign(new Error(response.error.message), { stack: response.error.stack })));
+      };
+      worker.onerror = (event) => {
+        const message = event.message || "Pi prompt worker failed";
+        debugLog("agent.prompt.worker.error", {
+          id,
+          kind: request.kind,
+          modelId: request.modelId,
+          error: message
+        });
+        settle(() => reject(new Error(message)));
+      };
+      worker.onmessageerror = () => {
+        debugLog("agent.prompt.worker.message-error", {
+          id,
+          kind: request.kind,
+          modelId: request.modelId
+        });
+        settle(() => reject(new Error("Pi prompt worker message failed")));
+      };
+
+      request.abortSignal?.addEventListener("abort", abortHandler, { once: true });
+      if (request.abortSignal?.aborted) {
+        abortHandler();
+        return;
+      }
+
+      worker.postMessage(payload);
+    });
+  }
+
+  private createPromptWorker() {
+    return (
+      this.options.createPromptWorker?.() ??
+      new Worker(new URL("./pi-sdk-prompt-worker.ts", import.meta.url), {
+        type: "module"
+      })
+    );
   }
 
   async startExecution(request: PiAgentPromptRequest): Promise<PiAgentExecutionController> {

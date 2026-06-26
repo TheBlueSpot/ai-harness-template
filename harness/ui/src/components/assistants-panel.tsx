@@ -1168,7 +1168,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
         </Show>
 
         <Show when={showDetail()}>
-        <section class="flex min-h-0 flex-col p-4">
+        <section class="flex min-h-0 flex-1 flex-col p-4">
           <Show
             when={selectedAssistant()}
             fallback={
@@ -1298,10 +1298,10 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                 </Show>
 
                 <Show when={activeTab() === "chat"}>
-                  <div class="flex min-h-0 flex-1 flex-col gap-4">
-                    <section class="flex min-h-0 flex-col">
+                  <div class="flex min-h-0 flex-1 flex-col gap-4 overflow-auto pr-1">
+                    <section class="flex min-h-0 flex-1 flex-col">
                       <div class="mb-3 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Assistant chat</div>
-                      <div class="relative flex min-h-0 flex-1 flex-col">
+                      <div class="relative flex min-h-72 flex-1 flex-col">
                         <VirtualList
                           viewportRef={(element) => {
                             assistantMessageViewport = element;
@@ -1311,6 +1311,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                           contentClass="w-full"
                           itemClass="pb-3"
                           data-test-assistant-chat-scroll=""
+                          dataTest="assistant-chat-transcript"
                           items={assistantChatRows()}
                           getKey={(row, index) => row.kind === "message" ? row.message.id : `streaming-${row.index ?? index}`}
                           estimateSize={150}

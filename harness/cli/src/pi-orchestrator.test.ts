@@ -5,7 +5,7 @@ import path from "node:path";
 import { buildExecutionPlan, buildExecutionPrompt, chooseExecutionPath, executePlanPrerequisites, executeReadyRun, runPlannerTurn, shouldUseReadOnlyExecutionTools } from "./pi-orchestrator";
 import type { PiAgentAdapter, PiAgentExecutionController, PiAgentPromptRequest, PiAgentPromptResult } from "./pi-agent-adapter";
 import type { ExecutionPlan, ModeDefinition, PlannerReadyTurn, ProviderModelId } from "../../shared/protocol";
-import { resolveModeExecutionAccess } from "../../shared/modes";
+import { builtinModes, resolveModeExecutionAccess } from "../../shared/modes";
 import { WorkspaceRepository } from "./workspace-repository";
 import { RunBudgetAgentAdapter } from "./run-budget-agent-adapter";
 
@@ -109,6 +109,11 @@ describe("pi execution router", () => {
     expect(
       shouldUseReadOnlyExecutionTools({
         mode: createMode("read-heavy", "workspace-write")
+      })
+    ).toBe(false);
+    expect(
+      shouldUseReadOnlyExecutionTools({
+        mode: builtinModes.find((mode) => mode.id === "plan")
       })
     ).toBe(false);
   });

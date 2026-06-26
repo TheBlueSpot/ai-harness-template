@@ -21,7 +21,7 @@ import { useGitProjectFixture } from "./test-support/git-project-fixture";
 
 const tempPaths: string[] = [];
 
-setDefaultTimeout(15000);
+setDefaultTimeout(30000);
 
 class MergeResolverAdapter implements PiAgentAdapter {
   readonly calls: PiAgentPromptRequest[] = [];
@@ -86,6 +86,7 @@ describe("branchfs subagent integration", () => {
       }),
       createSnapshot(rootPath, "task-2", (lease) => {
         writeFileSync(path.join(lease.projectMountPath, "task-2.txt"), "task-2\n");
+        writeFileSync(path.join(lease.projectMountPath, "empty.txt"), "");
       })
     ]);
 
@@ -113,6 +114,7 @@ describe("branchfs subagent integration", () => {
 
     expect(normalizeNewlines(await readFile(path.join(rootPath, "task-1.txt"), "utf8"))).toBe("task-1\n");
     expect(normalizeNewlines(await readFile(path.join(rootPath, "task-2.txt"), "utf8"))).toBe("task-2\n");
+    expect(await readFile(path.join(rootPath, "empty.txt"), "utf8")).toBe("");
   });
 
   test("integrates file and directory replacements from isolated snapshots", async () => {

@@ -1780,6 +1780,22 @@ export const workspaceStateSchema = z.object({
   }
 });
 
+export const tokenUsageTotalsSchema = z.object({
+  inputTokens: z.number().int().min(0),
+  outputTokens: z.number().int().min(0),
+  cachedInputTokens: z.number().int().min(0),
+  totalProcessedTokens: z.number().int().min(0),
+  totalTokensIncludingCached: z.number().int().min(0),
+  events: z.number().int().min(0),
+  updatedAt: z.string().datetime().or(z.string().min(1)).optional()
+});
+
+export const tokenUsageStateSchema = z.object({
+  session: tokenUsageTotalsSchema,
+  lifetime: tokenUsageTotalsSchema,
+  resetAt: z.string().datetime().or(z.string().min(1)).optional()
+});
+
 export const clientCommandSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("connection.ping"),
@@ -1792,6 +1808,10 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("agent.list"),
+    requestId: requestIdSchema
+  }),
+  z.object({
+    type: z.literal("usage.reset"),
     requestId: requestIdSchema
   }),
   z.object({
@@ -2791,6 +2811,7 @@ export const serverEventSchema = z.discriminatedUnion("type", [
       workspace: workspaceStateSchema,
       executionControl: executionControlStateSchema,
       preferences: preferencesStateSchema,
+      tokenUsage: tokenUsageStateSchema,
       setup: setupStateSchema,
       backgroundJobs: backgroundJobsStateSchema,
       assistants: assistantsStateSchema,
@@ -3346,7 +3367,15 @@ export const serverEventSchema = z.discriminatedUnion("type", [
     payload: z.object({
       projectId: projectIdSchema,
       threadId: threadIdSchema,
-      contextUsage: projectContextUsageSchema
+      contextUsage: projectContextUsageSchema,
+      tokenUsage: tokenUsageStateSchema.optional()
+    })
+  }),
+  z.object({
+    type: z.literal("usage.updated"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      tokenUsage: tokenUsageStateSchema
     })
   }),
   z.object({
@@ -3512,6 +3541,13 @@ export const serverEventSchema = z.discriminatedUnion("type", [
     })
   })
 ]);
+
+export const serverEventBatchFrameSchema = z.object({
+  type: z.literal("server.events-batch"),
+  payload: z.object({
+    events: z.array(serverEventSchema).min(1).max(256)
+  })
+});
 
 export type RequestId = z.infer<typeof requestIdSchema>;
 export type SessionId = z.infer<typeof sessionIdSchema>;
@@ -3720,8 +3756,12 @@ export type IdeSearchResult = z.infer<typeof ideSearchResultSchema>;
 export type IdeGitChange = z.infer<typeof ideGitChangeSchema>;
 export type WorkspaceProjectState = z.infer<typeof workspaceProjectStateSchema>;
 export type WorkspaceState = z.infer<typeof workspaceStateSchema>;
+export type TokenUsageTotals = z.infer<typeof tokenUsageTotalsSchema>;
+export type TokenUsageState = z.infer<typeof tokenUsageStateSchema>;
 export type ClientCommand = z.infer<typeof clientCommandSchema>;
 export type ServerEvent = z.infer<typeof serverEventSchema>;
+export type ServerEventBatchFrame = z.infer<typeof serverEventBatchFrameSchema>;
+export type ServerEventFrame = ServerEvent | ServerEventBatchFrame;
 
 export function createRequestId(): RequestId {
   return crypto.randomUUID();
@@ -3913,4 +3953,16 @@ export function parseClientCommand(input: unknown): ClientCommand {
 
 export function parseServerEvent(input: unknown): ServerEvent {
   return serverEventSchema.parse(input);
+}
+
+export function parseServerEventFrame(input: unknown): ServerEvent[] {
+  if (isObjectWithType(input, "server.events-batch")) {
+    return serverEventBatchFrameSchema.parse(input).payload.events;
+  }
+
+  return [parseServerEvent(input)];
+}
+
+function isObjectWithType(input: unknown, type: string): input is { type: string } {
+  return typeof input === "object" && input !== null && "type" in input && input.type === type;
 }

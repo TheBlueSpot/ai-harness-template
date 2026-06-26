@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
+import { buildGitRepositoryPromptContext, resolveGitRepositoryPromptContext } from "./git-context";
 import { resolveGlobalSkillsRoot } from "./harness-paths";
 
 export type SubagentEnvironmentBriefInput = {
@@ -14,30 +15,7 @@ export const SUBAGENT_MILESTONE_INSTRUCTION =
   "Emit standalone `MILESTONE: <brief update>` lines only for stable meaning: concrete findings, decisions, implementation progress, blockers, retries, completion, or handoff. Do not include tool names, shell commands, raw paths, or generic checking/inspecting chatter unless it reports a concrete result.";
 
 export function resolveRepoRoot(projectRoot: string) {
-  const result = tryResolveGitRepoRoot(projectRoot);
-  if (!result) {
-    return projectRoot;
-  }
-
-  if (result.exitCode !== 0) {
-    return projectRoot;
-  }
-
-  const root = new TextDecoder().decode(result.stdout).trim();
-  return root || projectRoot;
-}
-
-function tryResolveGitRepoRoot(projectRoot: string) {
-  try {
-    return Bun.spawnSync({
-      cmd: ["git", "rev-parse", "--show-toplevel"],
-      cwd: projectRoot,
-      stdout: "pipe",
-      stderr: "pipe"
-    });
-  } catch {
-    return undefined;
-  }
+  return resolveGitRepositoryPromptContext(projectRoot).repoRoot;
 }
 
 export function discoverRepoSkillPaths(repoRoot: string) {
@@ -86,6 +64,7 @@ export function buildSubagentEnvironmentBrief(input: SubagentEnvironmentBriefInp
     `- Repository root: ${input.repoRoot}`,
     `- Project path relative to repository root: ${relativeProjectRoot}`,
     "- This project may be nested inside the repo.",
+    buildGitRepositoryPromptContext(input.projectRoot),
     "- Repo-level files such as AGENTS.md and .agents live at repo root.",
     "- Do not invent skill paths.",
     "- Project skills live under .agents/skills/<name>/SKILL.md when present.",

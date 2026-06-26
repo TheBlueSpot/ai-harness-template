@@ -1,11 +1,12 @@
 /** @jsxImportSource solid-js */
 import { onMount } from "solid-js";
 import { render } from "solid-js/web";
-import { createChatMessage, createEmptySession } from "../../../shared/protocol";
+import { createEmptySession } from "../../../shared/protocol";
 import "../styles.css";
 import { createHarnessStore, harnessStore, setActiveHarnessStore } from "../harness-store";
 import { createToastStoreForProvider, setActiveToastStore } from "../toast-store";
 import { createHarnessStateFixture, createViewProjectFixture } from "../utils/tests/test-fixtures";
+import { createProjectChatBrowserMessages } from "./chat-panel.browser-data";
 import { ChatPanel } from "./chat-panel";
 
 Object.defineProperty(globalThis, "ResizeObserver", { configurable: true, writable: true, value: undefined });
@@ -14,11 +15,7 @@ setActiveToastStore(createToastStoreForProvider());
 
 const threadId = "browser-project-chat-no-resize-observer-thread";
 const projectId = "browser-project-chat-no-resize-observer-project";
-const messages = Array.from({ length: 160 }, (_, index) =>
-  createChatMessage(index % 2 === 0 ? "user" : "assistant", `Project chat browser message ${index}`, {
-    id: `browser-project-chat-no-resize-observer-message-${index}`
-  })
-);
+const messages = createProjectChatBrowserMessages("browser-project-chat-no-resize-observer-message", { tallFromIndex: 145 });
 const project = createViewProjectFixture({
   id: projectId,
   activeThreadId: threadId,

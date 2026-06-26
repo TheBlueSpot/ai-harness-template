@@ -330,7 +330,7 @@ async function hashPath(targetPath: string) {
     }
     throw error;
   });
-  if (!content) {
+  if (content === undefined) {
     return "missing";
   }
   hash.update(content);

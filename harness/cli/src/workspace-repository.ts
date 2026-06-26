@@ -131,9 +131,12 @@ import {
   terminalPaneLayoutSchema,
   terminalPreferencesSchema,
   terminalSessionSchema,
+  tokenUsageTotalsSchema,
   type TerminalPaneLayout,
   type TerminalPreferences,
-  type TerminalSession
+  type TerminalSession,
+  type TokenUsageTotals,
+  type TokenUsageState
 } from "../../shared/protocol";
 import { defaultBackgroundJobTemplates } from "../../shared/background-job-templates";
 import { assertResolvedAssistantAssetRefs, resolveAssistantAssetRefs } from "./assistant-capabilities";
@@ -167,6 +170,8 @@ const MEMORY_BANK_ENABLED_DEFAULT_KEY = "memory_bank_enabled_default";
 const MEMORY_BANK_RECORD_RUNS_DEFAULT_KEY = "memory_bank_record_runs_default";
 const CHECK_CLI_UPDATES_DEFAULT_KEY = "check_cli_updates_default";
 const GLOBAL_EXECUTION_PAUSED_KEY = "global_execution_paused";
+const TOKEN_USAGE_LIFETIME_KEY = "token_usage_lifetime_v1";
+const TOKEN_USAGE_RESET_AT_KEY = "token_usage_reset_at";
 const ASSISTANT_LOG_DETAILS_JSON_MAX_CHARS = 12000;
 const ASSISTANT_SUMMARY_PAGE_LIMIT = 128;
 const ASSISTANT_DETAIL_ITEM_LIMIT = 256;
@@ -1721,7 +1726,19 @@ export class WorkspaceRepository {
 
     const now = new Date().toISOString();
     const tx = this.db.transaction(() => {
-      this.assertRunExists(projectId, runId);
+      const currentRun = this.db
+        .query<{ status: AgentRunStatus }, [string, ProjectId]>(
+          `SELECT status
+           FROM agent_runs
+           WHERE id = ?1 AND project_id = ?2`
+        )
+        .get(runId, projectId);
+      if (!currentRun) {
+        throw new Error(`Unknown agent run: ${runId}`);
+      }
+      if (isTerminalAgentRunStatus(currentRun.status)) {
+        return;
+      }
       let ordinal =
         this.db.query<{ count: number }, [string]>(`SELECT COUNT(*) AS count FROM agent_run_questions WHERE run_id = ?1`).get(runId)?.count ?? 0;
       const existingQuery = this.db.query<{ id: string }, [string, string, string, string]>(
@@ -1781,7 +1798,7 @@ export class WorkspaceRepository {
       this.db
         .query(
           `UPDATE agent_runs
-           SET status = 'awaiting-user-input', summary = ?3, updated_at = ?4
+           SET status = 'awaiting-user-input', summary = ?3, updated_at = ?4, completed_at = NULL
            WHERE id = ?1 AND project_id = ?2`
         )
         .run(runId, projectId, questions[0]?.prompt ?? null, now);
@@ -1799,13 +1816,24 @@ export class WorkspaceRepository {
          FROM agent_run_questions
          INNER JOIN agent_runs ON agent_runs.id = agent_run_questions.run_id
          WHERE agent_run_questions.status = 'deferred'
+           AND agent_runs.status NOT IN ('completed', 'partial-complete', 'stopped', 'failed')
          ORDER BY agent_runs.updated_at ASC, agent_run_questions.ordinal ASC`
       )
       .all();
 
     const tx = this.db.transaction(() => {
       this.db
-        .query(`UPDATE agent_run_questions SET status = 'pending' WHERE status = 'deferred'`)
+        .query(
+          `UPDATE agent_run_questions
+           SET status = 'pending'
+           WHERE status = 'deferred'
+             AND EXISTS (
+               SELECT 1
+               FROM agent_runs
+               WHERE agent_runs.id = agent_run_questions.run_id
+                 AND agent_runs.status NOT IN ('completed', 'partial-complete', 'stopped', 'failed')
+             )`
+        )
         .run();
       this.db
         .query(
@@ -1818,8 +1846,10 @@ export class WorkspaceRepository {
                  ORDER BY ordinal ASC
                  LIMIT 1
                ),
-               updated_at = ?1
-           WHERE id IN (SELECT DISTINCT run_id FROM agent_run_questions WHERE status = 'pending')`
+               updated_at = ?1,
+               completed_at = NULL
+           WHERE status NOT IN ('completed', 'partial-complete', 'stopped', 'failed')
+             AND id IN (SELECT DISTINCT run_id FROM agent_run_questions WHERE status = 'pending')`
         )
         .run(now);
     });
@@ -1844,9 +1874,12 @@ export class WorkspaceRepository {
         `UPDATE agent_run_questions
          SET status = 'answered', answer_text = ?4, answered_at = ?5
          WHERE id = ?1 AND run_id = ?2
+           AND status IN ('pending', 'deferred')
            AND EXISTS (
              SELECT 1 FROM agent_runs
-             WHERE agent_runs.id = ?2 AND agent_runs.project_id = ?3
+             WHERE agent_runs.id = ?2
+               AND agent_runs.project_id = ?3
+               AND agent_runs.status NOT IN ('completed', 'partial-complete', 'stopped', 'failed')
            )`
       )
       .run(questionId, runId, projectId, answerText, now);
@@ -1858,7 +1891,7 @@ export class WorkspaceRepository {
     this.db
       .query(
         `UPDATE agent_runs
-         SET status = 'planning', updated_at = ?3
+         SET status = 'planning', updated_at = ?3, completed_at = NULL
          WHERE id = ?1 AND project_id = ?2`
       )
       .run(runId, projectId, now);
@@ -1949,7 +1982,8 @@ export class WorkspaceRepository {
                failure_message = NULL,
                plan_json = ?8,
                correctness_review_json = NULL,
-               updated_at = ?9
+               updated_at = ?9,
+               completed_at = NULL
            WHERE id = ?1 AND project_id = ?2`
         )
         .run(
@@ -2000,10 +2034,45 @@ export class WorkspaceRepository {
              failure_message = ?4,
              failure_category = ?5,
              updated_at = ?6,
-             completed_at = CASE WHEN ?7 IS NULL THEN completed_at ELSE COALESCE(completed_at, ?7) END
+             completed_at = CASE WHEN ?7 IS NULL THEN NULL ELSE COALESCE(completed_at, ?7) END
          WHERE id = ?1 AND project_id = ?2`
       )
       .run(runId, projectId, status, failureMessage ?? null, failureCategory ?? null, now, completedAt);
+
+    if (updated.changes === 0) {
+      throw new Error(`Unknown agent run: ${runId}`);
+    }
+
+    return this.readProjectSnapshot(projectId);
+  }
+
+  resumeAgentRun(projectId: ProjectId, runId: string, status: "running-main" | "running-subagents") {
+    const now = new Date().toISOString();
+    const current = this.db
+      .query<{ status: AgentRunStatus }, [string, ProjectId]>(
+        `SELECT status
+         FROM agent_runs
+         WHERE id = ?1 AND project_id = ?2`
+      )
+      .get(runId, projectId);
+    if (!current) {
+      throw new Error(`Unknown agent run: ${runId}`);
+    }
+    if (current.status === "completed") {
+      return this.readProjectSnapshot(projectId);
+    }
+
+    const updated = this.db
+      .query(
+        `UPDATE agent_runs
+         SET status = ?3,
+             failure_message = NULL,
+             failure_category = NULL,
+             updated_at = ?4,
+             completed_at = NULL
+         WHERE id = ?1 AND project_id = ?2`
+      )
+      .run(runId, projectId, status, now);
 
     if (updated.changes === 0) {
       throw new Error(`Unknown agent run: ${runId}`);
@@ -2016,12 +2085,12 @@ export class WorkspaceRepository {
     projectIds?: ProjectId[];
     reason: string;
     failureCategory: "shutdown-interrupt";
-  }): { stoppedRunIds: string[] } {
+  }): { stoppedRunIds: string[]; stoppedRuns: Array<{ projectId: ProjectId; runId: string; threadId: ThreadId }> } {
     const activeStatuses: AgentRunStatus[] = ["planning", "awaiting-user-input", "running-main", "running-subagents", "aggregating"];
     const projectIds = input.projectIds && input.projectIds.length > 0 ? new Set(input.projectIds) : undefined;
     const rows = this.db
-      .query<{ id: string; project_id: string; status: AgentRunStatus }, []>(
-        `SELECT id, project_id, status
+      .query<{ id: string; project_id: string; thread_id: string; status: AgentRunStatus }, []>(
+        `SELECT id, project_id, thread_id, status
          FROM agent_runs
          WHERE status IN ('planning', 'awaiting-user-input', 'running-main', 'running-subagents', 'aggregating')`
       )
@@ -2032,7 +2101,30 @@ export class WorkspaceRepository {
         this.setAgentRunStatus(row.project_id as ProjectId, row.id, "stopped", input.reason, input.failureCategory);
       }
     }
-    return { stoppedRunIds: rows.map((row) => row.id) };
+    return {
+      stoppedRunIds: rows.map((row) => row.id),
+      stoppedRuns: rows.map((row) => ({
+        projectId: row.project_id as ProjectId,
+        runId: row.id,
+        threadId: row.thread_id as ThreadId
+      }))
+    };
+  }
+
+  hasActiveForegroundAgentRun() {
+    const row = this.db
+      .query<{ id: string }, []>(
+        `SELECT agent_runs.id
+         FROM agent_runs
+         LEFT JOIN background_job_runs
+           ON background_job_runs.linked_agent_run_id = agent_runs.id
+          AND background_job_runs.status IN ('queued', 'awaiting-approval', 'awaiting-user-input', 'running')
+         WHERE agent_runs.status IN ('planning', 'awaiting-user-input', 'running-main', 'running-subagents', 'aggregating')
+           AND background_job_runs.id IS NULL
+         LIMIT 1`
+      )
+      .get();
+    return Boolean(row);
   }
 
   setAgentRunRuntimeBudget(projectId: ProjectId, runId: string, maxTurns: number | undefined) {
@@ -4962,6 +5054,40 @@ export class WorkspaceRepository {
     this.deleteWorkspaceMetaValue(ANTHROPIC_API_KEY);
   }
 
+  getTokenUsageState(session: TokenUsageTotals): TokenUsageState {
+    return {
+      session: normalizeTokenUsageTotals(session),
+      lifetime: this.getTokenUsageLifetime(),
+      resetAt: this.getWorkspaceMetaValue(TOKEN_USAGE_RESET_AT_KEY)
+    };
+  }
+
+  getTokenUsageLifetime(): TokenUsageTotals {
+    const raw = this.getWorkspaceMetaValue(TOKEN_USAGE_LIFETIME_KEY);
+    if (!raw) {
+      return createEmptyTokenUsageTotals();
+    }
+
+    try {
+      return normalizeTokenUsageTotals(JSON.parse(raw));
+    } catch {
+      return createEmptyTokenUsageTotals();
+    }
+  }
+
+  addTokenUsageLifetime(delta: TokenUsageTotals): TokenUsageTotals {
+    const next = addTokenUsageTotals(this.getTokenUsageLifetime(), delta);
+    this.setWorkspaceMetaValue(TOKEN_USAGE_LIFETIME_KEY, JSON.stringify(next));
+    return next;
+  }
+
+  resetTokenUsageLifetime(resetAt: string): TokenUsageTotals {
+    const next = createEmptyTokenUsageTotals();
+    this.setWorkspaceMetaValue(TOKEN_USAGE_LIFETIME_KEY, JSON.stringify(next));
+    this.setWorkspaceMetaValue(TOKEN_USAGE_RESET_AT_KEY, resetAt);
+    return next;
+  }
+
   getGeminiCachedContent(input: { projectId: ProjectId; modelId: string; attachmentSetHash: string }) {
     const row = this.db
       .query<GeminiCachedContentRow, [string, string, string]>(
@@ -5067,6 +5193,11 @@ export class WorkspaceRepository {
   getPlanExecutionModeDefault(): PlanExecutionMode {
     const value = this.getWorkspaceMetaValue(PLAN_EXECUTION_MODE_DEFAULT_KEY);
     return value === "approve" || value === "immediate" ? value : "countdown";
+  }
+
+  getConfiguredPlanExecutionModeDefault(): PlanExecutionMode | undefined {
+    const value = this.getWorkspaceMetaValue(PLAN_EXECUTION_MODE_DEFAULT_KEY);
+    return value === "countdown" || value === "approve" || value === "immediate" ? value : undefined;
   }
 
   setPlanExecutionModeDefault(value: PlanExecutionMode) {
@@ -7086,7 +7217,10 @@ export class WorkspaceRepository {
           browser_sessions_json, tool_activities_json,
           created_at, updated_at, completed_at
          FROM agent_runs
-         WHERE project_id = ?1 AND thread_id = ?2 AND status != 'completed'
+         WHERE project_id = ?1
+           AND thread_id = ?2
+           AND status != 'completed'
+           AND (completed_at IS NULL OR status IN ('partial-complete', 'stopped', 'failed'))
          ORDER BY updated_at DESC
          LIMIT 1`
       )
@@ -8741,6 +8875,35 @@ function parseToolActivities(input: string | null): ExecutionToolActivity[] | un
     return undefined;
   }
   return activities;
+}
+
+function createEmptyTokenUsageTotals(overrides: Partial<TokenUsageTotals> = {}): TokenUsageTotals {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedInputTokens: 0,
+    totalProcessedTokens: 0,
+    totalTokensIncludingCached: 0,
+    events: 0,
+    ...overrides
+  };
+}
+
+function normalizeTokenUsageTotals(input: unknown): TokenUsageTotals {
+  const parsed = tokenUsageTotalsSchema.safeParse(input);
+  return parsed.success ? parsed.data : createEmptyTokenUsageTotals();
+}
+
+function addTokenUsageTotals(left: TokenUsageTotals, right: TokenUsageTotals): TokenUsageTotals {
+  return createEmptyTokenUsageTotals({
+    inputTokens: left.inputTokens + right.inputTokens,
+    outputTokens: left.outputTokens + right.outputTokens,
+    cachedInputTokens: left.cachedInputTokens + right.cachedInputTokens,
+    totalProcessedTokens: left.totalProcessedTokens + right.totalProcessedTokens,
+    totalTokensIncludingCached: left.totalTokensIncludingCached + right.totalTokensIncludingCached,
+    events: left.events + right.events,
+    updatedAt: [left.updatedAt, right.updatedAt].filter(Boolean).sort().at(-1)
+  });
 }
 
 function parseBackgroundJobDefinition(kind: BackgroundJob["kind"], input: string | null) {

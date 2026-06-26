@@ -1,4 +1,4 @@
-import type { AssistantLogEntry, BackgroundJobRun, NotificationInboxItem } from "../../shared/protocol";
+import type { AgentRunState, AssistantLogEntry, BackgroundJobRun, NotificationInboxItem } from "../../shared/protocol";
 import { openBackgroundJobInJobsPane, openBackgroundRunInJobsPane } from "./background-run-navigation";
 import {
   harnessStore,
@@ -21,12 +21,33 @@ export function openProjectThreadSource(
   activateProjectThread(state, projectId, threadId, harnessStore.actions.sendCommand);
 }
 
-export function openProjectRunSource(state: HarnessViewState, projectId: string, run: Pick<BackgroundJobRun, "id"> | { threadId: string }) {
+export function openProjectRunSource(state: HarnessViewState, projectId: string, run: Pick<AgentRunState, "id"> | Pick<AgentRunState, "threadId">) {
   const threadId = "threadId" in run ? run.threadId : findProjectRunThreadId(state, projectId, run.id);
   if (!threadId) {
     return false;
   }
   openProjectThreadSource(state, projectId, threadId, "run");
+  return true;
+}
+
+export function openAgentRunSource(
+  state: HarnessViewState,
+  projectId: string,
+  run: Pick<AgentRunState, "id" | "threadId">,
+  chatPaneTab: ChatPaneTab = "run"
+) {
+  const backgroundRun = findBackgroundRunForAgentRun(state, projectId, run);
+  if (backgroundRun) {
+    openBackgroundRunInJobsPane(state, backgroundRun.id, backgroundRun.jobId);
+    return true;
+  }
+
+  if (isAutomationThread(state, projectId, run.threadId)) {
+    harnessStore.setActiveSurface("background-jobs");
+    return false;
+  }
+
+  openProjectThreadSource(state, projectId, run.threadId, chatPaneTab);
   return true;
 }
 
@@ -107,15 +128,12 @@ export function openNotificationSource(state: HarnessViewState, notification: No
   switch (notification.kind) {
     case "background-run-status":
       openBackgroundRunInJobsPane(state, notification.backgroundRunId, notification.jobId);
-      activateProjectThread(state, notification.projectId, notification.threadId, harnessStore.actions.sendCommand);
       return true;
     case "planning-question":
     case "planning-question-batch":
-      openProjectThreadSource(state, notification.projectId, notification.threadId, "chat");
-      return true;
+      return openAgentRunSource(state, notification.projectId, { id: notification.runId, threadId: notification.threadId }, "chat");
     case "browser-approval":
-      openProjectThreadSource(state, notification.projectId, notification.threadId, "events");
-      return true;
+      return openAgentRunSource(state, notification.projectId, { id: notification.runId, threadId: notification.threadId }, "events");
     case "assistant-question":
     case "assistant-question-batch":
       openAssistantSource(state, notification.assistantId, "questions");
@@ -189,6 +207,23 @@ function findProjectRunSource(state: HarnessViewState, runId: string, projectId?
     }
   }
   return undefined;
+}
+
+function findBackgroundRunForAgentRun(state: HarnessViewState, projectId: string, run: Pick<AgentRunState, "id" | "threadId">) {
+  const linkedRun = state.backgroundJobs.runs.find((entry) => entry.projectId === projectId && entry.linkedAgentRunId === run.id);
+  if (linkedRun) {
+    return linkedRun;
+  }
+
+  return state.backgroundJobs.runs
+    .filter((entry) => entry.projectId === projectId && entry.automationThreadId === run.threadId)
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
+}
+
+function isAutomationThread(state: HarnessViewState, projectId: string, threadId: string) {
+  return state.workspace.projects
+    .find((project) => project.id === projectId)
+    ?.threads.some((thread) => thread.id === threadId && thread.kind === "automation");
 }
 
 function getRecord(value: unknown) {

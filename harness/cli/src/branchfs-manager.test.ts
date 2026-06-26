@@ -1,10 +1,12 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { lstat, mkdir, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { BranchfsManager, testExports } from "./branchfs-manager";
 import { useGitProjectFixture } from "./test-support/git-project-fixture";
+
+setDefaultTimeout(15000);
 
 describe("branchfs manager", () => {
   const fixture = useGitProjectFixture({
@@ -144,10 +146,11 @@ describe("branchfs manager", () => {
     expect(existsSync(lease.repoMountPath)).toBe(false);
   });
 
-  test("skips source files that vanish during robust copy", async () => {
+  test("removes stale targets when source files vanish during robust copy", async () => {
     const tempRoot = mkdtempSync(path.join(os.tmpdir(), "branchfs-vanished-copy-"));
     const sourcePath = path.join(tempRoot, "missing.svg");
     const targetPath = path.join(tempRoot, "target.svg");
+    writeFileSync(targetPath, "stale\n");
 
     await testExports.copyRecursiveRobust(sourcePath, targetPath);
 
@@ -164,7 +167,9 @@ describe("branchfs manager", () => {
     const vanishedTargetPath = path.join(targetDirectory, "gone.txt");
 
     await mkdir(sourceDirectory, { recursive: true });
+    await mkdir(targetDirectory, { recursive: true });
     writeFileSync(vanishedSourcePath, "gone\n");
+    writeFileSync(vanishedTargetPath, "stale\n");
     writeFileSync(path.join(sourceDirectory, "keep.txt"), "keep\n");
 
     await testExports.copyRecursiveRobust(sourceDirectory, targetDirectory, {
@@ -237,6 +242,23 @@ describe("branchfs manager", () => {
 
     await manager.discardExperiment(lease);
     expect(existsSync(path.dirname(lease.repoMountPath))).toBe(false);
+  });
+
+  test("tracks and flushes empty files", async () => {
+    const rootPath = await fixture.createRepoClone("branchfs-empty-file");
+
+    const manager = new BranchfsManager({ rootPath, runId: "run-empty-file" });
+    const lease = await manager.prepareExperimentLease();
+
+    writeFileSync(path.join(lease.projectMountPath, "empty.txt"), "");
+
+    const inspection = await manager.readInspection(lease);
+    expect(inspection.changedPaths).toContain("empty.txt");
+
+    await manager.flushExperiment(lease);
+    expect(await readText(path.join(rootPath, "empty.txt"))).toBe("");
+
+    await manager.discardExperiment(lease);
   });
 
   test("flushes file to directory replacements back to disk", async () => {

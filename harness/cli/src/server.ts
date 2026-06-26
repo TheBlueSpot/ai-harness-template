@@ -50,6 +50,7 @@ import {
   type NotificationSeverity,
   parseClientCommand,
   type AgentRunState,
+  type AgentRunSummary,
   type AssistantQuestion,
   type AssistantQuestionBatchNotification,
   type AssistantQuestionNotification,
@@ -75,6 +76,7 @@ import {
   type TerminalSession,
   type TerminalShell,
   type ThreadId,
+  type TokenUsageTotals,
   type WorkspaceRuleSource,
   type WorkspaceProjectState
 } from "../../shared/protocol";
@@ -145,7 +147,7 @@ import { createHarnessUploadRouter } from "./uploadthing-router";
 import { buildSetupState, detectSetupLaunchMode } from "./setup-health";
 import { StreamPump } from "./stream-pump";
 import { AssistantStreamChunker, type AssistantStreamChunk } from "./assistant-stream-chunker";
-import { guardedWebsocketSend } from "./websocket-send-guard";
+import { createWebsocketEventBatcher } from "./websocket-event-batcher";
 import {
   findPendingBrowserApproval,
   recordBrowserToolEnd,
@@ -269,6 +271,10 @@ type HarnessWebSocketOpenHandler = NonNullable<HarnessWebSocketOptions["open"]>;
 type HarnessWebSocketCloseHandler = NonNullable<HarnessWebSocketOptions["close"]>;
 type HarnessWebSocketMessageHandler = NonNullable<HarnessWebSocketOptions["message"]>;
 const CONTROL_WEBSOCKET_MAX_QUEUED_BYTES = 64 * 1024 * 1024;
+const controlEventBatcher = createWebsocketEventBatcher({
+  maxQueuedBytes: CONTROL_WEBSOCKET_MAX_QUEUED_BYTES,
+  slowCloseReason: "Control websocket client is too slow"
+});
 
 type UiServingState =
   | {
@@ -303,6 +309,7 @@ type HarnessServerState = {
   terminalSessionManager: TerminalSessionManager;
   scheduler: BackgroundJobScheduler;
   osAdapters: HarnessServerOsAdapters;
+  tokenUsageSession: TokenUsageTotals;
 };
 
 type HarnessHandlerRefs = {
@@ -620,6 +627,7 @@ async function initializeHarnessServerState(input: {
       projectSearchControllers: input.existingState?.projectSearchControllers ?? new Map<string, { requestId: string; abortController: AbortController }>(),
       ideSearchControllers: input.existingState?.ideSearchControllers ?? new Map<string, { requestId: string; abortController: AbortController }>(),
       connections: input.existingState?.connections ?? new Set<Bun.ServerWebSocket<HarnessConnection>>(),
+      tokenUsageSession: input.existingState?.tokenUsageSession ?? createEmptyTokenUsageTotals(),
       uploadthingHandler:
         input.existingState?.uploadthingHandler ??
         createRouteHandler({
@@ -861,7 +869,8 @@ async function initializeHarnessServerState(input: {
     assistantManager: setupResult.assistantManager,
     cliSessionManager: setupResult.cliSessionManager,
     terminalSessionManager: setupResult.terminalSessionManager,
-    scheduler: setupResult.scheduler
+    scheduler: setupResult.scheduler,
+    tokenUsageSession: baseServices.tokenUsageSession
   } satisfies HarnessServerState;
 }
 
@@ -893,6 +902,9 @@ function createBackgroundJobScheduler(input: {
   const { repository, runtime, runtimeRegistry, assistantManager, connections, backgroundRunControllers } = input;
   return new BackgroundJobScheduler({
     repository,
+    isForegroundRunActive() {
+      return repository.hasActiveForegroundAgentRun();
+    },
     isRunLive(run) {
       return isBackgroundRunLive(backgroundRunControllers, runtime, run);
     },
@@ -1088,6 +1100,7 @@ function createHarnessHandlerRefs(
             workspace: enrichWorkspaceForComposer(state.runtime.getWorkspace()),
             executionControl: state.repository.getExecutionControlState(),
             preferences: getCurrentPreferencesState(),
+            tokenUsage: state.repository.getTokenUsageState(state.tokenUsageSession),
             setup: state.currentSetupState,
             backgroundJobs: state.repository.loadBackgroundJobsState(),
             assistants: state.repository.loadAssistantSummaryState(),
@@ -1096,6 +1109,7 @@ function createHarnessHandlerRefs(
         });
       },
       close(ws) {
+        controlEventBatcher.clear(ws);
         state.connections.delete(ws);
         const searchController = state.projectSearchControllers.get(ws.data.clientId);
         searchController?.abortController.abort();
@@ -1188,7 +1202,8 @@ function createHarnessHandlerRefs(
           state.ideSearchControllers,
           state.scheduler,
           state.osAdapters,
-          options.derivedProgressHeartbeatMs
+          options.derivedProgressHeartbeatMs,
+          state.tokenUsageSession
         ).catch((error) => {
           if (error instanceof PreflightDecisionRequiredError) {
             return;
@@ -1231,6 +1246,7 @@ function decorateHarnessServerStop(
   const stop = server.stop.bind(server);
   server.stop = ((closeActiveConnections?: boolean) => {
     const state = getState();
+    stopLiveProjectRunsOnShutdown(state);
     failLiveBackgroundRunsOnShutdown(state.repository, state.backgroundRunControllers);
     if (state.ui.mode === "static-dist") {
       state.ui.uiAssets.dispose();
@@ -1566,6 +1582,28 @@ function failLiveBackgroundRunsOnShutdown(
   backgroundRunControllers.clear();
 }
 
+function stopLiveProjectRunsOnShutdown(state: HarnessServerState) {
+  const stopped = state.repository.stopInterruptedActiveRuns({
+    reason: "Local harness process shut down before completion",
+    failureCategory: "shutdown-interrupt"
+  });
+  if (stopped.stoppedRuns.length === 0) {
+    return;
+  }
+
+  for (const run of stopped.stoppedRuns) {
+    if (!state.runtime.hasProject(run.projectId)) {
+      continue;
+    }
+
+    state.runtime.abortRun(run.projectId, run.runId);
+    state.runtime.clearProjectTransients(run.projectId, run.threadId);
+  }
+  for (const project of state.repository.loadWorkspace().projects) {
+    state.runtime.upsertPersistedProject(project);
+  }
+}
+
 function disposeBackgroundRunControl(control: BackgroundRunControl | undefined) {
   if (!control) {
     return;
@@ -1689,7 +1727,8 @@ async function handleCommand(
   ideSearchControllers: Map<string, { requestId: string; abortController: AbortController }>,
   scheduler: BackgroundJobScheduler,
   osAdapters: HarnessServerOsAdapters,
-  derivedProgressHeartbeatMs: number
+  derivedProgressHeartbeatMs: number,
+  tokenUsageSession: TokenUsageTotals
 ) {
   switch (command.type) {
     case "connection.ping": {
@@ -1782,6 +1821,13 @@ async function handleCommand(
           agents: [...defaultAgentCatalog]
         }
       });
+      return;
+    }
+    case "usage.reset": {
+      const resetAt = new Date().toISOString();
+      Object.assign(tokenUsageSession, createEmptyTokenUsageTotals());
+      repository.resetTokenUsageLifetime(resetAt);
+      emitUsageUpdatedToAll(connections, command.requestId, repository.getTokenUsageState(tokenUsageSession));
       return;
     }
     case "agent.runtime.refresh": {
@@ -1989,7 +2035,12 @@ async function handleCommand(
     }
     case "project.remove": {
       const project = runtime.getProject(command.payload.projectId);
-      if (runtime.hasAnyStreamingThread(command.payload.projectId)) {
+      const blockingForegroundRun = findProjectForegroundRunWithStatuses(
+        repository,
+        command.payload.projectId,
+        new Set(["planning", "awaiting-user-input", "running-main", "running-subagents", "aggregating"])
+      );
+      if (runtime.hasAnyStreamingThread(command.payload.projectId) || blockingForegroundRun) {
         throw new Error("Project is streaming");
       }
 
@@ -2657,7 +2708,8 @@ async function handleCommand(
           fastMode: command.payload.fastMode,
           enableGeminiAttachmentCaching: true,
           abortSignal: abortController.signal,
-          derivedProgressHeartbeatMs
+          derivedProgressHeartbeatMs,
+          tokenUsageSession
         });
       } catch (error) {
         if (abortController.signal.aborted) {
@@ -2751,7 +2803,8 @@ async function handleCommand(
           reasoningStrength: command.payload.reasoningStrength,
           fastMode: command.payload.fastMode,
           abortSignal: abortController.signal,
-          derivedProgressHeartbeatMs
+          derivedProgressHeartbeatMs,
+          tokenUsageSession
         });
       } catch (error) {
         if (abortController.signal.aborted) {
@@ -2830,7 +2883,6 @@ async function handleCommand(
         await emitBackgroundJobRunUpdatedToAll(connections, resumedBackgroundRun);
         emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
       }
-
       runtime.setProjectError(projectId, undefined, command.payload.threadId);
       runtime.setProjectStreaming(projectId, true, command.payload.threadId);
       runtime.clearStreaming(projectId, command.payload.threadId);
@@ -2856,7 +2908,8 @@ async function handleCommand(
           reasoningStrength: command.payload.reasoningStrength,
           fastMode: command.payload.fastMode,
           abortSignal: abortController.signal,
-          derivedProgressHeartbeatMs
+          derivedProgressHeartbeatMs,
+          tokenUsageSession
         });
       } catch (error) {
         if (abortController.signal.aborted) {
@@ -3045,7 +3098,6 @@ async function handleCommand(
         emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
         emitNotificationsUpdatedToAll(connections, command.requestId, repository.loadNotificationInboxState());
       }
-
       runtime.setProjectError(projectId, undefined, command.payload.threadId);
       runtime.setProjectStreaming(projectId, true, command.payload.threadId);
       runtime.clearStreaming(projectId, command.payload.threadId);
@@ -3071,7 +3123,8 @@ async function handleCommand(
           reasoningStrength: command.payload.reasoningStrength,
           fastMode: command.payload.fastMode,
           abortSignal: abortController.signal,
-          derivedProgressHeartbeatMs
+          derivedProgressHeartbeatMs,
+          tokenUsageSession
         });
       } catch (error) {
         if (abortController.signal.aborted) {
@@ -3109,7 +3162,6 @@ async function handleCommand(
         throw new Error(`Run status ${activeRun.status} is not executable`);
       }
       await enforceExecutionPreflight(ws, command.requestId, runtime, repository, project, osAdapters);
-
       const providerBrand = repository.getProviderBrand();
       runtime.setProjectError(projectId, undefined, command.payload.threadId);
       runtime.setProjectStreaming(projectId, true, command.payload.threadId);
@@ -3132,7 +3184,8 @@ async function handleCommand(
           reasoningStrength: command.payload.reasoningStrength,
           fastMode: command.payload.fastMode,
           abortSignal: abortController.signal,
-          derivedProgressHeartbeatMs
+          derivedProgressHeartbeatMs,
+          tokenUsageSession
         });
       } catch (error) {
         if (abortController.signal.aborted) {
@@ -3262,6 +3315,10 @@ async function handleCommand(
           summary.staleRunsStopped = stopped.stoppedRunIds.length;
           const updatedProject = repository.getProject(command.payload.projectId);
           runtime.upsertPersistedProject(updatedProject);
+          for (const run of stopped.stoppedRuns) {
+            runtime.abortRun(run.projectId, run.runId);
+            runtime.clearProjectTransients(run.projectId, run.threadId);
+          }
           emitRunUpdated(ws, command.requestId, updatedProject);
         }
       } finally {
@@ -3384,7 +3441,6 @@ async function handleCommand(
         throw new Error("Run is not resumable");
       }
       await enforceExecutionPreflight(ws, command.requestId, runtime, repository, project, osAdapters);
-
       const providerBrand = repository.getProviderBrand();
       if (command.payload.guidanceText?.trim()) {
         const guidanceProject = repository.appendMessage(projectId, "user", command.payload.guidanceText, command.payload.threadId);
@@ -3422,7 +3478,8 @@ async function handleCommand(
             subagentIds: command.payload.subagentIds,
             reasoningStrength: command.payload.reasoningStrength,
             fastMode: command.payload.fastMode,
-            derivedProgressHeartbeatMs
+            derivedProgressHeartbeatMs,
+            tokenUsageSession
           }
         );
       } catch (error) {
@@ -3457,7 +3514,6 @@ async function handleCommand(
       assertActiveThread(project, command.payload.threadId);
       assertProjectCanStartRetry(repository, runtime, projectId, command.payload.threadId, command.payload.runId);
       await enforceExecutionPreflight(ws, command.requestId, runtime, repository, project, osAdapters);
-
       const retryRun = requireRetryablePersistedRun(repository, projectId, command.payload.threadId, command.payload.runId);
       const providerBrand = repository.getProviderBrand();
       const executionModelId = resolveExecutionModelIdForRuntime({
@@ -3505,7 +3561,8 @@ async function handleCommand(
             reasoningStrength: command.payload.reasoningStrength,
             fastMode: command.payload.fastMode,
             abortSignal: abortController.signal,
-            derivedProgressHeartbeatMs
+            derivedProgressHeartbeatMs,
+            tokenUsageSession
           });
         } else {
           const readyPlan = buildReadyPlanFromRun(retryRun);
@@ -3591,7 +3648,8 @@ async function handleCommand(
               reasoningStrength: command.payload.reasoningStrength,
               fastMode: command.payload.fastMode,
               abortSignal: abortController.signal,
-              derivedProgressHeartbeatMs
+              derivedProgressHeartbeatMs,
+              tokenUsageSession
             }
           );
         }
@@ -3632,7 +3690,17 @@ async function handleCommand(
         .filter((state) => command.payload.subagentId === undefined || state.subagentId === command.payload.subagentId);
 
       if (executionStates.length === 0) {
-        throw new Error("No refreshable execution is active for this run");
+        repairStaleRefreshRun(
+          ws,
+          command.requestId,
+          runtime,
+          repository,
+          pendingBrowserApprovals,
+          connections,
+          projectId,
+          targetRun
+        );
+        return;
       }
 
       for (const executionState of executionStates) {
@@ -4199,12 +4267,15 @@ async function handleCommand(
         assertGlobalExecutionNotPaused(repository);
       }
       const project = runtime.getProject(command.payload.projectId);
-      const run = [project.activeRun, project.lastRun].find((entry) => entry?.id === command.payload.runId);
+      const run = [project.activeRun, project.lastRun].find(
+        (entry) => entry?.id === command.payload.runId && entry.threadId === command.payload.threadId
+      );
       if (!run) {
         throw new Error(`Run ${command.payload.runId} is not available`);
       }
 
       const pendingActivity = findPendingBrowserApproval(run.browserSessions ?? [], {
+        runId: command.payload.runId,
         sessionId: command.payload.sessionId,
         toolCallId: command.payload.toolCallId
       });
@@ -4443,6 +4514,7 @@ async function continueRunLifecycle(
     enableGeminiAttachmentCaching?: boolean;
     abortSignal: AbortSignal;
     derivedProgressHeartbeatMs: number;
+    tokenUsageSession: TokenUsageTotals;
   }
 ) {
   const project = runtime.getProject(options.projectId);
@@ -4458,7 +4530,7 @@ async function continueRunLifecycle(
     options.fastMode
   );
   const mode = resolveModeById(project.selectedModeId, runtime.getWorkspace().workspaceModes, project.projectModes);
-  const planExecutionMode = mode?.planExecutionModeDefault ?? repository.getPlanExecutionModeDefault();
+  const planExecutionMode = resolvePlanExecutionModeDefault(repository, mode);
   const subagentWorktreeStrategy =
     mode?.subagentWorktreeStrategyDefault ?? repository.getSubagentWorktreeStrategyDefault();
   const correctnessIterationMode =
@@ -4534,7 +4606,8 @@ async function continueRunLifecycle(
       pendingBrowserApprovals,
       options.abortSignal,
       connections,
-      options.derivedProgressHeartbeatMs
+      options.derivedProgressHeartbeatMs,
+      options.tokenUsageSession
     )
   });
   const promptProject = repository.setAgentRunPromptStats(options.projectId, activeRun.id, plannerTurn.promptStats);
@@ -4660,7 +4733,7 @@ async function continueQuickTaskLifecycle(
   const activeRun = requireActiveRun(project, options.runId);
   const threadSession = getThreadSessionState(runtime, repository, projectId, activeRun.threadId);
   appendComposerControlStatus(ws, requestId, runtime, repository, projectId, activeRun.threadId, options.fastMode);
-  const planExecutionMode = options.mode?.planExecutionModeDefault ?? repository.getPlanExecutionModeDefault();
+  const planExecutionMode = resolvePlanExecutionModeDefault(repository, options.mode);
   const subagentWorktreeStrategy =
     options.mode?.subagentWorktreeStrategyDefault ?? repository.getSubagentWorktreeStrategyDefault();
   const correctnessIterationMode =
@@ -4751,6 +4824,7 @@ async function resumeRunLifecycle(
     reasoningStrength?: ComposerReasoningStrength;
     fastMode?: boolean;
     derivedProgressHeartbeatMs: number;
+    tokenUsageSession: TokenUsageTotals;
   }
 ) {
   const project = runtime.getProject(options.projectId);
@@ -4784,7 +4858,7 @@ async function resumeRunLifecycle(
     return existingTask.status !== "completed";
   });
 
-  const resumingProject = repository.setAgentRunStatus(
+  const resumingProject = repository.resumeAgentRun(
     options.projectId,
     options.runId,
     readyPlan.usesSubagents ? "running-subagents" : "running-main"
@@ -4808,7 +4882,8 @@ async function resumeRunLifecycle(
     reasoningStrength: options.reasoningStrength,
     fastMode: options.fastMode,
     abortSignal: options.abortSignal,
-    derivedProgressHeartbeatMs: options.derivedProgressHeartbeatMs
+    derivedProgressHeartbeatMs: options.derivedProgressHeartbeatMs,
+    tokenUsageSession: options.tokenUsageSession
   });
 }
 
@@ -4838,6 +4913,7 @@ async function executeRunLifecycle(
     fastMode?: boolean;
     abortSignal?: AbortSignal;
     derivedProgressHeartbeatMs: number;
+    tokenUsageSession: TokenUsageTotals;
   }
 ) {
   const project = runtime.getProject(options.projectId);
@@ -4919,7 +4995,8 @@ async function executeRunLifecycle(
     pendingBrowserApprovals,
     options.abortSignal,
     connections,
-    options.derivedProgressHeartbeatMs
+    options.derivedProgressHeartbeatMs,
+    options.tokenUsageSession
   );
   let executionPlan = baseExecutionPlan;
   if (hasPendingPrerequisites) {
@@ -5140,6 +5217,7 @@ async function executeInlineSubagentRetryLifecycle(
     fastMode?: boolean;
     abortSignal: AbortSignal;
     derivedProgressHeartbeatMs: number;
+    tokenUsageSession: TokenUsageTotals;
   }
 ) {
   const project = runtime.getProject(options.projectId);
@@ -5161,7 +5239,8 @@ async function executeInlineSubagentRetryLifecycle(
     pendingBrowserApprovals,
     options.abortSignal,
     connections,
-    options.derivedProgressHeartbeatMs
+    options.derivedProgressHeartbeatMs,
+    options.tokenUsageSession
   );
   const subagentModelId = resolveSubagentModelId({
     agentId: options.agentId,
@@ -5274,7 +5353,8 @@ function createExecutionCallbacks(
   pendingBrowserApprovals: Map<string, PendingBrowserApproval>,
   abortSignal?: AbortSignal,
   connections?: Set<Bun.ServerWebSocket<HarnessConnection>>,
-  derivedProgressHeartbeatMs: number = DERIVED_PROGRESS_HEARTBEAT_MS
+  derivedProgressHeartbeatMs: number = DERIVED_PROGRESS_HEARTBEAT_MS,
+  tokenUsageSession: TokenUsageTotals = createEmptyTokenUsageTotals()
 ) {
   const transcriptDraft = new RunTranscriptDraft({ runId });
   let currentPhase: RunMilestonePhase = "planning";
@@ -5488,13 +5568,15 @@ function createExecutionCallbacks(
     },
     onContextUsage(contextUsage: ProjectContextUsage) {
       runtime.setProjectContextUsage(projectId, contextUsage, threadId);
+      const tokenUsage = recordServerTokenUsage(repository, tokenUsageSession, contextUsage);
       emitControlEvent(connections, {
         type: "project.context",
         requestId,
         payload: {
           projectId,
           threadId,
-          contextUsage
+          contextUsage,
+          tokenUsage
         }
       });
     },
@@ -5793,6 +5875,31 @@ function emitExecutionControlUpdatedToAll(
   }
 }
 
+function repairStaleRefreshRun(
+  ws: Bun.ServerWebSocket<HarnessConnection>,
+  requestId: string,
+  runtime: WorkspaceRuntimeStore,
+  repository: WorkspaceRepository,
+  pendingBrowserApprovals: Map<string, PendingBrowserApproval>,
+  connections: Set<Bun.ServerWebSocket<HarnessConnection>>,
+  projectId: ProjectId,
+  run: AgentRunState
+) {
+  const message = "Run has no live execution controller; stopped stale run so it can be resumed or retried.";
+  rejectPendingBrowserApprovalsForRun(pendingBrowserApprovals, projectId, run.id, "Run controller was lost");
+  runtime.abortRun(projectId, run.id);
+  const stoppedProject = repository.setAgentRunStatus(projectId, run.id, "stopped", message, "controller-lost");
+  runtime.upsertPersistedProject(stoppedProject);
+  runtime.clearProjectTransients(projectId, run.threadId);
+  emitRunUpdatedById(ws, requestId, repository, projectId, run.id, connections);
+  appendSystemStatus(ws, requestId, runtime, repository, projectId, run.threadId, message);
+  debugLog("run.refresh.stale-controller", {
+    projectId,
+    runId: run.id,
+    threadId: run.threadId
+  });
+}
+
 async function releaseDeferredExecutionState(
   requestId: string,
   runtime: WorkspaceRuntimeStore,
@@ -5857,19 +5964,21 @@ async function releaseDeferredExecutionState(
 
   await assistantManager.drainPendingReprioritizes();
 
-  await Promise.all(
-    repository.getQueuedBackgroundJobRuns().map((queuedRun) =>
-      safeLaunchBackgroundJobRun(
-        connections,
-        repository,
-        runtimeRegistry,
-        runtime,
-        backgroundRunControllers,
-        assistantManager,
-        queuedRun.id
+  if (!repository.hasActiveForegroundAgentRun()) {
+    await Promise.all(
+      repository.getQueuedBackgroundJobRuns().map((queuedRun) =>
+        safeLaunchBackgroundJobRun(
+          connections,
+          repository,
+          runtimeRegistry,
+          runtime,
+          backgroundRunControllers,
+          assistantManager,
+          queuedRun.id
+        )
       )
-    )
-  );
+    );
+  }
 
   await scheduler.tick(false);
   emitNotificationsUpdatedToAll(connections, requestId, repository.loadNotificationInboxState());
@@ -6649,7 +6758,17 @@ async function requestExecutionRefresh(
         : `Refreshing ${executionLabel} with continue.`
   });
 
-  await executionState.controller?.abort();
+  const abortPromise = executionState.controller?.abort();
+  if (abortPromise) {
+    void abortPromise.catch((error) => {
+      debugLog("run.refresh.abort-failed", {
+        runId: executionState.runId,
+        kind: executionState.kind,
+        subagentId: executionState.subagentId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    });
+  }
 }
 
 function emitProjectTrace(
@@ -6927,6 +7046,7 @@ async function runCorrectnessReview(
   const gaps: CorrectnessGap[] = [];
   const indexHtmlPath = path.join(rootPath, "index.html");
   const indexHtmlText = await Bun.file(indexHtmlPath).text().catch(() => "");
+  const changedWorkspaceFiles = await findChangedWorkspaceFiles(rootPath);
 
   if (outcome.partial) {
     gaps.push({
@@ -6937,6 +7057,23 @@ async function runCorrectnessReview(
       suggestedFix: "Resolve failed subagent work and finish missing integration.",
       canParallelize: false,
       ownedPaths: []
+    });
+  }
+
+  if (
+    executionPlanRequiresWorkspaceChanges(executionPlan) &&
+    (modeUsesReadOnlyExecution(executionPlan.mode) || finalAnswerReportsWorkspaceWriteBlock(outcome.assistantMessage.content)) &&
+    (!changedWorkspaceFiles || changedWorkspaceFiles.length === 0)
+  ) {
+    const ownedPaths = getConcretePlanOwnedPaths(executionPlan);
+    gaps.push({
+      id: "write-required-no-output",
+      category: "plan-gap",
+      severity: "high",
+      description: "The plan required workspace changes, but execution produced no file changes and reported blocked or read-only write access.",
+      suggestedFix: "Rerun with workspace-write execution and create the planned files before completing.",
+      canParallelize: false,
+      ownedPaths
     });
   }
 
@@ -6952,7 +7089,7 @@ async function runCorrectnessReview(
     });
   }
 
-  const suspiciousFiles = await findSuspiciousQualityFiles(rootPath);
+  const suspiciousFiles = await findSuspiciousQualityFiles(rootPath, changedWorkspaceFiles);
   if (suspiciousFiles.length > 0) {
     gaps.push({
       id: "suspicious-quality-files",
@@ -6981,8 +7118,36 @@ async function runCorrectnessReview(
   };
 }
 
-async function findSuspiciousQualityFiles(rootPath: string) {
-  const changedFiles = await findChangedWorkspaceFiles(rootPath);
+function executionPlanRequiresWorkspaceChanges(executionPlan: ExecutionPlan) {
+  const text = [
+    executionPlan.summary,
+    executionPlan.finalExecutionBrief,
+    ...executionPlan.prerequisites.flatMap((prerequisite) => [prerequisite.title, prerequisite.instruction, prerequisite.reason]),
+    ...executionPlan.contracts.flatMap((contract) => [
+      contract.title,
+      contract.instruction,
+      ...contract.deliverables,
+      ...contract.integrationPoints,
+      contract.mergeNotes
+    ])
+  ].join("\n");
+
+  return /\b(?:add|build|create|delete|edit|fix|generate|implement|install|migrate|modify|patch|refactor|remove|replace|scaffold|update|wire|write)\b/i.test(text);
+}
+
+function finalAnswerReportsWorkspaceWriteBlock(content: string) {
+  return (
+    /\b(?:blocked|cannot|can't|could not|couldn't|read-only|unable|workspace is mounted read-only|write access|writable workspace)\b/i.test(content) &&
+    /\b(?:create|edit|file|modify|save|scaffold|workspace|write)\b/i.test(content)
+  );
+}
+
+function getConcretePlanOwnedPaths(executionPlan: ExecutionPlan) {
+  const paths = executionPlan.contracts.flatMap((contract) => contract.ownedPaths);
+  return [...new Set(paths.filter((value) => value !== "(planner-unspecified)"))].slice(0, 24);
+}
+
+async function findSuspiciousQualityFiles(rootPath: string, changedFiles?: string[]) {
   if (changedFiles) {
     return changedFiles.filter(isSuspiciousQualityFile).slice(0, 8);
   }
@@ -7151,6 +7316,10 @@ async function presentCorrectivePlan(
   }
 }
 
+function resolvePlanExecutionModeDefault(repository: WorkspaceRepository, mode?: ModeDefinition) {
+  return repository.getConfiguredPlanExecutionModeDefault() ?? mode?.planExecutionModeDefault ?? repository.getPlanExecutionModeDefault();
+}
+
 function shouldAppendPlanSummaryMessage(executionPlan: ExecutionPlan) {
   return executionPlan.origin !== "quick-task" && !(executionPlan.mode?.id === "ask" && executionPlan.gating.mode === "immediate");
 }
@@ -7287,7 +7456,7 @@ function assertProjectCanStartRun(
     throw new Error("Thread has active run in status running-main");
   }
   const blockingStatuses = new Set(["planning", "awaiting-user-input", "ready", "running-main", "running-subagents", "aggregating", "partial-complete"]);
-  const blockingRun = findProjectRunWithStatuses(repository, projectId, blockingStatuses);
+  const blockingRun = findProjectForegroundRunWithStatuses(repository, projectId, blockingStatuses);
   if (blockingRun) {
     throw new Error(`Thread has active run in status ${blockingRun.status}`);
   }
@@ -7310,7 +7479,7 @@ function assertProjectCanStartRetry(
     throw new Error("Thread has active run in status running-main");
   }
   const blockingStatuses = new Set(["planning", "awaiting-user-input", "running-main", "running-subagents", "aggregating"]);
-  const blockingRun = findProjectRunWithStatuses(repository, projectId, blockingStatuses, runId);
+  const blockingRun = findProjectForegroundRunWithStatuses(repository, projectId, blockingStatuses, runId);
   if (blockingRun) {
     throw new Error(`Thread has active run in status ${blockingRun.status}`);
   }
@@ -7330,17 +7499,30 @@ function assertNoOtherWorkingRun(
     throw new Error("Thread has active run in status running-main");
   }
   const workingStatuses = new Set(["planning", "awaiting-user-input", "running-main", "running-subagents", "aggregating"]);
-  const workingRun = findProjectRunWithStatuses(repository, projectId, workingStatuses, runId);
+  const workingRun = findProjectForegroundRunWithStatuses(repository, projectId, workingStatuses, runId);
   if (workingRun) {
     throw new Error(`Thread has active run in status ${workingRun.status}`);
   }
+}
+
+function findProjectForegroundRunWithStatuses(
+  repository: WorkspaceRepository,
+  projectId: ProjectId,
+  statuses: Set<string>,
+  excludedRunId?: string
+) {
+  return findProjectRunWithStatuses(repository, projectId, statuses, excludedRunId, (run) => {
+    const linkedBackgroundRun = repository.getBackgroundJobRunByLinkedAgentRunId(run.id);
+    return !linkedBackgroundRun || !isActiveBackgroundRunStatus(linkedBackgroundRun.status);
+  });
 }
 
 function findProjectRunWithStatuses(
   repository: WorkspaceRepository,
   projectId: ProjectId,
   statuses: Set<string>,
-  excludedRunId?: string
+  excludedRunId?: string,
+  predicate?: (run: AgentRunState | AgentRunSummary) => boolean
 ) {
   const project = repository.getProject(projectId);
   const seenRunIds = new Set<string>();
@@ -7349,12 +7531,16 @@ function findProjectRunWithStatuses(
       continue;
     }
     seenRunIds.add(run.id);
-    if (run.id !== excludedRunId && statuses.has(run.status)) {
+    if (run.id !== excludedRunId && statuses.has(run.status) && (!predicate || predicate(run))) {
       return run;
     }
   }
 
   return undefined;
+}
+
+function isActiveBackgroundRunStatus(status: BackgroundJobRunStatus) {
+  return status === "queued" || status === "awaiting-approval" || status === "awaiting-user-input" || status === "running";
 }
 
 function isActiveThreadStreaming(runtime: WorkspaceRuntimeStore, projectId: ProjectId, threadId: ThreadId) {
@@ -7521,6 +7707,14 @@ async function repairBranchfsStateOnStartup(repository: WorkspaceRepository, run
   if (stopped.stoppedRunIds.length > 0) {
     for (const project of repository.loadWorkspace().projects) {
       runtime.upsertPersistedProject(project);
+    }
+    for (const run of stopped.stoppedRuns) {
+      if (!runtime.hasProject(run.projectId)) {
+        continue;
+      }
+
+      runtime.abortRun(run.projectId, run.runId);
+      runtime.clearProjectTransients(run.projectId, run.threadId);
     }
   }
 }
@@ -7734,10 +7928,7 @@ function isTransientSubagentError(error: Error) {
 }
 
 function sendEvent(ws: Bun.ServerWebSocket<HarnessConnection>, event: ServerEvent) {
-  guardedWebsocketSend(ws, JSON.stringify(event), {
-    maxQueuedBytes: CONTROL_WEBSOCKET_MAX_QUEUED_BYTES,
-    slowCloseReason: "Control websocket client is too slow"
-  });
+  controlEventBatcher.send(ws, event);
 }
 
 function emitControlEvent(
@@ -7795,6 +7986,84 @@ function emitSetupUpdatedToAll(
       }
     });
   }
+}
+
+function emitUsageUpdatedToAll(
+  connections: Set<Bun.ServerWebSocket<HarnessConnection>>,
+  requestId: string,
+  tokenUsage: ReturnType<WorkspaceRepository["getTokenUsageState"]>
+) {
+  for (const connection of connections) {
+    if (connection.data.kind !== "control") {
+      continue;
+    }
+
+    sendEvent(connection, {
+      type: "usage.updated",
+      requestId,
+      payload: {
+        tokenUsage
+      }
+    });
+  }
+}
+
+function recordServerTokenUsage(
+  repository: WorkspaceRepository,
+  tokenUsageSession: TokenUsageTotals,
+  contextUsage: ProjectContextUsage
+) {
+  const delta = createTokenUsageDelta(contextUsage);
+  if (delta.totalTokensIncludingCached <= 0) {
+    return repository.getTokenUsageState(tokenUsageSession);
+  }
+
+  Object.assign(tokenUsageSession, addTokenUsageTotals(tokenUsageSession, delta));
+  repository.addTokenUsageLifetime(delta);
+  return repository.getTokenUsageState(tokenUsageSession);
+}
+
+function createTokenUsageDelta(usage: ProjectContextUsage): TokenUsageTotals {
+  const inputTokens = normalizeTokenCount(usage.tokens);
+  const totalProcessedTokens = Math.max(inputTokens, normalizeTokenCount(usage.totalProcessedTokens ?? inputTokens));
+  const cachedInputTokens = normalizeTokenCount(usage.cachedInputTokens);
+  return createEmptyTokenUsageTotals({
+    inputTokens,
+    outputTokens: Math.max(0, totalProcessedTokens - inputTokens),
+    cachedInputTokens,
+    totalProcessedTokens,
+    totalTokensIncludingCached: totalProcessedTokens + cachedInputTokens,
+    events: 1,
+    updatedAt: usage.updatedAt
+  });
+}
+
+function normalizeTokenCount(value: number | undefined) {
+  return Number.isFinite(value) && value && value > 0 ? Math.floor(value) : 0;
+}
+
+function createEmptyTokenUsageTotals(overrides: Partial<TokenUsageTotals> = {}): TokenUsageTotals {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedInputTokens: 0,
+    totalProcessedTokens: 0,
+    totalTokensIncludingCached: 0,
+    events: 0,
+    ...overrides
+  };
+}
+
+function addTokenUsageTotals(left: TokenUsageTotals, right: TokenUsageTotals): TokenUsageTotals {
+  return createEmptyTokenUsageTotals({
+    inputTokens: left.inputTokens + right.inputTokens,
+    outputTokens: left.outputTokens + right.outputTokens,
+    cachedInputTokens: left.cachedInputTokens + right.cachedInputTokens,
+    totalProcessedTokens: left.totalProcessedTokens + right.totalProcessedTokens,
+    totalTokensIncludingCached: left.totalTokensIncludingCached + right.totalTokensIncludingCached,
+    events: left.events + right.events,
+    updatedAt: [left.updatedAt, right.updatedAt].filter(Boolean).sort().at(-1)
+  });
 }
 
 function emitTerminalShellsUpdatedToAll(
@@ -9250,6 +9519,7 @@ async function stopBackgroundRunsForJob(input: {
       failureCategory: "manual-abort"
     });
     if (existingRun.linkedAgentRunId) {
+      const linkedRun = input.repository.getRun(existingRun.projectId, existingRun.linkedAgentRunId);
       const stoppedProject = input.repository.setAgentRunStatus(
         existingRun.projectId,
         existingRun.linkedAgentRunId,
@@ -9257,6 +9527,10 @@ async function stopBackgroundRunsForJob(input: {
         input.reason
       );
       input.runtime.upsertPersistedProject(stoppedProject);
+      input.runtime.abortRun(existingRun.projectId, existingRun.linkedAgentRunId);
+      if (linkedRun) {
+        input.runtime.clearProjectTransients(existingRun.projectId, linkedRun.threadId);
+      }
       emitRunUpdatedById(
         input.ws,
         input.requestId,
@@ -9265,7 +9539,9 @@ async function stopBackgroundRunsForJob(input: {
         existingRun.linkedAgentRunId,
         input.connections
       );
-      scheduleBranchfsRetentionPrune(input.runtime.getProject(existingRun.projectId).rootPath);
+      if (input.runtime.hasProject(existingRun.projectId)) {
+        scheduleBranchfsRetentionPrune(input.runtime.getProject(existingRun.projectId).rootPath);
+      }
     }
     input.repository.appendBackgroundJobRunEvent(existingRun.id, "cancelled", "Background run cancelled", input.reason);
     saveBackgroundRunStatusNotification(input.repository, updatedRun);

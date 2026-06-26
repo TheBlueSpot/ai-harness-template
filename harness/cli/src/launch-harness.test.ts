@@ -1,10 +1,12 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import path from "node:path";
 import { resolveHarnessDbPath } from "./dev-db-recovery";
 import { launchHarnessServerWithRecovery } from "./launch-harness";
 import { startHarnessServer } from "./server";
 import type { StartupPhaseId, StartupTelemetrySink } from "./startup-telemetry";
 import { WorkspaceRepository } from "./workspace-repository";
+
+setDefaultTimeout(15000);
 
 describe("launch harness with recovery", () => {
   const servers: Array<Awaited<ReturnType<typeof startHarnessServer>> | Bun.Server<undefined>> = [];

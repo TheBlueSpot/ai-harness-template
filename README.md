@@ -50,7 +50,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - Persistent retry for full runs and individual subagents, including successful runs
 - Manual refresh for active runs and active subagents, with deferred refresh while work is still streaming
 - Dirty-git preflight with a configurable chat-run restriction toggle and tracked plus untracked change threshold
-- Live context usage meter sourced from pi session context stats
+- Live context usage meter sourced from runtime stats, with app-session and durable lifetime totals
 
 ## Workspace Model
 
@@ -127,8 +127,9 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - `bun run package:launcher` builds a portable Bun launcher folder for the current OS target
 - Portable launcher startup failures now write a timestamped crash log under `logs/` next to the executable and print that path before exit
 - Development UI builds emit external source maps for browser debugging
-- `bun run test` runs Bun test suite in parallel, capped at 12 workers by default and overridable with `HARNESS_TEST_WORKERS`
+- `bun run test` runs core tests in parallel, capped at 12 workers by default and overridable with `HARNESS_TEST_WORKERS`; UI-sensitive tests run serially for browser preload stability
 - `bun run typecheck` validates TypeScript contracts
+- `bun run bench:websocket-batch` compares individual and batched control websocket frame throughput
 - Development startup backs up then purges broken local SQLite artifacts, retries delete on transient Windows file locks, then retries boot once if legacy migration drift makes the dev DB unloadable
 - Development DB recovery now logs the triggering startup error first and only auto-purges on concrete corruption or schema-drift signatures instead of generic SQLite failures
 - Background job run schema repair now also rebuilds dependent notification and event tables when an older migration left them pointing at legacy table names

@@ -52,6 +52,8 @@ import {
   type StreamingTailSegment,
   type ExecutionPlan,
   type ExecutionControlState,
+  type TokenUsageState,
+  type TokenUsageTotals,
   type WorkspaceRuleSource,
   type WorkspaceProjectState,
   type WorkspaceState
@@ -105,7 +107,6 @@ export const COMPOSER_FAST_MODE_STORAGE_KEY = "composer_fast_mode";
 export const APP_HOTKEY_PREFERENCES_STORAGE_KEY = "pi-harness:app-hotkeys:v1";
 export const THEME_PREFERENCE_STORAGE_KEY = "pi-harness:theme-preference:v1";
 export const PREFERENCES_ACTIVE_SECTION_STORAGE_KEY = "pi-harness:preferences-active-section:v1";
-export const TOKEN_USAGE_LIFETIME_STORAGE_KEY = "pi-harness:token-usage-lifetime:v1";
 export const THREAD_DRAFT_STORAGE_KEY_PREFIX = "pi-harness:thread-draft:v1";
 export const TUTORIAL_PROGRESS_STORAGE_KEY = "pi-harness:tutorial-progress:v1";
 export const BROWSER_UI_SESSION_STORAGE_KEY = "pi-harness:browser-ui-session:v1";
@@ -128,7 +129,7 @@ export type AssistantRosterSort = "updated" | "created" | "name" | "run-state" |
 export type JobsPaneJobSort = "next-run" | "updated" | "created" | "status" | "risk";
 export type JobsPaneRunSort = "urgency" | "updated" | "queued" | "status";
 export type JobsJobStateFilter = "all" | BackgroundJobSchedulerStatus | "backoff";
-export type JobsRunFilter = "all" | "approval" | "queued" | "running" | "failed" | "done";
+export type JobsRunFilter = "all" | "approval" | "input" | "queued" | "running" | "failed" | "done";
 export type TracePanelMode = "closed" | "peek" | "open";
 
 export type RunDiagnosticsViewState = {
@@ -179,22 +180,6 @@ export type PreferencesActiveSectionId =
   | "usage"
   | "background-jobs"
   | "developer-advanced";
-
-export type TokenUsageTotals = {
-  inputTokens: number;
-  outputTokens: number;
-  cachedInputTokens: number;
-  totalProcessedTokens: number;
-  totalTokensIncludingCached: number;
-  events: number;
-  updatedAt?: string;
-};
-
-export type TokenUsageState = {
-  session: TokenUsageTotals;
-  lifetime: TokenUsageTotals;
-  resetAt?: string;
-};
 
 export type MainPanelSizes = {
   left: number;
@@ -852,6 +837,7 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
         backgroundJobs,
         notifications,
         executionControl: event.payload.executionControl,
+        tokenUsage: event.payload.tokenUsage,
         projectPreflights: {},
         pendingPreflightCommands: {},
         blockingNonGitPreflight: undefined,
@@ -868,6 +854,12 @@ export function reduceServerEvent(state: HarnessViewState, event: ServerEvent): 
       return {
         ...state,
         notifications: event.payload.notifications
+      };
+    case "usage.updated":
+      return {
+        ...state,
+        tokenUsage: event.payload.tokenUsage,
+        tokenUsageResetDialogOpen: false
       };
     case "agent.list":
       return {
@@ -1671,6 +1663,13 @@ function applyTokenUsageEvent(
   event: Extract<ServerEvent, { type: "project.context" }>,
   recordedEventKeys: Set<string>
 ) {
+  if (event.payload.tokenUsage) {
+    return {
+      ...state,
+      tokenUsage: event.payload.tokenUsage
+    };
+  }
+
   const eventKey = createTokenUsageEventKey(event);
   if (recordedEventKeys.has(eventKey)) {
     return state;
@@ -1687,7 +1686,6 @@ function applyTokenUsageEvent(
     session: addTokenUsageTotals(state.tokenUsage.session, delta),
     lifetime: addTokenUsageTotals(state.tokenUsage.lifetime, delta)
   };
-  persistTokenUsageLifetime(tokenUsage.lifetime);
   return {
     ...state,
     tokenUsage
@@ -1915,6 +1913,7 @@ export function createHarnessStore() {
     },
     setActiveLeftTab(activeLeftTab: HarnessLeftTab) {
       const previousSnapshot = getBrowserUiSessionSnapshot(state);
+      const previousActiveSurface = state.activeSurface;
       const normalizedTab = normalizeLeftTab(activeLeftTab);
       const nextState = finalizeHarnessViewState({
         ...state,
@@ -1926,6 +1925,11 @@ export function createHarnessStore() {
         persistBrowserUiSession(getBrowserUiSessionSnapshot(nextState));
       } else {
         persistBrowserUiStateIfChanged(previousSnapshot, nextState);
+      }
+      if (normalizedTab === "projects" && previousActiveSurface !== "chat" && commandDispatcher) {
+        for (const command of getBrowserUiSessionRestoreCommands(nextState, getBrowserUiSessionSnapshot(nextState))) {
+          commandDispatcher(command);
+        }
       }
     },
     openIdeFile(path: string, line?: number, column?: number) {
@@ -2438,11 +2442,15 @@ export function createHarnessStore() {
       setState({ tokenUsageResetDialogOpen: false });
     },
     resetTokenUsage() {
-      const resetAt = new Date().toISOString();
-      const tokenUsage = createEmptyTokenUsageState({ resetAt });
       recordedTokenUsageEventKeys.clear();
-      persistTokenUsageLifetime(tokenUsage.lifetime);
-      setState({ tokenUsage, tokenUsageResetDialogOpen: false });
+      if (!commandDispatcher) {
+        const error = new Error("Command dispatcher unavailable");
+        pushToast("Connection unavailable", "Wait for workspace connection before resetting usage.", "error");
+        reportUiError(error, "Token usage reset failed", { rethrow: "dev-only" });
+        return;
+      }
+      commandDispatcher({ type: "usage.reset", requestId: createRequestId() });
+      setState({ tokenUsageResetDialogOpen: false });
     },
     openSetupChecklist() {
       setState({ setupChecklistOpen: true });
@@ -2637,11 +2645,6 @@ export function createHarnessStore() {
     hydrateLocalPreferences() {
       const localPreferences = readLocalPreferences();
       const themePreference = normalizeThemePreference(localPreferences.themePreference ?? state.themePreference);
-      const tokenUsage = createEmptyTokenUsageState({
-        session: state.tokenUsage.session,
-        lifetime: readTokenUsageLifetime(),
-        resetAt: state.tokenUsage.resetAt
-      });
       const nextState = finalizeHarnessViewState({
         ...state,
         providerBrand: localPreferences.providerBrand ?? state.providerBrand,
@@ -2691,7 +2694,7 @@ export function createHarnessStore() {
         themePreference,
         backgroundJobNotificationsEnabled:
           localPreferences.backgroundJobNotificationsEnabled ?? state.backgroundJobNotificationsEnabled,
-        tokenUsage,
+        tokenUsage: state.tokenUsage,
         preferencesActiveSectionId:
           localPreferences.preferencesActiveSectionId ?? state.preferencesActiveSectionId,
         projectSidebarPreferences: normalizeProjectSidebarPreferences(
@@ -3589,22 +3592,6 @@ export function readLocalPreferences(): LocalPreferencesState {
   };
 }
 
-export function readTokenUsageLifetime(): TokenUsageTotals {
-  if (typeof window === "undefined") {
-    return createEmptyTokenUsageTotals();
-  }
-
-  try {
-    const raw = window.localStorage.getItem(TOKEN_USAGE_LIFETIME_STORAGE_KEY);
-    if (!raw) {
-      return createEmptyTokenUsageTotals();
-    }
-    return normalizeTokenUsageTotals(JSON.parse(raw));
-  } catch {
-    return createEmptyTokenUsageTotals();
-  }
-}
-
 export function readAppHotkeyPreferences(): AppHotkeyPreferences {
   if (typeof window === "undefined") {
     return { ...DEFAULT_APP_HOTKEY_PREFERENCES };
@@ -3744,14 +3731,6 @@ function persistThemePreference(input: ThemePreference | undefined) {
   }
 
   window.localStorage.setItem(THEME_PREFERENCE_STORAGE_KEY, JSON.stringify(normalizeThemePreference(input)));
-}
-
-function persistTokenUsageLifetime(input: TokenUsageTotals) {
-  if (typeof window === "undefined") {
-    return;
-  }
-
-  window.localStorage.setItem(TOKEN_USAGE_LIFETIME_STORAGE_KEY, JSON.stringify(createEmptyTokenUsageTotals(input)));
 }
 
 export function persistMergedLocalPreferences(input: LocalPreferencesState) {
@@ -3997,11 +3976,14 @@ export function getBrowserUiSessionRestoreCommands(
     });
   }
 
-  const targetThreadId = browserUiSession.lastActiveThreadByProjectId?.[targetProject.id];
+  const targetThreadId = resolveBrowserUiSessionTargetThreadId(
+    targetProject,
+    browserUiSession.lastActiveThreadByProjectId?.[targetProject.id]
+  );
   if (
     targetThreadId &&
     targetThreadId !== targetProject.activeThreadId &&
-    targetProject.threads.some((thread) => thread.id === targetThreadId)
+    targetProject.threads.some((thread) => thread.id === targetThreadId && thread.kind === "user")
   ) {
     commands.push({
       type: "thread.activate",
@@ -4014,6 +3996,17 @@ export function getBrowserUiSessionRestoreCommands(
   }
 
   return commands;
+}
+
+function resolveBrowserUiSessionTargetThreadId(
+  project: ViewProjectState,
+  rememberedThreadId: string | undefined
+) {
+  return (
+    project.threads.find((thread) => thread.id === rememberedThreadId && thread.kind === "user" && thread.status === "active")?.id ??
+    project.threads.find((thread) => thread.id === project.activeThreadId && thread.kind === "user" && thread.status === "active")?.id ??
+    project.threads.find((thread) => thread.kind === "user" && thread.status === "active")?.id
+  );
 }
 
 function getBrowserUiSessionSnapshot(state: HarnessViewState): BrowserUiSessionState {
@@ -4147,7 +4140,13 @@ function normalizeJobsPaneRunSort(input: unknown): JobsPaneRunSort {
 }
 
 function normalizeJobsRunFilter(input: unknown): JobsRunFilter {
-  return input === "all" || input === "approval" || input === "queued" || input === "running" || input === "failed" || input === "done"
+  return input === "all" ||
+    input === "approval" ||
+    input === "input" ||
+    input === "queued" ||
+    input === "running" ||
+    input === "failed" ||
+    input === "done"
     ? input
     : "all";
 }
@@ -4295,15 +4294,17 @@ function finalizeHarnessViewState(state: HarnessViewState): HarnessViewState {
   const lastActiveThreadByProjectId = Object.fromEntries(
     Object.entries(state.lastActiveThreadByProjectId).filter(([projectId, threadId]) => {
       const project = state.workspace.projects.find((entry) => entry.id === projectId);
-      return Boolean(project && project.threads.some((thread) => thread.id === threadId));
+      return Boolean(project && project.threads.some((thread) => thread.id === threadId && thread.kind === "user"));
     })
   );
-  if (activeProject) {
+  const activeThread = activeProject?.threads.find((thread) => thread.id === activeProject.activeThreadId);
+  const rememberActiveProjectThread = state.activeSurface === "chat" && activeThread?.kind === "user";
+  if (activeProject && rememberActiveProjectThread) {
     lastActiveThreadByProjectId[activeProject.id] = activeProject.activeThreadId;
   }
 
   const nextLastActiveProjectId =
-    activeProject?.id ??
+    (rememberActiveProjectThread ? activeProject?.id : undefined) ??
     (state.lastActiveProjectId && validProjectIds.has(state.lastActiveProjectId) ? state.lastActiveProjectId : undefined);
   const projectSidebarPreferences = normalizeProjectSidebarPreferences(
     state.projectSidebarPreferences,
@@ -4427,23 +4428,6 @@ function parseBooleanStorageValue(value: string | null) {
   }
 
   return undefined;
-}
-
-function normalizeTokenUsageTotals(input: unknown): TokenUsageTotals {
-  const source = isRecord(input) ? input : {};
-  const inputTokens = normalizeTokenCount(source.inputTokens);
-  const outputTokens = normalizeTokenCount(source.outputTokens);
-  const cachedInputTokens = normalizeTokenCount(source.cachedInputTokens);
-  const totalProcessedTokens = normalizeTokenCount(source.totalProcessedTokens ?? inputTokens + outputTokens);
-  return createEmptyTokenUsageTotals({
-    inputTokens,
-    outputTokens,
-    cachedInputTokens,
-    totalProcessedTokens,
-    totalTokensIncludingCached: normalizeTokenCount(source.totalTokensIncludingCached ?? totalProcessedTokens + cachedInputTokens),
-    events: normalizeTokenCount(source.events),
-    updatedAt: typeof source.updatedAt === "string" ? source.updatedAt : undefined
-  });
 }
 
 function normalizeTokenCount(input: unknown) {

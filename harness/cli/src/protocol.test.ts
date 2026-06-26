@@ -30,6 +30,25 @@ const defaultSetup = {
   checks: []
 } as const;
 
+const defaultTokenUsage = {
+  session: {
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedInputTokens: 0,
+    totalProcessedTokens: 0,
+    totalTokensIncludingCached: 0,
+    events: 0
+  },
+  lifetime: {
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedInputTokens: 0,
+    totalProcessedTokens: 0,
+    totalTokensIncludingCached: 0,
+    events: 0
+  }
+} as const;
+
 describe("client command validation", () => {
   test("rejects malformed chat.send payloads", () => {
     expect(() =>
@@ -53,6 +72,15 @@ describe("client command validation", () => {
         payload: {}
       })
     ).toThrow();
+  });
+
+  test("accepts usage reset command", () => {
+    expect(
+      parseClientCommand({
+        type: "usage.reset",
+        requestId: "req-usage-reset"
+      }).type
+    ).toBe("usage.reset");
   });
 
   test("rejects malformed project.add payloads", () => {
@@ -1010,6 +1038,7 @@ describe("planner result validation", () => {
             memoryBankRecordRunsDefault: true,
             checkCliUpdatesDefault: true
           },
+          tokenUsage: defaultTokenUsage,
           setup: defaultSetup,
           backgroundJobs: {
             jobs: [],
@@ -1216,6 +1245,7 @@ describe("planner result validation", () => {
             memoryBankRecordRunsDefault: true,
             checkCliUpdatesDefault: true
           },
+          tokenUsage: defaultTokenUsage,
           setup: defaultSetup,
           backgroundJobs: {
             jobs: [],

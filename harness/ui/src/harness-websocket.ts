@@ -1,4 +1,4 @@
-import { createRequestId, parseServerEvent, type ClientCommand, type PreferencesState } from "../../shared/protocol";
+import { createRequestId, parseServerEventFrame, type ClientCommand, type PreferencesState } from "../../shared/protocol";
 import {
   canSelectProviderBrand,
   getBrowserUiSessionRestoreCommands,
@@ -10,7 +10,7 @@ import {
 } from "./harness-store";
 import { openBackgroundRunInJobsPane } from "./background-run-navigation";
 import { recordUiTelemetry } from "./lib/ui-telemetry";
-import { openAssistantSource, openPreferencesSectionSource, openProjectThreadSource } from "./source-navigation";
+import { openAgentRunSource, openAssistantSource, openPreferencesSectionSource, openProjectThreadSource } from "./source-navigation";
 import { terminalStore } from "./terminal/terminal-store";
 import { ideStore } from "./ide/ide-store";
 import { closeAllTerminalSockets, openTerminalSocket } from "./terminal/terminal-transport";
@@ -163,31 +163,32 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
 
     socket.addEventListener("message", (event) => {
       try {
-      const browserUiSession = readBrowserUiSession();
-      const parsed = parseServerEvent(JSON.parse(event.data));
-      recordUiTelemetry("websocket.event", {
-        type: parsed.type,
-        requestId: readTelemetryField(parsed, "requestId"),
-        projectId: readTelemetryPayloadField(parsed, "projectId"),
-        threadId: readTelemetryPayloadField(parsed, "threadId")
-      });
-      if (parsed.type === "connection.pong") {
-        missedPongs = 0;
-        harnessStore.setConnectionState("connected");
-      }
-      const wasExecutionPaused = harnessStore.state.executionControl.isPaused;
-      const previousRun =
-        parsed.type === "run.updated" ||
-        parsed.type === "chat.error" ||
-        parsed.type === "chat.message-appended" ||
-        parsed.type === "thread.message-appended"
-          ? harnessStore.state.workspace.projects.find((project) => project.id === parsed.payload.projectId)?.activeRun
-          : undefined;
-      harnessStore.applyServerEvent(parsed);
-      terminalStore.applyServerEvent(parsed);
-      ideStore.applyServerEvent(parsed);
+        const parsedEvents = parseServerEventFrame(JSON.parse(event.data));
+        for (const parsed of parsedEvents) {
+          const browserUiSession = readBrowserUiSession();
+          recordUiTelemetry("websocket.event", {
+            type: parsed.type,
+            requestId: readTelemetryField(parsed, "requestId"),
+            projectId: readTelemetryPayloadField(parsed, "projectId"),
+            threadId: readTelemetryPayloadField(parsed, "threadId")
+          });
+          if (parsed.type === "connection.pong") {
+            missedPongs = 0;
+            harnessStore.setConnectionState("connected");
+          }
+          const wasExecutionPaused = harnessStore.state.executionControl.isPaused;
+          const previousRun =
+            parsed.type === "run.updated" ||
+            parsed.type === "chat.error" ||
+            parsed.type === "chat.message-appended" ||
+            parsed.type === "thread.message-appended"
+              ? harnessStore.state.workspace.projects.find((project) => project.id === parsed.payload.projectId)?.activeRun
+              : undefined;
+          harnessStore.applyServerEvent(parsed);
+          terminalStore.applyServerEvent(parsed);
+          ideStore.applyServerEvent(parsed);
 
-      if (parsed.type === "connection.ready") {
+          if (parsed.type === "connection.ready") {
         const localPreferences = readLocalPreferences();
         const needsProviderSync =
           (localPreferences.openAiApiKey && !parsed.payload.preferences.hasStoredOpenAiApiKey) ||
@@ -245,7 +246,7 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
         startCliUpdateChecks();
       }
 
-      if (parsed.type === "preferences.saved" || parsed.type === "preferences.apiKeyCleared") {
+          if (parsed.type === "preferences.saved" || parsed.type === "preferences.apiKeyCleared") {
         persistMergedLocalPreferences({
           openAiApiKey:
             parsed.type === "preferences.apiKeyCleared" ? undefined : harnessStore.state.openAiApiKeyDraft.trim() || undefined,
@@ -407,21 +408,22 @@ export function connectHarnessWebSocket(endpoint: string = getDefaultEndpoint())
         const hasPendingPlanningQuestion = nextProject?.activeRun?.questions.some((question) => question.status === "pending");
         if (parsed.payload.run.status === "awaiting-user-input" && hasPendingPlanningQuestion && !harnessStore.state.executionControl.isPaused) {
           pushToast("Planner needs input", "Answer the planning question in the chat composer.", "info", () =>
-            openProjectThreadSource(harnessStore.state, parsed.payload.projectId, parsed.payload.threadId, "chat")
+            openAgentRunSource(harnessStore.state, parsed.payload.projectId, parsed.payload.run, "chat")
           );
         }
 
         if (parsed.payload.run.status === "partial-complete") {
           pushToast("Partial result ready", "Some subagents failed. Review output, then resume failed agents.", "error", () =>
-            openProjectThreadSource(harnessStore.state, parsed.payload.projectId, parsed.payload.threadId, "run")
+            openAgentRunSource(harnessStore.state, parsed.payload.projectId, parsed.payload.run, "run")
           );
         }
 
         if (parsed.payload.run.status === "failed" && parsed.payload.run.resumable) {
           pushToast("Run failed", "Completed work was saved. Resume failed agents when ready.", "error", () =>
-            openProjectThreadSource(harnessStore.state, parsed.payload.projectId, parsed.payload.threadId, "run")
+            openAgentRunSource(harnessStore.state, parsed.payload.projectId, parsed.payload.run, "run")
           );
         }
+      }
       }
       } catch (error) {
         harnessStore.setConnectionState(

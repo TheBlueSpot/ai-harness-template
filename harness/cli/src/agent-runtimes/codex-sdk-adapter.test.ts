@@ -104,7 +104,9 @@ describe("codex sdk adapter", () => {
       networkAccessEnabled: false,
       webSearchMode: "live"
     });
-    expect(thread.runCalls[0]?.input).toBe(`${testExports.CODEX_TOOL_GUIDANCE}\n\nInspect repo`);
+    expect(String(thread.runCalls[0]?.input)).toContain(testExports.CODEX_TOOL_GUIDANCE);
+    expect(String(thread.runCalls[0]?.input)).toContain("Git repository state:");
+    expect(String(thread.runCalls[0]?.input)).toContain("Inspect repo");
   });
 
   test("uses danger-full-access for writable Windows runs", () => {
@@ -156,8 +158,8 @@ describe("codex sdk adapter", () => {
   });
 
   test("builds codex command prelude for fast mode", () => {
-    expect(testExports.buildCodexCommandPrelude(createRequest({ fastMode: true }))).toBe("/fast");
-    expect(testExports.buildCodexCommandPrelude(createRequest({ reasoningStrength: "extra-high" }))).toBe("");
+    expect(testExports.buildCodexCommandPrelude(createRequest({ fastMode: true }))).toContain("/fast");
+    expect(testExports.buildCodexCommandPrelude(createRequest({ reasoningStrength: "extra-high" }))).toContain("Git repository state:");
   });
 
   test("streams appended agent-message deltas and tool events", async () => {

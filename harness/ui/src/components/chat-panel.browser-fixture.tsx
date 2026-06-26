@@ -1,11 +1,12 @@
 /** @jsxImportSource solid-js */
 import { onMount } from "solid-js";
 import { render } from "solid-js/web";
-import { createChatMessage, createEmptySession } from "../../../shared/protocol";
+import { createEmptySession } from "../../../shared/protocol";
 import "../styles.css";
 import { createHarnessStore, harnessStore, setActiveHarnessStore } from "../harness-store";
 import { createToastStoreForProvider, setActiveToastStore } from "../toast-store";
 import { createHarnessStateFixture, createViewProjectFixture } from "../utils/tests/test-fixtures";
+import { createProjectChatBrowserMessages } from "./chat-panel.browser-data";
 import { ChatPanel } from "./chat-panel";
 
 setActiveHarnessStore(createHarnessStore());
@@ -13,11 +14,7 @@ setActiveToastStore(createToastStoreForProvider());
 
 const threadId = "browser-project-chat-thread";
 const projectId = "browser-project-chat-project";
-const messages = Array.from({ length: 160 }, (_, index) =>
-  createChatMessage(index % 2 === 0 ? "user" : "assistant", `Project chat browser message ${index}`, {
-    id: `browser-project-chat-message-${index}`
-  })
-);
+const messages = createProjectChatBrowserMessages("browser-project-chat-message");
 const project = createViewProjectFixture({
   id: projectId,
   activeThreadId: threadId,

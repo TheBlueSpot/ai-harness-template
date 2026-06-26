@@ -36,7 +36,7 @@ const segmentExitCodes = await Promise.all(defaultSegments.map(async (segment, i
     cmd: [
       process.execPath,
       "test",
-      ...profiledArgs,
+      ...buildSegmentProfiledArgs(profiledArgs, segment),
       ...segment.targets,
       "--reporter=junit",
       `--reporter-outfile=${path.relative(repoRoot, segmentJunitXmlPath).replaceAll("\\", "/")}`
@@ -97,6 +97,13 @@ if (existingJunitXmlPaths.length > 0 || existsSync(outputJsonPath) || existsSync
   console.log(`[test:profile] summary: ${path.relative(repoRoot, outputMarkdownPath)}`);
 }
 process.exit(exitCode || (profileExceededThreshold ? 1 : 0));
+
+function buildSegmentProfiledArgs(args: string[], segment: TestSegment) {
+  if (!segment.serial) {
+    return args;
+  }
+  return stripFlag(stripFlag(args, "--parallel"), "--parallel-delay");
+}
 
 type TestProfileRecord = {
   name: string;

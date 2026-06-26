@@ -206,6 +206,7 @@ describe("pi planner payload parsing", () => {
     expect(prompt).toContain("Happy DOM for frontend/component tests");
     expect(prompt).toContain("documentation comments for new functions and variables");
     expect(prompt).toContain("createUiTest-style setup from harness/ui/src/utils/tests/test-harness.ts");
+    expect(prompt).toContain("Git repository state:");
   });
 
   test("normalizes planner prerequisite owner aliases before schema validation", () => {

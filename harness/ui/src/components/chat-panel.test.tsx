@@ -4,7 +4,7 @@ import { createUiTest } from "../utils/tests/test-harness";
 import { cleanup, fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { ChatPanel } from "./chat-panel";
 import { buildProjectChatSearchResults } from "../lib/project-chat-search";
-import { createInitialViewState, harnessStore, readBrowserUiSession } from "../harness-store";
+import { createEmptyTokenUsageState, createInitialViewState, harnessStore, readBrowserUiSession } from "../harness-store";
 import { DEFAULT_APP_HOTKEY_PREFERENCES } from "../lib/app-hotkeys";
 import { toastStore } from "../toast-store";
 import { formatShortTimestamp } from "../lib/time-format";
@@ -665,6 +665,7 @@ createUiTest("ChatPanel", () => {
           capabilities: state.capabilities,
           agentRuntimes: state.agentRuntimes
         },
+        tokenUsage: createEmptyTokenUsageState(),
         setup: state.setup,
         backgroundJobs: state.backgroundJobs,
         assistants: state.assistants,
@@ -1079,14 +1080,14 @@ it("updates composer effort label and sends reasoning plus fast mode", () => {
     expect(harnessStore.state.workspace.projects[0]?.draft).toBe("/forgiveness-audit ");
   });
 
-  it("navigates composer lookup with arrow keys and enter while composer stays focused", async () => {
+  it("keeps composer focused while typing a slash skill prefix and submitting it", async () => {
     const project = createViewProjectFixture({
-      id: "project-lookup-keyboard",
-      draft: "/"
+      id: "project-skill-prefix-focus",
+      draft: "/mar"
     });
     seedHarnessStoreForTests(
       createHarnessStateFixture({
-        availableSkillPaths: [".agents/skills/alpha/SKILL.md", ".agents/skills/beta/SKILL.md"],
+        availableSkillPaths: [".agents/skills/market-research/SKILL.md", ".agents/skills/matrix-audit/SKILL.md"],
         workspace: {
           activeProjectId: project.id,
           projects: [project]
@@ -1097,20 +1098,53 @@ it("updates composer effort label and sends reasoning plus fast mode", () => {
     render(() => <ChatPanel />);
     const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
     textbox.focus();
-    textbox.setSelectionRange(1, 1);
+    textbox.setSelectionRange(4, 4);
+    fireEvent.input(textbox, { target: { value: "/mar" } });
 
     await waitFor(() => expect(screen.getByRole("listbox", { name: "Composer lookup" })).not.toBeNull());
-    const listbox = screen.getByRole("listbox", { name: "Composer lookup" });
     await Promise.resolve();
-    expect(document.activeElement).toBe(listbox);
+    expect(document.activeElement).toBe(textbox);
 
-    fireEvent.keyDown(listbox, { key: "ArrowDown" });
+    fireEvent.keyDown(textbox, { key: "Enter" });
 
-    await waitFor(() => expect(screen.getByRole("option", { name: /beta/ }).getAttribute("aria-selected")).toBe("true"));
+    expect(harnessStore.state.workspace.projects[0]?.draft).toBe("/market-research ");
+    await Promise.resolve();
+    expect(document.activeElement).toBe(textbox);
+  });
 
-    fireEvent.keyDown(listbox, { key: "Enter" });
+  it("navigates composer lookup with arrow keys and enter while composer stays focused", async () => {
+    const project = createViewProjectFixture({
+      id: "project-lookup-keyboard",
+      draft: "/ma"
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        availableSkillPaths: [".agents/skills/market-research/SKILL.md", ".agents/skills/matrix-audit/SKILL.md"],
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
 
-    expect(harnessStore.state.workspace.projects[0]?.draft).toBe("/beta ");
+    render(() => <ChatPanel />);
+    const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
+    textbox.focus();
+    textbox.setSelectionRange(3, 3);
+    fireEvent.input(textbox, { target: { value: "/ma" } });
+
+    await waitFor(() => expect(screen.getByRole("listbox", { name: "Composer lookup" })).not.toBeNull());
+    await Promise.resolve();
+    expect(document.activeElement).toBe(textbox);
+
+    fireEvent.keyDown(textbox, { key: "ArrowDown" });
+
+    await waitFor(() => expect(screen.getByRole("option", { name: /matrix-audit/ }).getAttribute("aria-selected")).toBe("true"));
+    expect(document.activeElement).toBe(textbox);
+
+    fireEvent.keyDown(textbox, { key: "Enter" });
+
+    expect(harnessStore.state.workspace.projects[0]?.draft).toBe("/matrix-audit ");
     await Promise.resolve();
     expect(screen.queryByRole("listbox", { name: "Composer lookup" })).toBeNull();
   });

@@ -743,7 +743,7 @@ export function PreferencesPanel() {
 
   function renderToggle(checked: boolean, onInput: (checked: boolean) => void, label: string) {
     return (
-      <label class="inline-flex min-h-9 cursor-pointer items-center justify-between gap-3 rounded-xl border border-(--border) bg-white/60 px-3 py-2 transition hover:bg-[color-mix(in_srgb,rgb(255_255_255_/_0.6)_80%,black)]">
+      <label class="inline-flex min-h-9 cursor-pointer items-center justify-between gap-3 rounded-xl border border-(--border) bg-(--panel-strong) px-3 py-2 transition hover:bg-[color-mix(in_srgb,var(--accent)_8%,var(--panel)_92%)]">
         <span class="text-xs font-medium text-(--foreground)">{label}</span>
         <input
           class="h-4 w-4 accent-(--accent)"
@@ -1802,11 +1802,11 @@ export function PreferencesPanel() {
   function TokenUsageSection() {
     return (
       <>
-        <PreferenceSection title="Usage" description="Current session and lifetime token totals, including cached input.">
+        <PreferenceSection title="Usage" description="App session and lifetime token totals, including cached input.">
           <PreferenceRow id="token-usage" title="Token usage" description="Counters update from observed model context events.">
             <div class="grid gap-4">
-              {renderTokenUsageScope("Current session", "Since this browser session opened or usage was reset.", state.tokenUsage.session)}
-              {renderTokenUsageScope("Lifetime", "Persisted in this browser until reset.", state.tokenUsage.lifetime)}
+              {renderTokenUsageScope("Current session", "Since the app server started or usage was reset.", state.tokenUsage.session)}
+              {renderTokenUsageScope("Lifetime", "Persisted on the app server until reset.", state.tokenUsage.lifetime)}
               <div class="flex flex-wrap items-center gap-2">
                 <ActionButton
                   tooltip="Reset current session and lifetime token usage"
@@ -1830,7 +1830,7 @@ export function PreferencesPanel() {
         <Dialog
           open={state.tokenUsageResetDialogOpen}
           title="Reset token usage"
-          description="This clears current session and lifetime token counters stored in this browser."
+          description="This clears current session and lifetime token counters stored by the app server."
           onClose={() => {
             store.closeTokenUsageResetDialog();
             renderDetailRoot();

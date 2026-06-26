@@ -19,9 +19,10 @@ test("tracks browser approval and execution lifecycle in one session", () => {
 
   expect(requested).toHaveLength(1);
   expect(requested[0]?.status).toBe("awaiting-approval");
-  expect(findPendingBrowserApproval(requested, { sessionId: requested[0]!.id, toolCallId: "call-1" })?.label).toContain(
+  expect(findPendingBrowserApproval(requested, { runId: "run-1", sessionId: requested[0]!.id, toolCallId: "call-1" })?.label).toContain(
     "https://example.com"
   );
+  expect(findPendingBrowserApproval(requested, { runId: "other-run", sessionId: requested[0]!.id, toolCallId: "call-1" })).toBeUndefined();
 
   const approved = resolveBrowserApproval(requested, {
     runId: "run-1",

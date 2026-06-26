@@ -4,6 +4,7 @@ import path from "node:path";
 import { Codex, type CodexOptions } from "@openai/codex-sdk";
 import { buildCliProcessEnv } from "./cli-process-manager";
 import { resolveCodexSandboxMode } from "./codex-sandbox-policy";
+import { buildGitRepositoryPromptContext } from "../git-context";
 import type {
   PiAgentAdapter,
   PiAgentExecutionController,
@@ -15,7 +16,8 @@ import type {
 
 const CODEX_TOOL_GUIDANCE = [
   "Use native Codex tools first for general work: shell and apply_patch for local repository changes, and live web search for external or current facts.",
-  "Use repository skills when the user's task matches a listed skill; skill instructions override general tool preference for that workflow."
+  "Use repository skills when the user's task matches a listed skill; skill instructions override general tool preference for that workflow.",
+  "Before relying on git commands, follow the Git repository state block in this prompt."
 ].join("\n");
 
 type CodexSdkTextInput = {
@@ -445,7 +447,7 @@ function buildCodexCommandPrelude(request: PiAgentPromptRequest) {
   if (request.fastMode) {
     commands.push("/fast");
   }
-  return commands.join("\n");
+  return [buildGitRepositoryPromptContext(request.cwd), commands.join("\n")].filter(Boolean).join("\n");
 }
 
 function emitCommandExecutionEvent(

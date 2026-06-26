@@ -24,7 +24,7 @@ export const builtinModes: ModeDefinition[] = [
     plannerPrompt: "Spend more effort on scope, risks, contracts, and verification. Ask questions when uncertainty matters.",
     executionPrompt: "Keep execution tightly aligned to approved plan and call out assumptions before broad changes.",
     toolPolicy: "read-heavy",
-    executionAccess: "read-only",
+    executionAccess: "workspace-write",
     planExecutionModeDefault: "approve",
     correctnessIterationModeDefault: "ask-before-iterate",
     updatedAt: "builtin"

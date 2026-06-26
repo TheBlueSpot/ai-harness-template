@@ -1,15 +1,22 @@
 /** @jsxImportSource solid-js */
-import { beforeEach, expect, it } from "bun:test";
+import { afterEach, beforeEach, expect, it } from "bun:test";
 import { createUiTest } from "../../utils/tests/test-harness";
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { clearBrowserStateForTests } from "../../utils/tests/store-test-utils";
 import { clearOverlayStackForTests } from "./overlay-stack";
+import { Popover } from "./popover";
 import { SheetContent } from "./sheet";
 
 createUiTest("SheetContent", () => {
   beforeEach(() => {
     clearBrowserStateForTests();
     clearOverlayStackForTests();
+    (globalThis as typeof globalThis & { __padPilotDisablePortals?: boolean }).__padPilotDisablePortals = true;
+  });
+
+  afterEach(() => {
+    (globalThis as typeof globalThis & { __padPilotDisablePortals?: boolean }).__padPilotDisablePortals = true;
+    document.querySelectorAll("[data-test-primitive-portal-root]").forEach((root) => root.remove());
   });
 
   it("renders nothing when closed", () => {
@@ -44,6 +51,7 @@ createUiTest("SheetContent", () => {
     const body = document.querySelector("[data-test-sheet-body]");
 
     expect(sheet?.className).toContain("h-[100dvh]");
+    expect(sheet?.className).toContain("z-[71]");
     expect(sheet?.className).toContain("overflow-hidden");
     expect(body?.className).toContain("min-h-0");
     expect(body?.className).toContain("flex-1");
@@ -93,5 +101,49 @@ createUiTest("SheetContent", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Inner sheet action" }));
     expect(closed).toBe(false);
+  });
+
+  it("traps Tab focus inside sheet", async () => {
+    const firstButton = document.createElement("button");
+    firstButton.type = "button";
+    firstButton.textContent = "First sheet action";
+    const lastButton = document.createElement("button");
+    lastButton.type = "button";
+    lastButton.textContent = "Last sheet action";
+    render(() => (
+      <SheetContent open title="Focused sheet">
+        <div>{firstButton}{lastButton}</div>
+      </SheetContent>
+    ));
+
+    await screen.findByText("Focused sheet");
+    const closeButton = screen.getByRole("button", { name: "Close sheet" });
+    lastButton.focus();
+    fireEvent.keyDown(lastButton, { key: "Tab" });
+
+    expect(document.activeElement).toBe(closeButton);
+  });
+
+  it("closes nested popover before sheet on Escape", async () => {
+    let sheetClosed = false;
+    let popoverClosed = false;
+    render(() => (
+      <SheetContent open title="Nested sheet" onClose={() => sheetClosed = true}>
+        <Popover
+          open
+          onClose={() => popoverClosed = true}
+          content={<button type="button">Popover sheet action</button>}
+        >
+          <button type="button">Open popover</button>
+        </Popover>
+      </SheetContent>
+    ));
+
+    const popoverAction = await screen.findByText("Popover sheet action");
+    await Promise.resolve();
+    fireEvent.keyDown(popoverAction, { key: "Escape" });
+
+    expect(popoverClosed).toBe(true);
+    expect(sheetClosed).toBe(false);
   });
 });

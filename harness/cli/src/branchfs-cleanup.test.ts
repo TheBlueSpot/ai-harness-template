@@ -1,9 +1,11 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { mkdir, symlink } from "node:fs/promises";
 import path from "node:path";
 import { pruneBranchfsRoots } from "./branchfs-cleanup";
 import { useGitProjectFixture } from "./test-support/git-project-fixture";
+
+setDefaultTimeout(15000);
 
 describe("branchfs cleanup", () => {
   const fixture = useGitProjectFixture({

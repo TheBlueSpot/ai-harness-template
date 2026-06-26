@@ -61,6 +61,7 @@ import {
   resolveRepoRoot,
   SUBAGENT_MILESTONE_INSTRUCTION
 } from "./subagent-environment";
+import { buildGitRepositoryPromptContext, resolveGitRepositoryPromptContext } from "./git-context";
 
 export type PiOrchestratorCallbacks = {
   onPlan?: (plan: AgentPlan) => void;
@@ -896,6 +897,10 @@ async function executeMainAgent(
 }
 
 async function listChangedFiles(cwd: string) {
+  if (!resolveGitRepositoryPromptContext(cwd).isRepository) {
+    return [];
+  }
+
   const tracked = await runProcess(cwd, ["git", "diff", "--name-only", "--relative"]);
   const untracked = await runProcess(cwd, ["git", "ls-files", "--others", "--exclude-standard"]);
   return [...tracked.split(/\r?\n/), ...untracked.split(/\r?\n/)].map((value) => value.trim()).filter(Boolean);
@@ -934,6 +939,11 @@ export async function executePlanPrerequisites(
       continue;
     }
 
+    debugLog("agent.prerequisite.trace.before", {
+      runId: options.runId,
+      prerequisiteId: prerequisite.id,
+      modelId: options.executionModelId
+    });
     emitTrace(options.callbacks, {
       sessionId: options.sessionId,
       stage: "prerequisite-start",
@@ -941,8 +951,19 @@ export async function executePlanPrerequisites(
       detail: prerequisite.instruction,
       modelId: options.executionModelId
     });
+    debugLog("agent.prerequisite.trace.after", {
+      runId: options.runId,
+      prerequisiteId: prerequisite.id,
+      modelId: options.executionModelId
+    });
 
     const prompt = buildPrerequisitePrompt(options.messages, executionPlan, prerequisite, options.cwd);
+    debugLog("agent.prerequisite.prompt.start", {
+      runId: options.runId,
+      prerequisiteId: prerequisite.id,
+      modelId: options.executionModelId,
+      promptChars: prompt.length
+    });
     const response = await adapter.runPrompt({
       kind: "executor",
       cwd: options.cwd,
@@ -954,6 +975,12 @@ export async function executePlanPrerequisites(
       promptCacheIdentity: options.promptCacheIdentity,
       geminiCachedContentName: options.geminiCachedAttachmentContext?.cachedContentName,
       abortSignal: options.abortSignal
+    });
+    debugLog("agent.prerequisite.prompt.complete", {
+      runId: options.runId,
+      prerequisiteId: prerequisite.id,
+      modelId: options.executionModelId,
+      responseChars: response.text.length
     });
 
     if (response.contextUsage) {
@@ -1463,6 +1490,7 @@ function buildExecutionWorkspaceContext(
           ...executionPlan.memorySummaries.map((memory) => `[${memory.scope}] ${memory.label}: ${memory.content}`)
         ].join("\n")
       : "",
+    cwd ? buildGitRepositoryPromptContext(cwd) : "",
     cwd ? buildExecutionSkillContext(cwd) : "",
     workspacePathGuidance ?? "",
     `Execution brief: ${normalizedFinalExecutionBrief}`

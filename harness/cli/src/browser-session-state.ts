@@ -204,10 +204,10 @@ export function recordBrowserToolEnd(sessions: BrowserSession[], input: ToolLife
 
 export function findPendingBrowserApproval(
   sessions: BrowserSession[],
-  input: Pick<ApprovalResolutionInput, "sessionId" | "toolCallId">
+  input: Pick<ApprovalResolutionInput, "runId" | "sessionId" | "toolCallId">
 ) {
   return sessions
-    .find((session) => session.id === input.sessionId)
+    .find((session) => session.id === input.sessionId && session.runId === input.runId)
     ?.activities.find((activity) => activity.toolCallId === input.toolCallId && activity.approval?.status === "pending");
 }
 

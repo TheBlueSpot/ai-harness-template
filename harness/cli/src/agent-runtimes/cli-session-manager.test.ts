@@ -203,7 +203,7 @@ describe("CLI session manager", () => {
       clientId: "client-1"
     });
 
-    await delay(800);
+    await waitForCondition(() => updated.length > 0);
     expect(updated).toHaveLength(1);
 
     await manager.stopSession({
@@ -216,4 +216,14 @@ describe("CLI session manager", () => {
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForCondition(predicate: () => boolean, timeoutMs = 3500) {
+  const startedAt = Date.now();
+  while (!predicate()) {
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new Error("Timed out waiting for CLI session metadata update");
+    }
+    await delay(25);
+  }
 }

@@ -2,7 +2,15 @@ import { afterEach, beforeEach, describe, expect, test as bunTest } from "bun:te
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createMemoryEntryId, type AgentRuntimeCapability, type Assistant, type BackgroundJob, type ProviderBrand } from "../../../shared/protocol";
+import {
+  createMemoryEntryId,
+  parseServerEventFrame,
+  type AgentRuntimeCapability,
+  type Assistant,
+  type BackgroundJob,
+  type ProviderBrand,
+  type SubagentTaskState
+} from "../../../shared/protocol";
 import type { PiAgentAdapter, PiAgentExecutionController, PiAgentPromptRequest, PiAgentPromptResult, PiApiKeyProvider } from "../pi-agent-adapter";
 import { createSampleDocxBuffer } from "../document-extractors/test-fixtures";
 import { clearDevHarnessServerSingleton, getDevHarnessServerSingleton } from "../dev-server-singleton";
@@ -345,6 +353,20 @@ export class FakePiAgentAdapter implements PiAgentAdapter {
         );
       }
 
+      if (request.prompt.includes("read-only scaffold failure")) {
+        return withUsage(
+          JSON.stringify({
+            type: "ready",
+            difficultyScore: 20,
+            summary: "Scaffold missing app files",
+            executionModelId: defaultExecutionModelId,
+            usesSubagents: false,
+            subtasks: [],
+            finalExecutionBrief: "Scaffold app files in the workspace"
+          })
+        );
+      }
+
       if (request.prompt.includes("complex")) {
         if (
           request.prompt.includes("complex prerequisite task") ||
@@ -623,7 +645,7 @@ export class FakePiAgentAdapter implements PiAgentAdapter {
       if (isHardPatchSubtask) {
         const count = (this.subagentCallCounts.get("task-2-hard") ?? 0) + 1;
         this.subagentCallCounts.set("task-2-hard", count);
-        if (count < 3) {
+        if (count < 5) {
           throw new Error("timeout from hard fake subagent");
         }
 
@@ -671,6 +693,15 @@ export class FakePiAgentAdapter implements PiAgentAdapter {
       throw new Error("prerequisite setup failed");
     }
 
+    if (
+      request.kind === "executor" &&
+      (request.prompt.includes("Scaffold app files in the workspace") ||
+        request.prompt.includes("Scaffold missing app files") ||
+        request.prompt.includes("read-only scaffold failure"))
+    ) {
+      return withUsage("I couldn't write the scaffold because the workspace is mounted read-only.");
+    }
+
     if (request.kind === "aggregator" && request.prompt.includes("status window")) {
       await this.waitForDeferredAggregatorRelease();
     }
@@ -687,6 +718,7 @@ export class FakePiAgentAdapter implements PiAgentAdapter {
         nextRequest.onExecutionEvent?.({ type: "session-created" });
         nextRequest.onExecutionEvent?.({ type: "activity" });
         nextRequest.onTextDelta?.("working");
+        const completionDelayMs = nextRequest.prompt.includes("streaming refresh hold") ? 1000 : 120;
         return new Promise<PiAgentPromptResult>((resolve, reject) => {
           rejectAbort = (error: Error) => reject(error);
           setTimeout(() => {
@@ -725,7 +757,7 @@ export class FakePiAgentAdapter implements PiAgentAdapter {
                 }
               }
             });
-          }, 120);
+          }, completionDelayMs);
         });
       }
 
@@ -3162,6 +3194,100 @@ ec32e89b-08a3-41a5-80bf-6823701343f0
         socket.close();
       }, 60000);
 
+      serverTest("foreground chat keeps active background runs while planning", async () => {
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot);
+        const projectId = opened.payload.project.id;
+        const threadId = opened.payload.project.activeThreadId;
+        const now = new Date().toISOString();
+        const automationThreadId = crypto.randomUUID();
+        const jobId = crypto.randomUUID();
+        repository.saveBackgroundJob({
+          id: jobId,
+          projectId,
+          automationThreadId,
+          kind: "ai-routine",
+          name: "Yielded background job",
+          status: "enabled",
+          riskLevel: "safe",
+          definition: {
+            kind: "ai-routine",
+            prompt: "background work",
+            modeId: "implement"
+          },
+          schedule: {
+            type: "interval",
+            intervalSeconds: 600,
+            nextRunAt: now,
+            sourceText: "10m"
+          },
+          scheduleInput: "10m",
+          nextRunAt: now,
+          createdAt: now,
+          updatedAt: now
+        } satisfies BackgroundJob);
+        repository.createAgentRun(projectId, "background linked work", "openai/gpt-5.4", automationThreadId);
+        const linkedRun = repository.getLatestThreadRun(projectId, automationThreadId);
+        expect(linkedRun).toBeTruthy();
+        repository.setAgentRunStatus(projectId, linkedRun!.id, "running-main");
+        const activeRun = repository.createBackgroundJobRun({
+          jobId,
+          projectId,
+          automationThreadId,
+          triggerSource: "schedule",
+          status: "running",
+          riskLevel: "safe",
+          approvalStatus: "not-needed"
+        });
+        repository.setBackgroundJobRunStatus(activeRun.id, "running", { linkedAgentRunId: linkedRun!.id });
+
+        let sawBackgroundCancellation = false;
+        let sawLinkedRunStopped = false;
+        socket.addEventListener("message", (event) => {
+          for (const payload of parseMessageEventPayloads(event)) {
+            if (
+              payload.type === "background-job-run.updated" &&
+              payload.payload.run.id === activeRun.id &&
+              payload.payload.run.status === "cancelled"
+            ) {
+              sawBackgroundCancellation = true;
+            }
+            if (payload.type === "run.updated" && payload.payload.run.id === linkedRun!.id && payload.payload.run.status === "stopped") {
+              sawLinkedRunStopped = true;
+            }
+          }
+        });
+        const readyRunPromise = waitForEvent(
+          socket,
+          "run.updated",
+          (event) => event.payload.run.id !== linkedRun!.id && event.payload.run.status === "ready",
+          10000
+        );
+
+        socket.send(
+          JSON.stringify(
+            createChatSendCommand({
+              requestId: "req-foreground-preserves-background",
+              projectId,
+              threadId,
+              content: "simple foreground task",
+              modeId: "plan",
+              modeLocked: true
+            })
+          )
+        );
+
+        const readyRun = await readyRunPromise;
+        expect(repository.getBackgroundJobRun(activeRun.id)?.status).toBe("running");
+        expect(repository.getBackgroundJobRun(activeRun.id)?.failureMessage).toBeUndefined();
+        expect(repository.getRun(projectId, linkedRun!.id)?.status).toBe("running-main");
+        expect(sawBackgroundCancellation).toBe(false);
+        expect(sawLinkedRunStopped).toBe(false);
+        expect(readyRun.payload.run.status).toBe("ready");
+        socket.close();
+      }, 60000);
+
       serverTest("background job delete cancels an active run before removing the job", async () => {
         const socket = createSocket(port);
         await waitForEvent(socket, "connection.ready");
@@ -3218,6 +3344,12 @@ ec32e89b-08a3-41a5-80bf-6823701343f0
           (event) => event.payload.run.id === runningRun.payload.run.id && event.payload.run.status === "cancelled",
           10000
         );
+        const deletedJobsPromise = waitForEvent(
+          socket,
+          "background-jobs.updated",
+          (event) => !event.payload.backgroundJobs.jobs.some((job: BackgroundJob) => job.id === jobId),
+          10000
+        );
         socket.send(
           JSON.stringify({
             type: "background-job.delete",
@@ -3230,12 +3362,7 @@ ec32e89b-08a3-41a5-80bf-6823701343f0
         );
 
         await cancelledRunPromise;
-        await waitForEvent(
-          socket,
-          "background-jobs.updated",
-          (event) => !event.payload.backgroundJobs.jobs.some((job: BackgroundJob) => job.id === jobId),
-          10000
-        );
+        await deletedJobsPromise;
         expect(repository.getBackgroundJob(jobId)).toBeUndefined();
         expect(repository.getBackgroundJobRun(runningRun.payload.run.id)).toBeUndefined();
         socket.close();
@@ -3252,12 +3379,13 @@ ec32e89b-08a3-41a5-80bf-6823701343f0
         const readyPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "ready");
         let planMessageSeen = false;
         socket.addEventListener("message", (event) => {
-          const payload = JSON.parse(event.data as string);
-          if (
-            (payload.type === "chat.message-appended" || payload.type === "thread.message-appended") &&
-            payload.payload?.message?.kind === "plan-summary"
-          ) {
-            planMessageSeen = true;
+          for (const payload of parseMessageEventPayloads(event)) {
+            if (
+              (payload.type === "chat.message-appended" || payload.type === "thread.message-appended") &&
+              payload.payload.message.kind === "plan-summary"
+            ) {
+              planMessageSeen = true;
+            }
           }
         });
     
@@ -3307,6 +3435,32 @@ ec32e89b-08a3-41a5-80bf-6823701343f0
     
         const ready = await readyPromise;
         expect(ready.payload.run.plan?.gating.mode).toBe("approve");
+        socket.close();
+      });
+
+      serverTest("saved plan gate preference overrides plan mode approval default", async () => {
+        repository.setPlanExecutionModeDefault("immediate");
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot, "req-plan-mode-immediate-open");
+        const projectId = opened.payload.project.id;
+        const threadId = opened.payload.project.activeThreadId;
+        const readyPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "ready");
+
+        socket.send(
+          JSON.stringify(
+            createChatSendCommand({
+              requestId: "req-plan-mode-immediate-send",
+              projectId,
+              threadId,
+              content: "Plan the safest rollout strategy before implementing anything.",
+              modeId: "plan"
+            })
+          )
+        );
+
+        const ready = await readyPromise;
+        expect(ready.payload.run.plan?.gating.mode).toBe("immediate");
         socket.close();
       });
 
@@ -4597,6 +4751,89 @@ export function registerServerSubagentTests(options: ServerTestShardOptions = {}
         socket.close();
       }, 60000);
 
+      serverTest("resumes partial subagent runs by reactivating the same run", async () => {
+        repository.setSubagentWorktreeStrategyDefault("same-worktree");
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot);
+        const projectId = opened.payload.project.id;
+        const threadId = opened.payload.project.activeThreadId;
+        const ready = await sendChatUntilReady(socket, {
+          requestId: "req-resume-partial",
+          projectId,
+          threadId,
+          content: "please resume task",
+          modeId: "plan",
+          modeLocked: true
+        }, 30000).catch((error) => {
+          throw new Error(`Timed out waiting for resume test ready run: ${error instanceof Error ? error.message : String(error)}`);
+        });
+        const partialPromise = waitForEvent(
+          socket,
+          "run.updated",
+          (event) => event.payload.run.id === ready.payload.run.id && event.payload.run.status === "partial-complete",
+          30000
+        );
+
+        await executeReadyRun(socket, {
+          requestId: "req-resume-partial-execute",
+          projectId,
+          threadId,
+          runId: ready.payload.run.id
+        }, 30000);
+        expect(repository.getRun(projectId, ready.payload.run.id)?.status).toBe("partial-complete");
+        const partial = await partialPromise.catch((error) => {
+          throw new Error(`Timed out waiting for resume test partial run: ${error instanceof Error ? error.message : String(error)}`);
+        });
+        expect(partial.payload.run.subtasks.find((task: SubagentTaskState) => task.id === "task-1")?.status).toBe("completed");
+        expect(partial.payload.run.subtasks.find((task: SubagentTaskState) => task.id === "task-2")?.status).toBe("failed");
+
+        const runningPromise = waitForEvent(
+          socket,
+          "run.updated",
+          (event) => event.payload.run.id === ready.payload.run.id && event.payload.run.status === "running-subagents",
+          30000
+        );
+        const completedPromise = waitForEvent(
+          socket,
+          "run.updated",
+          (event) => event.payload.run.id === ready.payload.run.id && event.payload.run.status === "completed",
+          30000
+        );
+        const completePromise = waitForEvent(
+          socket,
+          "chat.complete",
+          (event) => event.payload.projectId === projectId && event.payload.threadId === threadId,
+          30000
+        );
+
+        socket.send(
+          JSON.stringify({
+            type: "run.resume",
+            requestId: "req-resume-partial-resume",
+            payload: {
+              projectId,
+              threadId,
+              runId: ready.payload.run.id
+            }
+          })
+        );
+
+        const running = await runningPromise.catch((error) => {
+          throw new Error(`Timed out waiting for resume test running run: ${error instanceof Error ? error.message : String(error)}`);
+        });
+        expect(running.payload.run.completedAt).toBeUndefined();
+        const completed = await completedPromise.catch((error) => {
+          throw new Error(`Timed out waiting for resume test completed run: ${error instanceof Error ? error.message : String(error)}`);
+        });
+        await completePromise.catch((error) => {
+          throw new Error(`Timed out waiting for resume test chat complete: ${error instanceof Error ? error.message : String(error)}`);
+        });
+        expect(completed.payload.run.subtasks.find((task: SubagentTaskState) => task.id === "task-1")?.status).toBe("completed");
+        expect(completed.payload.run.subtasks.find((task: SubagentTaskState) => task.id === "task-2")?.status).toBe("completed");
+        socket.close();
+      }, 60000);
+
       serverTest("runs prerequisites before subagent fan-out and persists completion", async () => {
         repository.setSubagentWorktreeStrategyDefault("separate-worktrees");
         const socket = createSocket(port);
@@ -4747,15 +4984,16 @@ export function registerServerSubagentTests(options: ServerTestShardOptions = {}
         const updatedMessages: Array<{ role: string; kind?: string; content: string }> = [];
         const streamingTailContents: string[] = [];
         const listener = (event: MessageEvent) => {
-          const payload = JSON.parse(event.data as string);
-          if (payload.type === "chat.message-appended" || payload.type === "thread.message-appended") {
-            appendedMessages.push(payload.payload.message);
-          }
-          if (payload.type === "chat.message-updated") {
-            updatedMessages.push(payload.payload.message);
-          }
-          if (payload.type === "chat.streaming-tail-updated") {
-            streamingTailContents.push(payload.payload.segments.map((segment: { content: string }) => segment.content).join("\n"));
+          for (const payload of parseMessageEventPayloads(event)) {
+            if (payload.type === "chat.message-appended" || payload.type === "thread.message-appended") {
+              appendedMessages.push(payload.payload.message);
+            }
+            if (payload.type === "chat.message-updated") {
+              updatedMessages.push(payload.payload.message);
+            }
+            if (payload.type === "chat.streaming-tail-updated") {
+              streamingTailContents.push(payload.payload.segments.map((segment: { content: string }) => segment.content).join("\n"));
+            }
           }
         };
         socket.addEventListener("message", listener);
@@ -4879,9 +5117,10 @@ export function registerServerSubagentTests(options: ServerTestShardOptions = {}
 
         let completeResolved = false;
         const completeListener = (event: MessageEvent) => {
-          const payload = JSON.parse(event.data as string);
-          if (payload.type === "chat.complete") {
-            completeResolved = true;
+          for (const payload of parseMessageEventPayloads(event)) {
+            if (payload.type === "chat.complete") {
+              completeResolved = true;
+            }
           }
         };
         socket.addEventListener("message", completeListener);
@@ -4962,9 +5201,10 @@ export function registerServerSubagentTests(options: ServerTestShardOptions = {}
         const threadId = opened.payload.project.activeThreadId;
         const chatMessages: string[] = [];
         const listener = (event: MessageEvent) => {
-          const payload = JSON.parse(event.data as string);
-          if (payload.type === "chat.message-appended" || payload.type === "thread.message-appended") {
-            chatMessages.push(payload.payload.message.content);
+          for (const payload of parseMessageEventPayloads(event)) {
+            if (payload.type === "chat.message-appended" || payload.type === "thread.message-appended") {
+              chatMessages.push(payload.payload.message.content);
+            }
           }
         };
         socket.addEventListener("message", listener);
@@ -5074,6 +5314,47 @@ export function registerServerCorrectnessTests(options: ServerTestShardOptions =
         expect(correctiveReady.payload.run.plan?.gating.mode).toBe("immediate");
         expect(correctiveReady.payload.run.plan?.summary).toContain("TypeScript modules directly");
         expect(correctiveReady.payload.run.plan?.summary).not.toContain("node_modules");
+        socket.close();
+      }, 15000);
+
+      serverTest("presents a corrective plan when write-required execution produces no files", async () => {
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot, "req-correctness-write-block-open");
+        const projectId = opened.payload.project.id;
+        const threadId = opened.payload.project.activeThreadId;
+        const correctiveReadyPromise = waitForEvent(
+          socket,
+          "run.updated",
+          (event) => event.payload.run.status === "ready" && event.payload.run.plan?.origin === "correctness-followup",
+          10000
+        );
+
+        const initialReadyPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "ready", 10000);
+        socket.send(JSON.stringify(createChatSendCommand({
+          requestId: "req-correctness-write-block-send",
+          projectId,
+          threadId,
+          content: "read-only scaffold failure"
+        })));
+        const initialReady = await initialReadyPromise;
+        await executeReadyRunUntil(
+          socket,
+          {
+            requestId: "req-correctness-write-block-execute",
+            projectId,
+            threadId,
+            runId: initialReady.payload.run.id
+          },
+          [correctiveReadyPromise],
+          10000,
+          { includeChatComplete: false }
+        );
+
+        const correctiveReady = await correctiveReadyPromise;
+        expect(correctiveReady.payload.run.plan?.origin).toBe("correctness-followup");
+        expect(correctiveReady.payload.run.plan?.summary).toContain("produced no file changes");
+        expect(correctiveReady.payload.run.plan?.finalExecutionBrief).toContain("workspace-write execution");
         socket.close();
       }, 15000);
 
@@ -5245,6 +5526,53 @@ export function registerServerProjectsAndHistoryTests(options: ServerTestShardOp
         await deferredTracePromise;
         await completePromise;
         expect(adapter.calls.filter((call) => call.kind === "executor")).toHaveLength(1);
+        socket.close();
+      }, 10000);
+
+      serverTest("stops stale active runs when refresh has no live execution", async () => {
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot);
+        const projectId = opened.payload.project.id;
+        const threadId = opened.payload.project.activeThreadId;
+        const ready = await sendChatUntilReady(socket, {
+          requestId: "req-refresh-stale-1",
+          projectId,
+          threadId,
+          content: "simple task"
+        });
+        repository.setAgentRunStatus(projectId, ready.payload.run.id, "running-main");
+        const stoppedPromise = waitForEvent(
+          socket,
+          "run.updated",
+          (event) => event.payload.run.id === ready.payload.run.id && event.payload.run.status === "stopped",
+          10000
+        );
+        const systemMessagePromise = waitForEvent(
+          socket,
+          "thread.message-appended",
+          (event) =>
+            event.payload.threadId === threadId &&
+            event.payload.message.content.includes("no live execution controller"),
+          10000
+        );
+
+        socket.send(
+          JSON.stringify({
+            type: "run.refresh",
+            requestId: "req-refresh-stale-2",
+            payload: {
+              projectId,
+              threadId,
+              runId: ready.payload.run.id
+            }
+          })
+        );
+
+        const stopped = await stoppedPromise;
+        await systemMessagePromise;
+        expect(stopped.payload.run.failureCategory).toBe("controller-lost");
+        expect(repository.getRun(projectId, ready.payload.run.id)?.status).toBe("stopped");
         socket.close();
       }, 10000);
 
@@ -5820,7 +6148,7 @@ export function registerServerProjectsAndHistoryTests(options: ServerTestShardOp
           requestId: "req-thread-refresh-1",
           projectId,
           threadId: originalThreadId,
-          content: "streaming refresh"
+          content: "streaming refresh hold"
         });
         const runningRunPromise = waitForEvent(socket, "run.updated", (event) => event.payload.run.status === "running-main");
         const deltaPromise = waitForEvent(socket, "chat.delta", (event) => event.payload.threadId === originalThreadId);
@@ -6659,9 +6987,10 @@ export function registerServerProjectsAndHistoryTests(options: ServerTestShardOp
         const threadId = opened.payload.project.activeThreadId;
         const contextEvents: any[] = [];
         const listener = (event: MessageEvent) => {
-          const payload = JSON.parse(event.data as string);
-          if (payload.type === "project.context") {
-            contextEvents.push(payload);
+          for (const payload of parseMessageEventPayloads(event)) {
+            if (payload.type === "project.context") {
+              contextEvents.push(payload);
+            }
           }
         };
         socket.addEventListener("message", listener);
@@ -6686,6 +7015,10 @@ export function registerServerProjectsAndHistoryTests(options: ServerTestShardOp
         expect(contextEvents.some((event) => event.payload.contextUsage.sourceKind === "main")).toBe(true);
         expect(contextEvents.every((event) => event.payload.contextUsage.contextWindow === 200000)).toBe(true);
         expect(contextEvents.every((event) => typeof event.payload.contextUsage.modelId === "string")).toBe(true);
+        expect(contextEvents.every((event) => event.payload.tokenUsage?.session.totalTokensIncludingCached > 0)).toBe(true);
+        expect(contextEvents.at(-1)?.payload.tokenUsage.lifetime.totalTokensIncludingCached).toBeGreaterThanOrEqual(
+          contextEvents.at(-1)?.payload.tokenUsage.session.totalTokensIncludingCached
+        );
         socket.close();
       });
   });
@@ -6783,6 +7116,22 @@ export function registerServerRuntimeBudgetTests(options: ServerTestShardOptions
         })
       );
       const ready = await readyPromise;
+
+      const staleThreadRejectedPromise = waitForEvent(socket, "command.rejected", (event) => event.requestId === "req-complete-stale-thread");
+      socket.send(
+        JSON.stringify({
+          type: "run.complete",
+          requestId: "req-complete-stale-thread",
+          payload: {
+            projectId: opened.payload.project.id,
+            threadId: "thread-stale-complete",
+            runId: ready.payload.run.id,
+            assistantMessageContent: "wrong thread"
+          }
+        })
+      );
+      const staleThreadRejected = await staleThreadRejectedPromise;
+      expect(staleThreadRejected.payload.detail).toContain("not active for project");
 
       const completedPromise = waitForEvent(
         socket,
@@ -7036,23 +7385,25 @@ function waitForEvent(socket: EventTarget, type: string, predicate?: (payload: a
       if (!(event instanceof MessageEvent)) {
         return;
       }
-      const payload = JSON.parse(event.data as string);
-      const effectivePayload =
-        type === "chat.message-appended" && payload.type === "thread.message-appended"
-          ? {
-              ...payload,
-              type: "chat.message-appended",
-              payload: {
-                ...payload.payload,
-                state: {
-                  isStreaming: false
+      for (const payload of parseMessageEventPayloads(event)) {
+        const effectivePayload =
+          type === "chat.message-appended" && payload.type === "thread.message-appended"
+            ? {
+                ...payload,
+                type: "chat.message-appended",
+                payload: {
+                  ...payload.payload,
+                  state: {
+                    isStreaming: false
+                  }
                 }
               }
-            }
-          : payload;
-      if (effectivePayload.type === type && (predicate ? predicate(effectivePayload) : true)) {
-        cleanup();
-        resolve(effectivePayload);
+            : payload;
+        if (effectivePayload.type === type && (predicate ? predicate(effectivePayload) : true)) {
+          cleanup();
+          resolve(effectivePayload);
+          return;
+        }
       }
     };
 
@@ -7080,6 +7431,19 @@ function waitForEvent(socket: EventTarget, type: string, predicate?: (payload: a
     socket.addEventListener("message", listener);
     socket.addEventListener("error", onError, { once: true });
   });
+}
+
+function parseMessageEventPayloads(event: MessageEvent): any[] {
+  if (typeof event.data !== "string") {
+    return [];
+  }
+
+  const raw = JSON.parse(event.data);
+  try {
+    return parseServerEventFrame(raw);
+  } catch {
+    return [raw];
+  }
 }
 
 function waitForCondition(predicate: () => boolean, timeoutMs: number = DEFAULT_TEST_EVENT_TIMEOUT_MS, intervalMs: number = 25) {

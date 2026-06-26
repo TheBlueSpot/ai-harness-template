@@ -44,7 +44,10 @@ function getBackgroundRunFilter(
     return undefined;
   }
 
-  if (run.status === "awaiting-approval" || run.status === "awaiting-user-input" || run.approvalStatus === "pending") {
+  if (run.status === "awaiting-user-input") {
+    return "input";
+  }
+  if (run.status === "awaiting-approval" || run.approvalStatus === "pending") {
     return "approval";
   }
   if (run.status === "queued") {

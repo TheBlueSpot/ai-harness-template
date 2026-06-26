@@ -5,6 +5,7 @@ export type TestSegment = {
   name: string;
   targets: string[];
   env?: Record<string, string>;
+  serial?: boolean;
 };
 
 const uiSensitiveCliTests = new Set([
@@ -53,7 +54,8 @@ export function buildDefaultTestSegments(repoRoot: string): TestSegment[] {
     },
     {
       name: "ui",
-      targets: [...uiCliTests, normalizePath("harness/ui/src")]
+      targets: [...uiCliTests, normalizePath("harness/ui/src")],
+      serial: true
     }
   ];
 }

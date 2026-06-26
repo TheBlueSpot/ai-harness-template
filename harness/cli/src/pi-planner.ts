@@ -20,6 +20,7 @@ import { buildWorkspacePathGuidance, normalizeWorkspaceRelativePaths } from "./w
 import { assembleDeterministicPrompt } from "./deterministic-prompt";
 import type { PromptCacheIdentity } from "./prompt-cache";
 import type { GeminiCachedAttachmentContext } from "./gemini-cached-contents";
+import { buildGitRepositoryPromptContext } from "./git-context";
 
 export const GPT_DEFAULT_PLANNING_MODEL_ID = "openai/gpt-5.4";
 export const GPT_DEFAULT_EXECUTION_MODEL_ID = "openai/gpt-5.4";
@@ -126,6 +127,7 @@ export async function planTask(
           ...options.memorySummaries.map((memory) => `[${memory.scope}] ${memory.label}: ${memory.content}`)
         ].join("\n")
       : "",
+        buildGitRepositoryPromptContext(options.cwd),
         workspacePathGuidance ?? ""
       ]
     },

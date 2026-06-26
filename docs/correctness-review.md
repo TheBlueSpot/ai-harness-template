@@ -113,22 +113,15 @@ Edge case: One assistant owns many historical background runs. Opening its Jobs 
 
 Fix direction: Add assistant-scoped background job and run pages, then hydrate the selected Jobs tab on demand like assistant detail.
 
-### CR-033: Overlay dismissal and focus behavior has no stack owner
+### CR-033: Closed - overlay dismissal and focus behavior has a stack owner
 
 Stories: `US-UI-002`, `US-UI-005`, `US-ACTIVATION-004`, `US-NOTIFICATIONS-003`.
 
 Code map: [dialog primitive](../harness/ui/src/components/primitives/dialog.tsx), [sheet primitive](../harness/ui/src/components/primitives/sheet.tsx), [popover primitive](../harness/ui/src/components/primitives/popover.tsx), [tutorial overlay](../harness/ui/src/components/tutorial-overlay.tsx), [notification inbox](../harness/ui/src/components/notification-inbox.tsx), [chat composer popovers](../harness/ui/src/components/chat-panel.tsx).
 
-Impact: Popovers are portaled and outside-click dismissal exists, but modal, sheet, popover, and tutorial layers each own independent global `Escape` listeners and fixed `z-index` values. Dialogs and sheets focus their surface on open but do not trap focus. When a popover is opened inside a modal or tutorial flow, `Escape` and `Tab` behavior depends on event propagation and DOM order rather than an explicit overlay stack.
+Status: Closed for shared `Dialog`, `Sheet`, and `Popover` primitives. They now register with a shared overlay stack, route topmost Escape handling through it, trap focus in modal surfaces, restore prior focus, and have nested popover-in-dialog plus popover-in-sheet tests.
 
-Edge cases:
-
-- Pressing `Escape` inside a composer or inbox popover can also reach the dialog, sheet, or tutorial listener underneath.
-- `Tab` can leave an active modal or sheet and move into blurred background controls.
-- Hardcoded layer values for sheet, dialog, popover, toaster, tooltip, and tutorial overlays can regress when a new dense panel adds another overlay.
-- Current tests verify single-layer Escape and backdrop dismissal, but not nested overlay priority or focus containment.
-
-Fix direction: Add a shared overlay stack primitive that owns topmost Escape handling, focus trap and release, outside-click policy, and layer tokens. Route `Dialog`, `Sheet`, `Popover`, tutorial spotlight, and inbox popovers through it, then add tests for nested popover-in-dialog dismissal, keyboard focus cycling, and tooltip or toaster layering.
+Remaining watch item: keep tutorial, tooltip, toaster, IDE, and terminal overlays on the same stack as those surfaces evolve.
 
 ### CR-034: Global hotkeys and composer submit paths do not fully respect input ownership
 
@@ -296,17 +289,15 @@ Edge case: Model output says `usesSubagents: false` but includes conflicting sub
 
 Fix direction: Add semantic `superRefine` or normalization before persistence. Fail or repair contradictory `usesSubagents`, difficulty, contracts, prerequisites, and worktree strategy fields before any plan reaches the ready card.
 
-### CR-047: Browser approval commands do not validate the run and thread locator they carry
+### CR-047: Closed - browser approval commands validate run and thread ownership
 
 Stories: `US-BROWSER-001`, `US-BROWSER-002`, `US-BROWSER-003`, `US-NOTIFICATIONS-001`.
 
 Code map: [browser approval command](../harness/shared/protocol.ts), [browser approval handler](../harness/cli/src/server.ts), [browser session state](../harness/cli/src/browser-session-state.ts), [notification sync](../harness/cli/src/server.ts).
 
-Impact: The protocol carries project, thread, session, and tool ids, but the handler searches only active or last runs and ignores thread ownership. Resolution looks up pending approval by session and tool, then records the owner as `main`. Background or older run approvals can be invisible, or a stale command can resolve the wrong pending approval.
+Status: Closed for stale foreground approval resolution. The server now requires the payload thread id to match the target run, the pending approval lookup includes run id plus session and tool ids, and websocket coverage proves a wrong-thread approval leaves the pending approval untouched before the owning-thread command succeeds.
 
-Edge case: An inbox notification points to a browser approval from a background thread. The user answers it after switching threads; the server says the run is unavailable, or resolves another approval with matching session/tool ids.
-
-Fix direction: Resolve approvals by a durable `(projectId, threadId, runId, sessionId, toolCallId, owner)` locator. Sync notifications from every pending approval run or explicitly archive stale notifications with a reason.
+Remaining watch item: keep future background-run browser approval notifications on the same durable locator, including assistant-owned and subagent-owned browser sessions.
 
 ### CR-048: Debug artifacts bypass the normal redaction and budget path
 
@@ -448,13 +439,13 @@ Stories: `US-ASSISTANTS-001`, `US-ASSISTANTS-002`, `US-JOBS-001`, `US-JOBS-002`,
 
 Code map: [scheduler](../harness/cli/src/background-job-scheduler.ts), [background executor](../harness/cli/src/background-job-executor.ts), [server lifecycle](../harness/cli/src/server.ts), [jobs panel](../harness/ui/src/components/background-jobs-panel.tsx), [notification inbox](../harness/ui/src/components/notification-inbox.tsx), [run navigation](../harness/ui/src/background-run-navigation.ts), [preferences](../harness/ui/src/components/preferences-modal.tsx).
 
-Impact: The background approval preference only controls scheduled and startup launch approval. Manual run-now already queues as approved, and background AI jobs execute after planning. Other stops still exist: assistant or planner input, browser per-tool approval, global pause, assistant pause, and circuit breaker. The UI then routes `awaiting-user-input` into the `approval` run filter, shows both launch approval and input with similar amber treatment, and makes launch approval notifications noninteractive while browser approval notifications are actionable inline.
+Impact: The background approval preference only controls scheduled and startup launch approval. Manual run-now already queues as approved, and background AI jobs execute after planning. Other stops still exist: assistant or planner input, browser per-tool approval, global pause, assistant pause, and circuit breaker. The UI now separates launch approvals from user-input stops in run filtering and notification navigation, but broader stop reasons still need one shared intervention descriptor.
 
 Edge case: A user sets background approval to allow all, an assistant-owned job runs, then the planner asks for missing input or a browser step needs approval. The Jobs pane or toast still feels like "approval required" without showing which gate stopped the run, why the auto-run setting did not apply, or the smallest next action.
 
-Fix direction: Replace the single approval bucket with a typed intervention model such as launch approval, user input, browser permission, pause, circuit breaker, and failure. Every stop should carry `why`, `scope`, `risk`, `affected job/run`, `blocking setting`, and `next action`. Make background-run launch approvals interactive in the inbox, split filters into Approval and Input, and add a local "why did this stop?" explanation surfaced from the same backend state used by guards.
+Fix direction: Replace the remaining ad hoc stop wording with a typed intervention model such as launch approval, user input, browser permission, pause, circuit breaker, and failure. Every stop should carry `why`, `scope`, `risk`, `affected job/run`, `blocking setting`, and `next action`. Make background-run launch approvals interactive in the inbox and add a local "why did this stop?" explanation surfaced from the same backend state used by guards.
 
-Partial closeout note: non-blocking assistant questions now have an explicit auto-approval preference. The broader typed intervention model remains open for launch approvals, input lanes, browser permissions, pause, circuit breaker, and failure readback.
+Partial closeout note: non-blocking assistant questions now have an explicit auto-approval preference, and run filters split `Approval` from `Input` so `awaiting-user-input` no longer lands in the approval bucket. The broader typed intervention model remains open for launch approvals, browser permissions, pause, circuit breaker, and failure readback.
 
 ## Critical Duplicate Logic To Extract
 
@@ -527,7 +518,7 @@ Use [coverage-matrix.md](coverage-matrix.md) as the baseline. Highest-value addi
 19. `US-THREADS-008`, `US-RUNTIMES-002`, and `US-MARKDOWN-001`: assert assistant and PTY streams are coalesced, persisted at bounded cadence, and fail or detach slow websocket clients before queues grow without limit.
 20. `US-RUNS-009` and `US-PERSISTENCE-007`: add long-thread payload-size regression tests for append, run-status, subtask, and trace events.
 21. `US-UI-010`, `US-UI-015`, and `US-MARKDOWN-ROADMAP-001`: add a large streamed-code and large-trace UI fixture that proves live markdown and dense panes stay bounded.
-22. `US-UI-002`, `US-UI-005`, and `US-NOTIFICATIONS-003`: test nested overlay Escape priority, focus trapping, outside-click dismissal, and layer order across dialog, sheet, popover, tooltip, toaster, and tutorial surfaces.
+22. `US-UI-002`, `US-UI-005`, and `US-NOTIFICATIONS-003`: shared dialog, sheet, and popover coverage now guards nested Escape priority and focus trapping; extend the same stack coverage when tooltip, toaster, and tutorial surfaces add new behavior.
 23. `US-SEARCH-001`, `US-UI-016`, and `US-UI-017`: prove global shortcuts do not fire from editable controls unless explicitly opted in, and that composer keyboard submit cannot bypass disabled state or dispatch twice.
 24. `US-ATTACHMENTS-001`, `US-ATTACHMENTS-002`, and `US-PERSISTENCE-008`: cover drag/drop affordance, unsent attachment preservation or cleanup, and attachment chip behavior across thread switch and reload.
 25. `US-SEARCH-001`, `US-JOBS-002`, and `US-NOTIFICATIONS-001`: cover switcher framework metadata, pending approval or job activity badges, and right-arrow thread preview with stale project/thread deletion.
@@ -536,14 +527,14 @@ Use [coverage-matrix.md](coverage-matrix.md) as the baseline. Highest-value addi
 28. `US-UI-002`, `US-UI-016`, `US-RUNS-005`, and `US-MARKDOWN-ROADMAP-001`: cover reduced-motion behavior, status-tint non-color cues, skeleton teardown on fast thread switches, smooth-scroll affordance state, and quote-reply focus ownership.
 29. `US-DEV-007` and `US-ACTIVATION-001`: run doctor and runtime health from an extracted portable launcher folder and prove it does not depend on source-checkout `node_modules`.
 30. `US-PREFERENCES-001` and `US-UI-017`: ensure preferences tests target visible, real controls and that no hidden interactive controls are exposed only for tests.
-31. `US-RUNS-004`, `US-RUNS-009`, and `US-RUNS-016`: reject `run.complete` outside executing states, make final message plus status atomic, and cover deferred `run.refresh` after active streaming.
+31. `US-RUNS-004`, `US-RUNS-009`, and `US-RUNS-016`: stale-thread `run.complete` rejection is covered; keep hardening terminal-state authority, final message plus status atomicity, and deferred `run.refresh` after active streaming.
 32. `US-PLANNING-002` and `US-RUNS-013`: reject partial planning-answer batches when other required questions remain pending.
 33. `US-THREADS-010` and `US-RUNTIMES-003`: archive threads only after live run and CLI activity stop succeeds, including stop-failure rollback tests.
 34. `US-JOBS-002` and `US-JOBS-004`: cover `partial-complete` as terminal and retryable or explicitly non-retryable across guards, repository, UI, and notifications.
 35. `US-PERSISTENCE-014`, `US-THREADS-007`, and `US-ATTACHMENTS-002`: preserve or restore chat drafts and unsent attachments when commands queue, reject, or fail to flush.
 36. `US-WORKTREE-001`, `US-WORKTREE-002`, `US-WORKTREE-007`, and `US-UI-022`: add nested-project dirty fingerprint, BranchFS symlink, IDE symlink escape, and missing `package.json` integration tests.
 37. `US-PLANNING-003`, `US-PLANNING-010`, and `US-WORKTREE-004`: validate semantic plan invariants beyond schema shape before ready plans persist.
-38. `US-BROWSER-001`, `US-BROWSER-002`, and `US-BROWSER-003`: resolve browser approvals by durable run/thread/session/tool owner, including background-run inbox notifications.
+38. `US-BROWSER-001`, `US-BROWSER-002`, and `US-BROWSER-003`: foreground browser approvals now validate run/thread/session/tool ownership; extend the same durable locator to background-run inbox notifications.
 39. `US-UI-020` and `US-DEV-020`: prove debug artifact files pass through the same redaction and budget path as persisted tool activity.
 40. `US-PROVIDERS-002`, `US-PROVIDERS-006`, `US-RUNTIMES-006`, and `US-RUNS-012`: cover Claude model namespace acceptance and Gemini cache invalidation on Google key rotation.
 41. `US-UI-023` and `US-RUNTIMES-003`: cover terminal spawn failure, high-output chunk cadence, scrollback rollover, and xterm append behavior.
@@ -554,7 +545,7 @@ Use [coverage-matrix.md](coverage-matrix.md) as the baseline. Highest-value addi
 46. `US-ACTIVATION-004` and `US-ACTIVATION-007`: prove tutorial completion cannot be recorded while the target is missing or the mapped setup check remains unresolved.
 47. `US-THREADS-008`, `US-UI-015`, `US-UI-017`, and `US-DEV-017`: keep browser-backed first-paint virtual-list coverage current when tab-mounted transcript, assistant, jobs, runs, memory, or trace wrappers diverge from the primitive fixture.
 48. `US-UI-010`, `US-UI-022`, `US-THREADS-008`, and `US-RUNS-009`: keep browser coverage for Ctrl/Meta-click IDE open from transcript, streamed tool, trace, log, and assistant-chat surfaces with pointer affordance and project-owned target scope.
-49. `US-ASSISTANTS-001`, `US-JOBS-002`, `US-RUNS-013`, and `US-BROWSER-001`: prove allow-all background launch policy does not suppress required planner, assistant, or browser interventions, and prove each intervention renders with a distinct reason, inline action, and matching backend rejection rule.
+49. `US-ASSISTANTS-001`, `US-JOBS-002`, `US-RUNS-013`, and `US-BROWSER-001`: approval and input run filters are split; next prove allow-all background launch policy does not suppress required planner, assistant, or browser interventions, and prove each remaining intervention renders with a distinct reason, inline action, and matching backend rejection rule.
 
 ## Bottom Line
 

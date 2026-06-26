@@ -11,7 +11,7 @@ import type {
   PlanningQuestionNotification
 } from "../../../shared/protocol";
 import { createUiTest } from "../utils/tests/test-harness";
-import { clearBrowserStateForTests, seedHarnessStoreForTests } from "../utils/tests/store-test-utils";
+import { captureDispatchedCommands, clearBrowserStateForTests, seedHarnessStoreForTests } from "../utils/tests/store-test-utils";
 import { createHarnessStateFixture, createViewProjectFixture } from "../utils/tests/test-fixtures";
 import { createEmptyAssistantsState, createEmptyBackgroundJobsState, harnessStore, type JobsRunFilter } from "../harness-store";
 import { getAssistantQuestionDefaultChoices } from "../assistant-question-defaults";
@@ -497,8 +497,42 @@ createUiTest("openBackgroundRunNotificationFromInbox", () => {
   });
 
   it("opens generic background run notifications on selected runs details", () => {
+    const commands: ClientCommand[] = [];
     seedHarnessStoreForTests(
       createHarnessStateFixture({
+        workspace: {
+          activeProjectId: "project-1",
+          projects: [
+            createViewProjectFixture({
+              id: "project-1",
+              activeThreadId: "thread-user",
+              threads: [
+                {
+                  id: "thread-user",
+                  kind: "user",
+                  status: "active",
+                  pinned: false,
+                  title: "User thread",
+                  titleSource: "generated",
+                  badgeState: "idle",
+                  messageCount: 0,
+                  updatedAt: isoNow()
+                },
+                {
+                  id: "thread-1",
+                  kind: "automation",
+                  status: "active",
+                  pinned: false,
+                  title: "Nightly build",
+                  titleSource: "custom",
+                  badgeState: "idle",
+                  messageCount: 0,
+                  updatedAt: isoNow()
+                }
+              ]
+            })
+          ]
+        },
         backgroundJobs: {
           ...createEmptyBackgroundJobsState(),
           runs: [createBackgroundRun({ status: "running", summary: "Running" })]
@@ -509,11 +543,14 @@ createUiTest("openBackgroundRunNotificationFromInbox", () => {
         }
       })
     );
+    captureDispatchedCommands(commands);
 
     openBackgroundRunNotificationFromInbox(harnessStore.state, backgroundRunStatusNotification());
 
     expect(harnessStore.state.activeSurface).toBe("background-jobs");
     expect(harnessStore.state.activeLeftTab).toBe("runs");
+    expect(harnessStore.state.workspace.projects[0]?.activeThreadId).toBe("thread-user");
+    expect(commands.map((command) => command.type)).not.toContain("thread.activate");
     expect(harnessStore.state.jobsRunFilter).toBe("running");
     expect(harnessStore.state.jobsPanePreferences).toMatchObject({
       segment: "inbox",
@@ -528,7 +565,7 @@ createUiTest("openBackgroundRunNotificationFromInbox", () => {
   it("switches run notification clicks to the selected run status filter", () => {
     const cases: Array<[BackgroundJobRun["status"], BackgroundJobRun["approvalStatus"], JobsRunFilter]> = [
       ["awaiting-approval", "pending", "approval"],
-      ["awaiting-user-input", "not-needed", "approval"],
+      ["awaiting-user-input", "not-needed", "input"],
       ["queued", "not-needed", "queued"],
       ["running", "not-needed", "running"],
       ["failed", "not-needed", "failed"],

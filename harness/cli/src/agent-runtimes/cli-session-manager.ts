@@ -380,7 +380,7 @@ export class CliSessionManager {
       return;
     }
 
-    this.cancelPendingSessionUpdate(record);
+    this.flushPendingSessionUpdate(record);
     const now = new Date().toISOString();
     record.session = {
       ...record.session,
@@ -489,6 +489,16 @@ export class CliSessionManager {
       record.metadataUpdateTimer = undefined;
     }
     record.metadataUpdatePending = false;
+  }
+
+  private flushPendingSessionUpdate(record: SessionRecord) {
+    if (!record.metadataUpdatePending) {
+      this.cancelPendingSessionUpdate(record);
+      return;
+    }
+
+    this.cancelPendingSessionUpdate(record);
+    this.emitSessionUpdated(record);
   }
 
   private emitSessionUpdated(record: SessionRecord) {

@@ -45,6 +45,7 @@ describe("subagent scheduler", () => {
     expect(prompt).toContain("MILESTONE:");
     expect(prompt).toContain("Execution cwd: C:\\repo\\context");
     expect(prompt).toContain("Repository root: C:\\repo");
+    expect(prompt).toContain("Git repository state:");
     expect(prompt).toContain("This project may be nested inside the repo.");
     expect(prompt).toContain("Repo-level files such as AGENTS.md and .agents live at repo root.");
     expect(prompt).toContain(".ai-harness-template");
