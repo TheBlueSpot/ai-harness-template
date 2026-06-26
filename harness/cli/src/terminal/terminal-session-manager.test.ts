@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, test } from "bun:test";
 import { WorkspaceRepository } from "../workspace-repository";
-import { TerminalSessionManager } from "./terminal-session-manager";
+import { TerminalSessionManager, testExports } from "./terminal-session-manager";
 import type { TerminalSession } from "../../../shared/protocol";
 
 function createManagerFixture() {
@@ -154,6 +154,22 @@ describe("TerminalSessionManager", () => {
     const failed = updatedSessions.at(-1);
     expect(failed).toMatchObject({ status: "failed", exitCode: -1 });
     expect(repository.getTerminalState().sessions.find((entry) => entry.id === failed?.id)?.status).toBe("failed");
+  });
+
+  test("treats releaseLock aborts as normal terminal pipe shutdown", async () => {
+    const error = new Error("Stream reader cancelled via releaseLock()");
+    error.name = "AbortError";
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(error);
+      }
+    });
+    let chunks = 0;
+
+    await expect(testExports.consumePipe(stream, () => chunks += 1)).resolves.toBeUndefined();
+
+    expect(chunks).toBe(0);
+    expect(testExports.isStreamReaderCancelledError(error)).toBe(true);
   });
 });
 

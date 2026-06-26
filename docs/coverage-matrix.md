@@ -48,7 +48,7 @@ New `US-*` stories start as `GAP-HIGH` here until at least one colocated or inte
 | US-THREADS-005 | harness/cli/src/workspace-repository.test.ts | integration | GAP-MED |
 | US-THREADS-006 | harness/ui/src/components/chat-panel.test.tsx, harness/cli/src/server.projects-and-history.test.ts | unit+integration | OK |
 | US-THREADS-007 | harness/cli/src/server.projects-and-history.test.ts, harness/ui/src/components/project-sidebar.test.tsx, harness/ui/src/store/store.test.ts, harness/cli/src/stream-pump.test.ts | unit+integration | OK |
-| US-THREADS-008 | harness/cli/src/protocol.test.ts, harness/cli/src/run-milestone-windows.test.ts, harness/cli/src/server.subagents.test.ts, harness/cli/src/stream-pump.test.ts, harness/ui/src/store/store.test.ts, harness/ui/src/components/chat-panel.test.tsx, harness/ui/src/components/primitives/virtual-list.browser.test.ts | unit+integration | OK |
+| US-THREADS-008 | harness/cli/src/protocol.test.ts, harness/cli/src/run-milestone-windows.test.ts, harness/cli/src/server.subagents.test.ts, harness/cli/src/stream-pump.test.ts, harness/ui/src/store/store.test.ts, harness/ui/src/components/chat-panel.test.tsx, harness/ui/src/components/chat-panel.browser.test.ts, harness/ui/src/components/primitives/virtual-list.browser.test.ts | unit+integration | OK |
 | US-THREADS-009 | harness/ui/src/components/project-sidebar.test.tsx | unit | OK |
 | US-THREADS-010 | harness/cli/src/workspace-repository.test.ts, harness/cli/src/server.projects-and-history.test.ts, harness/ui/src/components/project-sidebar.test.tsx, harness/ui/src/store/store.test.ts | unit+integration | OK |
 

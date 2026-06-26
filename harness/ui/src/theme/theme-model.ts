@@ -22,6 +22,9 @@ export const THEME_CSS_VARIABLES = [
   "--accent",
   "--accent-strong",
   "--accent-foreground",
+  "--markdown-inline-code-bg",
+  "--markdown-inline-code-foreground",
+  "--markdown-inline-code-border",
   "--info",
   "--info-strong",
   "--warning",
@@ -40,6 +43,22 @@ export const THEME_CSS_VARIABLES = [
 
 export type ThemeCssVariable = (typeof THEME_CSS_VARIABLES)[number];
 export type ThemeTokens = Record<ThemeCssVariable, string>;
+type GeneratedThemeCssVariable =
+  | "--surface-foreground"
+  | "--muted"
+  | "--panel"
+  | "--panel-strong"
+  | "--row"
+  | "--border"
+  | "--ring"
+  | "--body-background"
+  | "--app-background-grid"
+  | "--markdown-inline-code-bg"
+  | "--markdown-inline-code-foreground"
+  | "--markdown-inline-code-border";
+type ThemeSeedTokens =
+  Omit<ThemeTokens, "--font-ui" | "--font-display" | "--font-mono" | GeneratedThemeCssVariable> &
+  Partial<Pick<ThemeTokens, GeneratedThemeCssVariable>>;
 
 export type ThemeFonts = {
   ui: string;
@@ -213,7 +232,7 @@ function isCustomThemeFontVariable(variable: ThemeCssVariable): variable is Cust
 
 function withFonts(
   fonts: ThemeFonts,
-  tokens: Omit<ThemeTokens, "--font-ui" | "--font-display" | "--font-mono">
+  tokens: ThemeSeedTokens
 ): ThemeTokens {
   return {
     ...tokens,
@@ -234,24 +253,15 @@ function enforceFixedThemeTokens(tokens: ThemeTokens): ThemeTokens {
 
 function createBlendedSurfaceTokens(
   tokens: Pick<ThemeTokens, "--bg" | "--foreground" | "--accent">
-): Pick<
-  ThemeTokens,
-  | "--surface-foreground"
-  | "--muted"
-  | "--panel"
-  | "--panel-strong"
-  | "--row"
-  | "--border"
-  | "--ring"
-  | "--body-background"
-  | "--app-background-grid"
-> {
+): Pick<ThemeTokens, GeneratedThemeCssVariable> {
   const bg = normalizeHexColor(tokens["--bg"]) ?? "#ffffff";
   const foreground = normalizeHexColor(tokens["--foreground"]) ?? "#000000";
   const accent = normalizeHexColor(tokens["--accent"]) ?? "#2563eb";
   const dark = getRelativeLuminance(parseHexColor(bg) ?? { r: 255, g: 255, b: 255 }) < 0.38;
   const basePanel = dark ? blendHexColors(bg, "#ffffff", 0.08) : blendHexColors(bg, "#ffffff", 0.82);
   const borderBase = dark ? blendHexColors(bg, "#ffffff", 0.22) : blendHexColors(bg, "#000000", 0.15);
+  const inlineCodeBg = accent;
+  const inlineCodeForeground = getReadableTextColor(inlineCodeBg);
 
   return {
     "--surface-foreground": getReadableTextColor(foreground),
@@ -262,7 +272,10 @@ function createBlendedSurfaceTokens(
     "--border": blendHexColors(borderBase, accent, 0.12),
     "--ring": dark ? blendHexColors(accent, "#ffffff", 0.26) : blendHexColors(accent, "#ffffff", 0.36),
     "--body-background": dark ? blendHexColors(bg, "#000000", 0.08) : blendHexColors(bg, "#ffffff", 0.42),
-    "--app-background-grid": "none"
+    "--app-background-grid": "none",
+    "--markdown-inline-code-bg": inlineCodeBg,
+    "--markdown-inline-code-foreground": inlineCodeForeground,
+    "--markdown-inline-code-border": blendHexColors(inlineCodeBg, inlineCodeForeground, 0.24)
   };
 }
 
@@ -846,7 +859,13 @@ export function validateThemeContrast(tokens: ThemeTokens) {
     { foreground: "--foreground", background: "--bg", minimum: 4.5, label: "Text on background" },
     { foreground: "--foreground", background: "--panel", minimum: 4.5, label: "Text on panel" },
     { foreground: "--foreground", background: "--panel-strong", minimum: 4.5, label: "Text on strong panel" },
-    { foreground: "--accent-foreground", background: "--accent", minimum: 3, label: "Accent controls" }
+    { foreground: "--accent-foreground", background: "--accent", minimum: 3, label: "Accent controls" },
+    {
+      foreground: "--markdown-inline-code-foreground",
+      background: "--markdown-inline-code-bg",
+      minimum: 4.5,
+      label: "Inline code chips"
+    }
   ] as const;
 
   return pairs

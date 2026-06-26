@@ -23,8 +23,8 @@
   "dependencies": {
     "@kobalte/core": "^0.13.11",
     "@mariozechner/pi-coding-agent": "^0.73.1",
-    "@openai/codex": "^0.141.0",
-    "@openai/codex-sdk": "^0.141.0",
+    "@openai/codex": "^0.142.2",
+    "@openai/codex-sdk": "^0.142.2",
     "@tanstack/solid-hotkeys": "^0.9.1",
     "@tanstack/solid-virtual": "^3.13.24",
     "@thisbeyond/solid-dnd": "^0.7.5",

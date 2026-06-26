@@ -57,6 +57,14 @@ Footnote here.[^1]
     expect(lineBreak).not.toBeNull();
   });
 
+  it("renders inline code with the contrast chip class", () => {
+    render(() => <MarkdownContent content={"Run `assistant-actions` from chat."} />);
+
+    const inlineCode = screen.getByText("assistant-actions");
+    expect(inlineCode.tagName).toBe("CODE");
+    expect(inlineCode.className).toContain("markdown-inline-code");
+  });
+
   it("drops raw html and blocks unsafe links while hardening safe links", () => {
     render(() => (
       <MarkdownContent

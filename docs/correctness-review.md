@@ -422,13 +422,13 @@ Stories: `US-THREADS-008`, `US-UI-015`, `US-UI-017`, `US-DEV-017`.
 
 Code map: [virtual list primitive](../harness/ui/src/components/primitives/virtual-list.tsx), [chat panel](../harness/ui/src/components/chat-panel.tsx), [assistant panel](../harness/ui/src/components/assistants-panel.tsx), [jobs panel](../harness/ui/src/components/background-jobs-panel.tsx), [trace panel](../harness/ui/src/components/trace-panel.tsx), [UI test harness](../harness/ui/src/utils/tests/test-harness.ts).
 
-Status: Closed at the primitive level. `VirtualList` now has a real-browser first-paint smoke that mounts reverse and forward lists, delays viewport height stabilization, asserts visible row geometry and anchoring before any tab remount, then repeats the checks after tab switches.
+Status: Closed for the primitive and project chat transcript. `VirtualList` now has a real-browser first-paint smoke that mounts reverse and forward lists, delays viewport height stabilization, asserts visible row geometry and anchoring before any tab remount, then repeats the checks after tab switches. Project chat also has browser coverage for delayed workspace hydration while the transcript viewport is collapsed, including a no-`ResizeObserver` path that previously left the list on a stale virtual window until remount.
 
 Impact: Happy DOM tests prove that virtualized transcript, trace, assistant, jobs, and run-detail lists render expected rows in a stubbed DOM, but they do not prove real browser first paint. Happy DOM has no layout engine, and several tests stub scroll metrics or row rectangles. A list can therefore pass because fallback estimates produce DOM rows, while the real browser first mount can still render an empty, clipped, or stale scroll window until a tab switch remounts or remeasures it.
 
 Edge case: A user opens a tab whose active pane contains a virtual list. The pane mounts before its flex/grid height and row geometry are stable, so the virtualizer calculates the wrong visible window or scroll anchor. Switching away and back remounts the pane after layout has settled, making the content appear and hiding the first-load defect.
 
-Fix direction: Keep the primitive browser smoke as the required guard for virtualization behavior. Extend it to full chat transcript, memory/events, assistant detail, jobs/runs, and trace surfaces if a surface adds custom wrappers, scroll ownership, or anchoring rules that the primitive fixture no longer represents.
+Fix direction: Keep the primitive and project-chat browser smokes as required guards for virtualization behavior. Extend browser coverage to memory/events, assistant detail, jobs/runs, and trace surfaces if a surface adds custom wrappers, scroll ownership, or anchoring rules that these fixtures no longer represent.
 
 ### CR-058: Closed - project chat file paths share one modifier-click contract
 

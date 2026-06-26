@@ -3,6 +3,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { runAssistantMaintenance } from "./assistant-maintenance";
+import { buildAssistantJobsReport } from "./assistant-jobs";
 import { buildAssistantStateReport } from "./assistant-state";
 import { validateRunbook } from "./runbook-check";
 
@@ -48,6 +49,29 @@ describe("assistant-actions runbook", () => {
     ]);
     expect(report.backgroundJobRuns).toEqual([
       expect.objectContaining({ status: "queued", job_id: "job-1" })
+    ]);
+  });
+
+  test("recent job lookup covers project job runs", () => {
+    const dbPath = createAssistantStateFixture();
+    const report = buildAssistantJobsReport({
+      dbPath,
+      project: "Docs",
+      json: true,
+      limit: 5
+    }) as {
+      lookup: { status: string };
+      recentRuns: Array<{ status: string; job_id: string; assistant_name: string; project_name: string }>;
+    };
+
+    expect(report.lookup.status).toBe("ok");
+    expect(report.recentRuns).toEqual([
+      expect.objectContaining({
+        status: "queued",
+        job_id: "job-1",
+        assistant_name: "Release watcher",
+        project_name: "Docs"
+      })
     ]);
   });
 

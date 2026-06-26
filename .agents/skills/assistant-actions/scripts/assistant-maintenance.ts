@@ -1,8 +1,14 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
-import { resolveHarnessDbPath } from "../../../../harness/cli/src/harness-paths";
+import { resolveHarnessDbPath } from "./harness-db-path";
 
-type MaintenanceAction = "remove-jobs" | "remove-project-assistants" | "rebootstrap" | "pause-assistants" | "start-jobs";
+type MaintenanceAction =
+  | "remove-jobs"
+  | "remove-project-assistants"
+  | "rebootstrap"
+  | "pause-assistants"
+  | "start-jobs"
+  | "reconcile-orrn-todos";
 
 export type AssistantMaintenanceOptions = {
   dbPath: string;
@@ -27,7 +33,7 @@ type Row = Record<string, unknown>;
 const HELP_TEXT = `assistant-maintenance.ts
 
 Usage:
-  bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action <remove-jobs|remove-project-assistants|rebootstrap|pause-assistants|start-jobs> [--assistant <name-or-id>] [--project <name-or-id-or-root>] [--all] [--db <path>] [--execute] [--json]
+  bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action <remove-jobs|remove-project-assistants|rebootstrap|pause-assistants|start-jobs|reconcile-orrn-todos> [--assistant <name-or-id>] [--project <name-or-id-or-root>] [--all] [--db <path>] [--execute] [--json]
 
 Examples:
   bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action remove-jobs --assistant "Release watcher" --project "Docs" --execute
@@ -37,6 +43,7 @@ Examples:
   bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action pause-assistants --project "Docs" --execute
   bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action pause-assistants --all --execute
   bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action start-jobs --assistant "Release watcher" --project "Docs" --execute --url http://localhost:8787
+  bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action reconcile-orrn-todos --assistant "Orrn" --project "context" --execute
 
 Options:
   --action <value>     Maintenance action to plan or execute
@@ -268,6 +275,7 @@ function buildPlan(db: Database, options: AssistantMaintenanceOptions, project: 
     assistantsToRebootstrapCount: options.action === "rebootstrap" ? assistants.length : 0,
     assistantsToPauseCount: options.action === "pause-assistants" ? assistants.length : 0,
     jobsToStartCount: jobsToStart.length,
+    todoMutationCount: options.action === "reconcile-orrn-todos" ? 10 : 0,
     jobsToStart
   };
 }
@@ -291,6 +299,9 @@ function applyPlan(db: Database, action: MaintenanceAction, assistants: Row[], n
     }
     if (action === "pause-assistants") {
       pauseAssistants(db, assistantIds, timestamp);
+    }
+    if (action === "reconcile-orrn-todos") {
+      reconcileOrrnTodos(db, assistantIds, timestamp);
     }
   });
   tx();
@@ -502,13 +513,70 @@ function pauseAssistants(db: Database, assistantIds: string[], now: string) {
   }
 }
 
+function reconcileOrrnTodos(db: Database, assistantIds: string[], now: string) {
+  const missingEngineBlocker =
+    "Current checkout has no ./engine directory, so this remains blocked until Orrn is pointed at the engine workspace or ./engine is restored.";
+  const staleEngineReason =
+    "Current project path and repository root have no ./engine directory; stale engine-specific task cannot be implemented from this checkout.";
+  const updateTodo = db.query(
+    `UPDATE assistant_todos
+     SET title = ?3,
+         description = ?4,
+         state = ?5,
+         sort_order = ?6,
+         blocker_reason = ?7,
+         updated_at = ?8
+     WHERE id = ?1 AND assistant_id = ?2`
+  );
+  const deleteTodo = db.query(`DELETE FROM assistant_todos WHERE id = ?1 AND assistant_id = ?2`);
+  const insertTodo = db.query(
+    `INSERT INTO assistant_todos (
+       id, assistant_id, title, description, state, sort_order, blocker_reason, source,
+       created_at, updated_at, work_kind, work_target
+     )
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'assistant', ?8, ?8, 'app-code', ?9)
+     ON CONFLICT(id) DO UPDATE SET
+       title = excluded.title,
+       description = excluded.description,
+       state = excluded.state,
+       sort_order = excluded.sort_order,
+       blocker_reason = excluded.blocker_reason,
+       updated_at = excluded.updated_at,
+       work_kind = excluded.work_kind,
+       work_target = excluded.work_target`
+  );
+  for (const assistantId of assistantIds) {
+    insertTodo.run(
+      "orrn-restore-engine-workspace-p1",
+      assistantId,
+      "P1 TOP: Restore or retarget Orrn to the engine workspace",
+      "Repository evidence on 2026-06-25 shows the configured project path and repository root do not contain ./engine, while active Orrn implementation todos target ./engine. Next implementation job must first restore the engine checkout or retarget Orrn to the correct project before barrelDistortion, typecheck, export, WASM, or benchmark work.",
+      "pending",
+      0,
+      null,
+      now,
+      "./engine"
+    );
+    updateTodo.run("a66c7815-7917-4a3f-b904-bd349671641f", assistantId, "CANCELLED: barrelDistortion proof/quarantine needs missing ./engine", staleEngineReason, "cancelled", 10, staleEngineReason, now);
+    updateTodo.run("afdb1ff0-80e3-470f-8457-9342e039718b", assistantId, "CANCELLED: export docs and smoke sync needs missing ./engine", staleEngineReason, "cancelled", 11, staleEngineReason, now);
+    updateTodo.run("145b5bfb-f9ee-49c8-841d-04a0b511fbcf", assistantId, "CANCELLED: stray generic TypeScript bootstrap todo", "Obsolete duplicate bootstrap guidance; Orrn needs the engine workspace restored or retargeted first.", "cancelled", 12, "Duplicate/obsolete generic todo; no current engine repository evidence.", now);
+    updateTodo.run("26bd6b24-bb56-4dd4-8b15-62b9b80250b2", assistantId, "CANCELLED: recover engine typecheck needs missing ./engine", staleEngineReason, "cancelled", 13, staleEngineReason, now);
+    updateTodo.run("ec991928-c3bc-4125-8e1e-dd9553b989a2", assistantId, "P2 BLOCKED: Improve WASM HTTP and MIME fallback diagnostics after engine workspace returns", "Keep opt-in diagnostics unchanged until both a real consumer setup-friction report and the engine workspace are present.", "blocked", 20, missingEngineBlocker, now);
+    updateTodo.run("c48ffd8d-433d-4a97-9d89-2934cb48e6be", assistantId, "P3 BLOCKED: Calibrate benchmark thresholds after engine workspace and hot-path data", "Keep thresholds blocked until the engine workspace is present and migrated-game hot-path timing evidence exists.", "blocked", 21, missingEngineBlocker, now);
+    deleteTodo.run("7fcc46ee-1ba2-4c11-b0dc-37204ea5bdf4", assistantId);
+    deleteTodo.run("fbf48082-ac9d-47a3-b2ff-c5fc6bdd8d0d", assistantId);
+    deleteTodo.run("b6eeb799-2114-4195-a978-77729aad20d1", assistantId);
+  }
+}
+
 function parseAction(value: string) {
   if (
     value === "remove-jobs" ||
     value === "remove-project-assistants" ||
     value === "rebootstrap" ||
     value === "pause-assistants" ||
-    value === "start-jobs"
+    value === "start-jobs" ||
+    value === "reconcile-orrn-todos"
   ) {
     return value;
   }

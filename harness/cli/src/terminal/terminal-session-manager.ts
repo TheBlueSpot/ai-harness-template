@@ -618,15 +618,40 @@ async function consumePipe(stream: ReadableStream<Uint8Array>, onData: (chunk: U
   const reader = stream.getReader();
   try {
     while (true) {
-      const chunk = await reader.read();
+      const chunk = await readStreamChunk(reader);
       if (chunk.done) {
         return;
       }
       onData(chunk.value);
     }
   } finally {
-    reader.releaseLock();
+    releaseStreamReaderLock(reader);
   }
+}
+
+async function readStreamChunk(reader: ReadableStreamDefaultReader<Uint8Array>) {
+  try {
+    return await reader.read();
+  } catch (error) {
+    if (isStreamReaderCancelledError(error)) {
+      return { done: true, value: undefined } as ReadableStreamReadDoneResult<Uint8Array>;
+    }
+    throw error;
+  }
+}
+
+function releaseStreamReaderLock(reader: ReadableStreamDefaultReader<Uint8Array>) {
+  try {
+    reader.releaseLock();
+  } catch (error) {
+    if (!isStreamReaderCancelledError(error)) {
+      throw error;
+    }
+  }
+}
+
+function isStreamReaderCancelledError(error: unknown) {
+  return error instanceof Error && error.name === "AbortError" && error.message.includes("releaseLock");
 }
 
 function trimScrollback(input: string, lineLimit: number) {
@@ -636,3 +661,8 @@ function trimScrollback(input: string, lineLimit: number) {
   const lines = input.split(/\r?\n/);
   return lines.length > lineLimit ? lines.slice(-lineLimit).join("\n") : input;
 }
+
+export const testExports = {
+  consumePipe,
+  isStreamReaderCancelledError
+};

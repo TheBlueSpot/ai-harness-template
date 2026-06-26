@@ -26,6 +26,16 @@ bun.cmd .agents/skills/assistant-actions/scripts/assistant-state.ts --assistant 
    - next run time and last run result when present
 5. Ask clarification only if assistant or project target is ambiguous.
 
+## Recent Background Jobs
+
+Use for project-wide recent job inspection when the user has not named one assistant:
+
+```powershell
+bun.cmd .agents/skills/assistant-actions/scripts/assistant-jobs.ts --project "Docs" --limit 10
+```
+
+Read `recentRuns` and summarize statuses, failures, assistant names, job names, and run times. Prefer the current project path for `--project` when the request comes from project chat and no project name is given. Omit `--project` only for explicit workspace-wide inspection.
+
 ## Create Or Spawn Job
 
 Flow:

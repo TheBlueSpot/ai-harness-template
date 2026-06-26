@@ -39,6 +39,7 @@ const DEFAULT_THRESHOLD_PX = 1000;
 const DEFAULT_OVERSCAN = 20;
 const NEAR_END_PX = 32;
 const PAGINATION_SCROLL_THROTTLE_MS = 50;
+const VIEWPORT_MEASUREMENT_SETTLE_FRAMES = 24;
 const VIRTUAL_LIST_DEBUG_STORAGE_KEY = "virtual-list-debug";
 const VIRTUAL_LIST_DEBUG_QUERY_PARAM = "virtualListDebug";
 
@@ -56,6 +57,7 @@ type EstimatedVirtualItem = {
 type ViewportMeasurementOptions = {
   forceScrollToEnd?: boolean;
   scrollToEndIfStuck?: boolean;
+  retryFrames?: number;
 };
 
 type VirtualListScrollTargetProps<T> = {
@@ -274,7 +276,10 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
 
   onMount(() => {
     observeViewport();
-    queueViewportMeasurement({ forceScrollToEnd: local.stickToEnd || local.pagination.kind === "reverse" });
+    queueViewportMeasurement({
+      forceScrollToEnd: local.stickToEnd || local.pagination.kind === "reverse",
+      retryFrames: VIEWPORT_MEASUREMENT_SETTLE_FRAMES
+    });
     if (local.stickToEnd || local.pagination.kind === "reverse") {
       queueMicrotask(scrollToEnd);
     }
@@ -384,6 +389,7 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
     const itemCount = items().length;
     const wasStuck = untrack(stuckToEnd);
     if (local.stickToEnd && wasStuck && itemCount > 0) {
+      queueViewportMeasurement({ forceScrollToEnd: true, retryFrames: VIEWPORT_MEASUREMENT_SETTLE_FRAMES });
       queueMicrotask(scrollToEnd);
     }
   });
@@ -392,7 +398,10 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
     viewport = element;
     local.viewportRef?.(element);
     observeViewport();
-    queueViewportMeasurement({ forceScrollToEnd: local.stickToEnd || local.pagination.kind === "reverse" });
+    queueViewportMeasurement({
+      forceScrollToEnd: local.stickToEnd || local.pagination.kind === "reverse",
+      retryFrames: VIEWPORT_MEASUREMENT_SETTLE_FRAMES
+    });
   }
 
   function observeViewport() {
@@ -415,7 +424,8 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
   function queueViewportMeasurement(options: ViewportMeasurementOptions = {}) {
     pendingViewportMeasurementOptions = {
       forceScrollToEnd: pendingViewportMeasurementOptions.forceScrollToEnd || options.forceScrollToEnd,
-      scrollToEndIfStuck: pendingViewportMeasurementOptions.scrollToEndIfStuck || options.scrollToEndIfStuck
+      scrollToEndIfStuck: pendingViewportMeasurementOptions.scrollToEndIfStuck || options.scrollToEndIfStuck,
+      retryFrames: Math.max(pendingViewportMeasurementOptions.retryFrames ?? 0, options.retryFrames ?? 0)
     };
     if (pendingViewportMeasurementFrame !== undefined) {
       return;
@@ -436,6 +446,13 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
       if (currentOptions.forceScrollToEnd || (currentOptions.scrollToEndIfStuck && wasStuck)) {
         queueMicrotask(scrollToEnd);
       }
+      if ((currentOptions.retryFrames ?? 0) > 0) {
+        queueViewportMeasurement({
+          forceScrollToEnd: currentOptions.forceScrollToEnd && viewport.clientHeight <= 1,
+          scrollToEndIfStuck: currentOptions.scrollToEndIfStuck || (local.stickToEnd && wasStuck),
+          retryFrames: (currentOptions.retryFrames ?? 0) - 1
+        });
+      }
     });
   }
 
@@ -450,8 +467,10 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
     queueMicrotask(() => {
       const count = viewWindow().items.length;
       if (viewport && count > 0) {
-        viewport.scrollTop = Math.max(0, totalEstimatedSize() - (viewport.clientHeight || 720));
+        const nextScrollTop = Math.max(0, totalEstimatedSize() - (viewport.clientHeight || 720));
         virtualizer.scrollToIndex(count - 1, { align: "end" });
+        viewport.scrollTop = nextScrollTop;
+        virtualizer.scrollToOffset(nextScrollTop);
         setMeasurementVersion((version) => version + 1);
       }
     });
@@ -655,6 +674,7 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
       return;
     }
 
+    const shouldMaintainStickToEnd = local.stickToEnd && isNearEnd();
     measuredRowSizes.set(measurementKey, measuredSize);
     recordUiTelemetry("virtual-list.measure-row", {
       dataTest: local.dataTest,
@@ -665,6 +685,9 @@ export function VirtualList<T>(props: VirtualListProps<T>) {
       loadedCount: loadedCount()
     });
     virtualizer.resizeItem(index, measuredSize);
+    if (shouldMaintainStickToEnd) {
+      queueMicrotask(scrollToEnd);
+    }
     if (debugEnabled) {
       debugForceRepaint(element, "after-resizeItem-sync");
       debugTraceVirtualOffsets("after-resizeItem-sync", index, previousMeasuredSize, measuredSize);

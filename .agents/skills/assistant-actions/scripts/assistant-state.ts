@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
-import { resolveHarnessDbPath } from "../../../../harness/cli/src/harness-paths";
+import { resolveHarnessDbPath } from "./harness-db-path";
 
 export type AssistantStateOptions = {
   dbPath: string;
