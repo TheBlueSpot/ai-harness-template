@@ -97,6 +97,7 @@ export const ASSISTANT_AUTO_APPROVE_NON_BLOCKING_QUESTIONS_DEFAULT_STORAGE_KEY =
   "assistant_auto_approve_non_blocking_questions_default";
 export const ASSISTANT_CONGESTION_CONTROL_ENABLED_DEFAULT_STORAGE_KEY = "assistant_congestion_control_enabled_default";
 export const ASSISTANT_MAX_CONGESTION_DEFAULT_STORAGE_KEY = "assistant_max_congestion_default";
+export const MAX_BACKGROUND_JOBS_DEFAULT_STORAGE_KEY = "max_background_jobs_default";
 const AUTO_ARCHIVE_COMPLETED_THREADS_DEFAULT_STORAGE_KEY = "pi-harness:auto-archive-completed-threads-default:v1";
 export const BACKGROUND_JOB_NOTIFICATIONS_ENABLED_STORAGE_KEY = "background_job_notifications_enabled";
 export const MEMORY_BANK_ENABLED_DEFAULT_STORAGE_KEY = "memory_bank_enabled_default";
@@ -106,6 +107,7 @@ export const COMPOSER_REASONING_STRENGTH_STORAGE_KEY = "composer_reasoning_stren
 export const COMPOSER_FAST_MODE_STORAGE_KEY = "composer_fast_mode";
 export const APP_HOTKEY_PREFERENCES_STORAGE_KEY = "pi-harness:app-hotkeys:v1";
 export const THEME_PREFERENCE_STORAGE_KEY = "pi-harness:theme-preference:v1";
+export const NUMERIC_RIGHT_ALIGNMENT_ENABLED_STORAGE_KEY = "pi-harness:numeric-right-alignment:v1";
 export const PREFERENCES_ACTIVE_SECTION_STORAGE_KEY = "pi-harness:preferences-active-section:v1";
 export const THREAD_DRAFT_STORAGE_KEY_PREFIX = "pi-harness:thread-draft:v1";
 export const TUTORIAL_PROGRESS_STORAGE_KEY = "pi-harness:tutorial-progress:v1";
@@ -400,12 +402,14 @@ export type HarnessViewState = {
   assistantAutoApproveNonBlockingQuestionsDefault: boolean;
   assistantCongestionControlEnabledDefault: boolean;
   assistantMaxCongestionDefault: number;
+  maxBackgroundJobsDefault: number;
   autoArchiveCompletedThreadsDefault: boolean;
   memoryBankEnabledDefault: boolean;
   memoryBankRecordRunsDefault: boolean;
   checkCliUpdatesDefault: boolean;
   appHotkeyPreferences: AppHotkeyPreferences;
   themePreference: ThemePreference;
+  numericRightAlignmentEnabled: boolean;
   attachmentsEnabled: boolean;
   capabilities: ProviderCapability[];
   preferencesModalOpen: boolean;
@@ -455,6 +459,7 @@ export type HarnessViewState = {
   hasLocalBackgroundJobApprovalPolicyPreference: boolean;
   hasLocalAssistantAutoApproveNonBlockingQuestionsPreference: boolean;
   hasLocalAssistantCongestionControlPreference: boolean;
+  hasLocalMaxBackgroundJobsPreference: boolean;
   hasLocalAutoArchiveCompletedThreadsPreference: boolean;
   hasLocalMemoryBankEnabledPreference: boolean;
   hasLocalMemoryBankRecordRunsPreference: boolean;
@@ -502,6 +507,7 @@ export type LocalPreferencesState = {
   assistantAutoApproveNonBlockingQuestionsDefault?: boolean;
   assistantCongestionControlEnabledDefault?: boolean;
   assistantMaxCongestionDefault?: number;
+  maxBackgroundJobsDefault?: number;
   autoArchiveCompletedThreadsDefault?: boolean;
   memoryBankEnabledDefault?: boolean;
   memoryBankRecordRunsDefault?: boolean;
@@ -511,6 +517,7 @@ export type LocalPreferencesState = {
   selectedFastMode?: boolean;
   appHotkeyPreferences?: AppHotkeyPreferences;
   themePreference?: ThemePreference;
+  numericRightAlignmentEnabled?: boolean;
   preferencesActiveSectionId?: PreferencesActiveSectionId;
 };
 
@@ -724,12 +731,14 @@ export function createInitialViewState(): HarnessViewState {
     assistantAutoApproveNonBlockingQuestionsDefault: true,
     assistantCongestionControlEnabledDefault: true,
     assistantMaxCongestionDefault: 1,
+    maxBackgroundJobsDefault: 10,
     autoArchiveCompletedThreadsDefault: false,
     memoryBankEnabledDefault: true,
     memoryBankRecordRunsDefault: true,
     checkCliUpdatesDefault: true,
     appHotkeyPreferences: { ...DEFAULT_APP_HOTKEY_PREFERENCES },
     themePreference: DEFAULT_THEME_PREFERENCE,
+    numericRightAlignmentEnabled: true,
     attachmentsEnabled: false,
     capabilities: [...defaultProviderCapabilities],
     preferencesModalOpen: false,
@@ -778,6 +787,7 @@ export function createInitialViewState(): HarnessViewState {
     hasLocalBackgroundJobApprovalPolicyPreference: false,
     hasLocalAssistantAutoApproveNonBlockingQuestionsPreference: false,
     hasLocalAssistantCongestionControlPreference: false,
+    hasLocalMaxBackgroundJobsPreference: false,
     hasLocalAutoArchiveCompletedThreadsPreference: false,
     hasLocalMemoryBankEnabledPreference: false,
     hasLocalMemoryBankRecordRunsPreference: false,
@@ -2251,6 +2261,9 @@ export function createHarnessStore() {
     setThemeMode(mode: ThemeModePreference) {
       setThemePreferenceState(withThemePreference(state.themePreference, { mode }));
     },
+    setNumericRightAlignmentEnabled(numericRightAlignmentEnabled: boolean) {
+      setState({ numericRightAlignmentEnabled });
+    },
     setCustomTheme(custom: CustomThemeDefinition) {
       setThemePreferenceState(withThemePreference(state.themePreference, { themeId: "custom", custom }));
     },
@@ -2376,6 +2389,9 @@ export function createHarnessStore() {
     },
     setAssistantMaxCongestionDefault(assistantMaxCongestionDefault: number) {
       setState({ assistantMaxCongestionDefault: Math.max(0.25, Math.min(3, Math.round(assistantMaxCongestionDefault * 4) / 4)) });
+    },
+    setMaxBackgroundJobsDefault(maxBackgroundJobsDefault: number) {
+      setState({ maxBackgroundJobsDefault: Math.max(5, Math.min(100, Math.round(maxBackgroundJobsDefault))) });
     },
     setMemoryBankEnabledDefault(memoryBankEnabledDefault: boolean) {
       setState({ memoryBankEnabledDefault });
@@ -2583,6 +2599,8 @@ export function createHarnessStore() {
           localPreferences.assistantCongestionControlEnabledDefault ?? state.assistantCongestionControlEnabledDefault,
         assistantMaxCongestionDefault:
           localPreferences.assistantMaxCongestionDefault ?? state.assistantMaxCongestionDefault,
+        maxBackgroundJobsDefault:
+          localPreferences.maxBackgroundJobsDefault ?? state.maxBackgroundJobsDefault,
         autoArchiveCompletedThreadsDefault:
           localPreferences.autoArchiveCompletedThreadsDefault ?? state.autoArchiveCompletedThreadsDefault,
         memoryBankEnabledDefault: localPreferences.memoryBankEnabledDefault ?? state.memoryBankEnabledDefault,
@@ -2593,6 +2611,8 @@ export function createHarnessStore() {
           localPreferences.appHotkeyPreferences ?? state.appHotkeyPreferences
         ),
         themePreference,
+        numericRightAlignmentEnabled:
+          localPreferences.numericRightAlignmentEnabled ?? state.numericRightAlignmentEnabled,
         backgroundJobNotificationsEnabled:
           localPreferences.backgroundJobNotificationsEnabled ?? state.backgroundJobNotificationsEnabled,
         preferencesActiveSectionId:
@@ -2632,6 +2652,7 @@ export function createHarnessStore() {
         hasLocalAssistantCongestionControlPreference:
           localPreferences.assistantCongestionControlEnabledDefault !== undefined ||
           localPreferences.assistantMaxCongestionDefault !== undefined,
+        hasLocalMaxBackgroundJobsPreference: localPreferences.maxBackgroundJobsDefault !== undefined,
         hasLocalAutoArchiveCompletedThreadsPreference: localPreferences.autoArchiveCompletedThreadsDefault !== undefined,
         hasLocalMemoryBankEnabledPreference: localPreferences.memoryBankEnabledDefault !== undefined,
         hasLocalMemoryBankRecordRunsPreference: localPreferences.memoryBankRecordRunsDefault !== undefined,
@@ -2682,6 +2703,8 @@ export function createHarnessStore() {
           localPreferences.assistantCongestionControlEnabledDefault ?? state.assistantCongestionControlEnabledDefault,
         assistantMaxCongestionDefault:
           localPreferences.assistantMaxCongestionDefault ?? state.assistantMaxCongestionDefault,
+        maxBackgroundJobsDefault:
+          localPreferences.maxBackgroundJobsDefault ?? state.maxBackgroundJobsDefault,
         autoArchiveCompletedThreadsDefault:
           localPreferences.autoArchiveCompletedThreadsDefault ?? state.autoArchiveCompletedThreadsDefault,
         memoryBankEnabledDefault: localPreferences.memoryBankEnabledDefault ?? state.memoryBankEnabledDefault,
@@ -2692,6 +2715,8 @@ export function createHarnessStore() {
           localPreferences.appHotkeyPreferences ?? state.appHotkeyPreferences
         ),
         themePreference,
+        numericRightAlignmentEnabled:
+          localPreferences.numericRightAlignmentEnabled ?? state.numericRightAlignmentEnabled,
         backgroundJobNotificationsEnabled:
           localPreferences.backgroundJobNotificationsEnabled ?? state.backgroundJobNotificationsEnabled,
         tokenUsage: state.tokenUsage,
@@ -2732,6 +2757,7 @@ export function createHarnessStore() {
         hasLocalAssistantCongestionControlPreference:
           localPreferences.assistantCongestionControlEnabledDefault !== undefined ||
           localPreferences.assistantMaxCongestionDefault !== undefined,
+        hasLocalMaxBackgroundJobsPreference: localPreferences.maxBackgroundJobsDefault !== undefined,
         hasLocalAutoArchiveCompletedThreadsPreference: localPreferences.autoArchiveCompletedThreadsDefault !== undefined,
         hasLocalMemoryBankEnabledPreference: localPreferences.memoryBankEnabledDefault !== undefined,
         hasLocalMemoryBankRecordRunsPreference: localPreferences.memoryBankRecordRunsDefault !== undefined,
@@ -3455,6 +3481,9 @@ function applyReadyPreferencesState(state: HarnessViewState, preferences: Prefer
     assistantMaxCongestionDefault: state.hasLocalAssistantCongestionControlPreference
       ? state.assistantMaxCongestionDefault
       : (preferences.assistantMaxCongestionDefault ?? 1),
+    maxBackgroundJobsDefault: state.hasLocalMaxBackgroundJobsPreference
+      ? state.maxBackgroundJobsDefault
+      : preferences.maxBackgroundJobsDefault,
     autoArchiveCompletedThreadsDefault: state.hasLocalAutoArchiveCompletedThreadsPreference
       ? state.autoArchiveCompletedThreadsDefault
       : (preferences.autoArchiveCompletedThreadsDefault ?? false),
@@ -3534,6 +3563,11 @@ export function readLocalPreferences(): LocalPreferencesState {
     3,
     0.25
   );
+  const maxBackgroundJobsDefault = parseBoundedIntegerStorageValue(
+    window.localStorage.getItem(MAX_BACKGROUND_JOBS_DEFAULT_STORAGE_KEY),
+    5,
+    100
+  );
   const autoArchiveCompletedThreadsDefault = parseBooleanStorageValue(
     window.localStorage.getItem(AUTO_ARCHIVE_COMPLETED_THREADS_DEFAULT_STORAGE_KEY)
   );
@@ -3555,6 +3589,9 @@ export function readLocalPreferences(): LocalPreferencesState {
   const selectedFastMode = parseBooleanStorageValue(window.localStorage.getItem(COMPOSER_FAST_MODE_STORAGE_KEY));
   const appHotkeyPreferences = readAppHotkeyPreferences();
   const themePreference = parseThemePreferenceStorageValue(window.localStorage.getItem(THEME_PREFERENCE_STORAGE_KEY));
+  const numericRightAlignmentEnabled = parseBooleanStorageValue(
+    window.localStorage.getItem(NUMERIC_RIGHT_ALIGNMENT_ENABLED_STORAGE_KEY)
+  );
   const preferencesActiveSectionId = parsePreferencesActiveSectionStorageValue(
     window.localStorage.getItem(PREFERENCES_ACTIVE_SECTION_STORAGE_KEY)
   );
@@ -3579,6 +3616,7 @@ export function readLocalPreferences(): LocalPreferencesState {
     assistantAutoApproveNonBlockingQuestionsDefault,
     assistantCongestionControlEnabledDefault,
     assistantMaxCongestionDefault,
+    maxBackgroundJobsDefault,
     autoArchiveCompletedThreadsDefault,
     memoryBankEnabledDefault,
     memoryBankRecordRunsDefault,
@@ -3588,6 +3626,7 @@ export function readLocalPreferences(): LocalPreferencesState {
     selectedFastMode,
     appHotkeyPreferences,
     themePreference,
+    numericRightAlignmentEnabled,
     preferencesActiveSectionId
   };
 }
@@ -3703,6 +3742,7 @@ export function persistLocalPreferences(input: LocalPreferencesState) {
     input.assistantCongestionControlEnabledDefault
   );
   persistDecimalStorageValue(ASSISTANT_MAX_CONGESTION_DEFAULT_STORAGE_KEY, input.assistantMaxCongestionDefault, 0.25, 3, 0.25);
+  persistIntegerStorageValue(MAX_BACKGROUND_JOBS_DEFAULT_STORAGE_KEY, input.maxBackgroundJobsDefault, 5, 100);
   persistBooleanStorageValue(AUTO_ARCHIVE_COMPLETED_THREADS_DEFAULT_STORAGE_KEY, input.autoArchiveCompletedThreadsDefault);
   persistBooleanStorageValue(MEMORY_BANK_ENABLED_DEFAULT_STORAGE_KEY, input.memoryBankEnabledDefault);
   persistBooleanStorageValue(MEMORY_BANK_RECORD_RUNS_DEFAULT_STORAGE_KEY, input.memoryBankRecordRunsDefault);
@@ -3712,6 +3752,7 @@ export function persistLocalPreferences(input: LocalPreferencesState) {
   persistBooleanStorageValue(COMPOSER_FAST_MODE_STORAGE_KEY, input.selectedFastMode);
   persistAppHotkeyPreferences(input.appHotkeyPreferences);
   persistThemePreference(input.themePreference);
+  persistBooleanStorageValue(NUMERIC_RIGHT_ALIGNMENT_ENABLED_STORAGE_KEY, input.numericRightAlignmentEnabled);
   persistStorageValue(PREFERENCES_ACTIVE_SECTION_STORAGE_KEY, input.preferencesActiveSectionId);
 }
 

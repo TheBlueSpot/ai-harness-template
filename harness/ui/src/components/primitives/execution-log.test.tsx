@@ -48,6 +48,42 @@ createUiTest("ExecutionLog", () => {
     expect(screen.getByText(/README.md/)).not.toBeNull();
   });
 
+  it("renders plain details without markdown truncation and copies full detail text", async () => {
+    const copied: string[] = [];
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (value: string) => {
+          copied.push(value);
+        }
+      }
+    });
+    render(() => (
+      <ExecutionLog
+        entries={[
+          {
+            id: "entry-tool",
+            message: "shell completed",
+            level: "shell",
+            createdAt,
+            detail: "# not a heading\nfull output body",
+            detailKind: "plain",
+            copyText: "copy full output body"
+          }
+        ]}
+        selectedEntryId="entry-tool"
+      />
+    ));
+
+    expect(screen.queryByRole("heading", { name: "not a heading" })).toBeNull();
+    expect(screen.getByText(/# not a heading/)).not.toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy execution log details" }));
+    await Promise.resolve();
+
+    expect(copied).toEqual(["copy full output body"]);
+  });
+
   it("routes row clicks to source without hijacking details button", () => {
     const opened: string[] = [];
     const [selectedEntryId, setSelectedEntryId] = createSignal<string>();

@@ -2,7 +2,7 @@
 import { createMemo, createSignal, For, onCleanup, onMount, Show, type JSX } from "solid-js";
 import { render as renderSolidRoot } from "solid-js/web";
 import { formatForDisplay } from "@tanstack/solid-hotkeys";
-import { createRequestId, type ComposerReasoningStrength, type ProviderBrand, type RunModelPreference } from "../../../shared/protocol";
+import { createRequestId, type ComposerReasoningStrength, type ProviderBrand, type RunModelPreference, type TerminalPreferences } from "../../../shared/protocol";
 import {
   AlertTriangle,
   Archive,
@@ -67,6 +67,7 @@ import {
   type ThemeModePreference
 } from "../theme/theme-model";
 import { DEFAULT_IDE_EDITOR_SETTINGS, ideStore, type IdeAutoSaveMode, type IdeEditorSettings, type IdeIndentStyle, type IdeTabSize, type IdeWordWrapMode } from "../ide/ide-store";
+import { terminalStore } from "../terminal/terminal-store";
 import { pushToast } from "../toast-store";
 import { ActionButton } from "./action-button";
 import { ModeEditorPanel } from "./mode-editor-panel";
@@ -376,6 +377,7 @@ export function PreferencesPanel() {
       assistantAutoApproveNonBlockingQuestionsDefault: state.assistantAutoApproveNonBlockingQuestionsDefault,
       assistantCongestionControlEnabledDefault: state.assistantCongestionControlEnabledDefault,
       assistantMaxCongestionDefault: state.assistantMaxCongestionDefault,
+      maxBackgroundJobsDefault: state.maxBackgroundJobsDefault,
       autoArchiveCompletedThreadsDefault: state.autoArchiveCompletedThreadsDefault,
       backgroundJobNotificationsEnabled: state.backgroundJobNotificationsEnabled,
       memoryBankEnabledDefault: state.memoryBankEnabledDefault,
@@ -384,7 +386,8 @@ export function PreferencesPanel() {
       selectedReasoningStrength: state.selectedReasoningStrength,
       selectedFastMode: state.selectedFastMode,
       appHotkeyPreferences: state.appHotkeyPreferences,
-      themePreference: state.themePreference
+      themePreference: state.themePreference,
+      numericRightAlignmentEnabled: state.numericRightAlignmentEnabled
     };
 
     persistMergedLocalPreferences(localPreferences);
@@ -413,6 +416,7 @@ export function PreferencesPanel() {
         assistantAutoApproveNonBlockingQuestionsDefault: state.assistantAutoApproveNonBlockingQuestionsDefault,
         assistantCongestionControlEnabledDefault: state.assistantCongestionControlEnabledDefault,
         assistantMaxCongestionDefault: state.assistantMaxCongestionDefault,
+        maxBackgroundJobsDefault: state.maxBackgroundJobsDefault,
         autoArchiveCompletedThreadsDefault: state.autoArchiveCompletedThreadsDefault,
         memoryBankEnabledDefault: state.memoryBankEnabledDefault,
         memoryBankRecordRunsDefault: state.memoryBankRecordRunsDefault,
@@ -471,6 +475,7 @@ export function PreferencesPanel() {
       assistantAutoApproveNonBlockingQuestionsDefault: state.assistantAutoApproveNonBlockingQuestionsDefault,
       assistantCongestionControlEnabledDefault: state.assistantCongestionControlEnabledDefault,
       assistantMaxCongestionDefault: state.assistantMaxCongestionDefault,
+      maxBackgroundJobsDefault: state.maxBackgroundJobsDefault,
       autoArchiveCompletedThreadsDefault: state.autoArchiveCompletedThreadsDefault,
       backgroundJobNotificationsEnabled: state.backgroundJobNotificationsEnabled,
       memoryBankEnabledDefault: state.memoryBankEnabledDefault,
@@ -479,7 +484,8 @@ export function PreferencesPanel() {
       selectedReasoningStrength: state.selectedReasoningStrength,
       selectedFastMode: state.selectedFastMode,
       appHotkeyPreferences: state.appHotkeyPreferences,
-      themePreference: state.themePreference
+      themePreference: state.themePreference,
+      numericRightAlignmentEnabled: state.numericRightAlignmentEnabled
     });
     store.commitLocalPreferences({
       openAiApiKey: undefined,
@@ -501,6 +507,7 @@ export function PreferencesPanel() {
       assistantAutoApproveNonBlockingQuestionsDefault: state.assistantAutoApproveNonBlockingQuestionsDefault,
       assistantCongestionControlEnabledDefault: state.assistantCongestionControlEnabledDefault,
       assistantMaxCongestionDefault: state.assistantMaxCongestionDefault,
+      maxBackgroundJobsDefault: state.maxBackgroundJobsDefault,
       autoArchiveCompletedThreadsDefault: state.autoArchiveCompletedThreadsDefault,
       memoryBankEnabledDefault: state.memoryBankEnabledDefault,
       memoryBankRecordRunsDefault: state.memoryBankRecordRunsDefault,
@@ -508,7 +515,8 @@ export function PreferencesPanel() {
       selectedReasoningStrength: state.selectedReasoningStrength,
       selectedFastMode: state.selectedFastMode,
       appHotkeyPreferences: state.appHotkeyPreferences,
-      themePreference: state.themePreference
+      themePreference: state.themePreference,
+      numericRightAlignmentEnabled: state.numericRightAlignmentEnabled
     });
 
     sendCommand({
@@ -535,6 +543,7 @@ export function PreferencesPanel() {
       assistantAutoApproveNonBlockingQuestionsDefault: state.assistantAutoApproveNonBlockingQuestionsDefault,
       assistantCongestionControlEnabledDefault: state.assistantCongestionControlEnabledDefault,
       assistantMaxCongestionDefault: state.assistantMaxCongestionDefault,
+      maxBackgroundJobsDefault: state.maxBackgroundJobsDefault,
       autoArchiveCompletedThreadsDefault: state.autoArchiveCompletedThreadsDefault,
       backgroundJobNotificationsEnabled: state.backgroundJobNotificationsEnabled,
       memoryBankEnabledDefault: state.memoryBankEnabledDefault,
@@ -543,7 +552,8 @@ export function PreferencesPanel() {
       selectedReasoningStrength: state.selectedReasoningStrength,
       selectedFastMode: state.selectedFastMode,
       appHotkeyPreferences: state.appHotkeyPreferences,
-      themePreference: state.themePreference
+      themePreference: state.themePreference,
+      numericRightAlignmentEnabled: state.numericRightAlignmentEnabled
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -579,6 +589,7 @@ export function PreferencesPanel() {
         assistantAutoApproveNonBlockingQuestionsDefault: boolean;
         assistantCongestionControlEnabledDefault: boolean;
         assistantMaxCongestionDefault: number;
+        maxBackgroundJobsDefault: number;
         autoArchiveCompletedThreadsDefault: boolean;
         backgroundJobNotificationsEnabled: boolean;
         memoryBankEnabledDefault: boolean;
@@ -588,6 +599,7 @@ export function PreferencesPanel() {
         selectedFastMode: boolean;
         appHotkeyPreferences: unknown;
         themePreference: unknown;
+        numericRightAlignmentEnabled: boolean;
       }>;
       const importedThemePreference = parsed.themePreference === undefined
         ? state.themePreference
@@ -610,6 +622,7 @@ export function PreferencesPanel() {
         assistantAutoApproveNonBlockingQuestionsDefault: parsed.assistantAutoApproveNonBlockingQuestionsDefault,
         assistantCongestionControlEnabledDefault: parsed.assistantCongestionControlEnabledDefault,
         assistantMaxCongestionDefault: parsed.assistantMaxCongestionDefault,
+        maxBackgroundJobsDefault: parsed.maxBackgroundJobsDefault,
         autoArchiveCompletedThreadsDefault: parsed.autoArchiveCompletedThreadsDefault,
         backgroundJobNotificationsEnabled: parsed.backgroundJobNotificationsEnabled,
         memoryBankEnabledDefault: parsed.memoryBankEnabledDefault,
@@ -618,7 +631,8 @@ export function PreferencesPanel() {
         selectedReasoningStrength: parsed.selectedReasoningStrength,
         selectedFastMode: parsed.selectedFastMode,
         appHotkeyPreferences: normalizeAppHotkeyPreferences(parsed.appHotkeyPreferences),
-        themePreference: importedThemePreference
+        themePreference: importedThemePreference,
+        numericRightAlignmentEnabled: parsed.numericRightAlignmentEnabled
       });
       persistMergedLocalPreferences({
         openAiApiKey: state.openAiApiKeyDraft.trim() || undefined,
@@ -647,6 +661,8 @@ export function PreferencesPanel() {
           parsed.assistantCongestionControlEnabledDefault ?? state.assistantCongestionControlEnabledDefault,
         assistantMaxCongestionDefault:
           parsed.assistantMaxCongestionDefault ?? state.assistantMaxCongestionDefault,
+        maxBackgroundJobsDefault:
+          parsed.maxBackgroundJobsDefault ?? state.maxBackgroundJobsDefault,
         autoArchiveCompletedThreadsDefault:
           parsed.autoArchiveCompletedThreadsDefault ?? state.autoArchiveCompletedThreadsDefault,
         backgroundJobNotificationsEnabled: parsed.backgroundJobNotificationsEnabled ?? state.backgroundJobNotificationsEnabled,
@@ -656,7 +672,8 @@ export function PreferencesPanel() {
         selectedReasoningStrength: parsed.selectedReasoningStrength ?? state.selectedReasoningStrength,
         selectedFastMode: parsed.selectedFastMode ?? state.selectedFastMode,
         appHotkeyPreferences: normalizeAppHotkeyPreferences(parsed.appHotkeyPreferences ?? state.appHotkeyPreferences),
-        themePreference: importedThemePreference
+        themePreference: importedThemePreference,
+        numericRightAlignmentEnabled: parsed.numericRightAlignmentEnabled ?? state.numericRightAlignmentEnabled
       });
       pushToast("Preferences imported", "Local defaults updated.");
     } catch (error) {
@@ -753,6 +770,30 @@ export function PreferencesPanel() {
         />
       </label>
     );
+  }
+
+  function saveTerminalRendererMode(rendererMode: TerminalPreferences["rendererMode"]) {
+    const requestId = createRequestId();
+    const preferences = {
+      ...terminalStore.state.preferences,
+      rendererMode
+    };
+    terminalStore.applyServerEvent({
+      type: "terminal.preferences.saved",
+      requestId,
+      payload: {
+        preferences,
+        layout: terminalStore.state.layout
+      }
+    });
+    sendCommand({
+      type: "terminal.preferences.save",
+      requestId,
+      payload: {
+        preferences,
+        layout: terminalStore.state.layout
+      }
+    });
   }
 
   function renderSettingControl(title: string, description: string, control: JSX.Element) {
@@ -1373,6 +1414,28 @@ export function PreferencesPanel() {
             </Show>
           </div>
         </PreferenceRow>
+        <PreferenceRow id="terminal-display" title="Terminal and numeric display" description="Choose terminal rendering and dense numeric alignment defaults.">
+          <div class="grid gap-3">
+            {renderSettingControl(
+              "Terminal renderer",
+              "Solid is the default lightweight renderer; xterm keeps the full emulator path available.",
+              <SegmentedControl
+                ariaLabel="Terminal renderer"
+                value={terminalStore.state.preferences.rendererMode === "solid-prototype" ? "solid" : "xterm"}
+                options={[
+                  { value: "solid", label: "Solid" },
+                  { value: "xterm", label: "xterm" }
+                ]}
+                onChange={(value) => saveTerminalRendererMode(value === "solid" ? "solid-prototype" : "xterm-webgl")}
+              />
+            )}
+            {renderSettingControl(
+              "Numeric alignment",
+              "Right-align dense counts and numeric badges for easier scanning.",
+              renderToggle(state.numericRightAlignmentEnabled, store.setNumericRightAlignmentEnabled, "Right-align numbers")
+            )}
+          </div>
+        </PreferenceRow>
         <PreferenceRow id="navigation-sidebar" title="Sidebar and layout" description="Restore main panel sizes and choose project sidebar sorting/grouping.">
           <div class="grid gap-3">
             <ActionButton tooltip="Restore panel sizes" variant="secondary" icon={<LayoutPanelLeft class="h-4 w-4" />} onClick={handleResetPanelSizes}>
@@ -1705,8 +1768,8 @@ export function PreferencesPanel() {
 
   function renderBackgroundJobs() {
     return (
-      <PreferenceSection title="Background Jobs" description="Approval policy, notifications, and current jobs pane defaults.">
-        <PreferenceRow id="job-defaults" title="Background job defaults" description="Choose approval posture for background work.">
+      <PreferenceSection title="Background Jobs" description="Approval policy, capacity, notifications, and current jobs pane defaults.">
+        <PreferenceRow id="job-defaults" title="Background job defaults" description="Choose approval posture and concurrent capacity for background work.">
           <div class="grid gap-3">
             <SegmentedControl
               ariaLabel="Background approval policy"
@@ -1735,6 +1798,17 @@ export function PreferencesPanel() {
               tooltip="Higher values allow more assistant job load before congestion delays apply, which can lead to jobs running over each other."
               formatValue={(value) => value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "")}
               onChange={(value) => updateSavedPreference(() => store.setAssistantMaxCongestionDefault(value))}
+            />
+            <RangeControl
+              label="Max background jobs"
+              value={state.maxBackgroundJobsDefault}
+              min={5}
+              max={100}
+              step={1}
+              suffix=" jobs"
+              tooltip="Caps concurrently running or queued scheduled background jobs."
+              formatValue={(value) => Math.round(value).toString()}
+              onChange={(value) => updateSavedPreference(() => store.setMaxBackgroundJobsDefault(value))}
             />
           </div>
         </PreferenceRow>

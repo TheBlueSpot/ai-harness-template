@@ -139,6 +139,7 @@ it("derives thread execution log from run, plan, traces, tool activity, and brow
         toolName: "shell_command",
         category: "shell",
         command: "bun test",
+        rawResultJson: "{\"stdout\":\"full test output\"}",
         status: "running",
         startedAt: now,
         updatedAt: later
@@ -176,6 +177,7 @@ it("derives thread execution log from run, plan, traces, tool activity, and brow
   });
   const messages = entries.map((entry) => entry.message);
   const subtaskEntry = entries.find((entry) => entry.message === "Patch code running");
+  const toolEntry = entries.find((entry) => entry.message === "shell_command running");
   const traceEntry = entries.find((entry) => entry.message === "Trace event");
 
   expect(messages).toContain("Run running-main");
@@ -186,6 +188,10 @@ it("derives thread execution log from run, plan, traces, tool activity, and brow
   expect(messages).toContain("Trace event");
   expect(subtaskEntry?.createdAt).toBe(now);
   expect(subtaskEntry?.detail).toContain("Started: April 28 '26 - 12:00 PM");
+  expect(toolEntry?.rowSummary).toContain("Run Bun tests");
+  expect(toolEntry?.detailKind).toBe("plain");
+  expect(toolEntry?.detail).toContain("full test output");
+  expect(toolEntry?.copyText).toContain("full test output");
   expect(traceEntry?.createdAt).toBe(now);
 });
 

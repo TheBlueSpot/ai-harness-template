@@ -71,6 +71,7 @@ import {
   type SetupLaunchMode,
   type SetupState,
   type TerminalAttachToken,
+  type TerminalHistoryScope,
   type TerminalPaneLayout,
   type TerminalPreferences,
   type TerminalSession,
@@ -462,13 +463,12 @@ async function startHotReloadableHarnessServer(
   const hotRestartReason = singleton
     ? getHotSingletonRestartReason(singleton, options.hotSingletonVersion)
     : undefined;
-  if (singleton && hotRestartReason) {
-    clearPendingHotReloadUpdate(singleton, options.timerApi);
+  const restartSingleton = singleton && hotRestartReason ? singleton : undefined;
+  if (restartSingleton) {
+    clearPendingHotReloadUpdate(restartSingleton, options.timerApi);
     if (process.env.NODE_ENV !== "test") {
-      console.warn(`[dev] ${hotRestartReason}; restarting server state`);
+      console.warn(`[dev] ${hotRestartReason}; preparing server state restart`);
     }
-    await singleton.server.stop(true);
-    clearDevHarnessServerSingleton();
     singleton = undefined;
   }
 
@@ -489,21 +489,38 @@ async function startHotReloadableHarnessServer(
     }
   }
 
-  const state = await initializeHarnessServerState({
-    adapter: singleton?.state.adapter ?? options.adapter ?? new PiSdkAgentAdapter(),
-    repository: options.repository,
-    runtimeRegistry: options.runtimeRegistry,
-    osAdapters: options.osAdapters,
-    pickFolder: options.pickFolder ?? pickProjectFolder,
-    serverOnly: options.serverOnly,
-    launchMode: options.launchMode,
-    startupTelemetry: options.startupTelemetry,
-    uiAssetManagerFactory: options.uiAssetManagerFactory,
-    hotDevelopmentMode: true,
-    hotReloadDebouncePolicy: options.hotReloadDebouncePolicy,
-    existingState: singleton?.state
-  });
-  const handlerRefs = createHarnessHandlerRefs(state, { derivedProgressHeartbeatMs: options.derivedProgressHeartbeatMs });
+  let state: HarnessServerState;
+  let handlerRefs: HarnessHandlerRefs;
+  try {
+    state = await initializeHarnessServerState({
+      adapter: singleton?.state.adapter ?? options.adapter ?? new PiSdkAgentAdapter(),
+      repository: options.repository,
+      runtimeRegistry: options.runtimeRegistry,
+      osAdapters: options.osAdapters,
+      pickFolder: options.pickFolder ?? pickProjectFolder,
+      serverOnly: options.serverOnly,
+      launchMode: options.launchMode,
+      startupTelemetry: options.startupTelemetry,
+      uiAssetManagerFactory: options.uiAssetManagerFactory,
+      hotDevelopmentMode: true,
+      hotReloadDebouncePolicy: options.hotReloadDebouncePolicy,
+      existingState: singleton?.state
+    });
+    handlerRefs = createHarnessHandlerRefs(state, { derivedProgressHeartbeatMs: options.derivedProgressHeartbeatMs });
+  } catch (error) {
+    const fallbackSingleton = restartSingleton ?? singleton;
+    if (fallbackSingleton) {
+      return recoverFailedHotReload({
+        singleton: fallbackSingleton,
+        error,
+        startupTelemetry: options.startupTelemetry,
+        openBrowser: options.openBrowser,
+        browserLauncher: options.browserLauncher,
+        timerApi: options.timerApi
+      });
+    }
+    throw error;
+  }
 
   if (singleton) {
     const nextReloadDelayMs = peekNextHotReloadDelay(singleton, options.hotReloadDebouncePolicy);
@@ -528,6 +545,11 @@ async function startHotReloadableHarnessServer(
       browserLauncher: options.browserLauncher,
       browserOpenState: singleton
     });
+  }
+
+  if (restartSingleton) {
+    await restartSingleton.server.stop(true);
+    clearDevHarnessServerSingleton();
   }
 
   const websocketShell: HarnessWebSocketOptions = {
@@ -591,6 +613,47 @@ async function startHotReloadableHarnessServer(
     openBrowser: options.openBrowser,
     browserLauncher: options.browserLauncher,
     browserOpenState: singleton
+  });
+}
+
+function recoverFailedHotReload(input: {
+  singleton: NonNullable<
+    ReturnType<
+      typeof getDevHarnessServerSingleton<
+        HarnessServerState,
+        HarnessHandlerRefs,
+        Awaited<ReturnType<typeof Bun.serve<HarnessConnection>>>,
+        HarnessWebSocketOptions
+      >
+    >
+  >;
+  error: unknown;
+  startupTelemetry?: StartupTelemetrySink;
+  openBrowser: boolean;
+  browserLauncher: typeof openHarnessBrowser;
+  timerApi: TimerApi;
+}) {
+  clearPendingHotReloadUpdate(input.singleton, input.timerApi);
+  input.singleton.pendingState = undefined;
+  input.singleton.pendingHandlerRefs = undefined;
+  input.singleton.pendingApplyBackoffStep = 0;
+  setDevHarnessServerSingleton(input.singleton);
+
+  const message = formatUnknownErrorMessage(input.error);
+  if (process.env.NODE_ENV !== "test") {
+    console.warn(`[dev] hot reload failed; keeping previous server live until the next backend change: ${message}`);
+  }
+  input.startupTelemetry?.phaseStart("serve", "dev hot reload failed; keeping previous server live", {
+    error: message
+  });
+
+  return finalizeHarnessServerStartup({
+    server: input.singleton.server,
+    state: input.singleton.state,
+    startupTelemetry: input.startupTelemetry,
+    openBrowser: input.openBrowser,
+    browserLauncher: input.browserLauncher,
+    browserOpenState: input.singleton
   });
 }
 
@@ -708,7 +771,8 @@ async function initializeHarnessServerState(input: {
           runtimeRegistry: baseServices.runtimeRegistry,
           assistantManager,
           connections: baseServices.connections,
-          backgroundRunControllers: baseServices.backgroundRunControllers
+          backgroundRunControllers: baseServices.backgroundRunControllers,
+          tokenUsageSession: baseServices.tokenUsageSession
         });
         return {
           currentSetupState,
@@ -811,6 +875,9 @@ async function initializeHarnessServerState(input: {
         onShellsUpdated({ requestId, shells }) {
           emitTerminalShellsUpdatedToAll(baseServices.connections, { requestId, shells });
         },
+        onHistoryListed({ requestId, scope, sessions }) {
+          emitTerminalHistoryListedToAll(baseServices.connections, { requestId, scope, sessions });
+        },
         onSessionCreated({ requestId, session }) {
           emitTerminalSessionCreatedToAll(baseServices.connections, { requestId, session });
         },
@@ -834,7 +901,8 @@ async function initializeHarnessServerState(input: {
         runtimeRegistry: baseServices.runtimeRegistry,
         assistantManager,
         connections: baseServices.connections,
-        backgroundRunControllers: baseServices.backgroundRunControllers
+        backgroundRunControllers: baseServices.backgroundRunControllers,
+        tokenUsageSession: baseServices.tokenUsageSession
       });
 
       return {
@@ -898,13 +966,11 @@ function createBackgroundJobScheduler(input: {
   assistantManager: AssistantManager;
   connections: Set<Bun.ServerWebSocket<HarnessConnection>>;
   backgroundRunControllers: Map<string, BackgroundRunControl>;
+  tokenUsageSession: TokenUsageTotals;
 }) {
-  const { repository, runtime, runtimeRegistry, assistantManager, connections, backgroundRunControllers } = input;
+  const { repository, runtime, runtimeRegistry, assistantManager, connections, backgroundRunControllers, tokenUsageSession } = input;
   return new BackgroundJobScheduler({
     repository,
-    isForegroundRunActive() {
-      return repository.hasActiveForegroundAgentRun();
-    },
     isRunLive(run) {
       return isBackgroundRunLive(backgroundRunControllers, runtime, run);
     },
@@ -921,7 +987,8 @@ function createBackgroundJobScheduler(input: {
         runtime,
         backgroundRunControllers,
         assistantManager,
-        now
+        now,
+        tokenUsageSession
       );
     },
     async onRunsRepaired(runs) {
@@ -946,7 +1013,8 @@ function createBackgroundJobScheduler(input: {
           runtime,
           backgroundRunControllers,
           assistantManager,
-          run.id
+          run.id,
+          tokenUsageSession
         );
       }
     },
@@ -1654,6 +1722,10 @@ function injectDevLiveReloadScript(html: string) {
   return html.includes("</body>") ? html.replace("</body>", `${script}\n</body>`) : `${html}\n${script}`;
 }
 
+function formatUnknownErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function hydrateAdapterFromRepository(adapter: PiAgentAdapter, repository: WorkspaceRepository) {
   const storedOpenAiApiKey = repository.getStoredOpenAiApiKey();
   const storedGoogleApiKey = repository.getStoredGoogleApiKey();
@@ -1808,7 +1880,8 @@ async function handleCommand(
         assistantManager,
         connections,
         backgroundRunControllers,
-        scheduler
+        scheduler,
+        tokenUsageSession
       );
       emitExecutionControlUpdatedToAll(connections, command.requestId, repository.getExecutionControlState());
       return;
@@ -1844,6 +1917,20 @@ async function handleCommand(
       await terminalSessionManager.refreshShells(command.requestId);
       return;
     }
+    case "terminal.sessions.list": {
+      terminalSessionManager.listSessions({
+        requestId: command.requestId,
+        projectId: command.payload?.projectId
+      });
+      return;
+    }
+    case "terminal.history.list": {
+      terminalSessionManager.listHistory({
+        requestId: command.requestId,
+        scope: command.payload
+      });
+      return;
+    }
     case "terminal.session.create": {
       const project = runtime.getProject(command.payload.projectId);
       await terminalSessionManager.createSession({
@@ -1858,6 +1945,10 @@ async function handleCommand(
         rows: command.payload.rows,
         env: command.payload.env
       });
+      return;
+    }
+    case "terminal.session.set-input-override": {
+      terminalSessionManager.setInputOverride({ requestId: command.requestId, ...command.payload });
       return;
     }
     case "terminal.session.rename": {
@@ -2624,7 +2715,8 @@ async function handleCommand(
           assistantManager,
           projectId,
           threadId: command.payload.threadId,
-          action: assistantAction.action
+          action: assistantAction.action,
+          tokenUsageSession
         });
         return;
       }
@@ -3065,7 +3157,8 @@ async function handleCommand(
             assistantManager,
             projectId,
             threadId: command.payload.threadId,
-            action: assistantAction.action
+            action: assistantAction.action,
+            tokenUsageSession
           });
           const completedProject = repository.setAgentRunStatus(projectId, targetRun.id, "completed");
           runtime.upsertPersistedProject(completedProject);
@@ -3808,8 +3901,15 @@ async function handleCommand(
         runtime,
         backgroundRunControllers,
         assistantManager,
-        queuedRun.id
+        queuedRun.id,
+        tokenUsageSession
       );
+      return;
+    }
+    case "background-job.scheduler.retry": {
+      await scheduler.retry();
+      emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
+      emitNotificationsUpdatedToAll(connections, command.requestId, repository.loadNotificationInboxState());
       return;
     }
     case "background-job.stop-run": {
@@ -3854,7 +3954,8 @@ async function handleCommand(
           runtime,
           backgroundRunControllers,
           assistantManager,
-          queuedRun.id
+          queuedRun.id,
+          tokenUsageSession
         );
       }
       emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
@@ -3877,7 +3978,8 @@ async function handleCommand(
         runtime,
         backgroundRunControllers,
         assistantManager,
-        updatedRun.id
+        updatedRun.id,
+        tokenUsageSession
       );
       emitBackgroundJobsUpdatedToAll(connections, repository.loadBackgroundJobsState());
       emitNotificationsUpdatedToAll(connections, command.requestId, repository.loadNotificationInboxState());
@@ -4408,6 +4510,9 @@ async function handleCommand(
       );
       repository.setAssistantMaxCongestionDefault(
         command.payload.assistantMaxCongestionDefault ?? repository.getAssistantMaxCongestionDefault()
+      );
+      repository.setMaxBackgroundJobsDefault(
+        command.payload.maxBackgroundJobsDefault ?? repository.getMaxBackgroundJobsDefault()
       );
       setRepositoryAutoArchiveCompletedThreadsDefault(repository, command.payload.autoArchiveCompletedThreadsDefault ?? false);
       repository.setMemoryBankEnabledDefault(
@@ -5909,7 +6014,8 @@ async function releaseDeferredExecutionState(
   assistantManager: AssistantManager,
   connections: Set<Bun.ServerWebSocket<HarnessConnection>>,
   backgroundRunControllers: Map<string, BackgroundRunControl>,
-  scheduler: BackgroundJobScheduler
+  scheduler: BackgroundJobScheduler,
+  tokenUsageSession: TokenUsageTotals
 ) {
   for (const entry of repository.promoteDeferredPlanningQuestions()) {
     let project = repository.getProject(entry.projectId);
@@ -5974,7 +6080,8 @@ async function releaseDeferredExecutionState(
           runtime,
           backgroundRunControllers,
           assistantManager,
-          queuedRun.id
+          queuedRun.id,
+          tokenUsageSession
         )
       )
     );
@@ -8094,6 +8201,20 @@ function emitTerminalSessionsUpdatedToAll(
   });
 }
 
+function emitTerminalHistoryListedToAll(
+  connections: Set<Bun.ServerWebSocket<HarnessConnection>>,
+  input: { requestId: string; scope: TerminalHistoryScope; sessions: TerminalSession[] }
+) {
+  emitControlEvent(connections, {
+    type: "terminal.history.listed",
+    requestId: input.requestId,
+    payload: {
+      scope: input.scope,
+      sessions: input.sessions
+    }
+  });
+}
+
 function emitTerminalSessionCreatedToAll(
   connections: Set<Bun.ServerWebSocket<HarnessConnection>>,
   input: { requestId: string; session: TerminalSession }
@@ -8308,6 +8429,7 @@ function getPreferencesState(
     assistantAutoApproveNonBlockingQuestionsDefault: repository.getAssistantAutoApproveNonBlockingQuestionsDefault(),
     assistantCongestionControlEnabledDefault: repository.getAssistantCongestionControlEnabledDefault(),
     assistantMaxCongestionDefault: repository.getAssistantMaxCongestionDefault(),
+    maxBackgroundJobsDefault: repository.getMaxBackgroundJobsDefault(),
     autoArchiveCompletedThreadsDefault: getRepositoryAutoArchiveCompletedThreadsDefault(repository),
     memoryBankEnabledDefault: repository.getMemoryBankEnabledDefault(),
     memoryBankRecordRunsDefault: repository.getMemoryBankRecordRunsDefault(),
@@ -8675,6 +8797,7 @@ async function executeAssistantChatAction(input: {
   projectId: ProjectId;
   threadId: ThreadId;
   action: AssistantActionIntentDraft & { assistant: Assistant };
+  tokenUsageSession: TokenUsageTotals;
 }) {
   const { repository, action } = input;
   let assistant = action.assistant;
@@ -8827,7 +8950,8 @@ async function executeAssistantChatAction(input: {
         input.runtime,
         input.backgroundRunControllers,
         input.assistantManager,
-        queuedRun.id
+        queuedRun.id,
+        input.tokenUsageSession
       );
       jobId = job.id;
       runId = queuedRun.id;
@@ -9345,7 +9469,8 @@ async function resumeAndRepairBackgroundJobRuns(
   runtime: WorkspaceRuntimeStore,
   backgroundRunControllers: Map<string, BackgroundRunControl>,
   assistantManager: AssistantManager,
-  now: Date
+  now: Date,
+  tokenUsageSession: TokenUsageTotals
 ) {
   for (const run of repository.getActiveBackgroundJobRuns()) {
     if (backgroundRunControllers.has(run.id) || run.status !== "running" || !run.linkedAgentRunId) {
@@ -9376,7 +9501,8 @@ async function resumeAndRepairBackgroundJobRuns(
       runtime,
       backgroundRunControllers,
       assistantManager,
-      resumedRun.id
+      resumedRun.id,
+      tokenUsageSession
     );
   }
 
@@ -10054,7 +10180,8 @@ async function launchBackgroundJobRun(
   runtime: WorkspaceRuntimeStore,
   backgroundRunControllers: Map<string, BackgroundRunControl>,
   assistantManager: AssistantManager,
-  backgroundRunId: string
+  backgroundRunId: string,
+  tokenUsageSession?: TokenUsageTotals
 ) {
   if (backgroundRunControllers.has(backgroundRunId)) {
     debugLog("background.run.launch.skip-active-controller", {
@@ -10265,6 +10392,13 @@ async function launchBackgroundJobRun(
       abortSignal: abortController.signal,
       onRunUpdated(updatedRun) {
         void emitBackgroundJobRunUpdatedToAll(connections, updatedRun);
+      },
+      onContextUsage(contextUsage) {
+        if (!tokenUsageSession) {
+          return;
+        }
+        const tokenUsage = recordServerTokenUsage(repository, tokenUsageSession, contextUsage);
+        emitUsageUpdatedToAll(connections, `usage:bg:${crypto.randomUUID()}`, tokenUsage);
       }
     });
     if (job.assistantId) {
@@ -10333,7 +10467,8 @@ async function launchBackgroundJobRun(
         runtime,
         backgroundRunControllers,
         assistantManager,
-        retryRun.id
+        retryRun.id,
+        tokenUsageSession
       );
     }
   } catch (error) {

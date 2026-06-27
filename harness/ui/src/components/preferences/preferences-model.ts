@@ -14,6 +14,7 @@ export type PreferencesSectionId =
 
 export type PreferencesSettingId =
   | "appearance-density"
+  | "terminal-display"
   | "navigation-sidebar"
   | "keyboard-shortcuts"
   | "ide-editor-settings"
@@ -114,6 +115,13 @@ export const preferencesSettings: PreferencesSettingMeta[] = [
     title: "Appearance and density",
     description: "Themes, light and dark mode, custom colors, fonts, and compact density.",
     keywords: ["theme", "custom", "light", "dark", "system", "font", "color", "density", "appearance"]
+  },
+  {
+    id: "terminal-display",
+    sectionId: "general-ui",
+    title: "Terminal and numeric display",
+    description: "Choose the terminal renderer and dense numeric alignment.",
+    keywords: ["terminal", "renderer", "solid", "xterm", "numeric", "number", "alignment", "density"]
   },
   {
     id: "navigation-sidebar",
@@ -217,8 +225,8 @@ export const preferencesSettings: PreferencesSettingMeta[] = [
     id: "job-defaults",
     sectionId: "background-jobs",
     title: "Background job defaults",
-    description: "Approval, notification, and congestion defaults.",
-    keywords: ["jobs", "background", "approval", "notifications", "congestion", "capacity"]
+    description: "Approval, notification, concurrency, and congestion defaults.",
+    keywords: ["jobs", "background", "approval", "notifications", "congestion", "capacity", "concurrency", "maximum"]
   },
   {
     id: "assistant-job-controls",

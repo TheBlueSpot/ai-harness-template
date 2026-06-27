@@ -30,6 +30,7 @@ const basePreferences: PreferencesState = {
   correctnessIterationModeDefault: "ask-before-iterate",
   backgroundJobApprovalPolicyDefault: "ask-risky",
   assistantAutoApproveNonBlockingQuestionsDefault: true,
+  maxBackgroundJobsDefault: 10,
   memoryBankEnabledDefault: true,
   memoryBankRecordRunsDefault: true,
   checkCliUpdatesDefault: true,

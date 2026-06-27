@@ -1112,6 +1112,7 @@ export const setupStateSchema = z.object({
 
 export const runModelPreferenceSchema = z.enum(["inference", "intelligence"]);
 export const assistantMaxCongestionDefaultSchema = z.number().min(0.25).max(3);
+export const maxBackgroundJobsDefaultSchema = z.number().int().min(5).max(100);
 
 export const preferencesStateSchema = z.object({
   hasUsableApiKey: z.boolean(),
@@ -1138,6 +1139,7 @@ export const preferencesStateSchema = z.object({
   assistantAutoApproveNonBlockingQuestionsDefault: z.boolean().default(true),
   assistantCongestionControlEnabledDefault: z.boolean().optional(),
   assistantMaxCongestionDefault: assistantMaxCongestionDefaultSchema.optional(),
+  maxBackgroundJobsDefault: maxBackgroundJobsDefaultSchema.default(10),
   autoArchiveCompletedThreadsDefault: z.boolean().optional(),
   memoryBankEnabledDefault: z.boolean(),
   memoryBankRecordRunsDefault: z.boolean().default(true),
@@ -1557,6 +1559,20 @@ export const terminalSessionStatusSchema = z.enum(["starting", "running", "stopp
 export const terminalTransportModeSchema = z.enum(["pty", "pipe"]);
 export const terminalCtrlCModeSchema = z.enum(["auto", "copy", "sigint"]);
 export const terminalRendererModeSchema = z.enum(["xterm-webgl", "xterm-dom", "solid-prototype"]);
+export const terminalSessionSourceSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("user"),
+    label: z.string().min(1).max(128).optional()
+  }),
+  z.object({
+    kind: z.literal("agent"),
+    threadId: threadIdSchema,
+    runId: runIdSchema.optional(),
+    label: z.string().min(1).max(128),
+    trigger: z.enum(["project-chat", "run", "assistant", "background-job"]).default("project-chat")
+  })
+]);
+export const terminalSessionInputModeSchema = z.enum(["interactive", "read-only"]);
 
 export const terminalShellSchema = z.object({
   id: z.string().min(1).max(128),
@@ -1576,10 +1592,14 @@ export const terminalEnvVarSchema = z.object({
 export const terminalSessionSchema = z.object({
   id: z.string().min(1).max(128),
   projectId: projectIdSchema,
+  source: terminalSessionSourceSchema.optional(),
   name: z.string().min(1).max(128),
   shellId: z.string().min(1).max(128),
   cwd: z.string().min(1).max(4096),
   status: terminalSessionStatusSchema,
+  inputMode: terminalSessionInputModeSchema.optional(),
+  inputOverride: z.boolean().optional(),
+  inputLockReason: z.string().min(1).max(512).optional(),
   cols: z.number().int().min(1).max(1000),
   rows: z.number().int().min(1).max(1000),
   transportMode: terminalTransportModeSchema.optional(),
@@ -1589,7 +1609,14 @@ export const terminalSessionSchema = z.object({
   startedAt: z.string().datetime().or(z.string().min(1)),
   updatedAt: z.string().datetime().or(z.string().min(1)),
   exitedAt: z.string().datetime().or(z.string().min(1)).optional(),
+  closedAt: z.string().datetime().or(z.string().min(1)).optional(),
   serverRestarted: z.boolean().optional()
+});
+
+export const terminalHistoryScopeSchema = z.object({
+  projectId: projectIdSchema,
+  threadId: threadIdSchema.optional(),
+  runId: runIdSchema.optional()
 });
 
 export type TerminalPaneLayoutInput =
@@ -1628,7 +1655,7 @@ export const terminalPreferencesSchema = z.object({
   scrollbackLimit: z.number().int().min(1000).max(200000).default(10000),
   copyOnSelect: z.boolean().default(false),
   ctrlCMode: terminalCtrlCModeSchema.default("auto"),
-  rendererMode: terminalRendererModeSchema.default("xterm-webgl")
+  rendererMode: terminalRendererModeSchema.default("solid-prototype")
 });
 
 export const terminalAttachTokenSchema = z.object({
@@ -2276,6 +2303,10 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     })
   }),
   z.object({
+    type: z.literal("background-job.scheduler.retry"),
+    requestId: requestIdSchema
+  }),
+  z.object({
     type: z.literal("background-job.stop-run"),
     requestId: requestIdSchema,
     payload: z.object({
@@ -2559,6 +2590,20 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     requestId: requestIdSchema
   }),
   z.object({
+    type: z.literal("terminal.sessions.list"),
+    requestId: requestIdSchema,
+    payload: z
+      .object({
+        projectId: projectIdSchema.optional()
+      })
+      .optional()
+  }),
+  z.object({
+    type: z.literal("terminal.history.list"),
+    requestId: requestIdSchema,
+    payload: terminalHistoryScopeSchema
+  }),
+  z.object({
     type: z.literal("terminal.session.create"),
     requestId: requestIdSchema,
     payload: z.object({
@@ -2569,6 +2614,15 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       cols: z.number().int().min(1).max(1000),
       rows: z.number().int().min(1).max(1000),
       env: z.array(terminalEnvVarSchema).max(64).optional()
+    })
+  }),
+  z.object({
+    type: z.literal("terminal.session.set-input-override"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      projectId: projectIdSchema,
+      sessionId: z.string().min(1).max(128),
+      allowInput: z.boolean()
     })
   }),
   z.object({
@@ -2773,6 +2827,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       assistantAutoApproveNonBlockingQuestionsDefault: z.boolean().optional(),
       assistantCongestionControlEnabledDefault: z.boolean().optional(),
       assistantMaxCongestionDefault: assistantMaxCongestionDefaultSchema.optional(),
+      maxBackgroundJobsDefault: maxBackgroundJobsDefaultSchema.optional(),
       autoArchiveCompletedThreadsDefault: z.boolean().optional(),
       memoryBankEnabledDefault: z.boolean().optional(),
       memoryBankRecordRunsDefault: z.boolean().optional(),
@@ -3466,6 +3521,14 @@ export const serverEventSchema = z.discriminatedUnion("type", [
     })
   }),
   z.object({
+    type: z.literal("terminal.history.listed"),
+    requestId: requestIdSchema,
+    payload: z.object({
+      scope: terminalHistoryScopeSchema,
+      sessions: z.array(terminalSessionSchema).max(256)
+    })
+  }),
+  z.object({
     type: z.literal("terminal.session.created"),
     requestId: requestIdSchema,
     payload: z.object({
@@ -3742,8 +3805,11 @@ export type TerminalShell = z.infer<typeof terminalShellSchema>;
 export type TerminalShellKind = z.infer<typeof terminalShellKindSchema>;
 export type TerminalSessionStatus = z.infer<typeof terminalSessionStatusSchema>;
 export type TerminalTransportMode = z.infer<typeof terminalTransportModeSchema>;
+export type TerminalSessionSource = z.infer<typeof terminalSessionSourceSchema>;
+export type TerminalSessionInputMode = z.infer<typeof terminalSessionInputModeSchema>;
 export type TerminalSession = z.infer<typeof terminalSessionSchema>;
 export type TerminalEnvVar = z.infer<typeof terminalEnvVarSchema>;
+export type TerminalHistoryScope = z.infer<typeof terminalHistoryScopeSchema>;
 export type TerminalPaneLayout = z.infer<typeof terminalPaneLayoutSchema>;
 export type TerminalPreferences = z.infer<typeof terminalPreferencesSchema>;
 export type TerminalAttachToken = z.infer<typeof terminalAttachTokenSchema>;

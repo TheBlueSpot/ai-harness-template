@@ -21,6 +21,7 @@ Solid UI source for harness frontend.
 - Assistant roster refreshes stay summary-only; selected assistant detail hydrates on demand through bounded pages.
 - Assistant learnings render with empty states and bounded batches so large memory sets stay inspectable without special compacted-summary labeling.
 - Dense transcript, assistant, job, run, trace, and log collections use virtual infinite scrolling so tab switches stay responsive with large histories.
+- Dense visual language follows root [durable learnings](../../../LEARNINGS.md): semantic chips, progressive disclosure, tooltip-backed icon actions, quiet selected states, and preference-backed numeric alignment.
 - Assistant todo rows expose cleanup, work category, and work target controls while completed todos age out through backend retention.
 - Trace panel follows selected Projects, Assistants, or Jobs context and shows unified execution evidence, task timing, and running-agent counts.
 - Provider preferences and context usage surfaces include Claude and cached-input visibility for efficient runs.

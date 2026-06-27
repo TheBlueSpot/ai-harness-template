@@ -15,6 +15,7 @@ These rules are hard requirements for this repository.
 - Prefer concrete subagent contracts with non-overlapping owned paths. If paths overlap or are unknown, use isolated worktrees.
 - Use BranchFS isolation for ephemeral experiments or overlapping/unknown subagent edit ownership. Do not flush isolated edits without explicit promote/flush flow.
 - Browser smokes should prefer fast CDP or app-state setup scripts that jump directly to the state under test, then use CDP input/evaluation to exercise it; avoid waiting through long natural progression when deterministic state setup is possible.
+- Background jobs should keep running alongside primary runs; do not pause or block scheduled work only because a primary run is active. Max background jobs is a persisted setting defaulting to 10 with range 5-100.
 - MD files should contain as little references to code and more high level concepts and links to other MD files.
 - Assistant management actions must use `assistant-actions` runbook and bundled scripts exclusively; do not create ad hoc project-space code to inspect or mutate assistants.
 - Default greenfield project stack guidance must require useful documentation comments for new functions and variables, covering intent, constraints, units, or invariants.

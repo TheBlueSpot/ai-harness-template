@@ -33,6 +33,7 @@ import { selectCurrentTabItem } from "./lib/current-tab-item-hotkeys";
 import { createIdeWindowUrl, IDE_POP_IN_EVENT, OPEN_IDE_WINDOW_EVENT, type OpenIdeWindowInput } from "./lib/ide-window";
 import { createCurrentToastSourceNavigation } from "./source-navigation";
 import { TerminalDrawer } from "./terminal/terminal-drawer";
+import { toggleTerminalSearch } from "./terminal/terminal-search-actions";
 import { terminalStore } from "./terminal/terminal-store";
 import { reportUiError, setDefaultToastSourceResolver } from "./toast-store";
 
@@ -841,12 +842,7 @@ function createBackgroundJobFromHotkey() {
 
 function focusCurrentTabSearch() {
   if (terminalStore.state.open) {
-    terminalStore.setSearch(true);
-    queueMicrotask(() => {
-      const input = document.querySelector<HTMLInputElement>('input[aria-label="Search terminal"]');
-      input?.focus();
-      input?.select();
-    });
+    toggleTerminalSearch();
     return;
   }
   const labels: Record<HarnessLeftTab, string> = {

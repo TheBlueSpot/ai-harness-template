@@ -15,6 +15,7 @@
 - High-frequency minimaps should cache/static-throttle non-player markers and hint text; preserving live player heading every frame keeps control trust while avoiding per-frame marker churn.
 - Autocomplete overlays opened by typing should immediately own focus, expose active option state, and dismiss on selection, Escape, or outside click.
 - Blocking question panels scan better with a quiet surface, one semantic urgency marker, and choice buttons that preserve descriptive text instead of turning the entire region into warning color.
+- Terminal drawers read faster when session navigation owns a fixed side rail and warnings move into badges or banners above the raw buffer instead of appearing as terminal text.
 
 ## Project Findings
 

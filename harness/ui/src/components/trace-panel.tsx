@@ -6,6 +6,14 @@ import { openIdeWindow } from "../lib/ide-window";
 import { getLatestTaskStatusText, getRunRefreshState, getVisibleProjectTraces, isRunWorking } from "../lib/run-status";
 import { formatShortTimestamp } from "../lib/time-format";
 import {
+  formatToolActivityCopyText,
+  formatToolActivityOwner,
+  formatToolActivitySnippet,
+  formatToolInvocationDescription,
+  normalizeToolSnippet
+} from "../lib/tool-activity-format";
+import { rightAlignedNumbersEnabled } from "../lib/visual-flags";
+import {
   getAssistantTracePanelSnapshot,
   getJobTracePanelSnapshot,
   getThreadTracePanelSnapshot,
@@ -21,6 +29,7 @@ import { ExecutionLog } from "./primitives/execution-log";
 import { MarkdownContent } from "./markdown-content";
 import { Tooltip } from "./primitives/tooltip";
 import { VirtualList } from "./primitives/virtual-list";
+import { TerminalHistoryDialog } from "../terminal/terminal-history-dialog";
 import {
   CheckCircle2,
   ChevronDown,
@@ -89,6 +98,7 @@ export function TracePanel() {
     return project ? getRunRefreshState(project, runToShow()) : { disabled: true, disabledReason: "No run available", refreshing: false };
   };
   const [expandedToolActivityId, setExpandedToolActivityId] = createSignal<string>();
+  const [terminalHistoryOpen, setTerminalHistoryOpen] = createSignal(false);
   const planRun = () => runToShow();
   const hasPlanDetails = () => Boolean(activeProject()?.latestPlan?.executionPlan);
   const visibleSubtasks = createMemo(() => runToShow()?.subtasks ?? []);
@@ -211,6 +221,24 @@ export function TracePanel() {
     });
   }
 
+  function handleOpenRunTerminalHistory() {
+    const project = activeProject();
+    const run = runToShow();
+    if (!project || !run) {
+      return;
+    }
+    sendCommand({
+      type: "terminal.history.list",
+      requestId: createRequestId(),
+      payload: {
+        projectId: project.id,
+        threadId: project.activeThreadId,
+        runId: run.id
+      }
+    });
+    setTerminalHistoryOpen(true);
+  }
+
   function handleOpenTraceFile(target: ChatFileTarget) {
     const project = fileLinkProject();
     if (!project) {
@@ -229,6 +257,7 @@ export function TracePanel() {
   }
 
   return (
+    <>
     <aside data-test-trace-panel="" class="panel-shell flex h-full min-h-0 flex-col gap-4 rounded-2xl border-t-0 p-[0.8rem]">
       <div>
         <div class="flex items-center gap-2 text-[0.585rem] font-semibold tracking-[0.2em] text-(--muted)">
@@ -305,7 +334,7 @@ export function TracePanel() {
                       </div>
                     </Show>
                   </div>
-                  <section class="flex min-h-0 flex-1 flex-col rounded-3xl border border-(--border) bg-white/55 p-3">
+                  <section class="flex min-h-[8.5rem] flex-1 flex-col rounded-3xl border border-(--border) bg-white/55 p-3">
                     <div class="mb-3 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Execution log</div>
                     <ExecutionLog entries={executionLogEntries()} emptyMessage="No execution log yet." fileLinks={traceFileLinks()} />
                   </section>
@@ -315,7 +344,7 @@ export function TracePanel() {
             <Show when={jobSnapshot()}>
               {(snapshot) => (
                 <div class="flex min-h-0 flex-1 flex-col gap-4">
-                  <section class="flex min-h-0 flex-1 flex-col rounded-3xl border border-(--border) bg-white/55 p-3">
+                  <section class="flex min-h-[8.5rem] flex-1 flex-col rounded-3xl border border-(--border) bg-white/55 p-3">
                     <div class="mb-3 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Execution log</div>
                     <ExecutionLog entries={executionLogEntries()} emptyMessage="No execution log yet." fileLinks={traceFileLinks()} />
                   </section>
@@ -400,6 +429,16 @@ export function TracePanel() {
                         Retry
                       </ActionButton>
                     </Show>
+                    <ActionButton
+                      tooltip="Open terminal history for this run"
+                      ariaLabel="Open run terminal history"
+                      icon={<Terminal class="h-3.5 w-3.5" />}
+                      size="sm"
+                      variant="secondary"
+                      onClick={handleOpenRunTerminalHistory}
+                    >
+                      Terminals
+                    </ActionButton>
                   </div>
                 </div>
                 <div class="min-w-0 space-y-2 text-[0.675rem] text-(--muted)">
@@ -520,7 +559,7 @@ export function TracePanel() {
                         <div class="flex min-w-0 items-center justify-between gap-3 text-(--foreground)">
                           <div class="flex min-w-0 items-center gap-2 font-semibold">
                             <ToolActivityStatusIcon status={activity.status} />
-                            <span class="truncate">{formatToolOwner(activity)}</span>
+                            <span class="truncate">{formatToolActivityOwner(activity)}</span>
                             <span class="shrink-0 text-(--muted)">|</span>
                             <span class="shrink-0">{activity.toolName}</span>
                           </div>
@@ -528,24 +567,33 @@ export function TracePanel() {
                             {activity.exitCode === undefined ? activity.status : `${activity.status} ${activity.exitCode}`}
                           </span>
                         </div>
-                        <Show when={activity.command}>
-                          <div class="mt-2 truncate rounded-xl bg-slate-950/5 px-2 py-1 font-mono text-[0.62rem] text-(--foreground)">
-                            <FileLinkedText text={activity.command ?? ""} fileLinks={traceFileLinks()} />
-                          </div>
+                        <div class="mt-2 text-[0.64rem] leading-5 text-(--muted)">
+                          {formatToolInvocationDescription(activity)}
+                        </div>
+                        <Show when={formatToolActivitySnippet(activity, 260)}>
+                          {(snippet) => (
+                            <div class="tool-call-snippet mt-2 font-mono">
+                              <FileLinkedText text={snippet()} fileLinks={traceFileLinks()} />
+                            </div>
+                          )}
                         </Show>
-                        <Show when={activity.outputPreview}>
-                          <MarkdownContent content={() => activity.outputPreview ?? ""} class="mt-2" size="compact" tone={activity.status === "failed" ? "danger" : "muted"} fileLinks={traceFileLinks()} />
+                        <Show when={activity.outputPreview && activity.outputPreview !== activity.command ? activity.outputPreview : undefined}>
+                          {(preview) => (
+                            <div class="tool-call-snippet mt-2">
+                              <FileLinkedText text={normalizeToolSnippet(preview(), 260)} fileLinks={traceFileLinks()} />
+                            </div>
+                          )}
                         </Show>
                         <Show when={expandedToolActivityId() === activity.id}>
                           <div class="mt-2 space-y-2 rounded-xl border border-(--border) bg-white/80 p-2">
                             <Show when={activity.argsSummary}>
-                              <MarkdownContent content={() => `Args: ${activity.argsSummary}`} size="compact" tone="muted" fileLinks={traceFileLinks()} />
+                              {(summary) => <ToolSnippetBlock title="Args" value={summary()} fileLinks={traceFileLinks()} />}
                             </Show>
                             <Show when={activity.stdoutPreview}>
-                              <MarkdownContent content={() => `Stdout: ${activity.stdoutPreview}`} size="compact" fileLinks={traceFileLinks()} />
+                              {(stdout) => <ToolSnippetBlock title="Stdout" value={stdout()} fileLinks={traceFileLinks()} />}
                             </Show>
                             <Show when={activity.stderrPreview}>
-                              <MarkdownContent content={() => `Stderr: ${activity.stderrPreview}`} size="compact" tone="danger" fileLinks={traceFileLinks()} />
+                              {(stderr) => <ToolSnippetBlock title="Stderr" value={stderr()} tone="danger" fileLinks={traceFileLinks()} />}
                             </Show>
                           </div>
                         </Show>
@@ -688,7 +736,7 @@ export function TracePanel() {
               </div>
             </Show>
 
-            <section class="flex min-h-0 max-h-72 flex-col rounded-3xl border border-(--border) bg-white/55 p-3">
+            <section class="flex min-h-[8.5rem] max-h-72 flex-col rounded-3xl border border-(--border) bg-white/55 p-3">
               <div class="mb-3 text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Execution log</div>
               <ExecutionLog entries={executionLogEntries()} emptyMessage="No execution log yet." fileLinks={traceFileLinks()} />
             </section>
@@ -726,9 +774,21 @@ export function TracePanel() {
       </Show>
 
       <div class="shrink-0 rounded-2xl border border-(--border) bg-white/75 px-3 py-2 text-[0.625rem] font-semibold text-(--foreground)">
-        Running agents: {runningCounts().current} current / {runningCounts().total} total
+        Running agents: <span classList={{ "dense-numeric-flagged": rightAlignedNumbersEnabled() }}>{runningCounts().current}</span> current /{" "}
+        <span classList={{ "dense-numeric-flagged": rightAlignedNumbersEnabled() }}>{runningCounts().total}</span> total
       </div>
     </aside>
+    <TerminalHistoryDialog
+      open={terminalHistoryOpen()}
+      title="Run Terminal History"
+      scope={
+        activeProject() && runToShow()
+          ? { projectId: activeProject()!.id, threadId: activeProject()!.activeThreadId, runId: runToShow()!.id }
+          : undefined
+      }
+      onClose={() => setTerminalHistoryOpen(false)}
+    />
+    </>
   );
 }
 
@@ -761,8 +821,8 @@ function TraceContextSummary(props: {
           }}
         >
           <span class="trace-context-pill-dot" />
-          <span>{props.runningCounts.current}</span>
-          <span class="text-(--muted)">/ {props.runningCounts.total}</span>
+          <span classList={{ "dense-numeric-flagged": rightAlignedNumbersEnabled() }}>{props.runningCounts.current}</span>
+          <span class="text-(--muted)" classList={{ "dense-numeric-flagged": rightAlignedNumbersEnabled() }}>/ {props.runningCounts.total}</span>
         </div>
       </div>
 
@@ -772,8 +832,8 @@ function TraceContextSummary(props: {
             <>
               <TraceContextMetric label="State" value={assistant().runState} tone={toneForStatus(assistant().runState)} />
               <TraceContextMetric label="Bootstrap" value={assistant().bootstrapState} tone={toneForStatus(assistant().bootstrapState)} />
-              <TraceContextMetric label="Jobs" value={String(props.assistantJobsCount ?? 0)} tone="info" />
-              <TraceContextMetric label="Runs" value={String(props.assistantRunsCount ?? 0)} tone="neutral" />
+              <TraceContextMetric label="Jobs" value={String(props.assistantJobsCount ?? 0)} tone="info" numeric />
+              <TraceContextMetric label="Runs" value={String(props.assistantRunsCount ?? 0)} tone="neutral" numeric />
             </>
           )}
         </Show>
@@ -783,7 +843,7 @@ function TraceContextSummary(props: {
               <TraceContextMetric label="Kind" value={job().kind} tone="info" />
               <TraceContextMetric label="Status" value={job().status} tone={toneForStatus(job().status)} />
               <TraceContextMetric label="Risk" value={job().riskLevel} tone={toneForRisk(job().riskLevel)} />
-              <TraceContextMetric label="Runs" value={String(props.jobRunCount ?? 0)} tone="neutral" />
+              <TraceContextMetric label="Runs" value={String(props.jobRunCount ?? 0)} tone="neutral" numeric />
             </>
           )}
         </Show>
@@ -824,7 +884,7 @@ function TraceContextSummary(props: {
   );
 }
 
-function TraceContextMetric(props: { label: string; value: string; tone: "neutral" | "success" | "warning" | "danger" | "info" }) {
+function TraceContextMetric(props: { label: string; value: string; tone: "neutral" | "success" | "warning" | "danger" | "info"; numeric?: boolean }) {
   return (
     <div
       class="trace-context-metric"
@@ -836,7 +896,7 @@ function TraceContextMetric(props: { label: string; value: string; tone: "neutra
       }}
     >
       <div class="trace-context-metric-label">{props.label}</div>
-      <div class="trace-context-metric-value">{props.value}</div>
+      <div class="trace-context-metric-value" classList={{ "dense-numeric-flagged": Boolean(props.numeric) && rightAlignedNumbersEnabled() }}>{props.value}</div>
     </div>
   );
 }
@@ -1042,6 +1102,22 @@ function isAttentionStatus(status: string) {
   return status.includes("failed") || status.includes("cancelled") || status.includes("approval") || status.includes("running") || status.includes("queued");
 }
 
+function ToolSnippetBlock(props: { title: string; value: string; tone?: "danger"; fileLinks?: FileLinkConfig }) {
+  return (
+    <div class="rounded-lg border border-(--border) bg-white/70 p-2">
+      <div class="mb-1 text-[0.55rem] font-semibold uppercase tracking-[0.14em] text-(--muted)">{props.title}</div>
+      <div
+        class="tool-call-snippet"
+        classList={{
+          "text-rose-800": props.tone === "danger"
+        }}
+      >
+        <FileLinkedText text={normalizeToolSnippet(props.value, 360)} fileLinks={props.fileLinks} />
+      </div>
+    </div>
+  );
+}
+
 const TRACE_SUBTASK_LIMIT = 24;
 const TRACE_TOOL_ACTIVITY_LIMIT = 50;
 const TRACE_BROWSER_SESSION_LIMIT = 10;
@@ -1117,25 +1193,6 @@ function ToolActivityStatusIcon(props: { status: ExecutionToolActivity["status"]
     case "timed-out":
       return <CircleAlert class="h-3.5 w-3.5 text-rose-600" aria-label="Tool failed" />;
   }
-}
-
-function formatToolOwner(activity: ExecutionToolActivity) {
-  if (activity.owner === "subagent") {
-    return activity.subagentId ? `Subagent ${activity.subagentId}` : "Subagent";
-  }
-  return activity.owner === "aggregator" ? "Aggregator" : "Main";
-}
-
-function formatToolActivityCopyText(activity: ExecutionToolActivity) {
-  return [
-    `${formatToolOwner(activity)} ${activity.toolName} ${activity.status}`,
-    activity.exitCode === undefined ? "" : `Exit: ${activity.exitCode}`,
-    activity.command ? `Command:\n${activity.command}` : "",
-    activity.argsSummary ? `Args:\n${activity.argsSummary}` : "",
-    activity.outputPreview ? `Output:\n${activity.outputPreview}` : "",
-    activity.stdoutPreview ? `Stdout:\n${activity.stdoutPreview}` : "",
-    activity.stderrPreview ? `Stderr:\n${activity.stderrPreview}` : ""
-  ].filter(Boolean).join("\n\n");
 }
 
 function formatVerificationSummary(verification: Array<{ status: "passed" | "failed" | "unknown" }>) {

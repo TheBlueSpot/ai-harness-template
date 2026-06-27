@@ -29,9 +29,11 @@ import { Button } from "./primitives/button";
 import { ButtonGroup, type ButtonGroupItem } from "./primitives/button-group";
 import type { ContextMenuAction } from "./primitives/context-menu";
 import { LeftPaneEmptyState, LeftPaneFilterBlock, LeftPaneHeader, LeftPaneSearchInput, LeftPaneSearchMenu, LeftPaneShell } from "./primitives/left-pane";
+import { StatusChip, type StatusChipTone } from "./primitives/status-chip";
 import { Tooltip } from "./primitives/tooltip";
 import { ThreadCleanupDialog } from "./thread-cleanup-dialog";
 import { VirtualList, type VirtualListHandle } from "./primitives/virtual-list";
+import { rightAlignedNumbersEnabled } from "../lib/visual-flags";
 import {
   ArrowDown,
   ArrowUp,
@@ -600,13 +602,12 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
       <section
         data-test-project-card=""
         data-project-id={project.id}
-        class="group relative overflow-hidden rounded-lg border p-2.5 transition"
+        class="dense-action-parent dense-card group relative overflow-hidden p-2.5 transition hover:border-(--accent)"
         classList={{
           "opacity-80": sortable.isDragging,
           "shadow-lg": sortable.isDragging,
-          "border-(--accent) theme-selected-surface shadow-sm": isActiveProject(),
-          "border-(--border)": !isActiveProject(),
-          "bg-white/60 hover:border-(--accent) hover:bg-white/75": !isActiveProject()
+          "dense-card-selected": isActiveProject(),
+          "hover:bg-white/75": !isActiveProject()
         }}
         ref={sortable.ref}
         style={sortable.style}
@@ -668,19 +669,17 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
               <div class="truncate text-[0.585rem] text-(--muted)">
                 {truncateMiddle(project.rootPath, props.compact ? 24 : 30)}
               </div>
-              <div class="mt-0.5 flex flex-wrap items-center gap-1.5 text-[0.585rem] text-(--muted)">
-                <span>{project.threadCount} threads</span>
-                {project.isStreaming ? <span>streaming</span> : null}
+              <div class="mt-1 flex flex-wrap items-center gap-1.5 text-[0.585rem] text-(--muted)">
+                <span classList={{ "dense-numeric-flagged": rightAlignedNumbersEnabled() }}>{project.threadCount} threads</span>
+                {project.isStreaming ? <StatusChip tone="info" dot>streaming</StatusChip> : null}
                 {isActiveProject() ? (
-                  <span class="rounded-full bg-(--accent) px-1.5 py-0.5 text-[0.48rem] font-semibold uppercase tracking-[0.1em] text-(--accent-foreground)">
-                    Active
-                  </span>
+                  <StatusChip tone="accent">Active</StatusChip>
                 ) : null}
               </div>
             </div>
           </ActionButton>
 
-          <div class="flex shrink-0 items-center gap-0.5 opacity-70 transition group-focus-within:opacity-100 group-hover:opacity-100">
+          <div class="dense-secondary-actions flex shrink-0 items-center gap-0.5">
             <For each={actionItems().filter((item) => item.key !== "open-ide")}>
               {(item) => (
                 <ActionButton
@@ -803,11 +802,10 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
         data-test-project-thread-card=""
         data-project-id={project.id}
         data-thread-id={thread.id}
-        class="group/thread relative overflow-hidden rounded-lg border px-2.5 py-2 transition"
+        class="dense-action-parent dense-card group/thread relative overflow-hidden px-2.5 py-2 transition hover:border-(--accent)"
         classList={{
-          "border-(--accent) bg-(--panel-strong) shadow-sm": isActiveThread(),
-          "border-(--border)": !isActiveThread(),
-          "bg-white/60 hover:bg-white/75": !isActiveThread()
+          "dense-card-selected": isActiveThread(),
+          "hover:bg-white/75": !isActiveThread()
         }}
         onContextMenu={(event) => {
           event.preventDefault();
@@ -864,11 +862,9 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
               </Show>
               <div class="flex shrink-0 items-center gap-2">
                 <Show when={thread.badgeState !== "idle"}>
-                  <span class={`rounded-full px-2 py-0.5 text-[0.46rem] normal-case tracking-normal ${badgeClass(thread.badgeState)}`}>
-                    {badgeLabel(thread.badgeState)}
-                  </span>
+                  <StatusChip tone={threadBadgeTone(thread.badgeState)}>{badgeLabel(thread.badgeState)}</StatusChip>
                 </Show>
-                <span>{thread.messageCount} msgs</span>
+                <span classList={{ "dense-numeric-flagged": rightAlignedNumbersEnabled() }}>{thread.messageCount} msgs</span>
               </div>
             </div>
           </button>
@@ -876,7 +872,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
           <ButtonGroup
             items={() => actionItems().filter((item) => item.key !== "open-ide")}
             menuLabel="Thread actions"
-            class="opacity-70 transition group-focus-within/thread:opacity-100 group-hover/thread:opacity-100"
+            class="dense-secondary-actions"
             collapseBelowWidth="22rem"
           />
         </div>
@@ -1454,19 +1450,19 @@ function badgeLabel(value: string) {
   }
 }
 
-function badgeClass(value: string) {
+function threadBadgeTone(value: string): StatusChipTone {
   switch (value) {
     case "needs-input":
-      return "bg-violet-600 text-white";
+      return "warning";
     case "planning":
-      return "bg-orange-500 text-white";
+      return "warning";
     case "executing":
-      return "bg-yellow-400 text-slate-900";
+      return "info";
     case "error":
-      return "bg-rose-600 text-white";
+      return "danger";
     case "done":
-      return "bg-emerald-600 text-white";
+      return "success";
     default:
-      return "bg-slate-200 text-slate-800";
+      return "neutral";
   }
 }

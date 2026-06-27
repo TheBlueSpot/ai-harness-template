@@ -295,10 +295,48 @@ describe("client command validation", () => {
           planExecutionDelaySecondsDefault: 10,
           correctnessIterationModeDefault: "ask-before-iterate",
           backgroundJobApprovalPolicyDefault: "ask-risky",
-          assistantAutoApproveNonBlockingQuestionsDefault: false
+          assistantAutoApproveNonBlockingQuestionsDefault: false,
+          maxBackgroundJobsDefault: 10
         }
       }).type
     ).toBe("preferences.save");
+  });
+
+  test("rejects out-of-range max background jobs preferences", () => {
+    const payload = {
+      providerBrand: "gpt",
+      debugEnabled: true,
+      tracePanelDefaultOpen: false,
+      subagentWorktreeStrategyDefault: "same-worktree",
+      blockChatOnDirtyGitDefault: true,
+      dirtyGitChangeLimitDefault: 12,
+      autoCompactContextThresholdPercentDefault: 40,
+      planExecutionModeDefault: "countdown",
+      planExecutionDelaySecondsDefault: 10,
+      correctnessIterationModeDefault: "ask-before-iterate",
+      backgroundJobApprovalPolicyDefault: "ask-risky"
+    };
+
+    expect(() =>
+      parseClientCommand({
+        type: "preferences.save",
+        requestId: "req-pref-low",
+        payload: {
+          ...payload,
+          maxBackgroundJobsDefault: 4
+        }
+      })
+    ).toThrow();
+    expect(() =>
+      parseClientCommand({
+        type: "preferences.save",
+        requestId: "req-pref-high",
+        payload: {
+          ...payload,
+          maxBackgroundJobsDefault: 101
+        }
+      })
+    ).toThrow();
   });
 
   test("accepts planning.answer payloads", () => {
@@ -677,6 +715,40 @@ describe("client command validation", () => {
 
     expect(
       parseClientCommand({
+        type: "terminal.sessions.list",
+        requestId: "req-terminal-list",
+        payload: {
+          projectId: "project-1"
+        }
+      }).type
+    ).toBe("terminal.sessions.list");
+
+    expect(
+      parseClientCommand({
+        type: "terminal.history.list",
+        requestId: "req-terminal-history",
+        payload: {
+          projectId: "project-1",
+          threadId: "thread-1",
+          runId: "run-1"
+        }
+      }).type
+    ).toBe("terminal.history.list");
+
+    expect(
+      parseClientCommand({
+        type: "terminal.session.set-input-override",
+        requestId: "req-terminal-override",
+        payload: {
+          projectId: "project-1",
+          sessionId: "terminal-1",
+          allowInput: true
+        }
+      }).type
+    ).toBe("terminal.session.set-input-override");
+
+    expect(
+      parseClientCommand({
         type: "terminal.preferences.save",
         requestId: "req-terminal-prefs",
         payload: {
@@ -714,6 +786,48 @@ describe("client command validation", () => {
         }
       })
     ).toThrow();
+  });
+
+  test("accepts terminal history events with agent source metadata", () => {
+    const now = new Date().toISOString();
+    expect(
+      parseServerEvent({
+        type: "terminal.history.listed",
+        requestId: "req-terminal-history",
+        payload: {
+          scope: {
+            projectId: "project-1",
+            threadId: "thread-1",
+            runId: "run-1"
+          },
+          sessions: [
+            {
+              id: "terminal-1",
+              projectId: "project-1",
+              source: {
+                kind: "agent",
+                threadId: "thread-1",
+                runId: "run-1",
+                label: "Run run-1",
+                trigger: "run"
+              },
+              name: "PowerShell",
+              shellId: "powershell",
+              cwd: "C:\\repo",
+              status: "exited",
+              inputMode: "read-only",
+              inputOverride: false,
+              cols: 120,
+              rows: 32,
+              startedAt: now,
+              updatedAt: now,
+              exitedAt: now,
+              closedAt: now
+            }
+          ]
+        }
+      }).type
+    ).toBe("terminal.history.listed");
   });
 
   test("accepts run.execute payloads", () => {
@@ -876,6 +990,7 @@ describe("memory protocol", () => {
 
     expect(parsed.memoryBankRecordRunsDefault).toBe(true);
     expect(parsed.assistantAutoApproveNonBlockingQuestionsDefault).toBe(true);
+    expect(parsed.maxBackgroundJobsDefault).toBe(10);
   });
 
   test("accepts provider connection tested events", () => {

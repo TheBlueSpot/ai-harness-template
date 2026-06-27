@@ -6,7 +6,10 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import { createEffect, onCleanup, onMount } from "solid-js";
+import { resolveTerminalKeyboardAction } from "../terminal-keybindings";
 import { findTerminalLinks, openTerminalLink, resolveTerminalFileTarget, type TerminalLinkTarget } from "../terminal-links";
+import { closeTerminalSearch, toggleTerminalSearch } from "../terminal-search-actions";
+import { terminalStore } from "../terminal-store";
 import { sendTerminalInput } from "../terminal-transport";
 import { readTerminalTheme } from "../terminal-theme";
 
@@ -27,6 +30,8 @@ export function XtermRenderer(props: {
   ctrlCMode: "auto" | "copy" | "sigint";
   sessionCwd: string;
   projectRoot: string;
+  readOnly?: boolean;
+  backspaceInput?: string;
   onOpenFile: (path: string, line?: number, column?: number) => void;
   onInput?: (input: string | Uint8Array) => void;
   onReady?: (handle: XtermRendererHandle) => void;
@@ -41,16 +46,42 @@ export function XtermRenderer(props: {
   let seenOutputVersion = -1;
   let seenResetVersion = 0;
   let copyTimer: ReturnType<typeof setTimeout> | undefined;
+  let resizeFrame: number | undefined;
+  let lastReportedCols = 0;
+  let lastReportedRows = 0;
 
   onMount(() => {
+    const reportResize = () => {
+      if (!terminal) {
+        return;
+      }
+      if (terminal.cols === lastReportedCols && terminal.rows === lastReportedRows) {
+        return;
+      }
+      lastReportedCols = terminal.cols;
+      lastReportedRows = terminal.rows;
+      props.onResize?.(terminal.cols, terminal.rows);
+    };
+    const fitTerminal = () => {
+      resizeFrame = undefined;
+      fit?.fit();
+      reportResize();
+    };
+    const scheduleFit = () => {
+      if (resizeFrame === undefined) {
+        resizeFrame = window.requestAnimationFrame(fitTerminal);
+      }
+    };
+
     terminal = new Terminal({
       allowProposedApi: true,
       cursorBlink: true,
       convertEol: true,
-      fontFamily: "var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace)",
-      fontSize: 12,
+      fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace',
+      fontSize: 13,
+      letterSpacing: 0,
       scrollback: 10000,
-      theme: readTerminalTheme()
+      theme: readTerminalTheme(host ?? document.documentElement)
     });
     fit = new FitAddon();
     search = new SearchAddon();
@@ -97,9 +128,12 @@ export function XtermRenderer(props: {
       // WebGL is an optional acceleration path; xterm continues with DOM/canvas rendering.
     }
     terminal.open(host!);
-    fit.fit();
-    props.onResize?.(terminal.cols, terminal.rows);
+    terminal.element?.classList.add("terminal-xterm-instance");
+    fitTerminal();
     terminal.onData((data) => {
+      if (props.readOnly) {
+        return;
+      }
       if (props.onInput) {
         props.onInput(data);
         return;
@@ -107,9 +141,64 @@ export function XtermRenderer(props: {
       sendTerminalInput(props.sessionId, data);
     });
     terminal.attachCustomKeyEventHandler((event) => {
+      if (event.type === "keydown") {
+        if (event.key === "Escape" && terminalStore.state.searchOpen) {
+          consumeTerminalShortcut(event);
+          closeTerminalSearch();
+          return false;
+        }
+        const action = resolveTerminalKeyboardAction(event);
+        if (action === "toggle-search") {
+          consumeTerminalShortcut(event);
+          toggleTerminalSearch();
+          return false;
+        }
+        if (event.key === "Backspace" && props.backspaceInput) {
+          consumeTerminalShortcut(event);
+          if (!props.readOnly) {
+            sendRendererInput(props, props.backspaceInput);
+          }
+          return false;
+        }
+        if (action === "send-interrupt") {
+          consumeTerminalShortcut(event);
+          if (!props.readOnly) {
+            sendRendererInput(props, "\x03");
+          }
+          return false;
+        }
+        if (action === "copy") {
+          consumeTerminalShortcut(event);
+          const selection = terminal?.getSelection();
+          if (selection) {
+            void navigator.clipboard?.writeText(selection);
+          }
+          return false;
+        }
+        if (action === "select-all") {
+          consumeTerminalShortcut(event);
+          terminal?.selectAll();
+          return false;
+        }
+        if (action === "paste") {
+          if (!navigator.clipboard?.readText) {
+            return true;
+          }
+          consumeTerminalShortcut(event);
+          if (!props.readOnly) {
+            void navigator.clipboard.readText().then((text) => {
+              if (text) {
+                sendRendererInput(props, text);
+              }
+            }).catch(() => undefined);
+          }
+          return false;
+        }
+      }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c" && event.type === "keydown") {
         const selection = terminal?.getSelection();
         if (props.ctrlCMode === "copy" || (props.ctrlCMode === "auto" && selection)) {
+          consumeTerminalShortcut(event);
           if (selection) {
             void navigator.clipboard?.writeText(selection);
           }
@@ -132,12 +221,7 @@ export function XtermRenderer(props: {
         }
       }, 180);
     });
-    const resizeObserver = new ResizeObserver(() => {
-      fit?.fit();
-      if (terminal) {
-        props.onResize?.(terminal.cols, terminal.rows);
-      }
-    });
+    const resizeObserver = new ResizeObserver(scheduleFit);
     resizeObserver.observe(host!);
     props.onReady?.({
       findNext: (query) => Boolean(search?.findNext(query)),
@@ -145,6 +229,9 @@ export function XtermRenderer(props: {
       serialize: () => serialize?.serialize() ?? ""
     });
     onCleanup(() => {
+      if (resizeFrame !== undefined) {
+        window.cancelAnimationFrame(resizeFrame);
+      }
       resizeObserver.disconnect();
       terminal?.dispose();
     });
@@ -192,7 +279,7 @@ export function XtermRenderer(props: {
 
   createEffect(() => {
     if (terminal) {
-      terminal.options.theme = readTerminalTheme();
+      terminal.options.theme = readTerminalTheme(host ?? document.documentElement);
     }
   });
 
@@ -202,7 +289,25 @@ export function XtermRenderer(props: {
     }
   });
 
-  return <div ref={host} class="h-full min-h-0 w-full overflow-hidden" data-test-xterm-renderer="" />;
+  return (
+    <div class="terminal-xterm-shell h-full min-h-0 w-full overflow-hidden" data-test-xterm-renderer="">
+      <div ref={host} class="h-full min-h-0 w-full overflow-hidden" />
+    </div>
+  );
+}
+
+function sendRendererInput(
+  props: {
+    sessionId: string;
+    onInput?: (input: string | Uint8Array) => void;
+  },
+  input: string | Uint8Array
+) {
+  if (props.onInput) {
+    props.onInput(input);
+    return;
+  }
+  sendTerminalInput(props.sessionId, input);
 }
 
 function resolveLinkTarget(target: TerminalLinkTarget, sessionCwd: string, projectRoot: string): TerminalLinkTarget | undefined {
@@ -210,4 +315,9 @@ function resolveLinkTarget(target: TerminalLinkTarget, sessionCwd: string, proje
     return target;
   }
   return resolveTerminalFileTarget(target, sessionCwd, projectRoot);
+}
+
+function consumeTerminalShortcut(event: KeyboardEvent) {
+  event.preventDefault();
+  event.stopPropagation();
 }

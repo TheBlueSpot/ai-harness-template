@@ -4,8 +4,9 @@ import { fireEvent, render, screen } from "@solidjs/testing-library";
 import type { ExecutionToolActivity } from "../../../shared/protocol";
 import type { TimelineToolBlock } from "../lib/chat-timeline-model";
 import { formatShortTimestamp } from "../lib/time-format";
+import { formatToolActivityCopyText, formatToolMetadata } from "../lib/tool-activity-format";
 import { createUiTest } from "../utils/tests/test-harness";
-import { StreamedToolBlock, formatToolActivityCopyText, formatToolMetadata } from "./streamed-tool-block";
+import { StreamedToolBlock } from "./streamed-tool-block";
 
 createUiTest("StreamedToolBlock", () => {
   const activity = (id: string, command = `echo ${id}`): ExecutionToolActivity => ({
@@ -50,7 +51,52 @@ createUiTest("StreamedToolBlock", () => {
     render(() => <StreamedToolBlock block={block([activity("tool-1", "echo long command")])} />);
 
     expect(screen.getByRole("button", { name: /echo long command/ })).not.toBeNull();
+    expect(screen.getByText(/Run local shell command/)).not.toBeNull();
     expect(screen.getByRole("button", { name: "Copy tool calls" })).not.toBeNull();
+  });
+
+  it("explains arcane shell pipelines in compact rows", () => {
+    const command = "ps -eo pid,ppid,user,%cpu,%mem,comm --sort=-%cpu | head -n 20 | awk '$4 > 0.5 {print $1}'";
+    render(() => <StreamedToolBlock block={block([activity("tool-1", command)])} />);
+
+    expect(screen.getByText(/List processes by CPU/)).not.toBeNull();
+    expect(screen.getByText(/keep first 20 rows/)).not.toBeNull();
+    expect(screen.getByText(/filter rows where CPU column > 0.5/)).not.toBeNull();
+  });
+
+  it("copies command text from the detail dialog", async () => {
+    const copied: string[] = [];
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (value: string) => {
+          copied.push(value);
+        }
+      }
+    });
+    render(() => <StreamedToolBlock block={block([activity("tool-1", "echo runnable")])} selectedActivityId="tool-1" />);
+
+    await screen.findByRole("dialog");
+    fireEvent.click(screen.getByRole("button", { name: "Copy command" }));
+    await Promise.resolve();
+
+    expect(copied).toContain("echo runnable");
+  });
+
+  it("shows full stdout from sanitized raw result when available", async () => {
+    const toolActivity = activity("tool-1", "echo output");
+    toolActivity.stdoutPreview = "short preview";
+    toolActivity.rawResultJson = JSON.stringify({
+      stdout: "full stdout line 1\nfull stdout line 2",
+      exitCode: 0
+    });
+    render(() => <StreamedToolBlock block={block([toolActivity])} selectedActivityId="tool-1" />);
+
+    await screen.findByRole("dialog");
+
+    expect(
+      screen.getAllByText((_, element) => element?.textContent === "full stdout line 1\nfull stdout line 2").length
+    ).toBeGreaterThan(0);
   });
 
   it("formats file references and opens them on modifier click", () => {

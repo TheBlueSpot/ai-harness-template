@@ -13,6 +13,7 @@ import {
 import { createRequestId, type ClientCommand, type NotificationInboxItem } from "../../../shared/protocol";
 import { getAssistantQuestionDefaultChoices } from "../assistant-question-defaults";
 import { harnessStore, type HarnessViewState } from "../harness-store";
+import { formatApprovalInvocationDescription } from "../lib/tool-activity-format";
 import { activateProjectThread } from "../project-thread-navigation";
 import { openAssistantSource, openNotificationSource, openPreferencesSectionSource } from "../source-navigation";
 import { submitOnEnter } from "../textarea-submit";
@@ -612,7 +613,7 @@ function notificationSummary(notification: NotificationInboxItem) {
     case "assistant-question-batch":
       return notification.questions.map((question) => question.prompt).join(" ");
     case "browser-approval":
-      return notification.inputSummary;
+      return formatApprovalInvocationDescription(notification.label, notification.inputSummary);
     case "cli-update":
       return `${notification.currentVersion} -> ${notification.latestVersion}. Click to update.`;
   }

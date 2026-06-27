@@ -7,13 +7,11 @@ import { WorkspaceRepository } from "./workspace-repository";
 
 export const DEFAULT_BACKGROUND_RUN_MAX_MS = 30 * 60 * 1000;
 export const DEFAULT_BACKGROUND_RUN_NO_PROGRESS_MS = 10 * 60 * 1000;
-export const DEFAULT_BACKGROUND_SCHEDULER_MAX_ACTIVE_RUNS = 4;
 
 type BackgroundJobSchedulerOptions = {
   repository: WorkspaceRepository;
   intervalMs?: number;
   maxScheduledActiveRuns?: number;
-  isForegroundRunActive?: () => boolean;
   isRunLive?: (run: BackgroundJobRun) => boolean;
   onRunsTimingOut?: (runs: BackgroundJobRun[]) => Promise<void> | void;
   onRunsRepaired?: (runs: BackgroundJobRun[]) => Promise<void> | void;
@@ -50,6 +48,16 @@ export class BackgroundJobScheduler {
     this.timer = setInterval(() => {
       void this.tick(false).catch((error) => this.options.onTickFailed?.(error));
     }, this.intervalMs);
+  }
+
+  async retry() {
+    if (!this.timer) {
+      this.timer = setInterval(() => {
+        void this.tick(false).catch((error) => this.options.onTickFailed?.(error));
+      }, this.intervalMs);
+    }
+
+    await this.tick(false);
   }
 
   stop() {
@@ -99,15 +107,14 @@ export class BackgroundJobScheduler {
       const congestionByAssistant = congestionControlEnabled ? this.resolveAssistantCongestion(jobs) : new Map<string, AssistantCongestion>();
       const activeRuns = this.options.repository.getActiveBackgroundJobRuns();
       let scheduledActiveRunCount = countScheduledLaunchSlots(activeRuns);
-      const maxScheduledActiveRuns = this.options.maxScheduledActiveRuns ?? DEFAULT_BACKGROUND_SCHEDULER_MAX_ACTIVE_RUNS;
-      const foregroundRunActive = this.options.isForegroundRunActive?.() ?? false;
+      const maxScheduledActiveRuns =
+        this.options.maxScheduledActiveRuns ?? this.options.repository.getMaxBackgroundJobsDefault();
       debugLog("background.scheduler.tick", {
         isStartup,
         enabledJobs: jobs.length,
         activeRuns: activeRuns.length,
         scheduledActiveRuns: scheduledActiveRunCount,
         maxScheduledActiveRuns,
-        foregroundRunActive,
         congestedAssistants: congestionControlEnabled
           ? [...congestionByAssistant.values()].filter((entry) => entry.congested).length
           : 0
@@ -205,10 +212,6 @@ export class BackgroundJobScheduler {
             congestionRatio,
             nextRunAt: congestionDelay.nextRunAt.toISOString()
           });
-          continue;
-        }
-        if (foregroundRunActive) {
-          this.markForegroundBlocked(job, nowIso, congested, congestionRatio);
           continue;
         }
         if (maxScheduledActiveRuns > 0 && scheduledActiveRunCount >= maxScheduledActiveRuns) {
@@ -342,23 +345,6 @@ export class BackgroundJobScheduler {
       assistantId: job.assistantId,
       activeRunCount,
       maxActiveRuns,
-      congested
-    });
-  }
-
-  private markForegroundBlocked(job: BackgroundJob, nowIso: string, congested: boolean, congestionRatio?: number) {
-    const detail = "Foreground run active; background work waits";
-    this.options.repository.updateBackgroundJobSchedulerState(job.id, {
-      schedulerStatus: "blocked",
-      schedulerDetail: detail,
-      blockedReason: detail,
-      schedulerCongested: congested,
-      schedulerCongestionRatio: congestionRatio,
-      lastSchedulerCheckAt: nowIso
-    });
-    debugLog("background.scheduler.foreground-block", {
-      jobId: job.id,
-      assistantId: job.assistantId,
       congested
     });
   }

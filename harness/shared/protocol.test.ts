@@ -89,6 +89,15 @@ test("assistant pagination commands and events parse", () => {
   ).toBe("assistant.summary.listed");
 });
 
+test("scheduler retry command parses without payload", () => {
+  expect(
+    parseClientCommand({
+      type: "background-job.scheduler.retry",
+      requestId: "req-scheduler-retry"
+    }).type
+  ).toBe("background-job.scheduler.retry");
+});
+
 test("terminal sessions carry transport degradation metadata", () => {
   const now = new Date().toISOString();
 

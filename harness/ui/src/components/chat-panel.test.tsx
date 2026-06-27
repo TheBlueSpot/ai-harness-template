@@ -79,6 +79,38 @@ createUiTest("ChatPanel", () => {
     expect(screen.getByRole("button", { name: /Create a new thread in this project \(Alt.*N\)/ })).not.toBeNull();
   });
 
+  it("opens thread terminal history through a typed command", async () => {
+    const commands: unknown[] = [];
+    const project = createViewProjectFixture({
+      id: "project-terminal-history",
+      activeThreadId: "thread-terminal-history"
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+    captureDispatchedCommands(commands);
+
+    render(() => <ChatPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "Open thread terminal history" }));
+
+    await waitFor(() =>
+      expect(commands).toContainEqual(
+        expect.objectContaining({
+          type: "terminal.history.list",
+          payload: {
+            projectId: project.id,
+            threadId: "thread-terminal-history"
+          }
+        })
+      )
+    );
+  });
+
   it("orders project chat search by project title hits before active thread transcript", () => {
     const projectAlpha = createViewProjectFixture({
       id: "project-alpha-search",
@@ -658,6 +690,7 @@ createUiTest("ChatPanel", () => {
           correctnessIterationModeDefault: state.correctnessIterationModeDefault,
           backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
           assistantAutoApproveNonBlockingQuestionsDefault: state.assistantAutoApproveNonBlockingQuestionsDefault,
+          maxBackgroundJobsDefault: state.maxBackgroundJobsDefault,
           memoryBankEnabledDefault: state.memoryBankEnabledDefault,
           memoryBankRecordRunsDefault: state.memoryBankRecordRunsDefault,
           checkCliUpdatesDefault: state.checkCliUpdatesDefault,

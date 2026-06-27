@@ -13,6 +13,12 @@ import {
 } from "../harness-store";
 import { getVisibleProjectTraces, isRunWorking } from "./run-status";
 import { formatShortTimestamp } from "./time-format";
+import {
+  formatToolActivityCopyText,
+  formatToolActivityDetailText,
+  formatToolActivityOwner,
+  formatToolInvocationDescription
+} from "./tool-activity-format";
 
 export type TracePanelEntity =
   | { type: "thread"; projectId: string; threadId: string }
@@ -247,10 +253,17 @@ function getThreadExecutionLogEntries(
     entries.push({
       id: `thread-tool-${activity.id}`,
       message: `${activity.toolName} ${activity.status}`,
-      rowSummary: [formatToolOwner(activity.owner, activity.subagentId), activity.toolName, activity.status].join(" | "),
+      rowSummary: [
+        formatToolActivityOwner(activity),
+        activity.toolName,
+        activity.status,
+        formatToolInvocationDescription(activity)
+      ].join(" | "),
       level: activity.category,
       createdAt: activity.updatedAt,
-      detail: [activity.command, activity.outputPreview, activity.stdoutPreview, activity.stderrPreview].filter(Boolean).join("\n\n")
+      detail: formatToolActivityDetailText(activity),
+      detailKind: "plain",
+      copyText: formatToolActivityCopyText(activity)
     });
   }
 
@@ -484,13 +497,6 @@ function getVisibleJobs(state: HarnessViewState) {
       .toLowerCase()
       .includes(preferences.search.trim().toLowerCase());
   });
-}
-
-function formatToolOwner(owner: "main" | "subagent" | "aggregator", subagentId?: string) {
-  if (owner === "subagent") {
-    return subagentId ? `subagent ${subagentId}` : "subagent";
-  }
-  return owner;
 }
 
 function formatSubtaskDetail(task: AgentRunState["subtasks"][number]) {

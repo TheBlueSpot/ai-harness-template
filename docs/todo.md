@@ -11,6 +11,8 @@
 
 ## Selected Next Todo
 
+- Ship a run ledger and proof bundle v1 before adding more runtime breadth: every run should show stop reason, last verified state, waiting-on state, next action, key diff or branch links, terminal/test/browser evidence, approval history, and usage/context spikes in one durable review surface
+
 ## April 2026 Market Signals
 
 - Treat safe away-from-keyboard execution, durable review artifacts, explicit rule or memory control, preview-to-fix loops, and connector health as must-have coding-harness features, not stretch goals
@@ -42,6 +44,16 @@
 - First gate split shipped: non-blocking assistant questions have their own auto-approval preference while higher-risk questions still stop
 - Make safe auto-run feel magic through proof, not silence: run in isolated work, gather diffs/logs/screenshots/tests, then ask only for the smallest human decision when needed
 - Prefer reviewer or classifier handoff for routine safe approvals, but keep exact denial reasons and manual override paths visible so users do not learn to ignore prompts
+
+## June 2026 Deep Harness Audit
+
+- Treat the market center as an agent-ops cockpit, not a chat box: Cursor, Kilo, Hermes, Claude Code, OpenHands, Aider, Cline, and Goose all point toward runs, tools, memory, environment setup, and review artifacts as the sticky surface
+- Move liveness, stop, cancel, retry, and stale-run recovery above new agent surfaces; repeated public pain clusters around stuck agents, terminal hangs, blocked startup scripts, missing cancel paths, and unclear "working" states
+- Treat target capability as a first-class object: local, WSL, cloud, worktree, self-hosted VM, and container runs need visible support matrices for secrets, MCP, hooks, browser, shell, git, network, and artifact capture
+- Make proof bundles the daily review primitive: branch, diff, tests, terminal output, screenshots, videos, browser replay, approvals, and cost/context markers should survive refresh and support phone-friendly review
+- Keep checkpoint and rollback narrow until restore is git-safe, disk-bounded, and explainable; public issue patterns show users want restore, but broken checkpoint behavior destroys trust faster than missing checkpoint behavior
+- Treat context, rules, memories, and skills as governed assets with source, freshness, scope, and hit history because serious users now mix multiple coding tools and need portable discipline more than opaque auto-memory
+- Defer broad remote-control and personal-assistant surfaces; the higher-PMF version is remote review, evidence inspection, approval, stop, retry, and resume for coding runs
 
 ## Engine Package Priorities
 

@@ -30,6 +30,9 @@
     "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   --body-background: #f5f7f8;
   --app-background-grid: none;
+  --scrollbar-track: color-mix(in srgb, var(--panel) 78%, var(--border) 22%);
+  --scrollbar-thumb: color-mix(in srgb, var(--accent) 58%, var(--border) 42%);
+  --scrollbar-thumb-hover: color-mix(in srgb, var(--accent-strong) 72%, var(--border) 28%);
   color: var(--foreground);
   font-family: var(--font-ui);
 }
@@ -65,6 +68,35 @@ body {
   margin: 0;
   background: var(--body-background);
   color: var(--foreground);
+}
+
+* {
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 0.7rem;
+  height: 0.7rem;
+}
+
+*::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+
+*::-webkit-scrollbar-thumb {
+  min-height: 2rem;
+  border: 2px solid var(--scrollbar-track);
+  border-radius: 999px;
+  background: var(--scrollbar-thumb);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+*::-webkit-scrollbar-corner {
+  background: var(--scrollbar-track);
 }
 
 .bg-white {
@@ -216,11 +248,7 @@ body {
 }
 
 .theme-selected-surface {
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--accent) 18%, var(--panel) 82%),
-    color-mix(in srgb, var(--panel-strong) 90%, var(--accent) 10%)
-  );
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel) 90%);
 }
 
 .bg-teal-50,
@@ -441,8 +469,8 @@ textarea {
   border: 1px solid var(--border);
   border-radius: 0.75rem;
   background: var(--panel);
-  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.1);
-  backdrop-filter: blur(22px);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+  backdrop-filter: blur(12px);
 }
 
 .app-command-bar {
@@ -611,19 +639,13 @@ textarea {
   border: 1px solid var(--border);
   border-left: 3px solid var(--accent);
   border-radius: 0.5rem;
-  background:
-    linear-gradient(
-      135deg,
-      color-mix(in srgb, var(--panel-strong) 92%, transparent),
-      color-mix(in srgb, var(--row) 72%, transparent)
-    ),
-    var(--row);
-  box-shadow: 0 14px 34px color-mix(in srgb, var(--foreground) 11%, transparent);
+  background: var(--row);
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--foreground) 6%, transparent);
   padding: 0.82rem;
 }
 
 .trace-context-summary::before {
-  content: "";
+  content: none;
   position: absolute;
   inset: 0 0 auto;
   height: 2px;
@@ -723,7 +745,7 @@ textarea {
   border-radius: 0.5rem;
   background: color-mix(in srgb, var(--panel-strong) 72%, transparent);
   padding: 0.52rem 0.56rem;
-  box-shadow: 0 8px 20px color-mix(in srgb, var(--foreground) 6%, transparent);
+  box-shadow: none;
 }
 
 .trace-context-metric-success {
@@ -900,6 +922,209 @@ textarea {
     color-mix(in srgb, var(--success) 20%, var(--panel) 80%),
     color-mix(in srgb, var(--success) 28%, var(--panel) 72%)
   );
+}
+
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.28rem;
+  min-height: 1.25rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.08rem 0.46rem;
+  font-size: 0.55rem;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.status-chip-dot {
+  width: 0.35rem;
+  height: 0.35rem;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.status-chip-neutral {
+  background: color-mix(in srgb, var(--muted) 10%, var(--panel) 90%);
+  border-color: color-mix(in srgb, var(--muted) 30%, var(--border) 70%);
+  color: var(--muted);
+}
+
+.status-chip-success {
+  background: color-mix(in srgb, var(--success) 13%, var(--panel) 87%);
+  border-color: color-mix(in srgb, var(--success) 36%, var(--border) 64%);
+  color: var(--success-strong);
+}
+
+.status-chip-warning {
+  background: color-mix(in srgb, var(--warning) 13%, var(--panel) 87%);
+  border-color: color-mix(in srgb, var(--warning) 38%, var(--border) 62%);
+  color: var(--warning-strong);
+}
+
+.status-chip-danger {
+  background: color-mix(in srgb, var(--danger) 13%, var(--panel) 87%);
+  border-color: color-mix(in srgb, var(--danger) 38%, var(--border) 62%);
+  color: var(--danger-strong);
+}
+
+.status-chip-info {
+  background: color-mix(in srgb, var(--info) 13%, var(--panel) 87%);
+  border-color: color-mix(in srgb, var(--info) 38%, var(--border) 62%);
+  color: var(--info-strong);
+}
+
+.status-chip-accent {
+  background: color-mix(in srgb, var(--accent) 13%, var(--panel) 87%);
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--border) 62%);
+  color: var(--accent-strong);
+}
+
+.dense-card {
+  border-radius: 0.5rem;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel-strong) 64%, transparent);
+  box-shadow: none;
+}
+
+.dense-card-selected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel) 90%);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.dense-secondary-actions {
+  opacity: 0.42;
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease;
+}
+
+.dense-action-parent:hover .dense-secondary-actions,
+.dense-action-parent:focus-within .dense-secondary-actions {
+  opacity: 1;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .dense-action-parent .dense-secondary-actions {
+    opacity: 0;
+    transform: translateX(0.12rem);
+  }
+
+  .dense-action-parent:hover .dense-secondary-actions,
+  .dense-action-parent:focus-within .dense-secondary-actions {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@media (hover: none), (pointer: coarse) {
+  .dense-secondary-actions {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.dense-numeric-flagged {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+.dense-fact-grid {
+  display: grid;
+  gap: 0.25rem 1.25rem;
+}
+
+.terminal-drawer-shell {
+  --terminal-shell: color-mix(in srgb, var(--panel) 82%, var(--bg) 18%);
+  --terminal-sidebar: color-mix(in srgb, var(--panel-strong) 72%, var(--bg) 28%);
+  --terminal-border: color-mix(in srgb, var(--border) 86%, var(--foreground) 14%);
+  --terminal-foreground: var(--foreground);
+  --terminal-muted: var(--muted);
+  --terminal-hover: color-mix(in srgb, var(--accent) 8%, var(--panel) 92%);
+  --terminal-selection: color-mix(in srgb, var(--accent) 16%, var(--panel-strong) 84%);
+  --terminal-warning-bg: color-mix(in srgb, var(--warning) 13%, var(--panel) 87%);
+  --terminal-warning-border: color-mix(in srgb, var(--warning) 42%, var(--border) 58%);
+  --terminal-warning-text: var(--warning-strong);
+  --terminal-warning-button: color-mix(in srgb, var(--warning) 18%, var(--panel-strong) 82%);
+  --terminal-warning-button-hover: color-mix(in srgb, var(--warning) 26%, var(--panel-strong) 74%);
+  --terminal-xterm-selection: color-mix(in srgb, var(--accent) 28%, transparent);
+  color-scheme: light;
+}
+
+:root[data-theme-mode="dark"] .terminal-drawer-shell {
+  --terminal-shell: color-mix(in srgb, var(--bg) 82%, #000000 18%);
+  --terminal-sidebar: color-mix(in srgb, var(--panel) 90%, #000000 10%);
+  --terminal-border: color-mix(in srgb, var(--border) 72%, #000000 28%);
+  --terminal-hover: color-mix(in srgb, var(--accent) 8%, var(--panel-strong) 92%);
+  --terminal-selection: color-mix(in srgb, var(--accent) 18%, var(--panel-strong) 82%);
+  --terminal-warning-bg: color-mix(in srgb, var(--warning) 16%, var(--panel) 84%);
+  --terminal-warning-border: color-mix(in srgb, var(--warning) 48%, var(--border) 52%);
+  --terminal-warning-text: color-mix(in srgb, var(--warning-strong) 78%, #ffffff 22%);
+  --terminal-warning-button: color-mix(in srgb, var(--warning) 20%, var(--panel-strong) 80%);
+  --terminal-warning-button-hover: color-mix(in srgb, var(--warning) 30%, var(--panel-strong) 70%);
+  --terminal-xterm-selection: color-mix(in srgb, var(--accent) 32%, transparent);
+  color-scheme: dark;
+}
+
+.terminal-xterm-shell {
+  box-sizing: border-box;
+  background: var(--terminal-shell);
+  color: var(--terminal-foreground);
+  font-family:
+    "JetBrains Mono", "Fira Code", "Cascadia Code", var(--font-mono);
+  letter-spacing: 0;
+  padding: 0.35rem 0.45rem;
+}
+
+.terminal-xterm-shell .terminal-xterm-instance,
+.terminal-xterm-shell .xterm,
+.terminal-xterm-shell .xterm-helpers,
+.terminal-xterm-shell .xterm-screen,
+.terminal-xterm-shell .xterm-rows,
+.terminal-xterm-shell .xterm-rows > div,
+.terminal-xterm-shell .xterm-char-measure-element {
+  font-family:
+    "JetBrains Mono", "Fira Code", "Cascadia Code", var(--font-mono) !important;
+  letter-spacing: 0 !important;
+  font-variant-ligatures: contextual;
+}
+
+.terminal-solid-row {
+  letter-spacing: 0 !important;
+  font-kerning: none;
+  font-variant-ligatures: none;
+}
+
+.terminal-xterm-shell .xterm {
+  height: 100%;
+}
+
+.terminal-xterm-shell .xterm-viewport,
+.terminal-xterm-shell .xterm-screen {
+  background-color: var(--terminal-shell) !important;
+}
+
+.tool-call-snippet {
+  display: -webkit-box;
+  overflow: hidden;
+  max-width: 100%;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  border: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
+  border-radius: 0.5rem;
+  background: color-mix(in srgb, var(--panel-strong) 58%, transparent);
+  padding: 0.32rem 0.45rem;
+  color: var(--foreground);
+  font-size: 0.62rem;
+  letter-spacing: 0;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .markdown-content {

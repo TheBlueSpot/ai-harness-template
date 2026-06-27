@@ -164,6 +164,7 @@ const BACKGROUND_JOB_APPROVAL_POLICY_DEFAULT_KEY = "background_job_approval_poli
 const ASSISTANT_AUTO_APPROVE_NON_BLOCKING_QUESTIONS_DEFAULT_KEY = "assistant_auto_approve_non_blocking_questions_default";
 const ASSISTANT_CONGESTION_CONTROL_ENABLED_DEFAULT_KEY = "assistant_congestion_control_enabled_default";
 const ASSISTANT_MAX_CONGESTION_DEFAULT_KEY = "assistant_max_congestion_default";
+const MAX_BACKGROUND_JOBS_DEFAULT_KEY = "max_background_jobs_default";
 const AUTO_ARCHIVE_COMPLETED_THREADS_DEFAULT_KEY = "auto_archive_completed_threads_default";
 const BACKGROUND_SCHEDULER_HEARTBEAT_KEY = "background_scheduler_heartbeat_at";
 const MEMORY_BANK_ENABLED_DEFAULT_KEY = "memory_bank_enabled_default";
@@ -4505,6 +4506,15 @@ export class WorkspaceRepository {
   setAssistantMaxCongestionDefault(value: number) {
     const normalized = Math.max(0.25, Math.min(3, Math.round(value * 4) / 4));
     this.setWorkspaceMetaValue(ASSISTANT_MAX_CONGESTION_DEFAULT_KEY, normalized.toFixed(2).replace(/0+$/, "").replace(/\.$/, ""));
+  }
+
+  getMaxBackgroundJobsDefault() {
+    const value = Number.parseInt(this.getWorkspaceMetaValue(MAX_BACKGROUND_JOBS_DEFAULT_KEY) ?? "", 10);
+    return Number.isFinite(value) ? Math.max(5, Math.min(100, Math.round(value))) : 10;
+  }
+
+  setMaxBackgroundJobsDefault(value: number) {
+    this.setWorkspaceMetaValue(MAX_BACKGROUND_JOBS_DEFAULT_KEY, String(Math.max(5, Math.min(100, Math.round(value)))));
   }
 
   repairInterruptedBackgroundJobRuns(

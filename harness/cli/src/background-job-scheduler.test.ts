@@ -148,10 +148,37 @@ describe("background job scheduler", () => {
     expect(new Date(state.jobs[0]?.nextRunAt ?? 0).getTime()).toBeGreaterThan(now);
   });
 
-  test("caps scheduled launches during startup catch-up", async () => {
+  test("manual retry starts scheduler loop and checks due jobs", async () => {
     const repository = createRepository();
     const project = addProject(repository);
     repository.setBackgroundJobApprovalPolicyDefault("allow-all");
+    saveDueJob(repository, project.id);
+    const queuedRunIds: string[] = [];
+    const scheduler = new BackgroundJobScheduler({
+      repository,
+      intervalMs: 60_000,
+      onRunQueued(run) {
+        queuedRunIds.push(run.id);
+      }
+    });
+
+    try {
+      await scheduler.retry();
+
+      const state = repository.loadBackgroundJobsState();
+      expect(queuedRunIds).toHaveLength(1);
+      expect(state.runs[0]?.triggerSource).toBe("schedule");
+      expect(repository.getBackgroundSchedulerHeartbeatAt()).toBeDefined();
+    } finally {
+      scheduler.stop();
+    }
+  });
+
+  test("caps scheduled launches with the persisted max background jobs preference", async () => {
+    const repository = createRepository();
+    const project = addProject(repository);
+    repository.setBackgroundJobApprovalPolicyDefault("allow-all");
+    repository.setMaxBackgroundJobsDefault(5);
     for (let index = 0; index < 6; index += 1) {
       saveDueJob(repository, project.id, {
         id: createBackgroundJobId(),
@@ -162,7 +189,6 @@ describe("background job scheduler", () => {
     const queuedRunIds: string[] = [];
     const scheduler = new BackgroundJobScheduler({
       repository,
-      maxScheduledActiveRuns: 3,
       onRunQueued(run) {
         queuedRunIds.push(run.id);
       }
@@ -171,23 +197,27 @@ describe("background job scheduler", () => {
     await scheduler.tick(true);
 
     const state = repository.loadBackgroundJobsState();
-    expect(queuedRunIds).toHaveLength(3);
-    expect(state.runs).toHaveLength(3);
+    expect(queuedRunIds).toHaveLength(5);
+    expect(state.runs).toHaveLength(5);
     expect(state.runs.every((run) => run.triggerSource === "startup-catchup")).toBe(true);
     const blockedJobs = state.jobs.filter((job) => job.schedulerStatus === "blocked");
-    expect(blockedJobs).toHaveLength(3);
+    expect(blockedJobs).toHaveLength(1);
     expect(blockedJobs.every((job) => job.schedulerDetail?.includes("Waiting for background capacity"))).toBe(true);
   });
 
-  test("does not queue due jobs while a foreground run is active", async () => {
+  test("queues due jobs while a foreground run is active", async () => {
     const repository = createRepository();
     const project = addProject(repository);
     repository.setBackgroundJobApprovalPolicyDefault("allow-all");
     const job = saveDueJob(repository, project.id);
+    const foregroundProject = repository.createAgentRun(project.id, "primary run", "openai/gpt-5.4", project.activeThreadId);
+    const foregroundRunId = foregroundProject.activeRun?.id;
+    expect(foregroundRunId).toBeDefined();
+    repository.setAgentRunStatus(project.id, foregroundRunId!, "running-main");
+    expect(repository.hasActiveForegroundAgentRun()).toBe(true);
     const queuedRunIds: string[] = [];
     const scheduler = new BackgroundJobScheduler({
       repository,
-      isForegroundRunActive: () => true,
       onRunQueued(run) {
         queuedRunIds.push(run.id);
       }
@@ -196,12 +226,11 @@ describe("background job scheduler", () => {
     await scheduler.tick(false);
 
     const state = repository.loadBackgroundJobsState();
-    expect(queuedRunIds).toHaveLength(0);
-    expect(state.runs).toHaveLength(0);
+    expect(queuedRunIds).toHaveLength(1);
+    expect(state.runs).toHaveLength(1);
     expect(state.jobs[0]?.id).toBe(job.id);
-    expect(state.jobs[0]?.schedulerStatus).toBe("blocked");
-    expect(state.jobs[0]?.schedulerDetail).toBe("Foreground run active; background work waits");
-    expect(state.jobs[0]?.nextRunAt).toBe(job.nextRunAt);
+    expect(state.jobs[0]?.schedulerStatus).toBe("queued");
+    expect(state.jobs[0]?.blockedReason).toBeUndefined();
   });
 
   test("queues a due one-off job only once across repeated ticks and restart", async () => {

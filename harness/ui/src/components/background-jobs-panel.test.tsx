@@ -1030,6 +1030,7 @@ createUiTest("BackgroundJobsPanel", () => {
   });
 
   it("shows durable scheduler due, blocked, and stale states", () => {
+    const commands: unknown[] = [];
     const project = createViewProjectFixture({ id: "project-scheduler-state" });
     const oldHeartbeat = new Date(Date.now() - 120_000).toISOString();
     const staleNextRunAt = new Date(Date.now() - 60_000).toISOString();
@@ -1106,10 +1107,12 @@ createUiTest("BackgroundJobsPanel", () => {
         jobsPanePreferences: {
           segment: "jobs",
           search: "",
-          jobSort: "created"
+          jobSort: "created",
+          selectedJobId: staleJob.id
         }
       })
     );
+    captureDispatchedCommands(commands);
 
     render(() => <BackgroundJobsPanel />);
 
@@ -1118,7 +1121,16 @@ createUiTest("BackgroundJobsPanel", () => {
     expect(screen.getAllByText("Queue #1: waiting for approval run-pending").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Congested (112%): scheduled work overlaps recent exclusive-lane runtime").length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Last progress:/).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Stale: scheduler has not checked since/).length).toBeGreaterThan(0);
+    const staleWarnings = screen.getAllByText(/Stale: scheduler has not checked since/);
+    const retryButtons = screen.getAllByRole("button", { name: "Retry scheduler" });
+    expect(staleWarnings.length).toBeGreaterThan(0);
+    expect(retryButtons).toHaveLength(staleWarnings.length);
+    fireEvent.click(retryButtons[0]!);
+    expect(commands).toMatchObject([
+      {
+        type: "background-job.scheduler.retry"
+      }
+    ]);
   });
 
   it("shows active project chat runs in the shared runs list and opens details without changing tabs", () => {

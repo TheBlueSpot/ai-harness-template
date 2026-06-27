@@ -202,6 +202,176 @@ createUiTest("TerminalDrawer", () => {
 
     expect(screen.getByText("pipe mode")).not.toBeNull();
   });
+
+  it("shows spawned terminal category and sends input override commands", () => {
+    const commands: unknown[] = [];
+    const project = createViewProjectFixture({ id: "project-agent-terminal" });
+    const session = createTerminalSession({
+      id: "terminal-agent",
+      projectId: project.id,
+      source: {
+        kind: "agent",
+        threadId: "thread-1",
+        runId: "run-1",
+        label: "Run run-1",
+        trigger: "run"
+      },
+      inputMode: "read-only",
+      inputOverride: false,
+      inputLockReason: "Agent-spawned terminal is read-only while its run is in progress."
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+    terminalStore.resetForTests({
+      open: true,
+      height: 320,
+      sessions: [session],
+      focusedSessionId: session.id,
+      preferences: {
+        scrollbackLimit: 10000,
+        copyOnSelect: false,
+        ctrlCMode: "auto",
+        rendererMode: "solid-prototype"
+      }
+    });
+    captureDispatchedCommands(commands);
+
+    render(() => <TerminalDrawer />);
+
+    expect(screen.getByText("Spawned")).not.toBeNull();
+    expect(screen.getByText("read-only")).not.toBeNull();
+    expect(screen.getByText(/Caution:/)).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Override terminal input lock" }));
+
+    expect(commands).toContainEqual(
+      expect.objectContaining({
+        type: "terminal.session.set-input-override",
+        payload: {
+          projectId: project.id,
+          sessionId: session.id,
+          allowInput: true
+        }
+      })
+    );
+  });
+
+  it("saves split resize once after drag release", () => {
+    const commands: unknown[] = [];
+    const project = createViewProjectFixture({ id: "project-split-resize" });
+    const leftSession = createTerminalSession({
+      id: "terminal-left",
+      projectId: project.id,
+      name: "Left terminal"
+    });
+    const rightSession = createTerminalSession({
+      id: "terminal-right",
+      projectId: project.id,
+      name: "Right terminal"
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+    terminalStore.resetForTests({
+      open: true,
+      height: 320,
+      sessions: [leftSession, rightSession],
+      focusedSessionId: leftSession.id,
+      layout: {
+        type: "split",
+        id: "split-root",
+        direction: "vertical",
+        sizes: [50, 50],
+        children: [
+          { type: "leaf", id: "left-leaf", sessionId: leftSession.id },
+          { type: "leaf", id: "right-leaf", sessionId: rightSession.id }
+        ]
+      },
+      preferences: {
+        scrollbackLimit: 10000,
+        copyOnSelect: false,
+        ctrlCMode: "auto",
+        rendererMode: "solid-prototype"
+      }
+    });
+    captureDispatchedCommands(commands);
+
+    render(() => <TerminalDrawer />);
+
+    const handle = screen.getByRole("button", { name: "Resize terminal split" });
+    Object.defineProperty(handle.parentElement, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ x: 0, y: 0, width: 400, height: 320, top: 0, right: 400, bottom: 320, left: 0, toJSON: () => ({}) })
+    });
+    fireEvent.pointerDown(handle, { clientX: 0, clientY: 0 });
+    fireEvent.pointerMove(window, { clientX: 80, clientY: 0 });
+    fireEvent.pointerMove(window, { clientX: 120, clientY: 0 });
+    fireEvent.pointerUp(window, { clientX: 120, clientY: 0 });
+
+    const saveCommands = commands.filter((command) => {
+      return typeof command === "object" && command !== null && "type" in command && command.type === "terminal.preferences.save";
+    });
+    expect(saveCommands).toHaveLength(1);
+    expect(saveCommands[0]).toMatchObject({
+      payload: {
+        layout: {
+          type: "split",
+          sizes: [80, 20]
+        }
+      }
+    });
+  });
+
+  it("toggles terminal search from drawer keyboard shortcuts", () => {
+    const project = createViewProjectFixture({ id: "project-terminal-search" });
+    const session = createTerminalSession({
+      id: "terminal-search",
+      projectId: project.id
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+    terminalStore.resetForTests({
+      open: true,
+      height: 320,
+      sessions: [session],
+      focusedSessionId: session.id,
+      preferences: {
+        scrollbackLimit: 10000,
+        copyOnSelect: false,
+        ctrlCMode: "auto",
+        rendererMode: "solid-prototype"
+      }
+    });
+
+    const result = render(() => <TerminalDrawer />);
+    const drawer = result.container.querySelector("[data-test-terminal-drawer]") as HTMLElement;
+
+    fireEvent.keyDown(drawer, { key: "f", ctrlKey: true });
+    expect(terminalStore.state.searchOpen).toBe(true);
+
+    fireEvent.keyDown(drawer, { key: "f", ctrlKey: true });
+    expect(terminalStore.state.searchOpen).toBe(false);
+
+    terminalStore.setSearch(true);
+    fireEvent.keyDown(drawer, { key: "Escape" });
+    expect(terminalStore.state.searchOpen).toBe(false);
+  });
 });
 
 function createCliSession(overrides: Partial<CliSession> = {}): CliSession {
@@ -233,10 +403,14 @@ function createTerminalSession(overrides: Partial<TerminalSession> = {}): Termin
   return {
     id: overrides.id ?? "terminal-1",
     projectId: overrides.projectId ?? "project-1",
+    source: overrides.source,
     name: overrides.name ?? "PowerShell",
     shellId: overrides.shellId ?? "powershell",
     cwd: overrides.cwd ?? "C:\\repo-one",
     status: overrides.status ?? "running",
+    inputMode: overrides.inputMode,
+    inputOverride: overrides.inputOverride,
+    inputLockReason: overrides.inputLockReason,
     cols: overrides.cols ?? 120,
     rows: overrides.rows ?? 32,
     transportMode: overrides.transportMode,

@@ -5,6 +5,7 @@ import { formatShortTimestamp } from "../../lib/time-format";
 import { cn } from "../../lib/utils";
 import { FileLinkedText, type FileLinkConfig } from "../file-linked-text";
 import { MarkdownContent } from "../markdown-content";
+import { CopyTextButton } from "./copy-text-button";
 import { buttonVariants } from "./button";
 import { Dialog } from "./dialog";
 import { Tooltip } from "./tooltip";
@@ -19,8 +20,10 @@ export type ExecutionLogEntry = {
   level: string;
   createdAt: string | number | Date | undefined;
   detail?: string;
+  detailKind?: "markdown" | "plain";
   detailsJson?: unknown;
   detailsJsonSummary?: string;
+  copyText?: string;
 };
 
 type ExecutionLogProps = {
@@ -103,6 +106,7 @@ export function ExecutionLog(props: ExecutionLogProps) {
               <>
                 <article
                   class={cn(
+                    "dense-action-parent",
                     props.rowVariant === "flat"
                       ? "border-l-2 py-3 pl-4 pr-2"
                       : "rounded-[0.9rem] border border-(--border) bg-white/70 p-3",
@@ -150,7 +154,7 @@ export function ExecutionLog(props: ExecutionLogProps) {
                     </div>
                     <Tooltip content="Show execution log details">
                       <button
-                        class={buttonVariants({ variant: "secondary" })}
+                        class={cn(buttonVariants({ variant: "secondary", size: "icon" }), "dense-secondary-actions shrink-0")}
                         type="button"
                         aria-label={`Show details for ${entry.message}`}
                         onClick={(event) => {
@@ -159,7 +163,6 @@ export function ExecutionLog(props: ExecutionLogProps) {
                         }}
                       >
                         <Logs class="h-4 w-4" />
-                        Show details
                       </button>
                     </Tooltip>
                   </div>
@@ -182,9 +185,35 @@ export function ExecutionLog(props: ExecutionLogProps) {
             onClose={() => setSelectedEntryId(undefined)}
           >
             <div class="flex flex-col gap-3">
+              <Show when={entry().copyText}>
+                {(copyText) => (
+                  <div class="flex justify-end">
+                    <CopyTextButton
+                      value={copyText()}
+                      tooltip="Copy execution log details"
+                      copiedTitle="Execution log copied"
+                      copiedDescription="Execution log details copied to clipboard."
+                      size="sm"
+                      variant="secondary"
+                      ariaLabel="Copy execution log details"
+                    >
+                      Copy details
+                    </CopyTextButton>
+                  </div>
+                )}
+              </Show>
               <MarkdownContent content={entry().message} size="compact" fileLinks={props.fileLinks} />
               <Show when={entry().detail}>
-                {(detail) => <MarkdownContent content={detail()} tone="muted" size="compact" fileLinks={props.fileLinks} />}
+                {(detail) => (
+                  <Show
+                    when={entry().detailKind === "plain"}
+                    fallback={<MarkdownContent content={detail()} tone="muted" size="compact" fileLinks={props.fileLinks} />}
+                  >
+                    <pre class="overflow-visible whitespace-pre-wrap wrap-break-word rounded-[0.9rem] border border-(--border) bg-white/70 p-3 text-[0.7rem] leading-5 text-(--foreground)">
+                      <FileLinkedText text={detail()} fileLinks={props.fileLinks} />
+                    </pre>
+                  </Show>
+                )}
               </Show>
               <Show when={entry().detailsJson !== undefined}>
                 <pre class="overflow-auto rounded-[0.9rem] bg-slate-950/95 p-3 text-[0.625rem] leading-5 text-slate-100">

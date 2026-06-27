@@ -86,9 +86,11 @@ import {
 } from "./primitives/left-pane";
 import { DropdownControl } from "./primitives/dropdown";
 import { Input } from "./primitives/input";
+import { StatusChip, type StatusChipTone } from "./primitives/status-chip";
 import { ScrollArea } from "./primitives/scroll-area";
 import { Textarea } from "./primitives/textarea";
 import { VirtualList } from "./primitives/virtual-list";
+import { rightAlignedNumbersEnabled } from "../lib/visual-flags";
 
 const assistantTodoStateOptions = [
   { value: "pending", label: "pending", description: "Queued but not started yet." },
@@ -1065,11 +1067,11 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
       </Show>
 
       <div
-        class="grid min-h-0 flex-1 gap-4"
+        class="grid min-h-0 min-w-0 max-w-full flex-1 gap-4"
         classList={{ "xl:grid-cols-[minmax(18rem,22rem)_minmax(0,1fr)]": showRoster() && showDetail() }}
       >
         <Show when={showRoster()}>
-        <div class="flex min-h-0 flex-col gap-1">
+        <div class="flex min-h-0 min-w-0 max-w-full flex-col gap-1">
           <LeftPaneFilterBlock>
             <LeftPaneSearchInput
               value={state.assistants.rosterSearch}
@@ -1128,14 +1130,10 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
           >
             {(assistant) => (
               <div
-                class="w-full cursor-pointer rounded-[0.8rem] border border-l-4 p-3 text-left shadow-sm transition hover:border-(--accent-strong)"
+                class="dense-action-parent dense-card w-full cursor-pointer border-l-4 p-3 text-left transition hover:border-(--accent-strong)"
                 classList={{
-                  "border-(--accent)": selectedAssistant()?.id === assistant.id,
-                  "border-l-(--accent-strong)": selectedAssistant()?.id === assistant.id,
-                  "theme-selected-surface": selectedAssistant()?.id === assistant.id,
-                  "border-(--border)": selectedAssistant()?.id !== assistant.id,
+                  "dense-card-selected": selectedAssistant()?.id === assistant.id,
                   [assistantRunStateBorderClass(assistant.runState)]: selectedAssistant()?.id !== assistant.id,
-                  "bg-white/70": selectedAssistant()?.id !== assistant.id
                 }}
                 role="button"
                 tabIndex={0}
@@ -1143,16 +1141,23 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                 onKeyDown={(event) => handleAssistantRosterKeyDown(event, assistant.id)}
               >
                 <div class="flex items-start justify-between gap-3">
-                  <div>
+                  <div class="min-w-0 flex-1">
                     <div class="text-[0.775rem] font-semibold text-(--foreground)">{assistant.name}</div>
-                    <div class="mt-1 text-[0.575rem] uppercase tracking-[0.16em] text-(--muted)">{assistant.scope} | {assistant.bootstrapState}</div>
+                    <div class="mt-1 flex flex-wrap gap-1">
+                      <StatusChip tone={assistant.scope === "global" ? "info" : "accent"}>{assistant.scope}</StatusChip>
+                      <StatusChip tone={assistantBootstrapTone(assistant.bootstrapState)}>{assistant.bootstrapState}</StatusChip>
+                    </div>
                   </div>
-                  <span class={`shrink-0 rounded-full px-2 py-0.5 text-[0.55rem] font-semibold uppercase tracking-[0.12em] ${assistantRunStateBadgeClass(assistant.runState)}`}>
-                    {assistant.runState}
-                  </span>
-                  <Show when={assistant.unreadQuestionCount > 0}>
-                    <span class="rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[0.55rem] font-semibold uppercase tracking-[0.12em] text-amber-900">{assistant.unreadQuestionCount} q</span>
-                  </Show>
+                  <div class="flex shrink-0 flex-wrap justify-end gap-1">
+                    <StatusChip tone={assistantRunStateTone(assistant.runState)}>
+                      {assistant.runState}
+                    </StatusChip>
+                    <Show when={assistant.unreadQuestionCount > 0}>
+                      <StatusChip tone="warning" classList={{ "dense-numeric-flagged": rightAlignedNumbersEnabled() }}>
+                        {assistant.unreadQuestionCount} q
+                      </StatusChip>
+                    </Show>
+                  </div>
                 </div>
                 <div class="mt-3 text-[0.675rem] leading-5 text-(--muted)">
                   <div>
@@ -1168,7 +1173,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
         </Show>
 
         <Show when={showDetail()}>
-        <section class="flex min-h-0 flex-1 flex-col p-4">
+        <section class="flex min-h-0 min-w-0 max-w-full flex-1 flex-col p-4">
           <Show
             when={selectedAssistant()}
             fallback={
@@ -1181,21 +1186,23 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
               <div class="flex h-full min-h-0 flex-col gap-4">
                 <div class="border-b border-(--border) pb-4">
                   <div class="flex flex-wrap items-start justify-between gap-4">
-                    <div>
+                    <div class="min-w-0 flex-1">
                       <div class="flex flex-wrap items-center gap-2">
                         <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Inspector</div>
-                        <span class={`rounded-full px-2 py-0.5 text-[0.55rem] font-semibold uppercase tracking-[0.12em] ${assistantRunStateBadgeClass(assistant().runState)}`}>
+                        <StatusChip tone={assistantRunStateTone(assistant().runState)}>
                           {assistant().runState}
-                        </span>
+                        </StatusChip>
                         <Show when={assistant().circuitBreakerState === "tripped"}>
-                          <StatusPill label="circuit breaker" tone="error" />
+                          <StatusChip tone="danger">circuit breaker</StatusChip>
                         </Show>
                       </div>
                       <h2 class="mt-1 break-words text-[1.2rem] font-semibold text-(--foreground) [overflow-wrap:anywhere]">{assistant().name}</h2>
                       <div class="mt-3 grid gap-x-5 gap-y-1 border-l-2 border-(--border) pl-4 text-[0.675rem] leading-5 text-(--muted) sm:grid-cols-2 xl:grid-cols-3">
                         <AssistantFact label="Scope">{assistant().scope}</AssistantFact>
                         <AssistantFact label="Bootstrap">{assistant().bootstrapState}</AssistantFact>
-                        <AssistantFact label="Questions">{String(assistant().unreadQuestionCount)}</AssistantFact>
+                        <AssistantFact label="Questions">
+                          <span classList={{ "dense-numeric-flagged": rightAlignedNumbersEnabled() }}>{String(assistant().unreadQuestionCount)}</span>
+                        </AssistantFact>
                       </div>
                       <Show when={assistant().description}>
                         {(description) => (
@@ -1206,7 +1213,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                       </Show>
                     </div>
 
-                    <div class="flex flex-wrap gap-2">
+                    <div class="flex w-full max-w-full flex-wrap gap-2 sm:w-auto sm:justify-end">
                       <Show when={assistant().circuitBreakerState === "tripped"}>
                         <ActionButton
                           tooltip="Inspect circuit breaker failure and retry"
@@ -1448,7 +1455,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                     </div>
                     <VirtualList class="min-h-0 flex-1 pr-2" contentClass="w-full" itemClass="pb-3" items={visibleTodos()} getKey={(todo) => todo.id} estimateSize={128} pagination={{ kind: "forward", initialCount: 60, batchSize: 60 }}>
                       {(todo) => (
-                        <article class={`border-l-2 py-3 pl-4 pr-2 ${todoStateBorderClass(todo.state)}`}>
+                        <article class={`dense-action-parent border-l-2 py-3 pl-4 pr-2 ${todoStateBorderClass(todo.state)}`}>
                           <div class="flex flex-wrap items-start justify-between gap-3">
                             <div class="min-w-0 flex-1">
                               <div class="text-[0.75rem] font-semibold text-(--foreground)">
@@ -1476,7 +1483,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                                 )}
                               </Show>
                             </div>
-                            <div class="flex shrink-0 items-center gap-2">
+                            <div class="dense-secondary-actions flex shrink-0 items-center gap-2">
                               <ActionButton tooltip="Move assistant todo up" ariaLabel={`Move ${todo.title} up`} icon={<ArrowUp class="h-4 w-4" />} size="icon" variant="ghost" class="h-8 w-8" disabled={selectedTodos()[0]?.id === todo.id} disabledReason="Todo is already first" onClick={() => reorderTodo(todo, -1)} />
                               <ActionButton tooltip="Move assistant todo down" ariaLabel={`Move ${todo.title} down`} icon={<ArrowDown class="h-4 w-4" />} size="icon" variant="ghost" class="h-8 w-8" disabled={selectedTodos()[selectedTodos().length - 1]?.id === todo.id} disabledReason="Todo is already last" onClick={() => reorderTodo(todo, 1)} />
                               <DropdownControl kind="select" ariaLabel={`Select ${todo.title} state`} icon={<ClipboardList class="h-3.5 w-3.5" />} size="md" class="w-40" value={todo.state} options={assistantTodoStateOptions} onChange={(value) => updateTodo(todo, { state: value as AssistantTodo["state"] })} />
@@ -1488,9 +1495,12 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                             <Input value={todo.workTarget ?? ""} placeholder="Work target" onChange={(event) => updateTodo(todo, { workTarget: event.currentTarget.value.trim() || undefined })} />
                           </div>
                           <div class="mt-2 flex flex-wrap items-center gap-2 text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">
-                            <span class={`rounded-full px-2 py-0.5 ${todoStateBadgeClass(todo.state)}`}>{todo.state}</span>
-                            <span class={`rounded-full px-2 py-0.5 ${todoWorkKindBadgeClass(todo.workKind)}`}>{todo.workKind}</span>
-                            <span>{todo.source ?? "assistant"} | sort {todo.sortOrder}</span>
+                            <StatusChip tone={todoStateTone(todo.state)}>{todo.state}</StatusChip>
+                            <StatusChip tone={todoWorkKindTone(todo.workKind)}>{todo.workKind}</StatusChip>
+                            <span>
+                              {todo.source ?? "assistant"} | sort{" "}
+                              <span classList={{ "dense-numeric-flagged": rightAlignedNumbersEnabled() }}>{todo.sortOrder}</span>
+                            </span>
                           </div>
                         </article>
                       )}
@@ -1555,7 +1565,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                           >
                             <div class="flex items-start justify-between gap-3">
                               <div class="break-words text-[0.75rem] font-semibold text-(--foreground)">{job.name}</div>
-                              <span class={`shrink-0 rounded-full px-2 py-0.5 text-[0.55rem] font-semibold uppercase tracking-[0.12em] ${backgroundJobStatusBadgeClass(job.status)}`}>{job.status}</span>
+                              <StatusChip tone={backgroundJobStatusTone(job.status)} class="shrink-0">{job.status}</StatusChip>
                             </div>
                             <div class="mt-1 text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">{job.kind}</div>
                             <div class="mt-2 break-words text-[0.675rem] leading-5 text-(--muted) [overflow-wrap:anywhere]">
@@ -1585,7 +1595,7 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                               <div class="min-w-0 break-words text-[0.75rem] font-semibold text-(--foreground) [overflow-wrap:anywhere]">
                                 <FileLinkedText text={run.summary ?? run.id} fileLinks={assistantChatFileLinks()} />
                               </div>
-                              <div class={`shrink-0 rounded-full px-2 py-0.5 text-[0.55rem] font-semibold uppercase tracking-[0.12em] ${backgroundRunStatusBadgeClass(run.status)}`}>{run.status}</div>
+                              <StatusChip tone={backgroundRunStatusTone(run.status)} class="shrink-0">{run.status}</StatusChip>
                             </div>
                             <div class="mt-2 break-words text-[0.675rem] leading-5 text-(--muted) [overflow-wrap:anywhere]">
                               <div>
@@ -1673,15 +1683,15 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                       empty={<div class="border-l-2 border-dashed border-(--border) py-3 pl-4 text-[0.75rem] text-(--muted)">No learnings yet.</div>}
                     >
                       {(learning) => (
-                        <article class="border-l-2 border-(--border) py-3 pl-4 pr-2">
+                        <article class="dense-action-parent border-l-2 border-(--border) py-3 pl-4 pr-2">
                           <div class="flex items-start justify-between gap-3">
                             <div class="min-w-0">
                               <div class="text-[0.75rem] font-semibold leading-5 text-(--foreground)">
                                 <FileLinkedText text={learning.summary} fileLinks={assistantChatFileLinks()} />
                               </div>
                             </div>
-                            <div class="flex shrink-0 items-center gap-2">
-                              <div class="text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">{learning.confidence}</div>
+                            <div class="dense-secondary-actions flex shrink-0 items-center gap-2">
+                              <StatusChip tone={learning.confidence === "high" ? "success" : learning.confidence === "low" ? "neutral" : "info"}>{learning.confidence}</StatusChip>
                               <ActionButton tooltip="Move assistant learning up" ariaLabel={`Move learning ${learning.summary} up`} icon={<ArrowUp class="h-4 w-4" />} size="icon" variant="ghost" class="h-8 w-8" disabled={selectedLearnings()[0]?.id === learning.id} disabledReason="Learning is already first" onClick={() => reorderLearning(learning, -1)} />
                               <ActionButton tooltip="Move assistant learning down" ariaLabel={`Move learning ${learning.summary} down`} icon={<ArrowDown class="h-4 w-4" />} size="icon" variant="ghost" class="h-8 w-8" disabled={selectedLearnings()[selectedLearnings().length - 1]?.id === learning.id} disabledReason="Learning is already last" onClick={() => reorderLearning(learning, 1)} />
                               <ActionButton tooltip="Delete assistant learning" ariaLabel={`Delete learning ${learning.summary}`} icon={<Trash2 class="h-4 w-4" />} size="icon" variant="ghost" class="h-8 w-8 text-(--danger) hover:bg-(--panel)" onClick={() => deleteLearning(learning)} />
@@ -1739,27 +1749,40 @@ function AssistantFact(props: { label: string; children: JSX.Element }) {
   );
 }
 
-function assistantRunStateBadgeClass(runState: Assistant["runState"]) {
-  return runState === "active" ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-900";
+function assistantRunStateTone(runState: Assistant["runState"]): StatusChipTone {
+  return runState === "active" ? "success" : "warning";
+}
+
+function assistantBootstrapTone(state: Assistant["bootstrapState"]): StatusChipTone {
+  if (state === "completed") {
+    return "success";
+  }
+  if (state === "failed") {
+    return "danger";
+  }
+  if (state === "running") {
+    return "info";
+  }
+  return "warning";
 }
 
 function assistantRunStateBorderClass(runState: Assistant["runState"]) {
   return runState === "active" ? "border-l-emerald-500" : "border-l-amber-400";
 }
 
-function todoStateBadgeClass(state: AssistantTodo["state"]) {
+function todoStateTone(state: AssistantTodo["state"]): StatusChipTone {
   switch (state) {
     case "completed":
-      return "bg-emerald-100 text-emerald-800";
+      return "success";
     case "failed":
     case "cancelled":
-      return "bg-rose-100 text-rose-800";
+      return "danger";
     case "blocked":
-      return "bg-amber-100 text-amber-900";
+      return "warning";
     case "in-progress":
-      return "bg-sky-100 text-sky-800";
+      return "info";
     case "pending":
-      return "bg-slate-200 text-slate-700";
+      return "neutral";
   }
 }
 
@@ -1779,33 +1802,33 @@ function todoStateBorderClass(state: AssistantTodo["state"]) {
   }
 }
 
-function todoWorkKindBadgeClass(workKind: AssistantTodo["workKind"]) {
+function todoWorkKindTone(workKind: AssistantTodo["workKind"]): StatusChipTone {
   switch (workKind) {
     case "app-code":
-      return "bg-emerald-100 text-emerald-800";
+      return "success";
     case "automation-code":
-      return "bg-sky-100 text-sky-800";
+      return "info";
     case "documentation":
-      return "bg-violet-100 text-violet-800";
+      return "accent";
     case "research":
-      return "bg-indigo-100 text-indigo-800";
+      return "info";
     case "blocked":
-      return "bg-amber-100 text-amber-900";
+      return "warning";
     case "unspecified":
-      return "bg-slate-200 text-slate-700";
+      return "neutral";
   }
 }
 
-function questionStatusBadgeClass(status: AssistantQuestion["status"]) {
+function questionStatusTone(status: AssistantQuestion["status"]): StatusChipTone {
   switch (status) {
     case "answered":
-      return "bg-emerald-100 text-emerald-800";
+      return "success";
     case "pending":
-      return "bg-amber-100 text-amber-900";
+      return "warning";
     case "deferred":
-      return "bg-sky-100 text-sky-800";
+      return "info";
     case "dismissed":
-      return "bg-slate-200 text-slate-700";
+      return "neutral";
   }
 }
 
@@ -1822,30 +1845,32 @@ function questionStatusBorderClass(status: AssistantQuestion["status"]) {
   }
 }
 
-function backgroundJobStatusBadgeClass(status: BackgroundJob["status"]) {
-  return status === "enabled" ? "bg-emerald-100 text-emerald-800" : "bg-slate-200 text-slate-700";
+function backgroundJobStatusTone(status: BackgroundJob["status"]): StatusChipTone {
+  return status === "enabled" ? "success" : "neutral";
 }
 
 function backgroundJobStatusBorderClass(status: BackgroundJob["status"]) {
   return status === "enabled" ? "border-emerald-500" : "border-slate-300";
 }
 
-function backgroundRunStatusBadgeClass(status: BackgroundJobRun["status"]) {
+function backgroundRunStatusTone(status: BackgroundJobRun["status"]): StatusChipTone {
   switch (status) {
     case "succeeded":
-      return "bg-emerald-100 text-emerald-800";
+      return "success";
+    case "partial-complete":
+      return "warning";
     case "failed":
     case "cancelled":
-      return "bg-rose-100 text-rose-800";
+      return "danger";
     case "awaiting-approval":
     case "awaiting-user-input":
-      return "bg-amber-100 text-amber-900";
+      return "warning";
     case "running":
-      return "bg-sky-100 text-sky-800";
+      return "info";
     case "queued":
-      return "bg-slate-200 text-slate-700";
+      return "neutral";
     case "skipped":
-      return "bg-stone-200 text-stone-700";
+      return "neutral";
   }
 }
 
@@ -1866,24 +1891,6 @@ function backgroundRunStatusBorderClass(status: BackgroundJobRun["status"]) {
     case "skipped":
       return "border-stone-300";
   }
-}
-
-function StatusPill(props: { label: string; tone?: "default" | "error" }) {
-  return (
-    <span
-      class="rounded-full border px-2 py-1"
-      classList={{
-        "border-rose-300": props.tone === "error",
-        "bg-rose-50": props.tone === "error",
-        "text-rose-900": props.tone === "error",
-        "border-(--border)": props.tone !== "error",
-        "bg-white/80": props.tone !== "error",
-        "text-(--foreground)": props.tone !== "error"
-      }}
-    >
-      {props.label}
-    </span>
-  );
 }
 
 function QuestionColumn(props: {
@@ -1915,7 +1922,7 @@ function QuestionColumn(props: {
               <FileLinkedText text={question.prompt} fileLinks={props.fileLinks} />
             </div>
             <div class="mt-1 flex flex-wrap items-center gap-2 text-[0.575rem] uppercase tracking-[0.14em] text-(--muted)">
-              <span class={`rounded-full px-2 py-0.5 ${questionStatusBadgeClass(question.status)}`}>{question.status}</span>
+              <StatusChip tone={questionStatusTone(question.status)}>{question.status}</StatusChip>
               <span>{formatShortTimestamp(question.askedAt)}</span>
             </div>
             <Show when={question.status === "pending"}>

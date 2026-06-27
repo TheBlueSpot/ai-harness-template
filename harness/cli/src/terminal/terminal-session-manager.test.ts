@@ -39,10 +39,15 @@ function createManagerFixture() {
   });
   const events: string[] = [];
   const updatedSessions: TerminalSession[] = [];
+  const historySessions: TerminalSession[][] = [];
   const manager = new TerminalSessionManager({
     repository,
     onSessionsUpdated: () => events.push("sessions"),
     onShellsUpdated: () => events.push("shells"),
+    onHistoryListed: ({ sessions }) => {
+      events.push("history");
+      historySessions.push(sessions);
+    },
     onSessionCreated: () => events.push("created"),
     onSessionUpdated: ({ session }) => {
       events.push("updated");
@@ -52,7 +57,7 @@ function createManagerFixture() {
     onAttachReady: () => events.push("attach"),
     onPreferencesSaved: () => events.push("prefs")
   });
-  return { repository, project, manager, events, session, updatedSessions };
+  return { repository, project, manager, events, session, updatedSessions, historySessions };
 }
 
 describe("TerminalSessionManager", () => {
@@ -127,6 +132,13 @@ describe("TerminalSessionManager", () => {
     expect(repository.getTerminalState().scrollbackBySessionId[session.id]?.endsWith("abc")).toBe(true);
   });
 
+  test("decodes Windows PowerShell pipe output without null-padded glyph spacing", () => {
+    const utf16Output = new TextEncoder().encode("P\u0000S\u0000 \u0000C\u0000:\u0000\\\u0000r\u0000e\u0000p\u0000o\u0000>\u0000");
+
+    expect(testExports.decodeTerminalOutputChunk(utf16Output)).toBe("PS C:\\repo>");
+    expect(testExports.decodeTerminalOutputChunk(new TextEncoder().encode("plain utf8"))).toBe("plain utf8");
+  });
+
   test("marks pre-start spawn failures as failed sessions", async () => {
     const { project, repository, manager, updatedSessions } = createManagerFixture();
     (manager as unknown as { shells: unknown[] }).shells = [
@@ -154,6 +166,110 @@ describe("TerminalSessionManager", () => {
     const failed = updatedSessions.at(-1);
     expect(failed).toMatchObject({ status: "failed", exitCode: -1 });
     expect(repository.getTerminalState().sessions.find((entry) => entry.id === failed?.id)?.status).toBe("failed");
+  });
+
+  test("keeps agent-spawned terminals read-only until override and preserves history after exit", async () => {
+    const tempRoot = path.join(process.cwd(), ".tmp-test-data");
+    mkdirSync(tempRoot, { recursive: true });
+    const repository = new WorkspaceRepository(path.join(tempRoot, `terminal-agent-${crypto.randomUUID()}.sqlite`), process.cwd());
+    const projectRoot = path.join(tempRoot, `terminal-agent-project-${crypto.randomUUID()}`);
+    mkdirSync(projectRoot, { recursive: true });
+    const project = repository.addProject(projectRoot);
+    const updatedSessions: TerminalSession[] = [];
+    const activeLists: TerminalSession[][] = [];
+    const historyLists: TerminalSession[][] = [];
+    let writes = "";
+    let exit: ((code: number) => void) | undefined;
+    const manager = new TerminalSessionManager({
+      repository,
+      discoverShells: async () => [
+        {
+          id: "fake",
+          label: "Fake Shell",
+          executableLabel: "fake-shell",
+          kind: "custom",
+          available: true,
+          default: true
+        }
+      ],
+      startProcess: async (input) => {
+        exit = input.onExit;
+        return {
+          pid: 42,
+          transportMode: "pty",
+          write(data) {
+            writes += new TextDecoder().decode(typeof data === "string" ? new TextEncoder().encode(data) : data);
+          },
+          resize() {},
+          async stop() {
+            exit?.(0);
+          }
+        };
+      },
+      onSessionsUpdated: ({ sessions }) => activeLists.push(sessions),
+      onShellsUpdated: () => undefined,
+      onHistoryListed: ({ sessions }) => historyLists.push(sessions),
+      onSessionCreated: ({ session }) => updatedSessions.push(session),
+      onSessionUpdated: ({ session }) => updatedSessions.push(session),
+      onSessionExited: ({ session }) => updatedSessions.push(session),
+      onAttachReady: () => undefined,
+      onPreferencesSaved: () => undefined
+    });
+
+    await manager.createSession({
+      requestId: "req-agent-terminal",
+      projectId: project.id,
+      projectRoot: project.rootPath,
+      clientId: "client-1",
+      source: {
+        kind: "agent",
+        threadId: "thread-1",
+        runId: "run-1",
+        label: "Run run-1",
+        trigger: "run"
+      },
+      cols: 80,
+      rows: 24
+    });
+    const sessionId = updatedSessions.at(-1)?.id;
+    expect(sessionId).toBeDefined();
+    expect(updatedSessions.at(-1)).toMatchObject({
+      source: { kind: "agent", threadId: "thread-1", runId: "run-1" },
+      inputMode: "read-only",
+      inputOverride: false
+    });
+
+    await expect(manager.writeToSession(sessionId!, new TextEncoder().encode("blocked"))).resolves.toBe(false);
+    expect(writes).toBe("");
+
+    manager.setInputOverride({
+      requestId: "req-override",
+      projectId: project.id,
+      sessionId: sessionId!,
+      allowInput: true
+    });
+    await expect(manager.writeToSession(sessionId!, new TextEncoder().encode("allowed"))).resolves.toBe(true);
+    expect(writes).toBe("allowed");
+
+    exit?.(0);
+    await delay(0);
+
+    manager.listSessions({ requestId: "req-list", projectId: project.id });
+    manager.listHistory({
+      requestId: "req-history",
+      scope: {
+        projectId: project.id,
+        threadId: "thread-1",
+        runId: "run-1"
+      }
+    });
+
+    expect(activeLists.at(-1)).toEqual([]);
+    expect(historyLists.at(-1)?.[0]).toMatchObject({
+      id: sessionId,
+      closedAt: expect.any(String),
+      source: { kind: "agent", threadId: "thread-1", runId: "run-1" }
+    });
   });
 
   test("treats releaseLock aborts as normal terminal pipe shutdown", async () => {

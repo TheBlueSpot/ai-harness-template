@@ -1117,6 +1117,7 @@ export function registerServerStartupTests(options: ServerTestShardOptions = {})
         expect(ready.payload.preferences.planExecutionModeDefault).toBe("countdown");
         expect(ready.payload.preferences.planExecutionDelaySecondsDefault).toBe(10);
         expect(ready.payload.preferences.correctnessIterationModeDefault).toBe("ask-before-iterate");
+        expect(ready.payload.preferences.maxBackgroundJobsDefault).toBe(10);
         expect(ready.payload.preferences.memoryBankEnabledDefault).toBe(true);
         expect(ready.payload.preferences.memoryBankRecordRunsDefault).toBe(true);
         expect(ready.payload.preferences.attachmentsEnabled).toBe(EXPECT_ATTACHMENTS_ENABLED);
@@ -1315,6 +1316,51 @@ export function registerServerStartupTests(options: ServerTestShardOptions = {})
         expect(reloadedServer).toBe(server);
         expect(singletonAfter?.state.scheduler).not.toBe(firstScheduler);
         expect(activeRun?.status).toBe("awaiting-approval");
+      });
+
+      serverTest("hot dev mode keeps previous server alive when reload initialization fails", async () => {
+        await stopServerForTest(server);
+        const firstRoot = fixture.createTempDir(`first-hot-fail-root-${crypto.randomUUID()}`);
+        const secondRoot = fixture.createTempDir(`second-hot-fail-root-${crypto.randomUUID()}`);
+        const runtimeRegistry = createFastTestRuntimeRegistry(adapter);
+        const originalRefreshAll = runtimeRegistry.refreshAll.bind(runtimeRegistry);
+        let refreshCount = 0;
+        runtimeRegistry.refreshAll = async () => {
+          refreshCount += 1;
+          if (refreshCount > 1) {
+            throw new Error("simulated hot reload startup failure");
+          }
+          return originalRefreshAll();
+        };
+
+        server = await startHarnessServer({
+          port: 0,
+          adapter,
+          repository,
+          runtimeRegistry,
+          pickFolder: async () => firstRoot,
+          serverOnly: true,
+          devHotMode: true,
+          hotReloadDebounceMs: 0,
+          backendHotReloadChangeDetector: () => true
+        });
+        const firstServer = server;
+
+        const reloadedServer = await startHarnessServer({
+          port: 0,
+          adapter,
+          repository,
+          runtimeRegistry,
+          pickFolder: async () => secondRoot,
+          serverOnly: true,
+          devHotMode: true,
+          hotReloadDebounceMs: 0,
+          backendHotReloadChangeDetector: () => true
+        });
+
+        const singletonAfterFailure = getDevHarnessServerSingleton<any, any, any, any>();
+        expect(reloadedServer).toBe(firstServer);
+        expect(await singletonAfterFailure?.state.pickFolder()).toBe(firstRoot);
       });
 
 
@@ -1807,6 +1853,7 @@ export function registerServerPreferencesAndModesTests(options: ServerTestShardO
               correctnessIterationModeDefault: "auto-once",
               backgroundJobApprovalPolicyDefault: "ask-risky",
               assistantAutoApproveNonBlockingQuestionsDefault: false,
+              maxBackgroundJobsDefault: 25,
               memoryBankEnabledDefault: false,
               memoryBankRecordRunsDefault: false,
               checkCliUpdatesDefault: false
@@ -1832,6 +1879,7 @@ export function registerServerPreferencesAndModesTests(options: ServerTestShardO
         expect(saved.payload.correctnessIterationModeDefault).toBe("auto-once");
         expect(saved.payload.backgroundJobApprovalPolicyDefault).toBe("ask-risky");
         expect(saved.payload.assistantAutoApproveNonBlockingQuestionsDefault).toBe(false);
+        expect(saved.payload.maxBackgroundJobsDefault).toBe(25);
         expect(saved.payload.memoryBankEnabledDefault).toBe(false);
         expect(saved.payload.memoryBankRecordRunsDefault).toBe(false);
         expect(saved.payload.checkCliUpdatesDefault).toBe(false);
@@ -1839,6 +1887,7 @@ export function registerServerPreferencesAndModesTests(options: ServerTestShardO
         expect(repository.getStoredOpenAiApiKey()).toBe("sk-local-123");
         expect(repository.getStoredGoogleApiKey()).toBe("AIza-local-456");
         expect(repository.getAutoCompactContextThresholdPercentDefault()).toBe(55);
+        expect(repository.getMaxBackgroundJobsDefault()).toBe(25);
         expect(repository.getMemoryBankEnabledDefault()).toBe(false);
         expect(repository.getMemoryBankRecordRunsDefault()).toBe(false);
         expect(repository.getCheckCliUpdatesDefault()).toBe(false);
@@ -2847,6 +2896,60 @@ ec32e89b-08a3-41a5-80bf-6823701343f0
         const streamingLog = await streamingLogPromise;
         expect(streamingLog.payload.run.events.some((entry: { message: string }) => entry.message === "Background AI prompt")).toBe(true);
         await completedPromise;
+        socket.close();
+      }, 60000);
+
+      serverTest("background job usage updates app token counters", async () => {
+        const socket = createSocket(port);
+        await waitForEvent(socket, "connection.ready");
+        const opened = await openProject(socket, projectRoot);
+        const projectId = opened.payload.project.id;
+        const now = new Date().toISOString();
+        const jobId = crypto.randomUUID();
+        repository.saveBackgroundJob({
+          id: jobId,
+          projectId,
+          automationThreadId: crypto.randomUUID(),
+          kind: "ai-routine",
+          name: "Usage counter job",
+          status: "enabled",
+          riskLevel: "safe",
+          definition: {
+            kind: "ai-routine",
+            prompt: "usage counter background job",
+            modeId: "implement"
+          },
+          schedule: {
+            type: "one-off",
+            runAt: now,
+            sourceText: "now"
+          },
+          scheduleInput: "now",
+          nextRunAt: now,
+          createdAt: now,
+          updatedAt: now
+        } satisfies BackgroundJob);
+
+        const usageUpdatedPromise = waitForEvent(
+          socket,
+          "usage.updated",
+          (event) => event.payload.tokenUsage.session.totalTokensIncludingCached > 0,
+          10000
+        );
+        socket.send(
+          JSON.stringify({
+            type: "background-job.run-now",
+            requestId: "req-background-usage",
+            payload: {
+              projectId,
+              jobId
+            }
+          })
+        );
+
+        const usageUpdated = await usageUpdatedPromise;
+        expect(usageUpdated.payload.tokenUsage.session.events).toBeGreaterThan(0);
+        expect(usageUpdated.payload.tokenUsage.lifetime.totalTokensIncludingCached).toBeGreaterThan(0);
         socket.close();
       }, 60000);
 

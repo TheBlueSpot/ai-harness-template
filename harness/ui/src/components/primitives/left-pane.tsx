@@ -21,7 +21,7 @@ export function LeftPaneShell(props: LeftPaneShellProps) {
       {...rest}
       data-test-left-pane-shell=""
       data-left-pane-kind={local.kind}
-      class={cn("panel-shell flex h-full min-h-0 flex-col gap-4 rounded-2xl border-t-0", paddingClass(), local.class)}
+      class={cn("panel-shell flex h-full min-h-0 min-w-0 flex-col gap-4 rounded-2xl border-t-0", paddingClass(), local.class)}
     >
       {local.children}
     </section>

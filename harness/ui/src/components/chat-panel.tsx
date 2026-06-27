@@ -50,6 +50,7 @@ import { MarkdownContent } from "./markdown-content";
 import { ModeEditorPanel } from "./mode-editor-panel";
 import { SetupChecklistCard } from "./setup-checklist-card";
 import { StreamedToolBlock } from "./streamed-tool-block";
+import { TerminalHistoryDialog } from "../terminal/terminal-history-dialog";
 import { ChatComposer } from "./primitives/chat-composer";
 import { Dialog } from "./primitives/dialog";
 import { CopyTextButton } from "./primitives/copy-text-button";
@@ -94,6 +95,7 @@ import {
   Image,
   SendHorizontal,
   Settings,
+  Terminal,
   WandSparkles,
   X,
   Split
@@ -241,6 +243,7 @@ export function ChatPanel() {
   const [composerLookupForcedClosed, setComposerLookupForcedClosed] = createSignal(false);
   const [composerCaret, setComposerCaret] = createSignal<number | undefined>();
   const [dismissedComposerLookupKey, setDismissedComposerLookupKey] = createSignal<string | undefined>();
+  const [terminalHistoryOpen, setTerminalHistoryOpen] = createSignal(false);
   const pendingQuestion = () => activeProject()?.activeRun?.questions.find((question) => question.status === "pending");
   const resumableRun = () => (activeProject()?.activeRun?.resumable ? activeProject()?.activeRun : undefined);
   const retryableRun = () => (activeProject()?.lastRun?.retryable ? activeProject()?.lastRun : undefined);
@@ -2271,6 +2274,7 @@ export function ChatPanel() {
       correctnessIterationModeDefault: state.correctnessIterationModeDefault,
       backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
       assistantAutoApproveNonBlockingQuestionsDefault: state.assistantAutoApproveNonBlockingQuestionsDefault,
+      maxBackgroundJobsDefault: state.maxBackgroundJobsDefault,
       backgroundJobNotificationsEnabled: state.backgroundJobNotificationsEnabled,
       memoryBankEnabledDefault: state.memoryBankEnabledDefault,
       memoryBankRecordRunsDefault: state.memoryBankRecordRunsDefault,
@@ -2296,6 +2300,7 @@ export function ChatPanel() {
         correctnessIterationModeDefault: state.correctnessIterationModeDefault,
         backgroundJobApprovalPolicyDefault: state.backgroundJobApprovalPolicyDefault,
         assistantAutoApproveNonBlockingQuestionsDefault: state.assistantAutoApproveNonBlockingQuestionsDefault,
+        maxBackgroundJobsDefault: state.maxBackgroundJobsDefault,
         memoryBankEnabledDefault: state.memoryBankEnabledDefault,
         memoryBankRecordRunsDefault: state.memoryBankRecordRunsDefault,
         checkCliUpdatesDefault: state.checkCliUpdatesDefault
@@ -2497,6 +2502,22 @@ export function ChatPanel() {
     openBackgroundRunInJobsPane(state, backgroundRun.id, backgroundRun.jobId);
   }
 
+  function handleOpenThreadTerminalHistory() {
+    const project = activeProject();
+    if (!project) {
+      return;
+    }
+    sendCommand({
+      type: "terminal.history.list",
+      requestId: createRequestId(),
+      payload: {
+        projectId: project.id,
+        threadId: project.activeThreadId
+      }
+    });
+    setTerminalHistoryOpen(true);
+  }
+
   function handleAssistantActionCardAction(metadata: AssistantActionMessageMetadata, actionKind: AssistantActionMessageMetadata["actions"][number]["kind"]) {
     const project = activeProject();
     if (actionKind === "open-assistant") {
@@ -2620,6 +2641,7 @@ export function ChatPanel() {
   }
 
   return (
+    <>
     <section data-test-chat-panel="" class="panel-shell flex h-full min-h-0 flex-col gap-3 rounded-2xl border-t-0 p-[0.8rem]">
       <Dialog
         open={Boolean(state.blockingNonGitPreflight)}
@@ -2790,6 +2812,13 @@ export function ChatPanel() {
                   icon={<Split class="h-4 w-4" />}
                   variant="secondary"
                   onClick={handleForkThread}
+                />
+                <ActionButton
+                  tooltip="Open terminal history for this thread"
+                  ariaLabel="Open thread terminal history"
+                  icon={<Terminal class="h-4 w-4" />}
+                  variant="secondary"
+                  onClick={handleOpenThreadTerminalHistory}
                 />
                 <ActionButton
                   tooltip="Stop active run"
@@ -3748,6 +3777,13 @@ export function ChatPanel() {
           </>
       </Show>
     </section>
+    <TerminalHistoryDialog
+      open={terminalHistoryOpen()}
+      title="Thread Terminal History"
+      scope={activeProject() ? { projectId: activeProject()!.id, threadId: activeProject()!.activeThreadId } : undefined}
+      onClose={() => setTerminalHistoryOpen(false)}
+    />
+    </>
   );
 }
 

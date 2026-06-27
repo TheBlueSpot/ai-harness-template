@@ -10,6 +10,7 @@ Backend websocket handlers and runtime orchestration for harness.
 - Background-job commands validate project ownership and allowed run-status transitions before mutating persisted runs.
 - Stopping or deleting a background job run also stops linked agent work first, including stale persisted runs after reconnect.
 - Background-job scheduler state persists due, blocked, stale, queued launch, approval, timeout, progress, and congestion/capacity reasons so overdue work is explainable after long runs or reconnects.
+- Background-job capacity is user-configurable and runs independently from primary project runs, so scheduled work is not blocked only because the user thread is active.
 - Background-job scheduling avoids stacking another occurrence while a prior run for the same job is still queued, waiting, or running.
 - Background-run ownership now uses renewable controller leases, startup grace, and explicit shutdown interruption handling so restart recovery does not orphan healthy work or quietly lose ownership.
 - Background AI runs can finish `partial-complete` when useful output exists despite subagent failures; this warning state is terminal but does not count as a hard failure or trigger backoff.

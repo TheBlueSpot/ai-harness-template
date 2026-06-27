@@ -160,7 +160,7 @@ createUiTest("ProjectSidebar", () => {
     render(() => <ProjectSidebar />);
 
     const doneBadge = screen.getByText("Done");
-    expect(doneBadge.className).toContain("bg-emerald-600");
+    expect(doneBadge.closest("[data-test-status-chip]")?.className).toContain("status-chip-success");
     expect((screen.getByRole("button", { name: `Remove ${project.name}` }) as HTMLButtonElement).disabled).toBe(false);
   });
 
@@ -190,9 +190,9 @@ createUiTest("ProjectSidebar", () => {
 
     const projectCard = document.querySelector("[data-test-project-card][data-project-id='project-themed-active']");
     const threadCard = document.querySelector("[data-test-project-thread-card][data-thread-id='thread-active']");
-    expect(projectCard?.className).toContain("theme-selected-surface");
+    expect(projectCard?.className).toContain("dense-card-selected");
     expect(projectCard?.className).not.toContain("rgba(255");
-    expect(threadCard?.className).toContain("bg-(--panel-strong)");
+    expect(threadCard?.className).toContain("dense-card-selected");
   });
 
   it("activates the project before activating a thread in another project", () => {

@@ -155,6 +155,18 @@ describe("workspace repository", () => {
     expect(repository.getBackgroundJobApprovalPolicyDefault()).toBe("allow-all");
   });
 
+  test("defaults and bounds max background jobs", () => {
+    const repository = createRepository();
+
+    expect(repository.getMaxBackgroundJobsDefault()).toBe(10);
+    repository.setMaxBackgroundJobsDefault(42);
+    expect(repository.getMaxBackgroundJobsDefault()).toBe(42);
+    repository.setMaxBackgroundJobsDefault(4);
+    expect(repository.getMaxBackgroundJobsDefault()).toBe(5);
+    repository.setMaxBackgroundJobsDefault(101);
+    expect(repository.getMaxBackgroundJobsDefault()).toBe(100);
+  });
+
   test("defaults and persists non-blocking assistant question auto-approval", () => {
     const repository = createRepository();
 

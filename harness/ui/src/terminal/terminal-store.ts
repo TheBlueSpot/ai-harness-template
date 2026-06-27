@@ -1,11 +1,13 @@
 import { createStore, reconcile } from "solid-js/store";
 import type {
   ServerEvent,
+  TerminalHistoryScope,
   TerminalPaneLayout,
   TerminalPreferences,
   TerminalSession,
   TerminalShell
 } from "../../../shared/protocol";
+import { normalizeTerminalGlyphSpacing } from "./terminal-output-format";
 
 export const TERMINAL_DRAWER_STORAGE_KEY = "pi-harness:terminal-drawer:v1";
 
@@ -21,6 +23,11 @@ export type TerminalUiState = {
   connectedBySessionId: Record<string, boolean>;
   preferences: TerminalPreferences;
   layout?: TerminalPaneLayout;
+  history: {
+    scope?: TerminalHistoryScope;
+    sessions: TerminalSession[];
+    updatedAt?: string;
+  };
   focusedSessionId?: string;
   searchOpen: boolean;
   searchQuery: string;
@@ -30,7 +37,7 @@ const defaultPreferences: TerminalPreferences = {
   scrollbackLimit: 10000,
   copyOnSelect: false,
   ctrlCMode: "auto",
-  rendererMode: "xterm-webgl"
+  rendererMode: "solid-prototype"
 };
 
 function createInitialTerminalState(): TerminalUiState {
@@ -46,6 +53,9 @@ function createInitialTerminalState(): TerminalUiState {
     outputResetVersionBySessionId: {},
     connectedBySessionId: {},
     preferences: defaultPreferences,
+    history: {
+      sessions: []
+    },
     focusedSessionId: undefined,
     searchOpen: false,
     searchQuery: ""
@@ -75,15 +85,16 @@ function createTerminalStore() {
       setState({ focusedSessionId: sessionId });
     },
     appendOutput(sessionId: string, text: string) {
+      const normalizedText = normalizeTerminalGlyphSpacing(text);
       const limit = Math.max(100_000, state.preferences.scrollbackLimit * 160);
-      const combined = `${state.outputBySessionId[sessionId] ?? ""}${text}`;
+      const combined = `${state.outputBySessionId[sessionId] ?? ""}${normalizedText}`;
       const nextOutput = combined.slice(-limit);
       setState("outputBySessionId", sessionId, nextOutput);
-      setState("outputDeltaBySessionId", sessionId, text);
+      setState("outputDeltaBySessionId", sessionId, normalizedText);
       setState("outputVersionBySessionId", sessionId, (state.outputVersionBySessionId[sessionId] ?? 0) + 1);
     },
     replaceOutput(sessionId: string, text: string) {
-      setState("outputBySessionId", sessionId, text);
+      setState("outputBySessionId", sessionId, normalizeTerminalGlyphSpacing(text));
       setState("outputDeltaBySessionId", sessionId, "");
       setState("outputVersionBySessionId", sessionId, (state.outputVersionBySessionId[sessionId] ?? 0) + 1);
       setState("outputResetVersionBySessionId", sessionId, (state.outputResetVersionBySessionId[sessionId] ?? 0) + 1);
@@ -94,6 +105,9 @@ function createTerminalStore() {
     setSearch(open: boolean, query: string = state.searchQuery) {
       setState({ searchOpen: open, searchQuery: query });
     },
+    setLayout(layout: TerminalPaneLayout | undefined) {
+      setState({ layout });
+    },
     applyServerEvent(event: ServerEvent) {
       switch (event.type) {
         case "terminal.shells.updated":
@@ -101,7 +115,7 @@ function createTerminalStore() {
           return;
         case "terminal.sessions.updated":
           setState({
-            sessions: event.payload.sessions,
+            sessions: event.payload.sessions.filter(isActiveTerminalSession),
             preferences: event.payload.preferences,
             layout: event.payload.layout
           });
@@ -113,17 +127,30 @@ function createTerminalStore() {
         case "terminal.session.updated":
         case "terminal.session.exited": {
           const session = event.payload.session;
-          const sessions = [...state.sessions.filter((entry) => entry.id !== session.id), session].sort((left, right) =>
+          const sessions = (isActiveTerminalSession(session)
+            ? [...state.sessions.filter((entry) => entry.id !== session.id), session]
+            : state.sessions.filter((entry) => entry.id !== session.id)
+          ).sort((left, right) =>
             left.startedAt.localeCompare(right.startedAt)
           );
-          setState({ sessions, focusedSessionId: state.focusedSessionId ?? session.id });
+          setState({
+            sessions,
+            focusedSessionId: isActiveTerminalSession(session) ? state.focusedSessionId ?? session.id : state.focusedSessionId
+          });
           return;
         }
+        case "terminal.history.listed":
+          setState("history", {
+            scope: event.payload.scope,
+            sessions: event.payload.sessions,
+            updatedAt: new Date().toISOString()
+          });
+          return;
         case "terminal.preferences.saved":
           setState({ preferences: event.payload.preferences, layout: event.payload.layout });
           return;
         case "terminal.session.attach-ready":
-          setState("outputBySessionId", event.payload.sessionId, event.payload.snapshot);
+          setState("outputBySessionId", event.payload.sessionId, normalizeTerminalGlyphSpacing(event.payload.snapshot));
           return;
       }
     },
@@ -159,3 +186,7 @@ function persistDrawerState(height: number, open: boolean) {
 }
 
 export const terminalStore = createTerminalStore();
+
+function isActiveTerminalSession(session: TerminalSession) {
+  return !session.closedAt;
+}

@@ -7,9 +7,11 @@ import {
   type ProjectId,
   type TerminalAttachToken,
   type TerminalEnvVar,
+  type TerminalHistoryScope,
   type TerminalPaneLayout,
   type TerminalPreferences,
   type TerminalSession,
+  type TerminalSessionSource,
   type TerminalTransportMode,
   type TerminalShell
 } from "../../../shared/protocol";
@@ -29,6 +31,8 @@ const TERMINAL_STREAM_MAX_BUFFERED_BYTES = 16 * 1024;
 const TERMINAL_SEND_QUEUE_CAP_BYTES = 512 * 1024;
 const TERMINAL_STATE_PERSIST_THROTTLE_MS = 500;
 const MAX_SCROLLBACK_CHARS = 2_000_000;
+const TERMINAL_UTF8_DECODER = new TextDecoder();
+const TERMINAL_UTF16LE_DECODER = new TextDecoder("utf-16le");
 
 type TerminalProcess = {
   pid?: number;
@@ -56,11 +60,14 @@ type TerminalSessionManagerOptions = {
   repository: WorkspaceRepository;
   onSessionsUpdated: (input: { requestId: string; sessions: TerminalSession[]; preferences: TerminalPreferences; layout?: TerminalPaneLayout }) => void;
   onShellsUpdated: (input: { requestId: string; shells: TerminalShell[] }) => void;
+  onHistoryListed: (input: { requestId: string; scope: TerminalHistoryScope; sessions: TerminalSession[] }) => void;
   onSessionCreated: (input: { requestId: string; session: TerminalSession }) => void;
   onSessionUpdated: (input: { requestId: string; session: TerminalSession }) => void;
   onSessionExited: (input: { requestId: string; session: TerminalSession }) => void;
   onAttachReady: (input: { requestId: string; sessionId: string; attachToken: TerminalAttachToken; snapshot: string }) => void;
   onPreferencesSaved: (input: { requestId: string; preferences: TerminalPreferences; layout?: TerminalPaneLayout }) => void;
+  discoverShells?: () => Promise<TerminalShell[]>;
+  startProcess?: typeof startTerminalProcess;
 };
 
 export class TerminalSessionManager {
@@ -84,9 +91,21 @@ export class TerminalSessionManager {
   }
 
   async refreshShells(requestId: string) {
-    this.shells = await discoverTerminalShells();
+    this.shells = await this.discoverShells();
     this.options.onShellsUpdated({ requestId, shells: this.shells });
     this.emitSessionsUpdated(requestId);
+  }
+
+  listSessions(input: { requestId: string; projectId?: ProjectId }) {
+    this.emitSessionsUpdated(input.requestId, input.projectId);
+  }
+
+  listHistory(input: { requestId: string; scope: TerminalHistoryScope }) {
+    this.options.onHistoryListed({
+      requestId: input.requestId,
+      scope: input.scope,
+      sessions: this.getHistorySessions(input.scope)
+    });
   }
 
   async createSession(input: {
@@ -94,6 +113,7 @@ export class TerminalSessionManager {
     projectId: ProjectId;
     projectRoot: string;
     clientId: string;
+    source?: TerminalSessionSource;
     name?: string;
     shellId?: string;
     cwd?: string;
@@ -102,20 +122,26 @@ export class TerminalSessionManager {
     env?: TerminalEnvVar[];
   }) {
     if (this.shells.length === 0) {
-      this.shells = await discoverTerminalShells();
+      this.shells = await this.discoverShells();
     }
     const shell = this.resolveShell(input.shellId);
     const cwd = resolveTerminalCwd(input.projectRoot, input.cwd);
     const env = normalizeTerminalEnv(input.env);
     const transportInfo = getTerminalTransportInfo();
     const now = new Date().toISOString();
+    const source = input.source ?? { kind: "user" as const };
+    const inputMode = source.kind === "agent" ? "read-only" : "interactive";
     const session: TerminalSession = {
       id: createSessionId(),
       projectId: input.projectId,
+      source,
       name: input.name?.trim() || shell.label,
       shellId: shell.id,
       cwd,
       status: "starting",
+      inputMode,
+      inputOverride: false,
+      inputLockReason: inputMode === "read-only" ? "Agent-spawned terminal is read-only while its run is in progress." : undefined,
       cols: input.cols,
       rows: input.rows,
       transportMode: transportInfo.mode,
@@ -130,7 +156,7 @@ export class TerminalSessionManager {
     this.options.onSessionCreated({ requestId: input.requestId, session });
 
     try {
-      record.process = await startTerminalProcess({
+      record.process = await this.startProcess({
         cmd: resolveShellCommand(shell),
         cwd,
         cols: input.cols,
@@ -166,6 +192,29 @@ export class TerminalSessionManager {
     this.attachSession({ requestId: input.requestId, projectId: input.projectId, sessionId: session.id, clientId: input.clientId });
   }
 
+  setInputOverride(input: { requestId: string; projectId: ProjectId; sessionId: string; allowInput: boolean }) {
+    const record = this.requireOwnedSession(input.projectId, input.sessionId);
+    if (getTerminalSessionSource(record.session).kind !== "agent") {
+      record.session = {
+        ...record.session,
+        inputMode: "interactive",
+        inputOverride: false,
+        inputLockReason: undefined,
+        updatedAt: new Date().toISOString()
+      };
+    } else {
+      record.session = {
+        ...record.session,
+        inputMode: "read-only",
+        inputOverride: input.allowInput,
+        inputLockReason: input.allowInput ? undefined : "Agent-spawned terminal is read-only while its run is in progress.",
+        updatedAt: new Date().toISOString()
+      };
+    }
+    this.persistNow();
+    this.options.onSessionUpdated({ requestId: input.requestId, session: record.session });
+  }
+
   renameSession(input: { requestId: string; projectId: ProjectId; sessionId: string; name: string }) {
     const record = this.requireOwnedSession(input.projectId, input.sessionId);
     record.session = { ...record.session, name: input.name.trim(), updatedAt: new Date().toISOString() };
@@ -187,10 +236,17 @@ export class TerminalSessionManager {
     const record = this.requireOwnedSession(input.projectId, input.sessionId);
     await record.process?.stop();
     this.clearTransport(record);
-    this.sessions.delete(input.sessionId);
-    delete this.scrollbackBySessionId[input.sessionId];
+    const closedAt = new Date().toISOString();
+    record.process = undefined;
+    record.session = {
+      ...record.session,
+      status: record.session.status === "running" || record.session.status === "starting" ? "stopped" : record.session.status,
+      closedAt,
+      updatedAt: closedAt
+    };
     this.pruneLayoutSession(input.sessionId);
     this.persistNow();
+    this.options.onSessionUpdated({ requestId: input.requestId, session: record.session });
     this.emitSessionsUpdated(input.requestId);
   }
 
@@ -292,7 +348,11 @@ export class TerminalSessionManager {
 
   async writeToSession(sessionId: string, data: Uint8Array) {
     const record = this.requireSession(sessionId);
+    if (isTerminalInputLocked(record.session)) {
+      return false;
+    }
     await record.process?.write(data);
+    return true;
   }
 
   private handleChunk(sessionId: string, chunk: Uint8Array) {
@@ -300,7 +360,7 @@ export class TerminalSessionManager {
     if (!record) {
       return;
     }
-    const text = new TextDecoder().decode(chunk);
+    const text = decodeTerminalOutputChunk(chunk);
     this.scrollbackBySessionId[sessionId] = trimScrollback(`${this.scrollbackBySessionId[sessionId] ?? ""}${text}`, this.preferences.scrollbackLimit);
     record.session = { ...record.session, updatedAt: new Date().toISOString() };
     this.schedulePersist();
@@ -326,10 +386,12 @@ export class TerminalSessionManager {
       status: exitCode === 0 ? "exited" : "failed",
       exitCode,
       exitedAt: now,
+      closedAt: getTerminalSessionSource(record.session).kind === "agent" ? now : record.session.closedAt,
       updatedAt: now
     };
     this.persistNow();
     this.options.onSessionExited({ requestId: createRequestId(), session: record.session });
+    this.emitSessionsUpdated(createRequestId());
   }
 
   private sendFrame(record: SessionRecord, text: string) {
@@ -431,13 +493,36 @@ export class TerminalSessionManager {
     );
   }
 
-  private emitSessionsUpdated(requestId: string) {
+  private emitSessionsUpdated(requestId: string, projectId?: ProjectId) {
+    const sessions = [...this.sessions.values()]
+      .map((record) => record.session)
+      .filter((session) => !session.closedAt && (!projectId || session.projectId === projectId));
     this.options.onSessionsUpdated({
       requestId,
-      sessions: [...this.sessions.values()].map((record) => record.session),
+      sessions,
       preferences: this.preferences,
       layout: this.layout
     });
+  }
+
+  private getHistorySessions(scope: TerminalHistoryScope) {
+    return [...this.sessions.values()]
+      .map((record) => record.session)
+      .filter((session) => {
+        if (session.projectId !== scope.projectId) {
+          return false;
+        }
+        const source = getTerminalSessionSource(session);
+        if (scope.threadId && (source.kind !== "agent" || source.threadId !== scope.threadId)) {
+          return false;
+        }
+        if (scope.runId && (source.kind !== "agent" || source.runId !== scope.runId)) {
+          return false;
+        }
+        return true;
+      })
+      .sort((left, right) => right.startedAt.localeCompare(left.startedAt))
+      .slice(0, 256);
   }
 
   private schedulePersist() {
@@ -472,6 +557,22 @@ export class TerminalSessionManager {
       layout: this.layout
     } satisfies PersistedTerminalState);
   }
+
+  private discoverShells() {
+    return this.options.discoverShells?.() ?? discoverTerminalShells();
+  }
+
+  private startProcess(input: Parameters<typeof startTerminalProcess>[0]) {
+    return this.options.startProcess?.(input) ?? startTerminalProcess(input);
+  }
+}
+
+function getTerminalSessionSource(session: TerminalSession): TerminalSessionSource {
+  return session.source ?? { kind: "user" };
+}
+
+function isTerminalInputLocked(session: TerminalSession) {
+  return session.inputMode === "read-only" && session.inputOverride !== true;
 }
 
 function getTerminalTransportInfo(): { mode: TerminalTransportMode; warning?: string } {
@@ -654,6 +755,38 @@ function isStreamReaderCancelledError(error: unknown) {
   return error instanceof Error && error.name === "AbortError" && error.message.includes("releaseLock");
 }
 
+function decodeTerminalOutputChunk(chunk: Uint8Array) {
+  const decoded = looksLikeUtf16Le(chunk) ? TERMINAL_UTF16LE_DECODER.decode(chunk) : TERMINAL_UTF8_DECODER.decode(chunk);
+  return stripTerminalNullPadding(decoded);
+}
+
+function looksLikeUtf16Le(chunk: Uint8Array) {
+  if (chunk.byteLength < 4 || chunk.byteLength % 2 !== 0) {
+    return false;
+  }
+  let oddSlots = 0;
+  let oddZeros = 0;
+  let evenZeros = 0;
+  for (let index = 0; index < chunk.byteLength; index += 1) {
+    if (index % 2 === 1) {
+      oddSlots += 1;
+      if (chunk[index] === 0) {
+        oddZeros += 1;
+      }
+      continue;
+    }
+    if (chunk[index] === 0) {
+      evenZeros += 1;
+    }
+  }
+  return oddSlots > 0 && oddZeros / oddSlots >= 0.35 && oddZeros > evenZeros * 2;
+}
+
+function stripTerminalNullPadding(text: string) {
+  const nullCount = text.match(/\u0000/g)?.length ?? 0;
+  return nullCount > 0 && nullCount / text.length >= 0.2 ? text.replace(/\u0000/g, "") : text;
+}
+
 function trimScrollback(input: string, lineLimit: number) {
   if (input.length > MAX_SCROLLBACK_CHARS) {
     input = input.slice(-MAX_SCROLLBACK_CHARS);
@@ -664,5 +797,6 @@ function trimScrollback(input: string, lineLimit: number) {
 
 export const testExports = {
   consumePipe,
+  decodeTerminalOutputChunk,
   isStreamReaderCancelledError
 };

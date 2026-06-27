@@ -28,7 +28,7 @@ Roles: `user`, `developer`, `reviewer`.
 | NOTIFICATIONS | 3 |
 | BROWSER | 3 |
 | ACTIVATION | 7 |
-| UI | 23 |
+| UI | 24 |
 | PERSISTENCE | 15 |
 | PREFERENCES | 3 |
 | DEV | 26 |
@@ -346,6 +346,8 @@ US-UI-019: As a user, I see the live context usage meter sourced from server run
 US-UI-022: As a user, I open an IDE workbench with real project file navigation, read-only file previews, content search, Git status, editor tabs, command palette, resizable panes, terminal file-link handoff, status context, custom menus, themes, shortcut handling, notifications, and loading placeholders so that coding context can live beside harness execution.
 
 US-UI-023: As a user, I open a project-scoped terminal drawer with persistent integrated-terminal tabs, splits, scrollback, search, shell choice, and reconnectable live CLI sessions from chats and jobs so coding workflows stay in the harness. (integrated terminal)
+
+US-UI-024: As a user, I see agent-spawned terminals categorized separately, read them while a run is active, override input deliberately, and open terminal history from a project chat or run so terminal evidence stays tied to the work that created it. (README What It Is)
 
 ### PERSISTENCE
 

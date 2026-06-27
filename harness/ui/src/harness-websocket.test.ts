@@ -194,5 +194,19 @@ createUiTest("hasLocalServerPreferenceOverride", () => {
         { ...defaultPreferencesFixture, assistantAutoApproveNonBlockingQuestionsDefault: false }
       )
     ).toBe(false);
+
+    expect(
+      hasLocalServerPreferenceOverride(
+        { maxBackgroundJobsDefault: 25 },
+        { ...defaultPreferencesFixture, maxBackgroundJobsDefault: 10 }
+      )
+    ).toBe(true);
+
+    expect(
+      hasLocalServerPreferenceOverride(
+        { maxBackgroundJobsDefault: 10 },
+        { ...defaultPreferencesFixture, maxBackgroundJobsDefault: 10 }
+      )
+    ).toBe(false);
   });
 });

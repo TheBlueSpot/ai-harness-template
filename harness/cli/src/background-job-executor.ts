@@ -56,6 +56,7 @@ type BackgroundJobExecutorOptions = {
   debugEnabled: boolean;
   abortSignal?: AbortSignal;
   onRunUpdated?: (run: BackgroundJobRun) => void | Promise<void>;
+  onContextUsage?: (contextUsage: ProjectContextUsage) => void;
 };
 
 // Defense-in-depth bounds for shell job timeouts. The WS boundary schema in
@@ -565,7 +566,7 @@ async function executeShellJob(options: BackgroundJobExecutorOptions) {
 }
 
 function createBackgroundExecutionCallbacks(
-  options: Pick<BackgroundJobExecutorOptions, "repository" | "onRunUpdated" | "controllerLeaseId">,
+  options: Pick<BackgroundJobExecutorOptions, "repository" | "onRunUpdated" | "controllerLeaseId" | "onContextUsage">,
   projectId: string,
   backgroundRunId: string,
   agentRunId: string
@@ -576,6 +577,7 @@ function createBackgroundExecutionCallbacks(
       appendBackgroundJobRunEvent(options, backgroundRunId, trace.stage, trace.message, trace.detail);
     },
     onContextUsage(contextUsage: ProjectContextUsage) {
+      options.onContextUsage?.(contextUsage);
       appendBackgroundJobRunEvent(
         options,
         backgroundRunId,

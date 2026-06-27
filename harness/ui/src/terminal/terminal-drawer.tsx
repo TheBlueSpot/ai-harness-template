@@ -14,6 +14,10 @@ import { TerminalSplitLayout, createDefaultTerminalLayout } from "./terminal-spl
 import { TerminalSearch } from "./terminal-search";
 import { XtermRenderer, type XtermRendererHandle } from "./renderers/xterm-renderer";
 import { SolidTerminalRendererPrototype } from "./renderers/solid-renderer-prototype";
+import { normalizeTerminalGlyphSpacing } from "./terminal-output-format";
+import { shouldUseSolidTerminalRenderer } from "./terminal-renderer-mode";
+import { closeTerminalSearch, openTerminalSearch, toggleTerminalSearch } from "./terminal-search-actions";
+import { resolveTerminalKeyboardAction } from "./terminal-keybindings";
 
 type DrawerSession =
   | {
@@ -71,7 +75,8 @@ export function TerminalDrawer() {
       id: session.id,
       name: session.name,
       status: session.status,
-      renamable: session.kind === "terminal"
+      renamable: session.kind === "terminal" && session.session.source?.kind !== "agent",
+      category: session.kind === "cli" || session.session.source?.kind === "agent" ? "spawned" : "terminal"
     }))
   );
   const activeEntry = () =>
@@ -207,98 +212,140 @@ export function TerminalDrawer() {
     event.preventDefault();
     const startY = event.clientY;
     const startHeight = terminalStore.state.height;
+    let nextHeight = startHeight;
+    let animationFrame: number | undefined;
+    const applyHeight = () => {
+      animationFrame = undefined;
+      terminalStore.setHeight(nextHeight);
+    };
     const onPointerMove = (moveEvent: PointerEvent) => {
-      terminalStore.setHeight(startHeight - (moveEvent.clientY - startY));
+      nextHeight = startHeight - (moveEvent.clientY - startY);
+      if (animationFrame === undefined) {
+        animationFrame = window.requestAnimationFrame(applyHeight);
+      }
     };
     const onPointerUp = () => {
       window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("pointerup", onPointerUp);
+      if (animationFrame !== undefined) {
+        window.cancelAnimationFrame(animationFrame);
+      }
+      terminalStore.setHeight(nextHeight);
     };
     window.addEventListener("pointermove", onPointerMove);
     window.addEventListener("pointerup", onPointerUp, { once: true });
+  };
+
+  const copyActiveBuffer = () => {
+    const entry = activeEntry();
+    if (entry?.kind === "terminal") {
+      void navigator.clipboard?.writeText(terminalStore.state.outputBySessionId[entry.id] ?? "");
+      return;
+    }
+    if (entry?.kind === "cli") {
+      const terminal = harnessStore.state.cliSessionTerminal[entry.id];
+      void navigator.clipboard?.writeText(`${terminal?.stdout ?? ""}${terminal?.stderr ?? ""}`);
+    }
+  };
+
+  const handleDrawerKeyDown = (event: KeyboardEvent) => {
+    if (event.key === "Escape" && terminalStore.state.searchOpen) {
+      event.preventDefault();
+      event.stopPropagation();
+      closeTerminalSearch();
+      return;
+    }
+    if (resolveTerminalKeyboardAction(event) === "toggle-search") {
+      event.preventDefault();
+      event.stopPropagation();
+      toggleTerminalSearch();
+    }
   };
 
   return (
     <>
       <section
         data-test-terminal-drawer=""
-        class="fixed inset-x-0 bottom-0 z-40 flex min-h-0 flex-col border-t border-(--border) bg-(--panel) shadow-2xl transition-transform"
+        class="terminal-drawer-shell fixed inset-x-0 bottom-0 z-40 flex min-h-0 flex-col border-t border-(--terminal-border) bg-(--terminal-shell) text-(--terminal-foreground) shadow-2xl transition-transform"
         classList={{ "translate-y-full": !terminalStore.state.open }}
         style={{ height: `${terminalStore.state.height}px` }}
+        onKeyDown={handleDrawerKeyDown}
       >
         <button
           type="button"
-          class="h-2 cursor-row-resize border-b border-(--border) bg-transparent transition hover:bg-(--panel-strong)"
+          class="h-2 cursor-row-resize border-b border-(--terminal-border) bg-transparent transition hover:bg-(--terminal-hover)"
           aria-label="Resize terminal drawer"
           onPointerDown={startResize}
         />
-        <header class="flex h-11 shrink-0 items-center gap-2 border-b border-(--border) px-3">
-          <TerminalSquare class="h-4 w-4 shrink-0 text-(--muted)" />
-          <TerminalTabs
-            sessions={tabItems()}
-            activeSessionId={activeEntry()?.id}
-            onCreate={createSession}
-            onSelect={terminalStore.focusSession}
-            onRename={(sessionId, name) => {
-              const session = projectTerminalSessions().find((entry) => entry.id === sessionId);
-              if (!session) {
-                return;
-              }
-              harnessStore.actions.sendCommand({
-                type: "terminal.session.rename",
-                requestId: createRequestId(),
-                payload: {
-                  projectId: session.projectId,
-                  sessionId,
-                  name
-                }
-              });
-            }}
-            onClose={closeEntry}
-          />
-          <div class="flex shrink-0 items-center gap-1">
-            <DropdownControl
-              kind="select"
-              icon={<TerminalSquare class="h-3.5 w-3.5" />}
-              ariaLabel="Select terminal shell"
-              value={shellId() || terminalStore.state.preferences.defaultShellId || ""}
-              options={terminalStore.state.shells.map((shell) => ({
-                value: shell.id,
-                label: shell.label,
-                description: shell.available ? shell.executableLabel : "Unavailable",
-                disabled: !shell.available
-              }))}
-              onChange={(value) => setShellId(value)}
-              class="w-40"
-            />
-            <ActionButton tooltip="New terminal" ariaLabel="New terminal" variant="secondary" size="icon" class="h-8 w-8 rounded-lg" icon={<Plus class="h-4 w-4" />} onClick={createSession} />
-            <ActionButton tooltip="Terminal preferences" ariaLabel="Terminal preferences" variant="ghost" size="icon" class="h-8 w-8 rounded-lg" icon={<Settings2 class="h-4 w-4" />} onClick={() => setSettingsOpen(true)} />
-            <ActionButton tooltip="Copy terminal buffer" ariaLabel="Copy terminal buffer" variant="ghost" size="icon" class="h-8 w-8 rounded-lg" icon={<Copy class="h-4 w-4" />} onClick={() => {
-              const entry = activeEntry();
-              if (entry?.kind === "terminal") {
-                void navigator.clipboard?.writeText(terminalStore.state.outputBySessionId[entry.id] ?? "");
-              } else if (entry?.kind === "cli") {
-                const terminal = harnessStore.state.cliSessionTerminal[entry.id];
-                void navigator.clipboard?.writeText(`${terminal?.stdout ?? ""}${terminal?.stderr ?? ""}`);
-              }
-            }} />
-            <ActionButton tooltip="Close terminal drawer" ariaLabel="Close terminal drawer" variant="ghost" size="icon" class="h-8 w-8 rounded-lg" icon={<ChevronDown class="h-4 w-4" />} onClick={() => terminalStore.setOpen(false)} />
-          </div>
-        </header>
-        <div class="min-h-0 flex-1 p-1">
-          <Switch fallback={<div class="flex h-full items-center justify-center text-xs text-(--muted)">No terminal session.</div>}>
-            <Match when={activeEntry()?.kind === "cli" ? activeEntry() : undefined}>
-              {(entry) => (
-                <CliSessionDrawerPane
-                  session={(entry() as Extract<DrawerSession, { kind: "cli" }>).session}
-                  name={entry().name}
-                />
-              )}
-            </Match>
-            <Match when={activeEntry()?.kind === "terminal"}>
-              <TerminalSplitLayout sessions={projectTerminalSessions()} />
-            </Match>
-          </Switch>
+        <div class="flex min-h-0 flex-1">
+          <aside class="flex w-48 shrink-0 flex-col border-r border-(--terminal-border) bg-(--terminal-sidebar) sm:w-60">
+            <header class="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-(--terminal-border) px-3">
+              <div class="min-w-0">
+                <div class="text-[0.56rem] font-semibold uppercase tracking-[0.18em] text-(--terminal-muted)">Sessions</div>
+                <div class="truncate text-[0.82rem] font-semibold text-(--terminal-foreground)">Terminal</div>
+              </div>
+              <ActionButton tooltip="New terminal" ariaLabel="New terminal" variant="secondary" size="icon" class="h-8 w-8 rounded-lg border-(--terminal-border) bg-(--terminal-hover) text-(--terminal-foreground) hover:bg-(--terminal-selection)" icon={<Plus class="h-4 w-4" />} onClick={createSession} />
+            </header>
+            <div class="min-h-0 flex-1 overflow-auto px-2 py-2">
+              <TerminalTabs
+                sessions={tabItems()}
+                activeSessionId={activeEntry()?.id}
+                onSelect={terminalStore.focusSession}
+                onRename={(sessionId, name) => {
+                  const session = projectTerminalSessions().find((entry) => entry.id === sessionId);
+                  if (!session) {
+                    return;
+                  }
+                  harnessStore.actions.sendCommand({
+                    type: "terminal.session.rename",
+                    requestId: createRequestId(),
+                    payload: {
+                      projectId: session.projectId,
+                      sessionId,
+                      name
+                    }
+                  });
+                }}
+                onClose={closeEntry}
+              />
+            </div>
+            <footer class="grid shrink-0 gap-2 border-t border-(--terminal-border) p-2">
+              <DropdownControl
+                kind="select"
+                icon={<TerminalSquare class="h-3.5 w-3.5" />}
+                ariaLabel="Select terminal shell"
+                value={shellId() || terminalStore.state.preferences.defaultShellId || ""}
+                options={terminalStore.state.shells.map((shell) => ({
+                  value: shell.id,
+                  label: shell.label,
+                  description: shell.available ? shell.executableLabel : "Unavailable",
+                  disabled: !shell.available
+                }))}
+                onChange={(value) => setShellId(value)}
+                class="w-full"
+              />
+              <div class="flex items-center gap-1">
+                <ActionButton tooltip="Terminal preferences" ariaLabel="Terminal preferences" variant="ghost" size="icon" class="h-8 w-8 rounded-lg text-(--terminal-muted) hover:bg-(--terminal-hover) hover:text-(--terminal-foreground)" icon={<Settings2 class="h-4 w-4" />} onClick={() => setSettingsOpen(true)} />
+                <ActionButton tooltip="Copy terminal buffer" ariaLabel="Copy terminal buffer" variant="ghost" size="icon" class="h-8 w-8 rounded-lg text-(--terminal-muted) hover:bg-(--terminal-hover) hover:text-(--terminal-foreground)" icon={<Copy class="h-4 w-4" />} onClick={copyActiveBuffer} />
+                <ActionButton tooltip="Close terminal drawer" ariaLabel="Close terminal drawer" variant="ghost" size="icon" class="ml-auto h-8 w-8 rounded-lg text-(--terminal-muted) hover:bg-(--terminal-hover) hover:text-(--terminal-foreground)" icon={<ChevronDown class="h-4 w-4" />} onClick={() => terminalStore.setOpen(false)} />
+              </div>
+            </footer>
+          </aside>
+          <main class="flex min-h-0 min-w-0 flex-1 flex-col bg-(--terminal-shell) p-1.5">
+            <Switch fallback={<EmptyTerminalState onCreate={createSession} />}>
+              <Match when={activeEntry()?.kind === "cli" ? activeEntry() : undefined}>
+                {(entry) => (
+                  <CliSessionDrawerPane
+                    session={(entry() as Extract<DrawerSession, { kind: "cli" }>).session}
+                    name={entry().name}
+                  />
+                )}
+              </Match>
+              <Match when={activeEntry()?.kind === "terminal"}>
+                <TerminalSplitLayout sessions={projectTerminalSessions()} />
+              </Match>
+            </Switch>
+          </main>
         </div>
       </section>
       <Dialog
@@ -343,11 +390,28 @@ export function TerminalDrawer() {
   );
 }
 
+function EmptyTerminalState(props: { onCreate: () => void }) {
+  return (
+    <div class="flex h-full min-h-0 items-center justify-center border border-(--terminal-border) bg-(--terminal-shell)">
+      <div class="flex max-w-sm flex-col items-center gap-4 text-center">
+        <Plus class="h-12 w-12 text-(--terminal-muted)" strokeWidth={1.5} />
+        <ActionButton tooltip="Create a new terminal session" ariaLabel="New terminal session" variant="secondary" class="h-9 rounded-md border-(--terminal-border) bg-(--terminal-hover) px-4 text-sm text-(--terminal-foreground) hover:bg-(--terminal-selection)" icon={<Plus class="h-4 w-4" />} onClick={props.onCreate}>
+          New Terminal Session
+        </ActionButton>
+        <p class="max-w-xs text-sm leading-6 text-(--terminal-muted)">
+          No active terminals. Click to create a new session or choose one from the sidebar.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function CliSessionDrawerPane(props: { session: CliSession; name: string }) {
   const [renderer, setRenderer] = createSignal<XtermRendererHandle>();
   const activeProject = () => getActiveProject(harnessStore.state);
   const terminalState = () => harnessStore.state.cliSessionTerminal[props.session.id];
-  const output = () => `${terminalState()?.stdout ?? ""}${terminalState()?.stderr ?? ""}`;
+  const output = () => normalizeTerminalGlyphSpacing(`${terminalState()?.stdout ?? ""}${terminalState()?.stderr ?? ""}`);
+  const connectionState = () => (terminalState()?.connected ? "attached" : "detached");
 
   const stopSession = () => {
     harnessStore.actions.sendCommand({
@@ -392,12 +456,17 @@ function CliSessionDrawerPane(props: { session: CliSession; name: string }) {
   };
 
   return (
-    <section class="flex h-full min-h-0 min-w-0 flex-1 flex-col border border-(--border) bg-(--panel)" data-test-cli-terminal-pane={props.session.id}>
-      <div class="flex h-9 shrink-0 items-center justify-between gap-2 border-b border-(--border) px-2">
-        <div class="flex min-w-0 items-center gap-2 text-[0.68rem] text-(--muted)">
-          <span class="truncate font-semibold text-(--foreground)">{props.name}</span>
-          <span>{terminalState()?.connected ? "attached" : "detached"}</span>
-          <span>{props.session.cols}x{props.session.rows}</span>
+    <section class="flex h-full min-h-0 min-w-0 flex-1 flex-col border border-(--terminal-border) bg-(--terminal-shell)" data-test-cli-terminal-pane={props.session.id}>
+      <div class="flex min-h-11 shrink-0 items-center justify-between gap-2 border-b border-(--terminal-border) px-3 py-1.5">
+        <div class="min-w-0">
+          <div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[0.72rem] leading-4 text-(--terminal-muted)">
+            <span class="truncate font-semibold text-(--terminal-foreground)">{props.name}</span>
+            <span>{"\u2022"}</span>
+            <span>{connectionState()}</span>
+            <span>{"\u2022"}</span>
+            <span>{props.session.cols}x{props.session.rows}</span>
+          </div>
+          <div class="text-[0.62rem] leading-4 text-(--terminal-muted)">Spawned agent/CLI-created session</div>
         </div>
         <div class="flex shrink-0 items-center gap-1">
           {terminalStore.state.searchOpen && (
@@ -406,15 +475,15 @@ function CliSessionDrawerPane(props: { session: CliSession; name: string }) {
               onPrevious={() => renderer()?.findPrevious(terminalStore.state.searchQuery)}
             />
           )}
-          <ActionButton tooltip="Search terminal" ariaLabel="Search terminal" variant="ghost" size="icon" class="h-7 w-7 rounded-lg" icon={<Search class="h-3.5 w-3.5" />} onClick={() => terminalStore.setSearch(true)} />
-          <ActionButton tooltip="Reconnect CLI terminal" ariaLabel="Reconnect CLI terminal" variant="ghost" size="icon" class="h-7 w-7 rounded-lg" icon={<RotateCw class="h-3.5 w-3.5" />} onClick={attachSession} />
-          <ActionButton tooltip="Capture current terminal state for follow-up" ariaLabel="Capture CLI terminal state" variant="ghost" size="icon" class="h-7 w-7 rounded-lg" icon={<ClipboardCheck class="h-3.5 w-3.5" />} onClick={captureVisibleState} />
-          <ActionButton tooltip="Stop CLI terminal" ariaLabel="Stop CLI terminal" variant="ghost" size="icon" class="h-7 w-7 rounded-lg" icon={<Square class="h-3.5 w-3.5" />} onClick={stopSession} />
+          <ActionButton tooltip="Search terminal" ariaLabel="Search terminal" variant="ghost" size="icon" class="h-7 w-7 rounded-lg text-(--terminal-muted) hover:bg-(--terminal-hover) hover:text-(--terminal-foreground)" icon={<Search class="h-3.5 w-3.5" />} onClick={openTerminalSearch} />
+          <ActionButton tooltip="Reconnect CLI terminal" ariaLabel="Reconnect CLI terminal" variant="ghost" size="icon" class="h-7 w-7 rounded-lg text-(--terminal-muted) hover:bg-(--terminal-hover) hover:text-(--terminal-foreground)" icon={<RotateCw class="h-3.5 w-3.5" />} onClick={attachSession} />
+          <ActionButton tooltip="Capture current terminal state for follow-up" ariaLabel="Capture CLI terminal state" variant="ghost" size="icon" class="h-7 w-7 rounded-lg text-(--terminal-muted) hover:bg-(--terminal-hover) hover:text-(--terminal-foreground)" icon={<ClipboardCheck class="h-3.5 w-3.5" />} onClick={captureVisibleState} />
+          <ActionButton tooltip="Stop CLI terminal" ariaLabel="Stop CLI terminal" variant="ghost" size="icon" class="h-7 w-7 rounded-lg text-(--terminal-muted) hover:bg-(--terminal-hover) hover:text-(--terminal-foreground)" icon={<Square class="h-3.5 w-3.5" />} onClick={stopSession} />
         </div>
       </div>
-      <div class="min-h-0 flex-1 bg-(--panel-strong)">
-        {terminalStore.state.preferences.rendererMode === "solid-prototype" ? (
-          <SolidTerminalRendererPrototype output={output()} />
+      <div class="min-h-0 flex-1 bg-(--terminal-shell)">
+        {shouldUseSolidTerminalRenderer(terminalStore.state.preferences.rendererMode) ? (
+          <SolidTerminalRendererPrototype output={output()} onInput={(input) => sendCliSessionInput(props.session.id, input)} />
         ) : (
           <XtermRenderer
             sessionId={props.session.id}

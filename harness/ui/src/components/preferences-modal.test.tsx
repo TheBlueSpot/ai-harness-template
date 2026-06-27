@@ -9,6 +9,7 @@ import { captureDispatchedCommands, clearBrowserStateForTests, seedHarnessStoreF
 import { createHarnessStateFixture, createViewProjectFixture } from "../utils/tests/test-fixtures";
 import { clearCurrentTabItemSelectorsForTests, selectCurrentTabItem } from "../lib/current-tab-item-hotkeys";
 import { CUSTOM_THEME_FONT_OPTIONS, createDefaultCustomTheme } from "../theme/theme-model";
+import { terminalStore } from "../terminal/terminal-store";
 import type { BackgroundJob } from "../../../shared/protocol";
 
 createUiTest("PreferencesModal", () => {
@@ -361,6 +362,28 @@ createUiTest("PreferencesModal", () => {
     expect(readLocalPreferences().assistantAutoApproveNonBlockingQuestionsDefault).toBe(false);
   });
 
+  it("autosaves max background jobs preference", async () => {
+    const commands: unknown[] = [];
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        preferencesModalOpen: true,
+        preferencesActiveSectionId: "background-jobs",
+        maxBackgroundJobsDefault: 10
+      })
+    );
+    captureDispatchedCommands(commands as never[]);
+
+    renderPreferencesWithSideNav();
+    fireEvent.click(screen.getByRole("button", { name: /Background Jobs/i }));
+    const slider = (await screen.findByLabelText("Max background jobs")) as HTMLInputElement;
+    fireEvent.input(slider, { target: { value: "25" } });
+
+    expect(commands).toHaveLength(1);
+    expect((commands[0] as { type: string }).type).toBe("preferences.save");
+    expect((commands[0] as { payload: { maxBackgroundJobsDefault: number } }).payload.maxBackgroundJobsDefault).toBe(25);
+    expect(readLocalPreferences().maxBackgroundJobsDefault).toBe(25);
+  });
+
   it("does not render a save preferences button", () => {
     seedHarnessStoreForTests(
       createHarnessStateFixture({
@@ -454,6 +477,43 @@ createUiTest("PreferencesModal", () => {
     fireEvent.click(screen.getByRole("button", { name: "Reset custom theme" }));
     expect(readLocalPreferences().themePreference?.custom?.light).toBeUndefined();
     expect(commands).toHaveLength(0);
+  });
+
+  it("saves terminal renderer and numeric alignment display settings", async () => {
+    const commands: unknown[] = [];
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        preferencesModalOpen: true,
+        preferencesActiveSectionId: "general-ui",
+        numericRightAlignmentEnabled: true
+      })
+    );
+    terminalStore.resetForTests({
+      preferences: {
+        scrollbackLimit: 10000,
+        copyOnSelect: false,
+        ctrlCMode: "auto",
+        rendererMode: "xterm-webgl"
+      }
+    });
+
+    captureDispatchedCommands(commands as never[]);
+    renderPreferencesWithSideNav();
+    fireEvent.click(screen.getByRole("button", { name: /General & UI/i }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Solid" }));
+    const terminalPreferenceCommand = commands.find((command) =>
+      typeof command === "object" && command !== null && "type" in command && command.type === "terminal.preferences.save"
+    ) as { payload: { preferences: { rendererMode: string } } } | undefined;
+    expect(terminalPreferenceCommand?.payload.preferences.rendererMode).toBe("solid-prototype");
+    expect(terminalStore.state.preferences.rendererMode).toBe("solid-prototype");
+
+    const numericToggle = screen.getByLabelText("Right-align numbers") as HTMLInputElement;
+    expect(numericToggle.checked).toBe(true);
+    fireEvent.click(numericToggle);
+
+    expect(readLocalPreferences().numericRightAlignmentEnabled).toBe(false);
+    expect(harnessStore.state.numericRightAlignmentEnabled).toBe(false);
   });
 
   it("autosaves preferences without API keys", () => {

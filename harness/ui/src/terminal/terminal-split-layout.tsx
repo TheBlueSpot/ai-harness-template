@@ -17,6 +17,7 @@ export function TerminalSplitLayout(props: { sessions: TerminalSession[] }) {
     props.sessions.find((session) => session.id === terminalStore.state.focusedSessionId) ?? props.sessions[0];
 
   const saveLayout = (layout: TerminalPaneLayout) => {
+    terminalStore.setLayout(layout);
     harnessStore.actions.sendCommand({
       type: "terminal.preferences.save",
       requestId: createRequestId(),
@@ -25,14 +26,6 @@ export function TerminalSplitLayout(props: { sessions: TerminalSession[] }) {
         layout
       }
     });
-  };
-
-  const updateRootSplitSizes = (sizes: [number, number]) => {
-    const currentLayout = layout();
-    if (!currentLayout || currentLayout.type !== "split") {
-      return;
-    }
-    saveLayout({ ...currentLayout, sizes });
   };
 
   const startSplitResize = (event: PointerEvent) => {
@@ -50,15 +43,32 @@ export function TerminalSplitLayout(props: { sessions: TerminalSession[] }) {
     const startY = event.clientY;
     const rect = container.getBoundingClientRect();
     const axisSize = currentLayout.direction === "horizontal" ? rect.height : rect.width;
+    let nextSizes: [number, number] = [startSizes[0], startSizes[1]];
+    let didMove = false;
+    let animationFrame: number | undefined;
+    const applyPreview = () => {
+      animationFrame = undefined;
+      terminalStore.setLayout({ ...currentLayout, sizes: nextSizes });
+    };
     const onPointerMove = (moveEvent: PointerEvent) => {
       const delta = currentLayout.direction === "horizontal" ? moveEvent.clientY - startY : moveEvent.clientX - startX;
       const deltaPercent = axisSize > 0 ? (delta / axisSize) * 100 : 0;
       const first = Math.max(20, Math.min(80, startSizes[0] + deltaPercent));
-      updateRootSplitSizes([first, 100 - first]);
+      nextSizes = [first, 100 - first];
+      didMove = true;
+      if (animationFrame === undefined) {
+        animationFrame = window.requestAnimationFrame(applyPreview);
+      }
     };
     const onPointerUp = () => {
       window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("pointerup", onPointerUp);
+      if (animationFrame !== undefined) {
+        window.cancelAnimationFrame(animationFrame);
+      }
+      if (didMove) {
+        saveLayout({ ...currentLayout, sizes: nextSizes });
+      }
     };
     window.addEventListener("pointermove", onPointerMove);
     window.addEventListener("pointerup", onPointerUp, { once: true });
@@ -112,7 +122,7 @@ export function TerminalSplitLayout(props: { sessions: TerminalSession[] }) {
   };
 
   return (
-    <Show when={activeSession()} fallback={<div class="flex h-full items-center justify-center text-xs text-(--muted)">No terminal session.</div>}>
+    <Show when={activeSession()} fallback={<div class="flex h-full items-center justify-center text-xs text-(--terminal-muted)">No terminal session.</div>}>
       {(session) => (
         <Show when={splitSessions().length > 1} fallback={renderLeaf(session())}>
           <div class={layoutDirection() === "horizontal" ? "flex h-full min-h-0 flex-col" : "flex h-full min-w-0"}>
@@ -126,8 +136,8 @@ export function TerminalSplitLayout(props: { sessions: TerminalSession[] }) {
                       aria-label="Resize terminal split"
                       class={
                         layoutDirection() === "horizontal"
-                          ? "h-1 shrink-0 cursor-row-resize bg-transparent hover:bg-(--accent)"
-                          : "w-1 shrink-0 cursor-col-resize bg-transparent hover:bg-(--accent)"
+                          ? "h-1 shrink-0 cursor-row-resize bg-(--terminal-border) hover:bg-(--accent)"
+                          : "w-1 shrink-0 cursor-col-resize bg-(--terminal-border) hover:bg-(--accent)"
                       }
                       onPointerDown={startSplitResize}
                     />

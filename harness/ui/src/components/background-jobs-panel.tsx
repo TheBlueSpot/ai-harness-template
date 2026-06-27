@@ -35,8 +35,10 @@ import {
   type LeftPaneSearchMenuItem
 } from "./primitives/left-pane";
 import { ScrollArea } from "./primitives/scroll-area";
+import { StatusChip, type StatusChipTone } from "./primitives/status-chip";
 import { Tooltip } from "./primitives/tooltip";
 import { VirtualList } from "./primitives/virtual-list";
+import { rightAlignedNumbersEnabled } from "../lib/visual-flags";
 import {
   Bell,
   BellOff,
@@ -493,6 +495,13 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
     persistCurrentLocalPreferences(true);
   }
 
+  function retryScheduler() {
+    sendCommand({
+      type: "background-job.scheduler.retry",
+      requestId: createRequestId()
+    });
+  }
+
   function persistCurrentLocalPreferences(backgroundJobNotificationsEnabled: boolean) {
     persistMergedLocalPreferences({
       openAiApiKey: state.openAiApiKeyDraft.trim() || undefined,
@@ -511,6 +520,7 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
       assistantAutoApproveNonBlockingQuestionsDefault: state.assistantAutoApproveNonBlockingQuestionsDefault,
       assistantCongestionControlEnabledDefault: state.assistantCongestionControlEnabledDefault,
       assistantMaxCongestionDefault: state.assistantMaxCongestionDefault,
+      maxBackgroundJobsDefault: state.maxBackgroundJobsDefault,
       backgroundJobNotificationsEnabled
     });
   }
@@ -559,7 +569,7 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
           <Show when={formatSchedulerHeartbeatWarning(state.backgroundJobs.schedulerHeartbeatAt)}>
             {(warning) => (
               <div class="mt-3 rounded-[0.9rem] border border-amber-300/70 bg-amber-50 px-3 py-2 text-[0.675rem] leading-5 text-amber-900">
-                {warning()}
+                <SchedulerWarningContent text={warning()} onRetryScheduler={retryScheduler} />
               </div>
             )}
           </Show>
@@ -649,15 +659,11 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                 >
                   {(job) => (
                     <article
-                      class="min-w-0 cursor-pointer rounded-[0.8rem] border border-l-4 p-3 shadow-sm transition hover:border-(--accent-strong)"
+                      class="dense-action-parent dense-card min-w-0 cursor-pointer border-l-4 p-3 transition hover:border-(--accent-strong)"
                       classList={{
-                        "border-(--accent)": selectedJob()?.id === job.id,
-                        "border-l-(--accent-strong)": selectedJob()?.id === job.id,
-                        "theme-selected-surface": selectedJob()?.id === job.id,
-                        "border-(--border)": selectedJob()?.id !== job.id,
+                        "dense-card-selected": selectedJob()?.id === job.id,
                         "border-l-emerald-500": selectedJob()?.id !== job.id && job.status === "enabled",
-                        "border-l-slate-300": selectedJob()?.id !== job.id && job.status !== "enabled",
-                        "bg-white/70": selectedJob()?.id !== job.id
+                        "border-l-slate-300": selectedJob()?.id !== job.id && job.status !== "enabled"
                       }}
                       onClick={() => openJobDetails(job)}
                     >
@@ -665,11 +671,11 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                         <button type="button" class="min-w-0 flex-1 text-left cursor-pointer" aria-label={`Select ${job.name}`} onClick={() => openJobDetails(job)}>
                           <span class="break-words text-[0.75rem] font-semibold text-(--foreground) [overflow-wrap:anywhere]">{job.name}</span>
                         </button>
-                        <span class={`shrink-0 rounded-full px-2 py-0.5 text-[0.55rem] font-semibold uppercase tracking-[0.12em] ${jobStatusBadgeClass(job.status)}`}>
+                        <StatusChip tone={jobStatusTone(job.status)} class="shrink-0">
                           {job.status}
-                        </span>
+                        </StatusChip>
                       </div>
-                      <div class="flex gap-0.25">
+                      <div class="dense-secondary-actions flex gap-0.25">
                         <Show when={job.assistantId}>
                           {(assistantId) => (
                             <ActionButton
@@ -691,14 +697,24 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                         <ActionButton tooltip="Delete task" icon={<Trash2 class="h-3 w-3" />} size="icon" variant="ghost" ariaLabel={`Delete ${job.name}`} onClick={(event) => { event.stopPropagation(); sendCommand({ type: "background-job.delete", requestId: createRequestId(), payload: { projectId: job.projectId, jobId: job.id } }); }} />
                       </div>
                       <div class="mt-3 break-words text-[0.675rem] leading-5 text-(--muted) [overflow-wrap:anywhere]">
-                        <div class="mt-1 text-[0.625rem] uppercase tracking-[0.14em] text-(--muted)">{job.kind} | {job.riskLevel} | {job.lane ?? "exclusive"}</div>
+                        <div class="mt-1 flex flex-wrap gap-1">
+                          <StatusChip tone={jobKindTone(job.kind)}>{job.kind}</StatusChip>
+                          <StatusChip tone={riskTone(job.riskLevel)}>{job.riskLevel}</StatusChip>
+                          <StatusChip tone="neutral">{job.lane ?? "exclusive"}</StatusChip>
+                        </div>
                         <div>
                           <FileLinkedText text={job.description ?? job.scheduleInput} fileLinks={getBackgroundRunFileLinks(job.projectId)} />
                         </div>
-                        <div class="mt-1">Next: {formatJobNextRun(job, state.backgroundJobs.runs, state.backgroundJobs.schedulerHeartbeatAt)}</div>
+                        <div class="mt-1">
+                          Next: <NextRunContent text={formatJobNextRun(job, state.backgroundJobs.runs, state.backgroundJobs.schedulerHeartbeatAt)} onRetryScheduler={retryScheduler} />
+                        </div>
                         <Show when={formatFailureTrackingLine(job)}>{(line) => <div><FileLinkedText text={line()} fileLinks={getBackgroundRunFileLinks(job.projectId)} /></div>}</Show>
                         <For each={formatJobSchedulerLines(job, state.backgroundJobs.runs, state.backgroundJobs.schedulerHeartbeatAt)}>
-                          {(line) => <div><FileLinkedText text={line} fileLinks={getBackgroundRunFileLinks(job.projectId)} /></div>}
+                          {(line) => (
+                            <div>
+                              <SchedulerWarningContent text={line} fileLinks={getBackgroundRunFileLinks(job.projectId)} onRetryScheduler={retryScheduler} />
+                            </div>
+                          )}
                         </For>
                         <div>Project: {state.workspace.projects.find((project) => project.id === job.projectId)?.name ?? job.projectId}</div>
                         <div>Owner: {formatJobOwner(job, state)}</div>
@@ -741,6 +757,7 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                 onStopRun={(run) => sendCommand({ type: "background-job.stop-run", requestId: createRequestId(), payload: { projectId: run.projectId, runId: run.id } })}
                 onEdit={handleEditJob}
                 onOpenAssistant={openAssistantDetails}
+                onRetryScheduler={retryScheduler}
                 schedulerHeartbeatAt={state.backgroundJobs.schedulerHeartbeatAt}
               />
             </Show>
@@ -752,9 +769,9 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                       <div class="min-w-0">
                         <div class="flex flex-wrap items-center gap-2">
                           <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Run detail</div>
-                          <span class={`rounded-full px-2 py-0.5 text-[0.55rem] font-semibold uppercase tracking-[0.12em] ${runStatusBadgeClass(run().status)}`}>
+                          <StatusChip tone={runStatusTone(run().status)}>
                             {run().status}
-                          </span>
+                          </StatusChip>
                         </div>
                         <h2 class="mt-1 break-words text-[1.2rem] font-semibold text-(--foreground) [overflow-wrap:anywhere]">{selectedRunItem() ? formatRunListItemTitle(selectedRunItem()!) : selectedJob()?.name}</h2>
                         <div class="mt-3 grid gap-x-5 gap-y-1 border-l-2 border-(--border) pl-4 text-[0.675rem] leading-5 text-(--muted) sm:grid-cols-2 xl:grid-cols-3">
@@ -920,6 +937,39 @@ function RunFact(props: { label: string; children: JSX.Element }) {
   );
 }
 
+const SCHEDULER_HEARTBEAT_WARNING_PREFIX = "Stale: scheduler has not checked since";
+
+function NextRunContent(props: { text: string; onRetryScheduler: () => void }) {
+  return (
+    <Show when={props.text.startsWith(SCHEDULER_HEARTBEAT_WARNING_PREFIX)} fallback={props.text}>
+      <SchedulerWarningContent text={props.text} onRetryScheduler={props.onRetryScheduler} />
+    </Show>
+  );
+}
+
+function SchedulerWarningContent(props: { text: string; fileLinks?: FileLinkConfig; onRetryScheduler: () => void }) {
+  return (
+    <span class="inline-flex min-w-0 flex-wrap items-center gap-2 align-baseline">
+      <FileLinkedText text={props.text} fileLinks={props.fileLinks} class="min-w-0 break-words [overflow-wrap:anywhere]" />
+      <Show when={props.text.startsWith(SCHEDULER_HEARTBEAT_WARNING_PREFIX)}>
+        <ActionButton
+          tooltip="Ask scheduler to check for due background jobs now"
+          ariaLabel="Retry scheduler"
+          size="sm"
+          variant="secondary"
+          icon={<RefreshCcw class="h-3.5 w-3.5" />}
+          onClick={(event) => {
+            event.stopPropagation();
+            props.onRetryScheduler();
+          }}
+        >
+          Retry scheduler
+        </ActionButton>
+      </Show>
+    </span>
+  );
+}
+
 function RunListButton(props: {
   item: RunListItem;
   selectedRunId?: string;
@@ -941,14 +991,10 @@ function RunListButton(props: {
   };
   return (
     <div
-      class="min-w-0 w-full cursor-pointer rounded-[0.8rem] border border-l-4 p-3 text-left shadow-sm transition hover:border-(--accent-strong)"
+      class="dense-card min-w-0 w-full cursor-pointer border-l-4 p-3 text-left transition hover:border-(--accent-strong)"
       classList={{
-        "border-(--accent)": selected(),
-        "border-l-(--accent-strong)": selected(),
-        "theme-selected-surface": selected(),
-        "border-(--border)": !selected(),
+        "dense-card-selected": selected(),
         [runListItemBorderClass(props.item)]: !selected(),
-        "bg-white/70": !selected()
       }}
       role="button"
       tabIndex={0}
@@ -957,9 +1003,9 @@ function RunListButton(props: {
     >
       <div class="flex min-w-0 items-center justify-between gap-3">
         <div class="min-w-0 truncate text-[0.725rem] font-semibold text-(--foreground)">{formatRunListItemTitle(props.item)}</div>
-        <div class={`shrink-0 rounded-full px-2 py-0.5 text-[0.55rem] font-semibold uppercase tracking-[0.12em] ${runListItemBadgeClass(props.item)}`}>
+        <StatusChip tone={runListItemTone(props.item)} class="shrink-0">
           {runListItemStatus(props.item)}
-        </div>
+        </StatusChip>
       </div>
       <div class="mt-2 break-words text-[0.675rem] leading-5 text-(--muted) [overflow-wrap:anywhere]">
         <div class="[display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:3] overflow-hidden">
@@ -1039,9 +1085,9 @@ function HealthView(props: {
               <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                 <For each={buildHealthSummaryRows(report())}>
                   {(row) => (
-                    <div class="rounded-[1.05rem] border border-(--border) bg-white/70 p-3">
+                    <div class="dense-card p-3">
                       <div class="text-[0.575rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">{row.label}</div>
-                      <div class="mt-2 text-[1.1rem] font-semibold tracking-[-0.04em] text-(--foreground)">{row.value}</div>
+                      <div class="mt-2 text-[1.1rem] font-semibold text-(--foreground)" classList={{ "dense-numeric-flagged": rightAlignedNumbersEnabled() }}>{row.value}</div>
                     </div>
                   )}
                 </For>
@@ -1135,13 +1181,13 @@ function HealthTable(props: {
       >
         <div class="overflow-hidden rounded-[1rem] border border-(--border) bg-white/70">
           <div class={`grid gap-2 border-b border-(--border) px-3 py-2 text-[0.575rem] font-semibold uppercase tracking-[0.16em] text-(--muted) ${healthTableColumns(props.headers.length)}`}>
-            <For each={props.headers}>{(header) => <div>{header}</div>}</For>
+            <For each={props.headers}>{(header) => <div classList={{ "dense-numeric-flagged": rightAlignedNumbersEnabled() && isRightAlignedHealthHeader(header) }}>{header}</div>}</For>
           </div>
           <div class="divide-y divide-(--border)">
             <For each={props.rows}>
               {(row) => (
                 <div class={`grid gap-2 px-3 py-2 text-[0.675rem] leading-5 text-(--foreground) ${healthTableColumns(row.length)}`}>
-                  <For each={row}>{(cell) => <div class="truncate">{cell}</div>}</For>
+                  <For each={row}>{(cell, index) => <div class="truncate" classList={{ "dense-numeric-flagged": rightAlignedNumbersEnabled() && isRightAlignedHealthHeader(props.headers[index()]) }}>{cell}</div>}</For>
                 </div>
               )}
             </For>
@@ -1457,6 +1503,10 @@ function healthTableColumns(columnCount: number) {
     default:
       return "md:grid-cols-3";
   }
+}
+
+function isRightAlignedHealthHeader(header: string) {
+  return ["Count", "Share", "Runs", "Avg chars", "Streak"].includes(header);
 }
 
 function formatShare(value: number) {
@@ -1947,63 +1997,54 @@ function formatFailureCategory(value: string) {
   return value.replace(/-/g, " ");
 }
 
-function jobStatusBadgeClass(status: BackgroundJob["status"]) {
-  if (status === "enabled") {
-    return "bg-emerald-100 text-emerald-800";
-  }
-  return "bg-slate-200 text-slate-700";
+function jobStatusTone(status: BackgroundJob["status"]): StatusChipTone {
+  return status === "enabled" ? "success" : "neutral";
 }
 
-function runStatusBadgeClass(status: BackgroundJobRun["status"] | AgentRunState["status"]) {
+function runStatusTone(status: BackgroundJobRun["status"] | AgentRunState["status"]): StatusChipTone {
   switch (status) {
     case "completed":
     case "succeeded":
-      return "bg-emerald-100 text-emerald-800";
+      return "success";
     case "partial-complete":
-      return "bg-amber-100 text-amber-900";
+      return "warning";
     case "failed":
     case "stopped":
     case "cancelled":
-      return "bg-rose-100 text-rose-800";
+      return "danger";
     case "awaiting-approval":
     case "awaiting-user-input":
     case "planning":
     case "aggregating":
-      return "bg-amber-100 text-amber-900";
+      return "warning";
     case "running-main":
     case "running-subagents":
     case "running":
-      return "bg-sky-100 text-sky-800";
+      return "info";
     case "ready":
     case "queued":
-      return "bg-slate-200 text-slate-700";
+      return "neutral";
     case "skipped":
-      return "bg-stone-200 text-stone-700";
+      return "neutral";
   }
 }
 
-function runListItemBadgeClass(item: RunListItem) {
-  if (item.kind === "background") {
-    return runStatusBadgeClass(item.run.status);
+function runListItemTone(item: RunListItem): StatusChipTone {
+  return item.kind === "background" ? runStatusTone(item.run.status) : runStatusTone(item.entry.run.status);
+}
+
+function jobKindTone(kind: BackgroundJob["kind"]): StatusChipTone {
+  return kind === "shell" ? "info" : "accent";
+}
+
+function riskTone(risk: BackgroundJob["riskLevel"]): StatusChipTone {
+  if (risk === "unsafe") {
+    return "danger";
   }
-  switch (item.entry.run.status) {
-    case "completed":
-      return "bg-emerald-100 text-emerald-800";
-    case "partial-complete":
-      return "bg-amber-100 text-amber-900";
-    case "failed":
-    case "stopped":
-      return "bg-rose-100 text-rose-800";
-    case "awaiting-user-input":
-      return "bg-amber-100 text-amber-900";
-    case "running-main":
-    case "running-subagents":
-    case "aggregating":
-      return "bg-sky-100 text-sky-800";
-    case "planning":
-    case "ready":
-      return "bg-slate-200 text-slate-700";
+  if (risk === "slightly-unsafe") {
+    return "warning";
   }
+  return "success";
 }
 
 function runStatusBorderClass(status: BackgroundJobRun["status"]) {
@@ -2107,6 +2148,7 @@ function JobDetail(props: {
   onStopRun: (run: BackgroundJobRun) => void;
   onEdit: (job: BackgroundJob) => void;
   onOpenAssistant: (assistantId: string) => void;
+  onRetryScheduler: () => void;
   schedulerHeartbeatAt?: string;
 }) {
   const latestRun = createMemo(() => props.runs[0]);
@@ -2137,9 +2179,9 @@ function JobDetail(props: {
               <div>
                 <div class="flex flex-wrap items-center gap-2">
                   <div class="text-[0.585rem] font-semibold uppercase tracking-[0.18em] text-(--muted)">Job detail</div>
-                  <span class={`rounded-full px-2 py-0.5 text-[0.55rem] font-semibold uppercase tracking-[0.12em] ${jobStatusBadgeClass(job().status)}`}>
+                  <StatusChip tone={jobStatusTone(job().status)}>
                     {job().status}
-                  </span>
+                  </StatusChip>
                 </div>
                 <h2 class="mt-1 break-words text-[1.2rem] font-semibold text-(--foreground) [overflow-wrap:anywhere]">{job().name}</h2>
                 <div class="mt-3 grid gap-x-5 gap-y-1 border-l-2 border-(--border) pl-4 text-[0.675rem] leading-5 text-(--muted) sm:grid-cols-2 xl:grid-cols-3">
@@ -2148,7 +2190,9 @@ function JobDetail(props: {
                   <RunFact label="Lane">{job().lane ?? "exclusive"}</RunFact>
                   <RunFact label="Owner">{formatJobOwner(job(), harnessStore.state)}</RunFact>
                   <RunFact label="Schedule">{job().scheduleInput}</RunFact>
-                  <RunFact label="Next">{formatJobNextRun(job(), props.runs, props.schedulerHeartbeatAt)}</RunFact>
+                  <RunFact label="Next">
+                    <NextRunContent text={formatJobNextRun(job(), props.runs, props.schedulerHeartbeatAt)} onRetryScheduler={props.onRetryScheduler} />
+                  </RunFact>
                   <Show when={job().schedulerStatus}>
                     {(status) => (
                       <RunFact label="Scheduler">
@@ -2166,7 +2210,7 @@ function JobDetail(props: {
                   <For each={formatJobSchedulerLines(job(), props.runs, props.schedulerHeartbeatAt)}>
                     {(line) => (
                       <RunFact label="Scheduler">
-                        <FileLinkedText text={line} fileLinks={props.fileLinks} />
+                        <SchedulerWarningContent text={line} fileLinks={props.fileLinks} onRetryScheduler={props.onRetryScheduler} />
                       </RunFact>
                     )}
                   </For>

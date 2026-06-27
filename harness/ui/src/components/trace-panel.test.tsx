@@ -1,7 +1,7 @@
 /** @jsxImportSource solid-js */
 import { beforeEach, expect, it } from "bun:test";
 import { createUiTest } from "../utils/tests/test-harness";
-import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
+import { cleanup, fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import type { Assistant, BackgroundJob, BackgroundJobRun, ClientCommand } from "../../../shared/protocol";
 import { TracePanel } from "./trace-panel";
 import { createDefaultJobsPanePreferences, createEmptyAssistantsState, harnessStore } from "../harness-store";
@@ -20,6 +20,13 @@ import {
 
 const now = "2026-04-28T12:00:00.000Z";
 const later = "2026-04-28T12:05:00.000Z";
+
+function expectRunningAgentsText(expected: string) {
+  const normalize = (value: string | null | undefined) => value?.replace(/\s+/g, " ").trim();
+  expect(
+    screen.getByText((_, element) => normalize(element?.textContent) === expected && element?.classList.contains("shrink-0") === true)
+  ).not.toBeNull();
+}
 
 createUiTest("TracePanel", () => {
   beforeEach(() => {
@@ -100,6 +107,47 @@ createUiTest("TracePanel", () => {
 
     render(() => <TracePanel />);
     expect(screen.queryByRole("button", { name: "Refresh the active run" })).toBeNull();
+  });
+
+  it("opens run terminal history through a typed command", async () => {
+    const commands: ClientCommand[] = [];
+    const project = createViewProjectFixture({
+      id: "project-run-terminal-history",
+      activeThreadId: "thread-run-terminal-history",
+      activeRun: createRunFixture({
+        id: "run-terminal-history",
+        status: "running-main"
+      }),
+      lastRun: createRunFixture({
+        id: "run-terminal-history",
+        status: "running-main"
+      })
+    });
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        workspace: {
+          activeProjectId: project.id,
+          projects: [project]
+        }
+      })
+    );
+    captureDispatchedCommands(commands);
+
+    render(() => <TracePanel />);
+    fireEvent.click(screen.getByRole("button", { name: "Open run terminal history" }));
+
+    await waitFor(() =>
+      expect(commands).toContainEqual(
+        expect.objectContaining({
+          type: "terminal.history.list",
+          payload: {
+            projectId: project.id,
+            threadId: "thread-run-terminal-history",
+            runId: "run-terminal-history"
+          }
+        })
+      )
+    );
   });
 
   it("disables refresh for a finished subtask and retry while project is streaming", () => {
@@ -294,7 +342,7 @@ createUiTest("TracePanel", () => {
     expect(screen.getByText("Source: repo-one")).not.toBeNull();
     expect(screen.getByText("Execution log")).not.toBeNull();
     expect(screen.getAllByText(/running-main/).length).toBeGreaterThan(0);
-    expect(screen.getByText("Running agents: 2 current / 2 total")).not.toBeNull();
+    expectRunningAgentsText("Running agents: 2 current / 2 total");
   });
 
   it("shows selected assistant with assistant logs and owned job events", () => {
@@ -350,7 +398,7 @@ createUiTest("TracePanel", () => {
     expect(screen.getByText("Assistant")).not.toBeNull();
     expect(screen.getByText("Assistant log row")).not.toBeNull();
     expect(screen.getByText(/Owned job event/)).not.toBeNull();
-    expect(screen.getByText("Running agents: 0 current / 0 total")).not.toBeNull();
+    expectRunningAgentsText("Running agents: 0 current / 0 total");
   });
 
   it("shows assistant job status icons, status colors, and next start time only when not running", () => {
@@ -515,7 +563,7 @@ createUiTest("TracePanel", () => {
 
     expect(screen.getAllByText("Job").length).toBeGreaterThan(0);
     expect(screen.getByText(/Selected job event/)).not.toBeNull();
-    expect(screen.getByText("Running agents: 1 current / 1 total")).not.toBeNull();
+    expectRunningAgentsText("Running agents: 1 current / 1 total");
   });
 
   it("switches trace entity when active left tab changes", () => {

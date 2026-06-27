@@ -39,6 +39,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - Plan-first execution that persists a full execution plan, posts a durable plan summary into chat, and lets that card execute the stored run by id while it is `ready`
 - Obvious low-complexity workspace actions such as direct file or folder requests, plus correction-style follow-ups that refine where the edit should land, can auto-switch into `implement` mode and skip planner turn-taking; simple leading-slash task paths like `/breakout` are normalized to workspace-relative targets when the request is clearly local
 - Optional live CLI sessions for Copilot CLI and Codex CLI over Bun-managed piped transport, with thread-owned attach tokens, reconnect, and captured terminal context that can feed the next prompt
+- Integrated terminals keep user-created sessions separate from agent-spawned terminals, preserve thread/run terminal history, and keep agent-spawned terminals read-only during active work unless the user overrides input
 - Built-in modes now differ on confirmation defaults and execution access: `plan` stays approval-first and read-only by default, `ask` suppresses transcript plan cards for direct Q&A without forcing read-only, and `implement` auto-runs unless the frozen plan fans out to multiple subagents
 - Composer input can auto-switch built-in modes when message intent is clear enough, using recent thread context to repair correction follow-ups so direct questions, review requests, debugging prompts, planning asks, and local workspace edits do not depend only on stale sticky mode state; an explicit user mode selection stays pinned for that send
 - Formatted markdown rendering across chat, plan, and trace surfaces with safe links, GFM tables and task lists, footnotes, and copyable highlighted code blocks
@@ -102,7 +103,7 @@ Local-first coding harness built around a Bun full-stack server, a SolidJS UI, l
 - Left workspace tabs keep `Projects`, `Assistants`, `Jobs`, and `Runs` as the primary navigation, with scheduled work separated from run history
 - Project chat keeps transcript first and exposes plan, run, memory, and events through a compact local pane strip instead of a larger cockpit card
 - Chat transcript auto-sticks only when already at bottom and exposes an explicit `Scroll to latest` affordance when the user scrolls away
-- Run cockpit now includes virtual-branch experiment review, promote, and discard actions plus a shared memory tab for local reusable learnings
+- Run cockpit now includes virtual-branch experiment review, promote, discard, run terminal history, and a shared memory tab for local reusable learnings
 - Jobs and Runs surfaces keep scheduled work, approval-needed runs, failures, and concise execution milestones out of normal project chat threads
 - Assistants surface keeps assistant chat, todos, questions, learnings, logs, and assistant-owned jobs inspectable outside normal project chat
 - Header-level help opens guided walkthroughs instead of pushing setup into a separate onboarding funnel

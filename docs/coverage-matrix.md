@@ -225,6 +225,7 @@ New `US-*` stories start as `GAP-HIGH` here until at least one colocated or inte
 | US-UI-021 | harness/ui/src/lib/trace-panel-model.test.ts, harness/ui/src/components/trace-panel.test.tsx | unit | OK |
 | US-UI-022 | harness/cli/src/ide-project-service.test.ts, harness/cli/src/protocol.test.ts, harness/ui/src/ide/ide-workbench.test.tsx, harness/ui/src/app.test.tsx | unit | GAP-MED |
 | US-UI-023 | harness/cli/src/protocol.test.ts, harness/cli/src/terminal/terminal-session-manager.test.ts, harness/ui/src/app.test.tsx, harness/ui/src/terminal/terminal-drawer.test.tsx, harness/ui/src/terminal/terminal-links.test.ts, harness/ui/src/terminal/renderers/terminal-renderer-benchmark.test.ts | unit | GAP-MED |
+| US-UI-024 | harness/cli/src/protocol.test.ts, harness/cli/src/terminal/terminal-session-manager.test.ts, harness/cli/src/terminal/terminal-ws-mock-client.test.ts, harness/ui/src/components/chat-panel.test.tsx, harness/ui/src/components/trace-panel.test.tsx, harness/ui/src/terminal/terminal-drawer.test.tsx, harness/ui/src/terminal/terminal-store.test.ts, harness/ui/src/terminal/terminal-keybindings.test.ts | unit+integration | OK |
 
 ## PERSISTENCE
 
