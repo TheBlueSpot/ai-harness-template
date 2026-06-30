@@ -47,6 +47,7 @@ For bulk pause or assistant-job launch planning, use:
 
 ```powershell
 bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action pause-assistants --project "<project-name-or-id>"
+bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action resume-assistants --project "<project-name-or-id>"
 bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action start-jobs --assistant "<name-or-id>" --project "<project-name-or-id>"
 ```
 

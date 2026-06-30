@@ -39,6 +39,7 @@
 
 ## June 2026 Approval And Autonomy Signals
 
+- Treat inferred intent as a durable background-work contract, not prompt prose: assistant jobs should preserve the user's objective, expected artifacts, quality bar, and evidence requirements through creation, maintenance, launch, and completion readback
 - Treat "why did this stop?" as the core background-work affordance: every stop needs a typed reason, risk summary, evidence, next action, and the setting that did or did not apply
 - Split autonomy policy by gate instead of one broad approval knob: launch approval, plan questions, assistant questions, browser permissions, network or filesystem boundary crossing, and merge/release review need distinct defaults
 - First gate split shipped: non-blocking assistant questions have their own auto-approval preference while higher-risk questions still stop
@@ -54,6 +55,14 @@
 - Keep checkpoint and rollback narrow until restore is git-safe, disk-bounded, and explainable; public issue patterns show users want restore, but broken checkpoint behavior destroys trust faster than missing checkpoint behavior
 - Treat context, rules, memories, and skills as governed assets with source, freshness, scope, and hit history because serious users now mix multiple coding tools and need portable discipline more than opaque auto-memory
 - Defer broad remote-control and personal-assistant surfaces; the higher-PMF version is remote review, evidence inspection, approval, stop, retry, and resume for coding runs
+
+## June 2026 Bulk Action Market Scan
+
+- Treat bulk actions as a cross-surface operation model, not a list-widget feature: Linear, GitHub Issues, Jira, Plane, and Pylon all make high-volume work faster only when selection, preview, mutation, and readback stay tied together
+- Keep normal click-to-open behavior distinct from bulk selection: selection should be deliberate, support Shift range and Ctrl/Cmd toggle, and make right-click context menus reflect the current selected set
+- Make bulk actions kind-aware instead of generic: projects, assistants, jobs, and runs need different edit dialogs, safety gates, and terminal states
+- Require preview or dry-run plus per-item result readback for destructive, cross-project, or live-run actions so partial failures do not look like success
+- Project-chat bulk requests should route through the same operation registry and assistant maintenance scripts as the UI, not repeated single-row commands or ad hoc state mutation
 
 ## Engine Package Priorities
 
@@ -84,6 +93,7 @@
 - Clarify which thread visibility changes are manual versus preference-driven, especially when auto-archive is limited to stale or low-activity threads
 - Add explicit thread-scoped or project-scoped saved composer presets for mode, agent, provider, and model, while keeping current browser-global restore as default and making preset scope obvious
 - Add a global search surface reachable with `Cmd/Ctrl+F` via `TanStack Hotkeys`, with debounced input and tiered streamed results so names, quick matches, and fuzzy matches surface in stages
+- Harden the shared bulk selection and operation model across Projects, Assistants, Jobs, and Runs with kind-specific edit dialogs, keyboard refinements, visible preview/readback, retry-safe idempotency, and destructive confirmations
 - Add terminal-first workflow support such as embedded terminals, project scripts, command palette actions, keyboard shortcuts, and searchable branch or run names
 - Add one-step handoff into the user's editor and keep active thread or run context attached to that project flow
 - Add step-level diff review, incremental change views, and checkpoint restore so users can inspect or roll back agent work before trust is lost
@@ -113,6 +123,7 @@
 - Make those away-from-desk review flows artifact-first and phone-friendly so users can approve from summary cards, screenshots, short demos, and diff highlights instead of raw traces
 - Replace the single approvals bucket with typed intervention lanes for launch approval, input needed, browser permission, pause, circuit breaker, and failure
 - Add inline approve/reject/answer actions to background-run inbox cards, with a visible reason and policy readback before navigating to deep details
+- Extend project-chat parsing so scoped mixed bulk assistant, job, project, and run requests resolve into the shared dry-run and live operation contract
 - Add pattern-based output watches so users can get notified when long-running jobs hit errors, readiness signals, or other important milestones
 - Deepen risk summaries around branch, environment, network, and filesystem scope before launch or approval
 - Keep safeguards around long-running tasks and external side effects

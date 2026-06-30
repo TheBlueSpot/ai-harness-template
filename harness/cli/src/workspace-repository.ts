@@ -24,6 +24,7 @@ import {
   backgroundRunStatusNotificationSchema,
   browserSessionSchema,
   executionToolActivitySchema,
+  intentContractSchema,
   correctnessReviewSchema,
   chatMessageSchema,
   chatAttachmentSchema,
@@ -139,6 +140,7 @@ import {
   type TokenUsageState
 } from "../../shared/protocol";
 import { defaultBackgroundJobTemplates } from "../../shared/background-job-templates";
+import { compileAssistantIntentContract, compileBackgroundJobIntentContract } from "../../shared/intent-contract";
 import { assertResolvedAssistantAssetRefs, resolveAssistantAssetRefs } from "./assistant-capabilities";
 import { debugLog } from "./logging";
 import { resolveHarnessDbPath } from "./harness-paths";
@@ -184,7 +186,7 @@ const WORKSPACE_MEMORY_UPDATED_AT_KEY = "workspace_memory_updated_at";
 const TERMINAL_STATE_KEY = "terminal_state_v1";
 const ASSISTANT_SELECT_SQL = `SELECT
   id, name, scope, project_id, description, personality_prompt, job_prompt, agent_id, mode_id,
-  provider_brand, execution_model_id, reasoning_strength, fast_mode, run_state, bootstrap_state,
+  intent_contract_json, provider_brand, execution_model_id, reasoning_strength, fast_mode, run_state, bootstrap_state,
   bootstrap_attempt_id, bootstrap_started_at, bootstrap_finished_at, cloned_from_assistant_id, failure_streak_count,
   circuit_breaker_state, circuit_breaker_reason, pending_reprioritize_reason, pending_reprioritize_requested_at,
   deleted_at, latest_activity_at, created_at, updated_at
@@ -396,6 +398,7 @@ type BackgroundJobRow = {
   kind: BackgroundJob["kind"];
   name: string;
   description: string | null;
+  intent_contract_json: string | null;
   lane: "exclusive" | "concurrent";
   definition_json: string;
   schedule_json: string;
@@ -531,6 +534,7 @@ type AssistantRow = {
   description: string | null;
   personality_prompt: string;
   job_prompt: string;
+  intent_contract_json: string | null;
   agent_id: AgentId;
   provider_brand: ProviderBrand | null;
   mode_id: string | null;
@@ -2957,7 +2961,7 @@ export class WorkspaceRepository {
       .query<AssistantRow, [string]>(
         `SELECT
           id, name, scope, project_id, description, personality_prompt, job_prompt, agent_id, mode_id,
-          provider_brand, execution_model_id, reasoning_strength, fast_mode, run_state, bootstrap_state,
+          intent_contract_json, provider_brand, execution_model_id, reasoning_strength, fast_mode, run_state, bootstrap_state,
           bootstrap_attempt_id, bootstrap_started_at, bootstrap_finished_at, cloned_from_assistant_id, failure_streak_count,
           circuit_breaker_state, circuit_breaker_reason, pending_reprioritize_reason, pending_reprioritize_requested_at,
           deleted_at, latest_activity_at, created_at, updated_at
@@ -2979,9 +2983,13 @@ export class WorkspaceRepository {
       this.assertProjectExists(assistant.projectId);
     }
 
+    const assistantToSave: Assistant = {
+      ...assistant,
+      intentContract: compileAssistantIntentContract(assistant)
+    };
     const resolvedAssetRefs = resolveAssistantAssetRefs({
       repoRoot: this.repoRoot,
-      assistant,
+      assistant: assistantToSave,
       assetRefs,
       workspaceModes: this.readWorkspaceModes(),
       projectModes: assistant.projectId ? this.readProjectModes(assistant.projectId) : [],
@@ -2995,11 +3003,11 @@ export class WorkspaceRepository {
         .query(
           `INSERT INTO assistants (
             id, name, scope, project_id, description, personality_prompt, job_prompt, agent_id, mode_id,
-            provider_brand, execution_model_id, reasoning_strength, fast_mode, run_state, bootstrap_state,
+            intent_contract_json, provider_brand, execution_model_id, reasoning_strength, fast_mode, run_state, bootstrap_state,
             bootstrap_attempt_id, bootstrap_started_at, bootstrap_finished_at, cloned_from_assistant_id, failure_streak_count,
             circuit_breaker_state, circuit_breaker_reason, pending_reprioritize_reason, pending_reprioritize_requested_at,
             deleted_at, latest_activity_at, created_at, updated_at
-          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, NULL, NULL, ?23, ?24, ?25, ?26)
+          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, NULL, NULL, ?24, ?25, ?26, ?27)
           ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
             scope = excluded.scope,
@@ -3007,6 +3015,7 @@ export class WorkspaceRepository {
             description = excluded.description,
             personality_prompt = excluded.personality_prompt,
             job_prompt = excluded.job_prompt,
+            intent_contract_json = excluded.intent_contract_json,
             agent_id = excluded.agent_id,
             mode_id = excluded.mode_id,
             provider_brand = excluded.provider_brand,
@@ -3027,31 +3036,32 @@ export class WorkspaceRepository {
             updated_at = excluded.updated_at`
         )
         .run(
-          assistant.id,
-          assistant.name,
-          assistant.scope,
-          assistant.projectId ?? null,
-          assistant.description ?? null,
-          assistant.personalityPrompt,
-          assistant.jobPrompt,
-          assistant.agentId,
-          assistant.modeId ?? null,
-          assistant.providerBrand ?? null,
-          assistant.executionModelId ?? null,
-          assistant.reasoningStrength ?? null,
-          assistant.fastMode === undefined ? null : assistant.fastMode ? 1 : 0,
-          assistant.runState,
-          assistant.bootstrapState,
-          assistant.bootstrapAttemptId ?? null,
-          assistant.bootstrapStartedAt ?? null,
-          assistant.bootstrapFinishedAt ?? null,
-          assistant.clonedFromAssistantId ?? null,
-          assistant.failureStreakCount,
-          assistant.circuitBreakerState,
-          assistant.circuitBreakerReason ?? null,
-          assistant.deletedAt ?? null,
-          assistant.latestActivityAt ?? now,
-          assistant.createdAt,
+          assistantToSave.id,
+          assistantToSave.name,
+          assistantToSave.scope,
+          assistantToSave.projectId ?? null,
+          assistantToSave.description ?? null,
+          assistantToSave.personalityPrompt,
+          assistantToSave.jobPrompt,
+          assistantToSave.agentId,
+          assistantToSave.modeId ?? null,
+          JSON.stringify(assistantToSave.intentContract),
+          assistantToSave.providerBrand ?? null,
+          assistantToSave.executionModelId ?? null,
+          assistantToSave.reasoningStrength ?? null,
+          assistantToSave.fastMode === undefined ? null : assistantToSave.fastMode ? 1 : 0,
+          assistantToSave.runState,
+          assistantToSave.bootstrapState,
+          assistantToSave.bootstrapAttemptId ?? null,
+          assistantToSave.bootstrapStartedAt ?? null,
+          assistantToSave.bootstrapFinishedAt ?? null,
+          assistantToSave.clonedFromAssistantId ?? null,
+          assistantToSave.failureStreakCount,
+          assistantToSave.circuitBreakerState,
+          assistantToSave.circuitBreakerReason ?? null,
+          assistantToSave.deletedAt ?? null,
+          assistantToSave.latestActivityAt ?? now,
+          assistantToSave.createdAt,
           now
         );
 
@@ -4059,18 +4069,22 @@ export class WorkspaceRepository {
     if (job.assistantId) {
       this.assertAssistantExists(job.assistantId);
     }
+    const jobToSave: BackgroundJob = {
+      ...job,
+      intentContract: compileBackgroundJobIntentContract(job)
+    };
     const now = new Date().toISOString();
-    const automationThreadId = this.ensureAutomationThread(job.projectId, job.automationThreadId, job.name, now);
+    const automationThreadId = this.ensureAutomationThread(jobToSave.projectId, jobToSave.automationThreadId, jobToSave.name, now);
     this.db
       .query(
         `INSERT INTO background_jobs (
           id, project_id, assistant_id, automation_thread_id, template_id, created_from_run_id, kind, name, description,
-          lane, definition_json, schedule_json, schedule_input, timezone, status, risk_level, next_run_at,
+          intent_contract_json, lane, definition_json, schedule_json, schedule_input, timezone, status, risk_level, next_run_at,
           last_run_at, last_enqueued_at, scheduler_status, scheduler_detail, last_scheduler_check_at,
           last_blocked_at, blocked_reason, scheduler_queue_position, scheduler_queue_reason, scheduler_blocked_since_at,
           scheduler_active_run_id, scheduler_active_run_started_at, scheduler_last_progress_at, scheduler_overloaded,
           scheduler_congestion_ratio, consecutive_failure_count, backoff_until, last_failure_category, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37)
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38)
         ON CONFLICT(id) DO UPDATE SET
           project_id = excluded.project_id,
           assistant_id = excluded.assistant_id,
@@ -4080,6 +4094,7 @@ export class WorkspaceRepository {
           kind = excluded.kind,
           name = excluded.name,
           description = excluded.description,
+          intent_contract_json = excluded.intent_contract_json,
           lane = excluded.lane,
           definition_json = excluded.definition_json,
           schedule_json = excluded.schedule_json,
@@ -4093,45 +4108,46 @@ export class WorkspaceRepository {
           updated_at = excluded.updated_at`
       )
       .run(
-        job.id,
-        job.projectId,
-        job.assistantId ?? null,
+        jobToSave.id,
+        jobToSave.projectId,
+        jobToSave.assistantId ?? null,
         automationThreadId,
-        job.templateId ?? null,
-        job.createdFromRunId ?? null,
-        job.kind,
-        job.name,
-        job.description ?? null,
-        job.lane ?? "exclusive",
-        JSON.stringify(job.definition),
-        JSON.stringify(job.schedule),
-        job.scheduleInput,
-        job.timezone ?? null,
-        job.status,
-        job.riskLevel,
-        job.nextRunAt ?? null,
-        job.lastRunAt ?? null,
-        job.lastEnqueuedAt ?? null,
-        job.schedulerStatus ?? "idle",
-        job.schedulerDetail ?? null,
-        job.lastSchedulerCheckAt ?? null,
-        job.lastBlockedAt ?? null,
-        job.blockedReason ?? null,
-        job.schedulerQueuePosition ?? null,
-        job.schedulerQueueReason ?? null,
-        job.schedulerBlockedSinceAt ?? null,
-        job.schedulerActiveRunId ?? null,
-        job.schedulerActiveRunStartedAt ?? null,
-        job.schedulerLastProgressAt ?? null,
-        (job.schedulerCongested ?? job.schedulerOverloaded) ? 1 : 0,
-        job.schedulerCongestionRatio ?? null,
-        job.consecutiveFailureCount ?? 0,
-        job.backoffUntil ?? null,
-        job.lastFailureCategory ?? null,
-        job.createdAt,
+        jobToSave.templateId ?? null,
+        jobToSave.createdFromRunId ?? null,
+        jobToSave.kind,
+        jobToSave.name,
+        jobToSave.description ?? null,
+        JSON.stringify(jobToSave.intentContract),
+        jobToSave.lane ?? "exclusive",
+        JSON.stringify(jobToSave.definition),
+        JSON.stringify(jobToSave.schedule),
+        jobToSave.scheduleInput,
+        jobToSave.timezone ?? null,
+        jobToSave.status,
+        jobToSave.riskLevel,
+        jobToSave.nextRunAt ?? null,
+        jobToSave.lastRunAt ?? null,
+        jobToSave.lastEnqueuedAt ?? null,
+        jobToSave.schedulerStatus ?? "idle",
+        jobToSave.schedulerDetail ?? null,
+        jobToSave.lastSchedulerCheckAt ?? null,
+        jobToSave.lastBlockedAt ?? null,
+        jobToSave.blockedReason ?? null,
+        jobToSave.schedulerQueuePosition ?? null,
+        jobToSave.schedulerQueueReason ?? null,
+        jobToSave.schedulerBlockedSinceAt ?? null,
+        jobToSave.schedulerActiveRunId ?? null,
+        jobToSave.schedulerActiveRunStartedAt ?? null,
+        jobToSave.schedulerLastProgressAt ?? null,
+        (jobToSave.schedulerCongested ?? jobToSave.schedulerOverloaded) ? 1 : 0,
+        jobToSave.schedulerCongestionRatio ?? null,
+        jobToSave.consecutiveFailureCount ?? 0,
+        jobToSave.backoffUntil ?? null,
+        jobToSave.lastFailureCategory ?? null,
+        jobToSave.createdAt,
         now
       );
-    this.touchProject(job.projectId, now);
+    this.touchProject(jobToSave.projectId, now);
     return this.loadBackgroundJobsState();
   }
 
@@ -4354,7 +4370,7 @@ export class WorkspaceRepository {
       .query<BackgroundJobRow, [string]>(
         `SELECT
           id, project_id, assistant_id, automation_thread_id, template_id, created_from_run_id, kind, name, description,
-          lane, definition_json, schedule_json, schedule_input, timezone, status, risk_level, next_run_at,
+          intent_contract_json, lane, definition_json, schedule_json, schedule_input, timezone, status, risk_level, next_run_at,
           last_run_at, last_enqueued_at, scheduler_status, scheduler_detail, scheduler_queue_position, scheduler_queue_reason,
           scheduler_blocked_since_at, scheduler_active_run_id, scheduler_active_run_started_at, scheduler_last_progress_at,
           scheduler_overloaded, scheduler_congestion_ratio, consecutive_failure_count, backoff_until, last_failure_category,
@@ -5824,6 +5840,7 @@ export class WorkspaceRepository {
         kind TEXT NOT NULL CHECK(kind IN ('ai-routine', 'shell')),
         name TEXT NOT NULL,
         description TEXT NULL,
+        intent_contract_json TEXT NULL,
         lane TEXT NOT NULL DEFAULT 'exclusive' CHECK(lane IN ('exclusive', 'concurrent')),
         definition_json TEXT NOT NULL,
         schedule_json TEXT NOT NULL,
@@ -5967,6 +5984,7 @@ export class WorkspaceRepository {
         description TEXT NULL,
         personality_prompt TEXT NOT NULL,
         job_prompt TEXT NOT NULL,
+        intent_contract_json TEXT NULL,
         agent_id TEXT NOT NULL CHECK(agent_id IN ('pi', 'copilot-cli', 'codex-cli')),
         provider_brand TEXT NULL CHECK(provider_brand IN ('gpt', 'gemini', 'claude')),
         mode_id TEXT NULL,
@@ -6154,6 +6172,7 @@ export class WorkspaceRepository {
     this.addColumnIfMissing("project_threads", "pinned", "INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0, 1))");
     this.addColumnIfMissing("memory_entries", "priority", "INTEGER NOT NULL DEFAULT 50000");
     this.addColumnIfMissing("background_jobs", "assistant_id", "TEXT NULL");
+    this.addColumnIfMissing("background_jobs", "intent_contract_json", "TEXT NULL");
     this.addColumnIfMissing("background_jobs", "lane", "TEXT NOT NULL DEFAULT 'exclusive' CHECK(lane IN ('exclusive', 'concurrent'))");
     this.addColumnIfMissing(
       "background_jobs",
@@ -6199,6 +6218,7 @@ export class WorkspaceRepository {
     this.addColumnIfMissing("background_job_runs", "heartbeat_stage", "TEXT NULL");
     this.addColumnIfMissing("background_job_runs", "heartbeat_detail", "TEXT NULL");
     this.addColumnIfMissing("background_job_runs", "timed_out_at", "TEXT NULL");
+    this.addColumnIfMissing("assistants", "intent_contract_json", "TEXT NULL");
     this.addColumnIfMissing("assistants", "provider_brand", "TEXT NULL CHECK(provider_brand IN ('gpt', 'gemini'))");
     this.addColumnIfMissing("assistants", "fast_mode", "INTEGER NULL CHECK(fast_mode IN (0, 1))");
     this.addColumnIfMissing(
@@ -6961,6 +6981,7 @@ export class WorkspaceRepository {
       description: normalizeOptionalString(row.description, 1024),
       personalityPrompt: normalizeRequiredString(row.personality_prompt, 8000, "Recovered assistant personality."),
       jobPrompt: normalizeRequiredString(row.job_prompt, 12000, "Recovered assistant job."),
+      intentContract: parseIntentContract(row.intent_contract_json),
       agentId: row.agent_id,
       providerBrand: row.provider_brand ?? undefined,
       modeId: row.mode_id ?? undefined,
@@ -7992,7 +8013,7 @@ export class WorkspaceRepository {
       .query<BackgroundJobRow, []>(
         `SELECT
           id, project_id, assistant_id, automation_thread_id, template_id, created_from_run_id, kind, name, description,
-          lane, definition_json, schedule_json, schedule_input, timezone, status, risk_level, next_run_at,
+          intent_contract_json, lane, definition_json, schedule_json, schedule_input, timezone, status, risk_level, next_run_at,
           last_run_at, last_enqueued_at, scheduler_status, scheduler_detail, scheduler_queue_position, scheduler_queue_reason,
           scheduler_blocked_since_at, scheduler_active_run_id, scheduler_active_run_started_at, scheduler_last_progress_at,
           scheduler_overloaded, scheduler_congestion_ratio, consecutive_failure_count, backoff_until, last_failure_category,
@@ -8077,6 +8098,7 @@ export class WorkspaceRepository {
       kind: row.kind,
       name: normalizeRequiredString(row.name, 256, "Recovered background job"),
       description: normalizeOptionalString(row.description, 1024),
+      intentContract: parseIntentContract(row.intent_contract_json),
       lane: row.lane === "concurrent" ? "concurrent" : "exclusive",
       definition: parseBackgroundJobDefinition(row.kind, row.definition_json),
       schedule: parseBackgroundJobSchedule(row.schedule_json, row.next_run_at ?? row.updated_at),
@@ -8913,6 +8935,17 @@ function addTokenUsageTotals(left: TokenUsageTotals, right: TokenUsageTotals): T
     totalTokensIncludingCached: left.totalTokensIncludingCached + right.totalTokensIncludingCached,
     events: left.events + right.events,
     updatedAt: [left.updatedAt, right.updatedAt].filter(Boolean).sort().at(-1)
+  });
+}
+
+function parseIntentContract(input: string | null) {
+  const parsed = parseJsonObjectOrUndefined(input);
+  if (!parsed) {
+    return undefined;
+  }
+  return safeParsePersisted(intentContractSchema, parsed, {
+    table: "intent_contract",
+    rowId: "inline"
   });
 }
 

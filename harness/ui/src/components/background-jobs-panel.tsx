@@ -1,5 +1,5 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, type JSX } from "solid-js";
-import { createRequestId, type AgentRunState, type BackgroundJob, type BackgroundJobRun, type RunDiagnosticsWindowDays } from "../../../shared/protocol";
+import { createRequestId, type AgentRunState, type BackgroundJob, type BackgroundJobRun, type BulkOperationAction, type BulkOperationTarget, type RunDiagnosticsWindowDays } from "../../../shared/protocol";
 import { formatForDisplay } from "@tanstack/solid-hotkeys";
 import {
   type BackgroundJobEditorDraft,
@@ -16,11 +16,13 @@ import { normalizeAppHotkeyPreferences } from "../lib/app-hotkeys";
 import { registerCurrentTabItemSelector } from "../lib/current-tab-item-hotkeys";
 import type { ChatFileTarget } from "../lib/chat-file-links";
 import { openIdeWindow } from "../lib/ide-window";
+import { openProjectThreadSource } from "../source-navigation";
 import { toProperCase } from "../lib/utils";
 import { pushToast } from "../toast-store";
 import { ActionButton } from "./action-button";
 import { FileLinkedText, type FileLinkConfig } from "./file-linked-text";
 import { CopyTextButton } from "./primitives/copy-text-button";
+import { ContextMenu, type ContextMenuAction } from "./primitives/context-menu";
 import { ExecutionLog } from "./primitives/execution-log";
 import { Dialog } from "./primitives/dialog";
 import {
@@ -46,6 +48,7 @@ import {
   BriefcaseBusiness,
   Calendar,
   CheckCircle2,
+  CheckSquare2,
   Clock3,
   CircleX,
   ListFilter,
@@ -56,6 +59,7 @@ import {
   Plus,
   RefreshCcw,
   ShieldCheck,
+  Square,
   Terminal,
   Trash2
 } from "lucide-solid";
@@ -92,6 +96,32 @@ function formatHotkeyHint(hotkey: string) {
 
 function tooltipWithPrimaryHotkey(label: string, hotkey: string | undefined) {
   return hotkey ? `${label} (${formatHotkeyHint(hotkey)})` : label;
+}
+
+function toggleId(ids: string[], id: string) {
+  return ids.includes(id) ? ids.filter((entry) => entry !== id) : [...ids, id];
+}
+
+function mergeRangeSelection(ids: string[], visibleIds: string[], anchorId: string, targetId: string) {
+  const anchorIndex = visibleIds.indexOf(anchorId);
+  const targetIndex = visibleIds.indexOf(targetId);
+  if (anchorIndex === -1 || targetIndex === -1) {
+    return ids.includes(targetId) ? ids : [...ids, targetId];
+  }
+  const start = Math.min(anchorIndex, targetIndex);
+  const end = Math.max(anchorIndex, targetIndex);
+  return [...new Set([...ids, ...visibleIds.slice(start, end + 1)])];
+}
+
+function formatBulkActionLabel(action: BulkOperationAction) {
+  switch (action) {
+    case "run-now":
+      return "run now";
+    case "bootstrap-retry":
+      return "bootstrap retry";
+    default:
+      return action;
+  }
 }
 
 export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
@@ -156,6 +186,24 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
       ...activeProjectChatRuns().map((entry) => ({ kind: "project-chat" as const, entry })),
       ...filteredRuns().map((run) => ({ kind: "background" as const, run }))
     ].sort((left, right) => compareRunListItems(left, right, jobsPane().runSort ?? "urgency"))
+  );
+  const [selectedJobIds, setSelectedJobIds] = createSignal<string[]>([]);
+  const [selectedRunIds, setSelectedRunIds] = createSignal<string[]>([]);
+  const [jobSelectionAnchorId, setJobSelectionAnchorId] = createSignal<string>();
+  const [runSelectionAnchorId, setRunSelectionAnchorId] = createSignal<string>();
+  const [contextMenu, setContextMenu] = createSignal<{ x: number; y: number; label: string; actions: ContextMenuAction[] }>();
+  let pendingSelectionTimer: ReturnType<typeof setTimeout> | undefined;
+  let pendingSelectionKind: "job" | "run" | undefined;
+  let pendingSelectionId: string | undefined;
+  let consumedDelayedSelection = false;
+  const selectedJobIdSet = createMemo(() => new Set(selectedJobIds()));
+  const selectedRunIdSet = createMemo(() => new Set(selectedRunIds()));
+  const selectedJobs = createMemo(() => jobs().filter((job) => selectedJobIdSet().has(job.id)));
+  const selectedBackgroundRuns = createMemo(() =>
+    runListItems()
+      .filter((item): item is Extract<RunListItem, { kind: "background" }> => item.kind === "background")
+      .map((item) => item.run)
+      .filter((run) => selectedRunIdSet().has(run.id))
   );
   const selectedRunItem = createMemo(() => {
     const explicitRunId = selectedRunId();
@@ -247,6 +295,21 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
       onCleanup(unregister);
     }
   });
+  createEffect(() => {
+    const visibleIds = new Set(jobs().map((job) => job.id));
+    setSelectedJobIds((ids) => ids.filter((id) => visibleIds.has(id)));
+    if (jobSelectionAnchorId() && !visibleIds.has(jobSelectionAnchorId()!)) {
+      setJobSelectionAnchorId(undefined);
+    }
+  });
+  createEffect(() => {
+    const visibleIds = new Set(runListItems().filter((item) => item.kind === "background").map((item) => runListItemRun(item).id));
+    setSelectedRunIds((ids) => ids.filter((id) => visibleIds.has(id)));
+    if (runSelectionAnchorId() && !visibleIds.has(runSelectionAnchorId()!)) {
+      setRunSelectionAnchorId(undefined);
+    }
+  });
+  onCleanup(() => clearPendingSelectionTimer());
 
   function scrollRunDetailToBottom() {
     if (runDetailViewport) {
@@ -266,6 +329,249 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
           onOpenFile: (target) => handleOpenBackgroundFile(project, target)
         }
       : undefined;
+  }
+
+  function clearPendingSelectionTimer() {
+    if (pendingSelectionTimer) {
+      clearTimeout(pendingSelectionTimer);
+      pendingSelectionTimer = undefined;
+    }
+    if (!consumedDelayedSelection) {
+      pendingSelectionKind = undefined;
+      pendingSelectionId = undefined;
+    }
+  }
+
+  function scheduleDelayedSelection(kind: "job" | "run", id: string, event: PointerEvent) {
+    if (event.button !== 0 || event.shiftKey || event.ctrlKey || event.metaKey || isInteractiveSelectionTarget(event.target)) {
+      return;
+    }
+    clearPendingSelectionTimer();
+    pendingSelectionKind = kind;
+    pendingSelectionId = id;
+    pendingSelectionTimer = setTimeout(() => {
+      pendingSelectionTimer = undefined;
+      consumedDelayedSelection = true;
+      if (kind === "job") {
+        setSelectedRunIds([]);
+        setSelectedJobIds((ids) => (ids.includes(id) ? ids : [...ids, id]));
+        setJobSelectionAnchorId(id);
+        return;
+      }
+      setSelectedJobIds([]);
+      setSelectedRunIds((ids) => (ids.includes(id) ? ids : [...ids, id]));
+      setRunSelectionAnchorId(id);
+    }, 250);
+  }
+
+  function consumeDelayedSelection(kind: "job" | "run", id: string) {
+    if (!consumedDelayedSelection || pendingSelectionKind !== kind || pendingSelectionId !== id) {
+      return false;
+    }
+    consumedDelayedSelection = false;
+    pendingSelectionKind = undefined;
+    pendingSelectionId = undefined;
+    return true;
+  }
+
+  function isInteractiveSelectionTarget(target: EventTarget | null) {
+    return target instanceof Element && Boolean(target.closest("button,a,input,textarea,select,[role='menuitem'],[data-selection-ignore]"));
+  }
+
+  function selectJobWithMouse(job: BackgroundJob, event: MouseEvent) {
+    setSelectedRunIds([]);
+    const visibleIds = jobs().map((entry) => entry.id);
+    if (event.shiftKey) {
+      const anchorId = jobSelectionAnchorId() ?? job.id;
+      setSelectedJobIds((ids) => mergeRangeSelection(ids, visibleIds, anchorId, job.id));
+      setJobSelectionAnchorId(anchorId);
+      return;
+    }
+    if (event.ctrlKey || event.metaKey) {
+      setSelectedJobIds((ids) => toggleId(ids, job.id));
+      setJobSelectionAnchorId(job.id);
+      return;
+    }
+    setSelectedJobIds([job.id]);
+    setJobSelectionAnchorId(job.id);
+  }
+
+  function selectRunWithMouse(run: BackgroundJobRun, event: MouseEvent) {
+    setSelectedJobIds([]);
+    const visibleIds = runListItems()
+      .filter((item) => item.kind === "background")
+      .map((item) => runListItemRun(item).id);
+    if (event.shiftKey) {
+      const anchorId = runSelectionAnchorId() ?? run.id;
+      setSelectedRunIds((ids) => mergeRangeSelection(ids, visibleIds, anchorId, run.id));
+      setRunSelectionAnchorId(anchorId);
+      return;
+    }
+    if (event.ctrlKey || event.metaKey) {
+      setSelectedRunIds((ids) => toggleId(ids, run.id));
+      setRunSelectionAnchorId(run.id);
+      return;
+    }
+    setSelectedRunIds([run.id]);
+    setRunSelectionAnchorId(run.id);
+  }
+
+  function handleJobCardClick(job: BackgroundJob, event: MouseEvent) {
+    if (consumeDelayedSelection("job", job.id)) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    if (event.shiftKey || event.ctrlKey || event.metaKey) {
+      event.preventDefault();
+      event.stopPropagation();
+      selectJobWithMouse(job, event);
+      return;
+    }
+    openJobDetails(job);
+  }
+
+  function handleRunListClick(item: RunListItem, event: MouseEvent, openRunItem: () => void) {
+    const run = item.kind === "background" ? item.run : undefined;
+    if (run && consumeDelayedSelection("run", run.id)) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    if (run && (event.shiftKey || event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      event.stopPropagation();
+      selectRunWithMouse(run, event);
+      return;
+    }
+    openRunItem();
+  }
+
+  function openJobBulkContextMenu(job: BackgroundJob, event: MouseEvent) {
+    event.preventDefault();
+    event.stopPropagation();
+    const selected = selectedJobIdSet().has(job.id) ? selectedJobs() : [job];
+    if (!selectedJobIdSet().has(job.id)) {
+      setSelectedRunIds([]);
+      setSelectedJobIds([job.id]);
+      setJobSelectionAnchorId(job.id);
+    }
+    setContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      label: selected.length > 1 ? "Bulk job actions" : "Job actions",
+      actions: createJobBulkActions(selected)
+    });
+  }
+
+  function openRunBulkContextMenu(item: RunListItem, event: MouseEvent) {
+    if (item.kind !== "background") {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const selected = selectedRunIdSet().has(item.run.id) ? selectedBackgroundRuns() : [item.run];
+    if (!selectedRunIdSet().has(item.run.id)) {
+      setSelectedJobIds([]);
+      setSelectedRunIds([item.run.id]);
+      setRunSelectionAnchorId(item.run.id);
+    }
+    setContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      label: selected.length > 1 ? "Bulk run actions" : "Run actions",
+      actions: createRunBulkActions(selected)
+    });
+  }
+
+  function sendBulkOperation(action: BulkOperationAction, targets: BulkOperationTarget[]) {
+    if (targets.length === 0) {
+      return;
+    }
+    sendCommand({
+      type: "bulk-operation.apply",
+      requestId: createRequestId(),
+      payload: {
+        operationId: createRequestId(),
+        action,
+        targets
+      }
+    });
+    pushToast("Bulk action sent", `${targets.length} item${targets.length === 1 ? "" : "s"} queued for ${formatBulkActionLabel(action)}.`, "info");
+  }
+
+  function createJobBulkActions(items: BackgroundJob[]): ContextMenuAction[] {
+    const targets = items.map(jobBulkTarget);
+    return [
+      {
+        id: "run-now",
+        label: `Run now (${items.length})`,
+        disabled: executionPaused(),
+        disabledReason: executionPauseReason,
+        onSelect: () => sendBulkOperation("run-now", targets)
+      },
+      {
+        id: "pause",
+        label: `Pause (${items.length})`,
+        onSelect: () => sendBulkOperation("pause", targets)
+      },
+      {
+        id: "resume",
+        label: `Resume (${items.length})`,
+        onSelect: () => sendBulkOperation("resume", targets)
+      },
+      {
+        id: "delete",
+        label: `Delete (${items.length})`,
+        onSelect: () => sendBulkOperation("delete", targets)
+      }
+    ];
+  }
+
+  function createRunBulkActions(items: BackgroundJobRun[]): ContextMenuAction[] {
+    const targets = items.map(runBulkTarget);
+    return [
+      {
+        id: "stop",
+        label: `Stop (${items.length})`,
+        onSelect: () => sendBulkOperation("stop", targets)
+      },
+      {
+        id: "retry",
+        label: `Retry (${items.length})`,
+        disabled: executionPaused(),
+        disabledReason: executionPauseReason,
+        onSelect: () => sendBulkOperation("retry", targets)
+      },
+      {
+        id: "approve",
+        label: `Approve (${items.length})`,
+        disabled: executionPaused(),
+        disabledReason: executionPauseReason,
+        onSelect: () => sendBulkOperation("approve", targets)
+      },
+      {
+        id: "reject",
+        label: `Reject (${items.length})`,
+        onSelect: () => sendBulkOperation("reject", targets)
+      }
+    ];
+  }
+
+  function jobBulkTarget(job: BackgroundJob): BulkOperationTarget {
+    return {
+      kind: "background-job",
+      projectId: job.projectId,
+      jobId: job.id
+    };
+  }
+
+  function runBulkTarget(run: BackgroundJobRun): BulkOperationTarget {
+    return {
+      kind: "background-run",
+      projectId: run.projectId,
+      runId: run.id
+    };
   }
 
   function handleOpenBackgroundFile(project: typeof state.workspace.projects[number], target: ChatFileTarget) {
@@ -471,6 +777,20 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
     harnessStore.setJobsPanePreferences({ segment: "inbox", selectedRunId: runId, selectedJobId: undefined, selectedNotificationId: undefined });
   }
 
+  function openRunSource(item: RunListItem) {
+    if (item.kind === "background") {
+      const job = state.backgroundJobs.jobs.find((entry) => entry.id === item.run.jobId);
+      if (job) {
+        openJobDetails(job);
+        return;
+      }
+      harnessStore.closeBackgroundJobDetailsDialog();
+      harnessStore.setJobsPanePreferences({ segment: "jobs", selectedJobId: item.run.jobId, selectedRunId: undefined, selectedNotificationId: undefined });
+      return;
+    }
+    openProjectThreadSource(state, item.entry.project.id, item.entry.run.threadId, "run");
+  }
+
   async function handleToggleNotifications() {
     if (typeof Notification === "undefined") {
       pushToast("Notifications unavailable", "Browser does not support desktop notifications.", "error");
@@ -623,6 +943,26 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
             <Show when={activeSegment() === "jobs"}>
               <LeftPaneListSection title="Jobs" count={`${jobs().length} total`} class="min-w-0 border-0 bg-transparent p-0">
                 <CapacityBar jobs={jobs()} />
+                <Show when={selectedJobs().length > 0}>
+                  <div class="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-(--border) bg-(--panel-strong) p-2 text-[0.675rem] text-(--foreground)">
+                    <span class="font-semibold">{selectedJobs().length} selected</span>
+                    <ActionButton tooltip="Run selected jobs now" disabled={executionPaused()} disabledReason={executionPauseReason} size="sm" icon={<Play class="h-3.5 w-3.5" />} onClick={() => sendBulkOperation("run-now", selectedJobs().map(jobBulkTarget))}>
+                      Run now
+                    </ActionButton>
+                    <ActionButton tooltip="Pause selected jobs" size="sm" variant="secondary" icon={<Pause class="h-3.5 w-3.5" />} onClick={() => sendBulkOperation("pause", selectedJobs().map(jobBulkTarget))}>
+                      Pause
+                    </ActionButton>
+                    <ActionButton tooltip="Resume selected jobs" size="sm" variant="secondary" icon={<Play class="h-3.5 w-3.5" />} onClick={() => sendBulkOperation("resume", selectedJobs().map(jobBulkTarget))}>
+                      Resume
+                    </ActionButton>
+                    <ActionButton tooltip="Delete selected jobs" size="sm" variant="secondary" icon={<Trash2 class="h-3.5 w-3.5" />} onClick={() => sendBulkOperation("delete", selectedJobs().map(jobBulkTarget))}>
+                      Delete
+                    </ActionButton>
+                    <ActionButton tooltip="Clear selection" size="sm" variant="ghost" icon={<CircleX class="h-3.5 w-3.5" />} onClick={() => setSelectedJobIds([])}>
+                      Clear
+                    </ActionButton>
+                  </div>
+                </Show>
                 <VirtualList
                   class="min-h-0 flex-1 pr-2"
                   contentClass="w-full"
@@ -661,14 +1001,19 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                     <article
                       class="dense-action-parent dense-card min-w-0 cursor-pointer border-l-4 p-3 transition hover:border-(--accent-strong)"
                       classList={{
-                        "dense-card-selected": selectedJob()?.id === job.id,
-                        "border-l-emerald-500": selectedJob()?.id !== job.id && job.status === "enabled",
-                        "border-l-slate-300": selectedJob()?.id !== job.id && job.status !== "enabled"
+                        "dense-card-selected": selectedJob()?.id === job.id || selectedJobIdSet().has(job.id),
+                        "border-l-emerald-500": selectedJob()?.id !== job.id && !selectedJobIdSet().has(job.id) && job.status === "enabled",
+                        "border-l-slate-300": selectedJob()?.id !== job.id && !selectedJobIdSet().has(job.id) && job.status !== "enabled"
                       }}
-                      onClick={() => openJobDetails(job)}
+                      onPointerDown={(event) => scheduleDelayedSelection("job", job.id, event)}
+                      onPointerUp={clearPendingSelectionTimer}
+                      onPointerCancel={clearPendingSelectionTimer}
+                      onPointerLeave={clearPendingSelectionTimer}
+                      onClick={(event) => handleJobCardClick(job, event)}
+                      onContextMenu={(event) => openJobBulkContextMenu(job, event)}
                     >
                       <div class="flex items-start justify-between gap-3">
-                        <button type="button" class="min-w-0 flex-1 text-left cursor-pointer" aria-label={`Select ${job.name}`} onClick={() => openJobDetails(job)}>
+                        <button type="button" class="min-w-0 flex-1 text-left cursor-pointer" aria-label={`Select ${job.name}`} onClick={(event) => { event.stopPropagation(); handleJobCardClick(job, event); }}>
                           <span class="break-words text-[0.75rem] font-semibold text-(--foreground) [overflow-wrap:anywhere]">{job.name}</span>
                         </button>
                         <StatusChip tone={jobStatusTone(job.status)} class="shrink-0">
@@ -676,6 +1021,19 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                         </StatusChip>
                       </div>
                       <div class="dense-secondary-actions flex gap-0.25">
+                        <ActionButton
+                          tooltip={selectedJobIdSet().has(job.id) ? "Remove from bulk selection" : "Add to bulk selection"}
+                          icon={selectedJobIdSet().has(job.id) ? <CheckSquare2 class="h-3 w-3" /> : <Square class="h-3 w-3" />}
+                          size="icon"
+                          variant="ghost"
+                          ariaLabel={selectedJobIdSet().has(job.id) ? `Remove ${job.name} from bulk selection` : `Add ${job.name} to bulk selection`}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setSelectedRunIds([]);
+                            setSelectedJobIds((ids) => toggleId(ids, job.id));
+                            setJobSelectionAnchorId(job.id);
+                          }}
+                        />
                         <Show when={job.assistantId}>
                           {(assistantId) => (
                             <ActionButton
@@ -727,6 +1085,26 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
 
             <Show when={activeSegment() === "inbox"}>
               <LeftPaneListSection title="Runs" count={`${runListItems().length} total`} class="min-w-0 border-0 bg-transparent p-0">
+                <Show when={selectedBackgroundRuns().length > 0}>
+                  <div class="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-(--border) bg-(--panel-strong) p-2 text-[0.675rem] text-(--foreground)">
+                    <span class="font-semibold">{selectedBackgroundRuns().length} selected</span>
+                    <ActionButton tooltip="Stop selected runs" size="sm" icon={<CircleX class="h-3.5 w-3.5" />} onClick={() => sendBulkOperation("stop", selectedBackgroundRuns().map(runBulkTarget))}>
+                      Stop
+                    </ActionButton>
+                    <ActionButton tooltip="Retry selected runs" disabled={executionPaused()} disabledReason={executionPauseReason} size="sm" variant="secondary" icon={<RefreshCcw class="h-3.5 w-3.5" />} onClick={() => sendBulkOperation("retry", selectedBackgroundRuns().map(runBulkTarget))}>
+                      Retry
+                    </ActionButton>
+                    <ActionButton tooltip="Approve selected runs" disabled={executionPaused()} disabledReason={executionPauseReason} size="sm" variant="secondary" icon={<CheckCircle2 class="h-3.5 w-3.5" />} onClick={() => sendBulkOperation("approve", selectedBackgroundRuns().map(runBulkTarget))}>
+                      Approve
+                    </ActionButton>
+                    <ActionButton tooltip="Reject selected runs" size="sm" variant="secondary" icon={<Trash2 class="h-3.5 w-3.5" />} onClick={() => sendBulkOperation("reject", selectedBackgroundRuns().map(runBulkTarget))}>
+                      Reject
+                    </ActionButton>
+                    <ActionButton tooltip="Clear selection" size="sm" variant="ghost" icon={<CircleX class="h-3.5 w-3.5" />} onClick={() => setSelectedRunIds([])}>
+                      Clear
+                    </ActionButton>
+                  </div>
+                </Show>
                 <VirtualList
                   class="min-h-0 flex-1 pr-2"
                   contentClass="w-full"
@@ -737,7 +1115,30 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
                   pagination={{ kind: "forward", initialCount: 60, batchSize: 60 }}
                   empty={<EmptyFilteredState message="Run history appears after first task. No runs match current search or filter." onClear={() => { harnessStore.setJobsPanePreferences({ runSearch: "" }); harnessStore.setJobsRunFilter("all"); }} />}
                 >
-                  {(item) => <RunListButton item={item} selectedRunId={selectedRun()?.id} fileLinks={runListItemFileLinks(item)} onOpenRun={openRunDetails} onOpenProjectChatRun={openProjectChatRun} />}
+                  {(item) => (
+                    <RunListButton
+                      item={item}
+                      selectedRunId={selectedRun()?.id}
+                      selectedForBulk={item.kind === "background" && selectedRunIdSet().has(item.run.id)}
+                      fileLinks={runListItemFileLinks(item)}
+                      onOpenRun={openRunDetails}
+                      onOpenProjectChatRun={openProjectChatRun}
+                      onOpenRunSource={openRunSource}
+                      onClickItem={handleRunListClick}
+                      onPointerDownItem={(entry, event) => {
+                        if (entry.kind === "background") {
+                          scheduleDelayedSelection("run", entry.run.id, event);
+                        }
+                      }}
+                      onClearPendingSelection={clearPendingSelectionTimer}
+                      onContextMenuItem={openRunBulkContextMenu}
+                      onToggleBulkSelection={(run) => {
+                        setSelectedJobIds([]);
+                        setSelectedRunIds((ids) => toggleId(ids, run.id));
+                        setRunSelectionAnchorId(run.id);
+                      }}
+                    />
+                  )}
                 </VirtualList>
               </LeftPaneListSection>
             </Show>
@@ -924,6 +1325,18 @@ export function BackgroundJobsPanel(props: BackgroundJobsPanelProps = {}) {
             </div>
           </Dialog>
       </Show>
+      <Show when={contextMenu()}>
+        {(menu) => (
+          <ContextMenu
+            open={true}
+            x={menu().x}
+            y={menu().y}
+            ariaLabel={menu().label}
+            actions={menu().actions}
+            onClose={() => setContextMenu(undefined)}
+          />
+        )}
+      </Show>
     </LeftPaneShell>
   );
 }
@@ -973,9 +1386,16 @@ function SchedulerWarningContent(props: { text: string; fileLinks?: FileLinkConf
 function RunListButton(props: {
   item: RunListItem;
   selectedRunId?: string;
+  selectedForBulk?: boolean;
   fileLinks?: FileLinkConfig;
   onOpenRun: (run: BackgroundJobRun) => void;
   onOpenProjectChatRun: (runId: string) => void;
+  onOpenRunSource: (item: RunListItem) => void;
+  onClickItem?: (item: RunListItem, event: MouseEvent, openRunItem: () => void) => void;
+  onPointerDownItem?: (item: RunListItem, event: PointerEvent) => void;
+  onClearPendingSelection?: () => void;
+  onContextMenuItem?: (item: RunListItem, event: MouseEvent) => void;
+  onToggleBulkSelection?: (run: BackgroundJobRun, event: MouseEvent) => void;
 }) {
   const selected = createMemo(() => props.selectedRunId === runListItemRun(props.item).id);
   const openRunItem = () =>
@@ -993,16 +1413,54 @@ function RunListButton(props: {
     <div
       class="dense-card min-w-0 w-full cursor-pointer border-l-4 p-3 text-left transition hover:border-(--accent-strong)"
       classList={{
-        "dense-card-selected": selected(),
-        [runListItemBorderClass(props.item)]: !selected(),
+        "dense-card-selected": selected() || props.selectedForBulk,
+        [runListItemBorderClass(props.item)]: !selected() && !props.selectedForBulk,
       }}
       role="button"
       tabIndex={0}
-      onClick={openRunItem}
+      onPointerDown={(event) => props.onPointerDownItem?.(props.item, event)}
+      onPointerUp={props.onClearPendingSelection}
+      onPointerCancel={props.onClearPendingSelection}
+      onPointerLeave={props.onClearPendingSelection}
+      onClick={(event) => {
+        if (props.onClickItem) {
+          props.onClickItem(props.item, event, openRunItem);
+          return;
+        }
+        openRunItem();
+      }}
+      onContextMenu={(event) => props.onContextMenuItem?.(props.item, event)}
       onKeyDown={handleKeyDown}
     >
       <div class="flex min-w-0 items-center justify-between gap-3">
-        <div class="min-w-0 truncate text-[0.725rem] font-semibold text-(--foreground)">{formatRunListItemTitle(props.item)}</div>
+        <div class="flex min-w-0 items-center gap-2">
+          <Show when={props.item.kind === "background"}>
+            <ActionButton
+              tooltip={props.selectedForBulk ? "Remove from bulk selection" : "Add to bulk selection"}
+              icon={props.selectedForBulk ? <CheckSquare2 class="h-3 w-3" /> : <Square class="h-3 w-3" />}
+              size="icon"
+              variant="ghost"
+              ariaLabel={props.selectedForBulk ? `Remove ${formatRunListItemTitle(props.item)} from bulk selection` : `Add ${formatRunListItemTitle(props.item)} to bulk selection`}
+              onClick={(event) => {
+                event.stopPropagation();
+                if (props.item.kind === "background") {
+                  props.onToggleBulkSelection?.(props.item.run, event);
+                }
+              }}
+            />
+          </Show>
+          <button
+            type="button"
+            class="min-w-0 truncate text-left text-[0.725rem] font-semibold text-(--foreground) underline-offset-2 hover:text-(--accent-strong) hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--accent-strong)"
+            aria-label={`Open source for ${formatRunListItemTitle(props.item)}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              props.onOpenRunSource(props.item);
+            }}
+          >
+            {formatRunListItemTitle(props.item)}
+          </button>
+        </div>
         <StatusChip tone={runListItemTone(props.item)} class="shrink-0">
           {runListItemStatus(props.item)}
         </StatusChip>

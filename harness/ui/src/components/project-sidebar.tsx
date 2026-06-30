@@ -7,7 +7,7 @@ import {
   transformStyle,
   type DragEventHandler
 } from "@thisbeyond/solid-dnd";
-import { createRequestId } from "../../../shared/protocol";
+import { createRequestId, type BulkOperationTarget } from "../../../shared/protocol";
 import {
   getActiveProject,
   harnessStore,
@@ -40,6 +40,7 @@ import {
   Calendar,
   ChevronDown,
   ChevronRight,
+  CheckSquare2,
   Clock3,
   Code2,
   Edit3,
@@ -48,6 +49,7 @@ import {
   GitFork,
   Plus,
   Pin,
+  Square,
   Trash2,
   FolderOpenDot,
   Layers,
@@ -58,6 +60,21 @@ type ProjectSidebarProps = {
   compact?: boolean;
   onNavigate?: () => void;
 };
+
+function toggleSelectionId(ids: string[], id: string) {
+  return ids.includes(id) ? ids.filter((entry) => entry !== id) : [...ids, id];
+}
+
+function mergeProjectRangeSelection(ids: string[], visibleIds: string[], anchorId: string, targetId: string) {
+  const anchorIndex = visibleIds.indexOf(anchorId);
+  const targetIndex = visibleIds.indexOf(targetId);
+  if (anchorIndex === -1 || targetIndex === -1) {
+    return ids.includes(targetId) ? ids : [...ids, targetId];
+  }
+  const start = Math.min(anchorIndex, targetIndex);
+  const end = Math.max(anchorIndex, targetIndex);
+  return [...new Set([...ids, ...visibleIds.slice(start, end + 1)])];
+}
 
 export function ProjectSidebar(props: ProjectSidebarProps) {
   const store = useHarnessStore();
@@ -122,6 +139,14 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
     ariaLabel: string;
     actions: ContextMenuAction[];
   }>();
+  const [selectedProjectIds, setSelectedProjectIds] = createSignal<string[]>([]);
+  const [projectSelectionAnchorId, setProjectSelectionAnchorId] = createSignal<string>();
+  let pendingProjectSelectionTimer: ReturnType<typeof setTimeout> | undefined;
+  let pendingProjectSelectionId: string | undefined;
+  let consumedProjectDelayedSelection = false;
+  const selectedProjectIdSet = createMemo(() => new Set(selectedProjectIds()));
+  const selectedProjects = createMemo(() => projectCards().filter((project) => selectedProjectIdSet().has(project.id)));
+  const selectedProjectRemoveDisabledReason = createMemo(() => selectedProjects().map(projectRemoveDisabledReason).find(Boolean));
   const owner = getOwner();
   const projectChatSearchResults = createMemo(() => buildProjectChatSearchResults(state.workspace.projects, projectChatSearch()));
   const selectableProjectThreads = createMemo(() =>
@@ -352,7 +377,126 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
     return project.hasWorkingThread ? "Project is streaming" : project.hasCliSession ? "Live CLI session attached" : undefined;
   }
 
+  function clearProjectSelectionTimer() {
+    if (pendingProjectSelectionTimer) {
+      clearTimeout(pendingProjectSelectionTimer);
+      pendingProjectSelectionTimer = undefined;
+    }
+    if (!consumedProjectDelayedSelection) {
+      pendingProjectSelectionId = undefined;
+    }
+  }
+
+  function scheduleProjectDelayedSelection(projectId: string, event: PointerEvent) {
+    if (event.button !== 0 || event.shiftKey || event.ctrlKey || event.metaKey || isInteractiveProjectSelectionTarget(event.target)) {
+      return;
+    }
+    clearProjectSelectionTimer();
+    pendingProjectSelectionId = projectId;
+    pendingProjectSelectionTimer = setTimeout(() => {
+      pendingProjectSelectionTimer = undefined;
+      consumedProjectDelayedSelection = true;
+      setSelectedProjectIds((ids) => (ids.includes(projectId) ? ids : [...ids, projectId]));
+      setProjectSelectionAnchorId(projectId);
+    }, 250);
+  }
+
+  function consumeProjectDelayedSelection(projectId: string) {
+    if (!consumedProjectDelayedSelection || pendingProjectSelectionId !== projectId) {
+      return false;
+    }
+    consumedProjectDelayedSelection = false;
+    pendingProjectSelectionId = undefined;
+    return true;
+  }
+
+  function isInteractiveProjectSelectionTarget(target: EventTarget | null) {
+    return target instanceof Element && Boolean(target.closest("button,a,input,textarea,select,[role='menuitem']"));
+  }
+
+  function selectProjectWithMouse(project: ProjectCard, event: MouseEvent) {
+    if (event.shiftKey) {
+      const anchorId = projectSelectionAnchorId() ?? project.id;
+      setSelectedProjectIds((ids) => mergeProjectRangeSelection(ids, visibleProjectIds(), anchorId, project.id));
+      setProjectSelectionAnchorId(anchorId);
+      return;
+    }
+    if (event.ctrlKey || event.metaKey) {
+      setSelectedProjectIds((ids) => toggleSelectionId(ids, project.id));
+      setProjectSelectionAnchorId(project.id);
+      return;
+    }
+    setSelectedProjectIds([project.id]);
+    setProjectSelectionAnchorId(project.id);
+  }
+
+  function handleProjectCardClick(project: ProjectCard, event: MouseEvent) {
+    if (isInteractiveProjectSelectionTarget(event.target)) {
+      return;
+    }
+    if (consumeProjectDelayedSelection(project.id)) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    if (event.shiftKey || event.ctrlKey || event.metaKey) {
+      event.preventDefault();
+      event.stopPropagation();
+      selectProjectWithMouse(project, event);
+      return;
+    }
+    handleActivateProject(project.id);
+  }
+
+  function bulkProjectTargets(projects: ProjectCard[]): BulkOperationTarget[] {
+    return projects.map((project) => ({
+      kind: "project",
+      projectId: project.id
+    }));
+  }
+
+  function sendBulkProjectDelete(projects: ProjectCard[]) {
+    if (projects.length === 0) {
+      return;
+    }
+    sendCommand({
+      type: "bulk-operation.apply",
+      requestId: createRequestId(),
+      payload: {
+        operationId: createRequestId(),
+        action: "delete",
+        targets: bulkProjectTargets(projects)
+      }
+    });
+  }
+
+  function selectedOrSingleProject(project: ProjectCard) {
+    return selectedProjectIdSet().has(project.id) ? selectedProjects() : [project];
+  }
+
+  function projectBulkContextActions(projects: ProjectCard[]): ContextMenuAction[] {
+    const removeDisabledReason = projects.map(projectRemoveDisabledReason).find(Boolean);
+    return [
+      {
+        id: "remove-selected",
+        label: `Remove selected (${projects.length})`,
+        disabled: Boolean(removeDisabledReason),
+        disabledReason: removeDisabledReason,
+        onSelect: () => sendBulkProjectDelete(projects)
+      },
+      {
+        id: "open-selected-ide",
+        label: `Open in IDE (${projects.length})`,
+        onSelect: () => projects.forEach((project) => handleOpenProjectInIde(project.id))
+      }
+    ];
+  }
+
   function projectContextActions(project: ProjectCard): ContextMenuAction[] {
+    const selected = selectedOrSingleProject(project);
+    if (selected.length > 1) {
+      return projectBulkContextActions(selected);
+    }
     const removeDisabledReason = projectRemoveDisabledReason(project);
     const projectIndex = visibleProjectIds().indexOf(project.id);
     return [
@@ -468,6 +612,17 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
     setLastScrolledActiveKey(key);
     queueMicrotask(() => sidebarList?.scrollToKey(key, "center"));
   });
+
+  createEffect(() => {
+    const visibleIds = new Set(visibleProjectIds());
+    setSelectedProjectIds((ids) => ids.filter((id) => visibleIds.has(id)));
+    const anchorId = projectSelectionAnchorId();
+    if (anchorId && !visibleIds.has(anchorId)) {
+      setProjectSelectionAnchorId(undefined);
+    }
+  });
+
+  onCleanup(() => clearProjectSelectionTimer());
 
   onMount(() => {
     const unregisterItemSelector = registerCurrentTabItemSelector("projects", (index) => {
@@ -606,18 +761,27 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
         classList={{
           "opacity-80": sortable.isDragging,
           "shadow-lg": sortable.isDragging,
-          "dense-card-selected": isActiveProject(),
-          "hover:bg-white/75": !isActiveProject()
+          "dense-card-selected": isActiveProject() || selectedProjectIdSet().has(project.id),
+          "hover:bg-white/75": !isActiveProject() && !selectedProjectIdSet().has(project.id)
         }}
         ref={sortable.ref}
         style={sortable.style}
+        onPointerDown={(event) => scheduleProjectDelayedSelection(project.id, event)}
+        onPointerUp={clearProjectSelectionTimer}
+        onPointerCancel={clearProjectSelectionTimer}
+        onPointerLeave={clearProjectSelectionTimer}
+        onClick={(event) => handleProjectCardClick(project, event)}
         onContextMenu={(event) => {
           event.preventDefault();
           event.stopPropagation();
+          if (!selectedProjectIdSet().has(project.id)) {
+            setSelectedProjectIds([project.id]);
+            setProjectSelectionAnchorId(project.id);
+          }
           showContextMenu({
             x: event.clientX,
             y: event.clientY,
-            ariaLabel: `${project.name} actions`,
+            ariaLabel: selectedProjectIdSet().has(project.id) && selectedProjects().length > 1 ? "Bulk project actions" : `${project.name} actions`,
             actions: projectContextActions(project)
           });
         }}
@@ -680,6 +844,18 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
           </ActionButton>
 
           <div class="dense-secondary-actions flex shrink-0 items-center gap-0.5">
+            <ActionButton
+              tooltip={selectedProjectIdSet().has(project.id) ? "Remove from bulk selection" : "Add to bulk selection"}
+              icon={selectedProjectIdSet().has(project.id) ? <CheckSquare2 class="h-3 w-3" /> : <Square class="h-3 w-3" />}
+              variant="ghost"
+              size="icon"
+              ariaLabel={selectedProjectIdSet().has(project.id) ? `Remove ${project.name} from bulk selection` : `Add ${project.name} to bulk selection`}
+              onClick={(event) => {
+                event.stopPropagation();
+                setSelectedProjectIds((ids) => toggleSelectionId(ids, project.id));
+                setProjectSelectionAnchorId(project.id);
+              }}
+            />
             <For each={actionItems().filter((item) => item.key !== "open-ide")}>
               {(item) => (
                 <ActionButton
@@ -1086,6 +1262,40 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
           </div>
         </Show>
       </LeftPaneFilterBlock>
+
+      <Show when={selectedProjects().length > 0}>
+        <div class="flex flex-wrap items-center gap-2 rounded-lg border border-(--border) bg-(--panel-strong) p-2 text-[0.675rem] text-(--foreground)">
+          <span class="font-semibold">{selectedProjects().length} selected</span>
+          <ActionButton
+            tooltip="Remove selected projects from this workspace"
+            disabled={Boolean(selectedProjectRemoveDisabledReason())}
+            disabledReason={selectedProjectRemoveDisabledReason()}
+            size="sm"
+            icon={<Trash2 class="h-3.5 w-3.5" />}
+            onClick={() => sendBulkProjectDelete(selectedProjects())}
+          >
+            Remove
+          </ActionButton>
+          <ActionButton
+            tooltip="Open selected projects in IDE"
+            size="sm"
+            variant="secondary"
+            icon={<Code2 class="h-3.5 w-3.5" />}
+            onClick={() => selectedProjects().forEach((project) => handleOpenProjectInIde(project.id))}
+          >
+            Open IDE
+          </ActionButton>
+          <ActionButton
+            tooltip="Clear selection"
+            size="sm"
+            variant="ghost"
+            icon={<Square class="h-3.5 w-3.5" />}
+            onClick={() => setSelectedProjectIds([])}
+          >
+            Clear
+          </ActionButton>
+        </div>
+      </Show>
 
       <Show
         when={state.workspace.projects.length > 0}

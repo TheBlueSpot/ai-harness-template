@@ -7,6 +7,7 @@ type MaintenanceAction =
   | "remove-project-assistants"
   | "rebootstrap"
   | "pause-assistants"
+  | "resume-assistants"
   | "start-jobs"
   | "reconcile-orrn-todos";
 
@@ -33,7 +34,7 @@ type Row = Record<string, unknown>;
 const HELP_TEXT = `assistant-maintenance.ts
 
 Usage:
-  bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action <remove-jobs|remove-project-assistants|rebootstrap|pause-assistants|start-jobs|reconcile-orrn-todos> [--assistant <name-or-id>] [--project <name-or-id-or-root>] [--all] [--db <path>] [--execute] [--json]
+  bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action <remove-jobs|remove-project-assistants|rebootstrap|pause-assistants|resume-assistants|start-jobs|reconcile-orrn-todos> [--assistant <name-or-id>] [--project <name-or-id-or-root>] [--all] [--db <path>] [--execute] [--json]
 
 Examples:
   bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action remove-jobs --assistant "Release watcher" --project "Docs" --execute
@@ -41,6 +42,7 @@ Examples:
   bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action rebootstrap --assistant "Release watcher" --project "Docs" --execute
   bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action rebootstrap --project "Docs" --execute
   bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action pause-assistants --project "Docs" --execute
+  bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action resume-assistants --project "Docs" --execute
   bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action pause-assistants --all --execute
   bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action start-jobs --assistant "Release watcher" --project "Docs" --execute --url http://localhost:8787
   bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action reconcile-orrn-todos --assistant "Orrn" --project "context" --execute
@@ -224,6 +226,7 @@ export function renderAssistantMaintenanceResult(result: Row) {
     `assistants to remove: ${plan.assistantsToRemoveCount}`,
     `assistants to rebootstrap: ${plan.assistantsToRebootstrapCount}`,
     `assistants to pause: ${plan.assistantsToPauseCount}`,
+    `assistants to resume: ${plan.assistantsToResumeCount}`,
     `jobs to start: ${plan.jobsToStartCount}`
   ];
 
@@ -274,6 +277,7 @@ function buildPlan(db: Database, options: AssistantMaintenanceOptions, project: 
     assistantsToRemoveCount: options.action === "remove-project-assistants" ? assistants.length : 0,
     assistantsToRebootstrapCount: options.action === "rebootstrap" ? assistants.length : 0,
     assistantsToPauseCount: options.action === "pause-assistants" ? assistants.length : 0,
+    assistantsToResumeCount: options.action === "resume-assistants" ? assistants.length : 0,
     jobsToStartCount: jobsToStart.length,
     todoMutationCount: options.action === "reconcile-orrn-todos" ? 10 : 0,
     jobsToStart
@@ -299,6 +303,9 @@ function applyPlan(db: Database, action: MaintenanceAction, assistants: Row[], n
     }
     if (action === "pause-assistants") {
       pauseAssistants(db, assistantIds, timestamp);
+    }
+    if (action === "resume-assistants") {
+      resumeAssistants(db, assistantIds, timestamp);
     }
     if (action === "reconcile-orrn-todos") {
       reconcileOrrnTodos(db, assistantIds, timestamp);
@@ -327,7 +334,7 @@ function resolveMaintenanceAssistants(db: Database, action: MaintenanceAction, a
     return dedupeRowsById(assistantSelectors.flatMap((selector) => resolveAssistants(db, selector, project ? String(project.id) : undefined)));
   }
 
-  if ((action === "pause-assistants" || action === "start-jobs") && project) {
+  if ((action === "pause-assistants" || action === "resume-assistants" || action === "start-jobs") && project) {
     return db
       .query(
         `SELECT a.id, a.name, a.scope, a.project_id, a.run_state, a.bootstrap_state, a.deleted_at, p.name AS project_name
@@ -339,7 +346,7 @@ function resolveMaintenanceAssistants(db: Database, action: MaintenanceAction, a
       .all(String(project.id)) as Row[];
   }
 
-  if ((action === "pause-assistants" || action === "start-jobs") && all) {
+  if ((action === "pause-assistants" || action === "resume-assistants" || action === "start-jobs") && all) {
     return db
       .query(
         `SELECT a.id, a.name, a.scope, a.project_id, a.run_state, a.bootstrap_state, a.deleted_at, p.name AS project_name
@@ -363,7 +370,7 @@ function resolveMaintenanceAssistants(db: Database, action: MaintenanceAction, a
       .all(String(project.id)) as Row[];
   }
 
-  if (action === "pause-assistants" || action === "start-jobs") {
+  if (action === "pause-assistants" || action === "resume-assistants" || action === "start-jobs") {
     throw new Error(`--assistant, --project, or --all is required for ${action}`);
   }
 
@@ -513,6 +520,20 @@ function pauseAssistants(db: Database, assistantIds: string[], now: string) {
   }
 }
 
+function resumeAssistants(db: Database, assistantIds: string[], now: string) {
+  const query = db.query(
+    `UPDATE assistants
+     SET run_state = 'active',
+         pending_reprioritize_reason = 'manual-resume',
+         pending_reprioritize_requested_at = ?2,
+         updated_at = ?2
+     WHERE id = ?1 AND deleted_at IS NULL`
+  );
+  for (const assistantId of assistantIds) {
+    query.run(assistantId, now);
+  }
+}
+
 function reconcileOrrnTodos(db: Database, assistantIds: string[], now: string) {
   const missingEngineBlocker =
     "Current checkout has no ./engine directory, so this remains blocked until Orrn is pointed at the engine workspace or ./engine is restored.";
@@ -575,6 +596,7 @@ function parseAction(value: string) {
     value === "remove-project-assistants" ||
     value === "rebootstrap" ||
     value === "pause-assistants" ||
+    value === "resume-assistants" ||
     value === "start-jobs" ||
     value === "reconcile-orrn-todos"
   ) {
@@ -663,26 +685,46 @@ async function runLiveAssistantMaintenance(options: AssistantMaintenanceOptions)
 
 function buildLiveCommands(action: string, result: Row) {
   if (action === "pause-assistants") {
-    return ((result.assistants as Row[] | undefined) ?? []).map((assistant) => ({
-      type: "assistant.pause",
-      requestId: createLiveRequestId(),
-      payload: {
-        assistantId: String(assistant.id)
-      }
+    const targets = ((result.assistants as Row[] | undefined) ?? []).map((assistant) => ({
+      kind: "assistant",
+      assistantId: String(assistant.id)
     }));
+    return buildBulkLiveCommands("pause", targets);
+  }
+  if (action === "resume-assistants") {
+    const targets = ((result.assistants as Row[] | undefined) ?? []).map((assistant) => ({
+      kind: "assistant",
+      assistantId: String(assistant.id)
+    }));
+    return buildBulkLiveCommands("resume", targets);
   }
   if (action === "start-jobs") {
     const plan = result.plan as Row;
-    return ((plan.jobsToStart as Row[] | undefined) ?? []).map((job) => ({
-      type: "background-job.run-now",
-      requestId: createLiveRequestId(),
-      payload: {
-        projectId: String(job.project_id),
-        jobId: String(job.id)
-      }
+    const targets = ((plan.jobsToStart as Row[] | undefined) ?? []).map((job) => ({
+      kind: "background-job",
+      projectId: String(job.project_id),
+      jobId: String(job.id)
     }));
+    return buildBulkLiveCommands("run-now", targets);
   }
   return [];
+}
+
+function buildBulkLiveCommands(action: string, targets: Row[]) {
+  if (targets.length === 0) {
+    return [];
+  }
+  return [
+    {
+      type: "bulk-operation.apply",
+      requestId: createLiveRequestId(),
+      payload: {
+        operationId: createLiveRequestId(),
+        action,
+        targets
+      }
+    }
+  ];
 }
 
 function resolveHarnessWsUrl(rawUrl: string | undefined) {

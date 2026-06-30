@@ -43,7 +43,7 @@ Roles: `user`, `developer`, `reviewer`.
 | THREADS-ROADMAP | 2 |
 | PREFERENCES-ROADMAP | 1 |
 | SEARCH-ROADMAP | 1 |
-| UI-ROADMAP | 4 |
+| UI-ROADMAP | 5 |
 | RUNS-ROADMAP | 4 |
 | WORKTREE-ROADMAP | 1 |
 | PROVIDERS-ROADMAP | 14 |
@@ -55,7 +55,7 @@ Roles: `user`, `developer`, `reviewer`.
 | PERSISTENCE-ROADMAP | 4 |
 | MODES-ROADMAP | 4 |
 | PLANNING-ROADMAP | 5 |
-| WORKSPACE-ROADMAP | 4 |
+| WORKSPACE-ROADMAP | 5 |
 
 ---
 
@@ -247,7 +247,7 @@ US-ASSISTANTS-001: As a user, I use local assistant operators with named persona
 
 US-ASSISTANTS-002: As a user, I get a dedicated Assistants surface with search and filters so assistant chat, todos, questions, bounded learnings, logs, and assistant-owned jobs stay inspectable outside normal project chat. (README L103)
 
-US-ASSISTANTS-003: As a developer, I see assistant state persist locally in SQLite, including canonical thread memory summaries, active todo list, deduped and compacted learnings, pending questions, structured logs, and assistant-linked background jobs. (README L144)
+US-ASSISTANTS-003: As a developer, I see assistant state persist locally in SQLite, including canonical thread memory summaries, active todo list, deduped and compacted learnings, pending questions, structured logs, assistant intent contracts, and assistant-linked background jobs. (README L144)
 
 US-ASSISTANTS-004: As a user, I see assistant-owned jobs share the same scheduler path while assistant circuit breakers can auto-pause failing assistants and surface blocking questions for user intervention. (README L179)
 
@@ -259,7 +259,7 @@ US-ASSISTANTS-007: As a user, build-oriented assistants keep structured todo wor
 
 ### JOBS
 
-US-JOBS-001: As a user, I use local scheduled tasks and background jobs with durable SQLite history, startup catch-up, approval policy defaults, non-blocking assistant question auto-approval, hidden automation threads, renewable ownership leases, visible due, blocked, stale, concurrent launch, timeout, progress, congestion/capacity scheduler state, and a dedicated health view for recent reliability. (README L22)
+US-JOBS-001: As a user, I use local scheduled tasks and background jobs with durable SQLite history, intent contracts, startup catch-up, approval policy defaults, non-blocking assistant question auto-approval, hidden automation threads, renewable ownership leases, visible due, blocked, stale, concurrent launch, timeout, progress, congestion/capacity scheduler state, and a dedicated health view for recent reliability. (README L22)
 
 US-JOBS-002: As a user, I use searchable and filterable Jobs, Runs, and Health tabs to inspect scheduled work, approval-needed runs, failures, concise execution milestones, backoff-blocked jobs, dominant failure classes, and prompt repetition outside normal project chat threads. (README L102)
 
@@ -499,6 +499,8 @@ US-UI-ROADMAP-003: As a user, I send selected UI elements, screenshots, console 
 
 US-UI-ROADMAP-004: As a user, I keep inspectability high without forcing trace-heavy UI on every normal coding task. (todo.md L40)
 
+US-UI-ROADMAP-005: As a user, I use shared bulk selection in Projects, Assistants, Jobs, and Runs with delayed click-to-select, Shift range selection, Ctrl/Cmd toggle selection, right-click bulk menus, keyboard access, and kind-specific dialogs so high-volume management stays fast. (todo.md Daily Coding Loop)
+
 ### RUNS-ROADMAP
 
 US-RUNS-ROADMAP-001: As a user, I review step-level diffs, incremental change views, and checkpoint restore so I can inspect or roll back agent work before trust is lost. (todo.md L34)
@@ -640,3 +642,5 @@ US-WORKSPACE-ROADMAP-002: As a user, I use diff-aware review summaries, issue ex
 US-WORKSPACE-ROADMAP-003: As a user, I capture review-specific rules from accepted or dismissed findings so repeated repo feedback improves future review runs without hiding reasoning. (todo.md L121)
 
 US-WORKSPACE-ROADMAP-004: As a user, I keep repository automation behind explicit opt-in and clear approval points. (todo.md L122)
+
+US-WORKSPACE-ROADMAP-005: As a user, I apply scoped bulk actions from UI or project chat through one typed preview/apply contract with dry-run, permission and readiness checks, per-item results, and durable failure readback so selection and chat automation cannot drift. (todo.md Bulk Action Market Scan)

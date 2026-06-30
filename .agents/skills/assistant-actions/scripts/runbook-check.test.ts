@@ -203,6 +203,41 @@ describe("assistant-actions runbook", () => {
     }
   });
 
+  test("maintenance resumes all project assistants and marks reprioritize", () => {
+    const dbPath = createAssistantMaintenanceFixture();
+
+    const dryRun = runAssistantMaintenance({
+      dbPath,
+      action: "resume-assistants",
+      project: "Docs",
+      execute: false,
+      json: true
+    }) as { plan: { assistantsToResumeCount: number }; applied: boolean };
+
+    expect(dryRun.applied).toBe(false);
+    expect(dryRun.plan.assistantsToResumeCount).toBe(1);
+
+    runAssistantMaintenance({
+      dbPath,
+      action: "resume-assistants",
+      project: "Docs",
+      execute: true,
+      json: true
+    });
+
+    const db = new Database(dbPath);
+    try {
+      const assistant = db
+        .query(`SELECT run_state, pending_reprioritize_reason FROM assistants WHERE id = ?1`)
+        .get("assistant-1") as { run_state: string; pending_reprioritize_reason: string | null };
+      expect(assistant.run_state).toBe("active");
+      expect(assistant.pending_reprioritize_reason).toBe("manual-resume");
+      expect((db.query(`SELECT run_state FROM assistants WHERE id = ?1`).get("assistant-global") as { run_state: string }).run_state).toBe("active");
+    } finally {
+      db.close();
+    }
+  });
+
   test("maintenance plans all assistant jobs and skips active runs", () => {
     const dbPath = createAssistantMaintenanceFixture();
 

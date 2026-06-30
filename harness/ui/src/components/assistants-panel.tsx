@@ -6,6 +6,7 @@ import {
   Bot,
   Calendar,
   Check,
+  CheckSquare2,
   CircleAlert,
   CirclePause,
   CircleHelp,
@@ -25,6 +26,7 @@ import {
   RefreshCcw,
   Save,
   Split,
+  Square,
   SquarePen,
   Trash2
 } from "lucide-solid";
@@ -38,6 +40,8 @@ import {
   type AssistantLearning,
   type AssistantQuestion,
   type AssistantTodo,
+  type BulkOperationAction,
+  type BulkOperationTarget,
   type ComposerReasoningStrength
 } from "../../../shared/protocol";
 import { resolveModeCatalog } from "../../../shared/modes";
@@ -70,6 +74,7 @@ import { FileLinkedText, type FileLinkConfig } from "./file-linked-text";
 import { MarkdownContent } from "./markdown-content";
 import { Button } from "./primitives/button";
 import { ChatComposer } from "./primitives/chat-composer";
+import { ContextMenu, type ContextMenuAction } from "./primitives/context-menu";
 import { CopyTextButton } from "./primitives/copy-text-button";
 import { Dialog } from "./primitives/dialog";
 import { ExecutionLog, type ExecutionLogEntry } from "./primitives/execution-log";
@@ -120,6 +125,25 @@ function formatHotkeyHint(hotkey: string) {
 
 function tooltipWithPrimaryHotkey(label: string, hotkey: string | undefined) {
   return hotkey ? `${label} (${formatHotkeyHint(hotkey)})` : label;
+}
+
+function toggleAssistantSelectionId(ids: string[], id: string) {
+  return ids.includes(id) ? ids.filter((entry) => entry !== id) : [...ids, id];
+}
+
+function mergeAssistantRangeSelection(ids: string[], visibleIds: string[], anchorId: string, targetId: string) {
+  const anchorIndex = visibleIds.indexOf(anchorId);
+  const targetIndex = visibleIds.indexOf(targetId);
+  if (anchorIndex === -1 || targetIndex === -1) {
+    return ids.includes(targetId) ? ids : [...ids, targetId];
+  }
+  const start = Math.min(anchorIndex, targetIndex);
+  const end = Math.max(anchorIndex, targetIndex);
+  return [...new Set([...ids, ...visibleIds.slice(start, end + 1)])];
+}
+
+function formatAssistantBulkActionLabel(action: BulkOperationAction) {
+  return action === "bootstrap-retry" ? "bootstrap retry" : action;
 }
 
 function renderMessageActionRow(timestamp: string | number | Date | undefined, copyButton: JSX.Element) {
@@ -263,7 +287,24 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
       .filter((assistant) => fuzzyMatches(assistantSearchHaystack(assistant, state), state.assistants.rosterSearch))
       .sort((left, right) => compareAssistants(left, right, state.assistants.rosterSort))
   );
+  const [selectedAssistantIds, setSelectedAssistantIds] = createSignal<string[]>([]);
+  const [assistantSelectionAnchorId, setAssistantSelectionAnchorId] = createSignal<string>();
+  const [contextMenu, setContextMenu] = createSignal<{ x: number; y: number; label: string; actions: ContextMenuAction[] }>();
+  let pendingAssistantSelectionTimer: ReturnType<typeof setTimeout> | undefined;
+  let pendingAssistantSelectionId: string | undefined;
+  let consumedAssistantDelayedSelection = false;
+  const selectedAssistantIdSet = createMemo(() => new Set(selectedAssistantIds()));
+  const selectedAssistants = createMemo(() => visibleAssistants().filter((assistant) => selectedAssistantIdSet().has(assistant.id)));
   const selectedAssistant = createMemo(() => getSelectedAssistant(state));
+  createEffect(() => {
+    const visibleIds = new Set(visibleAssistants().map((assistant) => assistant.id));
+    setSelectedAssistantIds((ids) => ids.filter((id) => visibleIds.has(id)));
+    const anchorId = assistantSelectionAnchorId();
+    if (anchorId && !visibleIds.has(anchorId)) {
+      setAssistantSelectionAnchorId(undefined);
+    }
+  });
+  onCleanup(() => clearAssistantSelectionTimer());
   createEffect(() => {
     const assistantId = selectedAssistant()?.id;
     if (!assistantId || lastRequestedDetailAssistantId === assistantId) {
@@ -299,6 +340,142 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
     ...assistantChatFileLinkContext(),
     onOpenFile: handleOpenAssistantChatFile
   });
+
+  function clearAssistantSelectionTimer() {
+    if (pendingAssistantSelectionTimer) {
+      clearTimeout(pendingAssistantSelectionTimer);
+      pendingAssistantSelectionTimer = undefined;
+    }
+    if (!consumedAssistantDelayedSelection) {
+      pendingAssistantSelectionId = undefined;
+    }
+  }
+
+  function isInteractiveAssistantSelectionTarget(target: EventTarget | null) {
+    return target instanceof Element && Boolean(target.closest("button,a,input,textarea,select,[role='menuitem']"));
+  }
+
+  function scheduleAssistantDelayedSelection(assistantId: string, event: PointerEvent) {
+    if (event.button !== 0 || event.shiftKey || event.ctrlKey || event.metaKey || isInteractiveAssistantSelectionTarget(event.target)) {
+      return;
+    }
+    clearAssistantSelectionTimer();
+    pendingAssistantSelectionId = assistantId;
+    pendingAssistantSelectionTimer = setTimeout(() => {
+      pendingAssistantSelectionTimer = undefined;
+      consumedAssistantDelayedSelection = true;
+      setSelectedAssistantIds((ids) => (ids.includes(assistantId) ? ids : [...ids, assistantId]));
+      setAssistantSelectionAnchorId(assistantId);
+    }, 250);
+  }
+
+  function consumeAssistantDelayedSelection(assistantId: string) {
+    if (!consumedAssistantDelayedSelection || pendingAssistantSelectionId !== assistantId) {
+      return false;
+    }
+    consumedAssistantDelayedSelection = false;
+    pendingAssistantSelectionId = undefined;
+    return true;
+  }
+
+  function selectAssistantWithMouse(assistant: Assistant, event: MouseEvent) {
+    const visibleIds = visibleAssistants().map((entry) => entry.id);
+    if (event.shiftKey) {
+      const anchorId = assistantSelectionAnchorId() ?? assistant.id;
+      setSelectedAssistantIds((ids) => mergeAssistantRangeSelection(ids, visibleIds, anchorId, assistant.id));
+      setAssistantSelectionAnchorId(anchorId);
+      return;
+    }
+    if (event.ctrlKey || event.metaKey) {
+      setSelectedAssistantIds((ids) => toggleAssistantSelectionId(ids, assistant.id));
+      setAssistantSelectionAnchorId(assistant.id);
+      return;
+    }
+    setSelectedAssistantIds([assistant.id]);
+    setAssistantSelectionAnchorId(assistant.id);
+  }
+
+  function handleAssistantCardClick(assistant: Assistant, event: MouseEvent) {
+    if (consumeAssistantDelayedSelection(assistant.id)) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    if (event.shiftKey || event.ctrlKey || event.metaKey) {
+      event.preventDefault();
+      event.stopPropagation();
+      selectAssistantWithMouse(assistant, event);
+      return;
+    }
+    harnessStore.setSelectedAssistantId(assistant.id);
+  }
+
+  function assistantBulkTarget(assistant: Assistant): BulkOperationTarget {
+    return {
+      kind: "assistant",
+      assistantId: assistant.id
+    };
+  }
+
+  function sendAssistantBulkOperation(action: BulkOperationAction, assistants: Assistant[]) {
+    if (assistants.length === 0) {
+      return;
+    }
+    sendCommand({
+      type: "bulk-operation.apply",
+      requestId: createRequestId(),
+      payload: {
+        operationId: createRequestId(),
+        action,
+        targets: assistants.map(assistantBulkTarget)
+      }
+    });
+    pushToast("Bulk action sent", `${assistants.length} assistant${assistants.length === 1 ? "" : "s"} queued for ${formatAssistantBulkActionLabel(action)}.`, "info");
+  }
+
+  function assistantBulkActions(assistants: Assistant[]): ContextMenuAction[] {
+    return [
+      {
+        id: "pause",
+        label: `Pause (${assistants.length})`,
+        onSelect: () => sendAssistantBulkOperation("pause", assistants)
+      },
+      {
+        id: "resume",
+        label: `Resume (${assistants.length})`,
+        onSelect: () => sendAssistantBulkOperation("resume", assistants)
+      },
+      {
+        id: "bootstrap-retry",
+        label: `Retry bootstrap (${assistants.length})`,
+        disabled: executionPaused(),
+        disabledReason: executionPauseReason,
+        onSelect: () => sendAssistantBulkOperation("bootstrap-retry", assistants)
+      },
+      {
+        id: "delete",
+        label: `Delete (${assistants.length})`,
+        onSelect: () => sendAssistantBulkOperation("delete", assistants)
+      }
+    ];
+  }
+
+  function openAssistantBulkContextMenu(assistant: Assistant, event: MouseEvent) {
+    event.preventDefault();
+    event.stopPropagation();
+    const assistants = selectedAssistantIdSet().has(assistant.id) ? selectedAssistants() : [assistant];
+    if (!selectedAssistantIdSet().has(assistant.id)) {
+      setSelectedAssistantIds([assistant.id]);
+      setAssistantSelectionAnchorId(assistant.id);
+    }
+    setContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      label: assistants.length > 1 ? "Bulk assistant actions" : "Assistant actions",
+      actions: assistantBulkActions(assistants)
+    });
+  }
+
   createEffect(() => {
     const assistant = selectedAssistant();
     if (!assistant) {
@@ -1089,6 +1266,26 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
             />
           </LeftPaneFilterBlock>
           <LeftPaneListSection title="Roster" count={`${visibleAssistants().length} total`} class="border-0 bg-transparent p-0">
+          <Show when={selectedAssistants().length > 0}>
+            <div class="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-(--border) bg-(--panel-strong) p-2 text-[0.675rem] text-(--foreground)">
+              <span class="font-semibold">{selectedAssistants().length} selected</span>
+              <ActionButton tooltip="Pause selected assistants" size="sm" icon={<CirclePause class="h-3.5 w-3.5" />} onClick={() => sendAssistantBulkOperation("pause", selectedAssistants())}>
+                Pause
+              </ActionButton>
+              <ActionButton tooltip="Resume selected assistants" size="sm" variant="secondary" icon={<CirclePlay class="h-3.5 w-3.5" />} onClick={() => sendAssistantBulkOperation("resume", selectedAssistants())}>
+                Resume
+              </ActionButton>
+              <ActionButton tooltip="Retry selected assistant bootstraps" disabled={executionPaused()} disabledReason={executionPauseReason} size="sm" variant="secondary" icon={<RefreshCcw class="h-3.5 w-3.5" />} onClick={() => sendAssistantBulkOperation("bootstrap-retry", selectedAssistants())}>
+                Bootstrap
+              </ActionButton>
+              <ActionButton tooltip="Delete selected assistants" size="sm" variant="secondary" icon={<Trash2 class="h-3.5 w-3.5" />} onClick={() => sendAssistantBulkOperation("delete", selectedAssistants())}>
+                Delete
+              </ActionButton>
+              <ActionButton tooltip="Clear selection" size="sm" variant="ghost" icon={<Square class="h-3.5 w-3.5" />} onClick={() => setSelectedAssistantIds([])}>
+                Clear
+              </ActionButton>
+            </div>
+          </Show>
           <VirtualList
             class="min-h-0 flex-1 pr-2"
             contentClass="w-full"
@@ -1132,12 +1329,17 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
               <div
                 class="dense-action-parent dense-card w-full cursor-pointer border-l-4 p-3 text-left transition hover:border-(--accent-strong)"
                 classList={{
-                  "dense-card-selected": selectedAssistant()?.id === assistant.id,
-                  [assistantRunStateBorderClass(assistant.runState)]: selectedAssistant()?.id !== assistant.id,
+                  "dense-card-selected": selectedAssistant()?.id === assistant.id || selectedAssistantIdSet().has(assistant.id),
+                  [assistantRunStateBorderClass(assistant.runState)]: selectedAssistant()?.id !== assistant.id && !selectedAssistantIdSet().has(assistant.id),
                 }}
                 role="button"
                 tabIndex={0}
-                onClick={() => harnessStore.setSelectedAssistantId(assistant.id)}
+                onPointerDown={(event) => scheduleAssistantDelayedSelection(assistant.id, event)}
+                onPointerUp={clearAssistantSelectionTimer}
+                onPointerCancel={clearAssistantSelectionTimer}
+                onPointerLeave={clearAssistantSelectionTimer}
+                onClick={(event) => handleAssistantCardClick(assistant, event)}
+                onContextMenu={(event) => openAssistantBulkContextMenu(assistant, event)}
                 onKeyDown={(event) => handleAssistantRosterKeyDown(event, assistant.id)}
               >
                 <div class="flex items-start justify-between gap-3">
@@ -1149,6 +1351,18 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
                     </div>
                   </div>
                   <div class="flex shrink-0 flex-wrap justify-end gap-1">
+                    <ActionButton
+                      tooltip={selectedAssistantIdSet().has(assistant.id) ? "Remove from bulk selection" : "Add to bulk selection"}
+                      icon={selectedAssistantIdSet().has(assistant.id) ? <CheckSquare2 class="h-3 w-3" /> : <Square class="h-3 w-3" />}
+                      size="icon"
+                      variant="ghost"
+                      ariaLabel={selectedAssistantIdSet().has(assistant.id) ? `Remove ${assistant.name} from bulk selection` : `Add ${assistant.name} to bulk selection`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setSelectedAssistantIds((ids) => toggleAssistantSelectionId(ids, assistant.id));
+                        setAssistantSelectionAnchorId(assistant.id);
+                      }}
+                    />
                     <StatusChip tone={assistantRunStateTone(assistant.runState)}>
                       {assistant.runState}
                     </StatusChip>
@@ -1714,6 +1928,18 @@ export function AssistantsPanel(props: AssistantsPanelProps = {}) {
         </section>
         </Show>
       </div>
+      <Show when={contextMenu()}>
+        {(menu) => (
+          <ContextMenu
+            open={true}
+            x={menu().x}
+            y={menu().y}
+            ariaLabel={menu().label}
+            actions={menu().actions}
+            onClose={() => setContextMenu(undefined)}
+          />
+        )}
+      </Show>
     </LeftPaneShell>
   );
 }

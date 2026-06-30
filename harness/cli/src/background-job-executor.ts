@@ -2,9 +2,11 @@ import path from "node:path";
 import { existsSync } from "node:fs";
 import { withAgentsMdRuleSource } from "./agent-rules";
 import { resolveModeById } from "../../shared/modes";
+import { compileBackgroundJobIntentContract, renderIntentContractPrompt } from "../../shared/intent-contract";
 import {
   createAssistantLogEntryId,
   createChatMessage,
+  type AssistantTodo,
   type AgentRunState,
   type AgentTrace,
   type BackgroundJob,
@@ -83,7 +85,8 @@ function resolveBackgroundRunMaxTurns(job: BackgroundJob) {
   if (!job.assistantId || job.definition.kind !== "ai-routine") {
     return undefined;
   }
-  return /\b(factory|spawn|create(?:s|d|ing)?\s+assistant|assistant\s+factory)\b/i.test(job.definition.prompt) ? 40 : 20;
+  const intentText = [job.definition.prompt, job.intentContract?.objective, job.intentContract?.sourcePrompt].filter(Boolean).join("\n");
+  return /\b(factory|spawn|create(?:s|d|ing)?\s+assistant|assistant\s+factory)\b/i.test(intentText) ? 40 : 20;
 }
 
 function isProjectRootGitRepository(projectRoot: string) {
@@ -114,9 +117,7 @@ async function executeAiRoutineJob(options: BackgroundJobExecutorOptions) {
   const assistantOwned = Boolean(job.assistantId);
   const existingThreadMessages = repository.getThreadMessages(job.projectId, threadId);
   const projectRootIsGitRepo = isProjectRootGitRepository(project.rootPath);
-  const basePrompt = job.assistantId
-    ? buildAssistantRoutinePrompt(definition.prompt, repository, job.assistantId)
-    : definition.prompt;
+  const basePrompt = buildBackgroundRoutinePrompt(job, repository);
   const prompt =
     assistantOwned && !projectRootIsGitRepo
       ? [
@@ -921,37 +922,82 @@ function summarizeShellOutput(stdout: string, stderr: string) {
   return primary.replace(/\s+/g, " ").trim().slice(0, 240);
 }
 
-function buildAssistantRoutinePrompt(
-  basePrompt: string,
-  repository: WorkspaceRepository,
-  assistantId: string
-) {
-  const assistant = repository.getAssistant(assistantId);
-  if (!assistant) {
-    return basePrompt;
+function buildBackgroundRoutinePrompt(job: BackgroundJob, repository: WorkspaceRepository) {
+  if (job.definition.kind !== "ai-routine") {
+    return "";
   }
 
-  const answeredQuestions = selectAssistantPromptQuestions(repository.getAssistantQuestions(assistantId));
-  const learnings = selectAssistantPromptLearnings(repository.getAssistantLearnings(assistantId));
-  const activeTodos = repository
-    .getAssistantTodos(assistantId)
-    .filter((todo) => ["pending", "in-progress", "blocked"].includes(todo.state));
+  const contract = job.intentContract ?? compileBackgroundJobIntentContract(job);
+  const assistant = job.assistantId ? repository.getAssistant(job.assistantId) : undefined;
+  const activeTodos = job.assistantId
+    ? selectActiveTodosForPrompt(repository.getAssistantTodos(job.assistantId))
+    : [];
+  const activeTodoCount = job.assistantId
+    ? repository.getAssistantTodos(job.assistantId).filter((todo) => ["pending", "in-progress", "blocked"].includes(todo.state)).length
+    : 0;
+  const answeredQuestions = job.assistantId ? selectAssistantPromptQuestions(repository.getAssistantQuestions(job.assistantId)) : [];
+  const learnings = job.assistantId ? selectAssistantPromptLearnings(repository.getAssistantLearnings(job.assistantId)) : [];
 
   return [
-    renderAssistantPromptContext(assistant, basePrompt),
-    activeTodos.length > 0
-      ? [
-          "Active assistant todos:",
-          ...activeTodos.map(
-            (todo) =>
-              `- (${todo.id}) state=${todo.state} workKind=${todo.workKind} target=${todo.workTarget ?? "none"} title=${todo.title}${todo.blockerReason ? ` blocker=${todo.blockerReason}` : ""}`
-          )
-        ].join("\n")
-      : "Active assistant todos: none",
-    renderAssistantPromptMemoryBlock(answeredQuestions, learnings)
+    renderIntentContractPrompt(contract),
+    "Runtime instruction: treat the IntentContract as authority. Use job prompt, assistant persona, todos, questions, and learnings as supporting context.",
+    renderBackgroundJobSupportContext(job),
+    assistant ? renderAssistantPromptContext(assistant, job.definition.prompt) : renderUnownedRoutineContext(job),
+    renderActiveTodos(activeTodos, activeTodoCount),
+    job.assistantId ? renderAssistantPromptMemoryBlock(answeredQuestions, learnings) : undefined
   ]
-    .filter(Boolean)
+    .filter((part): part is string => Boolean(part))
     .join("\n\n");
+}
+
+function renderBackgroundJobSupportContext(job: BackgroundJob) {
+  return [
+    "# BACKGROUND JOB SUPPORTING CONTEXT",
+    `Job: ${job.name}`,
+    `Description: ${job.description?.trim() || "No description provided."}`,
+    `Definition prompt: ${job.definition.kind === "ai-routine" ? job.definition.prompt.trim() : "No AI routine prompt."}`
+  ].join("\n");
+}
+
+function renderUnownedRoutineContext(job: BackgroundJob) {
+  return [
+    "# ACTIVE MISSION (The Request)",
+    job.definition.kind === "ai-routine" ? job.definition.prompt.trim() : job.name
+  ].join("\n");
+}
+
+function renderActiveTodos(activeTodos: AssistantTodo[], activeTodoCount: number) {
+  if (activeTodoCount === 0) {
+    return "Active assistant todos: none";
+  }
+  const lines = [
+    `Active assistant todos: showing ${activeTodos.length} of ${activeTodoCount}`,
+    ...activeTodos.map(
+      (todo) =>
+        `- (${todo.id}) state=${todo.state} workKind=${todo.workKind} target=${todo.workTarget ?? "none"} title=${todo.title}${todo.description ? ` description=${summarize(todo.description, 240)}` : ""}${todo.blockerReason ? ` blocker=${summarize(todo.blockerReason, 240)}` : ""}`
+    )
+  ];
+  return lines.join("\n");
+}
+
+function selectActiveTodosForPrompt(todos: AssistantTodo[]) {
+  return todos
+    .filter((todo) => ["pending", "in-progress", "blocked"].includes(todo.state))
+    .sort((left, right) => todoPromptRank(left) - todoPromptRank(right) || left.sortOrder - right.sortOrder)
+    .slice(0, 12);
+}
+
+function todoPromptRank(todo: AssistantTodo) {
+  if (todo.state === "in-progress") {
+    return 0;
+  }
+  if (todo.state === "pending" && (todo.workKind === "app-code" || todo.workKind === "automation-code")) {
+    return 1;
+  }
+  if (todo.state === "pending") {
+    return 2;
+  }
+  return 3;
 }
 
 async function consumeBoundedStream(

@@ -85,7 +85,7 @@ bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --acti
 ```
 
 3. Confirm matched assistants and `jobs to start`. Active queued/running/waiting jobs are skipped.
-4. Execute through the live harness command path so launch gates, notifications, and in-memory controllers stay correct:
+4. Execute through the live harness bulk command path so launch gates, notifications, and in-memory controllers stay correct:
 
 ```powershell
 bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action start-jobs --assistant "Release watcher" --project "Docs" --execute --url http://localhost:8787
@@ -93,7 +93,7 @@ bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --acti
 
 5. Verify with `assistant-state.ts`; new rows should appear under `backgroundJobRuns`.
 
-Do not create `background_job_runs` directly in SQLite for this action. Manual starts must use the live `background-job.run-now` path.
+Do not create `background_job_runs` directly in SQLite for this action. Manual starts must use the live `bulk-operation.apply` `run-now` path.
 
 ## Recovery Link
 

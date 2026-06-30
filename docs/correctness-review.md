@@ -19,6 +19,7 @@ Last merged targeted onboarding flow scan: 2026-06-15.
 Last merged targeted virtual-list first-paint scan: 2026-06-24.
 Last merged targeted chat file-link affordance scan: 2026-06-24.
 Last merged targeted assistant/background approval flow scan: 2026-06-25.
+Last merged targeted bulk-action audit and market scan: 2026-06-28.
 
 Source of truth: [user-stories.md](user-stories.md), [coverage-matrix.md](coverage-matrix.md), [root README](../README.md), and harness implementation under [harness](../harness).
 
@@ -32,6 +33,8 @@ Virtual-list first paint now has primitive-level browser coverage for real geome
 
 Project chat path linking now uses a shared modifier-click contract for rendered chat, tool, trace, assistant, and execution-log text. Future non-chat file path surfaces should reuse the same project-owned link adapter.
 
+Bulk actions add a new cross-surface risk: the same selected set must be understood by the UI, websocket commands, project-chat handoffs, assistant maintenance scripts, and durable readback before destructive or live mutations are safe.
+
 ## Story To Code Map
 
 | Story area | Main implementation surfaces | Highest edge risk |
@@ -44,6 +47,7 @@ Project chat path linking now uses a shared modifier-click contract for rendered
 | ATTACHMENTS | [attachment prompt builder](../harness/cli/src/chat-attachment-prompt.ts), [document extractors](../harness/cli/src/document-extractors), [attachment UI](../harness/ui/src/components/chat-panel-attachments.test.tsx) | Attachments now bind to trusted upload metadata; remaining risk is remote object expiry and richer upload cleanup UX. |
 | ASSISTANTS, JOBS, NOTIFICATIONS | [assistant manager](../harness/cli/src/assistant-manager.ts), [background scheduler](../harness/cli/src/background-job-scheduler.ts), [background executor](../harness/cli/src/background-job-executor.ts), [assistant panel](../harness/ui/src/components/assistants-panel.tsx), [notification inbox](../harness/ui/src/components/notification-inbox.tsx) | Assistant pause, circuit-breaker, bootstrap, job routing, and linked assets cross several paths and can drift from the dedicated assistant surface contract. |
 | UI, MARKDOWN | [UI store](../harness/ui/src/harness-store.ts), [run status helpers](../harness/ui/src/lib/run-status.ts), [markdown content](../harness/ui/src/components/markdown-content.tsx), [primitives](../harness/ui/src/components/primitives), [app shell](../harness/ui/src/app.tsx) | Overlay dismissal, focus isolation, hotkey ownership, and live markdown workload can drift across dense surfaces. |
+| BULK ACTIONS | [context menu primitive](../harness/ui/src/components/primitives/context-menu.tsx), [project sidebar](../harness/ui/src/components/project-sidebar.tsx), [assistant panel](../harness/ui/src/components/assistants-panel.tsx), [jobs panel](../harness/ui/src/components/background-jobs-panel.tsx), [protocol](../harness/shared/protocol.ts), [server](../harness/cli/src/server.ts), [assistant maintenance](../.agents/skills/assistant-actions/scripts/assistant-maintenance.ts) | Selection gestures, right-click menus, chat handoffs, and backend mutations can drift unless one operation contract owns preview, apply, partial failure, and readback. |
 | DEV, ACTIVATION | [launch harness](../harness/cli/src/launch-harness.ts), [CLI entry](../harness/cli/src/cli-entry.ts), [scripts](../scripts), [setup health](../harness/cli/src/setup-health.ts), [setup checklist](../harness/ui/src/components/setup-checklist-card.tsx), [tutorials](../harness/ui/src/components/tutorial-definitions.ts) | Top-level CLI parsing is covered; remaining activation risk is end-to-end first-run recovery plus keeping setup readiness paired with project lifecycle and local tutorial state. |
 | MAGIC UI AFFORDANCES | [project switcher](../harness/ui/src/components/project-switcher-dialog.tsx), [composer](../harness/ui/src/components/chat-panel.tsx), [setup checklist](../harness/ui/src/components/setup-checklist-card.tsx), [trace panel](../harness/ui/src/components/trace-panel.tsx), [notification inbox](../harness/ui/src/components/notification-inbox.tsx) | High-polish interactions need typed state, OS capability checks, reduced-motion paths, and stable test hooks before they can feel magical without lying. |
 
@@ -447,6 +451,56 @@ Fix direction: Replace the remaining ad hoc stop wording with a typed interventi
 
 Partial closeout note: non-blocking assistant questions now have an explicit auto-approval preference, and run filters split `Approval` from `Input` so `awaiting-user-input` no longer lands in the approval bucket. The broader typed intervention model remains open for launch approvals, browser permissions, pause, circuit breaker, and failure readback.
 
+### CR-060: Assistant-owned jobs lack a durable inferred-intent contract
+
+Stories: `US-ASSISTANTS-001`, `US-ASSISTANTS-004`, `US-JOBS-001`, `US-JOBS-002`, `US-MODES-004`.
+
+Code map: [assistant editor](../harness/ui/src/components/assistant-editor-dialog.tsx), [assistant create/update commands](../harness/cli/src/server.ts), [assistant persistence](../harness/cli/src/workspace-repository.ts), [background executor](../harness/cli/src/background-job-executor.ts), [assistant prompt builder](../harness/cli/src/assistant-manager.ts), [assistant job bootstrap](../harness/cli/src/assistant-job-bootstrap.ts), [assistant action jobs](../.agents/skills/assistant-actions/references/jobs.md).
+
+Impact: Assistant-owned jobs have multiple intent-bearing fields: assistant prompt, job definition prompt, job display description, active todos, learnings, and automation-thread transcript, but no single typed contract that captures the user's inferred objective, expected artifact class, quality bar, and success evidence. The executed prompt currently centers assistant job prompt plus job definition prompt. If a bulk maintenance flow updates only job descriptions or todo descriptions, the UI and DB can look corrected while the next background run still receives older local instructions.
+
+Edge case: A project request such as "make this directory a SaaS factory" implies apps, reusable skills or scripts, launch scaffolds, and proof of progress. Spawned assistants or dialog-created assistants can instead inherit local persona/catalog prompts, so jobs can keep maintaining notes while never preserving the top-level factory outcome as the authority.
+
+Fix direction: Add an AI-assisted intent compiler at the shared assistant create/update, assistant-from-thread, and assistant-owned job save boundaries that turns user phrasing into a durable outcome contract: objective, deliverables, artifact types, non-goals, quality patterns, evidence, and stop conditions. Every launch should reconcile current prompts and todos against that contract before dispatch. Treat job description as display-only or copy it into the executable definition through one shared save/update helper. Add tests that update UI-created assistant description and job prompt, job descriptions, definition prompts, assistant prompts, and todos separately, then assert the rendered background prompt contains the current inferred-intent contract.
+
+### CR-061: Assistant todo prompt context can grow while losing the strongest instruction text
+
+Stories: `US-ASSISTANTS-001`, `US-ASSISTANTS-003`, `US-ASSISTANTS-004`, `US-JOBS-001`, `US-RUNS-012`.
+
+Code map: [assistant prompt builder](../harness/cli/src/assistant-manager.ts), [background executor](../harness/cli/src/background-job-executor.ts), [assistant todo policy](../harness/cli/src/assistant-todo-policy.ts), [assistant state APIs](../harness/cli/src/workspace-repository.ts).
+
+Impact: Background prompts include active todo id, state, work kind, target, title, and blocker, but omit todo descriptions. That means repeated bulk todo rewrites can create many similarly titled rows while the strongest intent translation lives in a field not sent to the planner. Large todo sets also make planning noisy and can bias work toward local maintenance over the top-level outcome contract.
+
+Edge case: A project assistant accumulates dozens of open app-code todos with the same title and nearby targets. The planner sees a long duplicate list but not the acceptance details, then chooses a small documentation or catalog reconciliation because the assistant job prompt still rewards catalog maintenance.
+
+Fix direction: Cap and rank prompt todos before launch, deduplicate equivalent generated todos, include bounded todo descriptions for the top few items, and separate "research", "implementation", and "blocked" lanes in the prompt. Add a fixture with hundreds of active todos proving the prompt stays small and still contains the top work implied by the durable intent contract.
+
+### CR-062: Partial assistant job completion hides deterministic subagent setup failures behind useful-looking summaries
+
+Stories: `US-ASSISTANTS-004`, `US-JOBS-001`, `US-JOBS-002`, `US-JOBS-004`, `US-WORKTREE-002`, `US-WORKTREE-004`, `US-WORKTREE-010`.
+
+Code map: [background executor](../harness/cli/src/background-job-executor.ts), [subagent orchestration](../harness/cli/src/pi-subagents.ts), [BranchFS integration](../harness/cli/src/branchfs-subagent-integration.ts), [jobs panel](../harness/ui/src/components/background-jobs-panel.tsx).
+
+Impact: Recent assistant-owned background runs can fail all subagents immediately, retry the same setup failure, then let aggregation produce a final summary and mark the run `partial-complete`. This preserves some progress, but the user-facing readback makes the run look like a partial product pass instead of a deterministic subagent infrastructure failure.
+
+Edge case: Every subagent fails with a local workspace or BranchFS read/setup error before doing task work. The aggregator still writes docs or small changes, so the job is not marked failed. The user later sees many partial-complete runs and cannot tell whether product work was incomplete, subagent setup was broken, or the final summary came from fallback aggregation.
+
+Fix direction: Distinguish "subagent setup failure before first activity" from normal partial product work. Surface a typed failure reason, suppress expensive aggregation when every subagent failed before useful output unless main fallback is explicit, and make retry target the failing setup condition instead of re-running identical subagent attempts. Add coverage for non-git project roots, BranchFS mount/read errors, and all-subagent-failed aggregation behavior.
+
+### CR-063: Bulk actions lacked a shared selection and operation contract
+
+Stories: `US-WORKSPACE-001`, `US-THREADS-010`, `US-ASSISTANTS-001`, `US-JOBS-002`, `US-RUNS-009`, `US-UI-006`, `US-UI-ROADMAP-005`, `US-WORKSPACE-ROADMAP-005`.
+
+Code map: [context menu primitive](../harness/ui/src/components/primitives/context-menu.tsx), [project sidebar](../harness/ui/src/components/project-sidebar.tsx), [assistant panel](../harness/ui/src/components/assistants-panel.tsx), [jobs panel](../harness/ui/src/components/background-jobs-panel.tsx), [protocol](../harness/shared/protocol.ts), [server](../harness/cli/src/server.ts), [assistant maintenance script](../.agents/skills/assistant-actions/scripts/assistant-maintenance.ts), [assistant action handoffs](../.agents/skills/assistant-actions/references/operation-handoffs.md).
+
+Status: V1 implemented on 2026-06-28. Projects, assistants, jobs, and background runs now share a typed bulk target and `preview` / `apply` command path, and the main UI surfaces support delayed click-to-select, Shift range selection, Ctrl/Cmd toggle selection, selected-set bulk bars, and right-click bulk menus.
+
+Impact: The original risk was repeated single-row command dispatch with local target resolution per surface. V1 reduces that drift by centralizing readiness checks and per-item results for project remove, assistant pause/resume/delete/bootstrap retry, job pause/resume/delete/run-now, and background run stop/retry/approve/reject.
+
+Edge case: A user Shift-selects several jobs across projects and right-clicks Pause, or asks project chat to "pause failed assistant jobs, rebootstrap selected assistants, and retry stalled runs". Today each surface would need local target resolution and repeated command dispatch. A stale id, active run, paused execution gate, deleted assistant, or mixed project scope can create partial mutation while UI and chat still read as one successful bulk action.
+
+Remaining hardening: Add kind-specific edit dialogs, visible per-item result readback in the UI, idempotency keys for retry-safe apply, and deeper project-chat parsing for mixed bulk requests.
+
 ## Critical Duplicate Logic To Extract
 
 1. Project lifecycle and setup refresh path.
@@ -492,6 +546,10 @@ Chat, assistant, trace, terminal, IDE, and experiment-review surfaces each resol
 11. Intervention reason ownership.
 
 Launch approvals, planning questions, assistant questions, browser permissions, global pause, circuit breakers, and failed background runs each shape their own status text and UI bucket. Extract one shared intervention descriptor so notifications, filters, detail panes, toasts, and backend rejection messages all explain the same stop with the same action.
+
+12. Bulk operation ownership.
+
+Selection state, project-chat handoffs, assistant maintenance scripts, websocket commands, and per-row UI buttons should not each compute target sets and safety gates independently. The new bulk operation path covers core action authority; keep extracting kind-specific edit dialogs, destructive confirmation, and retryable partial-failure readback into that path.
 
 ## Coverage Priorities
 
@@ -546,7 +604,11 @@ Use [coverage-matrix.md](coverage-matrix.md) as the baseline. Highest-value addi
 47. `US-THREADS-008`, `US-UI-015`, `US-UI-017`, and `US-DEV-017`: keep browser-backed first-paint virtual-list coverage current when tab-mounted transcript, assistant, jobs, runs, memory, or trace wrappers diverge from the primitive fixture.
 48. `US-UI-010`, `US-UI-022`, `US-THREADS-008`, and `US-RUNS-009`: keep browser coverage for Ctrl/Meta-click IDE open from transcript, streamed tool, trace, log, and assistant-chat surfaces with pointer affordance and project-owned target scope.
 49. `US-ASSISTANTS-001`, `US-JOBS-002`, `US-RUNS-013`, and `US-BROWSER-001`: approval and input run filters are split; next prove allow-all background launch policy does not suppress required planner, assistant, or browser interventions, and prove each remaining intervention renders with a distinct reason, inline action, and matching backend rejection rule.
+50. `US-ASSISTANTS-001`, `US-ASSISTANTS-004`, and `US-JOBS-001`: assert that dialog-created assistant description/job prompt, assistant-from-thread purpose, assistant-owned job description, definition prompt, assistant job prompt, todo title, and todo description updates reconcile to one coherent inferred-intent contract in the executable background prompt.
+51. `US-ASSISTANTS-003`, `US-JOBS-001`, and `US-RUNS-012`: add large assistant-todo fixtures proving prompt todo selection is capped, deduplicated, ranked by contract value, and includes bounded acceptance details for the top work.
+52. `US-JOBS-004`, `US-WORKTREE-002`, and `US-WORKTREE-010`: cover all-subagent setup failure as a distinct background-run outcome with clear retry/readback behavior.
+53. `US-UI-ROADMAP-005` and `US-WORKSPACE-ROADMAP-005`: cover delayed click-to-select, Shift range selection, Ctrl/Cmd toggle selection, right-click selected-set menus, stale/deleted ids, mixed-scope rejection, dry-run preview, live apply, per-item partial failures, and UI/project-chat/script parity.
 
 ## Bottom Line
 
-Happy-path flow is broad and mostly wired. The highest remaining correctness risk is now in lifecycle command authority, active background ownership during destructive operations, unclear intervention reasons for assistant/background work, onboarding readiness drift, BranchFS and IDE path trust, debug artifact redaction, provider/cache identity, draft acknowledgement, browser approval ownership, terminal stream pressure, dense UI load budgets, app-specific virtualized layout drift, and overlay or button primitives in newer IDE/terminal surfaces.
+Happy-path flow is broad and mostly wired. The highest remaining correctness risk is now in assistant background intent fidelity, lifecycle command authority, active background ownership during destructive operations, bulk-action result readback, unclear intervention reasons for assistant/background work, onboarding readiness drift, BranchFS and IDE path trust, debug artifact redaction, provider/cache identity, draft acknowledgement, browser approval ownership, terminal stream pressure, dense UI load budgets, app-specific virtualized layout drift, and overlay or button primitives in newer IDE/terminal surfaces.

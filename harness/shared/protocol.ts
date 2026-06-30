@@ -74,6 +74,16 @@ export const backgroundJobRunStatusSchema = z.enum([
 export const backgroundJobRiskLevelSchema = z.enum(["safe", "slightly-unsafe", "unsafe"]);
 export const backgroundJobApprovalPolicySchema = z.enum(["allow-all", "allow-safe", "ask-risky", "always-ask"]);
 export const backgroundJobThreadKindSchema = z.enum(["user", "automation"]);
+export const intentArtifactTypeSchema = z.enum([
+  "app-code",
+  "automation-code",
+  "documentation",
+  "research",
+  "test-evidence",
+  "deployment",
+  "question",
+  "unknown"
+]);
 export const modeScopeSchema = z.enum(["builtin", "workspace", "project"]);
 export const modeToolPolicySchema = z.enum(["full-access", "read-heavy", "review-only"]);
 export const modeExecutionAccessSchema = z.enum(["workspace-write", "read-only"]);
@@ -105,6 +115,57 @@ export const assistantAssetRefProvenanceSchema = z.enum([
   "background-template"
 ]);
 export const assistantAssetRefResolutionStatusSchema = z.enum(["resolved", "missing", "out-of-scope"]);
+export const bulkOperationTargetSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("background-job"),
+    projectId: projectIdSchema,
+    jobId: backgroundJobIdSchema
+  }),
+  z.object({
+    kind: z.literal("background-run"),
+    projectId: projectIdSchema,
+    runId: backgroundJobRunIdSchema
+  }),
+  z.object({
+    kind: z.literal("assistant"),
+    assistantId: assistantIdSchema
+  }),
+  z.object({
+    kind: z.literal("project"),
+    projectId: projectIdSchema
+  })
+]);
+export const bulkOperationActionSchema = z.enum([
+  "pause",
+  "resume",
+  "delete",
+  "run-now",
+  "stop",
+  "retry",
+  "approve",
+  "reject",
+  "bootstrap-retry"
+]);
+export const bulkOperationItemStatusSchema = z.enum(["ready", "blocked", "applied", "failed", "skipped"]);
+export const bulkOperationItemResultSchema = z.object({
+  target: bulkOperationTargetSchema,
+  status: bulkOperationItemStatusSchema,
+  label: z.string().min(1).max(256),
+  message: z.string().min(1).max(512),
+  destructive: z.boolean(),
+  live: z.boolean()
+});
+export const bulkOperationPayloadSchema = z.object({
+  operationId: z.string().min(1).max(128).optional(),
+  action: bulkOperationActionSchema,
+  targets: z.array(bulkOperationTargetSchema).min(1).max(100)
+});
+export const bulkOperationResultSchema = z.object({
+  operationId: z.string().min(1).max(128),
+  action: bulkOperationActionSchema,
+  applied: z.boolean(),
+  results: z.array(bulkOperationItemResultSchema).max(100)
+});
 export const assistantActionKindSchema = z.enum([
   "create",
   "chat",
@@ -510,6 +571,18 @@ export const memorySummarySchema = z.object({
   source: z.enum(["user", "generated"])
 });
 
+export const intentContractSchema = z.object({
+  objective: z.string().trim().min(1).max(4000),
+  sourcePrompt: z.string().trim().min(1).max(32000),
+  deliverables: z.array(z.string().trim().min(1).max(512)).min(1).max(16),
+  artifactTypes: z.array(intentArtifactTypeSchema).min(1).max(8),
+  qualityBar: z.array(z.string().trim().min(1).max(512)).min(1).max(16),
+  evidenceRequired: z.array(z.string().trim().min(1).max(512)).min(1).max(16),
+  nonGoals: z.array(z.string().trim().min(1).max(512)).max(16),
+  stopConditions: z.array(z.string().trim().min(1).max(512)).min(1).max(16),
+  allowedAdaptation: z.string().trim().min(1).max(2000)
+});
+
 export const backgroundJobScheduleSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("one-off"),
@@ -684,6 +757,7 @@ export const backgroundJobSchema = z.object({
   kind: backgroundJobKindSchema,
   name: z.string().min(1).max(256),
   description: z.string().min(1).max(1024).optional(),
+  intentContract: intentContractSchema.optional(),
   status: backgroundJobStatusSchema,
   lane: backgroundJobLaneSchema.optional(),
   riskLevel: backgroundJobRiskLevelSchema,
@@ -910,6 +984,7 @@ export const assistantSchema = z.object({
   description: z.string().min(1).max(1024).optional(),
   personalityPrompt: z.string().min(1).max(8000),
   jobPrompt: z.string().min(1).max(12000),
+  intentContract: intentContractSchema.optional(),
   agentId: agentIdSchema,
   providerBrand: providerBrandSchema.optional(),
   modeId: modeIdSchema.optional(),
@@ -2347,6 +2422,16 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     })
   }),
   z.object({
+    type: z.literal("bulk-operation.preview"),
+    requestId: requestIdSchema,
+    payload: bulkOperationPayloadSchema
+  }),
+  z.object({
+    type: z.literal("bulk-operation.apply"),
+    requestId: requestIdSchema,
+    payload: bulkOperationPayloadSchema
+  }),
+  z.object({
     type: z.literal("assistant.create"),
     requestId: requestIdSchema,
     payload: z.object({
@@ -3244,6 +3329,16 @@ export const serverEventSchema = z.discriminatedUnion("type", [
     })
   }),
   z.object({
+    type: z.literal("bulk-operation.previewed"),
+    requestId: requestIdSchema,
+    payload: bulkOperationResultSchema
+  }),
+  z.object({
+    type: z.literal("bulk-operation.applied"),
+    requestId: requestIdSchema,
+    payload: bulkOperationResultSchema
+  }),
+  z.object({
     type: z.literal("assistants.updated"),
     requestId: requestIdSchema,
     payload: z.object({
@@ -3660,6 +3755,8 @@ export type BackgroundJobRunStatus = z.infer<typeof backgroundJobRunStatusSchema
 export type BackgroundJobRiskLevel = z.infer<typeof backgroundJobRiskLevelSchema>;
 export type BackgroundJobApprovalPolicy = z.infer<typeof backgroundJobApprovalPolicySchema>;
 export type BackgroundJobThreadKind = z.infer<typeof backgroundJobThreadKindSchema>;
+export type IntentArtifactType = z.infer<typeof intentArtifactTypeSchema>;
+export type IntentContract = z.infer<typeof intentContractSchema>;
 export type NotificationSeverity = z.infer<typeof notificationSeveritySchema>;
 export type ModeScope = z.infer<typeof modeScopeSchema>;
 export type ModeToolPolicy = z.infer<typeof modeToolPolicySchema>;
@@ -3731,6 +3828,12 @@ export type AssistantAssetRefKind = z.infer<typeof assistantAssetRefKindSchema>;
 export type AssistantAssetRefScope = z.infer<typeof assistantAssetRefScopeSchema>;
 export type AssistantAssetRefProvenance = z.infer<typeof assistantAssetRefProvenanceSchema>;
 export type AssistantAssetRefResolutionStatus = z.infer<typeof assistantAssetRefResolutionStatusSchema>;
+export type BulkOperationTarget = z.infer<typeof bulkOperationTargetSchema>;
+export type BulkOperationAction = z.infer<typeof bulkOperationActionSchema>;
+export type BulkOperationItemStatus = z.infer<typeof bulkOperationItemStatusSchema>;
+export type BulkOperationItemResult = z.infer<typeof bulkOperationItemResultSchema>;
+export type BulkOperationPayload = z.infer<typeof bulkOperationPayloadSchema>;
+export type BulkOperationResult = z.infer<typeof bulkOperationResultSchema>;
 export type AssistantActionKind = z.infer<typeof assistantActionKindSchema>;
 export type AssistantActionMessageMetadata = z.infer<typeof assistantActionMessageMetadataSchema>;
 export type AssistantActionPlanningIntent = z.infer<typeof assistantActionPlanningIntentSchema>;

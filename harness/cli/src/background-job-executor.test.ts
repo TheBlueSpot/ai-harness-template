@@ -1487,4 +1487,73 @@ describe("executeBackgroundJobRun", () => {
     expect(adapter.calls[0]?.prompt).not.toContain("merged durable assistant guidance");
     expect(adapter.calls[0]?.prompt).not.toContain("Background routine fact 0");
   });
+
+  test("assistant-owned routine prompt reconciles edited job description with stale definition prompt", async () => {
+    const repository = createRepository();
+    const projectRoot = path.join(createTempDir(), `repo-${crypto.randomUUID()}`);
+    mkdirSync(projectRoot, { recursive: true });
+    const project = repository.addProject(projectRoot);
+    const now = new Date().toISOString();
+    const assistantId = saveAssistant(repository, project.id);
+    const job: BackgroundJob = {
+      id: createBackgroundJobId(),
+      projectId: project.id,
+      assistantId,
+      automationThreadId: createThreadId(),
+      kind: "ai-routine",
+      name: "Billing app slice",
+      description: "Build a usable billing web app slice with tests.",
+      status: "enabled",
+      riskLevel: "unsafe",
+      definition: {
+        kind: "ai-routine",
+        prompt: "Update docs about SaaS ideas.",
+        planExecutionMode: "immediate",
+        subagentWorktreeStrategy: "separate-worktrees"
+      },
+      schedule: {
+        type: "interval",
+        intervalSeconds: 600,
+        nextRunAt: now,
+        sourceText: "10m"
+      },
+      scheduleInput: "10m",
+      nextRunAt: now,
+      createdAt: now,
+      updatedAt: now
+    };
+    repository.saveBackgroundJob(job);
+    const savedJob = repository.getBackgroundJob(job.id)!;
+    const run = repository.createBackgroundJobRun({
+      jobId: savedJob.id,
+      projectId: savedJob.projectId,
+      assistantId: savedJob.assistantId,
+      automationThreadId: savedJob.automationThreadId,
+      triggerSource: "manual",
+      status: "queued",
+      riskLevel: savedJob.riskLevel,
+      approvalStatus: "approved"
+    });
+    const adapter = new ReadyRoutineAdapter();
+
+    await executeBackgroundJobRun({
+      repository,
+      adapter,
+      agentId: "pi",
+      job: savedJob,
+      run,
+      providerBrand: "gpt",
+      planningModelId: "openai/gpt-5.4",
+      executionModelId: "openai/gpt-5.4",
+      debugEnabled: false
+    });
+
+    expect(savedJob.intentContract?.objective).toBe("Build a usable billing web app slice with tests.");
+    expect(adapter.calls[0]?.prompt).toContain("# INTENT CONTRACT");
+    expect(adapter.calls[0]?.prompt).toContain("Objective: Build a usable billing web app slice with tests.");
+    expect(adapter.calls[0]?.prompt).toContain("Runtime instruction: treat the IntentContract as authority.");
+    expect(adapter.calls[0]?.prompt).toContain("Description: Build a usable billing web app slice with tests.");
+    expect(adapter.calls[0]?.prompt).toContain("Definition prompt: Update docs about SaaS ideas.");
+    expect(adapter.calls[0]?.prompt).toContain("# ACTIVE MISSION (The Request)\nUpdate docs about SaaS ideas.");
+  });
 });

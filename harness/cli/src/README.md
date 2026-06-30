@@ -21,6 +21,7 @@ Backend websocket handlers and runtime orchestration for harness.
 - Background-job questions persist against the owning automation thread even when another project thread is active.
 - Assistant-owned background jobs persist prompt and output evidence in run events and assistant logs instead of normal project chat.
 - Assistant creation and assistant-owned job creation now share one persistence path, including launch-profile snapshots, UI refresh events, and assistant logs.
+- Assistant and background-job records persist an intent contract so runtime prompts grade scope, artifacts, and evidence against typed intent instead of only stale prose prompts.
 - Assistant-owned job launches persist their resolved agent, provider, model, reasoning, and fast-mode choices for diagnostics and recovery cards.
 - Assistant summary and selected-detail state use bounded SQL-backed pages so reconnects and roster refreshes do not load every assistant row.
 - Assistant-owned implement jobs use one bounded correctness iteration by default, leave durable todo/learning/question/log state after runs, and retry one partial completion before stabilizing.

@@ -241,3 +241,29 @@ Update this file when a scan finds a reusable failure pattern, missing probe, or
 - Treat "approval", "blocked", and "needs input" as risky labels when multiple gates can stop the same run.
 - Probe background jobs, assistants, browser tools, global pause, circuit breakers, and planner questions for distinct reason metadata, policy readback, inline actions, and matching filters.
 - Auto-run settings should name exactly which gates they bypass and which gates remain human- or reviewer-mediated.
+
+## 2026-06-28
+
+### Missing durable intent contract
+
+- Treat multi-step assistant spawning as risky unless the original user objective is compiled into one durable outcome contract before jobs are created.
+- Probe whether spawned assistants, recurring jobs, todos, and memories preserve the inferred objective, artifact class, quality bar, evidence, non-goals, and stop conditions.
+- Runtime launch should reconcile local persona/job prompts against that contract so bespoke user phrasing can still produce best-practice deliverables.
+
+### Editable metadata vs executable prompt drift
+
+- Treat any model-facing workflow as risky when similar intent can live in display descriptions, definition prompts, actor prompts, todos, memories, and chat transcripts.
+- Probe whether the field edited by UI, scripts, or bulk maintenance is the exact field rendered into the runtime prompt.
+- Prompt previews and tests should cover every intent-bearing field separately, then assert the launched prompt contains the current executable mission and excludes stale guidance.
+
+### Todo backlog bloat without acceptance details
+
+- Treat assistant or job prompts as risky when they include large todo lists but omit todo descriptions, acceptance notes, or ranked stop conditions.
+- Probe bulk-generated todos for duplicate titles, stale completed work, blocked rows that outrank app-code work, and token-heavy lists that hide the top executable target.
+- Runtime prompt builders should cap, dedupe, rank, and include bounded details for the top work instead of dumping every active row.
+
+### Bulk selection without bulk command authority
+
+- Treat multi-select UI as risky unless the same selected set can be previewed and applied through typed backend commands and chat/script handoffs.
+- Probe delayed selection gestures, Shift range selection, Ctrl/Cmd toggles, right-click selected-set menus, filter changes, reconnects, stale ids, mixed project scope, active runs, and deleted assistants/jobs.
+- Bulk operations need scoped target resolution, destructive confirmation, idempotency, per-item results, and durable partial-failure readback instead of repeated single-row command dispatch.

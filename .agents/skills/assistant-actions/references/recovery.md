@@ -53,6 +53,30 @@ bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --acti
 
 Project-scoped bulk pause does not pause global assistants unless they are named explicitly or `--all` is used without `--project`.
 
+## Resume All Or Subset
+
+Use for explicit bulk resume such as:
+
+```text
+resume all assistants for this project
+resume Release watcher and Docs watcher
+resume all assistants
+```
+
+Dry-run first:
+
+```powershell
+bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action resume-assistants --project "Docs"
+```
+
+Execute only after the matched assistant list is correct:
+
+```powershell
+bun.cmd .agents/skills/assistant-actions/scripts/assistant-maintenance.ts --action resume-assistants --project "Docs" --execute
+```
+
+Verify each matched assistant has run state `active`; global execution pause still blocks immediate work launch.
+
 ## Bootstrap Retry
 
 Flow:

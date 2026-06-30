@@ -98,6 +98,68 @@ test("scheduler retry command parses without payload", () => {
   ).toBe("background-job.scheduler.retry");
 });
 
+test("bulk operation commands and events parse", () => {
+  const command = parseClientCommand({
+    type: "bulk-operation.apply",
+    requestId: "req-bulk-apply",
+    payload: {
+      operationId: "bulk-1",
+      action: "pause",
+      targets: [
+        {
+          kind: "background-job",
+          projectId: "project-1",
+          jobId: "job-1"
+        },
+        {
+          kind: "assistant",
+          assistantId: "assistant-1"
+        },
+        {
+          kind: "project",
+          projectId: "project-1"
+        }
+      ]
+    }
+  });
+
+  expect(command.type).toBe("bulk-operation.apply");
+  if (command.type !== "bulk-operation.apply") {
+    throw new Error("Expected bulk-operation.apply command");
+  }
+  expect(command.payload.targets).toHaveLength(3);
+
+  const event = parseServerEvent({
+    type: "bulk-operation.applied",
+    requestId: "req-bulk-apply",
+    payload: {
+      operationId: "bulk-1",
+      action: "pause",
+      applied: true,
+      results: [
+        {
+          target: {
+            kind: "background-job",
+            projectId: "project-1",
+            jobId: "job-1"
+          },
+          status: "applied",
+          label: "Daily review",
+          message: "Paused scheduled job.",
+          destructive: false,
+          live: false
+        }
+      ]
+    }
+  });
+
+  expect(event.type).toBe("bulk-operation.applied");
+  if (event.type !== "bulk-operation.applied") {
+    throw new Error("Expected bulk-operation.applied event");
+  }
+  expect(event.payload.results[0]?.status).toBe("applied");
+});
+
 test("terminal sessions carry transport degradation metadata", () => {
   const now = new Date().toISOString();
 

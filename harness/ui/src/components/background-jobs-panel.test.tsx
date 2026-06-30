@@ -1179,7 +1179,7 @@ createUiTest("BackgroundJobsPanel", () => {
     expect(screen.getByText("Implement active run visibility")).toBeTruthy();
     expect(screen.getByText("Implement active run visibility").parentElement?.className).toContain("[-webkit-line-clamp:3]");
 
-    fireEvent.click(screen.getByRole("button", { name: /Harness \/ Active chat/ }));
+    fireEvent.click(screen.getByText("Implement active run visibility"));
 
     expect(commands).toEqual([]);
     expect(harnessStore.state.jobsPanePreferences.selectedRunId).toBe(activeRun.id);
@@ -1189,6 +1189,73 @@ createUiTest("BackgroundJobsPanel", () => {
 
     expect(screen.getByText("Run detail")).toBeTruthy();
     expect(screen.getAllByText("Harness / Active chat").length).toBeGreaterThan(1);
+  });
+
+  it("routes run title clicks to the spawned job or project run source", () => {
+    const now = "2026-05-06T12:00:00.000Z";
+    const backgroundProject = createViewProjectFixture({ id: "project-background-title-route", name: "Background project" });
+    const job = createBackgroundJobForFilter("job-title-route", backgroundProject.id, "Hourly review", now);
+    const run = createBackgroundRunForFilter("run-title-route", job, "succeeded", "approved", now);
+    const activeRun = createRunFixture({
+      id: "run-project-title-route",
+      threadId: "thread-title-route",
+      status: "running-main",
+      latestUserPrompt: "Keep title route visible",
+      updatedAt: now
+    });
+    const chatProject = createViewProjectFixture({
+      id: "project-chat-title-route",
+      name: "Chat project",
+      activeThreadId: "thread-title-route",
+      activeRun,
+      threads: [
+        createProjectThreadSummary({
+          id: "thread-title-route",
+          title: "Source chat",
+          titleSource: "generated",
+          updatedAt: now
+        })
+      ]
+    });
+    const commands: unknown[] = [];
+    seedHarnessStoreForTests(
+      createHarnessStateFixture({
+        activeLeftTab: "runs",
+        activeSurface: "background-jobs",
+        workspace: {
+          activeProjectId: backgroundProject.id,
+          projects: [backgroundProject, chatProject]
+        },
+        backgroundJobs: {
+          jobs: [job],
+          runs: [run],
+          templates: []
+        },
+        jobsPanePreferences: {
+          segment: "inbox",
+          search: "",
+          jobSort: "updated",
+          runSearch: "",
+          runSort: "updated",
+          selectedRunId: run.id
+        }
+      })
+    );
+    captureDispatchedCommands(commands);
+
+    render(() => <BackgroundJobsPanel variant="left" segment="runs" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open source for Hourly review" }));
+
+    expect(harnessStore.state.jobsPanePreferences.segment).toBe("jobs");
+    expect(harnessStore.state.jobsPanePreferences.selectedJobId).toBe(job.id);
+    expect(harnessStore.state.jobsPanePreferences.selectedRunId).toBeUndefined();
+
+    fireEvent.click(screen.getByRole("button", { name: "Open source for Chat project / Source chat" }));
+
+    expect(harnessStore.state.activeSurface).toBe("chat");
+    expect(harnessStore.state.chatPaneTab).toBe("run");
+    expect(commands.map((command) => (command as { type: string }).type)).toEqual(["project.activate", "thread.activate"]);
   });
 
   it("filters and sorts project chat runs with background runs", () => {
